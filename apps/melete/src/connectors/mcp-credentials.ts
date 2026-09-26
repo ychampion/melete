@@ -27,6 +27,11 @@ export const mcpCredentials = z
     token_url: mcpCredentialUrl.optional(),
     client_id: z.string().min(1).max(1024).optional(),
     client_secret: z.string().min(1).max(16_384).optional(),
+    /**
+     * The resource the token was issued for (RFC 8707), as the server's own
+     * metadata declares it. A refresh asks for the same one.
+     */
+    resource: mcpCredentialUrl.optional(),
     status: z.enum(['active', 'revoked']).default('active'),
   })
   .strict()
@@ -87,7 +92,9 @@ export function mcpCredentialAccess(
         const form = new URLSearchParams({
           grant_type: 'refresh_token',
           refresh_token: credential.refresh_token,
-          ...(resource ? { resource } : {}),
+          ...((credential.resource ?? resource)
+            ? { resource: credential.resource ?? resource }
+            : {}),
           ...(credential.client_id ? { client_id: credential.client_id } : {}),
           ...(credential.client_secret ? { client_secret: credential.client_secret } : {}),
         });

@@ -16,6 +16,9 @@ import {
   describePlugin,
   installPluginRequest,
   installPluginResponse,
+  mcpSignInRequest,
+  mcpSignInStart,
+  mcpSignInStatus,
   PLUGIN_CATALOG,
   pluginEntry,
   pluginInstallation,
@@ -36,7 +39,9 @@ import { icsFeedTarget } from '../connectors/ics-feed.ts';
 import { mcpServerConfig } from '../connectors/mcp.ts';
 import { setupOwnersSpace } from '../connectors/mcp-connector.ts';
 import { mcpCredentials, mcpCredentialUrl } from '../connectors/mcp-credentials.ts';
-import { isPublicEndpoint } from '../connectors/public-fetch.ts';
+import { clientMetadataDocument, McpSignInFailure } from '../connectors/mcp-oauth.ts';
+import { McpSignIns } from '../connectors/mcp-sign-in.ts';
+import { isPublicEndpoint, publicOnlyFetch } from '../connectors/public-fetch.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
@@ -404,6 +409,82 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     return connectionResponse.parse({ connection: view(row), check: outcome });
   };
 
+  // Signing in to a remote MCP server. The sign-in earns the credential that
+  // would otherwise be pasted, and ends on the same installation path.
+  const signIns = new McpSignIns({
+    publicUrl: deps.env.MELETE_PUBLIC_URL,
+    authorize: async (actor, requested) => {
+      const spaceId = requested ?? (await personalSpace(deps.db, actor));
+      await requireInstaller(deps.db, spaceId, actor, 'mcp');
+      if (!factory.options.masterKey)
+        throw new ServiceError(
+          'sealing_unavailable',
+          'This service has no master key, so it cannot keep a credential. Set MELETE_MASTER_KEY and start it again.',
+          409,
+        );
+      return spaceId;
+    },
+    // The same reach the connection itself will have once installed.
+    fetcherFor: async (spaceId) =>
+      (await setupOwnersSpace(deps.sql, spaceId))
+        ? (url, init) => fetch(url, init)
+        : publicOnlyFetch(),
+    install: (actor, request) =>
+      install(actor, {
+        ...(request.space_id ? { space_id: request.space_id } : {}),
+        provider: 'mcp',
+        label: request.label,
+        scopes: [],
+        credentials: request.credentials,
+        mcp: request.mcp,
+      }),
+  });
+
+  app.post('/connections/mcp/sign-in', async (c) => {
+    const parsed = mcpSignInRequest.safeParse(await c.req.json());
+    if (!parsed.success)
+      throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
+    try {
+      return c.json(mcpSignInStart.parse(await signIns.start(c.get('owner').id, parsed.data)), 201);
+    } catch (error) {
+      throw signInError(error);
+    }
+  });
+
+  app.get('/connections/mcp/sign-in/:id', (c) => {
+    const status = signIns.status(c.get('owner').id, c.req.param('id'));
+    if (!status) throw new ServiceError('not_found', 'No sign-in by that id.', 404);
+    return c.json(mcpSignInStatus.parse(status));
+  });
+
+  // The authorization server sends the browser here. The page it shows is all
+  // the browser needs; the app reads the outcome from the sign-in's status.
+  app.get('/connections/oauth/callback', async (c) => {
+    try {
+      const installed = await signIns.complete(c.get('owner').id, new URL(c.req.url).searchParams);
+      const label = installed.connection.label;
+      return c.html(
+        installed.check?.status === 'failing'
+          ? signInPage(
+              'Signed in',
+              `You signed in to ${label}, but the server did not answer. Test the connection from the app.`,
+            )
+          : signInPage('Connected', `${label} is connected. You can close this tab.`),
+      );
+    } catch (error) {
+      const refused = signInError(error);
+      return c.html(signInPage('Not connected', refused.message), refused.status);
+    }
+  });
+
+  app.get('/oauth/client-metadata.json', (c) => {
+    const clientId = signIns.clientMetadataUrl();
+    const redirectUri = signIns.redirectUri();
+    if (!clientId || !redirectUri)
+      throw new ServiceError('not_found', 'This service publishes no client metadata.', 404);
+    return c.json(clientMetadataDocument(clientId, redirectUri));
+  });
+
   app.post('/connections', async (c) => {
     const parsed = createConnectionRequest.safeParse(await c.req.json());
     // The person is told which field to fix, in the words the form uses for it.
@@ -502,6 +583,72 @@ async function requireInstaller(
 }
 
 /** The space a request means when it names none: the caller's own first personal space. */
+/** What a sign-in failure tells the person, by its fixed code. */
+const SIGN_IN_FAILURES: Record<string, { status: 400 | 404 | 409 | 502; message: string }> = {
+  callback_unavailable: {
+    status: 409,
+    message:
+      'Signing in needs the address people open this service at. Set MELETE_PUBLIC_URL to an https:// address, or a localhost one.',
+  },
+  sign_in_not_needed: {
+    status: 409,
+    message: 'This server answers without signing in. Install it without a credential.',
+  },
+  client_registration_required: {
+    status: 409,
+    message:
+      "This server's sign-in needs a client registered with it. Register one there, then sign in again with its client ID.",
+  },
+  pkce_unsupported: {
+    status: 502,
+    message:
+      "This server's sign-in does not offer the protection Melete requires (PKCE with S256).",
+  },
+  resource_metadata_unavailable: {
+    status: 502,
+    message: 'This server does not say where to sign in.',
+  },
+  server_address_refused: {
+    status: 400,
+    message: 'The server address must be https://, or http:// on this machine.',
+  },
+  state_mismatch: {
+    status: 400,
+    message: 'That sign-in response belongs to another sign-in. Start again.',
+  },
+  issuer_missing: {
+    status: 400,
+    message: 'The sign-in response did not say who issued it. Start again.',
+  },
+  sign_in_declined: { status: 400, message: 'The sign-in was not approved.' },
+  callback_invalid: { status: 400, message: 'The sign-in response was incomplete. Start again.' },
+  sign_in_not_found: {
+    status: 404,
+    message:
+      'That sign-in has expired, was already used, or was started by someone else. Start again.',
+  },
+};
+
+function signInError(error: unknown): ServiceError {
+  if (error instanceof ServiceError) return error;
+  if (error instanceof McpSignInFailure) {
+    const known = SIGN_IN_FAILURES[error.code];
+    return new ServiceError(
+      error.code,
+      known?.message ?? "The server's sign-in did not answer as expected. Try again shortly.",
+      known?.status ?? 502,
+    );
+  }
+  return new ServiceError('sign_in_failed', 'The connection could not be completed.', 502);
+}
+
+const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+
+/** The small page the browser lands on after signing in. */
+function signInPage(title: string, message: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem"><h1 style="font-size:1.25rem">${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body></html>`;
+}
+
 async function personalSpace(db: Database, actor: string): Promise<string> {
   const [row] = await db
     .select({ id: space.id })
