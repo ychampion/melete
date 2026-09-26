@@ -120,6 +120,23 @@ form from that response alone. Each entry has an `id`, and a kind can appear
 more than once: an entry for a provider whose servers are known carries them in
 `fixed`, so the person gives only an email address and an app password.
 
+The same response carries `catalog`: everything a person can connect here, in
+the order a connector screen shows it. Account sign-ins come first (Google, and
+Microsoft), then remote MCP servers known to sign in with OAuth (Notion, Linear,
+Atlassian, Sentry and Stripe), then one entry for each form in `kinds`. Each
+entry says what it covers (`mail`, `calendar`, `tools` or `execution`) and how it
+connects:
+
+- `sign_in` names the provider and the route to `POST` to start
+  (`/google-sign-ins`, `/microsoft-sign-ins`);
+- `mcp_sign_in` gives the server's address and a suggested `mcp.id` for
+  `POST /mcp-sign-ins`, whose `mcp` block still names the tools to grant;
+- `form` names the entry in `kinds` whose form connects it.
+
+`available` is false when this installation cannot offer an entry yet, and
+`unavailable_reason` then says what the operator has to set: a provider's OAuth
+client, or a `MELETE_PUBLIC_URL` to return the browser to.
+
 | Entry | Kind | What the person types |
 | --- | --- | --- |
 | Gmail, iCloud Mail, Fastmail, Yahoo Mail | `mail` | email address, app password |

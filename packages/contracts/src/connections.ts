@@ -556,7 +556,109 @@ export const connectionKindDescriptor = z
   })
   .meta({ id: 'ConnectionKind' });
 export type ConnectionKindDescriptor = z.infer<typeof connectionKindDescriptor>;
-export const connectionKindListResponse = z.object({ kinds: z.array(connectionKindDescriptor) });
+
+/**
+ * One entry of the connector catalog: something a person can connect, how,
+ * and whether this installation offers it now. A sign-in entry starts at its
+ * sign-in route; a form entry opens the form of the kind it names.
+ */
+export const connectionCatalogEntry = z
+  .object({
+    id: z.string().regex(/^[a-z][a-z0-9_-]*$/),
+    title: z.string(),
+    description: z.string(),
+    /** What a connection made from this entry can do. */
+    covers: z.array(z.enum(['mail', 'calendar', 'tools', 'execution'])),
+    connect: z.discriminatedUnion('method', [
+      z.object({
+        method: z.literal('sign_in'),
+        provider: z.enum(['google', 'microsoft']),
+        /** `POST` here to start; the answer is the address to open in the browser. */
+        start: z.string(),
+      }),
+      z.object({
+        method: z.literal('mcp_sign_in'),
+        /** The server's address, for the `mcp` block of `POST /mcp-sign-ins`. */
+        url: z.url(),
+        /** A short name for the installation's `mcp.id`, which prefixes its grants. */
+        suggested_id: z.string().regex(/^[a-z][a-z0-9_]*$/),
+        start: z.string(),
+      }),
+      z.object({
+        method: z.literal('form'),
+        /** The `id` of the entry in `kinds` whose form connects it. */
+        kind_id: z.string(),
+      }),
+    ]),
+    available: z.boolean(),
+    /** When it is not available, the sentence that says what the operator has to set. */
+    unavailable_reason: z.string().optional(),
+  })
+  .meta({ id: 'ConnectionCatalogEntry' });
+export type ConnectionCatalogEntry = z.infer<typeof connectionCatalogEntry>;
+
+export const connectionKindListResponse = z.object({
+  kinds: z.array(connectionKindDescriptor),
+  /** Everything a person can connect here, sign-ins first. Additive to `kinds`. */
+  catalog: z.array(connectionCatalogEntry).optional(),
+});
+
+/** Account sign-ins: one consent connects the account's mail and calendar. */
+export const ACCOUNT_CATALOG = [
+  {
+    id: 'google',
+    title: 'Google',
+    description:
+      'Sign in with Google to connect Gmail and Google Calendar. Mail is read and searched, drafts stay here, and each message is sent and each event changed after you approve it.',
+    covers: ['mail', 'calendar'],
+    provider: 'google',
+  },
+  {
+    id: 'microsoft',
+    title: 'Microsoft',
+    description:
+      'Sign in with Microsoft to connect Outlook mail and calendar, for Outlook.com and work or school accounts. Each message is sent and each event changed after you approve it.',
+    covers: ['mail', 'calendar'],
+    provider: 'microsoft',
+  },
+] as const;
+
+/**
+ * Remote MCP servers known to sign in with OAuth. Their tools are still named
+ * and granted in the installation's `mcp` block, as for any MCP server.
+ */
+export const MCP_CATALOG = [
+  {
+    id: 'notion',
+    title: 'Notion',
+    description: "Search and edit your Notion workspace through Notion's MCP server.",
+    url: 'https://mcp.notion.com/mcp',
+  },
+  {
+    id: 'linear',
+    title: 'Linear',
+    description: "Find, create and update Linear issues and projects through Linear's MCP server.",
+    url: 'https://mcp.linear.app/mcp',
+  },
+  {
+    id: 'atlassian',
+    title: 'Atlassian',
+    description: "Work with Jira and Confluence through Atlassian's MCP server.",
+    url: 'https://mcp.atlassian.com/v2/mcp',
+  },
+  {
+    id: 'sentry',
+    title: 'Sentry',
+    description: "Look into issues and errors through Sentry's MCP server.",
+    url: 'https://mcp.sentry.dev/mcp',
+  },
+  {
+    id: 'stripe',
+    title: 'Stripe',
+    description: "Look up and manage Stripe objects through Stripe's MCP server.",
+    url: 'https://mcp.stripe.com',
+  },
+] as const;
 
 const text = (
   path: string,
