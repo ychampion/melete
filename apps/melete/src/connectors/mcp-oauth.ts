@@ -353,11 +353,17 @@ export const randomState = (): string => randomBytes(32).toString('base64url');
 export function requestedScope(
   resource: ProtectedResource,
   server: AuthorizationServer,
+  /**
+   * Scopes already granted or asked for by a step-up challenge. Signing in
+   * again asks for their union with the server's own, so nothing granted
+   * before is lost (MCP authorization, scope selection and step-up).
+   */
+  also: string[] = [],
 ): string | undefined {
   const base = resource.challengeScope
     ? resource.challengeScope.split(/\s+/).filter(Boolean)
     : (resource.scopesSupported ?? []);
-  const scopes = new Set(base);
+  const scopes = new Set([...base, ...also]);
   if (server.scopes_supported?.includes('offline_access')) scopes.add('offline_access');
   return scopes.size ? [...scopes].join(' ') : undefined;
 }

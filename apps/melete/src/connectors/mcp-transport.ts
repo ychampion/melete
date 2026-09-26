@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { type JsonObject, jsonObject } from '@melete/contracts';
 import { ConnectorFaultError } from './faults.ts';
+import { bearerChallenge } from './mcp-oauth.ts';
 
 export const MCP_PROTOCOL_VERSION = '2025-11-25';
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
@@ -29,6 +30,8 @@ export type McpTransportOptions = {
    * fetch for an endpoint that may not reach private addresses.
    */
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
+  /** Told the scopes a server asked for when it refused a call for want of them. */
+  onInsufficientScope?: (scope: string) => Promise<void>;
 };
 
 const disconnected = () =>
@@ -328,6 +331,17 @@ export function openHttpMcpTransport(
         await response.body?.cancel().catch(() => {});
         // MCP session termination and HTTP authentication reject before tool execution.
         if (response.status === 404 && session) throw disconnected();
+        if (response.status === 403) {
+          const challenge = bearerChallenge(response.headers.get('www-authenticate'));
+          if (challenge?.error === 'insufficient_scope') {
+            await options.onInsufficientScope?.(challenge.scope ?? '').catch(() => {});
+            // The person signs in again with more access; nobody is substituted.
+            throw new ConnectorFaultError({
+              kind: 'revoked_credential',
+              detail: 'MCP server needs more access than was granted',
+            });
+          }
+        }
         if (response.status === 401 || response.status === 403)
           throw new ConnectorFaultError({
             kind: response.status === 401 ? 'expired_credential' : 'revoked_credential',

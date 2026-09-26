@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { ConnectionResponse, McpConnectionConfig } from '@melete/contracts';
+import { asConnectorFault } from './faults.ts';
 import {
   type FakeMcpAuth,
   type FakeMcpAuthOptions,
@@ -15,6 +16,7 @@ import {
   type OAuthFetch,
 } from './mcp-oauth.ts';
 import { type McpSignInRequest, McpSignIns } from './mcp-sign-in.ts';
+import { openHttpMcpTransport } from './mcp-transport.ts';
 
 const fetcher: OAuthFetch = (url, init) => fetch(url, init);
 const servers: FakeMcpAuth[] = [];
@@ -48,14 +50,26 @@ const policy = (url: string): McpConnectionConfig => ({
   ],
 });
 
-type Installed = McpSignInRequest & { credentials: Record<string, string> };
+type Installed = Extract<McpSignInRequest, { mcp: unknown }> & {
+  credentials: Record<string, string>;
+};
 
-function signIns(publicUrl = 'http://localhost:3000', clientMetadata?: boolean) {
+function signIns(
+  publicUrl = 'http://localhost:3000',
+  clientMetadata?: boolean,
+  existing?: { url: string; scopes: string[] },
+) {
   const installed: Installed[] = [];
+  const renewed: { connectionId: string; credentials: Record<string, string> }[] = [];
   const service = new McpSignIns({
     publicUrl,
     ...(clientMetadata === undefined ? {} : { clientMetadata }),
     authorize: async (_actor, spaceId) => spaceId ?? 'sp_fixture',
+    existing: async (actor, connectionId) => {
+      if (!existing || actor !== 'prn_owner' || connectionId !== 'conn_01J00000000000000000000001')
+        throw new Error('not found');
+      return { spaceId: 'sp_fixture', ...existing };
+    },
     fetcherFor: async () => fetcher,
     install: async (_actor, request) => {
       installed.push(request);
@@ -63,8 +77,12 @@ function signIns(publicUrl = 'http://localhost:3000', clientMetadata?: boolean) 
         connection: { id: 'conn_01J00000000000000000000000', label: request.label },
       } as unknown as ConnectionResponse;
     },
+    renew: async (_actor, connectionId, credentials) => {
+      renewed.push({ connectionId, credentials });
+      return { connection: { id: connectionId, label: 'Files' } } as unknown as ConnectionResponse;
+    },
   });
-  return { service, installed };
+  return { service, installed, renewed };
 }
 
 /** Stands in for the browser: opens the authorize address and returns where it was sent back. */
@@ -340,5 +358,78 @@ describe('the returning browser', () => {
       state: 'failed',
       error: 'sign_in_declined',
     });
+  });
+});
+
+describe('asking for more access', () => {
+  test('signing in again for a connection asks for everything granted and everything since asked for', async () => {
+    const server = await fake({ challengeScope: 'files:read' });
+    const { service, installed, renewed } = signIns('http://localhost:3000', undefined, {
+      url: server.mcpUrl,
+      scopes: ['files:read', 'files:write'],
+    });
+    const started = await service.start('prn_owner', {
+      connection_id: 'conn_01J00000000000000000000001',
+    });
+    const asked = new URL(started.authorize_url).searchParams.get('scope')?.split(' ');
+    expect(asked).toEqual(expect.arrayContaining(['files:read', 'files:write', 'offline_access']));
+    const back = await approve(started.authorize_url);
+    const result = await service.complete('prn_owner', back.searchParams);
+    expect(result.connection.id).toBe('conn_01J00000000000000000000001');
+    expect(installed).toHaveLength(0);
+    expect(renewed[0]?.connectionId).toBe('conn_01J00000000000000000000001');
+    expect(renewed[0]?.credentials).toMatchObject({ resource: server.mcpUrl, scope: 'files:read' });
+    expect(service.status('prn_owner', started.sign_in_id)).toEqual({
+      state: 'connected',
+      connection_id: 'conn_01J00000000000000000000001',
+    });
+  });
+
+  test('a connection the person may not sign in for is refused before anything is fetched', async () => {
+    const server = await fake();
+    const { service } = signIns('http://localhost:3000', undefined, {
+      url: server.mcpUrl,
+      scopes: [],
+    });
+    const refused = await service
+      .start('prn_other', { connection_id: 'conn_01J00000000000000000000001' })
+      .catch((error: Error) => error.message);
+    expect(refused).toBe('not found');
+    expect(server.requests).toEqual([]);
+  });
+
+  test('a call refused for want of scope records the scopes and stops for a new sign-in', async () => {
+    const needed: string[] = [];
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: () =>
+        new Response(null, {
+          status: 403,
+          headers: {
+            'www-authenticate':
+              'Bearer error="insufficient_scope", scope="files:write", resource_metadata="https://x.example/.well-known/oauth-protected-resource"',
+          },
+        }),
+    });
+    try {
+      const transport = openHttpMcpTransport(
+        { transport: 'http', url: `http://127.0.0.1:${server.port}/mcp` },
+        {
+          accessToken: async () => 'token',
+          onInsufficientScope: async (scope) => {
+            needed.push(scope);
+          },
+        },
+      );
+      const thrown = await transport.request('tools/call', { name: 'write' }).catch((e) => e);
+      expect(asConnectorFault(thrown)).toMatchObject({
+        kind: 'revoked_credential',
+        detail: 'MCP server needs more access than was granted',
+      });
+      expect(needed).toEqual(['files:write']);
+    } finally {
+      server.stop(true);
+    }
   });
 });

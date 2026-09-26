@@ -103,6 +103,12 @@ export const connection = z.object({
   generation: z.number().int().nonnegative().optional(),
   /** True for a connection the service keeps in every space and that needs no credential. */
   builtin: z.boolean().optional(),
+  /**
+   * Scopes a signed-in MCP server asked for when it refused a call for want of
+   * them. Present, the connection needs more access: signing in again for it
+   * asks for these with everything granted before.
+   */
+  needs_scope: z.array(z.string()).optional(),
   last_checked_at: timestamp.nullable(),
   created_at: timestamp,
 });

@@ -137,6 +137,42 @@ withDb('signing in to a remote MCP server', () => {
     // The same response cannot be spent twice.
     const replayed = await h.app.request(`/oauth/callback${back.search}`, h.as(h.cookie));
     expect(replayed.status).toBe(404);
+
+    // Later the server refuses a call for want of a scope, and the transport
+    // records it. The connection says it needs more access, and signing in again
+    // for it asks for that scope with everything granted before.
+    await h.sql`update connection
+      set configuration = jsonb_set(configuration, '{needs_scope}', '["files:write"]'::jsonb)
+      where id = ${installed.id}`;
+    const flagged = connectionResponse.parse(
+      await (await h.app.request(`/connections/${installed.id}`, h.as(h.cookie))).json(),
+    ).connection;
+    expect(flagged.needs_scope).toEqual(['files:write']);
+    const [before] = await h.sql`select secret_ref from connection where id = ${installed.id}`;
+    const [counted] = await h.sql`select count(*)::int as count from connection`;
+    const rowsBefore = counted?.count;
+    const again = await h.app.request(
+      '/mcp-sign-ins',
+      h.as(h.cookie, { connection_id: installed.id }),
+    );
+    expect(again.status).toBe(201);
+    const restart = mcpSignInStart.parse(await again.json());
+    expect(new URL(restart.authorize_url).searchParams.get('scope')?.split(' ')).toEqual(
+      expect.arrayContaining(['files:read', 'files:write']),
+    );
+    const approvedAgain = await fetch(restart.authorize_url, { redirect: 'manual' });
+    const backAgain = new URL(approvedAgain.headers.get('location') ?? '');
+    const renewed = await h.app.request(`/oauth/callback${backAgain.search}`, h.as(h.cookie));
+    expect(renewed.status).toBe(200);
+    const after = connectionResponse.parse(
+      await (await h.app.request(`/connections/${installed.id}`, h.as(h.cookie))).json(),
+    ).connection;
+    expect(after).toMatchObject({ id: installed.id, status: 'active' });
+    expect(after.needs_scope).toBeUndefined();
+    const [afterRow] = await h.sql`select secret_ref from connection where id = ${installed.id}`;
+    expect(afterRow?.secret_ref).not.toBe(before?.secret_ref);
+    const [recounted] = await h.sql`select count(*)::int as count from connection`;
+    expect(recounted?.count).toBe(rowsBefore);
   }, 60_000);
 
   test('someone who may not install in a space is refused before the server is contacted', async () => {
@@ -159,6 +195,15 @@ withDb('signing in to a remote MCP server', () => {
     );
     expect(refused.status).toBe(403);
     expect(server.requests).toEqual([]);
+    // Nor may they sign in again for someone else's connection.
+    const [owned] = await h.sql`select id from connection
+      where provider = 'mcp' and status <> 'revoked' order by id limit 1`;
+    expect(owned).toBeDefined();
+    const again = await h.app.request(
+      '/mcp-sign-ins',
+      h.as(memberCookie, { connection_id: owned?.id }),
+    );
+    expect(again.status).toBe(403);
   }, 30_000);
 
   test('the client metadata document is public, and only published at an https address', async () => {
