@@ -176,7 +176,7 @@ describe('signing in', () => {
       label: 'Files',
       mcp: policy(server.mcpUrl),
     });
-    expect(started.redirect_uri).toBe('http://localhost:3000/api/connections/oauth/callback');
+    expect(started.redirect_uri).toBe('http://localhost:3000/api/oauth/callback');
     // Dynamic registration, as a native client because the address is on this machine.
     expect(server.registrations).toHaveLength(1);
     expect(server.registrations[0]).toMatchObject({

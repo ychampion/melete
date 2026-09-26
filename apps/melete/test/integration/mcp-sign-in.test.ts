@@ -93,17 +93,11 @@ withDb('signing in to a remote MCP server', () => {
     const server = await startFakeMcpAuth({ issParameter: true });
     closers.push(server.stop);
 
-    const started = await h.app.request(
-      '/connections/mcp/sign-in',
-      h.as(h.cookie, signInBody(server.mcpUrl)),
-    );
+    const started = await h.app.request('/mcp-sign-ins', h.as(h.cookie, signInBody(server.mcpUrl)));
     expect(started.status).toBe(201);
     const start = mcpSignInStart.parse(await started.json());
-    expect(start.redirect_uri).toBe(`${PUBLIC_URL}/api/connections/oauth/callback`);
-    const pending = await h.app.request(
-      `/connections/mcp/sign-in/${start.sign_in_id}`,
-      h.as(h.cookie),
-    );
+    expect(start.redirect_uri).toBe(`${PUBLIC_URL}/api/oauth/callback`);
+    const pending = await h.app.request(`/mcp-sign-ins/${start.sign_in_id}`, h.as(h.cookie));
     expect(mcpSignInStatus.parse(await pending.json()).state).toBe('pending');
 
     // The person approves; the authorization server sends the browser back.
@@ -112,15 +106,13 @@ withDb('signing in to a remote MCP server', () => {
     const back = new URL(approved.headers.get('location') ?? '');
     expect(`${back.origin}${back.pathname}`).toBe(start.redirect_uri);
     // The web app forwards /api/* to this service without the prefix.
-    const landed = await h.app.request(`/connections/oauth/callback${back.search}`, h.as(h.cookie));
+    const landed = await h.app.request(`/oauth/callback${back.search}`, h.as(h.cookie));
     const page = await landed.text();
     expect(landed.status).toBe(200);
     expect(page).toContain('Files is connected');
 
     const done = mcpSignInStatus.parse(
-      await (
-        await h.app.request(`/connections/mcp/sign-in/${start.sign_in_id}`, h.as(h.cookie))
-      ).json(),
+      await (await h.app.request(`/mcp-sign-ins/${start.sign_in_id}`, h.as(h.cookie))).json(),
     );
     if (done.state !== 'connected') throw new Error(`Sign-in ended ${done.state}`);
     const installed = connectionResponse.parse(
@@ -143,10 +135,7 @@ withDb('signing in to a remote MCP server', () => {
       expect(String(sealed?.ciphertext ?? '')).not.toContain(token);
 
     // The same response cannot be spent twice.
-    const replayed = await h.app.request(
-      `/connections/oauth/callback${back.search}`,
-      h.as(h.cookie),
-    );
+    const replayed = await h.app.request(`/oauth/callback${back.search}`, h.as(h.cookie));
     expect(replayed.status).toBe(404);
   }, 60_000);
 
@@ -165,7 +154,7 @@ withDb('signing in to a remote MCP server', () => {
     );
     const memberCookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';
     const refused = await h.app.request(
-      '/connections/mcp/sign-in',
+      '/mcp-sign-ins',
       h.as(memberCookie, { ...signInBody(server.mcpUrl), space_id: h.spaceId }),
     );
     expect(refused.status).toBe(403);
@@ -181,7 +170,7 @@ withDb('signing in to a remote MCP server', () => {
     expect(published.status).toBe(200);
     expect(await published.json()).toMatchObject({
       client_id: 'https://melete.example.test/api/oauth/client-metadata.json',
-      redirect_uris: ['https://melete.example.test/api/connections/oauth/callback'],
+      redirect_uris: ['https://melete.example.test/api/oauth/callback'],
       token_endpoint_auth_method: 'none',
     });
   }, 30_000);

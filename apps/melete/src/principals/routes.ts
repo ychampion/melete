@@ -32,7 +32,8 @@ export function mountPrincipals(
   if (!db) return;
   const service = new PrincipalService(db, spacesRoot, jobs);
   app.use('*', async (c, next) => {
-    if (['/health', '/setup', '/login'].includes(c.req.path)) return next();
+    if (['/health', '/setup', '/login', '/oauth/client-metadata.json'].includes(c.req.path))
+      return next();
     const actor = c.get('owner').id;
     const path = c.req.path;
     const parts = path.split('/').filter(Boolean);

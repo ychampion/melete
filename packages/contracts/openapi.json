@@ -11696,7 +11696,7 @@
         }
       }
     },
-    "/connections/mcp/sign-in": {
+    "/mcp-sign-ins": {
       "post": {
         "tags": [
           "connections"
@@ -11827,7 +11827,7 @@
         }
       }
     },
-    "/connections/mcp/sign-in/{id}": {
+    "/mcp-sign-ins/{id}": {
       "get": {
         "tags": [
           "connections"
@@ -11923,7 +11923,7 @@
         }
       }
     },
-    "/connections/oauth/callback": {
+    "/oauth/callback": {
       "get": {
         "tags": [
           "connections"

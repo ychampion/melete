@@ -1498,7 +1498,7 @@ export function buildOpenApiDocument() {
           },
         },
 
-        '/connections/mcp/sign-in': {
+        '/mcp-sign-ins': {
           post: {
             tags: ['connections'],
             summary: 'Start connecting a remote MCP server by signing in to it',
@@ -1522,7 +1522,7 @@ export function buildOpenApiDocument() {
           },
         },
 
-        '/connections/mcp/sign-in/{id}': {
+        '/mcp-sign-ins/{id}': {
           get: {
             tags: ['connections'],
             summary: 'Read how a sign-in is going',
@@ -1534,7 +1534,7 @@ export function buildOpenApiDocument() {
           },
         },
 
-        '/connections/oauth/callback': {
+        '/oauth/callback': {
           get: {
             tags: ['connections'],
             summary: 'Where the authorization server returns the browser after signing in',

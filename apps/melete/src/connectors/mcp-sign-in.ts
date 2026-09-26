@@ -97,7 +97,7 @@ export class McpSignIns {
     const url = new URL(base);
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) return null;
-    return `${base}/api/connections/oauth/callback`;
+    return `${base}/api/oauth/callback`;
   }
 
   /** Where this service's client metadata document is published: HTTPS only. */

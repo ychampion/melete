@@ -440,7 +440,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       }),
   });
 
-  app.post('/connections/mcp/sign-in', async (c) => {
+  app.post('/mcp-sign-ins', async (c) => {
     const parsed = mcpSignInRequest.safeParse(await c.req.json());
     if (!parsed.success)
       throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
@@ -451,7 +451,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     }
   });
 
-  app.get('/connections/mcp/sign-in/:id', (c) => {
+  app.get('/mcp-sign-ins/:id', (c) => {
     const status = signIns.status(c.get('owner').id, c.req.param('id'));
     if (!status) throw new ServiceError('not_found', 'No sign-in by that id.', 404);
     return c.json(mcpSignInStatus.parse(status));
@@ -459,7 +459,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
 
   // The authorization server sends the browser here. The page it shows is all
   // the browser needs; the app reads the outcome from the sign-in's status.
-  app.get('/connections/oauth/callback', async (c) => {
+  app.get('/oauth/callback', async (c) => {
     try {
       const installed = await signIns.complete(c.get('owner').id, new URL(c.req.url).searchParams);
       const label = installed.connection.label;
