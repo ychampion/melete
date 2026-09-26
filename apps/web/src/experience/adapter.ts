@@ -51,6 +51,8 @@ import type {
   StreamGap,
   Task,
   TaskInput,
+  TelegramLinkCode,
+  TelegramStatus,
   Turn,
 } from './types.ts';
 import { isNotAvailable } from './types.ts';
@@ -239,6 +241,11 @@ export const adapter = {
       }),
     ),
   revokeRule: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/rules/{id}', path(id))),
+  /** Whether Telegram is offered here, and whether this person's chat is linked. */
+  telegram: () => guard<TelegramStatus>(() => api.GET('/telegram')),
+  /** A one-time code to send the bot as /start <code>. */
+  telegramLinkCode: () => guard<TelegramLinkCode>(() => api.POST('/telegram/link-code')),
+  telegramUnlink: () => guard<{ status: 'ok' }>(() => api.DELETE('/telegram')),
 
   /* ---------- what Melete learned ---------- */
   learned: (spaceId: string) =>

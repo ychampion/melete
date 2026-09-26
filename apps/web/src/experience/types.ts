@@ -64,6 +64,8 @@ export type PermissionDecision = Body<paths['/permissions/{id}'], 'post'>;
 export type RuleBounds = Extract<PermissionDecision, { option: 'always' }>['bounds'];
 export type PermissionOutcome = Success<Ok<paths['/permissions/{id}'], 'post'>>;
 export type Rule = Success<Ok<paths['/rules'], 'get'>>['rules'][number];
+export type TelegramStatus = Ok<paths['/telegram'], 'get'>;
+export type TelegramLinkCode = Ok<paths['/telegram/link-code'], 'post'>;
 /** What Melete learned from the person's corrections, and skills it wrote for itself. */
 export type LearnedList = Ok<paths['/learned'], 'get'>;
 export type LearnedItem = LearnedList['items'][number];

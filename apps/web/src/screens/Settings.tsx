@@ -17,6 +17,7 @@ import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 import { LearnedTab } from './Learned.tsx';
+import { TelegramCard } from './TelegramCard.tsx';
 
 const SOURCE_LABEL: Record<MemoryItem['source'], string> = {
   onboarding: 'You told Melete during setup',
@@ -381,6 +382,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
             {connections.error ? (
               <p style={{ color: 'var(--danger)', fontSize: 13 }}>{connections.error}</p>
             ) : null}
+            <TelegramCard />
             <div className="col" style={{ gap: 8 }}>
               {list.map((connection) => (
                 <ConnectionCard

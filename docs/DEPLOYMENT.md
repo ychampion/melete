@@ -813,6 +813,48 @@ make at most `MELETE_COMPANIES_DAILY_CALLS` calls in any 24 hours, 500 when it i
 unset, and each scan reads at most fifty messages. A message past the allowance
 is read on a later scan. Set these in `deploy/.env` and recreate the service.
 
+## Telegram
+
+Each person can have Melete reach them on Telegram: the decisions it waits on
+arrive in their own private chat with your bot, and they can answer there.
+
+**Set up the bot once.** In Telegram, message
+[@BotFather](https://t.me/BotFather), send `/newbot`, and follow its steps. Put
+the token it gives you in `deploy/.env` as `TELEGRAM_BOT_TOKEN`, then recreate
+the service. The token stays in the environment; Melete does not write it
+anywhere.
+
+**Each person links their own chat.** In Melete, open Settings, choose
+Telegram, and get a code. Open your bot in Telegram and send `/start` followed
+by the code, for example `/start K7Q2M9TX`. A code works once, for ten
+minutes, and getting a new one replaces the old. A chat belongs to one person
+and a person has one chat; linking another chat unlinks the first. Unlink in
+Settings, or send `/unlink` to the bot.
+
+**What arrives, and how to answer.**
+
+- A permission shows what would happen and exactly what would leave: for an
+  email, the recipient, any copies, the subject and the whole body, as plain
+  text. The buttons are **Allow once** and **Deny**. Saving a standing rule
+  ("always") is done in Melete itself.
+- A question shows its choices as buttons.
+- Anything else you type is your next message to Melete. A reply to one of the
+  bot's messages goes to that conversation; otherwise it goes to your most
+  recent conversation.
+
+Each button works once, in the chat it was sent to, for the person that chat
+belongs to. A second tap, or the same button tapped from another chat, is
+refused. A chat that is not linked is told how to link and nothing else. What
+a permission shows, including the full text of an email, passes through
+Telegram's servers on its way to you.
+
+**Polling or webhook.** By default Melete asks Telegram for new messages
+(`MELETE_TELEGRAM_MODE=polling`), which works without a public address. With
+an `https://` `MELETE_PUBLIC_URL`, `MELETE_TELEGRAM_MODE=webhook` has Telegram
+post to `<MELETE_PUBLIC_URL>/api/telegram/webhook` instead, with a secret the
+service registers each time it starts. Webhook mode with an `http://` address,
+or none, stops the service at start with that reason.
+
 ## Engine limits
 
 Three settings bound what one attempt's engine may do. All have working
