@@ -392,6 +392,48 @@ export const connectionResponse = z.object({
   connection: connectionView,
   check: connectionCheck.optional(),
 });
+export type ConnectionResponse = z.infer<typeof connectionResponse>;
+export type McpConnectionConfig = z.infer<typeof mcpConnectionConfig>;
+
+/**
+ * Connecting a remote MCP server by signing in to it. The server's address
+ * and grants are the same block a pasted credential installs with; the sign-in
+ * earns the credential instead.
+ */
+export const mcpSignInRequest = z
+  .object({
+    /** Left out, the space of the signed-in session. */
+    space_id: prefixedId(ID_PREFIXES.space).optional(),
+    label: z.string().min(1).max(120),
+    mcp: mcpConnectionConfig,
+    /**
+     * A client the person registered with the server's authorization server
+     * themselves. Only needed for a server that offers no other way to register.
+     */
+    client: z
+      .object({
+        client_id: z.string().min(1).max(1024),
+        client_secret: z.string().min(1).max(16_384).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export const mcpSignInStart = z.object({
+  sign_in_id: z.string(),
+  /** Open this in the person's browser. */
+  authorize_url: z.url(),
+  /** Where the authorization server sends the browser back. */
+  redirect_uri: z.url(),
+  expires_at: timestamp,
+});
+
+export const mcpSignInStatus = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('pending'), expires_at: timestamp }),
+  z.object({ state: z.literal('connected'), connection_id: prefixedId(ID_PREFIXES.connection) }),
+  z.object({ state: z.literal('failed'), error: z.string() }),
+]);
 export const connectionCheckResponse = z.object({
   connection: connectionView,
   check: connectionCheck,

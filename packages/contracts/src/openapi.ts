@@ -58,6 +58,9 @@ import {
   connectionListResponse,
   connectionResponse,
   createConnectionRequest,
+  mcpSignInRequest,
+  mcpSignInStart,
+  mcpSignInStatus,
 } from './connections.ts';
 import { space, triggerSpec } from './entities.ts';
 import { eventPage, eventQuery } from './events.ts';
@@ -1491,6 +1494,100 @@ export function buildOpenApiDocument() {
               '403': problem('Space owner and matching audience required'),
               '404': problem('No such plugin'),
               '409': problem('The plugin is already added to this space'),
+            },
+          },
+        },
+
+        '/mcp-sign-ins': {
+          post: {
+            tags: ['connections'],
+            summary: 'Start connecting a remote MCP server by signing in to it',
+            description:
+              "Reads the server's protected resource metadata (RFC 9728) and its authorization " +
+              "server's metadata, registers a client (the one given, a Client ID Metadata Document, " +
+              'or dynamic registration), and answers with the address to open in the browser. The ' +
+              'request carries PKCE (S256), a state and the resource indicator (RFC 8707). When the ' +
+              'browser returns, the credential is sealed and the server is installed with the grants ' +
+              'in `mcp`, exactly as a connection with a pasted credential is.',
+            requestBody: json(mcpSignInRequest),
+            responses: {
+              '201': jsonResponse('Open `authorize_url` in the browser', mcpSignInStart),
+              '400': problem('Invalid request or server address'),
+              '403': problem('Space owner and matching audience required'),
+              '409': problem(
+                'No public address to return to, no master key, a server that needs no sign-in, or one that needs a client registered by hand',
+              ),
+              '502': problem('The server or its authorization server did not answer as required'),
+            },
+          },
+        },
+
+        '/mcp-sign-ins/{id}': {
+          get: {
+            tags: ['connections'],
+            summary: 'Read how a sign-in is going',
+            requestParams: idParam('id', 'Sign-in id'),
+            responses: {
+              '200': jsonResponse('Pending, connected, or failed with a code', mcpSignInStatus),
+              '404': problem('No sign-in by that id for this person'),
+            },
+          },
+        },
+
+        '/oauth/callback': {
+          get: {
+            tags: ['connections'],
+            summary: 'Where the authorization server returns the browser after signing in',
+            description:
+              'Checks the state and the issuer (RFC 9207) before the code is spent, then installs ' +
+              'the connection. Answers with a short page for the browser; the outcome is also ' +
+              'available from the sign-in status.',
+            requestParams: {
+              query: z.object({
+                code: z.string().optional(),
+                state: z.string().optional(),
+                iss: z.string().optional(),
+                error: z.string().optional(),
+              }),
+            },
+            responses: {
+              '200': {
+                description: 'Connected',
+                content: { 'text/html': { schema: z.string() } },
+              },
+              '400': {
+                description: 'The response was refused',
+                content: { 'text/html': { schema: z.string() } },
+              },
+              '404': {
+                description: 'No such sign-in for this person',
+                content: { 'text/html': { schema: z.string() } },
+              },
+            },
+          },
+        },
+
+        '/oauth/client-metadata.json': {
+          get: {
+            tags: ['connections'],
+            summary: "This service's OAuth Client ID Metadata Document",
+            description:
+              'Published when the service has an https:// public address, so an authorization server ' +
+              'that supports Client ID Metadata Documents can identify it without registration. No ' +
+              'session is needed.',
+            responses: {
+              '200': jsonResponse(
+                'The client metadata',
+                z.object({
+                  client_id: z.url(),
+                  client_name: z.string(),
+                  redirect_uris: z.array(z.url()),
+                  grant_types: z.array(z.string()),
+                  response_types: z.array(z.string()),
+                  token_endpoint_auth_method: z.string(),
+                }),
+              ),
+              '404': problem('No https:// public address is configured'),
             },
           },
         },

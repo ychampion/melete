@@ -195,7 +195,11 @@ export function mountAuth(
       return c.json({ error: { code: 'origin_rejected', message: 'Use the same origin.' } }, 403);
     }
     const publicRoute =
-      (c.req.method === 'GET' && (c.req.path === '/health' || c.req.path === '/setup')) ||
+      (c.req.method === 'GET' &&
+        (c.req.path === '/health' ||
+          c.req.path === '/setup' ||
+          // An authorization server reads this client's metadata without a session.
+          c.req.path === '/oauth/client-metadata.json')) ||
       (c.req.method === 'POST' &&
         [
           '/setup',

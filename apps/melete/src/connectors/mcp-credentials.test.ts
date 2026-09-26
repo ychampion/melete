@@ -11,17 +11,28 @@ const binding = {
 };
 
 /** Just enough store and database to hold one sealed credential and accept its rotation. */
-function held(tokenUrl: string) {
+function held(tokenUrl: string, extra: Record<string, string> = {}) {
   const row = { secret_ref: 'sealed-1', generation: 1, scopes: [], status: 'active' };
   const sql = (async () => [row]) as unknown as Sql;
   const store = {
     withSecret: async (_ref: string, _space: string, use: (value: string) => unknown) =>
-      use(JSON.stringify({ access_token: 'old', refresh_token: 'refresh-1', token_url: tokenUrl })),
-    put: async () => 'sealed-2',
+      use(
+        JSON.stringify({
+          access_token: 'old',
+          refresh_token: 'refresh-1',
+          token_url: tokenUrl,
+          ...extra,
+        }),
+      ),
+    put: async (_space: string, value: string) => {
+      rotated.push(value);
+      return 'sealed-2';
+    },
   } as unknown as SealedSecretStore;
   return { sql, store };
 }
 
+const rotated: string[] = [];
 let hits = 0;
 const inside = Bun.serve({
   hostname: '127.0.0.1',
@@ -61,5 +72,30 @@ describe('refreshing an MCP credential', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]?.url).toBe('https://auth.example.test/token');
     expect(sent[0]?.body).toContain('grant_type=refresh_token');
+  });
+
+  test('asks for the resource the sign-in was granted for, and keeps it with the new token', async () => {
+    const sent: string[] = [];
+    const resource = 'https://files.example.test/mcp';
+    const { sql, store } = held('https://auth.example.test/token', { resource, client_id: 'c1' });
+    const access = mcpCredentialAccess(
+      sql,
+      store,
+      binding,
+      'https://configured.example.test/mcp',
+      publicOnlyFetch({
+        resolve: async (): Promise<ResolvedAddress[]> => [{ address: '93.184.216.34', family: 4 }],
+        request: async (_url, _address, init) => {
+          sent.push(String(init.body));
+          return Response.json({ access_token: 'new', token_type: 'Bearer' });
+        },
+      }),
+    );
+    rotated.length = 0;
+    expect(await access.refresh()).toBe(true);
+    const form = new URLSearchParams(sent[0]);
+    expect(form.get('resource')).toBe(resource);
+    expect(form.get('client_id')).toBe('c1');
+    expect(JSON.parse(rotated[0] ?? '{}')).toMatchObject({ access_token: 'new', resource });
   });
 });
