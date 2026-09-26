@@ -77,6 +77,9 @@ function view(row: typeof connection.$inferSelect) {
     setup_state: row.setupState,
     generation: row.generation,
     ...(row.configuration.builtin === undefined ? {} : { builtin: true }),
+    ...(Array.isArray(row.configuration.needs_scope) && row.configuration.needs_scope.length
+      ? { needs_scope: row.configuration.needs_scope }
+      : {}),
     last_checked_at: row.lastCheckedAt?.toISOString() ?? null,
     created_at: row.createdAt.toISOString(),
   });
@@ -208,12 +211,12 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     return c.json(connectionResponse.parse({ connection: view(row) }));
   });
 
-  app.post('/connections/:id/health', async (c) => {
-    const id = c.req.param('id');
-    const [row] = await deps.db.select().from(connection).where(eq(connection.id, id));
-    if (!row) throw new ServiceError('not_found', 'Connection not found.', 404);
-    if ((await spaceAuthority(deps.db, row.spaceId, c.get('owner').id)).role !== 'owner')
-      throw new ServiceError('scope_denied', 'Connection is not accessible.', 403);
+  /**
+   * Test a connection again, and give one whose earlier test failed its
+   * connector when this test passes.
+   */
+  const retest = async (row: typeof connection.$inferSelect) => {
+    const id = row.id;
     let connector = deps.registry.get(id);
     let opened: Connector | undefined;
     // An installation whose first test failed has no connector yet; a test is how it gets one.
@@ -248,7 +251,19 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     }
     const [current] = await deps.db.select().from(connection).where(eq(connection.id, id));
     if (!current) throw new ServiceError('not_found', 'Connection not found.', 404);
-    return c.json(connectionCheckResponse.parse({ connection: view(current), check: outcome }));
+    return { connection: current, check: outcome };
+  };
+
+  app.post('/connections/:id/health', async (c) => {
+    const id = c.req.param('id');
+    const [row] = await deps.db.select().from(connection).where(eq(connection.id, id));
+    if (!row) throw new ServiceError('not_found', 'Connection not found.', 404);
+    if ((await spaceAuthority(deps.db, row.spaceId, c.get('owner').id)).role !== 'owner')
+      throw new ServiceError('scope_denied', 'Connection is not accessible.', 403);
+    const tested = await retest(row);
+    return c.json(
+      connectionCheckResponse.parse({ connection: view(tested.connection), check: tested.check }),
+    );
   });
 
   /** One installation, whether its request was written out or built from a plugin entry. */
@@ -430,6 +445,66 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       (await setupOwnersSpace(deps.sql, spaceId))
         ? (url, init) => fetch(url, init)
         : publicOnlyFetch(),
+    existing: async (actor, connectionId) => {
+      const [row] = await deps.db.select().from(connection).where(eq(connection.id, connectionId));
+      if (!row || row.provider !== 'mcp' || row.status === 'revoked')
+        throw new ServiceError('not_found', 'Connection not found.', 404);
+      await requireInstaller(deps.db, row.spaceId, actor, 'mcp');
+      const server = mcpServerConfig.safeParse(row.configuration.server);
+      if (!server.success || server.data.endpoint.transport !== 'http')
+        throw new ServiceError('invalid_request', 'Only a remote MCP server is signed in to.', 400);
+      if (!factory.options.masterKey)
+        throw new ServiceError(
+          'sealing_unavailable',
+          'This service has no master key, so it cannot keep a credential. Set MELETE_MASTER_KEY and start it again.',
+          409,
+        );
+      const granted = row.secretRef
+        ? await secrets
+            .withSecret(row.secretRef, row.spaceId, async (value) =>
+              mcpCredentials.parse(JSON.parse(value)),
+            )
+            .then((credential) => credential.scope?.split(/\s+/) ?? [])
+            .catch(() => [])
+        : [];
+      const needed = Array.isArray(row.configuration.needs_scope)
+        ? row.configuration.needs_scope.filter(
+            (scope): scope is string => typeof scope === 'string',
+          )
+        : [];
+      return {
+        spaceId: row.spaceId,
+        url: server.data.endpoint.url,
+        scopes: [...new Set([...granted, ...needed])].filter(Boolean),
+      };
+    },
+    renew: async (actor, connectionId, credentials) => {
+      const credential = mcpCredentials.parse(credentials);
+      const [row] = await deps.db.select().from(connection).where(eq(connection.id, connectionId));
+      if (!row || row.provider !== 'mcp' || row.status === 'revoked')
+        throw new ServiceError('not_found', 'Connection not found.', 404);
+      const secretRef = await secrets.put(row.spaceId, JSON.stringify(credential));
+      const updated = await serviceTransaction(deps.db, async (tx) => {
+        await requireInstaller(tx, row.spaceId, actor, 'mcp', true);
+        const { needs_scope: _answered, ...configuration } = row.configuration;
+        const [next] = await tx
+          .update(connection)
+          .set({ secretRef, configuration })
+          .where(
+            and(
+              eq(connection.id, row.id),
+              eq(connection.generation, row.generation),
+              ne(connection.status, 'revoked'),
+            ),
+          )
+          .returning();
+        return next;
+      });
+      if (!updated)
+        throw new ServiceError('generation_conflict', 'Connection changed during sign-in.', 409);
+      const tested = await retest(updated);
+      return connectionResponse.parse({ connection: view(tested.connection), check: tested.check });
+    },
     install: (actor, request) =>
       install(actor, {
         ...(request.space_id ? { space_id: request.space_id } : {}),

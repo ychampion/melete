@@ -536,6 +536,15 @@ Melete identifies itself to the authorization server in this order:
    served at `<MELETE_PUBLIC_URL>/api/oauth/client-metadata.json`.
 3. **Dynamic client registration**, when the server offers it.
 
+A server may later refuse a call because it needs a scope that was not granted
+(`403` with `error="insufficient_scope"`). The call stops without a retry, the
+scopes the server named are kept on the connection, and the connection shows
+them as `needs_scope`. `POST /mcp-sign-ins` with `{ "connection_id": ... }`
+signs in again for that connection: it asks for everything granted before
+together with the scopes needed since, and gives the same connection the new
+credential, keeping its id, grants and history. The same request renews a
+connection whose sign-in has ended.
+
 An installation reachable only on a private network or tailnet uses dynamic
 registration or a client you registered: when its `MELETE_PUBLIC_URL` is an
 `https://` address, set `MELETE_OAUTH_CLIENT_METADATA=false` so the metadata

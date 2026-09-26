@@ -1508,7 +1508,9 @@ export function buildOpenApiDocument() {
               'or dynamic registration), and answers with the address to open in the browser. The ' +
               'request carries PKCE (S256), a state and the resource indicator (RFC 8707). When the ' +
               'browser returns, the credential is sealed and the server is installed with the grants ' +
-              'in `mcp`, exactly as a connection with a pasted credential is.',
+              'in `mcp`, exactly as a connection with a pasted credential is. With `connection_id` ' +
+              'instead, it signs in again for that connection, asking for everything granted before ' +
+              'and any scopes it has needed since, and gives it the new credential.',
             requestBody: json(mcpSignInRequest),
             responses: {
               '201': jsonResponse('Open `authorize_url` in the browser', mcpSignInStart),

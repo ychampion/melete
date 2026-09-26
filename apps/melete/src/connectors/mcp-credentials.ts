@@ -32,6 +32,8 @@ export const mcpCredentials = z
      * metadata declares it. A refresh asks for the same one.
      */
     resource: mcpCredentialUrl.optional(),
+    /** The scopes granted at sign-in, so signing in again can ask for them all. */
+    scope: z.string().max(4096).optional(),
     status: z.enum(['active', 'revoked']).default('active'),
   })
   .strict()
@@ -41,6 +43,8 @@ export const mcpCredentials = z
   );
 
 type Credential = z.infer<typeof mcpCredentials>;
+/** An RFC 6749 scope token. */
+export const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,256}$/;
 const revoked = () =>
   new ConnectorFaultError({
     kind: 'revoked_credential',
@@ -75,6 +79,28 @@ export function mcpCredentialAccess(
   return {
     async accessToken() {
       return (await read()).credential?.access_token;
+    },
+    /**
+     * The server refused a call for want of scope (RFC 6750 `insufficient_scope`).
+     * The scopes it named are kept on the connection, so the person sees that it
+     * needs more access and signing in again asks for them.
+     */
+    async onInsufficientScope(scope: string) {
+      const named = scope
+        .split(/\s+/)
+        .filter((token) => SCOPE_TOKEN.test(token))
+        .slice(0, 32);
+      if (!named.length) return;
+      const [row] = await sql`select configuration->'needs_scope' as needed from connection
+        where id = ${binding.connectionId} and space_id = ${binding.spaceId} and provider = 'mcp'`;
+      const earlier = Array.isArray(row?.needed)
+        ? row.needed.filter((token: unknown): token is string => typeof token === 'string')
+        : [];
+      const needed = [...new Set([...earlier, ...named])].slice(0, 64);
+      await sql`update connection
+        set configuration = jsonb_set(configuration, '{needs_scope}', ${JSON.stringify(needed)}::jsonb)
+        where id = ${binding.connectionId} and space_id = ${binding.spaceId}
+          and provider = 'mcp' and status <> 'revoked'`;
     },
     async checkCredential() {
       const { credential } = await read();

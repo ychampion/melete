@@ -27,12 +27,22 @@ import {
   requestedScope,
 } from './mcp-oauth.ts';
 
-export type McpSignInRequest = {
-  space_id?: string;
-  label: string;
-  mcp: McpConnectionConfig;
-  /** A client the person registered with the server themselves, when it offers no other way. */
-  client?: { client_id: string; client_secret?: string };
+/** A client the person registered with the server themselves, when it offers no other way. */
+type PreRegistered = { client_id: string; client_secret?: string };
+
+export type McpSignInRequest =
+  | { space_id?: string; label: string; mcp: McpConnectionConfig; client?: PreRegistered }
+  /** Signing in again for a connection that exists: after its grant ended, or to grant more. */
+  | { connection_id: string; client?: PreRegistered };
+
+type NewConnection = Extract<McpSignInRequest, { mcp: McpConnectionConfig }>;
+
+/** What signing in again needs to know about the connection it is for. */
+export type ExistingConnection = {
+  spaceId: string;
+  url: string;
+  /** Granted before, and asked for since by a step-up challenge. */
+  scopes: string[];
 };
 
 type Pending = {
@@ -40,6 +50,7 @@ type Pending = {
   actor: string;
   spaceId: string;
   request: McpSignInRequest;
+  requestedScope?: string;
   state: string;
   verifier: string;
   redirectUri: string;
@@ -66,12 +77,20 @@ export type McpSignInHooks = {
   clientMetadata?: boolean;
   /** Refuses an actor who may not install in this space; runs before any address is fetched. */
   authorize(actor: string, spaceId: string | undefined): Promise<string>;
+  /** The same authority over an existing connection, and what signing in again needs. */
+  existing(actor: string, connectionId: string): Promise<ExistingConnection>;
   /** The fetch this space's installations are held to. */
   fetcherFor(spaceId: string): Promise<OAuthFetch>;
   /** The ordinary installation path, given the credential the sign-in earned. */
   install(
     actor: string,
-    request: McpSignInRequest & { credentials: Record<string, string> },
+    request: NewConnection & { credentials: Record<string, string> },
+  ): Promise<ConnectionResponse>;
+  /** Gives an existing connection the credential a new sign-in earned. */
+  renew(
+    actor: string,
+    connectionId: string,
+    credentials: Record<string, string>,
   ): Promise<ConnectionResponse>;
   now?: () => number;
 };
@@ -131,11 +150,18 @@ export class McpSignIns {
     expires_at: string;
   }> {
     this.sweep();
-    const spaceId = await this.hooks.authorize(actor, request.space_id);
+    const existing =
+      'connection_id' in request
+        ? await this.hooks.existing(actor, request.connection_id)
+        : undefined;
+    const spaceId =
+      existing?.spaceId ??
+      (await this.hooks.authorize(actor, 'mcp' in request ? request.space_id : undefined));
     const redirectUri = this.redirectUri();
     if (!redirectUri) throw new McpSignInFailure('callback_unavailable');
     const fetcher = await this.hooks.fetcherFor(spaceId);
-    const protectedResource = await discoverProtectedResource(request.mcp.url, fetcher);
+    const serverUrl = existing?.url ?? ('mcp' in request ? request.mcp.url : '');
+    const protectedResource = await discoverProtectedResource(serverUrl, fetcher);
     if (!protectedResource) throw new McpSignInFailure('sign_in_not_needed');
     // The first listed server; the resource's metadata names them in its own preference.
     const issuer = protectedResource.authorizationServers[0] as string;
@@ -150,11 +176,13 @@ export class McpSignIns {
     const state = randomState();
     const id = randomBytes(24).toString('base64url');
     const expiresAt = this.now() + PENDING_TTL_MS;
+    const scope = requestedScope(protectedResource, server, existing?.scopes);
     this.pending.set(id, {
       id,
       actor,
       spaceId,
-      request: { ...request, space_id: spaceId },
+      request: 'mcp' in request ? { ...request, space_id: spaceId } : request,
+      ...(scope ? { requestedScope: scope } : {}),
       state,
       verifier,
       redirectUri,
@@ -172,7 +200,7 @@ export class McpSignIns {
         state,
         challenge,
         resource: protectedResource.resource,
-        scope: requestedScope(protectedResource, server),
+        scope,
       }),
       redirect_uri: redirectUri,
       expires_at: new Date(expiresAt).toISOString(),
@@ -218,8 +246,15 @@ export class McpSignIns {
           ? { refresh_token: tokens.refreshToken, token_url: entry.server.token_endpoint }
           : {}),
         ...(entry.client.clientSecret ? { client_secret: entry.client.clientSecret } : {}),
+        // What was granted, or what was asked for when the server does not say.
+        ...((tokens.scope ?? entry.requestedScope)
+          ? { scope: (tokens.scope ?? entry.requestedScope) as string }
+          : {}),
       };
-      const installed = await this.hooks.install(actor, { ...entry.request, credentials });
+      const installed =
+        'connection_id' in entry.request
+          ? await this.hooks.renew(actor, entry.request.connection_id, credentials)
+          : await this.hooks.install(actor, { ...entry.request, credentials });
       this.finish(entry.id, actor, { state: 'connected', connection_id: installed.connection.id });
       return installed;
     } catch (error) {

@@ -400,25 +400,38 @@ export type McpConnectionConfig = z.infer<typeof mcpConnectionConfig>;
  * and grants are the same block a pasted credential installs with; the sign-in
  * earns the credential instead.
  */
-export const mcpSignInRequest = z
+/**
+ * A client the person registered with the server's authorization server
+ * themselves. Only needed for a server that offers no other way to register.
+ */
+const preRegisteredClient = z
   .object({
-    /** Left out, the space of the signed-in session. */
-    space_id: prefixedId(ID_PREFIXES.space).optional(),
-    label: z.string().min(1).max(120),
-    mcp: mcpConnectionConfig,
-    /**
-     * A client the person registered with the server's authorization server
-     * themselves. Only needed for a server that offers no other way to register.
-     */
-    client: z
-      .object({
-        client_id: z.string().min(1).max(1024),
-        client_secret: z.string().min(1).max(16_384).optional(),
-      })
-      .strict()
-      .optional(),
+    client_id: z.string().min(1).max(1024),
+    client_secret: z.string().min(1).max(16_384).optional(),
   })
   .strict();
+
+export const mcpSignInRequest = z.union([
+  z
+    .object({
+      /** Left out, the space of the signed-in session. */
+      space_id: prefixedId(ID_PREFIXES.space).optional(),
+      label: z.string().min(1).max(120),
+      mcp: mcpConnectionConfig,
+      client: preRegisteredClient.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      /**
+       * Sign in again for this connection, after its grant ended or when it
+       * needs more access. Everything granted before is asked for again.
+       */
+      connection_id: prefixedId(ID_PREFIXES.connection),
+      client: preRegisteredClient.optional(),
+    })
+    .strict(),
+]);
 
 export const mcpSignInStart = z.object({
   sign_in_id: z.string(),

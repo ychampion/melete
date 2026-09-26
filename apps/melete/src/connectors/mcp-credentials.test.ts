@@ -99,3 +99,21 @@ describe('refreshing an MCP credential', () => {
     expect(JSON.parse(rotated[0] ?? '{}')).toMatchObject({ access_token: 'new', resource });
   });
 });
+
+describe('a server asking for more access', () => {
+  test('the scopes it names are kept with those named before, and nothing malformed is', async () => {
+    const writes: string[] = [];
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join('').includes('update connection')) {
+        writes.push(String(values[0]));
+        return [];
+      }
+      return [{ needed: ['files:read'] }];
+    }) as unknown as Sql;
+    const access = mcpCredentialAccess(sql, {} as SealedSecretStore, binding);
+    await access.onInsufficientScope('files:write files:read bad"scope');
+    expect(JSON.parse(writes[0] ?? '[]')).toEqual(['files:read', 'files:write']);
+    await access.onInsufficientScope('"only-bad');
+    expect(writes).toHaveLength(1);
+  });
+});
