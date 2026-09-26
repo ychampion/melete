@@ -24,6 +24,15 @@ import { CalendarConnector } from './calendar.ts';
 import { EmailConnector } from './email.ts';
 import { createExecConnector } from './exec.ts';
 import { createFilesConnector } from './files.ts';
+import { GmailApiTransport } from './gmail.ts';
+import {
+  GOOGLE_ENDPOINTS,
+  type GoogleClient,
+  type GoogleEndpoints,
+  googleAccess,
+  googleIssuer,
+} from './google.ts';
+import { GoogleCalendarConnector } from './google-calendar.ts';
 import { IcsFeedConnector } from './ics-feed.ts';
 import { mcpServerConfig } from './mcp.ts';
 import { openConfiguredMcpConnector } from './mcp-connector.ts';
@@ -179,6 +188,12 @@ export type ConnectorOptions = {
   stdioLifecycle?: StdioLifecycleOptions;
   /** Everything a sandbox connection needs besides its own row. */
   sandbox?: SandboxRuntimeOptions;
+  /**
+   * The operator's Google OAuth client. Without it, Google sign-in is not
+   * offered and a Google connection offers nothing. Only a test replaces the
+   * endpoints.
+   */
+  google?: { client: GoogleClient; endpoints?: GoogleEndpoints };
 };
 
 /**
@@ -215,6 +230,8 @@ const storedConfiguration = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mail'), mail: mailConnectionConfig }),
   z.object({ kind: z.literal('caldav'), caldav: caldavConnectionConfig }),
   z.object({ kind: z.literal('ics') }),
+  z.object({ kind: z.literal('gmail'), account: z.email() }),
+  z.object({ kind: z.literal('google_calendar'), account: z.email() }),
   storedSandboxConnection,
 ]);
 
@@ -367,6 +384,45 @@ export class ConnectorFactory {
     }
     if (row.provider === 'test' && options.enableTestConnector)
       return createTestConnector(options.sql);
+    if (
+      (stored?.kind === 'gmail' && row.provider === 'imap') ||
+      (stored?.kind === 'google_calendar' && row.provider === 'caldav')
+    ) {
+      const google = options.google;
+      if (!google || !row.secretRef) return undefined;
+      const endpoints = google.endpoints ?? GOOGLE_ENDPOINTS;
+      const access = googleAccess({
+        sql: options.sql,
+        secrets: this.secrets,
+        connectionId: row.id,
+        spaceId: row.spaceId,
+        // A refresh sends no redirect address.
+        issuer: googleIssuer(google.client, '', endpoints),
+      });
+      if (stored.kind === 'google_calendar')
+        return ownerOnly(
+          new GoogleCalendarConnector({
+            id: row.id,
+            spaceId: row.spaceId,
+            base: endpoints.calendar,
+            access,
+          }),
+        );
+      const transport = new GmailApiTransport({
+        base: endpoints.gmail,
+        from: stored.account,
+        access,
+      });
+      return ownerOnly(
+        new EmailConnector({
+          kind: 'api',
+          id: row.id,
+          spaceId: row.spaceId,
+          from: stored.account,
+          session: (work) => work(transport),
+        }),
+      );
+    }
     if (row.provider === 'imap' && setting?.kind === 'email' && row.secretRef)
       return new EmailConnector(
         { ...setting, spaceId: row.spaceId, secretRef: row.secretRef },
@@ -577,6 +633,16 @@ export function connectorOptionsFromEnv(
     stdioLauncher: extra.stdioLauncher,
     stdioLifecycle: { idleMs: env.MELETE_MCP_IDLE_MS },
     cellIsolated: builtinEnvironment(env).cellIsolated,
+    ...(env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET
+      ? {
+          google: {
+            client: {
+              clientId: env.GOOGLE_OAUTH_CLIENT_ID,
+              clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET,
+            },
+          },
+        }
+      : {}),
     ...(env.MELETE_SANDBOX_PROJECT
       ? {
           sandbox: {

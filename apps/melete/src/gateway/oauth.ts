@@ -17,6 +17,8 @@ export interface OAuthTokens {
   expiresAt?: number;
   /** When the pair was received, so a short-lived token is not refreshed on every use. */
   issuedAt?: number;
+  /** The scopes granted, when the issuer said; a person may grant fewer than were asked for. */
+  scope?: string;
 }
 
 /** How one issuer is reached. Every URL is HTTPS, or plain HTTP on loopback. */
@@ -183,6 +185,7 @@ const tokenResponse = z.object({
     .refine((value) => value.toLowerCase() === 'bearer')
     .optional(),
   expires_in: z.number().int().positive().max(31_536_000).optional(),
+  scope: z.string().max(4096).optional(),
 });
 
 async function call(
@@ -244,6 +247,7 @@ function tokens(body: unknown, now: number): OAuthTokens {
     accessToken: parsed.data.access_token,
     refreshToken: parsed.data.refresh_token,
     idToken: parsed.data.id_token,
+    ...(parsed.data.scope !== undefined ? { scope: parsed.data.scope } : {}),
     issuedAt: now,
     expiresAt: parsed.data.expires_in
       ? now + parsed.data.expires_in * 1000

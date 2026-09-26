@@ -3490,6 +3490,173 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/google-sign-ins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether signing in with Google is offered here
+         * @description Available once the operator has set a Google OAuth client and an https:// or localhost public address. `redirect_uri` is the address to register with that client.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Availability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            available: boolean;
+                            redirect_uri: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Start connecting Gmail and Google Calendar by signing in with Google
+         * @description Answers with the Google address to open in the browser. One consent asks to read mail, send mail and manage calendar events; drafts stay in Melete. When the browser returns, each part the person allowed becomes a connection with the same tools, approvals and receipts as a mailbox or calendar connected with a password. Signing in again with the same account renews those connections instead of adding more.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        calendar_label?: string;
+                        mail_label?: string;
+                        space_id?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Open `authorize_url` in the browser */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uri */
+                            authorize_url: string;
+                            expires_at: components["schemas"]["__schema113"];
+                            /** Format: uri */
+                            redirect_uri: string;
+                            sign_in_id: string;
+                        };
+                    };
+                };
+                /** @description Invalid request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema142"];
+                    };
+                };
+                /** @description Space owner and matching audience required */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema142"];
+                    };
+                };
+                /** @description No Google client, no public address to return to, or no master key */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema142"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/google-sign-ins/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read how a Google sign-in is going */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Sign-in id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Pending, connected with its connections, or failed with a code */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            expires_at: components["schemas"]["__schema113"];
+                            /** @constant */
+                            state: "pending";
+                        } | {
+                            connection_ids: string[];
+                            /** @constant */
+                            state: "connected";
+                        } | {
+                            error: string;
+                            /** @constant */
+                            state: "failed";
+                        };
+                    };
+                };
+                /** @description No sign-in by that id for this person */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema142"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -7992,6 +8159,68 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["__schema142"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/oauth/google/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where Google returns the browser after signing in
+         * @description Checks the state before the code is spent, then connects what was granted. Answers with a short page for the browser; the outcome is also available from the sign-in status.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    code?: string;
+                    error?: string;
+                    scope?: string;
+                    state?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Connected */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                    };
+                };
+                /** @description The response was refused, or nothing was granted */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                    };
+                };
+                /** @description No such sign-in for this person */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
                     };
                 };
             };
@@ -12548,7 +12777,7 @@ export interface components {
         /** @enum {string} */
         __schema337: "ok" | "degraded" | "failing";
         /** @enum {string} */
-        __schema338: "ok" | "degraded" | "unavailable" | "credential_refused" | "not_running" | "revoked";
+        __schema338: "ok" | "degraded" | "unavailable" | "credential_refused" | "sign_in_required" | "not_running" | "revoked";
         __schema339: string;
         __schema340: string;
         __schema341: string;

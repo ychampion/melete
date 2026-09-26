@@ -14,6 +14,10 @@ import {
   connectionView,
   createConnectionRequest,
   describePlugin,
+  googleSignInAvailability,
+  googleSignInRequest,
+  googleSignInStart,
+  googleSignInStatus,
   installPluginRequest,
   installPluginResponse,
   mcpSignInRequest,
@@ -35,6 +39,12 @@ import {
   connectorFactoryFor,
   connectorOptionsFromEnv,
 } from '../connectors/configured.ts';
+import type { GoogleCredential } from '../connectors/google.ts';
+import {
+  type GoogleGrant,
+  GoogleSignInFailure,
+  GoogleSignIns,
+} from '../connectors/google-sign-in.ts';
 import { icsFeedTarget } from '../connectors/ics-feed.ts';
 import { mcpServerConfig } from '../connectors/mcp.ts';
 import { setupOwnersSpace } from '../connectors/mcp-connector.ts';
@@ -60,6 +70,17 @@ import { SandboxRefusal } from '../sandbox/manifest.ts';
 import { ServiceError } from './errors.ts';
 
 export type ConnectionDeps = { db: Database; sql: Sql; registry: ConnectorRegistry; env: Env };
+
+/**
+ * Kinds only this service installs. A sign-in earns their credential, so no
+ * request to `POST /connections` can carry one.
+ */
+type GoogleInstallation = { account: string; credential: GoogleCredential; scopes: string[] } & (
+  | { kind: 'gmail'; provider: 'imap' }
+  | { kind: 'google_calendar'; provider: 'caldav' }
+);
+type Installation = ConnectionInstallation | GoogleInstallation;
+type ConnectionResponse = ReturnType<typeof connectionResponse.parse>;
 
 const CHECK_TIMEOUT_MS = 25_000;
 /** Procedure evaluation spaces are throwaway and never the space a person means. */
@@ -125,7 +146,9 @@ async function check(connector: Connector | undefined, status: string): Promise<
     if (health.status === 'degraded') return result('degraded', 'degraded');
     return result(
       'failing',
-      health.reason === 'credential_refused' ? 'credential_refused' : 'unavailable',
+      health.reason === 'credential_refused' || health.reason === 'sign_in_required'
+        ? health.reason
+        : 'unavailable',
     );
   } catch {
     return result('failing', 'unavailable');
@@ -274,7 +297,16 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   ) => {
     const resolved = connectionInstallation(request);
     if (!resolved.ok) throw new ServiceError('invalid_request', resolved.error, 400);
-    const installation = resolved.value;
+    return installResolved(actor, request.space_id, request.label, resolved.value, plugin);
+  };
+
+  const installResolved = async (
+    actor: string,
+    requestedSpace: string | undefined,
+    label: string,
+    installation: Installation,
+    plugin?: { id: string; version: string; values: Record<string, string> },
+  ) => {
     // Everything but an MCP server without a token or secret variables has something to seal.
     const seals =
       installation.kind === 'mcp'
@@ -288,7 +320,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         'This service has no master key, so it cannot keep a credential. Set MELETE_MASTER_KEY and start it again.',
         409,
       );
-    const spaceId = request.space_id ?? (await personalSpace(deps.db, actor));
+    const spaceId = requestedSpace ?? (await personalSpace(deps.db, actor));
     // Authority is settled first, so no address in the request is resolved and
     // no connector is opened on the word of someone who may not install here.
     await requireInstaller(deps.db, spaceId, actor, installation.kind);
@@ -355,7 +387,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           id,
           spaceId,
           provider: installation.provider,
-          label: request.label,
+          label,
           scopes: stored.scopes,
           secretRef: stored.secret ? await secrets.put(spaceId, stored.secret) : null,
           configuration: plugin ? { ...stored.configuration, plugin } : stored.configuration,
@@ -569,6 +601,151 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     return c.json(await install(c.get('owner').id, parsed.data), 201);
   });
 
+  /**
+   * Signing in with Google again, after the grant ended or to grant more,
+   * gives the connection already made for that account the new credential
+   * rather than making a second one.
+   */
+  const reconnect = async (
+    actor: string,
+    row: typeof connection.$inferSelect,
+    installation: GoogleInstallation,
+  ): Promise<ConnectionResponse> => {
+    const secretRef = await secrets.put(row.spaceId, JSON.stringify(installation.credential));
+    const updated = await serviceTransaction(deps.db, async (tx) => {
+      await requireInstaller(tx, row.spaceId, actor, installation.kind, true);
+      const [next] = await tx
+        .update(connection)
+        .set({ secretRef, scopes: installation.scopes })
+        .where(
+          and(
+            eq(connection.id, row.id),
+            eq(connection.generation, row.generation),
+            ne(connection.status, 'revoked'),
+          ),
+        )
+        .returning();
+      return next;
+    });
+    if (!updated)
+      throw new ServiceError('generation_conflict', 'Connection changed during sign-in.', 409);
+    const tested = await retest(updated);
+    return connectionResponse.parse({ connection: view(tested.connection), check: tested.check });
+  };
+
+  const installGoogle = async (actor: string, grant: GoogleGrant) => {
+    const parts: Array<{ label: string; installation: GoogleInstallation }> = [];
+    const base = { account: grant.account, credential: grant.credential };
+    if (grant.mail)
+      parts.push({
+        label: grant.mail.label,
+        installation: { ...base, kind: 'gmail', provider: 'imap', scopes: grant.mail.scopes },
+      });
+    if (grant.calendar)
+      parts.push({
+        label: grant.calendar.label,
+        installation: {
+          ...base,
+          kind: 'google_calendar',
+          provider: 'caldav',
+          scopes: grant.calendar.scopes,
+        },
+      });
+    const installed: ConnectionResponse[] = [];
+    for (const { label, installation } of parts) {
+      const [existing] = await deps.db
+        .select()
+        .from(connection)
+        .where(
+          and(
+            eq(connection.spaceId, grant.spaceId),
+            eq(connection.provider, installation.provider),
+            ne(connection.status, 'revoked'),
+            query`${connection.configuration}->>'kind' = ${installation.kind}`,
+            query`${connection.configuration}->>'account' = ${installation.account}`,
+          ),
+        )
+        .orderBy(asc(connection.id))
+        .limit(1);
+      installed.push(
+        existing
+          ? await reconnect(actor, existing, installation)
+          : await installResolved(actor, grant.spaceId, label, installation),
+      );
+    }
+    return installed;
+  };
+
+  const googleSignIns = new GoogleSignIns<ConnectionResponse>({
+    publicUrl: deps.env.MELETE_PUBLIC_URL,
+    google: factory.options.google,
+    authorize: async (actor, requested) => {
+      const spaceId = requested ?? (await personalSpace(deps.db, actor));
+      await requireInstaller(deps.db, spaceId, actor, 'gmail');
+      if (!factory.options.masterKey)
+        throw new ServiceError(
+          'sealing_unavailable',
+          'This service has no master key, so it cannot keep a credential. Set MELETE_MASTER_KEY and start it again.',
+          409,
+        );
+      return spaceId;
+    },
+    install: installGoogle,
+    connectionId: (installed) => installed.connection.id,
+  });
+
+  app.get('/google-sign-ins', (c) =>
+    c.json(
+      googleSignInAvailability.parse({
+        available: googleSignIns.available(),
+        redirect_uri: googleSignIns.redirectUri(),
+      }),
+    ),
+  );
+
+  app.post('/google-sign-ins', async (c) => {
+    const parsed = googleSignInRequest.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success)
+      throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
+    try {
+      return c.json(
+        googleSignInStart.parse(await googleSignIns.start(c.get('owner').id, parsed.data)),
+        201,
+      );
+    } catch (error) {
+      throw googleSignInError(error);
+    }
+  });
+
+  app.get('/google-sign-ins/:id', (c) => {
+    const status = googleSignIns.status(c.get('owner').id, c.req.param('id'));
+    if (!status) throw new ServiceError('not_found', 'No sign-in by that id.', 404);
+    return c.json(googleSignInStatus.parse(status));
+  });
+
+  // Google sends the browser here. The page is all the browser needs; the app
+  // reads the outcome from the sign-in's status.
+  app.get('/oauth/google/callback', async (c) => {
+    try {
+      const installed = await googleSignIns.complete(
+        c.get('owner').id,
+        new URL(c.req.url).searchParams,
+      );
+      const labels = installed.map((item) => item.connection.label).join(' and ');
+      return c.html(
+        installed.some((item) => item.check?.status === 'failing')
+          ? signInPage(
+              'Signed in',
+              `You signed in to ${labels}, but Google did not answer. Test the connection from the app.`,
+            )
+          : signInPage('Connected', `${labels} connected. You can close this tab.`),
+      );
+    } catch (error) {
+      const refused = googleSignInError(error);
+      return c.html(signInPage('Not connected', refused.message), refused.status);
+    }
+  });
+
   /** Plugins a space already runs, by catalog entry. */
   const installedPlugins = async (spaceId: string) => {
     const rows = await deps.db
@@ -643,7 +820,7 @@ async function requireInstaller(
   reader: Database | Transaction,
   spaceId: string,
   actor: string,
-  kind: ConnectionInstallation['kind'],
+  kind: Installation['kind'],
   lock = false,
 ) {
   const access = await spaceAuthority(reader, spaceId, actor, lock);
@@ -718,6 +895,54 @@ function signInError(error: unknown): ServiceError {
   return new ServiceError('sign_in_failed', 'The connection could not be completed.', 502);
 }
 
+/** What a Google sign-in failure tells the person, by its fixed code. */
+const GOOGLE_SIGN_IN_FAILURES: Record<string, { status: 400 | 404 | 409 | 502; message: string }> =
+  {
+    google_not_configured: {
+      status: 409,
+      message:
+        'Signing in with Google needs a Google OAuth client. Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.',
+    },
+    callback_unavailable: {
+      status: 409,
+      message:
+        'Signing in needs the address people open this service at. Set MELETE_PUBLIC_URL to an https:// address, or a localhost one.',
+    },
+    sign_in_not_found: {
+      status: 404,
+      message:
+        'That sign-in has expired, was already used, or was started by someone else. Start again.',
+    },
+    sign_in_declined: { status: 400, message: 'Google did not approve the sign-in.' },
+    callback_invalid: { status: 400, message: 'Google sent the browser back without a code.' },
+    code_exchange_refused: {
+      status: 502,
+      message: 'Google refused the sign-in code. Start again.',
+    },
+    account_unverified: {
+      status: 502,
+      message: 'Google did not confirm a verified address for this account.',
+    },
+    access_not_granted: {
+      status: 400,
+      message:
+        'Nothing was connected: allow reading mail or managing calendar events on the Google consent screen.',
+    },
+  };
+
+function googleSignInError(error: unknown): ServiceError {
+  if (error instanceof ServiceError) return error;
+  if (error instanceof GoogleSignInFailure) {
+    const known = GOOGLE_SIGN_IN_FAILURES[error.code];
+    return new ServiceError(
+      error.code,
+      known?.message ?? 'Google could not be reached for sign-in. Try again shortly.',
+      known?.status ?? 502,
+    );
+  }
+  return new ServiceError('sign_in_failed', 'The connection could not be completed.', 502);
+}
+
 const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 
 /** The small page the browser lands on after signing in. */
@@ -748,6 +973,21 @@ async function personalSpace(db: Database, actor: string): Promise<string> {
  * that column: endpoints and account names, never a password, token or feed address.
  */
 async function storedShape(
+  installation: Installation,
+  id: string,
+  spaceId: string,
+  factory: ConnectorFactory,
+): Promise<{ scopes: string[]; secret: string | null; configuration: Record<string, unknown> }> {
+  if (installation.kind === 'gmail' || installation.kind === 'google_calendar')
+    return {
+      scopes: installation.scopes,
+      secret: JSON.stringify(installation.credential),
+      configuration: { kind: installation.kind, account: installation.account },
+    };
+  return requestedShape(installation, id, spaceId, factory);
+}
+
+async function requestedShape(
   installation: ConnectionInstallation,
   id: string,
   spaceId: string,

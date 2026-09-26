@@ -15,6 +15,7 @@ import {
   type MailAttachment,
   type MailMessage,
   type MailTransport,
+  signInEnded,
   validateMailConnection,
 } from './mail-transport.ts';
 import type { SecretAccess } from './secrets.ts';
@@ -42,6 +43,7 @@ const search = z
   })
   .strict();
 const read = z.object({ uid: z.number().int().positive() }).strict();
+const readById = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) }).strict();
 const addressSchema = {
   oneOf: [
     { type: 'string', format: 'email' },
@@ -140,6 +142,49 @@ export const emailManifest: ConnectorManifest = {
   ],
 };
 
+/**
+ * The same tools over a mailbox that addresses messages by an opaque id, as
+ * the Gmail API does: `email.read` takes that id, and search results carry it.
+ */
+export const idAddressedEmailManifest: ConnectorManifest = {
+  ...emailManifest,
+  description:
+    'Search and read mail, prepare a local draft, or send an approved message, through a signed-in account.',
+  credentials: [
+    {
+      key: 'sign_in',
+      description: 'The tokens of an account sign-in, sealed in the service.',
+      secret: true,
+    },
+  ],
+  tools: emailManifest.tools.map((tool) =>
+    tool.name === 'email.read'
+      ? {
+          ...tool,
+          description: 'Read an inbox message by id; authentication messages are withheld.',
+          input_schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['id'],
+            properties: { id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,64}$' } },
+          },
+        }
+      : tool,
+  ),
+};
+
+/**
+ * A mailbox reached through an API with a signed-in account rather than a
+ * password. `session` hands the work a transport holding that account's access.
+ */
+export type ApiMailbox = {
+  kind: 'api';
+  id: string;
+  spaceId: string;
+  from: string;
+  session: <T>(work: (transport: MailTransport) => Promise<T>) => Promise<T>;
+};
+
 /** Deliberately best-effort, including decoded body text as well as the subject. */
 export function sensitiveInboxMessage(message: MailMessage): boolean {
   const text = `${message.subject}\n${message.text}\n${message.html}`.normalize('NFKC');
@@ -154,17 +199,30 @@ export function emailMessageId(actionId: string): string {
 }
 
 export class EmailConnector implements Connector {
-  readonly manifest = emailManifest;
+  readonly manifest: ConnectorManifest;
+  private readonly config: { id: string; spaceId: string; from: string };
+  private readonly use: <T>(work: (transport: MailTransport) => Promise<T>) => Promise<T>;
 
   constructor(
-    private readonly config: EmailConnection,
-    private readonly secrets: SecretAccess,
-    private readonly transport: (config: EmailConnection, password: string) => MailTransport = (
-      config,
-      password,
-    ) => new ImapSmtpTransport(config, password),
+    config: EmailConnection | ApiMailbox,
+    secrets?: SecretAccess,
+    transport: (config: EmailConnection, password: string) => MailTransport = (config, password) =>
+      new ImapSmtpTransport(config, password),
   ) {
-    validateMailConnection(config);
+    this.config = config;
+    if ('kind' in config && config.kind === 'api') {
+      this.manifest = idAddressedEmailManifest;
+      this.use = config.session;
+      return;
+    }
+    const imap = config as EmailConnection;
+    validateMailConnection(imap);
+    if (!secrets) throw new Error('An IMAP mailbox needs its sealed password');
+    this.manifest = emailManifest;
+    this.use = (work) =>
+      secrets.withSecret(imap.secretRef, imap.spaceId, (password) =>
+        work(transport(imap, password)),
+      );
   }
 
   private assertContext(action: Action, ctx: ConnectorContext): void {
@@ -178,12 +236,6 @@ export class EmailConnector implements Connector {
       throw new Error('Mail action context mismatch');
     }
     ctx.signal?.throwIfAborted();
-  }
-
-  private use<T>(work: (transport: MailTransport) => Promise<T>): Promise<T> {
-    return this.secrets.withSecret(this.config.secretRef, this.config.spaceId, (password) =>
-      work(this.transport(this.config, password)),
-    );
   }
 
   /**
@@ -314,8 +366,11 @@ export class EmailConnector implements Connector {
         });
       }
       if (action.kind === 'email.read') {
-        const payload = read.parse(action.canonical_payload);
-        const message = await this.use((transport) => transport.read(payload.uid));
+        const key =
+          this.manifest === idAddressedEmailManifest
+            ? readById.parse(action.canonical_payload).id
+            : read.parse(action.canonical_payload).uid;
+        const message = await this.use((transport) => transport.read(key));
         if (!message || sensitiveInboxMessage(message))
           return {
             outcome: 'failed',
@@ -373,7 +428,7 @@ export class EmailConnector implements Connector {
       await this.use((transport) => transport.health());
       return {
         status: 'ok',
-        detail: 'IMAP connection is available.',
+        detail: 'The mailbox is available.',
         checked_at: new Date().toISOString(),
       };
     } catch (error) {
@@ -381,7 +436,11 @@ export class EmailConnector implements Connector {
         status: 'failing',
         detail: 'Mail connection unavailable.',
         checked_at: new Date().toISOString(),
-        ...(credentialRefused(error) ? { reason: 'credential_refused' as const } : {}),
+        ...(signInEnded(error)
+          ? { reason: 'sign_in_required' as const }
+          : credentialRefused(error)
+            ? { reason: 'credential_refused' as const }
+            : {}),
       };
     }
   }

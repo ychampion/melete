@@ -109,6 +109,9 @@ services:
       MELETE_MEMORY_DAILY_CALLS: ${MELETE_MEMORY_DAILY_CALLS:-200}
       MELETE_PUBLIC_URL: ${MELETE_PUBLIC_URL:-}
       MELETE_OAUTH_CLIENT_METADATA: ${MELETE_OAUTH_CLIENT_METADATA:-}
+      # Signing in with Google for Gmail and Google Calendar (docs/mail-calendar.md).
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       # The company map's model and its daily allowance (docs/DEPLOYMENT.md, "Company map").
       MELETE_COMPANIES_MODEL: ${MELETE_COMPANIES_MODEL:-}
       MELETE_COMPANIES_PROVIDER: ${MELETE_COMPANIES_PROVIDER:-}

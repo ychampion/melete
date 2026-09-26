@@ -358,6 +358,7 @@ export const CONNECTION_CHECK_CODES = [
   'degraded',
   'unavailable',
   'credential_refused',
+  'sign_in_required',
   'not_running',
   'revoked',
 ] as const;
@@ -371,6 +372,8 @@ export const CONNECTION_CHECK_DETAIL: Record<ConnectionCheckCode, string> = {
     'The destination could not be reached or refused the credential. Check the address, the account and the password.',
   credential_refused:
     'The server refused the account name or password. Use an app password where the provider offers one, then test again. Outlook.com accepts only its own sign-in, so no password works there.',
+  sign_in_required:
+    "The account's sign-in has ended or its access was removed. Sign in again to reconnect it.",
   not_running:
     'This connection has no running connector. Check the master key and the service log, then test again.',
   revoked: 'This connection was removed and can no longer be used.',
@@ -447,6 +450,41 @@ export const mcpSignInStatus = z.discriminatedUnion('state', [
   z.object({ state: z.literal('connected'), connection_id: prefixedId(ID_PREFIXES.connection) }),
   z.object({ state: z.literal('failed'), error: z.string() }),
 ]);
+/** Signing in with Google to connect Gmail and Google Calendar at once. */
+export const googleSignInRequest = z
+  .object({
+    /** Left out, the space of the signed-in session. */
+    space_id: prefixedId(ID_PREFIXES.space).optional(),
+    mail_label: z.string().min(1).max(120).optional(),
+    calendar_label: z.string().min(1).max(120).optional(),
+  })
+  .strict();
+export type GoogleSignInRequest = z.infer<typeof googleSignInRequest>;
+
+export const googleSignInAvailability = z.object({
+  /** False until the operator configures a Google OAuth client and a public address. */
+  available: z.boolean(),
+  /** The redirect address to register with that client. */
+  redirect_uri: z.url().nullable(),
+});
+
+export const googleSignInStart = z.object({
+  sign_in_id: z.string(),
+  /** Open this in the person's browser. */
+  authorize_url: z.url(),
+  redirect_uri: z.url(),
+  expires_at: timestamp,
+});
+
+export const googleSignInStatus = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('pending'), expires_at: timestamp }),
+  z.object({
+    state: z.literal('connected'),
+    connection_ids: z.array(prefixedId(ID_PREFIXES.connection)),
+  }),
+  z.object({ state: z.literal('failed'), error: z.string() }),
+]);
+
 export const connectionCheckResponse = z.object({
   connection: connectionView,
   check: connectionCheck,
