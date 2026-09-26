@@ -1,4 +1,8 @@
 import {
+  accountSignInAvailability,
+  accountSignInRequest,
+  accountSignInStart,
+  accountSignInStatus,
   CONNECTION_CHECK_DETAIL,
   CONNECTION_KIND_DESCRIPTORS,
   type ConnectionCheck,
@@ -14,10 +18,6 @@ import {
   connectionView,
   createConnectionRequest,
   describePlugin,
-  googleSignInAvailability,
-  googleSignInRequest,
-  googleSignInStart,
-  googleSignInStatus,
   installPluginRequest,
   installPluginResponse,
   mcpSignInRequest,
@@ -31,6 +31,12 @@ import {
 import { and, asc, eq, ne, not, sql as query } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import type { Sql } from 'postgres';
+import {
+  type AccountGrant,
+  type AccountProviderName,
+  AccountSignIns,
+  SignInFailure,
+} from '../connectors/account-sign-in.ts';
 import { builtinEnvironment, ensureBuiltinConnections } from '../connectors/builtin.ts';
 import { CalendarDiscoveryError, discoverCalendar } from '../connectors/caldav-discovery.ts';
 import {
@@ -39,20 +45,17 @@ import {
   connectorFactoryFor,
   connectorOptionsFromEnv,
 } from '../connectors/configured.ts';
-import type { GoogleCredential } from '../connectors/google.ts';
-import {
-  type GoogleGrant,
-  GoogleSignInFailure,
-  GoogleSignIns,
-} from '../connectors/google-sign-in.ts';
+import { googleProvider } from '../connectors/google.ts';
 import { icsFeedTarget } from '../connectors/ics-feed.ts';
 import { mcpServerConfig } from '../connectors/mcp.ts';
 import { setupOwnersSpace } from '../connectors/mcp-connector.ts';
 import { mcpCredentials, mcpCredentialUrl } from '../connectors/mcp-credentials.ts';
 import { clientMetadataDocument, McpSignInFailure } from '../connectors/mcp-oauth.ts';
 import { McpSignIns } from '../connectors/mcp-sign-in.ts';
+import { microsoftProvider } from '../connectors/microsoft.ts';
 import { isPublicEndpoint, publicOnlyFetch } from '../connectors/public-fetch.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
+import type { SignedInCredential } from '../connectors/signed-in.ts';
 import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
 import { connection, space } from '../db/schema.ts';
@@ -73,13 +76,25 @@ export type ConnectionDeps = { db: Database; sql: Sql; registry: ConnectorRegist
 
 /**
  * Kinds only this service installs. A sign-in earns their credential, so no
- * request to `POST /connections` can carry one.
+ * request to `POST /connections` can carry one. Mail keeps the `imap` provider
+ * and a calendar the `caldav` one, so everything that finds a mailbox or a
+ * calendar by provider finds these too.
  */
-type GoogleInstallation = { account: string; credential: GoogleCredential; scopes: string[] } & (
-  | { kind: 'gmail'; provider: 'imap' }
-  | { kind: 'google_calendar'; provider: 'caldav' }
+const ACCOUNT_KINDS = {
+  google: { mail: 'gmail', calendar: 'google_calendar' },
+  microsoft: { mail: 'outlook_mail', calendar: 'outlook_calendar' },
+} as const;
+type AccountInstallation = {
+  account: string;
+  credential: SignedInCredential;
+  scopes: string[];
+} & (
+  | { kind: 'gmail' | 'outlook_mail'; provider: 'imap' }
+  | { kind: 'google_calendar' | 'outlook_calendar'; provider: 'caldav' }
 );
-type Installation = ConnectionInstallation | GoogleInstallation;
+type Installation = ConnectionInstallation | AccountInstallation;
+const signedIn = (installation: Installation): installation is AccountInstallation =>
+  'credential' in installation;
 type ConnectionResponse = ReturnType<typeof connectionResponse.parse>;
 
 const CHECK_TIMEOUT_MS = 25_000;
@@ -602,14 +617,14 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   });
 
   /**
-   * Signing in with Google again, after the grant ended or to grant more,
-   * gives the connection already made for that account the new credential
-   * rather than making a second one.
+   * Signing in again with the same account, after the grant ended or to grant
+   * more, gives the connection already made for that account the new
+   * credential rather than making a second one.
    */
   const reconnect = async (
     actor: string,
     row: typeof connection.$inferSelect,
-    installation: GoogleInstallation,
+    installation: AccountInstallation,
   ): Promise<ConnectionResponse> => {
     const secretRef = await secrets.put(row.spaceId, JSON.stringify(installation.credential));
     const updated = await serviceTransaction(deps.db, async (tx) => {
@@ -633,20 +648,21 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     return connectionResponse.parse({ connection: view(tested.connection), check: tested.check });
   };
 
-  const installGoogle = async (actor: string, grant: GoogleGrant) => {
-    const parts: Array<{ label: string; installation: GoogleInstallation }> = [];
+  const installAccount = async (actor: string, grant: AccountGrant) => {
+    const kinds = ACCOUNT_KINDS[grant.provider];
+    const parts: Array<{ label: string; installation: AccountInstallation }> = [];
     const base = { account: grant.account, credential: grant.credential };
     if (grant.mail)
       parts.push({
         label: grant.mail.label,
-        installation: { ...base, kind: 'gmail', provider: 'imap', scopes: grant.mail.scopes },
+        installation: { ...base, kind: kinds.mail, provider: 'imap', scopes: grant.mail.scopes },
       });
     if (grant.calendar)
       parts.push({
         label: grant.calendar.label,
         installation: {
           ...base,
-          kind: 'google_calendar',
+          kind: kinds.calendar,
           provider: 'caldav',
           scopes: grant.calendar.scopes,
         },
@@ -676,75 +692,97 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     return installed;
   };
 
-  const googleSignIns = new GoogleSignIns<ConnectionResponse>({
-    publicUrl: deps.env.MELETE_PUBLIC_URL,
-    google: factory.options.google,
-    authorize: async (actor, requested) => {
-      const spaceId = requested ?? (await personalSpace(deps.db, actor));
-      await requireInstaller(deps.db, spaceId, actor, 'gmail');
-      if (!factory.options.masterKey)
+  const accountProviders = {
+    google: factory.options.google
+      ? googleProvider(factory.options.google.client, factory.options.google.endpoints)
+      : undefined,
+    microsoft: factory.options.microsoft
+      ? microsoftProvider(factory.options.microsoft.client, {
+          tenant: factory.options.microsoft.tenant,
+          ...(factory.options.microsoft.endpoints
+            ? { endpoints: factory.options.microsoft.endpoints }
+            : {}),
+        })
+      : undefined,
+  };
+
+  for (const name of ['google', 'microsoft'] as const) {
+    const title = ACCOUNT_TITLES[name];
+    const provider = accountProviders[name];
+    const signIns = new AccountSignIns<ConnectionResponse>(name, {
+      publicUrl: deps.env.MELETE_PUBLIC_URL,
+      ...(provider ? { provider } : {}),
+      authorize: async (actor, requested) => {
+        const spaceId = requested ?? (await personalSpace(deps.db, actor));
+        await requireInstaller(deps.db, spaceId, actor, ACCOUNT_KINDS[name].mail);
+        if (!factory.options.masterKey)
+          throw new ServiceError(
+            'sealing_unavailable',
+            'This service has no master key, so it cannot keep a credential. Set MELETE_MASTER_KEY and start it again.',
+            409,
+          );
+        return spaceId;
+      },
+      install: installAccount,
+      connectionId: (installed) => installed.connection.id,
+    });
+
+    app.get(`/${name}-sign-ins`, (c) =>
+      c.json(
+        accountSignInAvailability.parse({
+          available: signIns.available(),
+          redirect_uri: signIns.redirectUri(),
+        }),
+      ),
+    );
+
+    app.post(`/${name}-sign-ins`, async (c) => {
+      const parsed = accountSignInRequest.safeParse(await c.req.json().catch(() => ({})));
+      if (!parsed.success)
         throw new ServiceError(
-          'sealing_unavailable',
-          'This service has no master key, so it cannot keep a credential. Set MELETE_MASTER_KEY and start it again.',
-          409,
+          'invalid_request',
+          connectionRequestProblem(parsed.error.issues),
+          400,
         );
-      return spaceId;
-    },
-    install: installGoogle,
-    connectionId: (installed) => installed.connection.id,
-  });
+      try {
+        return c.json(
+          accountSignInStart.parse(await signIns.start(c.get('owner').id, parsed.data)),
+          201,
+        );
+      } catch (error) {
+        throw accountSignInError(name, error);
+      }
+    });
 
-  app.get('/google-sign-ins', (c) =>
-    c.json(
-      googleSignInAvailability.parse({
-        available: googleSignIns.available(),
-        redirect_uri: googleSignIns.redirectUri(),
-      }),
-    ),
-  );
+    app.get(`/${name}-sign-ins/:id`, (c) => {
+      const status = signIns.status(c.get('owner').id, c.req.param('id'));
+      if (!status) throw new ServiceError('not_found', 'No sign-in by that id.', 404);
+      return c.json(accountSignInStatus.parse(status));
+    });
 
-  app.post('/google-sign-ins', async (c) => {
-    const parsed = googleSignInRequest.safeParse(await c.req.json().catch(() => ({})));
-    if (!parsed.success)
-      throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
-    try {
-      return c.json(
-        googleSignInStart.parse(await googleSignIns.start(c.get('owner').id, parsed.data)),
-        201,
-      );
-    } catch (error) {
-      throw googleSignInError(error);
-    }
-  });
-
-  app.get('/google-sign-ins/:id', (c) => {
-    const status = googleSignIns.status(c.get('owner').id, c.req.param('id'));
-    if (!status) throw new ServiceError('not_found', 'No sign-in by that id.', 404);
-    return c.json(googleSignInStatus.parse(status));
-  });
-
-  // Google sends the browser here. The page is all the browser needs; the app
-  // reads the outcome from the sign-in's status.
-  app.get('/oauth/google/callback', async (c) => {
-    try {
-      const installed = await googleSignIns.complete(
-        c.get('owner').id,
-        new URL(c.req.url).searchParams,
-      );
-      const labels = installed.map((item) => item.connection.label).join(' and ');
-      return c.html(
-        installed.some((item) => item.check?.status === 'failing')
-          ? signInPage(
-              'Signed in',
-              `You signed in to ${labels}, but Google did not answer. Test the connection from the app.`,
-            )
-          : signInPage('Connected', `${labels} connected. You can close this tab.`),
-      );
-    } catch (error) {
-      const refused = googleSignInError(error);
-      return c.html(signInPage('Not connected', refused.message), refused.status);
-    }
-  });
+    // The provider sends the browser here. The page is all the browser needs;
+    // the app reads the outcome from the sign-in's status.
+    app.get(`/oauth/${name}/callback`, async (c) => {
+      try {
+        const installed = await signIns.complete(
+          c.get('owner').id,
+          new URL(c.req.url).searchParams,
+        );
+        const labels = installed.map((item) => item.connection.label).join(' and ');
+        return c.html(
+          installed.some((item) => item.check?.status === 'failing')
+            ? signInPage(
+                'Signed in',
+                `You signed in to ${labels}, but ${title} did not answer. Test the connection from the app.`,
+              )
+            : signInPage('Connected', `${labels} connected. You can close this tab.`),
+        );
+      } catch (error) {
+        const refused = accountSignInError(name, error);
+        return c.html(signInPage('Not connected', refused.message), refused.status);
+      }
+    });
+  }
 
   /** Plugins a space already runs, by catalog entry. */
   const installedPlugins = async (spaceId: string) => {
@@ -895,13 +933,21 @@ function signInError(error: unknown): ServiceError {
   return new ServiceError('sign_in_failed', 'The connection could not be completed.', 502);
 }
 
-/** What a Google sign-in failure tells the person, by its fixed code. */
-const GOOGLE_SIGN_IN_FAILURES: Record<string, { status: 400 | 404 | 409 | 502; message: string }> =
-  {
-    google_not_configured: {
+const ACCOUNT_TITLES = { google: 'Google', microsoft: 'Microsoft' } as const;
+const ACCOUNT_SETTINGS = {
+  google: 'GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET',
+  microsoft: 'MICROSOFT_OAUTH_CLIENT_ID and MICROSOFT_OAUTH_CLIENT_SECRET',
+} as const;
+
+/** What an account sign-in failure tells the person, by its fixed code. */
+function accountSignInFailures(
+  name: AccountProviderName,
+): Record<string, { status: 400 | 404 | 409 | 502; message: string }> {
+  const title = ACCOUNT_TITLES[name];
+  return {
+    provider_not_configured: {
       status: 409,
-      message:
-        'Signing in with Google needs a Google OAuth client. Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.',
+      message: `Signing in with ${title} needs an OAuth client. Set ${ACCOUNT_SETTINGS[name]}.`,
     },
     callback_unavailable: {
       status: 409,
@@ -913,30 +959,31 @@ const GOOGLE_SIGN_IN_FAILURES: Record<string, { status: 400 | 404 | 409 | 502; m
       message:
         'That sign-in has expired, was already used, or was started by someone else. Start again.',
     },
-    sign_in_declined: { status: 400, message: 'Google did not approve the sign-in.' },
-    callback_invalid: { status: 400, message: 'Google sent the browser back without a code.' },
+    sign_in_declined: { status: 400, message: `${title} did not approve the sign-in.` },
+    callback_invalid: { status: 400, message: `${title} sent the browser back without a code.` },
     code_exchange_refused: {
       status: 502,
-      message: 'Google refused the sign-in code. Start again.',
+      message: `${title} refused the sign-in code. Start again.`,
     },
     account_unverified: {
       status: 502,
-      message: 'Google did not confirm a verified address for this account.',
+      message: `${title} did not confirm an address for this account.`,
     },
     access_not_granted: {
       status: 400,
-      message:
-        'Nothing was connected: allow reading mail or managing calendar events on the Google consent screen.',
+      message: `Nothing was connected: allow reading mail or managing calendar events on the ${title} consent screen.`,
     },
   };
+}
 
-function googleSignInError(error: unknown): ServiceError {
+function accountSignInError(name: AccountProviderName, error: unknown): ServiceError {
   if (error instanceof ServiceError) return error;
-  if (error instanceof GoogleSignInFailure) {
-    const known = GOOGLE_SIGN_IN_FAILURES[error.code];
+  if (error instanceof SignInFailure) {
+    const known = accountSignInFailures(name)[error.code];
     return new ServiceError(
       error.code,
-      known?.message ?? 'Google could not be reached for sign-in. Try again shortly.',
+      known?.message ??
+        `${ACCOUNT_TITLES[name]} could not be reached for sign-in. Try again shortly.`,
       known?.status ?? 502,
     );
   }
@@ -978,7 +1025,7 @@ async function storedShape(
   spaceId: string,
   factory: ConnectorFactory,
 ): Promise<{ scopes: string[]; secret: string | null; configuration: Record<string, unknown> }> {
-  if (installation.kind === 'gmail' || installation.kind === 'google_calendar')
+  if (signedIn(installation))
     return {
       scopes: installation.scopes,
       secret: JSON.stringify(installation.credential),

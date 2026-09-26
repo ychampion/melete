@@ -1,10 +1,14 @@
 /**
- * The calendar a Google sign-in grants, over the Google Calendar API. It
- * offers the CalDAV calendar's tools with the same payloads, effect classes
- * and approvals, and keeps the same promises: an event Melete creates is named
- * by the action that created it, so a second create cannot make a second
- * event; a change or removal names the version it read; and only events Melete
- * created can be changed or removed.
+ * The calendar a Microsoft sign-in grants, over Microsoft Graph. It offers the
+ * CalDAV calendar's tools with the same payloads, effect classes and approvals,
+ * and keeps the same promises: an event Melete creates carries the action that
+ * created it, so a second create for that action is refused; a change or
+ * removal names the version it read; and only events Melete created can be
+ * changed or removed.
+ *
+ * Graph chooses its own event ids, so Melete's mark travels in an extended
+ * property of the event, `<uid> <action id> <payload hash>`, and an event is
+ * found again by that mark.
  */
 import type {
   Action,
@@ -24,17 +28,19 @@ import {
   updatePayload,
 } from './calendar.ts';
 import { asConnectorFault, ConnectorFaultError } from './faults.ts';
-import { googleErrorReason } from './google.ts';
 import { signInEnded } from './mail-transport.ts';
 import { bearerRequest, boundedJson, type SignedInAccess } from './signed-in.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-const RATE_LIMITED = ['rateLimitExceeded', 'userRateLimitExceeded', 'quotaExceeded'];
+/** Melete's own property set, so its mark never collides with another app's. */
+export const MELETE_MARK = 'String {0f5b3c7e-6d65-4c65-8a74-652d6d61726b} Name melete_mark';
+/** Times in UTC and bodies as text, so what was written can be compared with what is read. */
+const PREFER = 'outlook.timezone="UTC", outlook.body-content-type="text"';
 
-export const googleCalendarManifest: ConnectorManifest = {
+export const outlookCalendarManifest: ConnectorManifest = {
   ...calendarManifest,
-  description: 'Read and update the Google Calendar of a signed-in account.',
+  description: 'Read and update the Outlook calendar of a signed-in account.',
   credentials: [
     {
       key: 'sign_in',
@@ -44,50 +50,62 @@ export const googleCalendarManifest: ConnectorManifest = {
   ],
 };
 
-/**
- * Google event ids use the base32hex alphabet. The hexadecimal bytes of the
- * action id fit it, so the same action always names the same event.
- */
-export function googleEventId(uid: string): string {
-  return Buffer.from(uid, 'utf8').toString('hex');
-}
-
-type GoogleEvent = {
+type GraphEvent = {
   id?: string;
-  status?: string;
-  etag?: string;
-  iCalUID?: string;
-  summary?: string;
-  description?: string;
-  location?: string;
-  recurrence?: string[];
-  start?: { dateTime?: string; date?: string };
-  end?: { dateTime?: string; date?: string };
-  extendedProperties?: { private?: Record<string, string> };
+  '@odata.etag'?: string;
+  iCalUId?: string;
+  isCancelled?: boolean;
+  subject?: string;
+  body?: { contentType?: string; content?: string };
+  location?: { displayName?: string };
+  start?: { dateTime?: string; timeZone?: string };
+  end?: { dateTime?: string; timeZone?: string };
+  recurrence?: { pattern?: { type?: string; interval?: number } } | null;
+  singleValueExtendedProperties?: { id?: string; value?: string }[];
 };
 
-function eventView(event: GoogleEvent): EventView {
-  const marks = event.extendedProperties?.private ?? {};
+/** A Graph dateTime in UTC ("2026-09-30T09:00:00.0000000") as an instant. */
+function instant(value: string | undefined): number {
+  if (!value) return Number.NaN;
+  const trimmed = value.replace(/(\.\d{3})\d+/, '$1');
+  return Date.parse(/[zZ]|[+-]\d{2}:\d{2}$/.test(trimmed) ? trimmed : `${trimmed}Z`);
+}
+
+const utc = (iso: string) => new Date(iso).toISOString().replace(/Z$/, '');
+const mark = (event: GraphEvent) =>
+  event.singleValueExtendedProperties?.find((property) => property.id === MELETE_MARK)?.value;
+/** Graph's ETags are weak (`W/"..."`); the tools carry the quoted part. */
+const toolEtag = (etag: string | undefined) => (etag ? etag.replace(/^W\//, '') : null);
+const graphEtag = (etag: string) => (etag.startsWith('W/') ? etag : `W/${etag}`);
+const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
+
+function eventView(event: GraphEvent): EventView {
+  const time = (value: { dateTime?: string } | undefined) => {
+    const at = instant(value?.dateTime);
+    return Number.isNaN(at) ? (value?.dateTime ?? '') : new Date(at).toISOString();
+  };
   return {
-    uid: marks.melete_uid ?? event.iCalUID ?? event.id ?? '',
-    summary: event.summary ?? '',
-    start: event.start?.dateTime ?? event.start?.date ?? '',
-    end: event.end?.dateTime ?? event.end?.date ?? '',
-    description: event.description ?? '',
-    location: event.location ?? '',
-    recurrence: event.recurrence?.length ? event.recurrence.join('\n') : null,
-    etag: event.etag ?? null,
+    uid: mark(event)?.split(' ')[0] ?? event.iCalUId ?? event.id ?? '',
+    summary: event.subject ?? '',
+    start: time(event.start),
+    end: time(event.end),
+    description: event.body?.content ?? '',
+    location: event.location?.displayName ?? '',
+    recurrence: event.recurrence?.pattern
+      ? `${event.recurrence.pattern.type ?? 'recurring'} every ${event.recurrence.pattern.interval ?? 1}`
+      : null,
+    etag: toolEtag(event['@odata.etag']),
   };
 }
 
-export class GoogleCalendarConnector implements Connector {
-  readonly manifest = googleCalendarManifest;
+export class OutlookCalendarConnector implements Connector {
+  readonly manifest = outlookCalendarManifest;
 
   constructor(
     private readonly config: {
       id: string;
       spaceId: string;
-      /** `.../calendar/v3/calendars/primary` */
+      /** `https://graph.microsoft.com/v1.0/me` */
       base: string;
       access: SignedInAccess;
       fetcher?: typeof fetch;
@@ -119,7 +137,7 @@ export class GoogleCalendarConnector implements Connector {
       `${this.config.base}${path}`,
       {
         method,
-        headers,
+        headers: { prefer: PREFER, ...headers },
         ...(body ? { body: JSON.stringify(body) } : {}),
         ...(ctx?.signal ? { signal: ctx.signal } : {}),
       },
@@ -141,11 +159,49 @@ export class GoogleCalendarConnector implements Connector {
     };
   }
 
+  /**
+   * Events matching `query`. Before a write, a refused credential or a request
+   * to slow down raises the same faults the write itself would.
+   */
+  private async events(
+    query: URLSearchParams,
+    ctx?: ConnectorContext,
+    beforeWrite = false,
+  ): Promise<GraphEvent[]> {
+    query.set('$expand', `singleValueExtendedProperties($filter=id eq ${literal(MELETE_MARK)})`);
+    const response = await this.request('GET', `/events?${query}`, ctx);
+    if (beforeWrite && [401, 403, 429, 503].includes(response.status)) await this.refused(response);
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error('Calendar listing unavailable');
+    }
+    const listed = (await boundedJson(response, MAX_RESPONSE_BYTES)) as {
+      value?: GraphEvent[];
+    } | null;
+    return listed?.value ?? [];
+  }
+
+  /** The event Melete created under `uid`, found by its mark. */
+  private async find(
+    uid: string,
+    ctx?: ConnectorContext,
+    beforeWrite = false,
+  ): Promise<GraphEvent | null> {
+    const found = await this.events(
+      new URLSearchParams({
+        $filter: `singleValueExtendedProperties/Any(ep: ep/id eq ${literal(MELETE_MARK)} and startswith(ep/value, ${literal(`${uid} `)}))`,
+        $top: '2',
+      }),
+      ctx,
+      beforeWrite,
+    );
+    return found.find((event) => mark(event)?.split(' ')[0] === uid) ?? null;
+  }
+
   /** What a refused write means, in the same faults the CalDAV calendar raises. */
   private async refused(response: Response): Promise<DispatchResult> {
-    const body = await boundedJson(response, 64 * 1024).catch(() => null);
-    const reason = googleErrorReason(body);
-    if (response.status === 429 || (response.status === 403 && RATE_LIMITED.includes(reason ?? '')))
+    await response.body?.cancel().catch(() => {});
+    if (response.status === 429 || response.status === 503)
       throw new ConnectorFaultError({
         kind: 'rate_limited',
         detail: 'the calendar server asked to be left alone for a while',
@@ -161,7 +217,7 @@ export class GoogleCalendarConnector implements Connector {
         kind: 'revoked_credential',
         detail: 'the calendar server no longer permits this account to write',
       });
-    if ([400, 404, 409, 410, 412].includes(response.status))
+    if ([400, 404, 409, 412].includes(response.status))
       return {
         outcome: 'failed',
         reason: `Calendar server rejected the write (${response.status}).`,
@@ -173,19 +229,6 @@ export class GoogleCalendarConnector implements Connector {
     };
   }
 
-  private async event(uid: string, ctx?: ConnectorContext): Promise<GoogleEvent | null> {
-    const response = await this.request('GET', `/events/${googleEventId(uid)}`, ctx);
-    if (response.status === 404 || response.status === 410) {
-      await response.body?.cancel().catch(() => {});
-      return null;
-    }
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => {});
-      throw new Error('Calendar event unavailable');
-    }
-    return (await boundedJson(response, MAX_RESPONSE_BYTES)) as GoogleEvent;
-  }
-
   async execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult> {
     let dispatched = false;
     try {
@@ -193,42 +236,43 @@ export class GoogleCalendarConnector implements Connector {
       if (action.kind === 'calendar.list') {
         const payload = listPayload.parse(action.canonical_payload);
         const now = this.config.now?.() ?? Date.now();
-        const query = new URLSearchParams({
-          maxResults: String(payload.limit),
-          // Series and single events from yesterday on; a series keeps its rule.
-          timeMin: new Date(now - 86_400_000).toISOString(),
-          singleEvents: 'false',
+        const events = await this.events(
+          new URLSearchParams({
+            $top: String(payload.limit),
+            // From yesterday on; a series keeps its pattern.
+            $filter: `end/dateTime ge ${literal(utc(new Date(now - 86_400_000).toISOString()))}`,
+          }),
+          ctx,
+        );
+        return this.success(action, {
+          events: events
+            .filter((event) => !event.isCancelled)
+            .map(eventView)
+            .slice(0, payload.limit),
+          read_only: false,
         });
-        const response = await this.request('GET', `/events?${query}`, ctx);
-        if (!response.ok) {
-          await response.body?.cancel().catch(() => {});
-          throw new Error('Calendar listing unavailable');
-        }
-        const listed = (await boundedJson(response, MAX_RESPONSE_BYTES)) as {
-          items?: GoogleEvent[];
-        } | null;
-        const events = (listed?.items ?? [])
-          .filter((event) => event.status !== 'cancelled')
-          .map(eventView)
-          .slice(0, payload.limit);
-        return this.success(action, { events, read_only: false });
       }
       if (action.kind === 'calendar.delete') {
         const payload = deletePayload.parse(action.canonical_payload);
+        const found = await this.find(payload.uid, ctx, true);
+        if (!found?.id)
+          return {
+            outcome: 'failed',
+            reason: 'The event changed or could not be removed.',
+            retryable: false,
+          };
         dispatched = true;
         const response = await this.request(
           'DELETE',
-          `/events/${googleEventId(payload.uid)}`,
+          `/events/${encodeURIComponent(found.id)}`,
           ctx,
           undefined,
-          { 'if-match': payload.etag },
+          { 'if-match': graphEtag(payload.etag) },
         );
-        if (response.status >= 200 && response.status < 300) {
-          await response.body?.cancel().catch(() => {});
-          return this.success(action, { uid: payload.uid, removed: true }, payload.uid);
-        }
         await response.body?.cancel().catch(() => {});
-        return [401, 403, 404, 409, 410, 412].includes(response.status)
+        if (response.status >= 200 && response.status < 300)
+          return this.success(action, { uid: payload.uid, removed: true }, payload.uid);
+        return [401, 403, 404, 409, 412].includes(response.status)
           ? {
               outcome: 'failed',
               reason: 'The event changed or could not be removed.',
@@ -242,34 +286,40 @@ export class GoogleCalendarConnector implements Connector {
         action.kind === 'calendar.update' ? updatePayload.parse(action.canonical_payload) : null;
       const payload = update ?? createPayload.parse(action.canonical_payload);
       const uid = update?.uid ?? action.id;
+      const existing = await this.find(uid, ctx, true);
+      if (update ? !existing?.id : existing)
+        return {
+          outcome: 'failed',
+          reason: update
+            ? 'Calendar server rejected the write (404).'
+            : 'Calendar server rejected the write (409).',
+          retryable: false,
+        };
       const body: JsonObject = {
-        summary: payload.summary,
-        description: payload.description,
-        location: payload.location,
-        start: { dateTime: payload.start },
-        end: { dateTime: payload.end },
-        extendedProperties: {
-          private: {
-            melete_uid: uid,
-            melete_action_id: action.id,
-            melete_payload_hash: action.payload_hash,
-          },
-        },
+        subject: payload.summary,
+        body: { contentType: 'text', content: payload.description },
+        location: { displayName: payload.location },
+        start: { dateTime: utc(payload.start), timeZone: 'UTC' },
+        end: { dateTime: utc(payload.end), timeZone: 'UTC' },
+        singleValueExtendedProperties: [
+          { id: MELETE_MARK, value: `${uid} ${action.id} ${action.payload_hash}` },
+        ],
       };
       dispatched = true;
-      // A create names its event, so the calendar refuses a second one with that name.
-      const response = update
-        ? await this.request('PUT', `/events/${googleEventId(uid)}`, ctx, body, {
-            'if-match': update.etag,
-          })
-        : await this.request('POST', '/events', ctx, { ...body, id: googleEventId(uid) });
+      const response =
+        update && existing?.id
+          ? await this.request('PATCH', `/events/${encodeURIComponent(existing.id)}`, ctx, body, {
+              'if-match': graphEtag(update.etag),
+            })
+          : // Graph refuses a second create carrying the same transaction id.
+            await this.request('POST', '/events', ctx, { ...body, transactionId: action.id });
       if (response.status >= 200 && response.status < 300) {
         const written = (await boundedJson(response, MAX_RESPONSE_BYTES).catch(
           () => null,
-        )) as GoogleEvent | null;
+        )) as GraphEvent | null;
         return this.success(
           action,
-          { uid, etag: written?.etag ?? null, action_id: action.id },
+          { uid, etag: toolEtag(written?.['@odata.etag']), action_id: action.id },
           uid,
         );
       }
@@ -294,12 +344,12 @@ export class GoogleCalendarConnector implements Connector {
       try {
         this.assertContext(action, ctx);
         const payload = deletePayload.parse(action.canonical_payload);
-        const found = await this.event(payload.uid, ctx);
+        const found = await this.find(payload.uid, ctx);
         // Absence proves the desired state, but cannot attribute an uncertain deletion.
         return {
           decision: 'undecided',
           reason:
-            !found || found.status === 'cancelled'
+            !found || found.isCancelled
               ? 'The event is absent, but this removal has no acknowledgement.'
               : 'The event removal could not be confirmed.',
         };
@@ -318,19 +368,16 @@ export class GoogleCalendarConnector implements Connector {
         action.kind === 'calendar.update' ? updatePayload.parse(action.canonical_payload) : null;
       const payload = update ?? createPayload.parse(action.canonical_payload);
       const uid = update?.uid ?? action.id;
-      const found = await this.event(uid, ctx);
-      const marks = found?.extendedProperties?.private ?? {};
+      const found = await this.find(uid, ctx);
       const confirmed =
         found &&
-        found.status !== 'cancelled' &&
-        marks.melete_uid === uid &&
-        marks.melete_action_id === action.id &&
-        marks.melete_payload_hash === action.payload_hash &&
-        (found.summary ?? '') === payload.summary &&
-        (found.description ?? '') === payload.description &&
-        (found.location ?? '') === payload.location &&
-        Date.parse(found.start?.dateTime ?? '') === Date.parse(payload.start) &&
-        Date.parse(found.end?.dateTime ?? '') === Date.parse(payload.end);
+        !found.isCancelled &&
+        mark(found) === `${uid} ${action.id} ${action.payload_hash}` &&
+        (found.subject ?? '') === payload.summary &&
+        (found.body?.content ?? '').trim() === payload.description.trim() &&
+        (found.location?.displayName ?? '') === payload.location &&
+        instant(found.start?.dateTime) === Date.parse(payload.start) &&
+        instant(found.end?.dateTime) === Date.parse(payload.end);
       if (!confirmed)
         return {
           decision: 'undecided',
@@ -352,7 +399,7 @@ export class GoogleCalendarConnector implements Connector {
   async health(): Promise<ConnectorHealth> {
     const checkedAt = () => new Date().toISOString();
     try {
-      const response = await this.request('GET', '/events?maxResults=1');
+      const response = await this.request('GET', '/events?$top=1&$select=id');
       await response.body?.cancel().catch(() => {});
       if (response.status === 401 || response.status === 403)
         return {

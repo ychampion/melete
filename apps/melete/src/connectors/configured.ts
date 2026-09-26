@@ -25,13 +25,7 @@ import { EmailConnector } from './email.ts';
 import { createExecConnector } from './exec.ts';
 import { createFilesConnector } from './files.ts';
 import { GmailApiTransport } from './gmail.ts';
-import {
-  GOOGLE_ENDPOINTS,
-  type GoogleClient,
-  type GoogleEndpoints,
-  googleAccess,
-  googleIssuer,
-} from './google.ts';
+import { GOOGLE_ENDPOINTS, type GoogleEndpoints, googleIssuer } from './google.ts';
 import { GoogleCalendarConnector } from './google-calendar.ts';
 import { IcsFeedConnector } from './ics-feed.ts';
 import { mcpServerConfig } from './mcp.ts';
@@ -43,9 +37,13 @@ import {
   type StdioLifecycleOptions,
   storedStdioConnection,
 } from './mcp-stdio.ts';
+import { type MicrosoftEndpoints, microsoftEndpoints, microsoftIssuer } from './microsoft.ts';
+import { OutlookCalendarConnector } from './outlook-calendar.ts';
+import { OutlookMailTransport } from './outlook-mail.ts';
 import { ConnectorRegistry } from './registry.ts';
 import { createSandboxExecConnector } from './sandbox-exec.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
+import { type AccountClient, signedInAccess } from './signed-in.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
 import { createCapabilityConnector } from './tts.ts';
 import type { Connector } from './types.ts';
@@ -193,7 +191,9 @@ export type ConnectorOptions = {
    * offered and a Google connection offers nothing. Only a test replaces the
    * endpoints.
    */
-  google?: { client: GoogleClient; endpoints?: GoogleEndpoints };
+  google?: { client: AccountClient; endpoints?: GoogleEndpoints };
+  /** The operator's Microsoft client, as for Google; `tenant` is `common` unless named. */
+  microsoft?: { client: AccountClient; tenant?: string; endpoints?: MicrosoftEndpoints };
 };
 
 /**
@@ -232,6 +232,8 @@ const storedConfiguration = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('ics') }),
   z.object({ kind: z.literal('gmail'), account: z.email() }),
   z.object({ kind: z.literal('google_calendar'), account: z.email() }),
+  z.object({ kind: z.literal('outlook_mail'), account: z.email() }),
+  z.object({ kind: z.literal('outlook_calendar'), account: z.email() }),
   storedSandboxConnection,
 ]);
 
@@ -391,7 +393,7 @@ export class ConnectorFactory {
       const google = options.google;
       if (!google || !row.secretRef) return undefined;
       const endpoints = google.endpoints ?? GOOGLE_ENDPOINTS;
-      const access = googleAccess({
+      const access = signedInAccess({
         sql: options.sql,
         secrets: this.secrets,
         connectionId: row.id,
@@ -410,6 +412,44 @@ export class ConnectorFactory {
         );
       const transport = new GmailApiTransport({
         base: endpoints.gmail,
+        from: stored.account,
+        access,
+      });
+      return ownerOnly(
+        new EmailConnector({
+          kind: 'api',
+          id: row.id,
+          spaceId: row.spaceId,
+          from: stored.account,
+          session: (work) => work(transport),
+        }),
+      );
+    }
+    if (
+      (stored?.kind === 'outlook_mail' && row.provider === 'imap') ||
+      (stored?.kind === 'outlook_calendar' && row.provider === 'caldav')
+    ) {
+      const microsoft = options.microsoft;
+      if (!microsoft || !row.secretRef) return undefined;
+      const endpoints = microsoft.endpoints ?? microsoftEndpoints(microsoft.tenant);
+      const access = signedInAccess({
+        sql: options.sql,
+        secrets: this.secrets,
+        connectionId: row.id,
+        spaceId: row.spaceId,
+        issuer: microsoftIssuer(microsoft.client, '', endpoints),
+      });
+      if (stored.kind === 'outlook_calendar')
+        return ownerOnly(
+          new OutlookCalendarConnector({
+            id: row.id,
+            spaceId: row.spaceId,
+            base: endpoints.graph,
+            access,
+          }),
+        );
+      const transport = new OutlookMailTransport({
+        base: endpoints.graph,
         from: stored.account,
         access,
       });
@@ -633,6 +673,17 @@ export function connectorOptionsFromEnv(
     stdioLauncher: extra.stdioLauncher,
     stdioLifecycle: { idleMs: env.MELETE_MCP_IDLE_MS },
     cellIsolated: builtinEnvironment(env).cellIsolated,
+    ...(env.MICROSOFT_OAUTH_CLIENT_ID && env.MICROSOFT_OAUTH_CLIENT_SECRET
+      ? {
+          microsoft: {
+            client: {
+              clientId: env.MICROSOFT_OAUTH_CLIENT_ID,
+              clientSecret: env.MICROSOFT_OAUTH_CLIENT_SECRET,
+            },
+            tenant: env.MICROSOFT_OAUTH_TENANT,
+          },
+        }
+      : {}),
     ...(env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET
       ? {
           google: {

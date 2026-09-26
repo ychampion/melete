@@ -6,8 +6,9 @@ run against. A mailbox, a CalDAV calendar or a calendar feed is installed
 through `POST /connections`; the fields each kind takes are under
 [Installing a connection](CONNECTORS.md#installing-a-connection). Mail and
 CalDAV authenticate with an account name and a password or app password.
-Gmail and Google Calendar are connected by signing in with Google, described
-next. See [CONNECTORS](CONNECTORS.md) for the manifest and broker boundary.
+Gmail and Google Calendar are connected by signing in with Google, and Outlook
+mail and calendar by signing in with Microsoft, both described next. See
+[CONNECTORS](CONNECTORS.md) for the manifest and broker boundary.
 
 ## Signing in with Google
 
@@ -74,6 +75,65 @@ you publish the consent screen decides how long a sign-in lasts:
 
 For one person or a family on personal Gmail accounts, **Testing** works with a
 sign-in once a week. For a Workspace organisation, **Internal** is the simplest.
+
+## Signing in with Microsoft
+
+One sign-in connects a Microsoft account's Outlook mail and its default
+calendar, through Microsoft Graph. Personal accounts (Outlook.com, Hotmail,
+Live) and work or school accounts can both sign in. As with Google, each part
+becomes an ordinary connection with the same tools, approvals and receipts, and
+Melete connects only what the person granted.
+
+The consent screen asks for these Microsoft Graph permissions, all delegated:
+
+| Permission | What it is for |
+| --- | --- |
+| `User.Read` | The account's own address, which mail is sent from |
+| `Mail.Read` | `email.search` and `email.read` |
+| `Mail.Send` | `email.send`, once each send is approved |
+| `Calendars.ReadWrite` | `calendar.list`, `calendar.create`, `calendar.update`, `calendar.delete` |
+| `offline_access` | Staying signed in between uses |
+
+The routes are the Google ones with `microsoft` in place of `google`:
+`POST /microsoft-sign-ins`, `GET /microsoft-sign-ins/{id}`,
+`GET /microsoft-sign-ins`, and the redirect address
+`<MELETE_PUBLIC_URL>/api/oauth/microsoft/callback`. The id token must name this
+client and come from the Microsoft identity platform, and from your tenant when
+you name one; the address is the one Graph reports for the signed-in person.
+
+Microsoft replaces the refresh token each time it is used, and Melete seals the
+new one in place of the old. A sign-in lasts as long as it keeps being used
+within Microsoft's refresh-token lifetime (90 days), and the connection reports
+`sign_in_required` when Microsoft ends it.
+
+Outlook calendar events carry Melete's mark in an extended property, so an event
+Melete created is found again by the action that created it, and a second create
+for that action is refused. A create also sends Graph a transaction id, and a
+change or removal sends the ETag it read.
+
+### Setting up your Microsoft app
+
+Signing in with Microsoft needs an app registration in Microsoft Entra:
+
+1. In the Microsoft Entra admin center, register an application. For
+   **Supported account types**, choose accounts in any organizational directory
+   and personal Microsoft accounts, or only your own organization.
+2. Add a **Web** platform with the redirect URI
+   `<MELETE_PUBLIC_URL>/api/oauth/microsoft/callback`.
+   `GET /microsoft-sign-ins` shows the exact address.
+3. Under **Certificates & secrets**, create a client secret, and note when it
+   expires so you can replace it.
+4. Under **API permissions**, add the delegated Microsoft Graph permissions in
+   the table above.
+5. Set `MICROSOFT_OAUTH_CLIENT_ID` (the application id) and
+   `MICROSOFT_OAUTH_CLIENT_SECRET`, and restart the service. Set
+   `MICROSOFT_OAUTH_TENANT` to your tenant id or domain to accept only your own
+   organization's accounts; it is `common` otherwise.
+
+Personal accounts can consent for themselves. In a work or school organization,
+its policy decides whether people may consent to an app themselves or an
+administrator grants consent for everyone, which they do once under **API
+permissions**.
 
 ## Credentials and configuration
 

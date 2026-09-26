@@ -43,7 +43,7 @@ const search = z
   })
   .strict();
 const read = z.object({ uid: z.number().int().positive() }).strict();
-const readById = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) }).strict();
+const readById = z.object({ id: z.string().regex(/^[A-Za-z0-9=_-]{1,512}$/) }).strict();
 const addressSchema = {
   oneOf: [
     { type: 'string', format: 'email' },
@@ -166,7 +166,7 @@ export const idAddressedEmailManifest: ConnectorManifest = {
             type: 'object',
             additionalProperties: false,
             required: ['id'],
-            properties: { id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,64}$' } },
+            properties: { id: { type: 'string', pattern: '^[A-Za-z0-9=_-]{1,512}$' } },
           },
         }
       : tool,

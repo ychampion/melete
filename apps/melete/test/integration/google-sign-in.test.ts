@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import {
+  accountSignInAvailability,
+  accountSignInStart,
+  accountSignInStatus,
   connectionListResponse,
-  googleSignInAvailability,
-  googleSignInStart,
-  googleSignInStatus,
 } from '@melete/contracts';
 import { ConnectorFactory, useConnectorFactory } from '../../src/connectors/configured.ts';
 import { EmailConnector } from '../../src/connectors/email.ts';
@@ -72,14 +72,14 @@ async function harness() {
   const signIn = async () => {
     const started = await app.request('/google-sign-ins', as(cookie, {}));
     expect(started.status).toBe(201);
-    const start = googleSignInStart.parse(await started.json());
+    const start = accountSignInStart.parse(await started.json());
     const approved = await fetch(start.authorize_url, { redirect: 'manual' });
     const back = new URL(approved.headers.get('location') ?? '');
     expect(`${back.origin}${back.pathname}`).toBe(start.redirect_uri);
     // The web app forwards /api/* to this service without the prefix.
     const landed = await app.request(`/oauth/google/callback${back.search}`, as(cookie));
     const page = await landed.text();
-    const status = googleSignInStatus.parse(
+    const status = accountSignInStatus.parse(
       await (await app.request(`/google-sign-ins/${start.sign_in_id}`, as(cookie))).json(),
     );
     return { landed, page, status, back };
@@ -93,7 +93,7 @@ const withDb = fixture ? describe : describe.skip;
 withDb('signing in with Google', () => {
   test('one sign-in connects Gmail and Google Calendar, with the tokens only sealed', async () => {
     if (!h) throw new Error('Postgres unavailable');
-    const availability = googleSignInAvailability.parse(
+    const availability = accountSignInAvailability.parse(
       await (await h.app.request('/google-sign-ins', h.as(h.cookie))).json(),
     );
     expect(availability).toEqual({
