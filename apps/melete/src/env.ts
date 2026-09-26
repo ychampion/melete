@@ -131,6 +131,17 @@ const variables = z.object({
       }, 'Use your public web address.')
       .optional(),
   ),
+  /**
+   * Whether an https:// MELETE_PUBLIC_URL publishes this service's OAuth Client
+   * ID Metadata Document. Turn it off when that address is reachable only on a
+   * private network, so authorization servers are offered dynamic registration.
+   */
+  MELETE_OAUTH_CLIENT_METADATA: unsetWhenBlank(
+    z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
+  ),
   /** Signs bounded attempt capabilities; this key never enters an AttemptBundle. */
   MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
   /**

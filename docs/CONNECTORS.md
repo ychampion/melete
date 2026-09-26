@@ -509,6 +509,40 @@ An HTTP server is installed with `POST /connections` and its `mcp` block, as
 described under [Installing a connection](#installing-a-connection); the row then
 stores the policy.
 
+### Signing in to an MCP server
+
+A server that asks for OAuth can be connected by signing in from the browser
+instead of pasting a token. `POST /mcp-sign-ins` takes the same `label` and
+`mcp` block and answers with an `authorize_url` to open. The authorization
+server returns the browser to `<MELETE_PUBLIC_URL>/api/oauth/callback`, the
+connection is installed exactly as a pasted credential would be, and
+`GET /mcp-sign-ins/{id}` reports `pending`, `connected` or `failed`.
+`MELETE_PUBLIC_URL` must be an `https://` address or a `localhost` one.
+
+The client follows the MCP authorization specification: protected resource
+metadata (RFC 9728), authorization server metadata or OpenID discovery with an
+exact issuer match, PKCE with S256, the resource indicator (RFC 8707) on the
+authorization, token and refresh requests, and the issuer check on the returning
+browser (RFC 9207). Discovery and the token exchange use the same reach the
+installed connection has, so outside the setup owner's spaces every address must
+be public.
+
+Melete identifies itself to the authorization server in this order:
+
+1. **A client you registered.** Pass `client: { client_id, client_secret? }`
+   when the server's provider asks you to create an OAuth app yourself.
+2. **A Client ID Metadata Document**, when `MELETE_PUBLIC_URL` is an `https://`
+   address the authorization server can reach from the internet. The document is
+   served at `<MELETE_PUBLIC_URL>/api/oauth/client-metadata.json`.
+3. **Dynamic client registration**, when the server offers it.
+
+An installation reachable only on a private network or tailnet uses dynamic
+registration or a client you registered: when its `MELETE_PUBLIC_URL` is an
+`https://` address, set `MELETE_OAUTH_CLIENT_METADATA=false` so the metadata
+document is not offered. When a server offers none of these,
+the sign-in answers `409 client_registration_required`; register a client with
+that provider and sign in again with its client ID.
+
 Where an MCP server may live depends on whose space it is installed in. In the
 setup owner's spaces it may be at any address, including one on the owner's own
 machine or network. In every other account's space it must be at a public

@@ -62,6 +62,8 @@ const FINISHED_TTL_MS = 10 * 60_000;
 export type McpSignInHooks = {
   /** The service's public address, as the person's browser reaches it. */
   publicUrl?: string;
+  /** Publish a Client ID Metadata Document at an https:// public address. */
+  clientMetadata?: boolean;
   /** Refuses an actor who may not install in this space; runs before any address is fetched. */
   authorize(actor: string, spaceId: string | undefined): Promise<string>;
   /** The fetch this space's installations are held to. */
@@ -103,7 +105,9 @@ export class McpSignIns {
   /** Where this service's client metadata document is published: HTTPS only. */
   clientMetadataUrl(): string | undefined {
     const base = this.base();
-    return base?.startsWith('https://') ? `${base}/api/oauth/client-metadata.json` : undefined;
+    return this.hooks.clientMetadata !== false && base?.startsWith('https://')
+      ? `${base}/api/oauth/client-metadata.json`
+      : undefined;
   }
 
   private base(): string | null {

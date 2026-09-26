@@ -413,6 +413,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   // would otherwise be pasted, and ends on the same installation path.
   const signIns = new McpSignIns({
     publicUrl: deps.env.MELETE_PUBLIC_URL,
+    clientMetadata: deps.env.MELETE_OAUTH_CLIENT_METADATA,
     authorize: async (actor, requested) => {
       const spaceId = requested ?? (await personalSpace(deps.db, actor));
       await requireInstaller(deps.db, spaceId, actor, 'mcp');

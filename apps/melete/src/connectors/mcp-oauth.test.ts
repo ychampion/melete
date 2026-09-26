@@ -50,10 +50,11 @@ const policy = (url: string): McpConnectionConfig => ({
 
 type Installed = McpSignInRequest & { credentials: Record<string, string> };
 
-function signIns(publicUrl = 'http://localhost:3000') {
+function signIns(publicUrl = 'http://localhost:3000', clientMetadata?: boolean) {
   const installed: Installed[] = [];
   const service = new McpSignIns({
     publicUrl,
+    ...(clientMetadata === undefined ? {} : { clientMetadata }),
     authorize: async (_actor, spaceId) => spaceId ?? 'sp_fixture',
     fetcherFor: async () => fetcher,
     install: async (_actor, request) => {
@@ -242,6 +243,18 @@ describe('signing in', () => {
       'https://melete.example/api/oauth/client-metadata.json',
     );
     expect(server.registrations).toHaveLength(0);
+  });
+
+  test('an https address kept to a private network registers dynamically instead', async () => {
+    const server = await fake({ clientMetadataDocuments: true });
+    const { service } = signIns('https://melete.tailnet.example', false);
+    const started = await service.start('prn_owner', {
+      label: 'Files',
+      mcp: policy(server.mcpUrl),
+    });
+    expect(new URL(started.authorize_url).searchParams.get('client_id')).toBe('registered-client');
+    expect(server.registrations).toHaveLength(1);
+    expect(service.clientMetadataUrl()).toBeUndefined();
   });
 
   test('a server with no way to register asks for a client', async () => {
