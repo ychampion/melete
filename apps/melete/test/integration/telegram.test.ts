@@ -341,8 +341,16 @@ withDb('Telegram as a channel to one person', () => {
     const reply = telegram.text(PERSON_CHAT, 'Also invite Jules.');
     await ch.handleUpdate(reply);
     expect(telegram.to(PERSON_CHAT).at(-1)?.text).toBe(TEXT.received);
-    // Telegram redelivering the same update is the same message, not a second one.
+    // Telegram redelivering the same update is the same message, not a second
+    // one: it resolves to the message already accepted, rather than being
+    // refused as a new message while that one's turn runs.
     await ch.handleUpdate(reply);
+    expect(
+      telegram
+        .to(PERSON_CHAT)
+        .slice(-2)
+        .map((message) => message.text),
+    ).toEqual([TEXT.received, TEXT.received]);
     expect(await count()).toBe(before + 1);
   });
 
