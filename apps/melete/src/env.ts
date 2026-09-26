@@ -148,6 +148,22 @@ const variables = z.object({
    */
   GOOGLE_OAUTH_CLIENT_ID: unsetWhenBlank(z.string().min(1).max(512).optional()),
   GOOGLE_OAUTH_CLIENT_SECRET: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  /**
+   * The operator's Microsoft Entra app, for signing in to Outlook mail and
+   * calendar (docs/mail-calendar.md). Both, or neither. The tenant is `common`,
+   * for personal and work accounts, unless a tenant id or domain is named.
+   */
+  MICROSOFT_OAUTH_CLIENT_ID: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  MICROSOFT_OAUTH_CLIENT_SECRET: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  MICROSOFT_OAUTH_TENANT: unsetWhenBlank(
+    z
+      .string()
+      .regex(
+        /^[A-Za-z0-9.-]{1,253}$/,
+        'use common, organizations, consumers, a tenant id or a domain',
+      )
+      .default('common'),
+  ),
   /** Signs bounded attempt capabilities; this key never enters an AttemptBundle. */
   MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
   /**
@@ -382,6 +398,16 @@ export const envSchema = variables.transform((value, context) => {
       code: 'custom',
       path: ['MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS'],
       message: `a workspace snapshot must outlast the retention period: ${value.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS}s is shorter than MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS=${value.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS}s`,
+    });
+  if (Boolean(value.MICROSOFT_OAUTH_CLIENT_ID) !== Boolean(value.MICROSOFT_OAUTH_CLIENT_SECRET))
+    context.addIssue({
+      code: 'custom',
+      path: [
+        value.MICROSOFT_OAUTH_CLIENT_ID
+          ? 'MICROSOFT_OAUTH_CLIENT_SECRET'
+          : 'MICROSOFT_OAUTH_CLIENT_ID',
+      ],
+      message: 'set both MICROSOFT_OAUTH_CLIENT_ID and MICROSOFT_OAUTH_CLIENT_SECRET, or neither',
     });
   if (Boolean(value.GOOGLE_OAUTH_CLIENT_ID) !== Boolean(value.GOOGLE_OAUTH_CLIENT_SECRET))
     context.addIssue({

@@ -53,15 +53,15 @@ import {
 } from './browser-live.ts';
 import { company, companyMap, ledgerItem } from './companies.ts';
 import {
+  accountSignInAvailability,
+  accountSignInRequest,
+  accountSignInStart,
+  accountSignInStatus,
   connectionCheckResponse,
   connectionKindListResponse,
   connectionListResponse,
   connectionResponse,
   createConnectionRequest,
-  googleSignInAvailability,
-  googleSignInRequest,
-  googleSignInStart,
-  googleSignInStatus,
   mcpSignInRequest,
   mcpSignInStart,
   mcpSignInStatus,
@@ -193,6 +193,83 @@ const jsonResponse = <T extends z.ZodType>(description: string, schema: T) => ({
 });
 
 const problem = (description: string) => jsonResponse(description, errorResponse);
+
+/** The four routes of signing in with one account provider. */
+const accountSignInPaths = (
+  name: 'google' | 'microsoft',
+  text: { title: string; what: string; consent: string },
+) => ({
+  [`/${name}-sign-ins`]: {
+    get: {
+      tags: ['connections'],
+      summary: `Whether signing in with ${text.title} is offered here`,
+      description:
+        `Available once the operator has set a ${text.title} OAuth client and an https:// or ` +
+        'localhost public address. `redirect_uri` is the address to register with that client.',
+      responses: {
+        '200': jsonResponse('Availability', accountSignInAvailability),
+      },
+    },
+    post: {
+      tags: ['connections'],
+      summary: `Start connecting ${text.what} by signing in with ${text.title}`,
+      description:
+        `Answers with the ${text.title} address to open in the browser. ${text.consent} When ` +
+        'the browser returns, each part the person allowed becomes a connection with the same ' +
+        'tools, approvals and receipts as a mailbox or calendar connected with a password. ' +
+        'Signing in again with the same account renews those connections instead of adding more.',
+      requestBody: json(accountSignInRequest),
+      responses: {
+        '201': jsonResponse('Open `authorize_url` in the browser', accountSignInStart),
+        '400': problem('Invalid request'),
+        '403': problem('Space owner and matching audience required'),
+        '409': problem('No OAuth client, no public address to return to, or no master key'),
+      },
+    },
+  },
+  [`/${name}-sign-ins/{id}`]: {
+    get: {
+      tags: ['connections'],
+      summary: `Read how a ${text.title} sign-in is going`,
+      requestParams: idParam('id', 'Sign-in id'),
+      responses: {
+        '200': jsonResponse(
+          'Pending, connected with its connections, or failed with a code',
+          accountSignInStatus,
+        ),
+        '404': problem('No sign-in by that id for this person'),
+      },
+    },
+  },
+  [`/oauth/${name}/callback`]: {
+    get: {
+      tags: ['connections'],
+      summary: `Where ${text.title} returns the browser after signing in`,
+      description:
+        'Checks the state before the code is spent, then connects what was granted. Answers ' +
+        'with a short page for the browser; the outcome is also available from the sign-in status.',
+      requestParams: {
+        query: z.object({
+          code: z.string().optional(),
+          state: z.string().optional(),
+          error: z.string().optional(),
+          scope: z.string().optional(),
+        }),
+      },
+      responses: {
+        '200': { description: 'Connected', content: { 'text/html': { schema: z.string() } } },
+        '400': {
+          description: 'The response was refused, or nothing was granted',
+          content: { 'text/html': { schema: z.string() } },
+        },
+        '404': {
+          description: 'No such sign-in for this person',
+          content: { 'text/html': { schema: z.string() } },
+        },
+      },
+    },
+  },
+});
 
 const idParam = (name: string, description: string) => ({
   path: z.object({ [name]: z.string().meta({ description }) }),
@@ -1598,80 +1675,19 @@ export function buildOpenApiDocument() {
           },
         },
 
-        '/google-sign-ins': {
-          get: {
-            tags: ['connections'],
-            summary: 'Whether signing in with Google is offered here',
-            description:
-              'Available once the operator has set a Google OAuth client and an https:// or ' +
-              'localhost public address. `redirect_uri` is the address to register with that client.',
-            responses: {
-              '200': jsonResponse('Availability', googleSignInAvailability),
-            },
-          },
-          post: {
-            tags: ['connections'],
-            summary: 'Start connecting Gmail and Google Calendar by signing in with Google',
-            description:
-              'Answers with the Google address to open in the browser. One consent asks to read ' +
-              'mail, send mail and manage calendar events; drafts stay in Melete. When the browser ' +
-              'returns, each part the person allowed becomes a connection with the same tools, ' +
-              'approvals and receipts as a mailbox or calendar connected with a password. Signing ' +
-              'in again with the same account renews those connections instead of adding more.',
-            requestBody: json(googleSignInRequest),
-            responses: {
-              '201': jsonResponse('Open `authorize_url` in the browser', googleSignInStart),
-              '400': problem('Invalid request'),
-              '403': problem('Space owner and matching audience required'),
-              '409': problem('No Google client, no public address to return to, or no master key'),
-            },
-          },
-        },
+        ...accountSignInPaths('google', {
+          title: 'Google',
+          what: 'Gmail and Google Calendar',
+          consent:
+            'One consent asks to read mail, send mail and manage calendar events; drafts stay in Melete.',
+        }),
 
-        '/google-sign-ins/{id}': {
-          get: {
-            tags: ['connections'],
-            summary: 'Read how a Google sign-in is going',
-            requestParams: idParam('id', 'Sign-in id'),
-            responses: {
-              '200': jsonResponse(
-                'Pending, connected with its connections, or failed with a code',
-                googleSignInStatus,
-              ),
-              '404': problem('No sign-in by that id for this person'),
-            },
-          },
-        },
-
-        '/oauth/google/callback': {
-          get: {
-            tags: ['connections'],
-            summary: 'Where Google returns the browser after signing in',
-            description:
-              'Checks the state before the code is spent, then connects what was granted. ' +
-              'Answers with a short page for the browser; the outcome is also available from the ' +
-              'sign-in status.',
-            requestParams: {
-              query: z.object({
-                code: z.string().optional(),
-                state: z.string().optional(),
-                error: z.string().optional(),
-                scope: z.string().optional(),
-              }),
-            },
-            responses: {
-              '200': { description: 'Connected', content: { 'text/html': { schema: z.string() } } },
-              '400': {
-                description: 'The response was refused, or nothing was granted',
-                content: { 'text/html': { schema: z.string() } },
-              },
-              '404': {
-                description: 'No such sign-in for this person',
-                content: { 'text/html': { schema: z.string() } },
-              },
-            },
-          },
-        },
+        ...accountSignInPaths('microsoft', {
+          title: 'Microsoft',
+          what: 'Outlook mail and calendar',
+          consent:
+            'One consent asks to read the profile, read mail, send mail and read and write calendars; drafts stay in Melete. Personal and work or school accounts can sign in.',
+        }),
 
         '/connection-kinds': {
           get: {

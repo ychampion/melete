@@ -116,7 +116,10 @@ with an app password, and other IMAP and CalDAV accounts with their password.
 With your own Google OAuth client set in `GOOGLE_OAUTH_CLIENT_ID` and
 `GOOGLE_OAUTH_CLIENT_SECRET`, Gmail and Google Calendar connect by signing in
 with Google instead ([setup](mail-calendar.md#setting-up-your-google-client)).
-Outlook.com accepts only its own sign-in, so it cannot be connected yet.
+Outlook.com accepts only its own sign-in: with your own Microsoft app set in
+`MICROSOFT_OAUTH_CLIENT_ID` and `MICROSOFT_OAUTH_CLIENT_SECRET`, Outlook mail and
+calendar connect by signing in with Microsoft
+([setup](mail-calendar.md#setting-up-your-microsoft-app)).
 
 ## Windows (Docker Desktop)
 

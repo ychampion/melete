@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import type { Sql } from 'postgres';
 import { pkcePair } from '../gateway/oauth.ts';
+import { type AccountGrant, AccountSignIns, SignInFailure } from './account-sign-in.ts';
 import { EmailConnector } from './email.ts';
 import { asConnectorFault } from './faults.ts';
 import {
@@ -9,18 +10,11 @@ import {
   startFakeGoogle,
 } from './fixtures/fake-google.ts';
 import { GmailApiTransport } from './gmail.ts';
-import {
-  GOOGLE_SCOPES,
-  type GoogleAccess,
-  GoogleSignInEnded,
-  googleAccess,
-  googleIssuer,
-  googleRequest,
-} from './google.ts';
+import { GOOGLE_SCOPES, googleIssuer, googleProvider } from './google.ts';
 import { GoogleCalendarConnector, googleEventId } from './google-calendar.ts';
-import { type GoogleGrant, GoogleSignInFailure, GoogleSignIns } from './google-sign-in.ts';
 import { mailAction, mailContext } from './mail-fixtures.ts';
 import type { SealedSecretStore } from './secrets.ts';
+import { bearerRequest, type SignedInAccess, SignInEnded, signedInAccess } from './signed-in.ts';
 
 const fakes: FakeGoogle[] = [];
 afterAll(async () => {
@@ -36,10 +30,10 @@ function signIns(
   google: FakeGoogle | null,
   publicUrl: string | undefined = 'http://localhost:3000',
 ) {
-  const grants: GoogleGrant[] = [];
-  const service = new GoogleSignIns<string>({
+  const grants: AccountGrant[] = [];
+  const service = new AccountSignIns<string>('google', {
     publicUrl,
-    ...(google ? { google: { client: google.client, endpoints: google.endpoints } } : {}),
+    ...(google ? { provider: googleProvider(google.client, google.endpoints) } : {}),
     authorize: async (_actor, spaceId) => spaceId ?? 'spc_test',
     install: async (_actor, grant) => {
       grants.push(grant);
@@ -61,11 +55,11 @@ async function approve(authorizeUrl: string): Promise<URLSearchParams> {
 const failure = (promise: Promise<unknown>) =>
   promise.then(
     () => 'no failure',
-    (error) => (error instanceof GoogleSignInFailure ? error.code : String(error)),
+    (error) => (error instanceof SignInFailure ? error.code : String(error)),
   );
 
 /** A signed-in access token straight from the fake, for the API-level tests. */
-async function signedIn(google: FakeGoogle): Promise<GoogleAccess & { current: string }> {
+async function signedIn(google: FakeGoogle): Promise<SignedInAccess & { current: string }> {
   const { verifier, challenge } = pkcePair();
   const redirect = 'http://localhost:3000/cb';
   const authorize = new URL(google.endpoints.authorize);
@@ -191,7 +185,7 @@ describe('signing in with Google', () => {
 
   test('sign-in is offered only with a Google client and an address to return to', async () => {
     expect(await failure(signIns(null).service.start('prn_owner', {}))).toBe(
-      'google_not_configured',
+      'provider_not_configured',
     );
     const google = await fake();
     const plain = signIns(google, 'http://melete.example.test');
@@ -241,7 +235,7 @@ describe('a Google connection keeps its access current', () => {
       scope: 'x',
       account: 'person@example.test',
     });
-    const access = googleAccess({
+    const access = signedInAccess({
       sql: held.sql,
       secrets: held.secrets,
       connectionId: 'conn_1',
@@ -269,18 +263,18 @@ describe('a Google connection keeps its access current', () => {
       scope: 'x',
       account: 'person@example.test',
     });
-    const access = googleAccess({
+    const access = signedInAccess({
       sql: held.sql,
       secrets: held.secrets,
       connectionId: 'conn_1',
       spaceId: 'spc_test',
       issuer: googleIssuer(google.client, '', google.endpoints),
     });
-    expect(await access.token().catch((error) => error)).toBeInstanceOf(GoogleSignInEnded);
+    expect(await access.token().catch((error) => error)).toBeInstanceOf(SignInEnded);
 
     let renewed = 0;
     const live = await signedIn(await fake());
-    const stale: GoogleAccess = {
+    const stale: SignedInAccess = {
       token: async () => 'stale-token',
       renew: async () => {
         renewed += 1;
@@ -288,7 +282,7 @@ describe('a Google connection keeps its access current', () => {
       },
     };
     const liveFake = fakes.at(-1) as FakeGoogle;
-    const response = await googleRequest(stale, `${liveFake.endpoints.gmail}/profile`, {});
+    const response = await bearerRequest(stale, `${liveFake.endpoints.gmail}/profile`, {});
     expect(response.status).toBe(200);
     expect(renewed).toBe(1);
   });
@@ -371,7 +365,7 @@ describe('Gmail through the email tools', () => {
       spaceId: 'spc_test',
       from: 'person@example.test',
       session: async () => {
-        throw new GoogleSignInEnded();
+        throw new SignInEnded();
       },
     });
     expect(await ended.health()).toMatchObject({ status: 'failing', reason: 'sign_in_required' });

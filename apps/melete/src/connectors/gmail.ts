@@ -5,7 +5,6 @@
  * hygiene. Messages are addressed by Gmail's own id instead of an IMAP UID.
  */
 import { simpleParser } from 'mailparser';
-import { boundedJson, type GoogleAccess, googleRequest } from './google.ts';
 import {
   composeMail,
   type MailMessage,
@@ -13,6 +12,7 @@ import {
   type OutgoingMail,
   toMailMessage,
 } from './mail-transport.ts';
+import { bearerRequest, boundedJson, ResponseTooLarge, type SignedInAccess } from './signed-in.ts';
 
 const MAX_MESSAGE_BYTES = 256 * 1024;
 /** A raw message travels base64url-encoded inside JSON, a third larger than its bytes. */
@@ -43,13 +43,13 @@ export class GmailApiTransport implements MailTransport {
       /** `.../gmail/v1/users/me` */
       base: string;
       from: string;
-      access: GoogleAccess;
+      access: SignedInAccess;
       fetcher?: typeof fetch;
     },
   ) {}
 
   private async get(path: string, limit: number): Promise<unknown> {
-    const response = await googleRequest(
+    const response = await bearerRequest(
       this.options.access,
       `${this.options.base}${path}`,
       {},
@@ -82,7 +82,7 @@ export class GmailApiTransport implements MailTransport {
       body = (await this.get(`/messages/${id}?format=raw`, MAX_RAW_RESPONSE_BYTES)) as typeof body;
     } catch (error) {
       // A message too large to filter safely is left out, as it is over IMAP.
-      if (error instanceof Error && error.message === 'Google response too large') return null;
+      if (error instanceof ResponseTooLarge) return null;
       throw error;
     }
     if (!body || typeof body.raw !== 'string') return null;
@@ -112,7 +112,7 @@ export class GmailApiTransport implements MailTransport {
     const raw = await composeMail(this.options.from, message, {
       [ACTION_HEADER]: message.messageId,
     });
-    const response = await googleRequest(
+    const response = await bearerRequest(
       this.options.access,
       `${this.options.base}/messages/send`,
       { method: 'POST', body: JSON.stringify({ raw: raw.toString('base64url') }) },
