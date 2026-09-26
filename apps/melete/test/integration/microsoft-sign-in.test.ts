@@ -3,6 +3,7 @@ import {
   accountSignInAvailability,
   accountSignInStart,
   accountSignInStatus,
+  connectionKindListResponse,
   connectionListResponse,
 } from '@melete/contracts';
 import { ConnectorFactory, useConnectorFactory } from '../../src/connectors/configured.ts';
@@ -99,6 +100,17 @@ withDb('signing in with Microsoft', () => {
         await (await h.app.request('/google-sign-ins', h.as(h.cookie))).json(),
       ).available,
     ).toBe(false);
+    // The catalog says the same, and offers the known MCP servers now there is an address to return to.
+    const catalog =
+      connectionKindListResponse.parse(
+        await (await h.app.request('/connection-kinds', h.as(h.cookie))).json(),
+      ).catalog ?? [];
+    expect(catalog.find((entry) => entry.id === 'microsoft')?.available).toBe(true);
+    expect(catalog.find((entry) => entry.id === 'google')?.available).toBe(false);
+    expect(catalog.find((entry) => entry.id === 'linear')).toMatchObject({
+      available: true,
+      connect: { method: 'mcp_sign_in', url: 'https://mcp.linear.app/mcp' },
+    });
 
     const { landed, page, status } = await h.signIn();
     expect(landed.status).toBe(200);

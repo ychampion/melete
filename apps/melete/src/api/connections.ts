@@ -1,12 +1,15 @@
 import {
+  ACCOUNT_CATALOG,
   accountSignInAvailability,
   accountSignInRequest,
   accountSignInStart,
   accountSignInStatus,
   CONNECTION_CHECK_DETAIL,
   CONNECTION_KIND_DESCRIPTORS,
+  type ConnectionCatalogEntry,
   type ConnectionCheck,
   type ConnectionInstallation,
+  type ConnectionKindDescriptor,
   type CreateConnectionRequest,
   connectionCheck,
   connectionCheckResponse,
@@ -20,6 +23,7 @@ import {
   describePlugin,
   installPluginRequest,
   installPluginResponse,
+  MCP_CATALOG,
   mcpSignInRequest,
   mcpSignInStart,
   mcpSignInStatus,
@@ -215,16 +219,72 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   const factory = factoryFor(deps);
   const secrets = factory.secrets;
 
-  // A kind this service cannot run is not offered: stdio servers need an isolating launcher.
-  app.get('/connection-kinds', (c) =>
-    c.json(
-      connectionKindListResponse.parse({
-        kinds: CONNECTION_KIND_DESCRIPTORS.filter(
-          (kind) => kind.kind !== 'mcp_stdio' || factory.options.stdioLauncher,
-        ),
+  /** Filled in as each provider's sign-in is mounted, below. */
+  const accountSignIns: Partial<Record<AccountProviderName, AccountSignIns<ConnectionResponse>>> =
+    {};
+
+  /**
+   * Everything a person can connect here, and whether each is offered now: a
+   * sign-in needs its provider's client and an address to return to.
+   */
+  const catalog = (kinds: ConnectionKindDescriptor[]): ConnectionCatalogEntry[] => {
+    const accounts = ACCOUNT_CATALOG.map((entry): ConnectionCatalogEntry => {
+      const reason = !factory.options[entry.provider]
+        ? `Signing in with ${entry.title} needs its OAuth client. Set ${ACCOUNT_SETTINGS[entry.provider]}.`
+        : !accountSignIns[entry.provider]?.redirectUri()
+          ? RETURN_ADDRESS_NEEDED
+          : undefined;
+      return {
+        id: entry.id,
+        title: entry.title,
+        description: entry.description,
+        covers: [...entry.covers],
+        connect: {
+          method: 'sign_in',
+          provider: entry.provider,
+          start: `/${entry.provider}-sign-ins`,
+        },
+        available: !reason,
+        ...(reason ? { unavailable_reason: reason } : {}),
+      };
+    });
+    const mcpReason = signIns.redirectUri() ? undefined : RETURN_ADDRESS_NEEDED;
+    const servers = MCP_CATALOG.map(
+      (entry): ConnectionCatalogEntry => ({
+        id: entry.id,
+        title: entry.title,
+        description: entry.description,
+        covers: ['tools'],
+        connect: {
+          method: 'mcp_sign_in',
+          url: entry.url,
+          suggested_id: entry.id,
+          start: '/mcp-sign-ins',
+        },
+        available: !mcpReason,
+        ...(mcpReason ? { unavailable_reason: mcpReason } : {}),
       }),
-    ),
-  );
+    );
+    const forms = kinds.map(
+      (kind): ConnectionCatalogEntry => ({
+        id: kind.id,
+        title: kind.title,
+        description: kind.description,
+        covers: [KIND_COVERS[kind.kind]],
+        connect: { method: 'form', kind_id: kind.id },
+        available: true,
+      }),
+    );
+    return [...accounts, ...servers, ...forms];
+  };
+
+  // A kind this service cannot run is not offered: stdio servers need an isolating launcher.
+  app.get('/connection-kinds', (c) => {
+    const kinds = CONNECTION_KIND_DESCRIPTORS.filter(
+      (kind) => kind.kind !== 'mcp_stdio' || factory.options.stdioLauncher,
+    );
+    return c.json(connectionKindListResponse.parse({ kinds, catalog: catalog(kinds) }));
+  });
   app.get('/connections', async (c) => {
     const rows = await deps.db
       .select()
@@ -726,6 +786,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       install: installAccount,
       connectionId: (installed) => installed.connection.id,
     });
+    accountSignIns[name] = signIns;
 
     app.get(`/${name}-sign-ins`, (c) =>
       c.json(
@@ -934,6 +995,20 @@ function signInError(error: unknown): ServiceError {
 }
 
 const ACCOUNT_TITLES = { google: 'Google', microsoft: 'Microsoft' } as const;
+const RETURN_ADDRESS_NEEDED =
+  'Signing in needs the address people open this service at. Set MELETE_PUBLIC_URL to an https:// address, or a localhost one.';
+/** What a connection of each kind can do, for the catalog. */
+const KIND_COVERS = {
+  mail: 'mail',
+  caldav: 'calendar',
+  ics: 'calendar',
+  mcp: 'tools',
+  mcp_stdio: 'tools',
+  sandbox: 'execution',
+} as const satisfies Record<
+  ConnectionKindDescriptor['kind'],
+  ConnectionCatalogEntry['covers'][number]
+>;
 const ACCOUNT_SETTINGS = {
   google: 'GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET',
   microsoft: 'MICROSOFT_OAUTH_CLIENT_ID and MICROSOFT_OAUTH_CLIENT_SECRET',

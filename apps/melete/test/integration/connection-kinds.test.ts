@@ -320,6 +320,32 @@ withDb('installing each kind of connection through the API', () => {
     expect((await h.app.request('/connections', h.as('', { provider: 'imap' }))).status).toBe(401);
   });
 
+  test('the catalog puts sign-ins first, and says what the operator has to set to offer one', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const served = connectionKindListResponse.parse(
+      await (await h.app.request('/connection-kinds', h.as(h.cookie))).json(),
+    );
+    const catalog = served.catalog ?? [];
+    expect(catalog.slice(0, 2).map((entry) => entry.id)).toEqual(['google', 'microsoft']);
+    const google = catalog.find((entry) => entry.id === 'google');
+    expect(google).toMatchObject({
+      available: false,
+      connect: { method: 'sign_in', provider: 'google', start: '/google-sign-ins' },
+    });
+    expect(google?.unavailable_reason).toContain('GOOGLE_OAUTH_CLIENT_ID');
+    const notion = catalog.find((entry) => entry.id === 'notion');
+    expect(notion).toMatchObject({
+      available: false,
+      covers: ['tools'],
+      connect: { method: 'mcp_sign_in', url: 'https://mcp.notion.com/mcp', start: '/mcp-sign-ins' },
+    });
+    expect(notion?.unavailable_reason).toContain('MELETE_PUBLIC_URL');
+    // Every form a person can fill in is in the catalog, and nothing else is a form.
+    const forms = catalog.filter((entry) => entry.connect.method === 'form');
+    expect(forms.map((entry) => entry.id)).toEqual(served.kinds.map((kind) => kind.id));
+    expect(forms.every((entry) => entry.available)).toBe(true);
+  });
+
   test('mail: validated, sealed, tested, offered to a new attempt, and gone after revocation', async () => {
     if (!h) throw new Error('Postgres unavailable');
     let accepted = 'a-different-password';
