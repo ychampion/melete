@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
+import { envSchema } from '../../apps/melete/src/env.ts';
 import { checkDockerfileWorkspaces, checkServiceImageSources } from './dockerfile-check.ts';
 import { checkRuntimePluginPin } from './plugin-pin-check.ts';
 import { checkRemovalDigests } from './removal-digest-check.ts';
@@ -67,6 +68,11 @@ export type CheckResult = {
 };
 
 const RUNTIME = 'runtime';
+
+/** Every sandbox setting the service reads, from its own schema. */
+export const SANDBOX_SETTINGS = Object.keys(envSchema.in.shape).filter(
+  (name) => name.startsWith('MELETE_SANDBOX_') || name.startsWith('MELETE_E2B_'),
+);
 
 /**
  * Docker's default json-file log has no size limit, so one talkative container
@@ -371,6 +377,14 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
       webNetworks.length === 1 &&
       webNetworks[0] === 'edge',
     'MELETE_TRUSTED_PROXY must name the web service, attached to the edge network only',
+  );
+  // Compose hands the service only the variables this file names, so a sandbox
+  // setting it leaves out is ignored, and a sandbox connection cannot be made.
+  const unforwarded = SANDBOX_SETTINGS.filter((name) => !(name in (melete?.environment ?? {})));
+  say(
+    'the service receives every sandbox setting',
+    unforwarded.length === 0,
+    `add to the melete environment as \${NAME:-}: ${unforwarded.join(', ')}`,
   );
 
   return results;

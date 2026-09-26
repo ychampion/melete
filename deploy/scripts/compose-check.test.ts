@@ -11,6 +11,7 @@ import {
   checkCompose,
   defaultComposePath,
   loadCompose,
+  SANDBOX_SETTINGS,
 } from './compose-check.ts';
 
 const compose = loadCompose(defaultComposePath());
@@ -65,6 +66,17 @@ describe('the check catches the mistakes that would matter', () => {
     const runtime = broken.services?.runtime;
     if (runtime) runtime.networks = ['internal', 'edge'];
     expect(failures(broken)).toContain('the runtime is on the internal network only');
+  });
+
+  test('a sandbox setting the service is not handed', () => {
+    const name = 'the service receives every sandbox setting';
+    expect(SANDBOX_SETTINGS).toEqual(
+      expect.arrayContaining(['MELETE_SANDBOX_PROJECT', 'MELETE_E2B_PLAN']),
+    );
+    expect(failures(compose)).not.toContain(name);
+    const dropped: ComposeFile = structuredClone(compose);
+    delete dropped.services?.melete?.environment?.MELETE_SANDBOX_PROJECT;
+    expect(failures(dropped)).toContain(name);
   });
 
   test('dropping internal: true from the network', () => {

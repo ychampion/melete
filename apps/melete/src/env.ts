@@ -287,31 +287,35 @@ const variables = z.object({
    * each other's. Pick something random once and keep it: changing it orphans
    * whatever the old value labelled.
    */
-  MELETE_SANDBOX_PROJECT: z
-    .string()
-    .regex(/^[a-z0-9][a-z0-9-]{2,40}$/)
-    .optional(),
+  MELETE_SANDBOX_PROJECT: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{2,40}$/)
+      .optional(),
+  ),
   /** How long a sandbox session may go unrenewed before the sweep ends it. */
-  MELETE_SANDBOX_LEASE_SECONDS: z.coerce
-    .number()
-    .int()
-    .min(SANDBOX_LEASE_FLOOR_SECONDS)
-    .default(900),
+  MELETE_SANDBOX_LEASE_SECONDS: unsetWhenBlank(
+    z.coerce.number().int().min(SANDBOX_LEASE_FLOOR_SECONDS).default(900),
+  ),
   /** The most sandboxes this installation may have running at once, over every connection. */
-  MELETE_SANDBOX_MAX_CONCURRENT: z.coerce.number().int().positive().default(4),
+  MELETE_SANDBOX_MAX_CONCURRENT: unsetWhenBlank(z.coerce.number().int().positive().default(4)),
   /**
    * The most any one connection may have running. A provider quota belongs to
    * an account, and a connection is an account here, so this keeps one busy
    * space from spending another's. Left unset it is the ceiling above, and it
    * is never allowed past it.
    */
-  MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION: z.coerce.number().int().positive().optional(),
+  MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION: unsetWhenBlank(
+    z.coerce.number().int().positive().optional(),
+  ),
   /** How long a suspended workspace is kept while nobody resumes it. */
-  MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS: z.coerce
-    .number()
-    .int()
-    .positive()
-    .default(7 * 24 * 3600),
+  MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS: unsetWhenBlank(
+    z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(7 * 24 * 3600),
+  ),
   /**
    * How long Modal keeps a workspace snapshot, and Daytona a stopped
    * workspace, that this service never deletes. It
@@ -320,13 +324,15 @@ const variables = z.object({
    * provider acknowledged is not re-checked; anything it missed expires with
    * the snapshot TTL (MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS).
    */
-  MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS: z.coerce
-    .number()
-    .int()
-    .positive()
-    .default(30 * 24 * 3600),
+  MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS: unsetWhenBlank(
+    z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(30 * 24 * 3600),
+  ),
   /** E2B's maximum continuous runtime follows the account's plan. */
-  MELETE_E2B_PLAN: z.enum(['hobby', 'pro']).default('hobby'),
+  MELETE_E2B_PLAN: unsetWhenBlank(z.enum(['hobby', 'pro']).default('hobby')),
   /**
    * Modal's SDK speaks gRPC, and its transport honours `grpc_proxy`,
    * `https_proxy`, `http_proxy` and `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` from
@@ -334,10 +340,12 @@ const variables = z.object({
    * adapter is refused unless the operator says here that the proxy and its
    * trust anchors are theirs.
    */
-  MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT: z
-    .enum(['true', 'false'])
-    .default('false')
-    .transform((v) => v === 'true'),
+  MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT: unsetWhenBlank(
+    z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+  ),
 });
 
 /**

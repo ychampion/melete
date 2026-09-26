@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { loadEnv } from '../../apps/melete/src/env.ts';
 import type { DockerHostFacts } from '../../apps/melete/src/runtime/docker-host.ts';
 import {
   ConfigureRefusal,
@@ -7,6 +8,7 @@ import {
   dockerSocketGroup,
   failureReport,
   providerSettings,
+  sandboxProject,
 } from './configure.ts';
 import { DEFAULT_NODE_NAME } from './tailscale-origin.ts';
 
@@ -267,5 +269,14 @@ describe('what configure prints', () => {
       probeImage: async () => 'postgres:17-alpine@sha256:pinned',
     }).catch((error: unknown) => error);
     expect(failureReport(failure)?.text).toContain('mode 755');
+  });
+});
+
+describe('the sandbox label configure writes', () => {
+  test('is one the service accepts, and a new one each time', () => {
+    const first = sandboxProject();
+    expect(first).toMatch(/^melete-[0-9a-f]{8}$/);
+    expect(loadEnv({ MELETE_SANDBOX_PROJECT: first }).MELETE_SANDBOX_PROJECT).toBe(first);
+    expect(sandboxProject()).not.toBe(first);
   });
 });

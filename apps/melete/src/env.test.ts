@@ -61,7 +61,7 @@ function composeServiceEnvironment(): Record<string, string> {
   return Object.fromEntries(
     Object.entries(compose.services.melete.environment).map(([key, value]) => [
       key,
-      String(value).replace(/\$\{[A-Z_]+:([-?])([^}]*)\}/g, (_match, kind, fallback) =>
+      String(value).replace(/\$\{[A-Z0-9_]+:([-?])([^}]*)\}/g, (_match, kind, fallback) =>
         kind === '-' ? fallback : key === 'DATABASE_URL' ? GENERATED_DATABASE_URL : 'x'.repeat(64),
       ),
     ]),
