@@ -17,7 +17,10 @@ export type EmailConnection = {
 };
 
 export type MailMessage = {
-  uid: number;
+  /** An IMAP message's UID in the inbox. */
+  uid?: number;
+  /** A message addressed by an opaque id instead, as the Gmail API does. */
+  id?: string;
   message_id: string | null;
   from: string;
   /** The sender's addresses as the parser read them; see `toMailMessage`. */
@@ -37,14 +40,14 @@ export type MailMessage = {
  * that looks like another address, and the rendering does not escape it, so
  * nothing that decides who sent a message may re-parse `from`.
  */
-export function toMailMessage(uid: number, parsed: ParsedMail): MailMessage {
+export function toMailMessage(key: number | string, parsed: ParsedMail): MailMessage {
   const to = parsed.to
     ? Array.isArray(parsed.to)
       ? parsed.to.map((v) => v.text).join(', ')
       : parsed.to.text
     : '';
   return {
-    uid,
+    ...(typeof key === 'number' ? { uid: key } : { id: key }),
     message_id: parsed.messageId ?? null,
     from: parsed.from?.text ?? '',
     // A message with two From headers names two senders, and the parser keeps
@@ -104,7 +107,8 @@ export type OutgoingMail = {
 
 export interface MailTransport {
   search(query: string, limit: number): Promise<MailMessage[]>;
-  read(uid: number): Promise<MailMessage | null>;
+  /** By UID for IMAP, by id for a mailbox that addresses messages that way. */
+  read(key: number | string): Promise<MailMessage | null>;
   send(
     message: OutgoingMail,
   ): Promise<{ messageId: string; sentCopy: boolean; accepted?: string[]; rejected?: string[] }>;
@@ -123,6 +127,46 @@ export function credentialRefused(error: unknown): boolean {
   if (error === null || typeof error !== 'object') return false;
   const fields = error as { authenticationFailed?: unknown; code?: unknown };
   return fields.authenticationFailed === true || fields.code === 'EAUTH';
+}
+
+/** Whether the account's sign-in has ended, so only signing in again helps. */
+export function signInEnded(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    (error as { signInEnded?: unknown }).signInEnded === true
+  );
+}
+
+/**
+ * The bytes of one outgoing message. Buffers only: file and URL access stay
+ * disabled, so nodemailer never reads a path this process did not already read.
+ */
+export async function composeMail(
+  from: string,
+  message: OutgoingMail,
+  headers: Record<string, string> = {},
+): Promise<Buffer> {
+  const composer = nodemailer.createTransport({ streamTransport: true, buffer: true });
+  const composed = await composer.sendMail({
+    from,
+    to: message.to,
+    cc: message.cc,
+    bcc: message.bcc,
+    subject: message.subject,
+    text: message.body,
+    messageId: message.messageId,
+    headers,
+    attachments: message.attachments?.map((entry) => ({
+      filename: entry.filename,
+      content: entry.content,
+      contentType: entry.contentType,
+    })),
+    disableFileAccess: true,
+    disableUrlAccess: true,
+  });
+  if (!Buffer.isBuffer(composed.message)) throw new Error('Mail composition did not return bytes');
+  return composed.message;
 }
 
 /** TLS verification is always enabled; the test exception cannot target a remote host. */
@@ -221,41 +265,22 @@ export class ImapSmtpTransport implements MailTransport {
     });
   }
 
-  async read(uid: number): Promise<MailMessage | null> {
+  async read(uid: number | string): Promise<MailMessage | null> {
+    if (typeof uid !== 'number') return null;
     return this.imap(this.config.inbox ?? 'INBOX', (client) => this.message(client, uid));
   }
 
   async send(
     message: OutgoingMail,
   ): Promise<{ messageId: string; sentCopy: boolean; accepted: string[]; rejected: string[] }> {
-    const composer = nodemailer.createTransport({ streamTransport: true, buffer: true });
-    const composed = await composer.sendMail({
-      from: this.config.from,
-      to: message.to,
-      cc: message.cc,
-      bcc: message.bcc,
-      subject: message.subject,
-      text: message.body,
-      messageId: message.messageId,
-      // Buffers only: file and URL access stay disabled, so nodemailer never
-      // reads a path this process did not already read itself.
-      attachments: message.attachments?.map((entry) => ({
-        filename: entry.filename,
-        content: entry.content,
-        contentType: entry.contentType,
-      })),
-      disableFileAccess: true,
-      disableUrlAccess: true,
-    });
-    if (!Buffer.isBuffer(composed.message))
-      throw new Error('Mail composition did not return bytes');
+    const raw = await composeMail(this.config.from, message);
     const smtp = this.smtp();
     let accepted: string[];
     let rejected: string[];
     try {
       const result = await smtp.sendMail({
         envelope: { from: this.config.from, to: [...message.to, ...message.cc, ...message.bcc] },
-        raw: composed.message,
+        raw,
       });
       accepted = result.accepted.map(String);
       rejected = result.rejected.map(String);
@@ -268,7 +293,6 @@ export class ImapSmtpTransport implements MailTransport {
       // must not turn that fact into a failure that encourages a resend.
       sentCopy = await this.findSent(message.messageId);
       if (!sentCopy) {
-        const raw = composed.message;
         const folder = await this.sentFolder();
         sentCopy = await this.imap(null, async (client) =>
           Boolean(await client.append(folder, raw, ['\\Seen'])),

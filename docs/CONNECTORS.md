@@ -52,8 +52,8 @@ succeeded and the job continues`.
 | --- | --- | --- |
 | Files | List/read/write/move in configured work and space-artifact roots; content-hash verification | `files manifests parse and workspace/artifact writes can be read and verified` |
 | Web | HTTP(S) fetch with address, redirect and trusted-compartment checks | `redirects repeat compartment and DNS checks, with no request to the denied destination` |
-| Email | IMAP search/read, local draft, SMTP send; Message-ID verification in Sent | `accepted send with lost acknowledgement is unknown, then verified without resending` |
-| Calendar | Read-only ICS import; CalDAV list/create/update with UID and content verification | `CalDAV create uses action UID and conditional PUT; list and verify use real HTTP locally` |
+| Email | IMAP search/read, local draft, SMTP send, or the same tools over the Gmail API after a Google sign-in; Message-ID verification in Sent | `accepted send with lost acknowledgement is unknown, then verified without resending`; `a send is found in Sent afterwards, even when Gmail gives it a Message-ID of its own` |
+| Calendar | Read-only ICS import; CalDAV or Google Calendar list/create/update with UID and content verification | `CalDAV create uses action UID and conditional PUT; list and verify use real HTTP locally`; `an event is named by its action, so a second create cannot make a second event` |
 | Test destination | Durable acceptance with optional lost acknowledgement | `destination drops its acknowledgement only after acceptance and verify resolves it` |
 | Exec | `exec.run` and `exec.python` carried out inside the cell against a broker-reserved action, with the finished record settled afterwards | `the exec manifest parses and declares in-cell execution with a record schema`; `execution-admission.test.ts` |
 | Artifacts | Declared writes become artifact records with deterministic checks; publishing to the space or by email is an approved external effect | `artifacts.test.ts` |
@@ -307,8 +307,9 @@ resets and magic links; a sensitive message in any other shape is read like any
 other message.
 
 Mail and CalDAV authenticate with an account name and a password or app
-password; a provider that only accepts OAuth, such as Outlook.com, cannot be
-connected. Tests use
+password. Gmail and Google Calendar can instead be connected by signing in with
+Google, which serves the same tools over Google's APIs; see
+[Mail and calendars](mail-calendar.md#signing-in-with-google). Tests use
 credentials belonging to local fixtures rather than live accounts.
 
 ### Calendar

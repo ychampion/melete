@@ -12069,6 +12069,316 @@
         }
       }
     },
+    "/google-sign-ins": {
+      "get": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "Whether signing in with Google is offered here",
+        "description": "Available once the operator has set a Google OAuth client and an https:// or localhost public address. `redirect_uri` is the address to register with that client.",
+        "responses": {
+          "200": {
+            "description": "Availability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "redirect_uri": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "available",
+                    "redirect_uri"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "Start connecting Gmail and Google Calendar by signing in with Google",
+        "description": "Answers with the Google address to open in the browser. One consent asks to read mail, send mail and manage calendar events; drafts stay in Melete. When the browser returns, each part the person allowed becomes a connection with the same tools, approvals and receipts as a mailbox or calendar connected with a password. Signing in again with the same account renews those connections instead of adding more.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "space_id": {
+                    "type": "string",
+                    "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                  },
+                  "mail_label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "calendar_label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Open `authorize_url` in the browser",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sign_in_id": {
+                      "type": "string"
+                    },
+                    "authorize_url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "redirect_uri": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "expires_at": {
+                      "$ref": "#/components/schemas/__schema113"
+                    }
+                  },
+                  "required": [
+                    "sign_in_id",
+                    "authorize_url",
+                    "redirect_uri",
+                    "expires_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema142"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Space owner and matching audience required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema142"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No Google client, no public address to return to, or no master key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema142"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/google-sign-ins/{id}": {
+      "get": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "Read how a Google sign-in is going",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Sign-in id"
+            },
+            "required": true,
+            "description": "Sign-in id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending, connected with its connections, or failed with a code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "const": "pending"
+                        },
+                        "expires_at": {
+                          "$ref": "#/components/schemas/__schema113"
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "expires_at"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "const": "connected"
+                        },
+                        "connection_ids": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^conn_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                          }
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "connection_ids"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "const": "failed"
+                        },
+                        "error": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No sign-in by that id for this person",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema142"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oauth/google/callback": {
+      "get": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "Where Google returns the browser after signing in",
+        "description": "Checks the state before the code is spent, then connects what was granted. Answers with a short page for the browser; the outcome is also available from the sign-in status.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Connected",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The response was refused, or nothing was granted",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such sign-in for this person",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/connection-kinds": {
       "get": {
         "tags": [
@@ -22788,6 +23098,7 @@
           "degraded",
           "unavailable",
           "credential_refused",
+          "sign_in_required",
           "not_running",
           "revoked"
         ]

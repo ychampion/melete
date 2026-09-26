@@ -18,7 +18,7 @@ import type { Connector, ConnectorContext } from './types.ts';
  * the server asked for a wait without saying how long, and the policy uses its
  * own default rather than inventing one here.
  */
-function retryAfterSeconds(header: string | null): number | null {
+export function retryAfterSeconds(header: string | null): number | null {
   if (!header) return null;
   const seconds = Number(header.trim());
   if (Number.isInteger(seconds) && seconds >= 0) return Math.min(seconds, 86_400);
@@ -46,7 +46,9 @@ export type CalendarConnection = {
 );
 
 export const MAX_CALENDAR_BYTES = 2 * 1024 * 1024;
-const listPayload = z.object({ limit: z.number().int().min(1).max(100).default(50) }).strict();
+export const listPayload = z
+  .object({ limit: z.number().int().min(1).max(100).default(50) })
+  .strict();
 const fields = {
   summary: z.string().min(1).max(1000),
   start: z.iso.datetime({ offset: true }),
@@ -54,11 +56,11 @@ const fields = {
   description: z.string().max(50_000).default(''),
   location: z.string().max(2000).default(''),
 };
-const createPayload = z
+export const createPayload = z
   .object(fields)
   .strict()
   .refine((v) => Date.parse(v.end) > Date.parse(v.start));
-const updatePayload = z
+export const updatePayload = z
   .object({
     ...fields,
     uid: z.string().regex(/^act_[A-Za-z0-9_-]+$/),
@@ -70,7 +72,7 @@ const updatePayload = z
   })
   .strict()
   .refine((v) => Date.parse(v.end) > Date.parse(v.start));
-const deletePayload = z.strictObject({
+export const deletePayload = z.strictObject({
   uid: z.string().regex(/^act_[A-Za-z0-9_-]+$/),
   etag: z
     .string()
@@ -165,7 +167,7 @@ export const calendarManifest: ConnectorManifest = {
   ],
 };
 
-type EventView = {
+export type EventView = {
   uid: string;
   summary: string;
   start: string;

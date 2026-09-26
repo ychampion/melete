@@ -142,6 +142,12 @@ const variables = z.object({
       .default('true')
       .transform((v) => v === 'true'),
   ),
+  /**
+   * The operator's Google OAuth client, for signing in to Gmail and Google
+   * Calendar (docs/mail-calendar.md). Both, or neither.
+   */
+  GOOGLE_OAUTH_CLIENT_ID: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  GOOGLE_OAUTH_CLIENT_SECRET: unsetWhenBlank(z.string().min(1).max(512).optional()),
   /** Signs bounded attempt capabilities; this key never enters an AttemptBundle. */
   MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
   /**
@@ -376,6 +382,14 @@ export const envSchema = variables.transform((value, context) => {
       code: 'custom',
       path: ['MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS'],
       message: `a workspace snapshot must outlast the retention period: ${value.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS}s is shorter than MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS=${value.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS}s`,
+    });
+  if (Boolean(value.GOOGLE_OAUTH_CLIENT_ID) !== Boolean(value.GOOGLE_OAUTH_CLIENT_SECRET))
+    context.addIssue({
+      code: 'custom',
+      path: [
+        value.GOOGLE_OAUTH_CLIENT_ID ? 'GOOGLE_OAUTH_CLIENT_SECRET' : 'GOOGLE_OAUTH_CLIENT_ID',
+      ],
+      message: 'set both GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET, or neither',
     });
   return { ...value, MELETE_BROKER_URL: value.MELETE_BROKER_URL ?? derived ?? '' };
 });

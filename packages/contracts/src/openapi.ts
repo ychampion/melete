@@ -58,6 +58,10 @@ import {
   connectionListResponse,
   connectionResponse,
   createConnectionRequest,
+  googleSignInAvailability,
+  googleSignInRequest,
+  googleSignInStart,
+  googleSignInStatus,
   mcpSignInRequest,
   mcpSignInStart,
   mcpSignInStatus,
@@ -1590,6 +1594,81 @@ export function buildOpenApiDocument() {
                 }),
               ),
               '404': problem('No https:// public address is configured'),
+            },
+          },
+        },
+
+        '/google-sign-ins': {
+          get: {
+            tags: ['connections'],
+            summary: 'Whether signing in with Google is offered here',
+            description:
+              'Available once the operator has set a Google OAuth client and an https:// or ' +
+              'localhost public address. `redirect_uri` is the address to register with that client.',
+            responses: {
+              '200': jsonResponse('Availability', googleSignInAvailability),
+            },
+          },
+          post: {
+            tags: ['connections'],
+            summary: 'Start connecting Gmail and Google Calendar by signing in with Google',
+            description:
+              'Answers with the Google address to open in the browser. One consent asks to read ' +
+              'mail, send mail and manage calendar events; drafts stay in Melete. When the browser ' +
+              'returns, each part the person allowed becomes a connection with the same tools, ' +
+              'approvals and receipts as a mailbox or calendar connected with a password. Signing ' +
+              'in again with the same account renews those connections instead of adding more.',
+            requestBody: json(googleSignInRequest),
+            responses: {
+              '201': jsonResponse('Open `authorize_url` in the browser', googleSignInStart),
+              '400': problem('Invalid request'),
+              '403': problem('Space owner and matching audience required'),
+              '409': problem('No Google client, no public address to return to, or no master key'),
+            },
+          },
+        },
+
+        '/google-sign-ins/{id}': {
+          get: {
+            tags: ['connections'],
+            summary: 'Read how a Google sign-in is going',
+            requestParams: idParam('id', 'Sign-in id'),
+            responses: {
+              '200': jsonResponse(
+                'Pending, connected with its connections, or failed with a code',
+                googleSignInStatus,
+              ),
+              '404': problem('No sign-in by that id for this person'),
+            },
+          },
+        },
+
+        '/oauth/google/callback': {
+          get: {
+            tags: ['connections'],
+            summary: 'Where Google returns the browser after signing in',
+            description:
+              'Checks the state before the code is spent, then connects what was granted. ' +
+              'Answers with a short page for the browser; the outcome is also available from the ' +
+              'sign-in status.',
+            requestParams: {
+              query: z.object({
+                code: z.string().optional(),
+                state: z.string().optional(),
+                error: z.string().optional(),
+                scope: z.string().optional(),
+              }),
+            },
+            responses: {
+              '200': { description: 'Connected', content: { 'text/html': { schema: z.string() } } },
+              '400': {
+                description: 'The response was refused, or nothing was granted',
+                content: { 'text/html': { schema: z.string() } },
+              },
+              '404': {
+                description: 'No such sign-in for this person',
+                content: { 'text/html': { schema: z.string() } },
+              },
             },
           },
         },
