@@ -182,6 +182,7 @@ import {
   spaceRemovalPreview,
   spaceRemovalReport,
 } from './spaces.ts';
+import { telegramLinkCode, telegramStatus, telegramUnlinked } from './telegram.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
   content: { 'application/json': { schema } },
@@ -371,6 +372,7 @@ export function buildOpenApiDocument() {
         { name: 'browser' },
         { name: 'learning' },
         { name: 'companies' },
+        { name: 'channels' },
       ],
       paths: {
         '/episodes': {
@@ -661,6 +663,47 @@ export function buildOpenApiDocument() {
             },
           ]),
         ),
+        '/telegram': {
+          get: {
+            tags: ['channels'],
+            summary: 'Whether Telegram is offered here, and whether your chat is linked',
+            responses: { '200': jsonResponse('Telegram status', telegramStatus) },
+          },
+          delete: {
+            tags: ['channels'],
+            summary: 'Unlink your Telegram chat; buttons already sent there stop working',
+            responses: { '200': jsonResponse('Unlinked', telegramUnlinked) },
+          },
+        },
+        '/telegram/link-code': {
+          post: {
+            tags: ['channels'],
+            summary: 'Get a one-time code to send the bot as /start <code>',
+            description:
+              'The code links the private chat it is sent from to your account. It works once ' +
+              'and expires after ten minutes; a newer code replaces an unused older one.',
+            responses: {
+              '200': jsonResponse('Link code', telegramLinkCode),
+              '503': problem('No bot is configured on this installation'),
+            },
+          },
+        },
+        '/telegram/webhook': {
+          post: {
+            tags: ['channels'],
+            summary: 'Where Telegram delivers updates in webhook mode',
+            description:
+              'Served only when the bot runs in webhook mode. Telegram sends the secret token ' +
+              'the service registered in the X-Telegram-Bot-Api-Secret-Token header; a request ' +
+              'without it is refused.',
+            requestBody: json(z.object({ update_id: z.number().int() }).passthrough()),
+            responses: {
+              '200': jsonResponse('Received', z.object({ ok: z.literal(true) })),
+              '401': problem('Missing or wrong secret token'),
+              '404': problem('Not in webhook mode'),
+            },
+          },
+        },
         '/principals': {
           post: {
             tags: ['spaces'],

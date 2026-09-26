@@ -69,7 +69,15 @@ const SPACE_OWNER_SURFACES = new Set([
   'PATCH /agents/{id}',
 ]);
 
-export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
+/** What the routes are built on, for another surface that answers the same requests. */
+export type ExperienceParts = {
+  service: ExperienceService;
+  questions: ExperienceQuestions;
+  events: ExperienceEvents;
+  permissions: ExperiencePermissions | undefined;
+};
+
+export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceParts {
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
   const questions = new ExperienceQuestions(deps.db, deps.questions, deps.sql);
   const memory = deps.sql
@@ -361,5 +369,5 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       ? events.response(spaceId, since, c.req.raw.signal)
       : c.json(await events.page(spaceId, since));
   });
-  return service;
+  return { service, questions, events, permissions };
 }

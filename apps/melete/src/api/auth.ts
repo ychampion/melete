@@ -208,6 +208,8 @@ export function mountAuth(
           '/signin/magic-link/consume',
           '/signin/google',
           '/signin/apple',
+          // Telegram, in webhook mode; the route checks the secret it was given.
+          '/telegram/webhook',
         ].includes(c.req.path));
     // A body is counted as it arrives, so one sent without a length, or with a
     // false one, is dropped at the limit rather than read and parsed whole.

@@ -894,3 +894,86 @@ export const schema = {
   experienceUndo,
   experienceDraftSend,
 };
+
+/**
+ * A person's Telegram chat. A chat belongs to one person and a person has one
+ * chat; unlinking keeps the row with `revoked_at` set, so a button issued to
+ * the old link is refused. `event_cursor` is the last experience event this
+ * chat was sent, so a restart neither repeats nor skips a decision.
+ */
+export const telegramLink = pgTable(
+  'telegram_link',
+  {
+    id: text('id').primaryKey(),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    chatId: text('chat_id').notNull(),
+    userId: text('user_id').notNull(),
+    eventCursor: bigint('event_cursor', { mode: 'number' }).notNull().default(0),
+    linkedAt: created(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('telegram_link_principal_idx').on(t.principalId).where(sql`revoked_at is null`),
+    uniqueIndex('telegram_link_chat_idx').on(t.chatId).where(sql`revoked_at is null`),
+  ],
+);
+
+/** A one-time code a person sends the bot to link their chat. Only its hash is kept. */
+export const telegramLinkCode = pgTable('telegram_link_code', {
+  codeHash: text('code_hash').primaryKey(),
+  principalId: text('principal_id')
+    .notNull()
+    .references(() => principal.id, { onDelete: 'cascade' }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+  createdAt: created(),
+});
+
+/**
+ * One tap a message offers. The button carries a random token and only its
+ * hash is kept here, with everything the tap may do: which link it was sent
+ * to, what it answers, which choice, and which version of the request. A token
+ * is spent once.
+ */
+export const telegramButton = pgTable(
+  'telegram_button',
+  {
+    tokenHash: text('token_hash').primaryKey(),
+    linkId: text('link_id')
+      .notNull()
+      .references(() => telegramLink.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    targetId: text('target_id').notNull(),
+    choice: text('choice').notNull(),
+    version: text('version'),
+    /** Every button on one message shares this, so answering spends them all. */
+    messageKey: text('message_key').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [index('telegram_button_message_idx').on(t.messageKey)],
+);
+
+/** Which conversation a message the bot sent belongs to, so a reply to it lands there. */
+export const telegramDelivery = pgTable(
+  'telegram_delivery',
+  {
+    linkId: text('link_id')
+      .notNull()
+      .references(() => telegramLink.id, { onDelete: 'cascade' }),
+    messageId: bigint('message_id', { mode: 'number' }).notNull(),
+    conversationId: text('conversation_id').notNull(),
+    createdAt: created(),
+  },
+  (t) => [primaryKey({ columns: [t.linkId, t.messageId] })],
+);
+
+/** How far long polling has read, so a restart does not handle an update twice. */
+export const telegramPoll = pgTable('telegram_poll', {
+  id: text('id').primaryKey(),
+  nextOffset: bigint('next_offset', { mode: 'number' }).notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});

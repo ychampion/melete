@@ -9,6 +9,7 @@
  * directories with a README describing the contract they will implement.
  */
 
+import { randomBytes } from 'node:crypto';
 import type { AttemptBundle, RuntimeAdapter } from '@melete/contracts';
 import { brokerCatalogState } from '@melete/runtime-hermes';
 import { and, eq } from 'drizzle-orm';
@@ -38,6 +39,10 @@ import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
+import { TelegramApi } from './channels/telegram/api.ts';
+import { TelegramChannel } from './channels/telegram/channel.ts';
+import { mountTelegram, mountTelegramWebhook } from './channels/telegram/routes.ts';
+import { TelegramTransport } from './channels/telegram/transport.ts';
 import { CompanyReplyPoller, connectorReplyMailbox } from './companies/replies.ts';
 import { closeInterruptedScans } from './companies/repository.ts';
 import { type CompaniesDeps, mountCompanies } from './companies/routes.ts';
@@ -177,6 +182,12 @@ export type AppDeps = {
   companies?: Partial<CompaniesDeps>;
   /** The owner's model-provider sign-ins. Left out, built from `sql` and the master key. */
   providerSignIn?: ProviderSignIn;
+  /** The Telegram bot, when one is configured; `ready` receives the channel built on it. */
+  telegram?: {
+    api: TelegramApi;
+    webhookSecret?: string;
+    ready?: (channel: TelegramChannel) => void;
+  };
 };
 
 export function createApp(deps: AppDeps) {
@@ -206,6 +217,12 @@ export function createApp(deps: AppDeps) {
   // see mountDefaultConnections.
   if (connections) mountDefaultConnections(app, connections);
   mountAuth(app, deps);
+  // Built once the experience routes exist; the webhook reads it per request.
+  let telegramChannel: TelegramChannel | undefined;
+  mountTelegramWebhook(app, {
+    channel: () => telegramChannel,
+    webhookSecret: deps.telegram?.webhookSecret,
+  });
   // The authenticated session names the space and the principal; a request header never does.
   const personalSpace: SpaceResolver =
     deps.resolveSpace ??
@@ -258,20 +275,35 @@ export function createApp(deps: AppDeps) {
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
-  if (deps.db)
-    mountExperience(app, {
-      db: deps.db,
-      jobs: deps.jobs,
-      submissions,
-      runner: deps.runner,
-      sql: deps.sql,
-      broker: deps.broker,
-      registry: deps.registry,
-      questions,
-      memoryJournal: deps.memory?.journal,
-      memoryProvision: deps.memory?.provision,
-      triggers: deps.triggers,
-    });
+  const experience = deps.db
+    ? mountExperience(app, {
+        db: deps.db,
+        jobs: deps.jobs,
+        submissions,
+        runner: deps.runner,
+        sql: deps.sql,
+        broker: deps.broker,
+        registry: deps.registry,
+        questions,
+        memoryJournal: deps.memory?.journal,
+        memoryProvision: deps.memory?.provision,
+        triggers: deps.triggers,
+      })
+    : undefined;
+  if (deps.db) {
+    telegramChannel =
+      deps.telegram && deps.sql && experience
+        ? new TelegramChannel({
+            sql: deps.sql,
+            db: deps.db,
+            api: deps.telegram.api,
+            spacesDir: deps.env.MELETE_SPACES_DIR,
+            experience,
+          })
+        : undefined;
+    if (telegramChannel) deps.telegram?.ready?.(telegramChannel);
+    mountTelegram(app, { channel: telegramChannel });
+  }
   if (deps.db)
     mountCompanies(app, {
       ...companiesDeps({
@@ -424,6 +456,7 @@ export async function bootstrap(
   let registry: ConnectorRegistry | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
+  let telegram: TelegramTransport | undefined;
   let signIn: ProviderSignIn | undefined;
   let sandboxes: SandboxWiring | undefined;
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
@@ -442,6 +475,7 @@ export async function bootstrap(
           learning?.close(),
           events?.close(),
           companyReplies?.stop(),
+          telegram?.stop(),
           triggers?.stop(),
           runner?.stop(),
           operations?.stop(),
@@ -826,9 +860,28 @@ export async function bootstrap(
     throw error;
   }
 
+  // Telegram reaches each person only in a chat they linked themselves.
+  let telegramChannel: TelegramChannel | undefined;
+  const telegramApi =
+    env.TELEGRAM_BOT_TOKEN && handle
+      ? new TelegramApi({ token: env.TELEGRAM_BOT_TOKEN })
+      : undefined;
+  const telegramSecret =
+    telegramApi && env.MELETE_TELEGRAM_MODE === 'webhook'
+      ? randomBytes(32).toString('base64url')
+      : undefined;
   const app = createApp({
     env,
     db: handle?.db ?? null,
+    telegram: telegramApi
+      ? {
+          api: telegramApi,
+          ...(telegramSecret ? { webhookSecret: telegramSecret } : {}),
+          ready: (channel) => {
+            telegramChannel = channel;
+          },
+        }
+      : undefined,
     jobs,
     triggers,
     approvals,
@@ -864,6 +917,19 @@ export async function bootstrap(
     },
     ...(handle ? { checkMemory: () => memoryHealth(handle.sql) } : {}),
   });
+  if (telegramApi && telegramChannel && handle && options.workers !== false) {
+    telegram = new TelegramTransport(handle.sql, telegramApi, telegramChannel, {
+      mode: env.MELETE_TELEGRAM_MODE,
+      publicUrl: env.MELETE_PUBLIC_URL,
+      ...(telegramSecret ? { webhookSecret: telegramSecret } : {}),
+    });
+    try {
+      await telegram.start();
+    } catch (error) {
+      await close();
+      throw error;
+    }
+  }
 
   return {
     app,

@@ -164,6 +164,22 @@ const variables = z.object({
       )
       .default('common'),
   ),
+  /**
+   * The Telegram bot from BotFather, for reaching each person in their own
+   * private chat (docs/DEPLOYMENT.md). Unset, Telegram is not offered. Kept in
+   * the environment only; the service never writes it anywhere.
+   */
+  TELEGRAM_BOT_TOKEN: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^\d{3,}:[A-Za-z0-9_-]{20,}$/, 'use the token BotFather gave you')
+      .optional(),
+  ),
+  /**
+   * How Telegram updates arrive. `polling` needs no public address; `webhook`
+   * has Telegram post to MELETE_PUBLIC_URL, which must then be https.
+   */
+  MELETE_TELEGRAM_MODE: unsetWhenBlank(z.enum(['polling', 'webhook']).default('polling')),
   /** Signs bounded attempt capabilities; this key never enters an AttemptBundle. */
   MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
   /**
@@ -408,6 +424,16 @@ export const envSchema = variables.transform((value, context) => {
           : 'MICROSOFT_OAUTH_CLIENT_ID',
       ],
       message: 'set both MICROSOFT_OAUTH_CLIENT_ID and MICROSOFT_OAUTH_CLIENT_SECRET, or neither',
+    });
+  if (
+    value.TELEGRAM_BOT_TOKEN &&
+    value.MELETE_TELEGRAM_MODE === 'webhook' &&
+    !value.MELETE_PUBLIC_URL?.startsWith('https://')
+  )
+    context.addIssue({
+      code: 'custom',
+      path: ['MELETE_TELEGRAM_MODE'],
+      message: 'webhook mode needs an https:// MELETE_PUBLIC_URL; use polling otherwise',
     });
   if (Boolean(value.GOOGLE_OAUTH_CLIENT_ID) !== Boolean(value.GOOGLE_OAUTH_CLIENT_SECRET))
     context.addIssue({
