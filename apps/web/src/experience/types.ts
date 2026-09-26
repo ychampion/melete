@@ -64,6 +64,10 @@ export type PermissionDecision = Body<paths['/permissions/{id}'], 'post'>;
 export type RuleBounds = Extract<PermissionDecision, { option: 'always' }>['bounds'];
 export type PermissionOutcome = Success<Ok<paths['/permissions/{id}'], 'post'>>;
 export type Rule = Success<Ok<paths['/rules'], 'get'>>['rules'][number];
+export type PushSettings = Ok<paths['/push/settings'], 'get'>['settings'];
+export type PushSettingsUpdate = Body<paths['/push/settings'], 'patch'>;
+export type PushDevice = Ok<paths['/push/subscriptions'], 'get'>['subscriptions'][number];
+export type PushSubscriptionInput = Body<paths['/push/subscriptions'], 'post'>;
 /** What Melete learned from the person's corrections, and skills it wrote for itself. */
 export type LearnedList = Ok<paths['/learned'], 'get'>;
 export type LearnedItem = LearnedList['items'][number];

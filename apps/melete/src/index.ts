@@ -107,6 +107,8 @@ import {
   spaceAuthority,
 } from './principals/authority.ts';
 import { mountPrincipals } from './principals/routes.ts';
+import { mountPush } from './push/routes.ts';
+import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
 import { assertDockerEngine } from './runtime/docker-engine.ts';
@@ -173,6 +175,8 @@ export type AppDeps = {
   broker?: BrokerService;
   registry?: ConnectorRegistry;
   sql?: Sql;
+  /** Phone presence. Left out, built from the database and the VAPID keys in the environment. */
+  push?: PushService;
   /** Overrides for the company map: a test's store, extractor or handler. */
   companies?: Partial<CompaniesDeps>;
   /** The owner's model-provider sign-ins. Left out, built from `sql` and the master key. */
@@ -258,6 +262,7 @@ export function createApp(deps: AppDeps) {
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
+  if (deps.db) mountPush(app, deps.push ?? new PushService(deps.db, pushConfig(deps.env)));
   if (deps.db)
     mountExperience(app, {
       db: deps.db,
@@ -424,6 +429,7 @@ export async function bootstrap(
   let registry: ConnectorRegistry | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
+  let pushDispatcher: PushDispatcher | undefined;
   let signIn: ProviderSignIn | undefined;
   let sandboxes: SandboxWiring | undefined;
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
@@ -442,6 +448,7 @@ export async function bootstrap(
           learning?.close(),
           events?.close(),
           companyReplies?.stop(),
+          pushDispatcher?.stop(),
           triggers?.stop(),
           runner?.stop(),
           operations?.stop(),
@@ -816,6 +823,14 @@ export async function bootstrap(
               }),
           });
           await companyReplies.start();
+        }
+        // Pushes to people's devices, when this installation has its VAPID keys.
+        if (handle) {
+          pushDispatcher = new PushDispatcher(
+            new PushService(handle.db, pushConfig(env)),
+            triggers.jobs.boss,
+          );
+          await pushDispatcher.start();
         }
       }
       if (options.workers === false) await replies?.recover();

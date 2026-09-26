@@ -11,6 +11,7 @@
  * which is the one place the interface learns which space it is looking at.
  */
 import { API_BASE_URL, client, type Result } from '../experience/adapter.ts';
+import { markValueMoment } from '../experience/push.ts';
 import type {
   CompanyMap,
   LedgerDetail,
@@ -67,8 +68,15 @@ export const companiesApi = {
       `/spaces/${encodeURIComponent(spaceId)}/companies/scan/${encodeURIComponent(scanId)}`,
     ),
   item: (id: string) => call<LedgerDetail>(`/ledger/${encodeURIComponent(id)}`),
-  setStatus: (id: string, status: Extract<LedgerItemStatus, 'dropped' | 'settled'>) =>
-    call<LedgerItem>(`/ledger/${encodeURIComponent(id)}`, { method: 'PATCH', body: { status } }),
+  setStatus: async (id: string, status: Extract<LedgerItemStatus, 'dropped' | 'settled'>) => {
+    const result = await call<LedgerItem>(`/ledger/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: { status },
+    });
+    // Money back is the first moment Melete was worth hearing from.
+    if (result.data !== null && status === 'settled') markValueMoment();
+    return result;
+  },
   handle: (id: string) =>
     call<{ job_id: string }>(`/ledger/${encodeURIComponent(id)}/handle`, { method: 'POST' }),
   /** Stop the job handling an item: the item goes back to found, with no job. */

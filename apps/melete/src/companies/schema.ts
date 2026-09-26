@@ -111,6 +111,8 @@ export const ledgerItem = pgTable(
     confidence: text('confidence').notNull(),
     evidence: jsonb('evidence').$type<LedgerEvidence[]>().notNull(),
     suggestedPlaybook: text('suggested_playbook'),
+    /** When it was marked settled, so a week's summary can say what came back. */
+    settledAt: timestamp('settled_at', { withTimezone: true }),
     jobId: text('job_id'),
     /** The chase that last handled it and stopped, once it is open again. */
     lastJobId: text('last_job_id'),
