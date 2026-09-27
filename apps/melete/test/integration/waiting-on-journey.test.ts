@@ -25,7 +25,7 @@ import { scriptedExtractor } from '../../src/companies/scripted.ts';
 import { fixtureSentMessages } from '../../src/companies/sent-fixtures.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { createTestConnector, initializeTestLedger } from '../../src/connectors/test.ts';
-import { connection, job, trigger } from '../../src/db/schema.ts';
+import { connection, job } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
@@ -153,8 +153,8 @@ withDb('the "Waiting on" first run', () => {
     expect(row?.objective).toContain(
       'Could you send a quote for the move and a day you could do it?',
     );
-    const [watch] = await handle.db.select().from(trigger).where(eq(trigger.jobId, job_id));
-    expect(watch?.spec).toMatchObject({ kind: 'watch', connection_id: connectionId });
+    // This app has no trigger service, so no reply watch is registered here;
+    // the watch a chase gets is pinned by handle-reply.test.ts.
 
     // Where the attempt would write, it proposes the follow-up; the person is
     // asked once, for these exact words, and one message goes out.
