@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   type Action,
   type CapabilityClaims,
@@ -13,6 +14,7 @@ import { appendEvent, loadAction, recordId } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { DEFAULT_BUDGET } from '../jobs/service.ts';
+import { MCP_COMMAND_PREFIX } from '../mcp-server/actor.ts';
 import { ownJobClause, requestPrincipal } from '../principals/authority.ts';
 import { type ActionRow, draftForReview, object, projectReceipt } from './projectors.ts';
 import { experienceMissing } from './service.ts';
@@ -371,6 +373,53 @@ export class ExperienceEffects {
     await this.sql`insert into experience_draft_send (draft_action_id, send_action_id)
       values (${id}, ${effect.id}) on conflict (draft_action_id) do update set send_action_id = excluded.send_action_id`;
     return { action: effect, draft: await this.draft(spaceId, id) };
+  }
+
+  /**
+   * A message an assistant asked Melete to send, as an owner command of its
+   * own. The broker proposes it like any other send, so it waits for the person
+   * to approve these exact bytes in Melete; no standing rule admits it. The
+   * same message asked for again while it still waits is the same request.
+   */
+  async proposeSend(input: {
+    spaceId: string;
+    principalId: string;
+    connectionId: string;
+    payload: JsonObject;
+    assistant: string;
+  }): Promise<Action | NotAvailable> {
+    if (!(await this.supports(input.spaceId, input.connectionId, 'email.send')))
+      return unavailable('The connected mailbox cannot send with its current access.');
+    const digest = createHash('sha256')
+      .update(JSON.stringify([input.connectionId, input.payload]))
+      .digest('hex');
+    const stem = `${MCP_COMMAND_PREFIX}send:${input.principalId}:${digest}`;
+    const title = `Send the message ${input.assistant} prepared`.slice(0, 200);
+    const jobId = await this.sql.begin(async (tx) => {
+      await tx`select id from principal where id = ${input.principalId} for update`;
+      const [waiting] = await tx`select j.id from job j join action a on a.job_id = j.id
+        where j.experience_command_key like ${`${stem}:%`} and j.space_id = ${input.spaceId}
+        and a.status in ('proposed', 'needs_approval', 'approved') order by j.created_at desc limit 1`;
+      if (waiting) return String(waiting.id);
+      const id = recordId('job');
+      await tx`insert into job (id, space_id, principal_id, title, objective, kind, state, lease_epoch,
+        experience_command_key, constraints, budget)
+        values (${id}, ${input.spaceId}, ${input.principalId}, ${title}, ${title}, 'command', 'running', 1,
+        ${`${stem}:${recordId('req')}`}, '{}'::jsonb, ${JSON.stringify(DEFAULT_BUDGET)}::jsonb)`;
+      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${recordId('att')}, ${id}, 1, 'experience-v1', 'owner', 'assistant-command')`;
+      return id;
+    });
+    const [existing] = await this
+      .sql`select id from action where job_id = ${jobId} order by created_at limit 1`;
+    if (existing) return loadAction(this.sql, String(existing.id));
+    const proposed = await this.broker.propose(await this.claims(jobId, input.connectionId), {
+      connection_id: input.connectionId,
+      kind: 'email.send',
+      payload: input.payload,
+      client_ref: 'assistant',
+    });
+    return loadAction(this.sql, proposed.action_id);
   }
 
   async continueCommand(effect: Action) {
