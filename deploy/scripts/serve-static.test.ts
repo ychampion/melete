@@ -369,6 +369,21 @@ describe('same-origin API proxy', () => {
     expect(response.headers.get('cache-control')).toBe('no-store');
   });
 
+  test('forwards the OAuth discovery documents to the API at their own paths', async () => {
+    for (const path of [
+      '/.well-known/oauth-authorization-server',
+      '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-protected-resource/api/mcp',
+    ]) {
+      const response = await fetch(`${webOrigin()}${path}`);
+      expect(response.status).toBe(201);
+      expect(((await response.json()) as { path: string }).path).toBe(path);
+    }
+    // Only those names: any other well-known path is the bundle's, like any other path.
+    const other = await fetch(`${webOrigin()}/.well-known/oauth-authorization-server-x`);
+    expect(await other.text()).toBe(INDEX_HTML);
+  });
+
   test('states the browser socket as the client address and discards any the browser sent', async () => {
     for (const claimed of ['203.0.113.9', '203.0.113.9, 198.51.100.4', '']) {
       const response = await fetch(`${webOrigin()}/api/login`, {
