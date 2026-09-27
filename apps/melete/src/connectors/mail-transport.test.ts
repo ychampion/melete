@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { type AddressInfo, createServer, type Socket } from 'node:net';
+import { simpleParser } from 'mailparser';
 import { EmailConnector } from './email.ts';
 import { mailAction, mailContext } from './mail-fixtures.ts';
-import { type EmailConnection, ImapSmtpTransport } from './mail-transport.ts';
+import { type EmailConnection, ImapSmtpTransport, toMailMessage } from './mail-transport.ts';
 import type { SecretAccess } from './secrets.ts';
 
 /** A tiny protocol destination: test commands are real sockets, with no mailbox outside this process. */
@@ -322,4 +323,50 @@ describe('IMAP and SMTP wire adapters', () => {
       await destination.close();
     }
   }, 60_000);
+});
+
+describe('what a parsed message says about its thread and its sender', () => {
+  const lines = (...parts: string[]) => parts.map((part) => `${part}\r\n`).join('');
+  const raw = (headers: string) =>
+    simpleParser(
+      `${headers}${lines(
+        'From: Jo <jo@shop.example>',
+        'To: Sam <sam@studio.example>, ops@studio.example',
+        'Cc: kim@studio.example',
+        'Subject: Re: Quote',
+        'Message-ID: <b@shop.example>',
+        '',
+      )}Here it is.`,
+    );
+
+  test('the thread it answers and everyone it went to', async () => {
+    const message = toMailMessage(
+      1,
+      await raw(
+        lines(
+          'In-Reply-To: <a@studio.example>',
+          'References: <z@studio.example> <a@studio.example>',
+        ),
+      ),
+    );
+    expect(message.in_reply_to).toBe('<a@studio.example>');
+    expect(message.references).toEqual(['<z@studio.example>', '<a@studio.example>']);
+    expect(message.to_addresses).toEqual([
+      'sam@studio.example',
+      'ops@studio.example',
+      'kim@studio.example',
+    ]);
+    expect(message.automated).toBe(false);
+  });
+
+  test('list, bulk and auto-submitted mail is automated; a person writing is not', async () => {
+    for (const header of [
+      'List-Unsubscribe: <mailto:out@shop.example>',
+      'List-Id: <news.shop.example>',
+      'Auto-Submitted: auto-replied',
+      'Precedence: bulk',
+    ])
+      expect(toMailMessage(1, await raw(lines(header))).automated).toBe(true);
+    expect(toMailMessage(1, await raw(lines('Auto-Submitted: no'))).automated).toBe(false);
+  });
 });

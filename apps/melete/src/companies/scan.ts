@@ -18,6 +18,7 @@ import { messageText, type ScanMessage } from './messages.ts';
 import { prefilter } from './prefilter.ts';
 import type { CompanyStore, Owner, ScanRecord, StoredMessage } from './repository.ts';
 import { type AdmissionContext, admitAll, noDrops } from './validate.ts';
+import { findAwaitedReplies } from './waiting.ts';
 
 export const DEFAULT_WINDOW_DAYS = 90;
 
@@ -225,6 +226,40 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
     }
     found = await options.store.saveItems(options.owner, record.id, admitted);
     await options.store.markExtracted(options.owner, answered);
+
+    // What the person is still waiting to hear back about, when the mailbox can
+    // read what they sent. It is its own finding: a Sent folder that cannot be
+    // read is counted, and the company map stands without it.
+    if (options.mailbox.sent) {
+      try {
+        const sent = await options.mailbox.sent(options.readLimit ?? 50);
+        const waiting = findAwaitedReplies({ sent, inbox: messages, now });
+        // The sentence each one rests on is checked against this text later.
+        await options.store.saveMessages(
+          options.owner,
+          record.id,
+          waiting.awaited.map((entry) => {
+            const message = sent.find((candidate) => candidate.messageId === entry.messageId);
+            return {
+              messageId: entry.messageId,
+              subject: entry.subject,
+              from: message?.from ?? '',
+              receivedAt: entry.sentAt,
+              text: entry.text,
+            };
+          }),
+        );
+        counts.awaited_new = await options.store.saveAwaited(
+          options.owner,
+          record.id,
+          waiting.awaited,
+          waiting.answered,
+        );
+        counts.awaited_replies = waiting.awaited.length;
+      } catch {
+        counts.sent_unreadable = 1;
+      }
+    }
     counts.proposed = admitted.length;
     await options.store.closeScan(options.owner, record.id, {
       status: 'done',

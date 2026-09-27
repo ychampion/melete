@@ -48,9 +48,12 @@ class MailDouble implements MailTransport {
   sends = 0;
   dropAck = false;
   fail = false;
-  async search(): Promise<MailMessage[]> {
+  outbox = [message(9, 'Quote for the move', 'Could you send a quote?')];
+  folders: string[] = [];
+  async search(_query: string, _limit: number, folder?: 'inbox' | 'sent'): Promise<MailMessage[]> {
     if (this.fail) throw new Error('app-password-that-never-leaks');
-    return this.messages;
+    this.folders.push(folder ?? 'inbox');
+    return folder === 'sent' ? this.outbox : this.messages;
   }
   async read(uid: number): Promise<MailMessage | null> {
     return this.messages.find((m) => m.uid === uid) ?? null;
@@ -113,6 +116,26 @@ describe('email connector', () => {
     expect(
       (await connector.execute(mailAction('email.read', { uid: 1 }), mailContext())).outcome,
     ).toBe('succeeded');
+  });
+
+  test('search reads the Sent folder when asked, and the inbox otherwise', async () => {
+    const fake = new MailDouble();
+    const connector = new EmailConnector(config, secret, () => fake);
+    const sent = await connector.execute(
+      mailAction('email.search', { folder: 'sent' }),
+      mailContext(),
+    );
+    expect(sent.outcome).toBe('succeeded');
+    if (sent.outcome === 'succeeded')
+      expect(
+        (sent.receipt.detail.messages as { subject: string }[]).map((entry) => entry.subject),
+      ).toEqual(['Quote for the move']);
+    await connector.execute(mailAction('email.search'), mailContext());
+    expect(fake.folders).toEqual(['sent', 'inbox']);
+    expect(
+      (await connector.execute(mailAction('email.search', { folder: 'drafts' }), mailContext()))
+        .outcome,
+    ).toBe('failed');
   });
 
   test('a draft is durable local output and never loads credentials or calls SMTP', async () => {

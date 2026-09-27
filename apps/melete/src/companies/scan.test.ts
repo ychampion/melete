@@ -7,6 +7,7 @@ import { messageText } from './messages.ts';
 import { MemoryCompanyStore, type Owner } from './repository.ts';
 import { runScan, SCAN_FAILED } from './scan.ts';
 import { scriptedExtractor } from './scripted.ts';
+import { AWAITED_SENT_INDEXES, fixtureSentMessages } from './sent-fixtures.ts';
 
 const owner: Owner = {
   spaceId: 'sp_01J0000000000000000000000A',
@@ -404,4 +405,79 @@ describe('one person’s map is one person’s', () => {
 
 test('the extractor is asked for a date with no time as a bare date', () => {
   expect(EXTRACTION_INSTRUCTIONS).toContain('YYYY-MM-DD');
+});
+
+describe('what the person is still waiting to hear back about', () => {
+  const scanWith = (store: MemoryCompanyStore, inbox = fixtureMessages()) =>
+    runScan({
+      store,
+      mailbox: fixtureMailbox(inbox, fixtureSentMessages()),
+      extractor: scriptedExtractor(),
+      owner,
+      now,
+    });
+
+  test('a scan that can read the Sent folder records each unanswered question once', async () => {
+    const store = new MemoryCompanyStore();
+    const first = await scanWith(store);
+    expect(first.status).toBe('done');
+    expect(first.counts.awaited_replies).toBe(AWAITED_SENT_INDEXES.length);
+    const replies = await store.awaitedReplies(owner);
+    expect(replies.map((reply) => reply.to).sort()).toEqual([
+      'bookings@ashgrovestudios.example',
+      'service@deverillit.example',
+      'tomas.brennan@brennanphoto.example',
+    ]);
+    // The sentence each rests on opens back to the stored text of what was sent.
+    for (const reply of replies) {
+      const held = await store.awaitedReply(owner, reply.id);
+      expect(held?.text && evidenceHolds(held.text, reply.evidence)).toBe(true);
+    }
+    const second = await scanWith(store);
+    expect(second.counts.awaited_new).toBe(0);
+    expect(await store.awaitedReplies(owner)).toHaveLength(replies.length);
+  });
+
+  test('a reply that has arrived since settles the wait', async () => {
+    const store = new MemoryCompanyStore();
+    await scanWith(store);
+    const answer = {
+      messageId: '<answer@deverillit.example>',
+      from: 'Deverill IT <service@deverillit.example>',
+      fromAddresses: ['service@deverillit.example'],
+      to: 'accounts@thackeraylane.example',
+      subject: 'Re: Moving the studio server',
+      text: 'Our quote is attached.',
+      receivedAt: new Date(now.getTime() - 3_600_000).toISOString(),
+    };
+    await scanWith(store, [...fixtureMessages(), answer]);
+    expect((await store.awaitedReplies(owner)).map((reply) => reply.to)).not.toContain(
+      'service@deverillit.example',
+    );
+  });
+
+  test('a Sent folder that cannot be read leaves the company map whole', async () => {
+    const store = new MemoryCompanyStore();
+    const outcome = await runScan({
+      store,
+      mailbox: {
+        ...fixtureMailbox(fixtureMessages()),
+        sent: async () => {
+          throw new Error('the Sent folder is not there');
+        },
+      },
+      extractor: scriptedExtractor(),
+      owner,
+      now,
+    });
+    expect(outcome.status).toBe('done');
+    expect(outcome.counts.sent_unreadable).toBe(1);
+    expect(outcome.itemsFound).toBeGreaterThan(20);
+  });
+
+  test('a mailbox without a Sent folder finds no replies and says nothing about it', async () => {
+    const { store, outcome } = await scanFixtures();
+    expect(outcome.counts.awaited_replies).toBeUndefined();
+    expect(await store.awaitedReplies(owner)).toEqual([]);
+  });
 });

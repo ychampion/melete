@@ -84,10 +84,29 @@ class MailDouble implements MailTransport {
     // A message with no Message-ID cannot be cited, so it cannot be scanned.
     { ...message(5, 'Anonymous', 'No identity here.'), message_id: null },
   ];
-  async search(_query: string, limit: number): Promise<MailMessage[]> {
+  folders: string[] = [];
+  outbox: MailMessage[] = [
+    {
+      ...message(
+        20,
+        'Moving the studio server',
+        'Could you send a quote for the move?',
+        '2026-09-12T10:00:00.000Z',
+        'Sam Okafor <accounts@thackeraylane.example>',
+      ),
+      message_id: '<20@thackeraylane.example>',
+      to: 'Deverill IT <service@deverillit.example>',
+      to_addresses: ['service@deverillit.example'],
+      in_reply_to: '<19@deverillit.example>',
+      references: ['<19@deverillit.example>'],
+      automated: false,
+    },
+  ];
+  async search(_query: string, limit: number, folder?: 'inbox' | 'sent'): Promise<MailMessage[]> {
     this.searches++;
     this.lastLimit = limit;
-    return this.messages;
+    this.folders.push(folder ?? 'inbox');
+    return folder === 'sent' ? this.outbox : this.messages;
   }
   async read(uid: number): Promise<MailMessage | null> {
     return this.messages.find((entry) => entry.uid === uid) ?? null;
@@ -127,6 +146,22 @@ describe('reading a mailbox through the installed connector', () => {
       '<4@nimbusledger.example>',
       '<3@nimbusledger.example>',
       '<1@nimbusledger.example>',
+    ]);
+  });
+
+  test('reads what the person sent from the Sent folder, with its thread and recipients', async () => {
+    const { reader, transport } = mailbox();
+    const sent = await reader.sent?.(50);
+    expect(transport.folders).toEqual(['sent']);
+    expect(transport.sends).toBe(0);
+    expect(sent).toEqual([
+      expect.objectContaining({
+        messageId: '<20@thackeraylane.example>',
+        toAddresses: ['service@deverillit.example'],
+        inReplyTo: '<19@deverillit.example>',
+        references: ['<19@deverillit.example>'],
+        automated: false,
+      }),
     ]);
   });
 

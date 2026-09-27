@@ -14,8 +14,11 @@
  */
 
 import {
+  type CompanyMap,
   companyMap as companyMapContract,
   ledgerItem as ledgerItemContract,
+  type WaitingOn,
+  waitingOn as waitingOnContract,
 } from '@melete/contracts';
 import { eq, sql } from 'drizzle-orm';
 import type { Hono } from 'hono';
@@ -29,6 +32,7 @@ import { HandlerUnavailable, type LedgerItemHandler, stubLedgerItemHandler } fro
 import type { ScanMailbox } from './mailbox.ts';
 import type { CompanyStore, LedgerDetail, Owner, ScanRecord } from './repository.ts';
 import { runScan } from './scan.ts';
+import { waitingOnView } from './waiting-view.ts';
 
 export const ledgerStatusChange = z.strictObject({ status: z.enum(['dropped', 'settled']) });
 
@@ -312,6 +316,77 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
       }
       await store.setJob(found.owner, found.item.id, result.job_id);
       return { job_id: result.job_id, status: 201 as const };
+    });
+    return c.json({ job_id: answer.job_id }, answer.status);
+  });
+
+  /**
+   * The spaces a request speaks for: the one named, or every space the
+   * principal can see. The first is the one whose mailbox and scan are reported.
+   */
+  const ownersOf = async (spaceHint?: string): Promise<Owner[]> => {
+    if (spaceHint) return [await ownerFor(deps.db, spaceHint)];
+    const principalId = requestPrincipal();
+    if (!principalId) throw new ServiceError('not_found', 'No such space.', 404);
+    return (await visibleSpaceIds(deps.db, principalId)).map((spaceId) => ({
+      spaceId,
+      principalId,
+    }));
+  };
+
+  // What the person is waiting on: money companies owe them and replies nobody
+  // has sent, with the few to chase first. Read-only; it never starts a scan.
+  app.get('/waiting-on', async (c) => {
+    const owners = await ownersOf(c.req.query('space_id'));
+    const at = now();
+    const maps: CompanyMap[] = [];
+    const replies: Awaited<ReturnType<CompanyStore['awaitedReplies']>> = [];
+    for (const owner of owners) {
+      maps.push(await deps.store.map(owner, at, await profileTimeZone(deps.db, owner.spaceId)));
+      replies.push(...(await deps.store.awaitedReplies(owner)));
+    }
+    const first = owners[0];
+    const latest = first ? await deps.store.latestScan(first) : null;
+    const scan: WaitingOn['scan'] = {
+      connected: first ? (await deps.mailbox(first)) !== null : false,
+      status: latest?.status ?? 'none',
+      finished_at: latest?.finishedAt ?? null,
+    };
+    return c.json(waitingOnContract.parse(waitingOnView({ maps, replies, scan })));
+  });
+
+  // "Chase this" for a reply. Owed items are chased through `/ledger/:id/handle`.
+  // Like that route it is idempotent: a reply already being chased answers with
+  // its chase, and a second press waits for the first.
+  app.post('/waiting-on/replies/:id/chase', async (c) => {
+    const id = c.req.param('id');
+    const owners = await ownersOf(c.req.query('space_id'));
+    const answer = await exclusively(`awaited:${id}`, async (store) => {
+      for (const owner of owners) {
+        const found = await store.awaitedReply(owner, id);
+        if (!found) continue;
+        if (found.reply.job_id) return { job_id: found.reply.job_id, status: 200 as const };
+        if (!handler.handleAwaitedReply)
+          throw new ServiceError('not_connected', 'Chasing is not connected yet.', 503);
+        const connectionId = (await deps.sendConnection?.(owner)) ?? null;
+        let result: Awaited<ReturnType<NonNullable<LedgerItemHandler['handleAwaitedReply']>>>;
+        try {
+          result = await handler.handleAwaitedReply({
+            reply: found.reply,
+            messageText: found.text,
+            principalId: owner.principalId,
+            spaceId: owner.spaceId,
+            ...(connectionId ? { connectionId } : {}),
+          });
+        } catch (error) {
+          if (error instanceof HandlerUnavailable)
+            throw new ServiceError('not_connected', error.message, 503);
+          throw error;
+        }
+        await store.setAwaitedJob(owner, id, result.job_id);
+        return { job_id: result.job_id, status: 201 as const };
+      }
+      throw new ServiceError('not_found', 'Not found.', 404);
     });
     return c.json({ job_id: answer.job_id }, answer.status);
   });

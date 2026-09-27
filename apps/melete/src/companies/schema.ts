@@ -164,3 +164,44 @@ export const companyScan = pgTable(
     index('company_scan_principal_started_idx').on(table.principalId, table.startedAt),
   ],
 );
+
+/**
+ * A message the person sent that is still waiting on a reply. The sentence
+ * that asked is kept as evidence against the message's stored text in
+ * `company_message`, the way a ledger item's is. One row per sent message, so
+ * a later scan recognises what it already found.
+ */
+export const awaitedReply = pgTable(
+  'awaited_reply',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    messageId: text('message_id').notNull(),
+    toAddress: text('to_address').notNull(),
+    toName: text('to_name'),
+    subject: text('subject').notNull(),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull(),
+    evidence: jsonb('evidence').$type<LedgerEvidence>().notNull(),
+    status: text('status').notNull().default('found'),
+    jobId: text('job_id'),
+    scanId: text('scan_id').notNull(),
+    createdAt: created(),
+  },
+  (table) => [
+    uniqueIndex('awaited_reply_owner_message_idx').on(
+      table.spaceId,
+      table.principalId,
+      table.messageId,
+    ),
+    index('awaited_reply_owner_idx').on(table.spaceId, table.principalId, table.status),
+    check(
+      'awaited_reply_status',
+      sql`${table.status} in ('found', 'handling', 'waiting', 'settled', 'dropped')`,
+    ),
+  ],
+);

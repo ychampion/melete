@@ -124,6 +124,12 @@ function sharedDomain(addresses: readonly string[]): string | null {
   return domain ?? null;
 }
 
+/** The one address a message is from, or nothing when it names none or several. */
+export function messageSender(message: ReplyMessage): string | null {
+  const addresses = message.fromAddresses ?? fromAddresses(message.from);
+  return addresses.length === 1 ? (addresses[0] ?? null) : null;
+}
+
 /** Who a message is from: the parsed addresses when the mailbox gave them. */
 export function messageSenderDomain(message: ReplyMessage): string | null {
   return message.fromAddresses ? sharedDomain(message.fromAddresses) : senderDomain(message.from);
@@ -379,6 +385,7 @@ export function replyPayload(message: ReplyMessage) {
     message_id: message.messageId,
     from: message.from,
     sender_domain: messageSenderDomain(message),
+    sender: messageSender(message),
     subject: message.subject,
     received_at: message.receivedAt,
   };

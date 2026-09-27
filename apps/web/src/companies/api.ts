@@ -18,6 +18,7 @@ import type {
   LedgerItemStatus,
   ScanProgress,
   ScanStarted,
+  WaitingOn,
 } from '../experience/types.ts';
 
 const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
@@ -74,4 +75,11 @@ export const companiesApi = {
   /** Stop the job handling an item: the item goes back to found, with no job. */
   stop: (id: string) =>
     call<LedgerItem>(`/ledger/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
+  /** Money owed to the person and replies they are waiting on, in one view. */
+  waitingOn: () => call<WaitingOn>('/waiting-on'),
+  /** Start chasing a reply the person is waiting on. */
+  chaseReply: (id: string) =>
+    call<{ job_id: string }>(`/waiting-on/replies/${encodeURIComponent(id)}/chase`, {
+      method: 'POST',
+    }),
 };

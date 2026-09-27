@@ -308,6 +308,65 @@
   min-width: 200px;
 }
 
+/* ---------- waiting on ---------- */
+
+.waiting-on-line {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  line-height: 22px;
+  color: var(--secondary);
+}
+.waiting-on-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.waiting-on-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  min-height: 56px;
+  padding: 8px 0;
+  color: var(--muted);
+}
+.waiting-on-row + .waiting-on-row {
+  border-top: 1px solid var(--line);
+}
+.waiting-on-who {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+}
+.waiting-on-what {
+  font-size: 13px;
+  color: var(--muted);
+}
+.waiting-on-detail {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--secondary);
+  font-variant-numeric: tabular-nums;
+}
+/* On a phone the button goes under the words rather than squeezing them. */
+@media (max-width: 520px) {
+  .waiting-on-detail {
+    margin-left: 30px;
+  }
+  .waiting-on-row > .btn {
+    margin-left: auto;
+  }
+  .waiting-on-row > .col {
+    flex-basis: calc(100% - 30px);
+  }
+}
+
 /* ---------- in motion ---------- */
 
 .motion {
