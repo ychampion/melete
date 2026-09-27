@@ -92,6 +92,7 @@ import type { ProcedureProposer } from './learning/proposer.ts';
 import { expireEpisodes } from './learning/retention.ts';
 import { mountLearning } from './learning/routes.ts';
 import { startLearning } from './learning/start.ts';
+import { mountMcpServer } from './mcp-server/routes.ts';
 import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { withMemoryRuntime } from './memory/context.ts';
@@ -283,6 +284,14 @@ export function createApp(deps: AppDeps) {
         triggers: deps.triggers,
       }),
       ...deps.companies,
+    });
+  if (deps.db && deps.sql)
+    mountMcpServer(app, {
+      db: deps.db,
+      sql: deps.sql,
+      env: deps.env,
+      broker: deps.broker,
+      registry: deps.registry,
     });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory)

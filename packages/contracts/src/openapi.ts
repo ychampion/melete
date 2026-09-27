@@ -102,6 +102,20 @@ import {
   procedureTrialRequest,
 } from './learning.ts';
 import {
+  mcpConnectedClientList,
+  mcpRpcMessage,
+  mcpRpcResponse,
+  oauthAuthorizeQuery,
+  oauthClientRegistered,
+  oauthClientRegistration,
+  oauthConsentForm,
+  oauthErrorResponse,
+  oauthProtectedResource,
+  oauthServerMetadata,
+  oauthTokenRequest,
+  oauthTokenResponse,
+} from './mcp-server.ts';
+import {
   claimHistoryResponse,
   claimListResponse,
   claimRevision,
@@ -275,6 +289,176 @@ const idParam = (name: string, description: string) => ({
   path: z.object({ [name]: z.string().meta({ description }) }),
 });
 
+const html = (description: string) => ({
+  description,
+  content: { 'text/html': { schema: z.string() } },
+});
+const oauthProblem = (description: string) => jsonResponse(description, oauthErrorResponse);
+const redirect = (description: string) => ({
+  description,
+  headers: z.object({ Location: z.string() }),
+});
+
+/**
+ * Melete as an MCP server for other assistants, and Melete as the OAuth
+ * authorization server they connect through. Served when the service has a
+ * public address. The discovery documents sit at the root of the public origin.
+ */
+const assistantPaths = {
+  '/.well-known/oauth-authorization-server': {
+    get: {
+      tags: ['assistants'],
+      summary: 'OAuth authorization server metadata (RFC 8414)',
+      description: 'Public, at the root of the web origin. No session is needed.',
+      responses: { '200': jsonResponse('The metadata', oauthServerMetadata) },
+    },
+  },
+  '/.well-known/oauth-protected-resource': {
+    get: {
+      tags: ['assistants'],
+      summary: 'Protected resource metadata for the MCP endpoint (RFC 9728)',
+      responses: { '200': jsonResponse('The metadata', oauthProtectedResource) },
+    },
+  },
+  '/.well-known/oauth-protected-resource/api/mcp': {
+    get: {
+      tags: ['assistants'],
+      summary: 'Protected resource metadata at the path-specific address the endpoint names',
+      responses: { '200': jsonResponse('The metadata', oauthProtectedResource) },
+    },
+  },
+  '/oauth/register': {
+    post: {
+      tags: ['assistants'],
+      summary: 'Register an assistant as a public OAuth client (RFC 7591)',
+      description:
+        'Public clients only, with PKCE. A client may instead use an https:// client ID metadata document.',
+      requestBody: json(oauthClientRegistration),
+      responses: {
+        '201': jsonResponse('Registered', oauthClientRegistered),
+        '400': oauthProblem('The metadata was refused'),
+        '429': oauthProblem('Too many registrations from this address'),
+      },
+    },
+  },
+  '/oauth/authorize': {
+    get: {
+      tags: ['assistants'],
+      summary: 'The consent page an assistant sends a person to',
+      description:
+        'Shows who is asking and what they could do, to the signed-in person. Errors about the ' +
+        'request go back to a checked redirect address with the state and issuer.',
+      requestParams: { query: oauthAuthorizeQuery },
+      responses: {
+        '200': html('The consent page, or a prompt to sign in first'),
+        '302': redirect('An error returned to the assistant'),
+        '400': html('The client or its redirect address is unknown'),
+      },
+    },
+    post: {
+      tags: ['assistants'],
+      summary: "The person's answer on the consent page",
+      description:
+        'Accepted only from the page shown to this session for this exact request. Allowing ' +
+        'returns a single-use code bound to the PKCE challenge.',
+      security: [{ session: [] }],
+      requestBody: {
+        content: { 'application/x-www-form-urlencoded': { schema: oauthConsentForm } },
+      },
+      responses: {
+        '302': redirect('Back to the assistant with a code, or with access_denied'),
+        '400': html('The client or its redirect address is unknown'),
+        '403': html('The page expired or was not shown to this session'),
+      },
+    },
+  },
+  '/oauth/token': {
+    post: {
+      tags: ['assistants'],
+      summary: 'Exchange a code, or rotate a refresh token',
+      description:
+        'A code is used once, with its PKCE verifier. Each refresh returns a new refresh token; ' +
+        'presenting a used one ends every token of that connection.',
+      requestBody: {
+        content: { 'application/x-www-form-urlencoded': { schema: oauthTokenRequest } },
+      },
+      responses: {
+        '200': jsonResponse('Tokens', oauthTokenResponse),
+        '400': oauthProblem('The grant was refused'),
+        '401': oauthProblem('The client is not registered'),
+        '429': oauthProblem('Too many requests from this address'),
+      },
+    },
+  },
+  '/oauth/revoke': {
+    post: {
+      tags: ['assistants'],
+      summary: 'Revoke a token and every token of its connection (RFC 7009)',
+      requestBody: {
+        content: {
+          'application/x-www-form-urlencoded': { schema: z.object({ token: z.string() }) },
+        },
+      },
+      responses: { '200': { description: 'Revoked, or never valid' } },
+    },
+  },
+  '/mcp': {
+    post: {
+      tags: ['assistants'],
+      summary: 'The MCP endpoint (streamable HTTP, one JSON response per message)',
+      description:
+        'Tools: waiting_on, handle, safe_send, remember, recall and status, each acting as the ' +
+        'person the token names. safe_send only proposes: the person approves the exact text in Melete.',
+      security: [{ assistant: [] }],
+      requestParams: {
+        header: z.object({ 'MCP-Protocol-Version': z.string().optional() }),
+      },
+      requestBody: json(mcpRpcMessage),
+      responses: {
+        '200': jsonResponse('The JSON-RPC response', mcpRpcResponse),
+        '202': { description: 'A notification was accepted' },
+        '400': jsonResponse('Not one JSON-RPC 2.0 message, or an unknown version', mcpRpcResponse),
+        '401': {
+          ...problem('No valid access token'),
+          headers: z.object({
+            'WWW-Authenticate': z.string().meta({
+              description: 'Bearer, with resource_metadata naming the protected resource metadata',
+            }),
+          }),
+        },
+      },
+    },
+    get: {
+      tags: ['assistants'],
+      summary: 'Not offered: the endpoint holds no stream',
+      responses: { '405': jsonResponse('POST only', mcpRpcResponse) },
+    },
+    delete: {
+      tags: ['assistants'],
+      summary: 'Not offered: the endpoint holds no session',
+      responses: { '405': jsonResponse('POST only', mcpRpcResponse) },
+    },
+  },
+  '/mcp/clients': {
+    get: {
+      tags: ['assistants'],
+      summary: 'The assistants this person has connected',
+      responses: { '200': jsonResponse('Connected assistants', mcpConnectedClientList) },
+    },
+  },
+  '/mcp/clients/{clientId}': {
+    delete: {
+      tags: ['assistants'],
+      summary: 'Disconnect an assistant: every token it holds for this person ends',
+      requestParams: idParam('clientId', 'The client ID'),
+      responses: {
+        '204': { description: 'Disconnected' },
+        '404': problem('No connection from that assistant'),
+      },
+    },
+  },
+};
+
 /** A refusal that says when to try again. */
 const rateLimited = (description: string) => ({
   ...problem(description),
@@ -349,7 +533,14 @@ export function buildOpenApiDocument() {
       },
       servers: [{ url: 'http://localhost:8787', description: 'Default self-hosted address' }],
       components: {
-        securitySchemes: { session: { type: 'apiKey', in: 'cookie', name: 'melete_session' } },
+        securitySchemes: {
+          session: { type: 'apiKey', in: 'cookie', name: 'melete_session' },
+          assistant: {
+            type: 'http',
+            scheme: 'bearer',
+            description: 'An access token from the OAuth flow, for the MCP endpoint only.',
+          },
+        },
         schemas: { RuntimeEvent: runtimeEvent, HookObservation: hookObservation },
       },
       tags: [
@@ -371,6 +562,7 @@ export function buildOpenApiDocument() {
         { name: 'browser' },
         { name: 'learning' },
         { name: 'companies' },
+        { name: 'assistants' },
       ],
       paths: {
         '/episodes': {
@@ -1674,6 +1866,8 @@ export function buildOpenApiDocument() {
             },
           },
         },
+
+        ...assistantPaths,
 
         ...accountSignInPaths('google', {
           title: 'Google',

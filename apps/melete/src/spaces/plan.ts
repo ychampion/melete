@@ -53,6 +53,9 @@ export async function endSpaceAccess(
         set revoked_at = now(), generation = generation + 1
         where space_id = ${spaceId} and revoked_at is null`;
     await tx`delete from magic_link where space_id = ${spaceId}`;
+    // An assistant connected over MCP from this space loses it with everyone else.
+    await tx`delete from mcp_authorization where space_id = ${spaceId}`;
+    await tx`delete from mcp_token where space_id = ${spaceId}`;
   });
 }
 
