@@ -9,6 +9,10 @@ support. `ConnectorRegistry` validates manifests and refuses duplicate entries
 The tests use temporary files, fake destinations and local protocol servers, so
 they establish each connector's own behaviour against those fixtures.
 
+Connectors are how Melete reaches other services. The other direction, other
+assistants using Melete as their connector over MCP, is described in
+[MCP-SERVER](MCP-SERVER.md).
+
 ## Contract and policy
 
 Implement `Connector` from
