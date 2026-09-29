@@ -5532,6 +5532,35 @@
         }
       }
     },
+    "/signin/chatgpt": {
+      "post": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "POST /signin/chatgpt",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema177"
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema177"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/signout": {
       "post": {
         "tags": [
