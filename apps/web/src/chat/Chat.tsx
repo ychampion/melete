@@ -30,6 +30,7 @@ import {
   useMedia,
   useNow,
 } from '../experience/hooks.ts';
+import { inlineSpans } from '../experience/inline.ts';
 import {
   answerOf,
   latestTurn,
@@ -76,6 +77,34 @@ const FINISHED: TurnStatus[] = ['done', 'stopped', 'failed'];
 
 function titleFor(text: string): string {
   return shortTitle(text) || 'New chat';
+}
+
+type Outcome = { data: unknown; error: string | null; unavailable: string | null };
+
+/** A control that did not take says why, instead of doing nothing. */
+async function reportFailure(pending: Promise<Outcome>, verb: string) {
+  const result = await pending;
+  if (result.data === null)
+    toast({
+      kind: 'err',
+      title: `Couldn’t ${verb}`,
+      sub: result.unavailable ?? result.error ?? '',
+    });
+}
+
+/** Pausing mid-step needs the engine's help; without it, stopping keeps the progress. */
+async function pauseTurn(id: string) {
+  const paused = await adapter.pause(id);
+  if (paused.data !== null) return;
+  const stopped = await adapter.stop(id);
+  if (stopped.data !== null)
+    toast({
+      kind: 'info',
+      title: 'Stopped this turn',
+      sub: 'This model can’t pause mid-step, so it stopped. Your progress is saved.',
+    });
+  else
+    toast({ kind: 'err', title: 'Couldn’t pause', sub: paused.unavailable ?? paused.error ?? '' });
 }
 
 function AgentChip({
@@ -318,15 +347,23 @@ function TurnView({
   );
 }
 
-/** A line with its **bold** spans drawn bold; everything else stays plain text. */
+/** A line with its bold, italic and code spans drawn; everything else stays plain text. */
 function Line({ line }: { line: string }) {
-  const parts = line.split(/\*\*(.+?)\*\*/g);
   return (
     <>
-      {parts.map((part, index) =>
-        // biome-ignore lint/suspicious/noArrayIndexKey: the parts are a cut of one line, in order
-        index % 2 === 1 ? <strong key={index}>{part}</strong> : part,
-      )}
+      {inlineSpans(line).map((span, index) => {
+        // The spans are a cut of one line, in order, so their place is their key.
+        const key = `${index}:${span.kind}`;
+        if (span.kind === 'strong') return <strong key={key}>{span.text}</strong>;
+        if (span.kind === 'em') return <em key={key}>{span.text}</em>;
+        if (span.kind === 'code')
+          return (
+            <code key={key} className="answer-code">
+              {span.text}
+            </code>
+          );
+        return <span key={key}>{span.text}</span>;
+      })}
     </>
   );
 }
@@ -868,9 +905,13 @@ export function ChatScreen({ id }: { id: string | null }) {
                 state={conversationId ? composerState : 'send'}
                 working={working}
                 autoFocus={!touch}
-                onPause={() => conversationId && void adapter.pause(conversationId)}
-                onResume={() => conversationId && void adapter.resume(conversationId)}
-                onStop={() => conversationId && void adapter.stop(conversationId)}
+                onPause={() => conversationId && void pauseTurn(conversationId)}
+                onResume={() =>
+                  conversationId && void reportFailure(adapter.resume(conversationId), 'resume')
+                }
+                onStop={() =>
+                  conversationId && void reportFailure(adapter.stop(conversationId), 'stop')
+                }
               />
             </div>
           </div>

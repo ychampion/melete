@@ -1210,3 +1210,10 @@
     display: inline-flex;
   }
 }
+.answer-code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.86em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--line);
+}
