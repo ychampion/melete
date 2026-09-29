@@ -156,6 +156,17 @@
   align-items: flex-start;
   gap: 12px;
 }
+.answer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.answer-rule {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 4px 0;
+}
 /* What the agent says is set in the voice face. */
 .turn-text p {
   font-family: var(--font-voice);

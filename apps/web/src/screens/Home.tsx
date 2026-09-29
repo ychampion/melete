@@ -33,6 +33,7 @@ import {
   useLoad,
   useNow,
 } from '../experience/hooks.ts';
+import { shortTitle } from '../experience/title.ts';
 import { progressOf } from '../experience/trace.ts';
 import type {
   Agent,
@@ -46,6 +47,7 @@ import type {
 import { isWaiting, waitingOn } from '../experience/waiting.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
+import { blankAgent } from './Agents.tsx';
 import './home.css';
 
 const PROMPTS: { label: string; icon: IconName; text: string }[] = [
@@ -809,7 +811,7 @@ function DayColumn({ now }: { now: number }) {
 /* ---------- the screen ---------- */
 
 export function HomeScreen() {
-  const { agents, refreshConversations } = useApp();
+  const { agents, refreshAgents, refreshConversations } = useApp();
   const home = useLoad(() => adapter.home(), []);
   const decisions = useDecisions();
   const [map, setMap] = useState<CompanyMap | null>(null);
@@ -833,15 +835,27 @@ export function HomeScreen() {
 
   const start = async (body: string) => {
     const clean = body.trim();
-    const agent = agents[0];
-    if (!clean || busy || !agent) return;
+    if (!clean || busy) return;
     setBusy(true);
-    const title =
-      clean
-        .replace(/[.!?].*$/, '')
-        .trim()
-        .slice(0, 60) || 'New chat';
-    const created = await adapter.createConversation({ title, agent_id: agent.id });
+    // Skipping setup leaves no agent yet: make the default one so the first
+    // message still goes somewhere.
+    let agentId = agents[0]?.id;
+    if (!agentId) {
+      const made = await adapter.createAgent({ ...blankAgent(), name: 'Nova', role: 'Concierge' });
+      if (made.data === null) {
+        setBusy(false);
+        toast({
+          kind: 'err',
+          title: 'Couldn’t set up your agent',
+          sub: made.error ?? made.unavailable ?? '',
+        });
+        return;
+      }
+      agentId = made.data.agent.id;
+      refreshAgents();
+    }
+    const title = shortTitle(clean, 60) || 'New chat';
+    const created = await adapter.createConversation({ title, agent_id: agentId });
     if (created.data === null) {
       setBusy(false);
       toast({

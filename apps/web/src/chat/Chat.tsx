@@ -41,6 +41,7 @@ import {
   type TranscriptTurn,
   turnIndexForReaction,
 } from '../experience/reduce.ts';
+import { shortTitle } from '../experience/title.ts';
 import type {
   ActionResolution,
   LedgerAction,
@@ -74,12 +75,7 @@ const WORKING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
 const FINISHED: TurnStatus[] = ['done', 'stopped', 'failed'];
 
 function titleFor(text: string): string {
-  const lower = text.toLowerCase();
-  if (lower.includes('dinner')) return 'Dinner with friends';
-  if (lower.includes('kyoto') || lower.includes('japan')) return 'Kyoto in October';
-  if (lower.includes('passport')) return 'Passport renewal';
-  const clean = text.replace(/[.!?].*$/, '').trim();
-  return clean.length > 42 ? `${clean.slice(0, 40)}…` : clean || 'New chat';
+  return shortTitle(text) || 'New chat';
 }
 
 function AgentChip({
@@ -285,10 +281,7 @@ function TurnView({
         <div className="turn-text">
           <TurnAvatar agent={agent} status={turn.status} />
           {showText ? (
-            <p>
-              {text}
-              {turn.streaming ? <span className="caret pulse" aria-hidden="true" /> : null}
-            </p>
+            <Answer text={text} streaming={turn.streaming} />
           ) : (
             <div className="col grow" style={{ paddingTop: 2 }}>
               <Trail turn={turn} now={now} />
@@ -322,6 +315,52 @@ function TurnView({
         ) : null}
       </div>
     </>
+  );
+}
+
+/** A line with its **bold** spans drawn bold; everything else stays plain text. */
+function Line({ line }: { line: string }) {
+  const parts = line.split(/\*\*(.+?)\*\*/g);
+  return (
+    <>
+      {parts.map((part, index) =>
+        // biome-ignore lint/suspicious/noArrayIndexKey: the parts are a cut of one line, in order
+        index % 2 === 1 ? <strong key={index}>{part}</strong> : part,
+      )}
+    </>
+  );
+}
+
+/** The answer as paragraphs: a blank line is a gap, a single break stays a break. */
+function Answer({ text, streaming }: { text: string; streaming: boolean }) {
+  const paragraphs = text.split(/\n\s*\n/).filter((part) => part.trim().length > 0);
+  if (paragraphs.length === 0) paragraphs.push('');
+  return (
+    <div className="answer">
+      {paragraphs.map((paragraph, index) =>
+        /^\s*(?:-{3,}|\*{3,})\s*$/.test(paragraph) ? (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are a cut of one string, in order
+          <hr key={index} className="answer-rule" />
+        ) : (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are a cut of one string, in order
+          <p key={index}>
+            {paragraph
+              .trim()
+              .split('\n')
+              .map((line, at) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: lines of one paragraph, in order
+                <span key={at}>
+                  {at > 0 ? <br /> : null}
+                  <Line line={line} />
+                </span>
+              ))}
+            {streaming && index === paragraphs.length - 1 ? (
+              <span className="caret pulse" aria-hidden="true" />
+            ) : null}
+          </p>
+        ),
+      )}
+    </div>
   );
 }
 
