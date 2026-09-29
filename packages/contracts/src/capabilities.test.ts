@@ -57,10 +57,10 @@ describe('a capability manifest', () => {
     expect(tool.verify).toBe(true);
   });
 
-  test('only audio.synthesize has an adapter in v0.1, and the enum says the rest out loud', () => {
+  test('speech and transcription have adapters, and the enum says the rest out loud', () => {
     expect(isImplemented('audio.synthesize')).toBe(true);
+    expect(isImplemented('audio.transcribe')).toBe(true);
     expect(isImplemented('image.generate')).toBe(false);
-    expect(isImplemented('audio.transcribe')).toBe(false);
     expect(isImplemented('code.execute')).toBe(false);
   });
 });
