@@ -62,7 +62,7 @@ import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { SignedInCredential } from '../connectors/signed-in.ts';
 import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
-import { connection, space } from '../db/schema.ts';
+import { connection, owner, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
@@ -225,11 +225,20 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
 
   /**
    * Everything a person can connect here, and whether each is offered now: a
-   * sign-in needs its provider's client and an address to return to.
+   * sign-in needs its provider's client and an address to return to. Why one
+   * is not offered is said in plain words; what to set to offer it is for the
+   * operator, the installation's owner, alone.
    */
-  const catalog = (kinds: ConnectionKindDescriptor[]): ConnectionCatalogEntry[] => {
+  const catalog = (
+    kinds: ConnectionKindDescriptor[],
+    operator: boolean,
+  ): ConnectionCatalogEntry[] => {
+    const unavailable = (reason: string, hint: string | undefined) =>
+      hint === undefined
+        ? {}
+        : { unavailable_reason: reason, ...(operator ? { setup_hint: hint } : {}) };
     const accounts = ACCOUNT_CATALOG.map((entry): ConnectionCatalogEntry => {
-      const reason = !factory.options[entry.provider]
+      const hint = !factory.options[entry.provider]
         ? `Signing in with ${entry.title} needs its OAuth client. Set ${ACCOUNT_SETTINGS[entry.provider]}.`
         : !accountSignIns[entry.provider]?.redirectUri()
           ? RETURN_ADDRESS_NEEDED
@@ -243,12 +252,14 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           method: 'sign_in',
           provider: entry.provider,
           start: `/${entry.provider}-sign-ins`,
+          issuer: entry.issuer,
+          scopes: entry.scopes.map((scope) => ({ ...scope })),
         },
-        available: !reason,
-        ...(reason ? { unavailable_reason: reason } : {}),
+        available: hint === undefined,
+        ...unavailable(`Signing in with ${entry.title} is not set up on this Melete yet.`, hint),
       };
     });
-    const mcpReason = signIns.redirectUri() ? undefined : RETURN_ADDRESS_NEEDED;
+    const mcpHint = signIns.redirectUri() ? undefined : RETURN_ADDRESS_NEEDED;
     const servers = MCP_CATALOG.map(
       (entry): ConnectionCatalogEntry => ({
         id: entry.id,
@@ -261,8 +272,9 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           suggested_id: entry.id,
           start: '/mcp-sign-ins',
         },
-        available: !mcpReason,
-        ...(mcpReason ? { unavailable_reason: mcpReason } : {}),
+        available: mcpHint === undefined,
+        ...unavailable(`Signing in to ${entry.title} is not set up on this Melete yet.`, mcpHint),
+        ...('warning' in entry ? { warning: entry.warning } : {}),
       }),
     );
     const forms = kinds.map(
@@ -279,11 +291,13 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   };
 
   // A kind this service cannot run is not offered: stdio servers need an isolating launcher.
-  app.get('/connection-kinds', (c) => {
+  app.get('/connection-kinds', async (c) => {
     const kinds = CONNECTION_KIND_DESCRIPTORS.filter(
       (kind) => kind.kind !== 'mcp_stdio' || factory.options.stdioLauncher,
     );
-    return c.json(connectionKindListResponse.parse({ kinds, catalog: catalog(kinds) }));
+    const [installation] = await deps.db.select({ id: owner.id }).from(owner).limit(1);
+    const operator = installation !== undefined && installation.id === c.get('owner').id;
+    return c.json(connectionKindListResponse.parse({ kinds, catalog: catalog(kinds, operator) }));
   });
   app.get('/connections', async (c) => {
     const rows = await deps.db
@@ -628,7 +642,14 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     if (!parsed.success)
       throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
     try {
-      return c.json(mcpSignInStart.parse(await signIns.start(c.get('owner').id, parsed.data)), 201);
+      const started = await signIns.start(c.get('owner').id, parsed.data);
+      return c.json(
+        mcpSignInStart.parse({
+          ...started,
+          scopes: started.scopes.map((scope) => ({ scope })),
+        }),
+        201,
+      );
     } catch (error) {
       throw signInError(error);
     }
@@ -806,8 +827,21 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           400,
         );
       try {
+        const started = await signIns.start(c.get('owner').id, parsed.data);
+        // Each scope with the plain words the catalog shows for it.
+        const labels = new Map<string, string>(
+          ACCOUNT_CATALOG.flatMap((entry) =>
+            entry.scopes.map((scope) => [scope.scope, scope.label] as const),
+          ),
+        );
         return c.json(
-          accountSignInStart.parse(await signIns.start(c.get('owner').id, parsed.data)),
+          accountSignInStart.parse({
+            ...started,
+            scopes: started.scopes.map((scope) => {
+              const label = labels.get(scope);
+              return label ? { scope, label } : { scope };
+            }),
+          }),
           201,
         );
       } catch (error) {

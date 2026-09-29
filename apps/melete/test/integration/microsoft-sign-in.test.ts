@@ -9,6 +9,7 @@ import {
 import { ConnectorFactory, useConnectorFactory } from '../../src/connectors/configured.ts';
 import { EmailConnector } from '../../src/connectors/email.ts';
 import { startFakeMicrosoft } from '../../src/connectors/fixtures/fake-microsoft.ts';
+import { MICROSOFT_SIGN_IN_SCOPE } from '../../src/connectors/microsoft.ts';
 import { OutlookCalendarConnector } from '../../src/connectors/outlook-calendar.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -70,6 +71,10 @@ async function harness() {
     const started = await app.request('/microsoft-sign-ins', as(cookie, {}));
     expect(started.status).toBe(201);
     const start = accountSignInStart.parse(await started.json());
+    // Where the person will sign in, and everything asked for, before the browser goes there.
+    expect(start.issuer).toBe(new URL(start.authorize_url).origin);
+    expect(start.scopes.map((item) => item.scope)).toEqual(MICROSOFT_SIGN_IN_SCOPE.split(' '));
+    expect(start.scopes.every((item) => Boolean(item.label))).toBe(true);
     const approved = await fetch(start.authorize_url, { redirect: 'manual' });
     const back = new URL(approved.headers.get('location') ?? '');
     expect(`${back.origin}${back.pathname}`).toBe(start.redirect_uri);

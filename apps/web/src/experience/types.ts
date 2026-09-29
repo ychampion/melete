@@ -101,6 +101,10 @@ export type Connection = Success<
 >['connections'][number];
 /** A kind of connection that can be installed, with the fields its form needs. */
 export type ConnectionKind = Ok<paths['/connection-kinds'], 'get'>['kinds'][number];
+/** Something a person can connect here, with how and whether it is offered now. */
+export type CatalogEntry = NonNullable<Ok<paths['/connection-kinds'], 'get'>['catalog']>[number];
+export type AccountSignInStart = Ok<paths['/google-sign-ins'], 'post'>;
+export type AccountSignInStatus = Ok<paths['/google-sign-ins/{id}'], 'get'>;
 export type ConnectionField = ConnectionKind['fields'][number];
 export type ConnectionItemField = NonNullable<ConnectionField['item_fields']>[number];
 export type ConnectionCreate = Body<paths['/connections'], 'post'>;

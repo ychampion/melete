@@ -97,6 +97,12 @@ withDb('signing in to a remote MCP server', () => {
     expect(started.status).toBe(201);
     const start = mcpSignInStart.parse(await started.json());
     expect(start.redirect_uri).toBe(`${PUBLIC_URL}/api/oauth/callback`);
+    // Where the person will sign in, and what is asked for, before the browser goes there.
+    expect(start.issuer).toBe(server.issuer);
+    expect(start.scopes.map((item) => item.scope)).toEqual(
+      new URL(start.authorize_url).searchParams.get('scope')?.split(' ') ?? [],
+    );
+    expect(start.scopes.map((item) => item.scope)).toContain('files:read');
     const pending = await h.app.request(`/mcp-sign-ins/${start.sign_in_id}`, h.as(h.cookie));
     expect(mcpSignInStatus.parse(await pending.json()).state).toBe('pending');
 

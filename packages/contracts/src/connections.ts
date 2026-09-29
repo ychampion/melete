@@ -436,6 +436,13 @@ export const mcpSignInRequest = z.union([
     .strict(),
 ]);
 
+/** One permission a sign-in asks for, with the plain words a person reads for it when known. */
+export const requestedScope = z.object({
+  scope: z.string(),
+  label: z.string().optional(),
+});
+export type RequestedScope = z.infer<typeof requestedScope>;
+
 export const mcpSignInStart = z.object({
   sign_in_id: z.string(),
   /** Open this in the person's browser. */
@@ -443,6 +450,13 @@ export const mcpSignInStart = z.object({
   /** Where the authorization server sends the browser back. */
   redirect_uri: z.url(),
   expires_at: timestamp,
+  /**
+   * The authorization server the MCP server named, where the person will sign
+   * in. Show it, with `scopes`, before opening `authorize_url`.
+   */
+  issuer: z.url(),
+  /** What the sign-in asks the server for; empty when the server names no scopes. */
+  scopes: z.array(requestedScope),
 });
 
 export const mcpSignInStatus = z.discriminatedUnion('state', [
@@ -474,6 +488,10 @@ export const accountSignInStart = z.object({
   authorize_url: z.url(),
   redirect_uri: z.url(),
   expires_at: timestamp,
+  /** Where the person will sign in. Show it, with `scopes`, before opening `authorize_url`. */
+  issuer: z.url(),
+  /** Everything the sign-in asks the provider for. */
+  scopes: z.array(requestedScope),
 });
 
 export const accountSignInStatus = z.discriminatedUnion('state', [
@@ -575,6 +593,10 @@ export const connectionCatalogEntry = z
         provider: z.enum(['google', 'microsoft']),
         /** `POST` here to start; the answer is the address to open in the browser. */
         start: z.string(),
+        /** Where the person signs in. */
+        issuer: z.url(),
+        /** Everything the sign-in asks the provider for, in plain words. */
+        scopes: z.array(requestedScope),
       }),
       z.object({
         method: z.literal('mcp_sign_in'),
@@ -591,8 +613,15 @@ export const connectionCatalogEntry = z
       }),
     ]),
     available: z.boolean(),
-    /** When it is not available, the sentence that says what the operator has to set. */
+    /** When it is not available, why, in words for the person using this Melete. */
     unavailable_reason: z.string().optional(),
+    /**
+     * When it is not available, what the operator has to set. Sent only to the
+     * installation's owner, who runs it; everyone else reads `unavailable_reason`.
+     */
+    setup_hint: z.string().optional(),
+    /** Something the person should know before connecting it, such as that it can move money. */
+    warning: z.string().optional(),
   })
   .meta({ id: 'ConnectionCatalogEntry' });
 export type ConnectionCatalogEntry = z.infer<typeof connectionCatalogEntry>;
@@ -603,7 +632,11 @@ export const connectionKindListResponse = z.object({
   catalog: z.array(connectionCatalogEntry).optional(),
 });
 
-/** Account sign-ins: one consent connects the account's mail and calendar. */
+/**
+ * Account sign-ins: one consent connects the account's mail and calendar. The
+ * issuer and scopes are the ones the service asks for, fixed in its connectors;
+ * a test holds the two lists equal.
+ */
 export const ACCOUNT_CATALOG = [
   {
     id: 'google',
@@ -612,6 +645,23 @@ export const ACCOUNT_CATALOG = [
       'Sign in with Google to connect Gmail and Google Calendar. Mail is read and searched, drafts stay here, and each message is sent and each event changed after you approve it.',
     covers: ['mail', 'calendar'],
     provider: 'google',
+    issuer: 'https://accounts.google.com',
+    scopes: [
+      { scope: 'openid', label: 'Confirm who you are' },
+      { scope: 'email', label: 'See your email address' },
+      {
+        scope: 'https://www.googleapis.com/auth/gmail.readonly',
+        label: 'Read your Gmail messages',
+      },
+      {
+        scope: 'https://www.googleapis.com/auth/gmail.send',
+        label: 'Send email as you, each message after you approve it',
+      },
+      {
+        scope: 'https://www.googleapis.com/auth/calendar.events',
+        label: 'See and change events in your Google calendars, each change after you approve it',
+      },
+    ],
   },
   {
     id: 'microsoft',
@@ -620,6 +670,22 @@ export const ACCOUNT_CATALOG = [
       'Sign in with Microsoft to connect Outlook mail and calendar, for Outlook.com and work or school accounts. Each message is sent and each event changed after you approve it.',
     covers: ['mail', 'calendar'],
     provider: 'microsoft',
+    issuer: 'https://login.microsoftonline.com',
+    scopes: [
+      { scope: 'openid', label: 'Confirm who you are' },
+      { scope: 'email', label: 'See your email address' },
+      { scope: 'offline_access', label: 'Stay connected until you disconnect' },
+      { scope: 'https://graph.microsoft.com/User.Read', label: 'Read your basic profile' },
+      { scope: 'https://graph.microsoft.com/Mail.Read', label: 'Read your Outlook mail' },
+      {
+        scope: 'https://graph.microsoft.com/Mail.Send',
+        label: 'Send email as you, each message after you approve it',
+      },
+      {
+        scope: 'https://graph.microsoft.com/Calendars.ReadWrite',
+        label: 'See and change your Outlook calendar, each change after you approve it',
+      },
+    ],
   },
 ] as const;
 
@@ -657,8 +723,16 @@ export const MCP_CATALOG = [
     title: 'Stripe',
     description: "Look up and manage Stripe objects through Stripe's MCP server.",
     url: 'https://mcp.stripe.com',
+    warning:
+      "Stripe's tools can move money: they can issue refunds, and create payment links and invoices. Mark those tools as spend when you grant them, so each one waits for your approval.",
   },
-] as const;
+] as const satisfies ReadonlyArray<{
+  id: string;
+  title: string;
+  description: string;
+  url: string;
+  warning?: string;
+}>;
 
 const text = (
   path: string,

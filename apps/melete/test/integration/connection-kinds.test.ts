@@ -330,16 +330,47 @@ withDb('installing each kind of connection through the API', () => {
     const google = catalog.find((entry) => entry.id === 'google');
     expect(google).toMatchObject({
       available: false,
-      connect: { method: 'sign_in', provider: 'google', start: '/google-sign-ins' },
+      connect: {
+        method: 'sign_in',
+        provider: 'google',
+        start: '/google-sign-ins',
+        issuer: 'https://accounts.google.com',
+      },
     });
-    expect(google?.unavailable_reason).toContain('GOOGLE_OAUTH_CLIENT_ID');
+    // Where the person signs in and what is asked for are known before anything starts.
+    if (google?.connect.method !== 'sign_in') throw new Error('Expected a sign-in');
+    expect(google.connect.scopes.map((item) => item.scope)).toContain(
+      'https://www.googleapis.com/auth/gmail.send',
+    );
+    // The reason is in plain words; what to set is for the installation's owner, who runs it.
+    expect(google.unavailable_reason).toBe(
+      'Signing in with Google is not set up on this Melete yet.',
+    );
+    expect(google.setup_hint).toContain('GOOGLE_OAUTH_CLIENT_ID');
     const notion = catalog.find((entry) => entry.id === 'notion');
     expect(notion).toMatchObject({
       available: false,
       covers: ['tools'],
       connect: { method: 'mcp_sign_in', url: 'https://mcp.notion.com/mcp', start: '/mcp-sign-ins' },
     });
-    expect(notion?.unavailable_reason).toContain('MELETE_PUBLIC_URL');
+    expect(notion?.unavailable_reason).not.toContain('MELETE_PUBLIC_URL');
+    expect(notion?.setup_hint).toContain('MELETE_PUBLIC_URL');
+    expect(catalog.find((entry) => entry.id === 'stripe')?.warning).toContain('move money');
+    // Another account on this installation reads the plain reasons only.
+    const member = { email: 'catalog-reader@example.test', password: 'catalog-reader-password' };
+    expect((await h.app.request('/principals', h.as(h.cookie, member))).status).toBe(201);
+    const memberCookie = (await h.app.request('/login', h.as('', member))).headers
+      .get('set-cookie')
+      ?.split(';')[0];
+    if (!memberCookie) throw new Error('The member did not sign in');
+    const theirs = await (await h.app.request('/connection-kinds', h.as(memberCookie))).text();
+    const parsed = connectionKindListResponse.parse(JSON.parse(theirs)).catalog ?? [];
+    expect(parsed.find((entry) => entry.id === 'google')?.unavailable_reason).toBe(
+      google.unavailable_reason,
+    );
+    expect(parsed.every((entry) => entry.setup_hint === undefined)).toBe(true);
+    expect(theirs).not.toContain('GOOGLE_OAUTH_CLIENT_ID');
+    expect(theirs).not.toContain('MELETE_PUBLIC_URL');
     // Every form a person can fill in is in the catalog, and nothing else is a form.
     const forms = catalog.filter((entry) => entry.connect.method === 'form');
     expect(forms.map((entry) => entry.id)).toEqual(served.kinds.map((kind) => kind.id));
