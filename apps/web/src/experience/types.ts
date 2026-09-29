@@ -107,6 +107,14 @@ export type ConnectionCreate = Body<paths['/connections'], 'post'>;
 export type ConnectionInstalled = Ok<paths['/connections'], 'post'>;
 export type ConnectionChecked = Ok<paths['/connections/{connectionId}/health'], 'post'>;
 export type BrowserSession = Success<Ok<paths['/browser/sessions/{id}'], 'get'>>['session'];
+/** What a conversation's agent is doing on its computer: its browser and its terminal. */
+export type AgentComputer = Success<Ok<paths['/conversations/{id}/computer'], 'get'>>;
+export type ComputerBrowser = NonNullable<AgentComputer['browser']>;
+export type ComputerCommand = AgentComputer['terminal'][number];
+export type BrowserControl = Ok<paths['/browser/sessions/{id}/takeover'], 'post'>;
+export type LiveOpen = Ok<paths['/browser/sessions/{id}/live'], 'post'>;
+export type LiveUp = Body<paths['/browser/sessions/{id}/live/input'], 'post'>;
+export type LiveInput = LiveUp['events'][number];
 export type SearchResult = Success<Ok<paths['/search'], 'get'>>['results'][number];
 /**
  * An entry in the broker's action ledger. The interface reads it only for

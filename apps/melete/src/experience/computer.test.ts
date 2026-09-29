@@ -1,0 +1,83 @@
+import { expect, test } from 'bun:test';
+import { projectComputer, terminalText } from './computer.ts';
+import type { ActionRow } from './projectors.ts';
+
+const at = (minute: number) => new Date(Date.UTC(2026, 8, 30, 9, minute));
+let n = 0;
+const row = (kind: string, detail: Record<string, unknown>, payload = {}, status = 'succeeded') =>
+  ({
+    id: `act_${++n}`,
+    jobId: 'job_1',
+    attemptId: 'att_1',
+    connectionId: 'conn_1',
+    kind,
+    effectClass: 'read',
+    canonicalPayload: payload,
+    receipt: { detail },
+    status,
+    createdAt: at(n),
+    resolvedAt: at(n),
+  }) as unknown as ActionRow;
+const observation = (url: string, title: string, screenshot?: string) => ({
+  session_id: 'bs_1',
+  control_epoch: 1,
+  observation: {
+    id: 'obs',
+    url,
+    title,
+    ...(screenshot ? { screenshot: { artifact_id: screenshot } } : {}),
+  },
+});
+const available = { browser: true, terminal: false };
+
+test('the newest observation decides the page; an older picture is not carried past a hand-back', () => {
+  const view = projectComputer({
+    rows: [
+      row('browser.observe', observation('https://example.test/start', 'Start', 'art_before')),
+      row(
+        'browser.observe',
+        observation('https://example.test/account/[redacted]', 'Code [redacted]'),
+      ),
+    ],
+    bindings: [{ id: 'bs_1', control: 'automation', updated_at: at(1) }],
+    available,
+  });
+  expect(view.browser).toMatchObject({
+    session_id: 'bs_1',
+    control: 'agent',
+    title: 'Code [redacted]',
+    screenshot: null,
+  });
+});
+
+test('an address loses its query, and the binding touched last is the browser shown', () => {
+  const view = projectComputer({
+    rows: [
+      row('browser.observe', {
+        ...observation('https://example.test/a?token=abc#x', 'A', 'art_a'),
+        session_id: 'bs_2',
+      }),
+    ],
+    bindings: [
+      { id: 'bs_1', control: 'automation', updated_at: at(1) },
+      { id: 'bs_2', control: 'human', updated_at: at(5) },
+    ],
+    available,
+  });
+  expect(view.browser).toMatchObject({
+    session_id: 'bs_2',
+    control: 'you',
+    url: 'https://example.test/a',
+    screenshot: { artifact_id: 'art_a' },
+  });
+});
+
+test('terminal text keeps the last lines, strips escapes and hides a credential line whole', () => {
+  const text = terminalText(
+    'first\r\nexport TOKEN=abcdef123456\n\u001b[1mbold\u001b[0m\n\n',
+    4000,
+    'last',
+  );
+  expect(text).toBe('first\n[hidden]\nbold');
+  expect(terminalText('ab '.repeat(2000), 100, 'first').length).toBe(100);
+});

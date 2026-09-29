@@ -271,6 +271,7 @@ export function createApp(deps: AppDeps) {
       memoryJournal: deps.memory?.journal,
       memoryProvision: deps.memory?.provision,
       triggers: deps.triggers,
+      browser: Boolean(deps.browserSessions),
     });
   if (deps.db)
     mountCompanies(app, {

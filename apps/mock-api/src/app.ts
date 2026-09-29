@@ -97,6 +97,8 @@ export type AppDeps = {
   seedExperience?: boolean;
   /** Start as a fresh install: no account, and signed out until one is made. */
   setupNeeded?: boolean;
+  /** The agent's browser and sandbox. On unless a demonstration of a fresh install turns it off. */
+  computer?: boolean;
 };
 
 type ErrorBody = z.infer<typeof errorResponse>;
@@ -125,6 +127,7 @@ export function createMockApp(deps: AppDeps) {
   );
 
   const experience = mountExperienceMock(app, deps);
+  experience.computer.mount(app);
   if (deps.seedExperience) experience.seed();
   // The companies surface is agreed but not yet in openapi.json, so it mounts
   // its own routes rather than going through the contract's operation table.
