@@ -144,7 +144,7 @@
           "push"
         ],
         "summary": "Subscribe this device; the same endpoint again updates it",
-        "description": "Only endpoints on a known browser push service, or an origin the operator added, are accepted.",
+        "description": "Only endpoints on a known browser push service, or an origin the operator added, are accepted, with a P-256 public key and a 16-byte secret.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -162,12 +162,14 @@
                       "p256dh": {
                         "type": "string",
                         "minLength": 80,
-                        "maxLength": 120
+                        "maxLength": 120,
+                        "pattern": "^[A-Za-z0-9_-]+={0,2}$"
                       },
                       "auth": {
                         "type": "string",
                         "minLength": 16,
-                        "maxLength": 32
+                        "maxLength": 32,
+                        "pattern": "^[A-Za-z0-9_-]+={0,2}$"
                       }
                     },
                     "required": [
@@ -203,7 +205,7 @@
             }
           },
           "400": {
-            "description": "Not a push service this installation sends to",
+            "description": "Not a push service this installation sends to, or keys a browser does not subscribe with",
             "content": {
               "application/json": {
                 "schema": {
@@ -17716,6 +17718,9 @@
           "device_label": {
             "type": "string"
           },
+          "endpoint_hash": {
+            "type": "string"
+          },
           "created_at": {
             "$ref": "#/components/schemas/__schema110"
           },
@@ -17733,6 +17738,7 @@
         "required": [
           "id",
           "device_label",
+          "endpoint_hash",
           "created_at",
           "last_used_at"
         ],

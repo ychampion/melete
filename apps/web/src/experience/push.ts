@@ -5,6 +5,7 @@
  * settled. Never on the first visit.
  */
 import { adapter } from './adapter.ts';
+import type { PushDevice } from './types.ts';
 
 const MOMENT_KEY = 'melete.push.moment';
 const DISMISSED_KEY = 'melete.push.dismissed';
@@ -94,6 +95,39 @@ function keyBytes(base64url: string): Uint8Array {
   return Uint8Array.from(raw, (c) => c.charCodeAt(0));
 }
 
+/** The endpoint's SHA-256, base64url: how the service names each device without its endpoint. */
+export async function endpointHash(endpoint: string): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(endpoint)),
+  );
+  return btoa(String.fromCharCode(...digest))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+/** This browser's own subscription, if it has one. */
+async function browserSubscription(): Promise<PushSubscription | null> {
+  if (!pushSupported()) return null;
+  const registration = await navigator.serviceWorker.getRegistration();
+  return (await registration?.pushManager.getSubscription()) ?? null;
+}
+
+/** The hash of this browser's subscription endpoint, or null when it has none. */
+export async function thisBrowserHash(): Promise<string | null> {
+  const subscription = await browserSubscription();
+  return subscription ? endpointHash(subscription.endpoint) : null;
+}
+
+/**
+ * Pushes arrive here only when this browser holds a subscription and the
+ * service still lists it: a row removed from another device, or dropped after
+ * the push service said it was gone, no longer counts.
+ */
+export function subscribedHere(hash: string | null, devices: readonly PushDevice[]): boolean {
+  return hash !== null && devices.some((device) => device.endpoint_hash === hash);
+}
+
 export type EnableResult =
   | { ok: true; id: string }
   | { ok: false; reason: 'unsupported' | 'not_configured' | 'denied' | 'failed'; message: string };
@@ -123,8 +157,18 @@ export async function enablePush(): Promise<EnableResult> {
     };
   try {
     const registration = await navigator.serviceWorker.ready;
+    let existing = await registration.pushManager.getSubscription();
+    // One the service no longer lists may be one the push service gave up on: start afresh.
+    if (existing) {
+      const listed = await adapter.pushDevices();
+      const hash = await endpointHash(existing.endpoint);
+      if (!subscribedHere(hash, listed.data?.subscriptions ?? [])) {
+        await existing.unsubscribe();
+        existing = null;
+      }
+    }
     const subscription =
-      (await registration.pushManager.getSubscription()) ??
+      existing ??
       (await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: keyBytes(key.data.public_key) as BufferSource,
@@ -150,16 +194,18 @@ export async function enablePush(): Promise<EnableResult> {
   }
 }
 
-/** Whether this browser already has a subscription. */
+/**
+ * Whether pushes reach this browser: it has a subscription and the service lists
+ * it. When the list can't be read, the browser's own answer stands.
+ */
 export async function thisDeviceSubscribed(): Promise<boolean> {
-  if (!pushSupported()) return false;
-  const registration = await navigator.serviceWorker.getRegistration();
-  return Boolean(await registration?.pushManager.getSubscription());
+  const hash = await thisBrowserHash();
+  if (hash === null) return false;
+  const listed = await adapter.pushDevices();
+  return listed.data ? subscribedHere(hash, listed.data.subscriptions) : true;
 }
 
 /** Stops pushes here: the browser forgets the subscription as well as the service. */
 export async function forgetThisBrowser(): Promise<void> {
-  if (!pushSupported()) return;
-  const registration = await navigator.serviceWorker.getRegistration();
-  await (await registration?.pushManager.getSubscription())?.unsubscribe();
+  await (await browserSubscription())?.unsubscribe();
 }

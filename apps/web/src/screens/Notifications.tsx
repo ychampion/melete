@@ -16,6 +16,8 @@ import {
   MOMENT_EVENT,
   offerDismissed,
   pushSupported,
+  subscribedHere,
+  thisBrowserHash,
   thisDeviceSubscribed,
   valueMomentReached,
 } from '../experience/push.ts';
@@ -67,17 +69,20 @@ export function NotificationsTab() {
   const key = useLoad(() => adapter.pushPublicKey(), []);
   const devices = useLoad(() => adapter.pushDevices(), []);
   const settings = useLoad(() => adapter.pushSettings(), []);
-  const [here, setHere] = useState<boolean | null>(null);
+  // This browser's subscription, by the hash the service lists it under; undefined until read.
+  const [browserHash, setBrowserHash] = useState<string | null | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [dayStart, setDayStart] = useState(profile?.day_hours.start ?? '08:00');
   const [dayEnd, setDayEnd] = useState(profile?.day_hours.end ?? '22:00');
 
   useEffect(() => {
-    void thisDeviceSubscribed().then(setHere);
+    void thisBrowserHash().then(setBrowserHash);
   }, []);
 
   const configured = Boolean(key.data?.public_key);
   const list = devices.data?.subscriptions ?? [];
+  const here =
+    browserHash === undefined || !devices.data ? null : subscribedHere(browserHash, list);
   const current = settings.data?.settings;
 
   const save = async (patch: Parameters<typeof adapter.savePushSettings>[0]) => {
@@ -97,7 +102,7 @@ export function NotificationsTab() {
       toast({ kind: 'err', title: result.message });
       return;
     }
-    setHere(true);
+    setBrowserHash(await thisBrowserHash());
     devices.reload();
     toast({ kind: 'ok', title: 'Pushes are on for this device' });
   };
@@ -108,10 +113,10 @@ export function NotificationsTab() {
       toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t remove it' });
       return;
     }
-    // If it was this browser, it forgets the subscription too.
-    if (here && list.length === 1) {
+    // If it was this browser, it forgets the subscription too, so it can subscribe again.
+    if (browserHash && device.endpoint_hash === browserHash) {
       await forgetThisBrowser();
-      setHere(false);
+      setBrowserHash(null);
     }
     devices.set({ subscriptions: list.filter((d) => d.id !== device.id) });
     toast({ kind: 'ok', title: `No more pushes to ${device.device_label || 'that device'}` });

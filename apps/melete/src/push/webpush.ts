@@ -84,6 +84,25 @@ export type SubscriptionKeys = {
   auth: string;
 };
 
+const BASE64URL = /^[A-Za-z0-9_-]+={0,2}$/;
+
+/**
+ * Whether a message can be encrypted for these keys: the public key is a point
+ * on P-256 and the secret is 16 bytes. Checked when a browser subscribes, so a
+ * key that could never be used is refused there instead of failing every send.
+ */
+export async function subscriptionKeysUsable(keys: SubscriptionKeys): Promise<boolean> {
+  if (!BASE64URL.test(keys.p256dh) || !BASE64URL.test(keys.auth)) return false;
+  const point = fromBase64Url(keys.p256dh);
+  if (point.length !== 65 || point[0] !== 4 || fromBase64Url(keys.auth).length !== 16) return false;
+  try {
+    await crypto.subtle.importKey('raw', point, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Encrypts one message for one subscription. `sender` and `salt` exist for the
  * RFC's test vector; left out, both are fresh for every message, as they must be.
@@ -226,25 +245,60 @@ export type PushTarget = { endpoint: string; keys: SubscriptionKeys };
 /** What a push service said: sent, gone for good, or a failure worth trying again. */
 export type PushOutcome = 'sent' | 'gone' | 'failed';
 
+/** How long one push service gets to answer before the send counts as failed. */
+const SEND_TIMEOUT_MS = 10_000;
+
+/**
+ * Sends one message to one device. Nothing here throws: keys that cannot be
+ * encrypted for, a push service that cannot be reached and one that does not
+ * answer in time are all a failed send, so one device never stops the rest.
+ */
 export async function sendPush(
   target: PushTarget,
   payload: unknown,
   vapid: { keys: VapidKeys; subject: string },
-  options: { ttlSeconds?: number; urgency?: 'normal' | 'high'; fetcher?: typeof fetch } = {},
+  options: {
+    ttlSeconds?: number;
+    urgency?: 'normal' | 'high';
+    fetcher?: typeof fetch;
+    timeoutMs?: number;
+  } = {},
 ): Promise<PushOutcome> {
-  const body = await encryptPayload(encoder.encode(JSON.stringify(payload)), target.keys);
-  const response = await (options.fetcher ?? fetch)(target.endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: await vapidAuthorization(target.endpoint, vapid.keys, vapid.subject),
-      'Content-Encoding': 'aes128gcm',
-      'Content-Type': 'application/octet-stream',
-      TTL: String(options.ttlSeconds ?? 24 * 3600),
-      Urgency: options.urgency ?? 'normal',
-    },
-    body,
-  }).catch(() => null);
-  if (!response) return 'failed';
+  let body: Uint8Array;
+  let authorization: string;
+  try {
+    body = await encryptPayload(encoder.encode(JSON.stringify(payload)), target.keys);
+    authorization = await vapidAuthorization(target.endpoint, vapid.keys, vapid.subject);
+  } catch {
+    return 'failed';
+  }
+  let response: Response;
+  // A timer of its own rather than AbortSignal.timeout, whose timer does not keep the process
+  // waiting: the pass must end at the deadline whatever else is pending.
+  const deadline = new AbortController();
+  const timer = setTimeout(
+    () =>
+      deadline.abort(new DOMException('The push service did not answer in time', 'TimeoutError')),
+    options.timeoutMs ?? SEND_TIMEOUT_MS,
+  );
+  try {
+    response = await (options.fetcher ?? fetch)(target.endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: authorization,
+        'Content-Encoding': 'aes128gcm',
+        'Content-Type': 'application/octet-stream',
+        TTL: String(options.ttlSeconds ?? 24 * 3600),
+        Urgency: options.urgency ?? 'normal',
+      },
+      body,
+      signal: deadline.signal,
+    });
+  } catch {
+    return 'failed';
+  } finally {
+    clearTimeout(timer);
+  }
   if (response.ok) return 'sent';
   // The browser dropped the subscription; it will never accept this endpoint again.
   if (response.status === 404 || response.status === 410) return 'gone';

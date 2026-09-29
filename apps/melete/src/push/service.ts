@@ -10,6 +10,8 @@
  * never floods a phone with the past. A chase settling is recorded where the
  * ledger item is marked settled (see `recordSettled`).
  */
+
+import { createHash } from 'node:crypto';
 import {
   type PushSettings,
   type PushSubscriptionRequest,
@@ -33,7 +35,7 @@ import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { QUEUES } from '../jobs/queue.ts';
 import { type DayWindow, type IntentKind, localTime, planPush, type Waiting } from './policy.ts';
-import { type PushOutcome, sendPush, type VapidKeys } from './webpush.ts';
+import { type PushOutcome, sendPush, subscriptionKeysUsable, type VapidKeys } from './webpush.ts';
 
 /**
  * Browser push services, by host. An endpoint anywhere else is refused, so a
@@ -81,9 +83,17 @@ function allowedEndpoint(endpoint: string, extraOrigins: string[]): boolean {
   );
 }
 
+/**
+ * Names an endpoint without revealing it, so a browser can find its own row in
+ * the list by hashing its own subscription's endpoint the same way.
+ */
+export const endpointHash = (endpoint: string) =>
+  createHash('sha256').update(endpoint).digest('base64url');
+
 const view = (row: SubscriptionRow) => ({
   id: row.id,
   device_label: row.deviceLabel,
+  endpoint_hash: endpointHash(row.endpoint),
   created_at: row.createdAt.toISOString(),
   last_used_at: row.lastUsedAt?.toISOString() ?? null,
 });
@@ -93,7 +103,8 @@ const clip = (text: string, length: number) =>
 
 /**
  * A settled chase, recorded in the transaction that settled it. Only for a
- * person with a device to tell; the dedup key makes a second settle a no-op.
+ * person with a device to tell who has not turned this kind off; the dedup key
+ * makes a second settle a no-op.
  */
 export async function recordSettled(
   tx: Transaction | Database,
@@ -105,6 +116,7 @@ export async function recordSettled(
            ${clip(item.summary, 300)}, 'Because you asked Melete to chase this.',
            ${item.jobId ? `/#/chat/${item.jobId}` : '/#/companies'}, ${`settled:${item.id}`}
     where exists (select 1 from push_subscription s where s.principal_id = ${item.principalId})
+      and coalesce((select p.settled from push_setting p where p.principal_id = ${item.principalId}), true)
     on conflict (dedup_key) do nothing`);
 }
 
@@ -129,6 +141,12 @@ export class PushService {
       throw new ServiceError(
         'push_endpoint_refused',
         'That is not a push service this installation sends to.',
+        400,
+      );
+    if (!(await subscriptionKeysUsable(input.keys)))
+      throw new ServiceError(
+        'push_keys_invalid',
+        'Those keys are not ones a browser subscribes with.',
         400,
       );
     // One endpoint is one browser. Signing in as someone else on it moves it to them.
@@ -335,6 +353,14 @@ export class PushService {
     const day = await this.dayOf(principalId);
     const local = localTime(now, day.timeZone);
     if (local.weekday !== 1) return;
+    // Already made today: every later pass on this Monday stops here, before the counts.
+    const dedupKey = `weekly:${principalId}:${local.day}`;
+    const [made] = await this.db
+      .select({ id: pushIntent.id })
+      .from(pushIntent)
+      .where(eq(pushIntent.dedupKey, dedupKey))
+      .limit(1);
+    if (made) return;
     const weekAgo = new Date(now.getTime() - 7 * 86_400_000);
     const [counts] = (await this.db.execute(sql`
       select
@@ -366,7 +392,7 @@ export class PushService {
         body: parts.join(', '),
         because: 'Because you get a summary each week. You can turn it off in Settings.',
         url: '/#/companies',
-        dedupKey: `weekly:${principalId}:${local.day}`,
+        dedupKey,
       })
       .onConflictDoNothing({ target: pushIntent.dedupKey });
   }
@@ -394,18 +420,27 @@ export class PushService {
   /** One pass for one person: send what the policy allows, to each of their devices. */
   async dispatch(principalId: string, now: Date): Promise<'sent' | string> {
     if (!this.config.keys) return 'not_configured';
-    const waiting = await this.db
-      .select()
-      .from(pushIntent)
-      .where(
-        and(
-          eq(pushIntent.principalId, principalId),
-          isNull(pushIntent.sentAt),
-          isNull(pushIntent.droppedAt),
-        ),
-      );
-    const day = await this.dayOf(principalId);
     const pacing = await this.pacingOf(principalId);
+    // Only the kinds turned on, whatever was recorded around the moment one went off.
+    const on: IntentKind[] = [
+      ...(pacing.decisions ? (['decision'] as const) : []),
+      ...(pacing.settled ? (['settled'] as const) : []),
+      ...(pacing.weeklySummary ? (['weekly'] as const) : []),
+    ];
+    const waiting = on.length
+      ? await this.db
+          .select()
+          .from(pushIntent)
+          .where(
+            and(
+              eq(pushIntent.principalId, principalId),
+              isNull(pushIntent.sentAt),
+              isNull(pushIntent.droppedAt),
+              inArray(pushIntent.kind, on),
+            ),
+          )
+      : [];
+    const day = await this.dayOf(principalId);
     const plan = planPush({
       waiting: waiting.map(
         (row): Waiting => ({
@@ -465,13 +500,20 @@ export class PushService {
     return `mailto:${row?.email ?? 'owner@localhost'}`;
   }
 
-  /** One pass for everyone with a device. */
+  /** One pass for everyone with a device. One person's failure is theirs alone. */
   async runOnce(now: Date = new Date()): Promise<Record<string, string>> {
     const results: Record<string, string> = {};
     for (const { principalId, since } of await this.subscribers()) {
-      await this.collectDecisions(principalId, since);
-      await this.collectWeekly(principalId, now);
-      results[principalId] = await this.dispatch(principalId, now);
+      try {
+        await this.collectDecisions(principalId, since);
+        await this.collectWeekly(principalId, now);
+        results[principalId] = await this.dispatch(principalId, now);
+      } catch (error) {
+        results[principalId] = 'error';
+        process.stderr.write(
+          `push: dispatch_failed_for_one ${error instanceof Error ? error.name : 'error'}\n`,
+        );
+      }
     }
     return results;
   }

@@ -7,6 +7,8 @@ import { z } from 'zod';
 import { prefixedId, timestamp } from './common.ts';
 
 const clock = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+/** Base64url, as a browser reports its subscription keys. */
+const BASE64URL = /^[A-Za-z0-9_-]+={0,2}$/;
 
 /** This installation's VAPID public key, or null when push is not configured. */
 export const pushPublicKeyResponse = z.strictObject({ public_key: z.string().nullable() });
@@ -15,17 +17,21 @@ export const pushPublicKeyResponse = z.strictObject({ public_key: z.string().nul
 export const pushSubscriptionRequest = z.strictObject({
   endpoint: z.url().max(2048),
   keys: z.strictObject({
-    p256dh: z.string().min(80).max(120),
-    auth: z.string().min(16).max(32),
+    p256dh: z.string().regex(BASE64URL).min(80).max(120),
+    auth: z.string().regex(BASE64URL).min(16).max(32),
   }),
   device_label: z.string().max(80).default(''),
 });
 export type PushSubscriptionRequest = z.infer<typeof pushSubscriptionRequest>;
 
-/** A subscription as its owner sees it: never the endpoint or the keys. */
+/**
+ * A subscription as its owner sees it: never the endpoint or the keys. The
+ * endpoint's SHA-256, base64url, lets a browser tell which row is its own.
+ */
 export const pushSubscriptionView = z.strictObject({
   id: prefixedId('psub'),
   device_label: z.string(),
+  endpoint_hash: z.string(),
   created_at: timestamp,
   last_used_at: timestamp.nullable(),
 });

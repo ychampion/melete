@@ -7,7 +7,15 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { pushPayload } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
-import { experienceProfile, job, principal, question, space } from '../../src/db/schema.ts';
+import {
+  experienceProfile,
+  job,
+  principal,
+  pushIntent,
+  pushSubscription,
+  question,
+  space,
+} from '../../src/db/schema.ts';
 import { newId } from '../../src/ids.ts';
 import { PushService, recordSettled } from '../../src/push/service.ts';
 import { decryptPayload, generateVapidKeys, toBase64Url } from '../../src/push/webpush.ts';
@@ -50,8 +58,16 @@ const MINUTE = 60_000;
   }) as typeof fetch;
 
   let push: PushService;
-  const people = { ana: newId('own'), ben: newId('own') };
-  const spaces = { ana: newId('sp'), ben: newId('sp') };
+  type Who = 'ana' | 'ben' | 'cara' | 'dan';
+  const everyone: Who[] = ['ana', 'ben', 'cara', 'dan'];
+  const people = Object.fromEntries(everyone.map((who) => [who, newId('own')])) as Record<
+    Who,
+    string
+  >;
+  const spaces = Object.fromEntries(everyone.map((who) => [who, newId('sp')])) as Record<
+    Who,
+    string
+  >;
   let anaPhone: Device;
   let anaLaptop: Device;
   let benPhone: Device;
@@ -65,7 +81,7 @@ const MINUTE = 60_000;
     return offset === 0 ? 'Etc/GMT' : offset > 0 ? `Etc/GMT-${offset}` : `Etc/GMT+${-offset}`;
   })();
   /** Day hours around that noon, so "now" is inside or outside the day on purpose. */
-  const setDay = async (who: 'ana' | 'ben', inside: boolean) => {
+  const setDay = async (who: Who, inside: boolean) => {
     const [dayStart, dayEnd] = inside ? ['08:00', '20:00'] : ['15:00', '18:00'];
     await db
       .update(experienceProfile)
@@ -74,7 +90,7 @@ const MINUTE = 60_000;
   };
 
   /** An open question on its own job: the decision Melete would ask for. */
-  const ask = async (who: 'ana' | 'ben', text: string) => {
+  const ask = async (who: Who, text: string) => {
     const jobId = newId('job');
     await db.insert(job).values({
       id: jobId,
@@ -104,7 +120,7 @@ const MINUTE = 60_000;
       extraOrigins: [],
       fetcher,
     });
-    for (const who of ['ana', 'ben'] as const) {
+    for (const who of everyone) {
       await db.insert(principal).values({ id: people[who], email: `${who}@example.com` });
       await db.insert(space).values({
         id: spaces[who],
@@ -122,7 +138,7 @@ const MINUTE = 60_000;
     for (const phone of [anaPhone, anaLaptop, benPhone]) devices.set(phone.endpoint, phone);
   });
 
-  const subscribe = (who: 'ana' | 'ben', phone: Device, label: string) =>
+  const subscribe = (who: Who, phone: Device, label: string) =>
     push.subscribe(people[who], {
       endpoint: phone.endpoint,
       keys: { p256dh: phone.publicKey, auth: phone.auth },
@@ -248,5 +264,95 @@ const MINUTE = 60_000;
     delivered.length = 0;
     expect((await push.runOnce(later(30)))[people.ben]).toBe('nothing');
     expect(delivered).toEqual([]);
+  });
+  test('a chase settling is not told while that kind is turned off', async () => {
+    const caraPhone = await device('https://fcm.googleapis.com/fcm/send/cara-phone');
+    devices.set(caraPhone.endpoint, caraPhone);
+    await subscribe('cara', caraPhone, 'Cara’s phone');
+    await push.updateSettings(people.cara, { settled: false });
+    // Turned off before the settle: nothing is recorded, so nothing can go out later.
+    await recordSettled(db, {
+      id: newId('led'),
+      principalId: people.cara,
+      summary: 'Halliwell & Fox: deposit returned',
+      jobId: null,
+    });
+    const recorded = await db
+      .select()
+      .from(pushIntent)
+      .where(eq(pushIntent.principalId, people.cara));
+    expect(recorded).toEqual([]);
+    // One recorded in the moment the switch went off is still never sent.
+    await db.insert(pushIntent).values({
+      id: newId('pint'),
+      principalId: people.cara,
+      kind: 'settled',
+      title: 'A chase settled',
+      body: 'Recorded as the switch went off',
+      because: 'Because you asked Melete to chase this.',
+      url: '/#/companies',
+      dedupKey: `settled:${newId('led')}`,
+    });
+    delivered.length = 0;
+    expect((await push.runOnce(later(30)))[people.cara]).toBe('nothing');
+    expect(delivered.filter((d) => d.endpoint === caraPhone.endpoint)).toEqual([]);
+  });
+
+  test('a subscription whose keys cannot be encrypted for is refused', async () => {
+    const phone = await device('https://fcm.googleapis.com/fcm/send/cara-tablet');
+    // The length a browser key has, but not a point on the curve.
+    const offCurve = `B${'A'.repeat(86)}`;
+    for (const p256dh of [offCurve, 'A'.repeat(80), `${phone.publicKey.slice(0, -2)}!!`])
+      await expect(
+        push.subscribe(people.cara, {
+          endpoint: phone.endpoint,
+          keys: { p256dh, auth: phone.auth },
+          device_label: 'Cara’s tablet',
+        }),
+      ).rejects.toMatchObject({ status: 400, code: 'push_keys_invalid' });
+    await expect(
+      push.subscribe(people.cara, {
+        endpoint: phone.endpoint,
+        keys: { p256dh: phone.publicKey, auth: 'A'.repeat(24) },
+        device_label: 'Cara’s tablet',
+      }),
+    ).rejects.toMatchObject({ status: 400, code: 'push_keys_invalid' });
+    expect((await push.list(people.cara)).map((d) => d.device_label)).toEqual(['Cara’s phone']);
+  });
+
+  test('a device that cannot be sent to does not stop anyone else’s pushes', async () => {
+    // Written straight to the table, as a row stored before keys were checked would be.
+    await db.insert(pushSubscription).values({
+      id: newId('psub'),
+      principalId: people.dan,
+      endpoint: 'https://fcm.googleapis.com/fcm/send/dan-broken',
+      p256dh: 'A'.repeat(80),
+      auth: 'A'.repeat(22),
+      deviceLabel: 'Dan’s old phone',
+    });
+    await ask('dan', 'Answer the insurer?');
+    await ask('cara', 'Confirm the plumber for Thursday?');
+    delivered.length = 0;
+    const results = await push.runOnce(later(30));
+    expect(results[people.dan]).toBe('failed');
+    expect(results[people.cara]).toBe('sent');
+    expect(delivered.map((d) => d.endpoint)).toContain(
+      'https://fcm.googleapis.com/fcm/send/cara-phone',
+    );
+  });
+
+  test('one person’s pass failing leaves everyone else’s to run', async () => {
+    class OneFails extends PushService {
+      override async collectDecisions(principalId: string, since: Date) {
+        if (principalId === people.dan) throw new Error('lost the connection');
+        return super.collectDecisions(principalId, since);
+      }
+    }
+    const faulty = new OneFails(db, push.config);
+    await ask('cara', 'Sign the tenancy renewal?');
+    delivered.length = 0;
+    const results = await faulty.runOnce(later(60));
+    expect(results[people.dan]).toBe('error');
+    expect(results[people.cara]).toBe('sent');
   });
 });

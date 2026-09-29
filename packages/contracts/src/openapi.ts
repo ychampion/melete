@@ -399,11 +399,13 @@ export function buildOpenApiDocument() {
             tags: ['push'],
             summary: 'Subscribe this device; the same endpoint again updates it',
             description:
-              'Only endpoints on a known browser push service, or an origin the operator added, are accepted.',
+              'Only endpoints on a known browser push service, or an origin the operator added, are accepted, with a P-256 public key and a 16-byte secret.',
             requestBody: json(pushSubscriptionRequest),
             responses: {
               '201': jsonResponse('Subscribed', pushSubscriptionResponse),
-              '400': problem('Not a push service this installation sends to'),
+              '400': problem(
+                'Not a push service this installation sends to, or keys a browser does not subscribe with',
+              ),
               '503': problem('Push is not configured'),
             },
           },

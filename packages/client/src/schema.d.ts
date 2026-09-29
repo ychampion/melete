@@ -9727,7 +9727,7 @@ export interface paths {
         put?: never;
         /**
          * Subscribe this device; the same endpoint again updates it
-         * @description Only endpoints on a known browser push service, or an origin the operator added, are accepted.
+         * @description Only endpoints on a known browser push service, or an origin the operator added, are accepted, with a P-256 public key and a 16-byte secret.
          */
         post: {
             parameters: {
@@ -9760,7 +9760,7 @@ export interface paths {
                         "application/json": components["schemas"]["__schema111"];
                     };
                 };
-                /** @description Not a push service this installation sends to */
+                /** @description Not a push service this installation sends to, or keys a browser does not subscribe with */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -12034,6 +12034,7 @@ export interface components {
         __schema109: {
             created_at: components["schemas"]["__schema110"];
             device_label: string;
+            endpoint_hash: string;
             id: string;
             last_used_at: components["schemas"]["__schema110"] | null;
         };

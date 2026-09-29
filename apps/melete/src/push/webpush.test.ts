@@ -10,6 +10,7 @@ import {
   fromBase64Url,
   generateVapidKeys,
   sendPush,
+  subscriptionKeysUsable,
   toBase64Url,
   vapidAuthorization,
 } from './webpush.ts';
@@ -34,6 +35,25 @@ const RFC = {
     'mlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPT' +
     'pK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN',
 };
+
+describe('subscription keys', () => {
+  test('only a P-256 point and a 16-byte secret are accepted', async () => {
+    const browser = await generateVapidKeys();
+    const auth = toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
+    expect(await subscriptionKeysUsable({ p256dh: browser.publicKey, auth })).toBe(true);
+    expect(await subscriptionKeysUsable({ p256dh: RFC.receiver.publicKey, auth: RFC.auth })).toBe(
+      true,
+    );
+    for (const keys of [
+      { p256dh: 'A'.repeat(80), auth },
+      { p256dh: `B${'A'.repeat(86)}`, auth },
+      { p256dh: `${browser.publicKey.slice(0, -2)}!!`, auth },
+      { p256dh: browser.publicKey, auth: 'A'.repeat(24) },
+      { p256dh: browser.publicKey, auth: `${auth.slice(0, -1)}*` },
+    ])
+      expect(await subscriptionKeysUsable(keys)).toBe(false);
+  });
+});
 
 describe('RFC 8291 aes128gcm', () => {
   test('encrypting the example gives the example body exactly', async () => {
@@ -149,5 +169,41 @@ describe('sending', () => {
     expect(await sendPush(sub, {}, { ...vapid, keys }, { fetcher: answer(410) })).toBe('gone');
     expect(await sendPush(sub, {}, { ...vapid, keys }, { fetcher: answer(404) })).toBe('gone');
     expect(await sendPush(sub, {}, { ...vapid, keys }, { fetcher: answer(500) })).toBe('failed');
+  });
+  test('keys that cannot be encrypted for are a failed send, not a thrown error', async () => {
+    const keys = await generateVapidKeys();
+    let called = false;
+    const fetcher = (async () => {
+      called = true;
+      return new Response(null, { status: 201 });
+    }) as unknown as typeof fetch;
+    const broken = [
+      { p256dh: 'A'.repeat(80), auth: 'A'.repeat(22) },
+      { p256dh: `B${'A'.repeat(86)}`, auth: 'A'.repeat(22) },
+    ];
+    for (const bad of broken)
+      expect(
+        await sendPush(
+          { endpoint: 'https://push.example.net/p/2', keys: bad },
+          {},
+          { ...vapid, keys },
+          { fetcher },
+        ),
+      ).toBe('failed');
+    expect(called).toBe(false);
+  });
+
+  test('a push service that never answers is given up on', async () => {
+    const keys = await generateVapidKeys();
+    const { sub } = await target();
+    const silent = ((_input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+      })) as unknown as typeof fetch;
+    const started = Date.now();
+    expect(await sendPush(sub, {}, { ...vapid, keys }, { fetcher: silent, timeoutMs: 50 })).toBe(
+      'failed',
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 });

@@ -3,6 +3,7 @@
  * subscribe, devices kept per mock, and the settings with quiet hours read
  * from the mock's profile. Nothing is sent from here; the service does that.
  */
+import { createHash } from 'node:crypto';
 import {
   pushSettingsResponse,
   pushSettingsUpdate,
@@ -35,6 +36,7 @@ export function mountPushMock(
   const view = (device: Device) => ({
     id: device.id,
     device_label: device.device_label,
+    endpoint_hash: createHash('sha256').update(device.endpoint).digest('base64url'),
     created_at: device.created_at,
     last_used_at: null,
   });
