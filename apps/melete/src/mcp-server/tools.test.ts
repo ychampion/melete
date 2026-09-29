@@ -5,6 +5,7 @@ const actor = {
   principalId: 'own_1',
   spaceId: 'sp_1',
   membershipGeneration: 0,
+  clientId: 'mcpc_probe',
   clientName: 'Probe',
 };
 

@@ -337,7 +337,9 @@ const assistantPaths = {
       responses: {
         '201': jsonResponse('Registered', oauthClientRegistered),
         '400': oauthProblem('The metadata was refused'),
-        '429': oauthProblem('Too many registrations from this address'),
+        '429': oauthProblem(
+          'Too many registrations from this address, or too many waiting for a person to allow them',
+        ),
       },
     },
   },
@@ -346,13 +348,17 @@ const assistantPaths = {
       tags: ['assistants'],
       summary: 'The consent page an assistant sends a person to',
       description:
-        'Shows who is asking and what they could do, to the signed-in person. Errors about the ' +
-        'request go back to a checked redirect address with the state and issuer.',
+        'Shows the signed-in person who is asking (a checked host, or a self-given name marked ' +
+        'unverified), the space the access would act in, and what it could do. An error about ' +
+        'the request goes back with the state and issuer only to a trusted redirect address: ' +
+        'loopback, the metadata document host, or one a person here already allowed. Anywhere ' +
+        'else it is shown on this page.',
       requestParams: { query: oauthAuthorizeQuery },
       responses: {
         '200': html('The consent page, or a prompt to sign in first'),
         '302': redirect('An error returned to the assistant'),
-        '400': html('The client or its redirect address is unknown'),
+        '400': html('The client or its redirect address is unknown, or the request was refused'),
+        '429': html('Too many authorization requests from this address'),
       },
     },
     post: {
@@ -367,8 +373,9 @@ const assistantPaths = {
       },
       responses: {
         '302': redirect('Back to the assistant with a code, or with access_denied'),
-        '400': html('The client or its redirect address is unknown'),
+        '400': html('The client or its redirect address is unknown, or the request was refused'),
         '403': html('The page expired or was not shown to this session'),
+        '429': html('Too many authorization requests from this address'),
       },
     },
   },
@@ -378,7 +385,8 @@ const assistantPaths = {
       summary: 'Exchange a code, or rotate a refresh token',
       description:
         'A code is used once, with its PKCE verifier. Each refresh returns a new refresh token; ' +
-        'presenting a used one ends every token of that connection.',
+        'presenting a used one ends every token of that connection. No token outlives 90 days ' +
+        'from the consent, however often it is refreshed.',
       requestBody: {
         content: { 'application/x-www-form-urlencoded': { schema: oauthTokenRequest } },
       },
@@ -408,7 +416,9 @@ const assistantPaths = {
       summary: 'The MCP endpoint (streamable HTTP, one JSON response per message)',
       description:
         'Tools: waiting_on, handle, safe_send, remember, recall and status, each acting as the ' +
-        'person the token names. safe_send only proposes: the person approves the exact text in Melete.',
+        'person the token names, in the space they agreed from. safe_send only proposes: the ' +
+        'person approves the exact text in Melete. A token whose person can no longer use that ' +
+        'space is refused with 401 and its connection ends. Tool calls are limited per connection.',
       security: [{ assistant: [] }],
       requestParams: {
         header: z.object({ 'MCP-Protocol-Version': z.string().optional() }),
@@ -418,6 +428,7 @@ const assistantPaths = {
         '200': jsonResponse('The JSON-RPC response', mcpRpcResponse),
         '202': { description: 'A notification was accepted' },
         '400': jsonResponse('Not one JSON-RPC 2.0 message, or an unknown version', mcpRpcResponse),
+        '429': jsonResponse('Too many tool calls from this connection', mcpRpcResponse),
         '401': {
           ...problem('No valid access token'),
           headers: z.object({

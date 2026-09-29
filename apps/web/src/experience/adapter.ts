@@ -17,6 +17,7 @@ import type {
   Automation,
   AutomationCreate,
   BrowserSession,
+  ConnectedAssistant,
   ConnectionChecked,
   ConnectionCreate,
   ConnectionInstalled,
@@ -239,6 +240,22 @@ export const adapter = {
       }),
     ),
   revokeRule: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/rules/{id}', path(id))),
+
+  /* ---------- other assistants connected over MCP ---------- */
+  assistants: () => guard<{ clients: ConnectedAssistant[] }>(() => api.GET('/mcp/clients')),
+  /** Ends every token the assistant holds for this person; answered with 204 and no body. */
+  disconnectAssistant: async (clientId: string): Promise<Result<{ status: 'ok' }>> => {
+    try {
+      const outcome = await api.DELETE('/mcp/clients/{clientId}', {
+        params: { path: { clientId } },
+      });
+      return outcome.response.ok
+        ? { data: { status: 'ok' }, error: null, unavailable: null }
+        : settle(outcome);
+    } catch {
+      return { data: null, error: OFFLINE, unavailable: null };
+    }
+  },
 
   /* ---------- what Melete learned ---------- */
   learned: (spaceId: string) =>

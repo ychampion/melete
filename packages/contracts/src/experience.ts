@@ -451,6 +451,8 @@ export const memoryItem = z.strictObject({
   last_used: date.nullable(),
   editable: z.boolean(),
   version: id,
+  /** The assistant that saved this detail through Melete's MCP endpoint, by the name it registered. */
+  saved_by: z.string().max(120).optional(),
 });
 export const memoryItemEdit = z.strictObject({ value: z.string().min(1).max(16000), version: id });
 /**

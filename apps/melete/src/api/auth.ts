@@ -22,7 +22,11 @@ import { ExperienceSignIn } from '../experience/signin.ts';
 import { newId } from '../ids.ts';
 import { MCP_PUBLIC_PATHS, mcpActorOf, mcpPublicPath } from '../mcp-server/actor.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
-import { resolveSessionSpace, type SessionSpace } from '../principals/session-space.ts';
+import {
+  resolveSessionSpace,
+  type SessionSpace,
+  selectedSpace,
+} from '../principals/session-space.ts';
 import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
 import type { RequestSource } from './listener.ts';
@@ -232,12 +236,16 @@ export function mountAuth(
       if (!person) {
         return c.json({ error: { code: 'unauthorized', message: 'The access has ended.' } }, 401);
       }
-      c.set('owner', publicOwner(person));
-      const resolved = await resolveSessionSpace(db, env.MELETE_SPACES_DIR, person.id, {
+      // The grant acts in the space the person consented from, and in no other:
+      // once they may no longer use it there, the access has ended.
+      const resolved = await selectedSpace(db, person.id, {
         spaceId: actor.spaceId,
         generation: actor.membershipGeneration,
       });
-      if (resolved.created) await furnish?.(resolved.spaceId);
+      if (!resolved) {
+        return c.json({ error: { code: 'unauthorized', message: 'The access has ended.' } }, 401);
+      }
+      c.set('owner', publicOwner(person));
       c.set('sessionSpace', resolved);
       c.set('experienceSpaceId', resolved.spaceId);
       return principalContext.run(person.id, () => sessionBody(c, next));

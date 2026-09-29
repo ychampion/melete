@@ -29,7 +29,13 @@ import {
 export const MCP_SCOPE = 'melete';
 export const ACCESS_TOKEN_SECONDS = 60 * 60;
 export const REFRESH_TOKEN_SECONDS = 30 * 24 * 60 * 60;
+/** However often it is refreshed, a connection ends this long after the person agreed. */
+export const CONNECTION_SECONDS = 90 * 24 * 60 * 60;
 const CODE_SECONDS = 10 * 60;
+/** A registration nobody has agreed to is dropped after a day. */
+const UNUSED_CLIENT_SECONDS = 24 * 60 * 60;
+/** At most this many registrations may wait for a person's agreement at once. */
+export const UNUSED_CLIENT_LIMIT = 500;
 
 /** Where everything is published, derived from the service's public address. */
 export type McpServerAddresses = {
@@ -147,9 +153,22 @@ const registration = z
   })
   .passthrough();
 
-export type McpClientRecord = { id: string; name: string; redirectUris: string[] };
+export type McpClientRecord = {
+  id: string;
+  name: string;
+  redirectUris: string[];
+  /**
+   * For a client identified by its metadata document, the host that document
+   * was read from: the one part of its identity this server has checked. A
+   * registered client's name is whatever it chose to call itself.
+   */
+  verifiedHost?: string;
+};
 
-function checkedClient(input: unknown, id: string | undefined): Omit<McpClientRecord, 'id'> {
+function checkedClient(
+  input: unknown,
+  id: string | undefined,
+): Pick<McpClientRecord, 'name' | 'redirectUris'> {
   const parsed = registration.safeParse(input);
   if (!parsed.success)
     throw new OAuthError('invalid_client_metadata', 'The client metadata is not valid.');
@@ -220,6 +239,9 @@ export type McpGrant = {
   scope: string;
 };
 
+/** A live access token's grant, with the sign-in it belongs to. */
+export type McpAccess = McpGrant & { family: string };
+
 export type TokenPair = {
   access_token: string;
   token_type: 'Bearer';
@@ -252,9 +274,26 @@ export class OAuthStore {
     return new Date(this.now().getTime() + seconds * 1000).toISOString();
   }
 
+  private earlier(seconds: number) {
+    return new Date(this.now().getTime() - seconds * 1000).toISOString();
+  }
+
   /** RFC 7591 registration of a public client. */
   async register(input: unknown) {
     const client = checkedClient(input, undefined);
+    // Registration is open to anyone, so what nobody agreed to does not pile up.
+    await this
+      .sql`delete from mcp_client c where c.created_at < ${this.earlier(UNUSED_CLIENT_SECONDS)}
+      and not exists (select 1 from mcp_authorization a where a.client_id = c.id)
+      and not exists (select 1 from mcp_token t where t.client_id = c.id)`;
+    const [waiting] = await this.sql`select count(*)::int as n from mcp_client c
+      where not exists (select 1 from mcp_authorization a where a.client_id = c.id)`;
+    if (Number(waiting?.n ?? 0) >= UNUSED_CLIENT_LIMIT)
+      throw new OAuthError(
+        'temporarily_unavailable',
+        'Too many assistants are waiting to be connected. Try again later.',
+        429,
+      );
     const id = secret('mcpc').slice(0, 48);
     const [row] = await this.sql`insert into mcp_client (id, name, redirect_uris)
       values (${id}, ${client.name}, ${JSON.stringify(client.redirectUris)}::jsonb)
@@ -272,7 +311,8 @@ export class OAuthStore {
 
   /**
    * The client an id names. A registered id is read from the table; an HTTPS
-   * id is a metadata document, read afresh from a public address only.
+   * id is a metadata document, read afresh from a public address only. Reading
+   * one records nothing: see `recordClient`.
    */
   async client(clientId: string): Promise<McpClientRecord | undefined> {
     const document = metadataDocumentUrl(clientId);
@@ -287,7 +327,7 @@ export class OAuthStore {
 
   /**
    * The name of a client this server already knows, read from the table only:
-   * a metadata document is recorded the first time a person is asked about it.
+   * a metadata document is recorded when a person allows it.
    */
   async clientName(clientId: string): Promise<string | undefined> {
     if (clientId.length > 2048) return undefined;
@@ -316,16 +356,39 @@ export class OAuthStore {
     } catch {
       return undefined;
     }
-    let client: Omit<McpClientRecord, 'id'>;
     try {
-      client = checkedClient(body, clientId);
+      return { id: clientId, ...checkedClient(body, clientId), verifiedHost: url.host };
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Records a metadata-document client once a person has allowed it, so its
+   * tokens name a known client. Anyone can make this server read a document;
+   * only a person's Allow makes it keep one.
+   */
+  async recordClient(client: McpClientRecord): Promise<void> {
+    if (!client.verifiedHost) return;
     await this.sql`insert into mcp_client (id, name, redirect_uris, metadata_url)
-      values (${clientId}, ${client.name}, ${JSON.stringify(client.redirectUris)}::jsonb, ${clientId})
+      values (${client.id}, ${client.name}, ${JSON.stringify(client.redirectUris)}::jsonb, ${client.id})
       on conflict (id) do update set name = excluded.name, redirect_uris = excluded.redirect_uris`;
-    return { id: clientId, ...client };
+  }
+
+  /**
+   * Whether an error about a request may be sent back to this address before a
+   * person has answered. Registration is open, so it can name any address, and
+   * a redirect from here would otherwise take anyone anywhere (RFC 9700 4.11.2).
+   * Trusted: this computer, the metadata document's own host, or an address a
+   * person here has already let this client return to.
+   */
+  async trustedReturn(client: McpClientRecord, redirectUri: string): Promise<boolean> {
+    const url = new URL(redirectUri);
+    if (url.protocol === 'http:' && LOOPBACK.includes(url.hostname)) return true;
+    if (client.verifiedHost && url.host === client.verifiedHost) return true;
+    const [allowed] = await this.sql`select 1 from mcp_authorization
+      where client_id = ${client.id} and redirect_uri = ${redirectUri} limit 1`;
+    return Boolean(allowed);
   }
 
   /** A code for one client, redirect, challenge and resource, as the person who agreed. */
@@ -369,7 +432,8 @@ export class OAuthStore {
         (input.resource !== undefined && input.resource !== row.resource)
       )
         return new OAuthError('invalid_grant', 'The code is not valid for this request.');
-      return this.issueTokens(tx as unknown as Sql, digest(`code:${input.code}`), {
+      const ends = new Date(this.now().getTime() + CONNECTION_SECONDS * 1000);
+      return this.issueTokens(tx as unknown as Sql, digest(`code:${input.code}`), ends, {
         clientId: String(row.client_id),
         principalId: String(row.principal_id),
         spaceId: String(row.space_id),
@@ -405,8 +469,14 @@ export class OAuthStore {
         (input.resource !== undefined && input.resource !== row.resource)
       )
         return new OAuthError('invalid_grant', 'The refresh token is not valid for this request.');
+      // The sign-in's first token marks when the person agreed. Every token is
+      // issued to expire by then, so a refresh cannot carry the connection past it.
+      const [family] = await tx`select min(created_at) as began from mcp_token
+        where family = ${row.family}`;
+      const ends =
+        new Date(String(family?.began ?? row.created_at)).getTime() + CONNECTION_SECONDS * 1000;
       await tx`update mcp_token set used_at = ${this.stamp()} where token_hash = ${row.token_hash}`;
-      return this.issueTokens(tx as unknown as Sql, String(row.family), {
+      return this.issueTokens(tx as unknown as Sql, String(row.family), new Date(ends), {
         clientId: String(row.client_id),
         principalId: String(row.principal_id),
         spaceId: String(row.space_id),
@@ -420,18 +490,26 @@ export class OAuthStore {
     return outcome;
   }
 
-  private async issueTokens(sql: Sql, family: string, grant: McpGrant): Promise<TokenPair> {
+  /** A token pair for one sign-in, neither of which outlives the connection's end. */
+  private async issueTokens(
+    sql: Sql,
+    family: string,
+    ends: Date,
+    grant: McpGrant,
+  ): Promise<TokenPair> {
     const access = secret('mlta');
     const refresh = secret('mltr');
+    const until = (seconds: number) =>
+      new Date(Math.min(this.now().getTime() + seconds * 1000, ends.getTime())).toISOString();
     for (const [token, kind, seconds] of [
       [access, 'access', ACCESS_TOKEN_SECONDS],
       [refresh, 'refresh', REFRESH_TOKEN_SECONDS],
     ] as const)
       await sql`insert into mcp_token (token_hash, kind, family, client_id, principal_id, space_id,
-        membership_generation, resource, scope, expires_at)
+        membership_generation, resource, scope, expires_at, created_at)
         values (${digest(token)}, ${kind}, ${family}, ${grant.clientId}, ${grant.principalId},
         ${grant.spaceId}, ${grant.membershipGeneration}, ${grant.resource}, ${grant.scope},
-        ${this.later(seconds)})`;
+        ${until(seconds)}, ${this.stamp()})`;
     return {
       access_token: access,
       token_type: 'Bearer',
@@ -447,14 +525,21 @@ export class OAuthStore {
       and family = (select family from mcp_token where token_hash = ${digest(token)})`;
   }
 
+  /** Ends one sign-in: every token that shares its family. */
+  async revokeFamily(family: string): Promise<void> {
+    await this.sql`update mcp_token set revoked_at = ${this.stamp()}
+      where family = ${family} and revoked_at is null`;
+  }
+
   /** The person and space an access token acts for, if it is live and meant for this resource. */
-  async authenticate(token: string): Promise<McpGrant | undefined> {
+  async authenticate(token: string): Promise<McpAccess | undefined> {
     if (!/^mlta_[A-Za-z0-9_-]{43}$/.test(token)) return undefined;
     const [row] = await this.sql`select * from mcp_token where token_hash = ${digest(token)}
       and kind = 'access' and revoked_at is null and expires_at > ${this.stamp()}
       and resource = ${this.addresses.resource}`;
     if (!row) return undefined;
     return {
+      family: String(row.family),
       clientId: String(row.client_id),
       principalId: String(row.principal_id),
       spaceId: String(row.space_id),

@@ -6301,7 +6301,7 @@ export interface paths {
         put?: never;
         /**
          * The MCP endpoint (streamable HTTP, one JSON response per message)
-         * @description Tools: waiting_on, handle, safe_send, remember, recall and status, each acting as the person the token names. safe_send only proposes: the person approves the exact text in Melete.
+         * @description Tools: waiting_on, handle, safe_send, remember, recall and status, each acting as the person the token names, in the space they agreed from. safe_send only proposes: the person approves the exact text in Melete. A token whose person can no longer use that space is refused with 401 and its connection ends. Tool calls are limited per connection.
          */
         post: {
             parameters: {
@@ -6360,6 +6360,15 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["__schema152"];
+                    };
+                };
+                /** @description Too many tool calls from this connection */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema359"];
                     };
                 };
             };
@@ -8517,7 +8526,7 @@ export interface paths {
         };
         /**
          * The consent page an assistant sends a person to
-         * @description Shows who is asking and what they could do, to the signed-in person. Errors about the request go back to a checked redirect address with the state and issuer.
+         * @description Shows the signed-in person who is asking (a checked host, or a self-given name marked unverified), the space the access would act in, and what it could do. An error about the request goes back with the state and issuer only to a trusted redirect address: loopback, the metadata document host, or one a person here already allowed. Anywhere else it is shown on this page.
          */
         get: {
             parameters: {
@@ -8554,8 +8563,17 @@ export interface paths {
                     };
                     content?: never;
                 };
-                /** @description The client or its redirect address is unknown */
+                /** @description The client or its redirect address is unknown, or the request was refused */
                 400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                    };
+                };
+                /** @description Too many authorization requests from this address */
+                429: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -8603,7 +8621,7 @@ export interface paths {
                     };
                     content?: never;
                 };
-                /** @description The client or its redirect address is unknown */
+                /** @description The client or its redirect address is unknown, or the request was refused */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -8614,6 +8632,15 @@ export interface paths {
                 };
                 /** @description The page expired or was not shown to this session */
                 403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                    };
+                };
+                /** @description Too many authorization requests from this address */
+                429: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -8934,7 +8961,7 @@ export interface paths {
                         "application/json": components["schemas"]["__schema358"];
                     };
                 };
-                /** @description Too many registrations from this address */
+                /** @description Too many registrations from this address, or too many waiting for a person to allow them */
                 429: {
                     headers: {
                         [name: string]: unknown;
@@ -9002,7 +9029,7 @@ export interface paths {
         put?: never;
         /**
          * Exchange a code, or rotate a refresh token
-         * @description A code is used once, with its PKCE verifier. Each refresh returns a new refresh token; presenting a used one ends every token of that connection.
+         * @description A code is used once, with its PKCE verifier. Each refresh returns a new refresh token; presenting a used one ends every token of that connection. No token outlives 90 days from the consent, however often it is refreshed.
          */
         post: {
             parameters: {
@@ -13073,6 +13100,7 @@ export interface components {
             id: components["schemas"]["__schema180"];
             key: components["schemas"]["__schema181"];
             last_used: components["schemas"]["__schema184"] | null;
+            saved_by?: string;
             /** @enum {string} */
             source: "onboarding" | "conversation" | "inferred";
             value: string;

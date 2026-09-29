@@ -25,7 +25,7 @@ import type { Database } from '../db/client.ts';
 import type { Env } from '../env.ts';
 import { ExperienceEffects } from '../experience/effects.ts';
 import { principalContext } from '../principals/authority.ts';
-import { resolveSessionSpace } from '../principals/session-space.ts';
+import { resolveSessionSpace, selectedSpace } from '../principals/session-space.ts';
 import { actorEnvironment, type McpActor } from './actor.ts';
 import {
   authorizationServerMetadata,
@@ -116,6 +116,16 @@ type AuthorizeRead =
   | { kind: 'back'; url: string }
   | { kind: 'ok'; request: AuthorizeRequest; client: McpClientRecord };
 
+/** Tool calls one connection may make in a minute. */
+export const TOOL_CALLS_PER_MINUTE = 60;
+
+/** Who the consent page says is asking: a checked host, or a name nobody has checked. */
+function whoIsAsking(client: McpClientRecord) {
+  return client.verifiedHost
+    ? `<p>Melete checked that this assistant is published at <strong>${escapeHtml(client.verifiedHost)}</strong>.</p>`
+    : `<p><strong>Unverified:</strong> &ldquo;${escapeHtml(client.name)}&rdquo; is the name this assistant gave itself. Melete has not checked who runs it.</p>`;
+}
+
 export function mountMcpServer(app: Hono, deps: McpServerDeps) {
   const addresses = mcpServerAddresses(deps.env.MELETE_PUBLIC_URL);
   // Without a public address no assistant could reach the endpoint or return from consent.
@@ -129,6 +139,10 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
   const consentKey = randomBytes(32);
   const registrations = limiter(20, 60 * 60_000);
   const tokenRequests = limiter(120, 60_000);
+  // Each authorization request may read a metadata document from the internet.
+  const authorizeRequests = limiter(30, 60_000);
+  // Per connection: every tool call runs as the person, and some start work.
+  const toolCalls = limiter(TOOL_CALLS_PER_MINUTE, 60_000);
 
   app.get('/.well-known/oauth-authorization-server', (c) =>
     c.json(authorizationServerMetadata(addresses)),
@@ -168,7 +182,14 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
         message:
           'This assistant is not registered with this Melete, or its return address does not match.',
       };
-    const back = (error: string, description: string): AuthorizeRead => {
+    // An error goes back to the client only where a redirect cannot be used to
+    // send someone elsewhere; anywhere else it is shown here instead.
+    const back = async (error: string, description: string): Promise<AuthorizeRead> => {
+      if (!(await store.trustedReturn(client, redirectUri)))
+        return {
+          kind: 'refused',
+          message: `This assistant's request was not accepted: ${description}`,
+        };
       const url = new URL(redirectUri);
       url.searchParams.set('error', error);
       url.searchParams.set('error_description', description);
@@ -200,12 +221,13 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
     return { kind: 'ok', request, client };
   };
 
-  /** Binds a consent form to the session and the exact request it shows. */
-  const consentTag = (sessionToken: string, request: AuthorizeRequest) =>
+  /** Binds a consent form to the session, the space it names, and the exact request it shows. */
+  const consentTag = (sessionToken: string, spaceId: string, request: AuthorizeRequest) =>
     createHmac('sha256', consentKey)
       .update(
         JSON.stringify([
           sessionToken,
+          spaceId,
           request.clientId,
           request.redirectUri,
           request.state ?? '',
@@ -219,17 +241,30 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
   const signedIn = async (c: Context) => {
     const token = getCookie(c, SESSION_COOKIE);
     const active = token ? await activeSession(deps.db, token) : undefined;
-    return active && token ? { token, active } : undefined;
+    if (!active || !token) return undefined;
+    // The space the grant will act in: the one this session has selected.
+    const space = await resolveSessionSpace(
+      deps.db,
+      deps.env.MELETE_SPACES_DIR,
+      active.owner.id,
+      active.spaceId ? { spaceId: active.spaceId, generation: active.membershipGeneration } : null,
+    );
+    const [named] = await deps.sql`select name from space where id = ${space.spaceId}`;
+    return { token, active, space, spaceName: String(named?.name ?? 'Personal') };
   };
 
   const consentPage = (
     c: Context,
     request: AuthorizeRequest,
     client: McpClientRecord,
-    email: string,
+    session: NonNullable<Awaited<ReturnType<typeof signedIn>>>,
     tag: string,
   ) => {
     const returnHost = new URL(request.redirectUri).host;
+    const where =
+      session.space.kind === 'shared'
+        ? `in the shared space <strong>${escapeHtml(session.spaceName)}</strong>, which other people use too`
+        : `in your own space, <strong>${escapeHtml(session.spaceName)}</strong>`;
     const hidden = Object.entries({
       client_id: request.clientId,
       redirect_uri: request.redirectUri,
@@ -247,12 +282,14 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
       c,
       'Connect an assistant to Melete',
       `<h1>Let ${escapeHtml(client.name)} use Melete?</h1>
-<p>Signed in as <strong>${escapeHtml(email)}</strong>. If you agree, ${escapeHtml(client.name)} can, as you:</p>
+${whoIsAsking(client)}
+<p>Signed in as <strong>${escapeHtml(session.active.owner.email)}</strong>. If you agree, this assistant can, as you, ${where}:</p>
 <ul><li>see what companies owe you, and ask Melete to chase one;</li>
 <li>ask Melete to send an email, which waits for you to approve the exact text here in Melete;</li>
 <li>save and look up details you tell it;</li>
 <li>see where those jobs stand.</li></ul>
-<p class="muted">It cannot send anything without your approval, and you can disconnect it at any time. You will return to ${escapeHtml(returnHost)}.</p>
+<p>When you answer, you go back to <strong>${escapeHtml(returnHost)}</strong>. Continue only if that is where you started.</p>
+<p class="muted">It cannot send anything without your approval. You can disconnect it at any time in Melete, under Settings, Connections.</p>
 <form method="post" action="${escapeHtml(addresses.authorize)}">${hidden}
 <button class="allow" type="submit" name="decision" value="allow">Allow</button>
 <button type="submit" name="decision" value="deny">Deny</button></form>`,
@@ -260,7 +297,19 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
     );
   };
 
+  const tooMany = (c: Context) => {
+    c.header('Retry-After', '60');
+    return page(
+      c,
+      'Try again shortly',
+      '<h1>Too many requests</h1><p>Wait a minute, then start connecting again from your assistant.</p>',
+      undefined,
+      429,
+    );
+  };
+
   app.get('/oauth/authorize', async (c) => {
+    if (!authorizeRequests(clientAddress(c))) return tooMany(c);
     const read = await readAuthorize(c.req.query());
     if (read.kind === 'refused')
       return page(
@@ -276,18 +325,19 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
       return page(
         c,
         'Sign in to Melete',
-        `<h1>Sign in to Melete first</h1><p>${escapeHtml(read.client.name)} wants to use Melete as you. <a href="${escapeHtml(addresses.origin)}/" target="_blank" rel="noopener">Sign in to Melete</a> in this browser, then <a href="">continue here</a>.</p>`,
+        `<h1>Sign in to Melete first</h1>${whoIsAsking(read.client)}<p>This assistant wants to use Melete as you. <a href="${escapeHtml(addresses.origin)}/" target="_blank" rel="noopener">Sign in to Melete</a> in this browser, then <a href="">continue here</a>.</p>`,
       );
     return consentPage(
       c,
       read.request,
       read.client,
-      session.active.owner.email,
-      consentTag(session.token, read.request),
+      session,
+      consentTag(session.token, session.space.spaceId, read.request),
     );
   });
 
   app.post('/oauth/authorize', async (c) => {
+    if (!authorizeRequests(clientAddress(c))) return tooMany(c);
     const form = (await c.req.parseBody()) as Record<string, string | undefined>;
     const read = await readAuthorize(form);
     if (read.kind === 'refused')
@@ -300,7 +350,8 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
       );
     if (read.kind === 'back') return c.redirect(read.url, 302);
     const session = await signedIn(c);
-    const expected = session ? consentTag(session.token, read.request) : '';
+    // A session that has since moved to another space was not shown this one.
+    const expected = session ? consentTag(session.token, session.space.spaceId, read.request) : '';
     const given = form.consent ?? '';
     // Only the page shown to this session, for this very request, can say yes.
     if (
@@ -323,14 +374,8 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
       return c.redirect(back.toString(), 302);
     }
     const principalId = session.active.owner.id;
-    const space = await resolveSessionSpace(
-      deps.db,
-      deps.env.MELETE_SPACES_DIR,
-      principalId,
-      session.active.spaceId
-        ? { spaceId: session.active.spaceId, generation: session.active.membershipGeneration }
-        : null,
-    );
+    const { space } = session;
+    await store.recordClient(read.client);
     const code = await store.issueCode({
       clientId: read.request.clientId,
       principalId,
@@ -450,6 +495,17 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
     const token = /^Bearer ([A-Za-z0-9_-]{1,200})$/.exec(header)?.[1];
     const grant = token ? await store.authenticate(token) : undefined;
     if (!grant) return unauthorized(c, Boolean(token));
+    // The token acts in the space the person agreed from, under the membership
+    // they had then. Once that no longer holds, the whole sign-in ends; a later
+    // invitation back does not revive it.
+    const space = await selectedSpace(deps.db, grant.principalId, {
+      spaceId: grant.spaceId,
+      generation: grant.membershipGeneration,
+    });
+    if (!space) {
+      await store.revokeFamily(grant.family);
+      return unauthorized(c, true);
+    }
     const version = c.req.header('MCP-Protocol-Version');
     if (version && !MCP_PROTOCOL_VERSIONS.includes(version))
       return c.json(rpcError(null, -32600, 'Unsupported MCP protocol version.'), 400);
@@ -497,10 +553,18 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
       case 'tools/call': {
         const name = message.params?.name;
         if (typeof name !== 'string') return c.json(rpcError(id, -32602, 'Name a tool.'));
+        if (!toolCalls(grant.family)) {
+          c.header('Retry-After', '60');
+          return c.json(
+            rpcError(id, -32000, 'Too many tool calls from this assistant. Wait a minute.'),
+            429,
+          );
+        }
         const actor: McpActor = {
           principalId: grant.principalId,
-          spaceId: grant.spaceId,
+          spaceId: space.spaceId,
           membershipGeneration: grant.membershipGeneration,
+          clientId: grant.clientId,
           clientName: (await store.clientName(grant.clientId)) ?? 'An assistant',
         };
         try {
@@ -536,7 +600,11 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
                 ...(effects
                   ? {
                       proposeSend: async (input) => {
-                        const proposed = await effects.proposeSend(input);
+                        const proposed = await effects.proposeSend({
+                          ...input,
+                          membershipGeneration: actor.membershipGeneration,
+                          assistantClientId: actor.clientId,
+                        });
                         return 'reason' in proposed
                           ? { reason: proposed.reason }
                           : { id: proposed.id, job_id: proposed.job_id, status: proposed.status };

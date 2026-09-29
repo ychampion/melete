@@ -12346,7 +12346,7 @@
             }
           },
           "429": {
-            "description": "Too many registrations from this address",
+            "description": "Too many registrations from this address, or too many waiting for a person to allow them",
             "content": {
               "application/json": {
                 "schema": {
@@ -12364,7 +12364,7 @@
           "assistants"
         ],
         "summary": "The consent page an assistant sends a person to",
-        "description": "Shows who is asking and what they could do, to the signed-in person. Errors about the request go back to a checked redirect address with the state and issuer.",
+        "description": "Shows the signed-in person who is asking (a checked host, or a self-given name marked unverified), the space the access would act in, and what it could do. An error about the request goes back with the state and issuer only to a trusted redirect address: loopback, the metadata document host, or one a person here already allowed. Anywhere else it is shown on this page.",
         "parameters": [
           {
             "in": "query",
@@ -12451,7 +12451,17 @@
             }
           },
           "400": {
-            "description": "The client or its redirect address is unknown",
+            "description": "The client or its redirect address is unknown, or the request was refused",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many authorization requests from this address",
             "content": {
               "text/html": {
                 "schema": {
@@ -12540,7 +12550,7 @@
             }
           },
           "400": {
-            "description": "The client or its redirect address is unknown",
+            "description": "The client or its redirect address is unknown, or the request was refused",
             "content": {
               "text/html": {
                 "schema": {
@@ -12558,6 +12568,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Too many authorization requests from this address",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       }
@@ -12568,7 +12588,7 @@
           "assistants"
         ],
         "summary": "Exchange a code, or rotate a refresh token",
-        "description": "A code is used once, with its PKCE verifier. Each refresh returns a new refresh token; presenting a used one ends every token of that connection.",
+        "description": "A code is used once, with its PKCE verifier. Each refresh returns a new refresh token; presenting a used one ends every token of that connection. No token outlives 90 days from the consent, however often it is refreshed.",
         "requestBody": {
           "content": {
             "application/x-www-form-urlencoded": {
@@ -12717,7 +12737,7 @@
           "assistants"
         ],
         "summary": "The MCP endpoint (streamable HTTP, one JSON response per message)",
-        "description": "Tools: waiting_on, handle, safe_send, remember, recall and status, each acting as the person the token names. safe_send only proposes: the person approves the exact text in Melete.",
+        "description": "Tools: waiting_on, handle, safe_send, remember, recall and status, each acting as the person the token names, in the space they agreed from. safe_send only proposes: the person approves the exact text in Melete. A token whose person can no longer use that space is refused with 401 and its connection ends. Tool calls are limited per connection.",
         "security": [
           {
             "assistant": []
@@ -12807,6 +12827,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/__schema152"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many tool calls from this connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema359"
                 }
               }
             }
@@ -21225,6 +21255,10 @@
           },
           "version": {
             "$ref": "#/components/schemas/__schema180"
+          },
+          "saved_by": {
+            "type": "string",
+            "maxLength": 120
           }
         },
         "required": [

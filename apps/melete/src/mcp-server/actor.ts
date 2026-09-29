@@ -14,6 +14,8 @@ export type McpActor = {
   principalId: string;
   spaceId: string;
   membershipGeneration: number | null;
+  /** The assistant's OAuth client ID, recorded on anything it writes. */
+  clientId: string;
   /** The assistant, by name, for anything shown to the person about what it asked. */
   clientName: string;
 };

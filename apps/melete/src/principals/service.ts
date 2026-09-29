@@ -140,6 +140,13 @@ export class PrincipalService {
         .set({ revokedAt: new Date(), generation: existing.generation + 1 })
         .where(and(eq(spaceMembership.spaceId, spaceId), eq(spaceMembership.principalId, memberId)))
         .returning();
+      // An assistant the member connected from this space loses it with them.
+      await tx.execute(
+        sql`delete from mcp_authorization where space_id = ${spaceId} and principal_id = ${memberId}`,
+      );
+      await tx.execute(
+        sql`delete from mcp_token where space_id = ${spaceId} and principal_id = ${memberId}`,
+      );
       const generation = access.space.policyGeneration + 1;
       await tx.update(space).set({ policyGeneration: generation }).where(eq(space.id, spaceId));
       // Memory caches and prepared outputs carry the same revoked access fence.

@@ -40,6 +40,10 @@ import {
   resolveChaseScopedGrant,
   resolvePersonGrant,
 } from '../../apps/melete/src/experience/chase-scope.ts';
+import {
+  ASSISTANT_SEND_COOLDOWN_MINUTES,
+  ASSISTANT_SENDS_WAITING,
+} from '../../apps/melete/src/experience/effects.ts';
 import { ruleRecipient } from '../../apps/melete/src/experience/rules.ts';
 import { newId } from '../../apps/melete/src/ids.ts';
 import { createApp } from '../../apps/melete/src/index.ts';
@@ -426,6 +430,15 @@ withDb(`conformance 11: ${spec.title}`, () => {
       value: 'Aisle seat, always',
     });
     expect(saved.error).toBe(false);
+    // Saved as the assistant's, never as the person's own words.
+    if (!handle) throw new Error('Postgres unavailable');
+    const [source] = await handle.sql`select source_type, author, origin_trust from memory_sources
+      where stream = ${`mcp:${firstAssistant.assistant.info?.client_id}`}`;
+    expect(source).toMatchObject({
+      source_type: 'assistant',
+      author: 'external',
+      origin_trust: 'inferred',
+    });
     const found = await data(firstAssistant, 'recall', { query: 'seat' });
     expect(found.data.matches).toEqual([expect.objectContaining({ value: 'Aisle seat, always' })]);
     // The memory is the first person's own.
@@ -542,6 +555,56 @@ withDb(`conformance 11: ${spec.title}`, () => {
     expect(state.data.actions).toEqual([
       expect.objectContaining({ kind: 'email.send', status: 'succeeded' }),
     ]);
+  }, 60_000);
+
+  test('an assistant cannot flood the approval queue, and waits after a denial', async () => {
+    if (!handle) throw new Error('Postgres unavailable');
+    const waiting = async () =>
+      Number(
+        (
+          await handle.sql`select count(*)::int as n from job j join action a on a.job_id = j.id
+          where j.principal_id = ${first.principalId} and j.experience_command_key like 'mcp:%'
+          and a.status in ('proposed', 'needs_approval')`
+        )[0]?.n,
+      );
+    const room = ASSISTANT_SENDS_WAITING - (await waiting());
+    expect(room).toBeGreaterThan(0);
+    const ask = (index: number) =>
+      data(firstAssistant, 'safe_send', {
+        to: 'landlord@example.test',
+        subject: `Note ${index}`,
+        body: `A note about my deposit, number ${index}.`,
+      });
+    for (let index = 0; index < room; index++)
+      expect((await ask(index)).data.status).toBe('awaiting_approval');
+    const jobs = async () =>
+      (
+        await handle.sql`select count(*)::int as n from job where principal_id = ${first.principalId}`
+      )[0]?.n;
+    const before = await jobs();
+    const full = await ask(room);
+    expect(full.error).toBe(true);
+    expect(full.text).toContain(`${ASSISTANT_SENDS_WAITING} messages from assistants already wait`);
+    expect(await jobs()).toBe(before);
+    expect(sent).toHaveLength(1);
+
+    // The person turns one down: this assistant must wait before asking again.
+    const cards = (await (await browser(first.cookie, '/permissions')).json()) as {
+      permissions: Array<{ id: string; version: string }>;
+    };
+    const card = cards.permissions[0];
+    expect(
+      (
+        await browser(first.cookie, `/permissions/${card?.id}`, 'POST', {
+          option: 'deny',
+          version: card?.version,
+        })
+      ).status,
+    ).toBe(200);
+    const after = await ask(room + 1);
+    expect(after.error).toBe(true);
+    expect(after.text).toContain(`in the last ${ASSISTANT_SEND_COOLDOWN_MINUTES} minutes`);
+    expect(await jobs()).toBe(before);
   }, 60_000);
 
   test('a refresh rotates, and disconnecting ends the assistant’s access', async () => {

@@ -10,7 +10,7 @@ tools that act as that person:
 | `waiting_on` | Lists what companies owe the person: refunds, credits, deposits and promises Melete found in their mailbox, each with the `item_id` to pass to `handle`. |
 | `handle` | Asks Melete to chase one owed item. Melete starts the chase and returns its `job_id`. Asking again for the same item returns the same chase. |
 | `safe_send` | Proposes an email from the person's connected mailbox. It returns "Awaiting your approval in Melete." The person reads the exact text in Melete and approves it there; only then does Melete send it. |
-| `remember` | Saves a detail the person states, under a topic and a name. |
+| `remember` | Saves a detail under a topic and a name. Melete records it as saved by that assistant, not as the person's own words, so a message that uses it shows a warning on its approval card. |
 | `recall` | Looks up the details the person saved. |
 | `status` | Reports a job's state and each of its actions, with receipts for what was sent. |
 
@@ -56,6 +56,11 @@ In every case the assistant opens a Melete page in the browser. Sign in to
 Melete in that browser if you have not already, read what the assistant is
 asking for, and choose **Allow**. The assistant then holds a token for your
 account and the space you were using.
+
+The page names the space the assistant will act in and the site you will
+return to. An assistant that registered itself is shown by the name it gave,
+marked unverified; one identified by a metadata document is shown with the host
+that published it.
 
 ### ChatGPT
 
@@ -115,14 +120,28 @@ Standing rules you save in Melete ("always allow this for this recipient")
 cover the messages Melete writes in your own chats. A message an assistant
 asks for always waits for you, and its card offers **Allow once** and **Deny**.
 
+So that an assistant cannot bury you in requests, at most five messages from
+assistants wait for you at once, and after you deny one, that assistant must
+wait ten minutes before proposing another. Each connection may make 60 tool
+calls a minute.
+
 ## Seeing and ending access
 
-`GET /api/mcp/clients` lists the assistants you connected and since when.
-`DELETE /api/mcp/clients/{clientId}` ends every token that assistant holds for
-you. Tokens also end on their own: an access token lasts an hour, and a refresh
-token lasts 30 days and is replaced each time it is used. A refresh token used a
-second time ends the whole connection. Removing or emptying a space ends every
-assistant's access to it, along with everyone's sessions there.
+In Melete, open **Settings**, then **Connections**. Under **Connected
+assistants**, each assistant you let in is listed with the date you connected
+it, and **Disconnect** ends its access at once. The same list is
+`GET /api/mcp/clients`, and `DELETE /api/mcp/clients/{clientId}` ends every
+token that assistant holds for you.
+
+Tokens also end on their own: an access token lasts an hour, and a refresh
+token lasts 30 days and is replaced each time it is used. However often it is
+refreshed, a connection ends 90 days after you allowed it, and the assistant
+asks you again. A refresh token used a second time ends the whole connection.
+
+A token works only in the space you connected it from. If you are removed from
+that shared space, your assistants' access to it ends, and being invited back
+does not revive it. Removing or emptying a space ends every assistant's access
+to it, along with everyone's sessions there.
 
 ## Protocol reference
 
@@ -136,7 +155,11 @@ assistant's access to it, along with everyone's sessions there.
 
 A redirect address is HTTPS, or HTTP back to this computer (`127.0.0.1`,
 `localhost` or `[::1]`) for desktop clients. The authorization response carries
-`iss` (RFC 9207). The full contract is in
+`iss` (RFC 9207). An error about an authorization request goes back to the
+assistant only at an address Melete trusts: this computer, the host of the
+client's metadata document, or an address someone here already allowed. Any
+other error is shown on Melete's page instead, so the endpoint cannot be used
+to redirect someone elsewhere. The full contract is in
 [openapi.json](../packages/contracts/openapi.json) under the `assistants` tag,
 and [conformance scenario 11](../conformance/scenarios/11-mcp-server.test.ts)
 runs the whole flow with the reference MCP client library.
