@@ -314,6 +314,11 @@
   font-size: 20px;
   font-weight: 600;
 }
+.settings-subhead {
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+}
 .section-link {
   display: inline-flex;
   align-items: center;

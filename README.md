@@ -182,7 +182,7 @@ each command.
 - Sign in with your ChatGPT account, or use Anthropic, OpenAI, Google, Fireworks or a local model behind an OpenAI-compatible endpoint.
 - Share a space with your household or a small team, while each person's jobs and messages stay private to them.
 - Add tools over MCP from a URL or a package, and a packaged server runs in its own container.
-- Teach it by correcting it, then see, pause or remove what it learned in **Settings → What I've learned**.
+- Teach it by correcting it, then see, pause or remove what it learned in **Settings → Memory**.
 - Start your day with a short brief of your calendar, your tasks and the decisions waiting on you.
 - See a receipt for each action and undo what can be undone. Correct or forget anything it remembers, and a forgotten fact stays gone after a restore.
 

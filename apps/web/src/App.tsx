@@ -237,7 +237,9 @@ export function App() {
   } else if (head === 'automations') {
     screen = <AutomationsScreen />;
   } else if (head === 'settings') {
-    screen = <SettingsScreen tab={second ?? 'memory'} />;
+    // What Melete learned now lives under Memory; old links land there.
+    if (second === 'learned') window.location.replace('#/settings/memory');
+    screen = <SettingsScreen tab={second === 'learned' ? 'memory' : (second ?? 'memory')} />;
   } else {
     if (head) navigate('/');
     screen = <HomeScreen />;
