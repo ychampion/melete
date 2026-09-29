@@ -5,7 +5,7 @@
  */
 import { expect, test } from 'bun:test';
 import type { WaitingOn, WaitingOnEntry } from '../experience/types.ts';
-import { entryDetail, waitingOnLine } from './WaitingOnSection.tsx';
+import { entryDetail, mailPlan, waitingOnLine } from './WaitingOnSection.tsx';
 
 const view = (owed: number, replies: number): WaitingOn => ({
   currency: 'GBP',
@@ -13,7 +13,7 @@ const view = (owed: number, replies: number): WaitingOn => ({
   owed: [],
   replies: Array.from({ length: replies }, (_, index) => entry({ id: `awr_${index}` })),
   top: [],
-  scan: { connected: true, status: 'done', finished_at: null },
+  scan: { space_id: null, connected: true, status: 'done', finished_at: null, stale: false },
 });
 
 function entry(over: Partial<WaitingOnEntry> = {}): WaitingOnEntry {
@@ -55,4 +55,22 @@ test('an owed row shows its figure; a reply row how long it has waited', () => {
   );
   expect(entryDetail(entry({ sent_at: '2026-09-12T09:00:00.000Z' }), now)).toBe('Sent 6 days ago');
   expect(entryDetail(entry({ kind: 'owed' }), now)).toBeNull();
+});
+
+test('the mail is read once: on a first run, or when the last read looked for no replies', () => {
+  const scan = (over: Partial<WaitingOn['scan']>): WaitingOn['scan'] => ({
+    space_id: 'sp_01J0000000000000000000000A',
+    connected: true,
+    status: 'done',
+    finished_at: '2026-09-18T09:00:00.000Z',
+    stale: false,
+    ...over,
+  });
+  expect(mailPlan(scan({ status: 'none', finished_at: null }))).toBe('start');
+  expect(mailPlan(scan({ stale: true }))).toBe('start');
+  expect(mailPlan(scan({ status: 'running' }))).toBe('wait');
+  // A finished read that looked for replies, or one that failed, is not repeated.
+  expect(mailPlan(scan({}))).toBeNull();
+  expect(mailPlan(scan({ status: 'failed' }))).toBeNull();
+  expect(mailPlan(scan({ connected: false, status: 'none' }))).toBeNull();
 });

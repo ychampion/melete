@@ -11454,7 +11454,7 @@ export interface paths {
         };
         /**
          * What this person is waiting on: money owed to them, and replies
-         * @description Combines the company map’s owed items with messages the person sent that asked for something and have not been answered after three days. The owed figure is the company map’s own. `top` holds up to three nothing is chasing yet. Reads only; a scan is started with `POST /spaces/{spaceId}/companies/scan`.
+         * @description Combines the company map’s owed items with messages the person sent that asked for something and have not been answered after three days. The owed figure is the company map’s own. `top` holds up to three nothing is chasing yet. A reply nothing is chasing that went out more than thirty days ago is left out. Reads only; a scan is started with `POST /spaces/{spaceId}/companies/scan` in the space `scan.space_id` names.
          */
         get: {
             parameters: {
@@ -11482,6 +11482,8 @@ export interface paths {
                             scan: {
                                 connected: boolean;
                                 finished_at: components["schemas"]["__schema115"] | null;
+                                space_id: string | null;
+                                stale: boolean;
                                 /** @enum {string} */
                                 status: "none" | "running" | "done" | "failed";
                             };
@@ -11576,6 +11578,80 @@ export interface paths {
                     };
                 };
                 /** @description Chasing is not connected yet */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema144"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/waiting-on/replies/{id}/drop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss a reply the person is no longer waiting on
+         * @description Marks the awaited reply dropped, so it leaves the list and a later scan does not bring it back. A chase that has it is stopped first.
+         */
+        post: {
+            parameters: {
+                query?: {
+                    space_id?: string;
+                };
+                header?: never;
+                path: {
+                    /** @description Awaited reply id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The reply, now dropped */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            evidence: components["schemas"]["__schema415"];
+                            id: string;
+                            job_id: string | null;
+                            message_id: string;
+                            principal_id: string;
+                            sent_at: components["schemas"]["__schema115"];
+                            space_id: string;
+                            status: components["schemas"]["__schema414"];
+                            subject: string;
+                            to: string;
+                            to_name: string | null;
+                        };
+                    };
+                };
+                /** @description No such awaited reply for this person */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema144"];
+                    };
+                };
+                /** @description Stopping its chase is not connected yet */
                 503: {
                     headers: {
                         [name: string]: unknown;

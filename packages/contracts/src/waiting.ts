@@ -65,11 +65,22 @@ export const waitingOn = z.strictObject({
   replies: z.array(waitingOnEntry),
   /** The few to chase first: nothing is chasing them yet. */
   top: z.array(waitingOnEntry).max(WAITING_ON_TOP),
-  /** Whether a mailbox is connected, and how its latest scan went. */
+  /**
+   * Whether a mailbox is connected, and how its latest scan went, for the space
+   * named here: the one a scan should be started in, and the one to name in
+   * `space_id` while waiting for it.
+   */
   scan: z.strictObject({
+    space_id: prefixedId(ID_PREFIXES.space).nullable(),
     connected: z.boolean(),
     status: z.enum(['none', 'running', 'done', 'failed']),
     finished_at: timestamp.nullable(),
+    /**
+     * The latest scan finished without reading what the person sent, though
+     * this mailbox can, so no reply they wait on is known yet. One more scan
+     * finds them.
+     */
+    stale: z.boolean(),
   }),
 });
 export type WaitingOn = z.infer<typeof waitingOn>;

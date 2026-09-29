@@ -182,7 +182,7 @@ import {
   spaceRemovalPreview,
   spaceRemovalReport,
 } from './spaces.ts';
-import { waitingOn } from './waiting.ts';
+import { awaitedReply, waitingOn } from './waiting.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
   content: { 'application/json': { schema } },
@@ -2148,7 +2148,9 @@ export function buildOpenApiDocument() {
               'Combines the company map’s owed items with messages the person sent that ' +
               'asked for something and have not been answered after three days. The owed ' +
               'figure is the company map’s own. `top` holds up to three nothing is chasing ' +
-              'yet. Reads only; a scan is started with `POST /spaces/{spaceId}/companies/scan`.',
+              'yet. A reply nothing is chasing that went out more than thirty days ago is ' +
+              'left out. Reads only; a scan is started with ' +
+              '`POST /spaces/{spaceId}/companies/scan` in the space `scan.space_id` names.',
             requestParams: {
               query: z.object({
                 space_id: z
@@ -2184,6 +2186,24 @@ export function buildOpenApiDocument() {
               '404': problem('No such awaited reply for this person'),
               '409': problem('Already finished, or no longer quotable'),
               '503': problem('Chasing is not connected yet'),
+            },
+          },
+        },
+        '/waiting-on/replies/{id}/drop': {
+          post: {
+            tags: ['companies'],
+            summary: 'Dismiss a reply the person is no longer waiting on',
+            description:
+              'Marks the awaited reply dropped, so it leaves the list and a later scan does ' +
+              'not bring it back. A chase that has it is stopped first.',
+            requestParams: {
+              ...idParam('id', 'Awaited reply id'),
+              query: z.object({ space_id: z.string().optional() }),
+            },
+            responses: {
+              '200': jsonResponse('The reply, now dropped', awaitedReply),
+              '404': problem('No such awaited reply for this person'),
+              '503': problem('Stopping its chase is not connected yet'),
             },
           },
         },

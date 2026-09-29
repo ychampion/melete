@@ -72,7 +72,13 @@ const reply = (over: Partial<AwaitedReply> = {}): AwaitedReply => ({
   ...over,
 });
 
-const scan = { connected: true, status: 'done' as const, finished_at: '2026-09-18T09:00:00.000Z' };
+const scan = {
+  space_id: 'sp_01J0000000000000000000000A',
+  connected: true,
+  status: 'done' as const,
+  finished_at: '2026-09-18T09:00:00.000Z',
+  stale: false,
+};
 
 describe('what the person is waiting on', () => {
   test('the owed figure is the company map’s own, and the replies are counted beside it', () => {
@@ -143,7 +149,7 @@ describe('what the person is waiting on', () => {
     const view = waitingOnView({
       maps: [],
       replies: [],
-      scan: { connected: true, status: 'none', finished_at: null },
+      scan: { space_id: null, connected: true, status: 'none', finished_at: null, stale: false },
     });
     expect(view).toMatchObject({ owed_minor: 0, owed: [], replies: [], top: [] });
     expect(view.scan.status).toBe('none');

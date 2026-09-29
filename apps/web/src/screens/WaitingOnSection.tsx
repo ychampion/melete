@@ -40,6 +40,18 @@ export function entryDetail(entry: WaitingOnEntry, now: number): string | null {
   return days === 1 ? 'Sent yesterday' : `Sent ${days} days ago`;
 }
 
+/**
+ * What to do about the mail on arriving: read it when nothing has been read
+ * yet, or when the last read finished before replies were looked for; wait out
+ * a read already under way; otherwise nothing.
+ */
+export function mailPlan(scan: WaitingOn['scan']): 'start' | 'wait' | null {
+  if (!scan.connected) return null;
+  if (scan.status === 'running') return 'wait';
+  if (scan.status === 'none' || (scan.status === 'done' && scan.stale)) return 'start';
+  return null;
+}
+
 export function WaitingOnSection({ now }: { now: number }) {
   const { refreshConversations } = useApp();
   const [view, setView] = useState<WaitingOn | null>(null);
@@ -47,22 +59,27 @@ export function WaitingOnSection({ now }: { now: number }) {
   const [busy, setBusy] = useState<string | null>(null);
   const live = useRef(true);
 
-  const load = useCallback(async () => {
-    const result = await companiesApi.waitingOn();
+  const load = useCallback(async (spaceId?: string) => {
+    const result = await companiesApi.waitingOn(spaceId);
     if (live.current && result.data) setView(result.data);
     return result.data;
   }, []);
 
   // A first run: the mailbox is connected and nothing has been read, so read it.
-  // A scan already under way is waited out rather than started again.
+  // A scan already under way is waited out rather than started again. The scan
+  // is started, and watched, in the space the service reported it for.
   const readMail = useCallback(
     async (first: WaitingOn) => {
-      if (!first.scan.connected || first.scan.status === 'done' || first.scan.status === 'failed')
-        return;
+      const plan = mailPlan(first.scan);
+      if (!plan) return;
       setReading(true);
-      if (first.scan.status === 'none') {
-        const space = await currentSpaceId();
-        if (space.data === null || (await companiesApi.startScan(space.data)).data === null) {
+      let spaceId = first.scan.space_id ?? undefined;
+      if (plan === 'start') {
+        if (!spaceId) {
+          const space = await currentSpaceId();
+          spaceId = space.data ?? undefined;
+        }
+        if (!spaceId || (await companiesApi.startScan(spaceId)).data === null) {
           if (live.current) setReading(false);
           return;
         }
@@ -70,10 +87,14 @@ export function WaitingOnSection({ now }: { now: number }) {
       for (;;) {
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));
         if (!live.current) return;
-        const next = await load();
+        const next = await load(spaceId);
         if (next?.scan.status !== 'running') break;
       }
-      if (live.current) setReading(false);
+      // Back to every space the person can see.
+      if (live.current) {
+        await load();
+        setReading(false);
+      }
     },
     [load],
   );
@@ -102,6 +123,20 @@ export function WaitingOnSection({ now }: { now: number }) {
     }
     refreshConversations();
     navigate(`/chat/${result.data.job_id}`);
+  };
+
+  // Not waiting on it any more: it leaves the list, and a later scan leaves it out.
+  const dismiss = async (entry: WaitingOnEntry) => {
+    if (busy) return;
+    setBusy(entry.id);
+    const result = await companiesApi.dropReply(entry.id);
+    if (result.data === null) {
+      setBusy(null);
+      toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t dismiss it' });
+      return;
+    }
+    await load();
+    if (live.current) setBusy(null);
   };
 
   if (!view) return null;
@@ -148,6 +183,17 @@ export function WaitingOnSection({ now }: { now: number }) {
                 >
                   Chase this
                 </Button>
+                {entry.kind === 'reply' ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy !== null}
+                    aria-label={`Dismiss ${entry.who}`}
+                    onClick={() => void dismiss(entry)}
+                  >
+                    Dismiss
+                  </Button>
+                ) : null}
               </li>
             );
           })}

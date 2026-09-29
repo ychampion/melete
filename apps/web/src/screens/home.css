@@ -362,6 +362,9 @@
   .waiting-on-row > .btn {
     margin-left: auto;
   }
+  .waiting-on-row > .btn + .btn {
+    margin-left: 0;
+  }
   .waiting-on-row > .col {
     flex-basis: calc(100% - 30px);
   }

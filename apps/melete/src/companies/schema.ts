@@ -170,6 +170,11 @@ export const companyScan = pgTable(
  * that asked is kept as evidence against the message's stored text in
  * `company_message`, the way a ledger item's is. One row per sent message, so
  * a later scan recognises what it already found.
+ *
+ * A row being chased follows its chase, the way a ledger item does, by a
+ * trigger on `job` written into the migration: a chase that completes has
+ * heard back or given up and told the person, so the wait is settled; one
+ * that fails or is stopped hands the row back to be chased again.
  */
 export const awaitedReply = pgTable(
   'awaited_reply',
@@ -199,6 +204,7 @@ export const awaitedReply = pgTable(
       table.messageId,
     ),
     index('awaited_reply_owner_idx').on(table.spaceId, table.principalId, table.status),
+    index('awaited_reply_job_idx').on(table.jobId).where(sql`${table.jobId} is not null`),
     check(
       'awaited_reply_status',
       sql`${table.status} in ('found', 'handling', 'waiting', 'settled', 'dropped')`,

@@ -213,4 +213,103 @@ withDb('the "Waiting on" first run', () => {
     });
     expect(after.top.map((entry) => entry.id)).not.toContain(reply.id);
   }, 120_000);
+
+  test('a reply that arrives settles the wait, even while a chase has it', async () => {
+    if (!handle || !jobs) throw new Error('Postgres unavailable');
+    const reply = (await waiting(cookie)).replies.find((entry) => entry.who === 'Deverill IT');
+    if (!reply?.job_id) throw new Error('Expected the reply being chased');
+    const [row] = await handle.sql`select principal_id, message_id from awaited_reply
+      where id = ${reply.id}`;
+    const owner = { spaceId, principalId: String(row?.principal_id) };
+    const store = new PostgresCompanyStore(handle.db);
+    const latest = await store.latestScan(owner);
+    if (!latest) throw new Error('Expected a scan');
+    // The next scan sees their answer.
+    await store.saveAwaited(owner, latest.id, [], [String(row?.message_id)]);
+    expect((await waiting(cookie)).replies.map((entry) => entry.id)).not.toContain(reply.id);
+    // The chase stopping afterwards does not open it again.
+    await jobs.cancel(reply.job_id, 'answered');
+    const [after] = await handle.sql`select status from awaited_reply where id = ${reply.id}`;
+    expect(after?.status).toBe('settled');
+  }, 60_000);
+
+  test('a chase that completes settles the wait; one that is stopped hands it back', async () => {
+    if (!handle || !jobs) throw new Error('Postgres unavailable');
+    const view = await waiting(cookie);
+    const tomas = view.replies.find((entry) => entry.who === 'Tomas Brennan');
+    const ashgrove = view.replies.find((entry) => entry.who === 'Ashgrove Studios');
+    if (!tomas || !ashgrove) throw new Error('Expected both replies');
+    const chase = async (id: string) => {
+      const started = await call(cookie, `/waiting-on/replies/${id}/chase`, 'POST');
+      expect(started.status).toBe(201);
+      return ((await started.json()) as { job_id: string }).job_id;
+    };
+
+    // Whichever path finishes a job, the row follows it.
+    const completing = await chase(tomas.id);
+    await handle.sql`update job set state = 'completed' where id = ${completing}`;
+    expect((await waiting(cookie)).replies.map((entry) => entry.id)).not.toContain(tomas.id);
+    const [settled] = await handle.sql`select status from awaited_reply where id = ${tomas.id}`;
+    expect(settled?.status).toBe('settled');
+
+    const stopping = await chase(ashgrove.id);
+    await jobs.cancel(stopping, 'the person said stop');
+    const back = (await waiting(cookie)).replies.find((entry) => entry.id === ashgrove.id);
+    expect(back).toMatchObject({ status: 'found', job_id: null });
+  }, 60_000);
+
+  test('dismissing a reply stops its chase and takes it off the list for good', async () => {
+    if (!app || !handle || !jobs) throw new Error('Postgres unavailable');
+    const ashgrove = (await waiting(cookie)).replies.find(
+      (entry) => entry.who === 'Ashgrove Studios',
+    );
+    if (!ashgrove) throw new Error('Expected the reply');
+    const started = await call(cookie, `/waiting-on/replies/${ashgrove.id}/chase`, 'POST');
+    const { job_id } = (await started.json()) as { job_id: string };
+
+    expect(
+      (await app.request(`/waiting-on/replies/${ashgrove.id}/drop`, { method: 'POST' })).status,
+    ).toBe(401);
+    expect(
+      (await call(cookie, '/waiting-on/replies/awr_01J00000000000000000000000/drop', 'POST'))
+        .status,
+    ).toBe(404);
+    const dropped = await call(cookie, `/waiting-on/replies/${ashgrove.id}/drop`, 'POST');
+    expect(dropped.status).toBe(200);
+    expect(((await dropped.json()) as { status: string }).status).toBe('dropped');
+    expect((await jobs.get(job_id)).state).toBe('cancelled');
+    expect((await waiting(cookie)).replies.map((entry) => entry.id)).not.toContain(ashgrove.id);
+
+    // Scanning again does not bring back what was dismissed or settled.
+    expect((await call(cookie, `/spaces/${spaceId}/companies/scan`, 'POST')).status).toBe(202);
+    const rescanned = await waiting(cookie);
+    expect(rescanned.scan.status).toBe('done');
+    expect(rescanned.replies).toEqual([]);
+  }, 120_000);
+
+  test('a reply nothing is chasing leaves the list thirty days after it went out', async () => {
+    if (!handle) throw new Error('Postgres unavailable');
+    const [row] =
+      await handle.sql`select id from awaited_reply where to_address = ${'tomas.brennan@brennanphoto.example'}`;
+    const id = String(row?.id);
+    const reference = Date.parse(FIXTURE_REFERENCE);
+    const reopen = (days: number) => handle.sql`update awaited_reply
+      set status = 'found', job_id = null,
+          sent_at = ${new Date(reference - days * 86_400_000).toISOString()}::timestamptz
+      where id = ${id}`;
+    await reopen(29);
+    expect((await waiting(cookie)).replies.map((entry) => entry.id)).toContain(id);
+    await reopen(31);
+    expect((await waiting(cookie)).replies.map((entry) => entry.id)).not.toContain(id);
+  }, 60_000);
+
+  test('names the space its scan is for, and says when that scan looked for no replies', async () => {
+    if (!handle) throw new Error('Postgres unavailable');
+    const view = await waiting(cookie);
+    expect(view.scan).toMatchObject({ space_id: spaceId, status: 'done', stale: false });
+    // A scan from before Sent folders were read recorded nothing about replies.
+    await handle.sql`update company_scan set counts = counts - 'awaited_replies'
+      where space_id = ${spaceId}`;
+    expect((await waiting(cookie)).scan.stale).toBe(true);
+  }, 60_000);
 });

@@ -307,9 +307,11 @@ export function mountCompaniesMock(
       replies: waiting,
       top,
       scan: {
+        space_id: deps.spaceId,
         connected: true,
         status: scanStatus,
         finished_at: found ? new Date().toISOString() : null,
+        stale: false,
       },
     });
   });
@@ -333,6 +335,31 @@ export function mountCompaniesMock(
     reply.job_id = conversation.id;
     reply.status = 'handling';
     return c.json({ job_id: conversation.id }, 201);
+  });
+
+  // Dismissed: it leaves the list. The demonstration has no chase to stop.
+  app.post('/waiting-on/replies/:id/drop', (c) => {
+    const reply = replies.find((entry) => entry.id === c.req.param('id'));
+    if (!reply || !found) return c.json(fail('not_found', 'Not found.'), 404);
+    reply.status = 'dropped';
+    return c.json({
+      id: reply.id,
+      space_id: deps.spaceId,
+      principal_id: principalId,
+      message_id: `<${reply.id}@mock.example>`,
+      to: reply.to,
+      to_name: reply.to_name,
+      subject: reply.subject,
+      sent_at: new Date(Date.now() - reply.days_ago * 86_400_000).toISOString(),
+      evidence: {
+        message_id: `<${reply.id}@mock.example>`,
+        quote: reply.quote,
+        start: 0,
+        end: reply.quote.length,
+      },
+      status: reply.status,
+      job_id: reply.job_id,
+    });
   });
 
   app.post('/ledger/:id/stop', (c) => {

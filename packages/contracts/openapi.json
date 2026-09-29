@@ -14507,7 +14507,7 @@
           "companies"
         ],
         "summary": "What this person is waiting on: money owed to them, and replies",
-        "description": "Combines the company map’s owed items with messages the person sent that asked for something and have not been answered after three days. The owed figure is the company map’s own. `top` holds up to three nothing is chasing yet. Reads only; a scan is started with `POST /spaces/{spaceId}/companies/scan`.",
+        "description": "Combines the company map’s owed items with messages the person sent that asked for something and have not been answered after three days. The owed figure is the company map’s own. `top` holds up to three nothing is chasing yet. A reply nothing is chasing that went out more than thirty days ago is left out. Reads only; a scan is started with `POST /spaces/{spaceId}/companies/scan` in the space `scan.space_id` names.",
         "parameters": [
           {
             "in": "query",
@@ -14555,6 +14555,17 @@
                     "scan": {
                       "type": "object",
                       "properties": {
+                        "space_id": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "connected": {
                           "type": "boolean"
                         },
@@ -14576,12 +14587,17 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "stale": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
+                        "space_id",
                         "connected",
                         "status",
-                        "finished_at"
+                        "finished_at",
+                        "stale"
                       ],
                       "additionalProperties": false
                     }
@@ -14699,6 +14715,139 @@
           },
           "503": {
             "description": "Chasing is not connected yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema144"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/waiting-on/replies/{id}/drop": {
+      "post": {
+        "tags": [
+          "companies"
+        ],
+        "summary": "Dismiss a reply the person is no longer waiting on",
+        "description": "Marks the awaited reply dropped, so it leaves the list and a later scan does not bring it back. A chase that has it is stopped first.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Awaited reply id"
+            },
+            "required": true,
+            "description": "Awaited reply id"
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The reply, now dropped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^awr_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                    },
+                    "space_id": {
+                      "type": "string",
+                      "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                    },
+                    "principal_id": {
+                      "type": "string",
+                      "pattern": "^own_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                    },
+                    "message_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 998
+                    },
+                    "to": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 320
+                    },
+                    "to_name": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "maxLength": 200
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "subject": {
+                      "type": "string",
+                      "maxLength": 998
+                    },
+                    "sent_at": {
+                      "$ref": "#/components/schemas/__schema115"
+                    },
+                    "evidence": {
+                      "$ref": "#/components/schemas/__schema415"
+                    },
+                    "status": {
+                      "$ref": "#/components/schemas/__schema414"
+                    },
+                    "job_id": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "space_id",
+                    "principal_id",
+                    "message_id",
+                    "to",
+                    "to_name",
+                    "subject",
+                    "sent_at",
+                    "evidence",
+                    "status",
+                    "job_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such awaited reply for this person",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema144"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Stopping its chase is not connected yet",
             "content": {
               "application/json": {
                 "schema": {

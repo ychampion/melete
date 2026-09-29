@@ -14,6 +14,7 @@
  */
 
 import {
+  awaitedReply as awaitedReplyContract,
   type CompanyMap,
   companyMap as companyMapContract,
   ledgerItem as ledgerItemContract,
@@ -336,6 +337,8 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
 
   // What the person is waiting on: money companies owe them and replies nobody
   // has sent, with the few to chase first. Read-only; it never starts a scan.
+  // The scan it reports is the first space's, and it names that space, so a
+  // client that starts a scan starts it where this route will look for it.
   app.get('/waiting-on', async (c) => {
     const owners = await ownersOf(c.req.query('space_id'));
     const at = now();
@@ -343,16 +346,48 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
     const replies: Awaited<ReturnType<CompanyStore['awaitedReplies']>> = [];
     for (const owner of owners) {
       maps.push(await deps.store.map(owner, at, await profileTimeZone(deps.db, owner.spaceId)));
-      replies.push(...(await deps.store.awaitedReplies(owner)));
+      replies.push(...(await deps.store.awaitedReplies(owner, at)));
     }
     const first = owners[0];
     const latest = first ? await deps.store.latestScan(first) : null;
+    const mailbox = first ? await deps.mailbox(first) : null;
     const scan: WaitingOn['scan'] = {
-      connected: first ? (await deps.mailbox(first)) !== null : false,
+      space_id: first?.spaceId ?? null,
+      connected: mailbox !== null,
       status: latest?.status ?? 'none',
       finished_at: latest?.finishedAt ?? null,
+      // A scan that finished without reading a Sent folder this mailbox can
+      // read found no replies to wait on; one more scan finds them.
+      stale:
+        latest?.status === 'done' &&
+        typeof mailbox?.sent === 'function' &&
+        latest.counts.awaited_replies === undefined &&
+        latest.counts.sent_unreadable === undefined,
     };
     return c.json(waitingOnContract.parse(waitingOnView({ maps, replies, scan })));
+  });
+
+  // Dismiss a reply: the person is not waiting on it any more. A chase that has
+  // it is stopped first, and a later scan does not bring it back.
+  app.post('/waiting-on/replies/:id/drop', async (c) => {
+    const id = c.req.param('id');
+    const owners = await ownersOf(c.req.query('space_id'));
+    const dropped = await exclusively(`awaited:${id}`, async (store) => {
+      for (const owner of owners) {
+        const found = await store.awaitedReply(owner, id);
+        if (!found) continue;
+        const { reply } = found;
+        if (reply.job_id && (reply.status === 'handling' || reply.status === 'waiting')) {
+          if (!deps.cancelJob)
+            throw new ServiceError('not_connected', 'Stopping is not connected yet.', 503);
+          await deps.cancelJob(reply.job_id, 'The owner dismissed this reply.');
+        }
+        return store.dropAwaited(owner, id);
+      }
+      return null;
+    });
+    if (!dropped) throw new ServiceError('not_found', 'Not found.', 404);
+    return c.json(awaitedReplyContract.parse(dropped));
   });
 
   // "Chase this" for a reply. Owed items are chased through `/ledger/:id/handle`.

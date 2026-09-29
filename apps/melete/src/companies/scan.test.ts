@@ -422,7 +422,7 @@ describe('what the person is still waiting to hear back about', () => {
     const first = await scanWith(store);
     expect(first.status).toBe('done');
     expect(first.counts.awaited_replies).toBe(AWAITED_SENT_INDEXES.length);
-    const replies = await store.awaitedReplies(owner);
+    const replies = await store.awaitedReplies(owner, now);
     expect(replies.map((reply) => reply.to).sort()).toEqual([
       'bookings@ashgrovestudios.example',
       'service@deverillit.example',
@@ -435,7 +435,7 @@ describe('what the person is still waiting to hear back about', () => {
     }
     const second = await scanWith(store);
     expect(second.counts.awaited_new).toBe(0);
-    expect(await store.awaitedReplies(owner)).toHaveLength(replies.length);
+    expect(await store.awaitedReplies(owner, now)).toHaveLength(replies.length);
   });
 
   test('a reply that has arrived since settles the wait', async () => {
@@ -451,7 +451,7 @@ describe('what the person is still waiting to hear back about', () => {
       receivedAt: new Date(now.getTime() - 3_600_000).toISOString(),
     };
     await scanWith(store, [...fixtureMessages(), answer]);
-    expect((await store.awaitedReplies(owner)).map((reply) => reply.to)).not.toContain(
+    expect((await store.awaitedReplies(owner, now)).map((reply) => reply.to)).not.toContain(
       'service@deverillit.example',
     );
   });
@@ -478,6 +478,89 @@ describe('what the person is still waiting to hear back about', () => {
   test('a mailbox without a Sent folder finds no replies and says nothing about it', async () => {
     const { store, outcome } = await scanFixtures();
     expect(outcome.counts.awaited_replies).toBeUndefined();
-    expect(await store.awaitedReplies(owner)).toEqual([]);
+    expect(await store.awaitedReplies(owner, now)).toEqual([]);
+  });
+
+  test('a full inbox read judges only what it reaches back to', async () => {
+    // Fifty messages in the last two days fill the read; the questions went out
+    // before them, so their answers, if any, were not read.
+    const busy = Array.from({ length: 50 }, (_, index) => ({
+      messageId: `<busy-${index}@elsewhere.example>`,
+      from: `Someone <someone${index}@elsewhere${index}.example>`,
+      fromAddresses: [`someone${index}@elsewhere${index}.example`],
+      to: 'accounts@thackeraylane.example',
+      subject: `Note ${index}`,
+      text: 'Just a note.',
+      receivedAt: new Date(now.getTime() - (index + 1) * 3_600_000).toISOString(),
+    }));
+    const scan = (readLimit: number) =>
+      runScan({
+        store: new MemoryCompanyStore(),
+        mailbox: fixtureMailbox(busy, fixtureSentMessages()),
+        extractor: scriptedExtractor(),
+        owner,
+        now,
+        readLimit,
+      });
+    const full = await scan(50);
+    expect(full.counts.awaited_replies).toBe(0);
+    // The same inbox read to its end: nothing there answers them, so they wait,
+    // along with those the demonstration inbox would have answered.
+    expect((await scan(60)).counts.awaited_replies).toBeGreaterThanOrEqual(
+      AWAITED_SENT_INDEXES.length,
+    );
+  });
+});
+
+describe('an awaited reply leaves the list', () => {
+  const found = async () => {
+    const store = new MemoryCompanyStore();
+    await runScan({
+      store,
+      mailbox: fixtureMailbox(fixtureMessages(), fixtureSentMessages()),
+      extractor: scriptedExtractor(),
+      owner,
+      now,
+    });
+    const replies = await store.awaitedReplies(owner, now);
+    const [first] = replies;
+    if (!first) throw new Error('Expected an awaited reply');
+    return { store, replies, first };
+  };
+
+  test('when its answer arrives, even while a chase has it', async () => {
+    const { store, first } = await found();
+    await store.setAwaitedJob(owner, first.id, 'job_01J0000000000000000000000A');
+    const scan = await store.openScan(owner);
+    await store.saveAwaited(owner, scan.id, [], [first.message_id]);
+    expect((await store.awaitedReplies(owner, now)).map((reply) => reply.id)).not.toContain(
+      first.id,
+    );
+  });
+
+  test('when the person dismisses it, and a later scan leaves it dismissed', async () => {
+    const { store, replies, first } = await found();
+    expect((await store.dropAwaited(owner, first.id))?.status).toBe('dropped');
+    expect(await store.dropAwaited({ ...owner, principalId: 'own_other' }, first.id)).toBeNull();
+    await runScan({
+      store,
+      mailbox: fixtureMailbox(fixtureMessages(), fixtureSentMessages()),
+      extractor: scriptedExtractor(),
+      owner,
+      now,
+    });
+    expect((await store.awaitedReplies(owner, now)).map((reply) => reply.id)).toEqual(
+      replies.filter((reply) => reply.id !== first.id).map((reply) => reply.id),
+    );
+  });
+
+  test('thirty days after it went out, unless a chase still has it', async () => {
+    const { store, replies, first } = await found();
+    const later = new Date(Date.parse(first.sent_at) + 31 * 86_400_000);
+    const ids = async () => (await store.awaitedReplies(owner, later)).map((reply) => reply.id);
+    expect(await ids()).not.toContain(first.id);
+    await store.setAwaitedJob(owner, first.id, 'job_01J0000000000000000000000A');
+    expect(await ids()).toContain(first.id);
+    expect(replies.length).toBeGreaterThan(1);
   });
 });
