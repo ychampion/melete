@@ -157,3 +157,10 @@ export type LedgerDetail = Ok<paths['/ledger/{id}'], 'get'>;
 export type LedgerMessage = NonNullable<LedgerDetail['message']>;
 export type ScanStarted = Ok<paths['/spaces/{spaceId}/companies/scan'], 'post'>;
 export type ScanProgress = Ok<paths['/spaces/{spaceId}/companies/scan/{scanId}'], 'get'>;
+
+/* ---------- problem reports ---------- */
+
+export type FeedbackList = Ok<paths['/feedback'], 'get'>;
+export type FeedbackReport = FeedbackList['reports'][number];
+export type FeedbackStatus = FeedbackReport['status'];
+export type FeedbackCreate = Body<paths['/feedback'], 'post'>;
