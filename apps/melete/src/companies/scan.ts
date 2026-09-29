@@ -79,7 +79,8 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
   let session: ScanExtractor | undefined;
   let calls = 0;
   try {
-    const messages = await options.mailbox.recent(options.readLimit ?? 50);
+    const readLimit = options.readLimit ?? 50;
+    const messages = await options.mailbox.recent(readLimit);
     reason = SCAN_FAILED.after;
     const grouped = prefilter(messages, {
       now,
@@ -232,8 +233,14 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
     // read is counted, and the company map stands without it.
     if (options.mailbox.sent) {
       try {
-        const sent = await options.mailbox.sent(options.readLimit ?? 50);
-        const waiting = findAwaitedReplies({ sent, inbox: messages, now });
+        const sent = await options.mailbox.sent(readLimit);
+        // A read that came back short of its limit reached the end of the inbox.
+        const waiting = findAwaitedReplies({
+          sent,
+          inbox: messages,
+          inboxComplete: messages.length < readLimit,
+          now,
+        });
         // The sentence each one rests on is checked against this text later.
         await options.store.saveMessages(
           options.owner,

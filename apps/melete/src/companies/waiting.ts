@@ -9,14 +9,20 @@
  *
  * 1. **It asked.** The person's own words, with the quoted history cut away,
  *    hold a question or a request ("could you", "please confirm", "let me
- *    know"). The sentence that asked is kept as evidence, at a span that is
- *    checked the way the map checks its figures.
+ *    know"). A routine sign-off ("let me know if you have any questions",
+ *    "looking forward to hearing from you") is not a request on its own. The
+ *    sentence that asked is kept as evidence, at a span that is checked the way
+ *    the map checks its figures.
  * 2. **Somebody could answer.** Not the person themselves, not a no-reply or
  *    robot address, not a newsletter sender, and not an automatic reply the
  *    person's own mail client sent.
  * 3. **Nobody has.** No threaded reply, nothing from the recipient since, and
  *    for a company, nothing from a colleague of theirs on the same subject.
- *    Mail from a stranger at the same personal mail provider does not count.
+ *    Mail from a stranger at the same personal mail provider does not count,
+ *    and neither does an automatic reply such as an out-of-office.
+ *    Only what the inbox read can show is judged: a message sent before the
+ *    oldest inbox message read could have been answered out of sight, so it is
+ *    left alone unless the read reached the end of the inbox.
  * 4. **Long enough, not too long.** At least three days, at most thirty.
  *
  * A thread the person wrote to twice is one wait, dated from the latest.
@@ -108,6 +114,20 @@ const REQUEST =
 const PLEASANTRY =
   /^(?:(?:hi|hello|hey|dear)\b[^,?]*,\s*)?(?:how are (?:you|things)|how's it going|how have you been|hope (?:you're|you are) (?:well|good))\b/i;
 
+/**
+ * Routine closing lines that expect nothing back. They are cut out of a
+ * sentence before it is judged, so a sentence that also asks something real
+ * still counts.
+ */
+const COURTESY = [
+  /\b(?:please\s+)?(?:do\s+)?(?:let me know|feel free to (?:reach out|get in touch|contact me)|(?:don['’]t|do not) hesitate to (?:reach out|get in touch|contact me|ask))\s+if\s+(?:you(?:\s+(?:have|need|had)|['’]ve\s+got)\s+any|there(?:['’]s|\s+is|\s+are)\s+anything|anything\s+(?:else|comes up|changes)|i\s+can\s+(?:help|do|assist))\b[^.!?\n,;]*/gi,
+  /\b(?:(?:i|we)(?:['’]m|['’]re|\s+am|\s+are)?\s+)?look(?:ing)?\s+forward\s+to\s+(?:hearing|your\s+(?:reply|response|answer))\b[^.!?\n,;]*/gi,
+];
+
+/** An automatic reply that says only that nobody is there to answer yet. */
+const AUTO_REPLY_SUBJECT =
+  /^(?:(?:re|aw)\s*:\s*)?(?:automatic reply|auto(?:matic)?[-\s]?(?:reply|response)|out of (?:the )?office|ooo\b|away from (?:the )?office|on (?:annual )?leave\b)/i;
+
 const lower = (value: string) => value.trim().toLowerCase();
 
 /** The address a message was sent to, parsed; `to` is only read, guarded, as a fallback. */
@@ -165,7 +185,10 @@ export function askingSentence(
   for (let match = sentence.exec(own); match; match = sentence.exec(own)) {
     const quote = match[0].trim();
     if (!quote) continue;
-    const asks = (quote.endsWith('?') && !PLEASANTRY.test(quote)) || REQUEST.test(quote);
+    // What is left once the routine closing lines are cut out of it.
+    const rest = COURTESY.reduce((text, pattern) => text.replace(pattern, ' '), quote).trim();
+    if (!/\p{L}/u.test(rest)) continue;
+    const asks = (rest.endsWith('?') && !PLEASANTRY.test(rest)) || REQUEST.test(rest);
     if (!asks) continue;
     const start = offset + match.index + match[0].indexOf(quote);
     return { quote, start, end: start + quote.length };
@@ -173,14 +196,25 @@ export function askingSentence(
   return null;
 }
 
-/** Everyone who has sent the person a newsletter or other automated mail. */
+/**
+ * Everyone who has sent the person a newsletter or other automated mail. A
+ * person's own out-of-office is automatic too, but it does not make them a
+ * robot: they will answer when they are back.
+ */
 function automatedSenders(inbox: readonly ScanMessage[]): Set<string> {
   const senders = new Set<string>();
   for (const message of inbox)
-    if (message.unsubscribe || message.automated)
+    if (
+      message.unsubscribe ||
+      (message.automated && !AUTO_REPLY_SUBJECT.test(message.subject.trim()))
+    )
       for (const address of sendersOf(message)) senders.add(address);
   return senders;
 }
+
+/** An automatic reply, such as an out-of-office: it does not answer anything. */
+const autoReply = (message: ScanMessage): boolean =>
+  message.automated === true || AUTO_REPLY_SUBJECT.test(message.subject.trim());
 
 /** Whether anything in the inbox answers this sent message to these recipients. */
 function answeredBy(
@@ -197,6 +231,7 @@ function answeredBy(
   );
   return inbox.some((reply) => {
     if (!(Date.parse(reply.receivedAt) > sentAt)) return false;
+    if (autoReply(reply)) return false;
     if (reply.inReplyTo === message.messageId) return true;
     if (reply.references?.includes(message.messageId)) return true;
     const from = sendersOf(reply);
@@ -218,6 +253,11 @@ function answeredBy(
 export function findAwaitedReplies(input: {
   sent: readonly ScanMessage[];
   inbox: readonly ScanMessage[];
+  /**
+   * Whether the inbox read reached the end of the inbox. When it stopped at a
+   * limit, a reply older than its oldest message could not have been seen.
+   */
+  inboxComplete: boolean;
   now: Date;
   afterDays?: number;
   windowDays?: number;
@@ -234,9 +274,18 @@ export function findAwaitedReplies(input: {
     answered: 0,
     too_recent: 0,
     too_old: 0,
+    unobserved: 0,
   };
   const self = new Set(input.sent.flatMap(sendersOf));
   const robots = automatedSenders(input.inbox);
+  // The oldest moment the inbox read can speak for. Before it, a reply may
+  // exist that was simply not read.
+  const horizon =
+    input.inboxComplete || input.inbox.length === 0
+      ? Number.NEGATIVE_INFINITY
+      : Math.min(
+          ...input.inbox.map((message) => Date.parse(message.receivedAt)).filter(Number.isFinite),
+        );
 
   // Newest first, so the latest message in a thread is the one that is kept.
   const ordered = [...input.sent].sort(
@@ -253,6 +302,10 @@ export function findAwaitedReplies(input: {
     }
     if (message.automated) {
       counts.automatic = (counts.automatic ?? 0) + 1;
+      continue;
+    }
+    if (sentAt < horizon) {
+      counts.unobserved = (counts.unobserved ?? 0) + 1;
       continue;
     }
     const recipients = recipientsOf(message).filter(
