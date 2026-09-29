@@ -535,7 +535,7 @@
   align-items: center;
   gap: 10px;
   height: 52px;
-  padding: 0 16px;
+  padding: 0 14px 0 18px;
   border-bottom: 1px solid var(--line);
 }
 .palette-input input {
@@ -547,68 +547,182 @@
   font-size: 15px;
   color: var(--text);
 }
+.palette-input input::placeholder {
+  color: var(--placeholder);
+}
+.palette-glyph {
+  display: flex;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
 .palette-tabs {
   display: flex;
   flex-direction: row;
-  gap: 4px;
-  padding: 10px 12px 6px;
+  gap: 2px;
+  padding: 8px 10px;
   overflow-x: auto;
   scrollbar-width: none;
+  border-bottom: 1px solid var(--line);
 }
+/* The active type is a quiet tint, not a chip: the list below is the focus. */
 .palette-tab {
   display: inline-flex;
   align-items: center;
   height: 26px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: 12px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 12.5px;
   font-weight: 500;
-  color: var(--secondary);
-  border: 1px solid transparent;
+  color: var(--muted);
   white-space: nowrap;
+  transition:
+    color 0.12s,
+    background 0.12s;
+}
+.palette-tab:hover {
+  color: var(--text);
 }
 .palette-tab[aria-selected="true"] {
-  color: var(--blue-ink);
-  background: var(--blue-soft);
-  border-color: var(--blue-line);
+  color: var(--heading);
+  background: color-mix(in srgb, var(--heading) 8%, transparent);
 }
 .palette-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 0 6px 6px;
-  max-height: 50vh;
+  gap: 6px;
+  padding: 6px;
+  max-height: min(52vh, 440px);
   overflow-y: auto;
+  scroll-padding: 6px;
+}
+.palette-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.palette-heading {
+  padding: 8px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
 }
 .palette-item {
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 10px;
-  height: 40px;
-  padding: 0 10px;
+  gap: 12px;
+  min-height: 38px;
+  padding: 7px 10px;
   border-radius: 8px;
   width: 100%;
   text-decoration: none;
   color: inherit;
 }
 .palette-item[data-on="true"],
-.palette-item:hover {
-  background: var(--hover);
+.palette-item[data-on="true"]:hover {
+  background: color-mix(in srgb, var(--heading) 7%, transparent);
   text-decoration: none;
   color: inherit;
+}
+.palette-item:hover {
+  text-decoration: none;
+  color: inherit;
+}
+.palette-item[data-on="true"] .palette-glyph {
+  color: var(--heading);
+}
+.palette-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+.palette-title,
+.palette-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.palette-title {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--heading);
+}
+.palette-sub {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.palette-go {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.palette-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 28px 16px 24px;
+  text-align: center;
+}
+.palette-empty-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.palette-empty-sub {
+  font-size: 13px;
+  color: var(--muted);
+}
+.palette-empty-action {
+  margin-top: 8px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+}
+.palette-empty-action:hover {
+  background: var(--hover);
 }
 .palette-foot {
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 12px;
-  height: 36px;
+  gap: 18px;
+  height: 38px;
   padding: 0 16px;
   border-top: 1px solid var(--line);
   background: var(--soft);
   font-size: 12px;
   color: var(--muted);
+}
+.palette-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.palette-keys {
+  display: inline-flex;
+  gap: 3px;
+}
+@media (max-width: 767px) {
+  .palette-scrim {
+    padding-top: 56px;
+  }
+  .palette-foot {
+    display: none;
+  }
 }
 
 .plan-grid {
