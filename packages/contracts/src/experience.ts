@@ -742,6 +742,7 @@ export const experienceOperations = {
   'POST /signin/magic-link/consume': { request: magicLinkConsume, response: experienceOk },
   'POST /signin/google': { response: notAvailable },
   'POST /signin/apple': { response: notAvailable },
+  'POST /signin/chatgpt': { response: notAvailable },
   /** Ends the session behind the cookie; the next request needs a new sign-in. */
   'POST /signout': { response: experienceOk },
   'GET /browser/sessions/{id}': { response: browserResponse },
