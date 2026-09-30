@@ -33,6 +33,24 @@ describe('local days', () => {
       '2026-09-27T02:30:00.000Z',
     );
   });
+  test('the repeated hour is its first occurrence east of UTC too', () => {
+    // London goes from BST (+1) back to GMT at 02:00 on 25 October 2026.
+    expect(zonedInstant('2026-10-25', '01:30', 'Europe/London').toISOString()).toBe(
+      '2026-10-25T00:30:00.000Z',
+    );
+    // Lord Howe falls back half an hour, from +11 to +10:30, at 02:00 on 5 April 2026.
+    expect(zonedInstant('2026-04-05', '01:45', 'Australia/Lord_Howe').toISOString()).toBe(
+      '2026-04-04T14:45:00.000Z',
+    );
+    // Berlin skips 02:00 to 03:00 on 29 March 2026: 02:30 lands at 03:30 local.
+    expect(zonedInstant('2026-03-29', '02:30', 'Europe/Berlin').toISOString()).toBe(
+      '2026-03-29T01:30:00.000Z',
+    );
+    // Santiago's clocks skip midnight on 6 September 2026: the day starts at 01:00.
+    expect(zonedInstant('2026-09-06', '00:00', 'America/Santiago').toISOString()).toBe(
+      '2026-09-06T04:00:00.000Z',
+    );
+  });
 });
 
 describe('the weekly digest schedule', () => {
