@@ -69,6 +69,9 @@ const CREDENTIAL_LABEL =
   /\b(?:password|passcode|passphrase|secret|token|api key|card number|credit card|cvv|cvc|security code|one[- ]time|verification code|otp|pin|ssn|social security)\b/i;
 const GUEST_FIELDS = /^(?:attendees?|guests?|invitees?|to|cc|bcc|recipients?|participants?)$/i;
 
+/** A camel- or Pascal-case name with its words split, so `deleteIssue` reads as `delete_Issue`. */
+const words = (name: string) => name.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+
 function keys(value: JsonValue, found: string[] = []): string[] {
   if (Array.isArray(value)) for (const item of value) keys(item, found);
   else if (value && typeof value === 'object')
@@ -80,7 +83,7 @@ function keys(value: JsonValue, found: string[] = []): string[] {
 }
 
 function carriesCredentials(kind: string, payload: JsonObject): boolean {
-  if (keys(payload).some((key) => CREDENTIAL_KEY.test(key))) return true;
+  if (keys(payload).some((key) => CREDENTIAL_KEY.test(words(key)))) return true;
   // The browser names a field by its visible label, which is where a password shows.
   if (kind === 'browser.fill' && typeof payload.label === 'string')
     return CREDENTIAL_LABEL.test(payload.label);
@@ -102,7 +105,7 @@ export function reviewTier(input: {
   if (tool.effect_class === 'spend') return person('It spends money.');
   if (carriesCredentials(tool.name, payload))
     return person('It carries a password, key or payment detail.');
-  if (DESTRUCTIVE.test(tool.name)) return person('It deletes or removes something.');
+  if (DESTRUCTIVE.test(words(tool.name))) return person('It deletes or removes something.');
   if (doubts.length > 0)
     return person(
       'A recipient, destination or amount in it did not come from you or a connected app you verified.',

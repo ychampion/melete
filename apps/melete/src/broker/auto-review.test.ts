@@ -68,6 +68,27 @@ describe('reviewTier', () => {
     ['removing a member', tool('team.remove_member', 'write_reversible'), {}],
     ['revoking access', tool('drive.revoke', 'write_reversible'), {}],
     ['deleting a sandbox file', tool('files.delete', 'write_reversible'), {}],
+    [
+      'deleting, named in camel case',
+      tool('mcp_tracker.deleteIssue', 'write_reversible', true),
+      {},
+    ],
+    ['removing, named in Pascal case', tool('mcp_team.RemoveMember', 'write_reversible', true), {}],
+    [
+      'an access token, keyed in camel case',
+      tool('settings.update', 'write_reversible', true),
+      { auth: { accessToken: 'x' } },
+    ],
+    [
+      'a new password, keyed in camel case',
+      tool('account.update', 'write_reversible', true),
+      { newPassword: 'x' },
+    ],
+    [
+      'a client secret, keyed in camel case',
+      tool('app.configure', 'write_reversible', true),
+      { clientSecret: 'x' },
+    ],
     ['a stored password', tool('vault.store', 'write_reversible', true), { password: 'x' }],
     [
       'a nested API key',
