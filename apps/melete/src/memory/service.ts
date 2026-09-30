@@ -95,7 +95,12 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
     // Out of answered calls for this one message, or a call that can never
     // succeed (too large, or refused by the provider): asking again would not help.
     else if (
-      ['extraction_budget', 'extraction_call_refused', 'extraction_provider_refused'].includes(code)
+      [
+        'extraction_budget',
+        'extraction_call_refused',
+        'extraction_provider_refused',
+        'extraction_kept_private',
+      ].includes(code)
     ) {
       await options.sql.begin(async (tx) => {
         await lockSpace(tx, scope);

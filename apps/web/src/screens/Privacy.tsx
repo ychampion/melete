@@ -91,7 +91,7 @@ function Sent({ preview }: { preview: PrivacyPreview }) {
   const parts = preview.sent.split(/(⟦[A-Z_]+_\d+⟧)/g);
   const route =
     preview.route === 'local'
-      ? 'This would stay on your local model, as written. A cloud model would never see it; had it gone to one, it would have looked like this:'
+      ? 'This would stay on your local model, as written, and not go to a cloud model. Had it gone to one, it would have looked like this:'
       : preview.route === 'ask'
         ? 'This would stay private. With no local model, Melete asks you before sending the version below.'
         : preview.details.length
@@ -183,7 +183,12 @@ export function PrivacyTab() {
   const flip = (
     change: Pick<
       Partial<PrivacySettings>,
-      'enabled' | 'sensitive_topics' | 'private_space' | 'private_agent_ids' | 'local_detection'
+      | 'enabled'
+      | 'sensitive_topics'
+      | 'private_space'
+      | 'private_agent_ids'
+      | 'local_detection'
+      | 'model_on_device'
     >,
   ) => {
     setSettings((current) => (current ? { ...current, ...change } : current));
@@ -220,7 +225,7 @@ export function PrivacyTab() {
       {settings.model_on_device ? (
         <div className="row" style={{ gap: 8, fontSize: 13, color: 'var(--secondary)' }}>
           <Icon name="lock" size={14} />
-          Your model runs on this machine or your network, so nothing is sent to a cloud model.
+          You marked your model’s address as a model you run, so requests to it are sent as written.
         </div>
       ) : null}
       {!settings.sealed_vault ? (
@@ -289,9 +294,23 @@ export function PrivacyTab() {
         </div>
       </Section>
 
+      {settings.model_address_local ? (
+        <Section
+          title="Your model’s address"
+          sub={`Your model is set to ${settings.model_address ?? 'an address'}, which is on this machine or your network. That can be a model you run, or a proxy or gateway that passes requests on to a cloud service, so Melete still swaps details out of what it sends there.`}
+        >
+          <SwitchRow
+            label="This is a model running on a machine I control"
+            hint="Turn this on only if it answers requests itself and does not pass them on. Requests to it are then sent as written, and private conversations can run on it."
+            on={settings.model_on_device}
+            onChange={(next) => flip({ model_on_device: next })}
+          />
+        </Section>
+      ) : null}
+
       <Section
         title="Keep private work on your own model"
-        sub="These conversations never go to a cloud model. Without a local model, Melete asks you first and sends only a redacted version if you agree."
+        sub="These conversations stay on your local model. Without one, Melete asks you first and sends only a redacted version if you agree."
       >
         <SwitchRow
           label="Everything in this space"

@@ -671,7 +671,9 @@ with `MELETE_LOCAL_MODEL_URL` (an OpenAI-compatible version prefix on this
 machine or a private network, for example `http://127.0.0.1:11434/v1`),
 `MELETE_LOCAL_MODEL` and, when the server needs one, `MELETE_LOCAL_MODEL_KEY`.
 Listed private values and the vault of swapped details are sealed with
-`MELETE_MASTER_KEY`.
+`MELETE_MASTER_KEY`. A configured model whose address is on this machine or
+your network is still redacted for, since it may be a proxy to a cloud service,
+until the owner confirms under Settings → Privacy that it is a model they run.
 
 `MELETE_DEFAULT_MODEL` is the identifier the provider serves, written exactly as
 its API expects it. Fireworks identifiers are full account paths; the default is

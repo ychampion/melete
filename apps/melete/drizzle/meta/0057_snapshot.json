@@ -1,5 +1,5 @@
 {
-  "id": "3a065409-bbb4-4a12-bf76-b459ed0153ea",
+  "id": "32ee74ab-1dad-44e4-b532-43d5ce00ba11",
   "prevId": "73b5f06f-5b8e-449c-ac4b-9e819132323d",
   "version": "7",
   "dialect": "postgresql",
@@ -7734,6 +7734,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "private_origin": {
+          "name": "private_origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -7840,6 +7846,10 @@
         "memory_source_trust": {
           "name": "memory_source_trust",
           "value": "\"memory_sources\".\"origin_trust\" in ('owner','verified_connector','external_content','inferred')"
+        },
+        "memory_source_private_origin": {
+          "name": "memory_source_private_origin",
+          "value": "\"memory_sources\".\"private_origin\" is null or \"memory_sources\".\"private_origin\" in ('space','agent','health','therapy','finance')"
         }
       },
       "isRLSEnabled": false

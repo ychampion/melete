@@ -107,7 +107,15 @@ export const privacySettings = z.strictObject({
   /** Ask the local model to find names, addresses and health details too. */
   local_detection: z.boolean(),
   known_values: z.array(privacyKnownValue).max(200),
-  /** The configured model already runs on this machine or network: nothing leaves it. */
+  /** The configured model's address is on this machine or the person's network. */
+  model_address_local: z.boolean(),
+  /** That address, shown so the owner can tell what they would confirm; null when it is not local. */
+  model_address: z.string().max(500).nullable(),
+  /**
+   * The owner confirmed that address is a model running on a machine they
+   * control, not a proxy to a cloud service, so requests to it are sent as
+   * written. An address on their network alone is never taken as this.
+   */
   model_on_device: z.boolean(),
   /** Whether swapped details are kept, sealed, between requests. */
   sealed_vault: z.boolean(),
@@ -129,6 +137,8 @@ export const privacySettingsUpdate = z.strictObject({
     .nullable()
     .optional(),
   local_detection: z.boolean().optional(),
+  /** Confirm (true) or withdraw (false) that the configured model's address is a model the owner runs. */
+  model_on_device: z.boolean().optional(),
   add_known_values: z
     .array(
       z.strictObject({
@@ -143,7 +153,7 @@ export const privacySettingsUpdate = z.strictObject({
 });
 export type PrivacySettingsUpdate = z.infer<typeof privacySettingsUpdate>;
 
-/** Where a request goes. `on_device` is a configured model that is itself local. */
+/** Where a request goes. `on_device` is a configured model the owner confirmed they run. */
 export const privacyRoute = z
   .enum(['cloud', 'local', 'ask', 'on_device'])
   .meta({ id: 'PrivacyRoute' });

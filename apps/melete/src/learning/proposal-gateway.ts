@@ -92,8 +92,8 @@ export async function openProposalGateway(options: {
   providers: NonNullable<GatewayOptions['providers']>;
   fake?: GatewayOptions['fake'];
   fetch?: GatewayOptions['fetch'];
-  /** The service's privacy router; left out, the default one. */
-  privacy?: GatewayOptions['privacy'];
+  /** The service's privacy router. */
+  privacy: GatewayOptions['privacy'];
 }) {
   const tokens = new Map<string, Admission>();
   const principals = new WeakMap<GatewayPrincipal, Admission>();
@@ -163,6 +163,13 @@ export async function openProposalGateway(options: {
       const principal: GatewayPrincipal = {
         jobId: admission.jobId,
         attemptId: `proposal:${admission.episodeId}`,
+        // The corrected conversation's own privacy decides where its episode may go.
+        privacy: {
+          kind: 'service',
+          purpose: 'learning',
+          spaceId: admission.spaceId,
+          sourceJobId: admission.jobId,
+        },
         epoch: 0,
         revision: 0,
         maxRequests: 1,

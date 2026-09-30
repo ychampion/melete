@@ -12,7 +12,7 @@ import { createModelGateway, type GatewayOptions, type GatewayProvider } from '.
 import { EngineSkillService } from '../learning/engine-skills.ts';
 import { learningRuntimeFetch } from '../learning/runtime-route.ts';
 import { withPlaceholderResolution } from '../privacy/broker.ts';
-import { defaultPrivacyRouter, type PrivacyRouter } from '../privacy/index.ts';
+import type { PrivacyRouter } from '../privacy/index.ts';
 import { matchesServiceKey } from './capability.ts';
 import { PostgresGatewayBudget } from './gateway-budget.ts';
 import { createBrokerApp } from './http.ts';
@@ -49,8 +49,8 @@ export function createInternalServer(options: {
   artifactCritic?: ArtifactCritic;
   artifactRoots?: ArtifactRoots;
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
-  /** Where model requests may go and what they may carry; left out, the default router. */
-  privacy?: PrivacyRouter;
+  /** Where model requests may go and what they may carry. */
+  privacy: PrivacyRouter;
 }) {
   const broker =
     options.broker ??
@@ -139,7 +139,7 @@ export function createInternalServer(options: {
       }),
       {
         capabilityKey: options.capabilityKey,
-        router: () => options.privacy ?? defaultPrivacyRouter(),
+        router: () => options.privacy,
       },
     ),
     onError: (error) => process.stderr.write(`model gateway: ${error.message}\n`),

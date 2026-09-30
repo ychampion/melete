@@ -171,8 +171,9 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       );
     },
     'GET /memory/items': (spaceId, c) =>
-      memory?.list(spaceId, c.get('owner').id, c.req.query('after') ?? null) ??
-      unavailable('Your saved details are not connected yet.'),
+      memory?.list(spaceId, c.get('owner').id, c.req.query('after') ?? null, {
+        forAssistant: mcpActorOf(c.env) !== undefined,
+      }) ?? unavailable('Your saved details are not connected yet.'),
     'PATCH /memory/items/{id}': (spaceId, c, input) =>
       memory?.edit(spaceId, c.get('owner').id, c.req.param('id') ?? '', input) ??
       unavailable('Your saved details are not connected yet.'),

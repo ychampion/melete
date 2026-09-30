@@ -25,8 +25,10 @@ Named tests in `index.test.ts` cover:
 Every request passes the privacy router (`../privacy/`, described in
 [PRIVACY-ROUTER](../../../../docs/PRIVACY-ROUTER.md)) after validation and before
 metering: it chooses the destination, swaps sensitive details for placeholders,
-and rehydrates the reply before it leaves the gateway. `privacy: false` is for
-tests of the transport alone.
+and rehydrates the reply before it leaves the gateway. Every gateway is given its
+router (`privacy` is required), and every principal names whose data it carries
+(`privacy` on `GatewayPrincipal`: the job's own, or a service call's space and
+source conversation). `privacy: false` is for tests of the transport alone.
 
 `oauth.ts` speaks OAuth 2.0 with PKCE to ChatGPT's issuer, over the endpoints
 the open-source Codex CLI uses, and to an issuer the operator configures for the

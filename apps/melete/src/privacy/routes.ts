@@ -17,13 +17,13 @@ import {
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
-import { assertLocalEndpoint, checkLocalModel, PrivacyError } from './local.ts';
+import { assertLocalEndpoint, checkLocalModel, isLocalUrl, PrivacyError } from './local.ts';
 import type { PrivacyRouter } from './router.ts';
-import { newKnownId, type PlainSettings, type SealedSettings } from './store.ts';
+import { newKnownId, type PlainSettings, type SealedSettings, sameAddress } from './store.ts';
 
 export type PrivacyRouteOptions = {
   router: () => PrivacyRouter;
-  /** The configured provider's address, to tell the person when it is itself local. */
+  /** The configured provider's address, which the owner may confirm is a model they run. */
   providerUrl?: string;
 };
 
@@ -49,6 +49,7 @@ export async function settingsView(
 ): Promise<PrivacySettings> {
   const stored = await router.store.settings(spaceId);
   const settings = await router.settingsFor(spaceId);
+  const addressLocal = providerUrl ? await router.isLocal(providerUrl) : false;
   return {
     enabled: PRIVACY_CATEGORIES.filter((category) => settings.enabled.has(category)),
     sensitive_topics: settings.topics,
@@ -68,7 +69,13 @@ export async function settingsView(
       category: known.category,
       hint: hint(known.value),
     })),
-    model_on_device: providerUrl ? await router.isLocal(providerUrl) : false,
+    model_address_local: addressLocal,
+    model_address: addressLocal ? (providerUrl ?? null) : null,
+    model_on_device:
+      addressLocal &&
+      !!providerUrl &&
+      !!settings.onDeviceUrl &&
+      sameAddress(settings.onDeviceUrl, providerUrl),
     sealed_vault: router.store.sealing,
   };
 }
@@ -78,8 +85,11 @@ export async function updateSettings(
   router: PrivacyRouter,
   spaceId: string,
   input: PrivacySettingsUpdate,
+  providerUrl?: string,
 ): Promise<void> {
   const stored = await router.store.settings(spaceId);
+  const wasPrivateSpace = stored.plain.private_space === true;
+  const wasPrivateAgents = new Set(stored.plain.private_agent_ids ?? []);
   const plain: PlainSettings = { ...stored.plain };
   const sealed: SealedSettings = {
     known: [...(stored.sealed?.known ?? [])],
@@ -90,6 +100,16 @@ export async function updateSettings(
   if (input.private_space !== undefined) plain.private_space = input.private_space;
   if (input.private_agent_ids) plain.private_agent_ids = [...new Set(input.private_agent_ids)];
   if (input.local_detection !== undefined) plain.local_detection = input.local_detection;
+  if (input.model_on_device === false) plain.model_on_device_url = null;
+  else if (input.model_on_device === true) {
+    // Only the address the service is set to use now, and only while it is local.
+    if (!providerUrl || !(await isLocalUrl(providerUrl, router.options.resolve)))
+      throw new PrivacyError(
+        'model_not_local',
+        'Your model’s address is not on this machine or your network, so it can’t be marked as yours.',
+      );
+    plain.model_on_device_url = providerUrl;
+  }
   if (input.local_model === null) {
     plain.local_model = null;
     delete sealed.local_api_key;
@@ -116,6 +136,15 @@ export async function updateSettings(
       'This service has no master key, so it cannot keep a key. Set MELETE_MASTER_KEY and start it again.',
       409,
     );
+  // "Send a redacted version" was an answer about the reason it was asked for.
+  // A space or agent marked private since then is a new reason, so it asks
+  // again. Withdrawn first, so no request sees the new setting with the old answer.
+  if (!wasPrivateSpace && plain.private_space === true)
+    await router.store.revokeConsent(spaceId, null);
+  else {
+    const added = (plain.private_agent_ids ?? []).filter((id) => !wasPrivateAgents.has(id));
+    if (added.length) await router.store.revokeConsent(spaceId, added);
+  }
   await router.store.saveSettings(spaceId, plain, sealed);
   router.invalidate(spaceId);
 }
@@ -130,7 +159,7 @@ export function mountPrivacy(app: Hono, options: PrivacyRouteOptions) {
     const input = privacySettingsUpdate.parse(await c.req.json());
     const router = options.router();
     try {
-      await updateSettings(router, spaceId, input);
+      await updateSettings(router, spaceId, input, options.providerUrl);
     } catch (error) {
       if (error instanceof PrivacyError)
         throw new ServiceError(error.code, error.message, error.status === 409 ? 409 : 400);

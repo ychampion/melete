@@ -10,9 +10,18 @@
  *   the backstop. There is no silent fallback.
  * - Everything else is redacted with the conversation's vault and sent to the
  *   configured provider; the reply is rehydrated before the engine sees it.
- * - A configured provider that is itself on this machine or network gets the
- *   request as written: nothing leaves.
+ *   What memory learned in private conversations is swapped out of it too.
+ * - A configured provider gets the request as written only when the owner has
+ *   confirmed its address is a model running on a machine they control. An
+ *   address on this machine or network is not enough on its own: a proxy or
+ *   gateway there may forward to a cloud service.
+ *
+ * Every request names whose data it carries (`GatewayPrincipal.privacy`): an
+ * engine attempt's own job, or a service call's space and the conversation it
+ * read from, so a memory call about a private conversation is routed like that
+ * conversation.
  */
+import { createHash } from 'node:crypto';
 import {
   type AttemptBundle,
   PRIVACY_CATEGORY_NAMES,
@@ -25,11 +34,17 @@ import {
 import { GatewayError, type GatewayPrincipal, type GatewayProvider } from '../gateway/types.ts';
 import { authoredParts, classify, classifyParts, type TopicHits } from './classify.ts';
 import type { Detection } from './detect.ts';
-import { isLocalUrl, type LocalModel, localDetect } from './local.ts';
+import { isLocalUrl, type LocalModel, localDetect, pinLocalModel } from './local.ts';
 import { type Protocol, Redactor } from './redact.ts';
-import { type PrivacyStore, type ResolvedSettings, resolveSettings, type Scope } from './store.ts';
+import {
+  type PrivacyStore,
+  type ResolvedSettings,
+  resolveSettings,
+  type Scope,
+  sameAddress,
+} from './store.ts';
 import { Rehydrator } from './stream.ts';
-import { placeholderCategory, Vault } from './vault.ts';
+import { type KnownValue, placeholderCategory, Vault } from './vault.ts';
 
 export type PreparedRequest = {
   body: Record<string, unknown>;
@@ -61,7 +76,8 @@ type ConversationState = {
   vault: Vault;
   cache: Map<string, { text: string; used: string[] }>;
   ner: Map<string, Detection[]>;
-  settingsVersion: number;
+  /** The settings version and private memory the cache was built under. */
+  settingsVersion: string;
   saving: Promise<void>;
 };
 
@@ -118,6 +134,30 @@ export class PrivacyRouter {
     this.settingsCache.delete(spaceId);
   }
 
+  /**
+   * Whose data a request carries. An engine attempt is read from its job; a
+   * service call is taken at its word for the space, and a conversation it
+   * names must exist in that space.
+   */
+  async scopeFor(principal: GatewayPrincipal): Promise<Scope> {
+    const declared = principal.privacy;
+    if (declared?.kind === 'job') return this.store.scope(principal.jobId, principal.attemptId);
+    if (declared?.kind !== 'service') throw new GatewayError(403, 'privacy_scope_missing');
+    const base = {
+      jobId: principal.jobId,
+      attemptId: principal.attemptId,
+      spaceId: declared.spaceId,
+      conversationId: null,
+      agentId: null,
+      turnId: null,
+    };
+    if (!declared.sourceJobId) return base;
+    const source = await this.store.scope(declared.sourceJobId, '');
+    if (source.spaceId === null) throw new GatewayError(403, 'privacy_scope_unknown');
+    if (source.spaceId !== declared.spaceId) throw new GatewayError(403, 'privacy_scope_mismatch');
+    return { ...base, conversationId: source.conversationId, agentId: source.agentId };
+  }
+
   /** Whether every address of this URL is on the person's machine or network. */
   async isLocal(url: string): Promise<boolean> {
     const cached = this.addressChecks.get(url);
@@ -127,12 +167,16 @@ export class PrivacyRouter {
     return local;
   }
 
-  private async state(scope: Scope, settings: ResolvedSettings): Promise<ConversationState> {
+  private async state(
+    scope: Scope,
+    settings: ResolvedSettings,
+    key = String(settings.version),
+  ): Promise<ConversationState> {
     const fresh = (vault: Vault | null): ConversationState => ({
       vault: vault ?? new Vault(),
       cache: new Map(),
       ner: new Map(),
-      settingsVersion: settings.version,
+      settingsVersion: key,
       saving: Promise.resolve(),
     });
     // The service's own calls have no conversation: a vault for this request only.
@@ -154,10 +198,11 @@ export class PrivacyRouter {
       }
     }
     const state = await pending;
-    if (state.settingsVersion !== settings.version) {
-      // Categories or listed values changed: the same text may redact differently now.
+    if (state.settingsVersion !== key) {
+      // Categories, listed values or private memory changed: the same text may
+      // redact differently now.
       state.cache.clear();
-      state.settingsVersion = settings.version;
+      state.settingsVersion = key;
     }
     return state;
   }
@@ -170,17 +215,24 @@ export class PrivacyRouter {
     body: Record<string, unknown>;
   }): Promise<PreparedRequest> {
     const { principal, provider, protocol, body } = input;
-    const scope = await this.store.scope(principal.jobId, principal.attemptId);
+    const scope = await this.scopeFor(principal);
     const settings = await this.settingsFor(scope.spaceId);
-    if (!provider.fake && (await this.isLocal(provider.baseUrl))) {
+    if (!provider.fake && (await this.onDevice(settings, provider.baseUrl))) {
       const receipt = emptyReceipt('on_device');
       await this.log(scope, receipt);
       return { body, route: 'on_device', local: null, rehydrator: null, receipt };
     }
-    const decision = await this.privateDecision(scope, settings, authoredParts(body, protocol));
+    const decision = await this.privateDecision(
+      scope,
+      settings,
+      authoredParts(body, protocol),
+      // A service call reads the conversation's topic but never sets it: what it
+      // carries (a memory snapshot, say) is not what the person said there.
+      principal.privacy.kind === 'job',
+    );
     if (decision.private) {
-      const local = settings.local;
-      if (local && protocol === 'chat/completions' && (await this.isLocal(local.baseUrl))) {
+      const local = await this.readyLocal(settings, protocol);
+      if (local) {
         const receipt = emptyReceipt('local');
         await this.log(scope, receipt);
         return {
@@ -194,13 +246,17 @@ export class PrivacyRouter {
       if (decision.consent !== 'allowed')
         throw new GatewayError(409, 'privacy_confirmation_required');
     }
-    const state = await this.state(scope, settings);
+    // What memory learned in private conversations is swapped out of every
+    // cloud request, wherever it appears: recall already leaves it out, and
+    // this catches any other way it could arrive.
+    const remembered = scope.spaceId ? await this.store.privateMemory(scope.spaceId) : [];
+    const state = await this.state(scope, settings, `${settings.version}:${digest(remembered)}`);
     let localDetection: PrivacyReceipt['local_detection'] = 'off';
     if (settings.localDetection && settings.local)
       localDetection = await this.detectLocally(state, body, protocol, settings.local);
     const redactor = new Redactor(state.vault, {
       enabled: settings.enabled,
-      known: settings.known,
+      known: [...settings.known, ...memoryValues(remembered)],
       cache: state.cache,
       extra: (text) => state.ner.get(text),
     });
@@ -231,6 +287,7 @@ export class PrivacyRouter {
     scope: Scope,
     settings: ResolvedSettings,
     authored: { person: string[]; tools: string[] },
+    remember = true,
   ): Promise<{
     private: boolean;
     sensitive: SensitiveTopic | null;
@@ -242,7 +299,7 @@ export class PrivacyRouter {
     let sensitive = conversation?.sensitive ?? null;
     if (!sensitive) {
       sensitive = classifyParts(authored, settings.topics, this.topics);
-      if (sensitive && scope.conversationId && scope.spaceId)
+      if (remember && sensitive && scope.conversationId && scope.spaceId)
         await this.store.updateConversation(scope.conversationId, scope.spaceId, { sensitive });
     }
     const agentPrivate = scope.agentId !== null && settings.privateAgents.has(scope.agentId);
@@ -251,6 +308,71 @@ export class PrivacyRouter {
       sensitive,
       consent: conversation?.consent ?? null,
     };
+  }
+
+  /**
+   * The configured provider is trusted as the person's own model only when the
+   * owner confirmed this exact address and it is still on their machine or network.
+   */
+  private async onDevice(settings: ResolvedSettings, baseUrl: string): Promise<boolean> {
+    if (!settings.onDeviceUrl || !sameAddress(settings.onDeviceUrl, baseUrl)) return false;
+    return this.isLocal(baseUrl);
+  }
+
+  /** The local model, checked and pinned for this request, or null when it cannot take it. */
+  private async readyLocal(
+    settings: ResolvedSettings,
+    protocol: Protocol,
+  ): Promise<LocalModel | null> {
+    if (!settings.local || protocol !== 'chat/completions') return null;
+    return pinLocalModel(settings.local, this.options.resolve);
+  }
+
+  /**
+   * Whether an attempt's requests will stay on the person's own model, so what
+   * memory learned in private conversations may be recalled into its prompt.
+   * Read once before the attempt; the gateway still swaps private memory out of
+   * any request that goes to a cloud model.
+   */
+  async recallsPrivateMemory(
+    jobId: string,
+    attemptId: string,
+    engine: { protocol: Protocol; providerUrl?: string },
+  ): Promise<boolean> {
+    const scope = await this.store.scope(jobId, attemptId);
+    if (!scope.spaceId) return false;
+    const settings = await this.settingsFor(scope.spaceId);
+    if (engine.providerUrl && (await this.onDevice(settings, engine.providerUrl))) return true;
+    const conversation = scope.conversationId
+      ? await this.store.conversation(scope.conversationId)
+      : null;
+    const isPrivate =
+      settings.privateSpace ||
+      (scope.agentId !== null && settings.privateAgents.has(scope.agentId)) ||
+      !!conversation?.sensitive;
+    return isPrivate && (await this.readyLocal(settings, engine.protocol)) !== null;
+  }
+
+  /**
+   * Why what the person said in this job is private, when it is: the space or
+   * agent is marked private, or the conversation is about a sensitive topic.
+   * Memory records this on what it learns from the message. A topic found here
+   * is kept on the conversation, as the router would keep it.
+   */
+  async captureOrigin(jobId: string, text: string): Promise<PrivateOrigin | null> {
+    const scope = await this.store.scope(jobId, '');
+    if (!scope.spaceId) return null;
+    const settings = await this.settingsFor(scope.spaceId);
+    if (settings.privateSpace) return 'space';
+    if (scope.agentId !== null && settings.privateAgents.has(scope.agentId)) return 'agent';
+    const conversation = scope.conversationId
+      ? await this.store.conversation(scope.conversationId)
+      : null;
+    if (conversation?.sensitive) return conversation.sensitive;
+    const sensitive = classify(text, settings.topics);
+    if (sensitive && scope.conversationId)
+      await this.store.updateConversation(scope.conversationId, scope.spaceId, { sensitive });
+    return sensitive;
   }
 
   private async log(scope: Scope, receipt: PrivacyReceipt) {
@@ -266,9 +388,10 @@ export class PrivacyRouter {
     state: ConversationState,
     body: Record<string, unknown>,
     protocol: Protocol,
-    local: LocalModel,
+    configured: LocalModel,
   ): Promise<'used' | 'failed'> {
-    if (!(await this.isLocal(local.baseUrl))) return 'failed';
+    const local = await pinLocalModel(configured, this.options.resolve);
+    if (!local) return 'failed';
     const parts = authoredParts(body, protocol);
     const authored = new Set([...parts.person, ...parts.tools]);
     const strings = [...authored].filter((text) => text.length >= 8 && !state.ner.has(text));
@@ -283,10 +406,16 @@ export class PrivacyRouter {
    * Before an attempt starts: ask the person when this conversation must stay
    * private and there is no local model to keep it on.
    */
-  async beforeAttempt(bundle: AttemptBundle, engineProtocol: Protocol): Promise<GateDecision> {
+  async beforeAttempt(
+    bundle: AttemptBundle,
+    engineProtocol: Protocol,
+    providerUrl?: string,
+  ): Promise<GateDecision> {
     const scope = await this.store.scope(bundle.attempt.job_id, bundle.attempt.id);
     if (!scope.conversationId || !scope.spaceId) return { proceed: true };
     const settings = await this.settingsFor(scope.spaceId);
+    // A model the owner confirmed they run takes private conversations as written.
+    if (providerUrl && (await this.onDevice(settings, providerUrl))) return { proceed: true };
     const person = [
       bundle.job.objective,
       ...bundle.inputs.new_user_messages
@@ -481,6 +610,27 @@ export class PrivacyRouter {
   forget(conversationId: string) {
     this.states.delete(conversationId);
   }
+}
+
+/** Why a message is private, as memory records it on what it learns. */
+export type PrivateOrigin = 'space' | 'agent' | SensitiveTopic;
+
+/** Private memory as values the redactor swaps, in both its plain and JSON-escaped spelling. */
+function memoryValues(contents: string[]): KnownValue[] {
+  return contents.flatMap((content, index) => {
+    const escaped = JSON.stringify(content).slice(1, -1);
+    const spellings = escaped === content ? [content] : [content, escaped];
+    return spellings.map((value) => ({
+      id: `memory_${index}`,
+      label: 'Learned in a private conversation',
+      category: 'private' as const,
+      value,
+    }));
+  });
+}
+
+function digest(values: string[]): string {
+  return values.length ? createHash('sha256').update(values.join('\u0000')).digest('hex') : '';
 }
 
 function emptyReceipt(route: PrivacyReceipt['route']): PrivacyReceipt {

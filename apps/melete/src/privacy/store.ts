@@ -31,6 +31,12 @@ export type ResolvedSettings = {
   local: LocalModel | null;
   localDetection: boolean;
   known: KnownValue[];
+  /**
+   * The provider address the owner confirmed is a model they run on this
+   * machine or network, not a proxy to a cloud service. Requests to exactly this
+   * address are sent as written; nothing else is trusted as local.
+   */
+  onDeviceUrl: string | null;
 };
 
 /** What is stored in the plain `settings` column. */
@@ -41,6 +47,8 @@ export type PlainSettings = {
   private_agent_ids?: string[];
   local_model?: { base_url: string; model: string } | null;
   local_detection?: boolean;
+  /** The provider address the owner confirmed runs on a machine they control. */
+  model_on_device_url?: string | null;
 };
 
 /** What is sealed beside it. */
@@ -76,7 +84,20 @@ export function resolveSettings(
     local,
     localDetection: plain.local_detection === true,
     known: sealed?.known ?? [],
+    onDeviceUrl: plain.model_on_device_url ?? null,
   };
+}
+
+/** Whether two provider addresses are the same, however each is written. */
+export function sameAddress(a: string, b: string): boolean {
+  try {
+    const left = new URL(a);
+    const right = new URL(b);
+    const path = (url: URL) => url.pathname.replace(/\/+$/, '');
+    return left.origin === right.origin && path(left) === path(right);
+  } catch {
+    return false;
+  }
 }
 
 /** Who a model request belongs to. */
@@ -115,11 +136,26 @@ export interface PrivacyStore {
   loadVault(conversationId: string): Promise<Vault | null>;
   saveVault(conversationId: string, spaceId: string, vault: Vault): Promise<void>;
   conversation(conversationId: string): Promise<ConversationState>;
+  /**
+   * Change only the named fields. `sensitive` is never cleared once set: a
+   * write that carries none, or races another, leaves it as it was.
+   */
   updateConversation(
     conversationId: string,
     spaceId: string,
     change: Partial<ConversationState>,
   ): Promise<void>;
+  /**
+   * Withdraw "send a redacted version" answers given before the space, or one
+   * of these agents, was marked private, so the new reason asks again. Null
+   * agents means every conversation in the space.
+   */
+  revokeConsent(spaceId: string, agentIds: string[] | null): Promise<void>;
+  /**
+   * The current wording of what memory learned from conversations that were
+   * private when they were captured, so a cloud request can leave it out.
+   */
+  privateMemory(spaceId: string): Promise<string[]>;
   /** The answer given to the question an attempt asked, or null while it is open. */
   answer(attemptId: string): Promise<string | null>;
   log(entry: RequestLog): Promise<void>;
@@ -203,9 +239,7 @@ export class PostgresPrivacyStore implements PrivacyStore {
         agentId: row.agent_id ? String(row.agent_id) : null,
         turnId: row.turn_id ? String(row.turn_id) : null,
       };
-    // The service's own calls name their space in the job id: memory:<space>.
-    const space = /^memory:(.+)$/.exec(jobId)?.[1] ?? null;
-    return { jobId, attemptId, spaceId: space, conversationId: null, agentId: null, turnId: null };
+    return { jobId, attemptId, spaceId: null, conversationId: null, agentId: null, turnId: null };
   }
 
   async settings(spaceId: string | null) {
@@ -278,14 +312,45 @@ export class PostgresPrivacyStore implements PrivacyStore {
     spaceId: string,
     change: Partial<ConversationState>,
   ): Promise<void> {
-    const next = { ...(await this.conversation(conversationId)), ...change };
+    // One statement that touches only the named columns, so two writers (the
+    // gate recording a question, the router marking the topic) cannot undo each
+    // other, and a topic once found stays found.
+    const has = (field: keyof ConversationState) => field in change;
     await this.sql`insert into privacy_conversation
         (conversation_id, space_id, sensitive, consent, consent_turn_id, asked_attempt_id)
-      values (${conversationId}, ${spaceId}, ${next.sensitive}, ${next.consent},
-        ${next.consentTurnId}, ${next.askedAttemptId})
-      on conflict (conversation_id) do update set sensitive = excluded.sensitive,
-        consent = excluded.consent, consent_turn_id = excluded.consent_turn_id,
-        asked_attempt_id = excluded.asked_attempt_id, updated_at = now()`;
+      values (${conversationId}, ${spaceId}, ${change.sensitive ?? null}, ${change.consent ?? null},
+        ${change.consentTurnId ?? null}, ${change.askedAttemptId ?? null})
+      on conflict (conversation_id) do update set
+        sensitive = coalesce(privacy_conversation.sensitive, excluded.sensitive),
+        consent = case when ${has('consent')} then excluded.consent
+          else privacy_conversation.consent end,
+        consent_turn_id = case when ${has('consentTurnId')} then excluded.consent_turn_id
+          else privacy_conversation.consent_turn_id end,
+        asked_attempt_id = case when ${has('askedAttemptId')} then excluded.asked_attempt_id
+          else privacy_conversation.asked_attempt_id end,
+        updated_at = now()`;
+  }
+
+  async revokeConsent(spaceId: string, agentIds: string[] | null): Promise<void> {
+    if (agentIds && !agentIds.length) return;
+    await this.sql`update privacy_conversation pc set consent = null, consent_turn_id = null,
+        updated_at = now()
+      where pc.space_id = ${spaceId} and pc.consent = 'allowed'
+        and (${agentIds === null} or exists (
+          select 1 from job j left join job p on p.id = j.experience_parent_id
+          where j.id = pc.conversation_id
+            and coalesce(j.agent_id, p.agent_id) = any(${agentIds ?? []}::text[])))`;
+  }
+
+  async privateMemory(spaceId: string): Promise<string[]> {
+    const rows = await this.sql`select distinct b.content from memory_claims c
+      join memory_revision_content b on b.claim_id = c.id and b.revision = c.head_revision
+      where c.space_id = ${spaceId} and not c.hidden and exists (
+        select 1 from memory_references ref join memory_sources s on s.id = ref.source_id
+        where ref.claim_id = c.id and ref.revision = c.head_revision
+          and s.private_origin is not null)
+      limit 500`;
+    return rows.map((row) => String(row.content));
   }
 
   async answer(attemptId: string): Promise<string | null> {
@@ -329,6 +394,8 @@ export class MemoryPrivacyStore implements PrivacyStore {
   readonly logs: RequestLog[] = [];
   readonly conversations = new Map<string, ConversationState>();
   readonly answers = new Map<string, string>();
+  /** What memory learned privately, per space. */
+  readonly memory = new Map<string, string[]>();
   readonly scopes = new Map<string, Omit<Scope, 'jobId' | 'attemptId'>>();
   private readonly stored = new Map<
     string,
@@ -375,10 +442,28 @@ export class MemoryPrivacyStore implements PrivacyStore {
     _spaceId: string,
     change: Partial<ConversationState>,
   ) {
+    const current = await this.conversation(conversationId);
     this.conversations.set(conversationId, {
-      ...(await this.conversation(conversationId)),
+      ...current,
       ...change,
+      sensitive: current.sensitive ?? change.sensitive ?? null,
     });
+  }
+
+  async revokeConsent(spaceId: string, agentIds: string[] | null) {
+    for (const [conversationId, state] of this.conversations) {
+      if (state.consent !== 'allowed') continue;
+      const scope = [...this.scopes.values()].find(
+        (entry) => entry.conversationId === conversationId,
+      );
+      if (scope && scope.spaceId !== spaceId) continue;
+      if (agentIds !== null && !(scope?.agentId && agentIds.includes(scope.agentId))) continue;
+      this.conversations.set(conversationId, { ...state, consent: null, consentTurnId: null });
+    }
+  }
+
+  async privateMemory(spaceId: string) {
+    return this.memory.get(spaceId) ?? [];
   }
 
   async answer(attemptId: string) {

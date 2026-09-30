@@ -1,10 +1,15 @@
 # Privacy router
 
-Before anything Melete sends reaches a cloud model, the privacy router swaps
-sensitive details for placeholders such as `⟦ACCOUNT_1⟧` and `⟦EMAIL_2⟧`, and
-puts the real values back when the reply arrives, on the machine that runs
-Melete. The most private work does not go to a cloud model at all: it runs on a
-model on your own machine or network.
+Before a cloud model sees your request, Melete swaps account numbers, IDs,
+contact details and keys for placeholders, and can keep private conversations on
+a model you run.
+
+The privacy router does this. It replaces sensitive details with placeholders
+such as `⟦ACCOUNT_1⟧` and `⟦EMAIL_2⟧`, and puts the real values back when the
+reply arrives, on the machine that runs Melete. Conversations you mark private,
+and conversations about therapy, health records or personal finances, run on a
+model on your own machine or network, or wait for your answer before anything is
+sent.
 
 The code is in [`apps/melete/src/privacy/`](../apps/melete/src/privacy/). The
 settings are under **Settings → Privacy**.
@@ -21,6 +26,20 @@ history, tool results and the file contents they carry, tool arguments, and
 replayed reasoning. Because the router works on the finished body rather than on
 the parts that built it, a new source of context cannot bypass it.
 
+Every gateway is opened with the router (a gateway without one does not
+compile), and every request says whose data it carries:
+
+- an agent's request belongs to its job, and the router reads the job's space,
+  conversation and agent;
+- one of the service's own calls names its space and, when it reads from a
+  conversation, that conversation. A memory extraction names the conversation
+  the message was said in, so a private or sensitive conversation's words are
+  read on your local model, or not read at all, exactly as the conversation
+  itself is routed. The companies scan names the space whose mailbox it reads.
+
+Anything new that calls a model through Melete (a voice or phone integration,
+a reviewer) has to name its scope the same way.
+
 Only structural fields are left as they are: the model name, roles, types, ids,
 tool names, signatures and encrypted reasoning. Tool arguments and tool results
 that are JSON are read as JSON and redacted field by field. Text shaped like a
@@ -33,8 +52,8 @@ Each conversation has a vault. The same detail always gets the same placeholder
 in that conversation, numbered per kind; spellings are normalised, so
 `0001-2345-6789` and `000123456789` are one account. The vault is sealed with
 `MELETE_MASTER_KEY` (a sealed box bound to the conversation, so a copy placed on
-another conversation does not open) and stored in `privacy_vault`. It is never
-put into a request. Without a master key the vault lives in memory only; each
+another conversation does not open) and stored in `privacy_vault`. It is not
+put into requests. Without a master key the vault lives in memory only; each
 request is still redacted and its reply rehydrated with the same mapping.
 
 ## Replies come back with real values
@@ -94,7 +113,7 @@ A conversation does not go to a cloud model when:
 - the space is marked private, or its agent is;
 - it is about therapy or mental health, medical records, or personal finances
   (statements, taxes). This is decided from what you write and, through strong
-  phrases only, what tools bring back; never from the system prompt. Once a
+  phrases only, what tools bring back; not from the system prompt. Once a
   conversation is found sensitive it stays that way.
 
 Such a conversation goes to your local model, unredacted, since it stays on your
@@ -109,11 +128,37 @@ With no local model, nothing is sent. Melete asks first, with a quick answer:
 **Send a redacted version** or **Keep it private**. Agreeing lets that
 conversation go to the cloud model redacted; keeping it private sends nothing
 and asks again on your next message. The gateway refuses such a request itself
-(`privacy_confirmation_required`) if one ever arrives without that answer, so
-there is no silent fallback.
+(`privacy_confirmation_required`) if one arrives without that answer, so there
+is no silent fallback. The answer is about the reason it was asked for: if you
+later mark the space or the conversation's agent private, Melete asks again.
 
-If the configured model itself runs on this machine or your network, requests
-are sent as written.
+### Memory from private conversations
+
+What you say in a private conversation can still be remembered, but it stays
+private. When a message is captured, memory records why its conversation was
+private (the space, the agent, or the topic). What memory learns from it:
+
+- is recalled into an agent's prompt only when that conversation runs on your
+  own model;
+- is left out of the details shown to the model when memory reads a message
+  from an ordinary conversation;
+- is not shown to another assistant reading your saved details through
+  Melete's MCP endpoint;
+- is swapped for a `⟦PRIVATE_n⟧` placeholder if its wording turns up in any
+  request that goes to a cloud model, as a second line behind the rules above.
+
+You still see all of it in your own memory screen.
+
+### A model address on your own network
+
+If the configured model's address is on this machine or your network, Melete
+still redacts what it sends there: the address may be a model you run, or a
+proxy or gateway (LiteLLM, a corporate gateway, a private cloud endpoint) that
+passes requests on to a cloud service. Under **Settings → Privacy → Your model's
+address** you can confirm it is a model running on a machine you control. Only
+then are requests to that exact address sent as written, and private
+conversations run on it. Changing the model's address withdraws the
+confirmation.
 
 ## What you can see
 
@@ -124,9 +169,41 @@ are sent as written.
   kept in the page.
 - Every model request records its route and what was swapped, by kind and
   placeholder name, in `privacy_request` and on the request's model receipt.
-  Values are never recorded there.
+  Values are not recorded there.
 
-## Limits
+## What it guarantees, and what it doesn't
+
+What the router does, for every model request that goes through Melete's
+gateway (the agent's turns, and the service's memory, learning and companies
+calls):
+
+- It swaps the kinds of detail listed above, and the values you list, for
+  placeholders before the request leaves, and puts the real values back on your
+  machine when the reply arrives.
+- It sends a conversation you marked private, or one it recognises as about
+  therapy, health records or personal finances, to your local model, or asks
+  you before sending a redacted version to a cloud model.
+- It keeps what memory learned in those conversations out of recall into
+  cloud-bound requests.
+- It treats a model address on your network as a cloud model until you confirm
+  otherwise.
+
+What it does not do:
+
+- It is not a promise that no private detail reaches a cloud model. Detection
+  works by pattern and by the phrases it knows: a detail written in a form it
+  doesn't recognise, or a name you haven't listed, goes as written, and the
+  words around a placeholder still say a lot.
+- The sensitive-topic check reads phrases, not meaning. A conversation about
+  something sensitive in plain words may not be recognised.
+- Connectors and actions send real values to their own services when they run,
+  after your approval where one is needed: a payment has to carry the real
+  account. Text to speech (`connectors/tts.ts`) sends the script you approved to
+  its own speech service directly, not through the gateway.
+- Anything a cloud model already received before a conversation was marked
+  private, or before a topic was recognised, stays with that provider.
+
+### Limits in detail
 
 Redaction reduces what a cloud model sees. It is not anonymisation.
 

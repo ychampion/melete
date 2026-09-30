@@ -10,7 +10,7 @@ import {
   modelContextWindow,
   REQUEST_FRAMING_TOKENS,
 } from '@melete/contracts';
-import { defaultPrivacyRouter, localEndpoint, type PrivacyRouter } from '../privacy/index.ts';
+import { localEndpoint, PrivacyRouter } from '../privacy/index.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import {
@@ -58,10 +58,11 @@ export interface GatewayOptions {
   brokerFetch?: (request: Request) => Response | Promise<Response>;
   /**
    * Decides where each request may go and swaps sensitive details for
-   * placeholders. Left out, the default router redacts with default settings;
-   * `false` sends requests as written and is only for tests of the transport.
+   * placeholders. Required, so a new gateway cannot be opened without choosing
+   * its router; `false` sends requests as written and is only for tests of the
+   * transport.
    */
-  privacy?: PrivacyRouter | false;
+  privacy: PrivacyRouter | false;
 }
 
 function header(request: IncomingMessage, name: string): string {
@@ -127,6 +128,9 @@ function positiveInteger(value: unknown): value is number {
 }
 
 export function createModelGateway(options: GatewayOptions): Server {
+  // Checked at run time too, for a caller that reached here around the type.
+  if (options.privacy !== false && !(options.privacy instanceof PrivacyRouter))
+    throw new TypeError('A model gateway needs a privacy router');
   const providers = options.providers ?? [...providersFromEnv(), fakeProvider];
   const allowedHosts = new Set<string>(PROVIDER_HOSTS);
   for (const provider of providers) {
@@ -255,7 +259,7 @@ export function createModelGateway(options: GatewayOptions): Server {
       // go to the person's own model, everything else leaves with its sensitive
       // details swapped for placeholders. A refusal happens before anything is
       // reserved, and nothing below sees the unredacted body again.
-      const router = options.privacy === false ? null : (options.privacy ?? defaultPrivacyRouter());
+      const router = options.privacy === false ? null : options.privacy;
       const prepared = router
         ? await router.prepare({ principal, provider, protocol, body })
         : null;
@@ -301,6 +305,8 @@ export function createModelGateway(options: GatewayOptions): Server {
       for (const [name, value] of Object.entries(signedIn?.headers ?? {})) headers.set(name, value);
       if (local) {
         if (credential) headers.set('authorization', `Bearer ${credential}`);
+        // The router pinned the local model to the address it checked for this request.
+        if (local.host) headers.set('host', local.host);
       } else if (protocol === 'messages') {
         headers.set('x-api-key', credential ?? 'fake');
         headers.set('anthropic-version', '2023-06-01');

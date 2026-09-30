@@ -45,6 +45,7 @@ export function gatewayExtractor(options: {
   model: string;
   providers: GatewayProvider[];
   fetch?: GatewayOptions['fetch'];
+  privacy: GatewayOptions['privacy'];
 }): CompanyExtractor {
   const open = async (): Promise<ScanExtractor> => {
     const gateway = await openExtractionGateway({
@@ -52,6 +53,7 @@ export function gatewayExtractor(options: {
       model: options.model,
       providers: options.providers,
       ...(options.fetch ? { fetch: options.fetch } : {}),
+      privacy: options.privacy,
       maxCalls: SCAN_CALL_CEILING,
     });
     return {
@@ -118,11 +120,16 @@ export function configuredDailyCalls(env: Env): number | undefined {
 }
 
 /** Which extractor this deployment runs, as `companiesExtraction` decides. */
-export function configuredExtractor(env: Env, sql?: Sql): CompanyExtractor {
+export function configuredExtractor(
+  env: Env,
+  privacy: GatewayOptions['privacy'],
+  sql?: Sql,
+): CompanyExtractor {
   const extraction = companiesExtraction(env);
   if (!extraction) return scriptedExtractor();
   return gatewayExtractor({
     ...extraction,
+    privacy,
     providers: configuredProviders(env, () => {}, sql ? providerSignIn(sql, env) : undefined),
   });
 }
@@ -170,6 +177,8 @@ export function companiesDeps(options: {
   sql?: Sql;
   registry?: ConnectorRegistry;
   env: Env;
+  /** The service's privacy router, for the scan's model calls. */
+  privacy: GatewayOptions['privacy'];
   jobs?: JobService;
   triggers?: TriggerService;
 }): CompaniesDeps {
@@ -181,7 +190,7 @@ export function companiesDeps(options: {
       options.sql && options.registry
         ? spaceMailbox({ sql: options.sql, registry: options.registry })
         : () => null,
-    extractor: configuredExtractor(options.env, options.sql),
+    extractor: configuredExtractor(options.env, options.privacy, options.sql),
     ...(configuredDailyCalls(options.env) === undefined
       ? {}
       : { dailyCalls: configuredDailyCalls(options.env) }),

@@ -19,6 +19,7 @@ import {
   fakeProvider,
 } from '../../../apps/melete/src/gateway/fake.ts';
 import { startQueue } from '../../../apps/melete/src/jobs/queue.ts';
+import { defaultPrivacyRouter } from '../../../apps/melete/src/privacy/index.ts';
 import { seedJob } from '../../../apps/melete/test/helpers/broker.ts';
 import { createPostgresFixture } from '../../../apps/melete/test/helpers/postgres.ts';
 import { brokerCatalogState, brokerParkedActions, HermesRuntimeAdapter } from '../src/adapter.ts';
@@ -177,6 +178,7 @@ async function main() {
     let loaded = false;
     let invoked = false;
     internal = createInternalServer({
+      privacy: defaultPrivacyRouter(),
       sql: db.sql,
       connectors: registry,
       boss: boss.boss,

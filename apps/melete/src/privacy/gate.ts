@@ -24,6 +24,8 @@ export function withPrivacyGate<T extends RuntimeAdapter | QuestioningRuntimeAda
   options: {
     router: () => PrivacyRouter;
     engineProtocol: Protocol;
+    /** The configured provider's address, which the owner may have confirmed is a model they run. */
+    providerUrl?: string;
     onError?: (error: Error) => void;
   },
 ): QuestioningRuntimeAdapter {
@@ -34,7 +36,9 @@ export function withPrivacyGate<T extends RuntimeAdapter | QuestioningRuntimeAda
   ): Promise<CommittedOutcome> => {
     let decision: Awaited<ReturnType<PrivacyRouter['beforeAttempt']>> = { proceed: true };
     try {
-      decision = await options.router().beforeAttempt(bundle, options.engineProtocol);
+      decision = await options
+        .router()
+        .beforeAttempt(bundle, options.engineProtocol, options.providerUrl);
     } catch (error) {
       options.onError?.(error instanceof Error ? error : new Error(String(error)));
     }

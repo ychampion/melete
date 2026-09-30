@@ -170,6 +170,7 @@ test('the full outbound request for a finance conversation carries placeholders 
   let outbound = '';
   server = createModelGateway({
     authenticate: async () => ({
+      privacy: { kind: 'job' },
       jobId: 'job_finance',
       attemptId: 'att_finance',
       epoch: 1,

@@ -6414,6 +6414,9 @@
                   "local_detection": {
                     "type": "boolean"
                   },
+                  "model_on_device": {
+                    "type": "boolean"
+                  },
                   "add_known_values": {
                     "maxItems": 50,
                     "type": "array",
@@ -23837,6 +23840,20 @@
               "$ref": "#/components/schemas/__schema246"
             }
           },
+          "model_address_local": {
+            "type": "boolean"
+          },
+          "model_address": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "model_on_device": {
             "type": "boolean"
           },
@@ -23852,6 +23869,8 @@
           "local_model",
           "local_detection",
           "known_values",
+          "model_address_local",
+          "model_address",
           "model_on_device",
           "sealed_vault"
         ],

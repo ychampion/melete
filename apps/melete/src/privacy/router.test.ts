@@ -38,9 +38,18 @@ const PROVIDERS: GatewayProvider[] = [
     protocols: ['chat/completions', 'responses'],
     allowHttp: true,
   },
+  {
+    // A proxy container on the same Docker network: a private address, a cloud model behind it.
+    name: 'litellm',
+    baseUrl: 'http://litellm:4000/v1/',
+    apiKey: 'proxy-key',
+    protocols: ['chat/completions'],
+    allowHttp: true,
+  },
 ];
 
 const principal = (jobId = 'job_chat'): GatewayPrincipal => ({
+  privacy: { kind: 'job' },
   jobId,
   attemptId: `att_${jobId}`,
   epoch: 1,
@@ -52,6 +61,7 @@ const principal = (jobId = 'job_chat'): GatewayPrincipal => ({
     { provider: 'openai', model: 'cloud-model' },
     { provider: 'anthropic', model: 'cloud-model' },
     { provider: 'openai-compatible', model: 'cloud-model' },
+    { provider: 'litellm', model: 'cloud-model' },
   ],
 });
 
@@ -86,6 +96,8 @@ async function start(options: {
   router?: PrivacyRouter;
   reply?: (captured: Captured) => Response;
   job?: string;
+  principal?: GatewayPrincipal;
+  resolve?: (hostname: string) => Promise<{ address: string }[]>;
 }) {
   const store = options.store ?? new MemoryPrivacyStore();
   const router =
@@ -93,7 +105,7 @@ async function start(options: {
     new PrivacyRouter({
       store,
       // Names resolve to a public address unless a test says otherwise.
-      resolve: async () => [{ address: '93.184.216.34' }],
+      resolve: options.resolve ?? (async () => [{ address: '93.184.216.34' }]),
     });
   const captured: Captured[] = [];
   const settlements: GatewaySettlement[] = [];
@@ -109,7 +121,7 @@ async function start(options: {
     },
   };
   const server = createModelGateway({
-    authenticate: async () => principal(options.job),
+    authenticate: async () => options.principal ?? principal(options.job),
     budget,
     providers: PROVIDERS,
     defaultProvider: 'fireworks',
@@ -687,17 +699,270 @@ describe('private conversations', () => {
       'My account is ⟦ACCOUNT_1⟧',
     );
   });
+});
 
-  test('a configured provider on this machine gets the request as written', async () => {
-    const { captured, post, settlements } = await start({});
-    await post('/providers/openai-compatible/v1/chat/completions', {
-      stream: true,
-      messages: [{ role: 'user', content: `My account is ${SAM.account}` }],
+describe('a model address on this machine or network', () => {
+  const inSpace = async (settings: Record<string, unknown> = {}) => {
+    const store = new MemoryPrivacyStore();
+    store.scopes.set('job_chat', {
+      spaceId: 'spc_1',
+      conversationId: 'job_chat',
+      agentId: 'agt_1',
+      turnId: 'trn_1',
     });
-    expect(JSON.parse(captured[0]?.body ?? '{}').messages[0].content).toBe(
-      `My account is ${SAM.account}`,
-    );
+    await store.saveSettings('spc_1', settings, null);
+    return store;
+  };
+  const account = {
+    stream: true,
+    messages: [{ role: 'user', content: `My account is ${SAM.account}` }],
+  };
+  const sentContent = (captured: Captured[]) =>
+    JSON.parse(captured[0]?.body ?? '{}').messages[0].content;
+
+  test('a provider on this machine is redacted until the owner says it is a model they run', async () => {
+    const { captured, post, settlements } = await start({ store: await inSpace() });
+    await post('/providers/openai-compatible/v1/chat/completions', account);
+    expect(sentContent(captured)).toBe('My account is ⟦ACCOUNT_1⟧');
+    expect(settlements[0]?.privacy?.route).toBe('cloud');
+  });
+
+  test('a proxy whose name resolves to a private address is a cloud model too', async () => {
+    const { captured, post, settlements } = await start({
+      store: await inSpace(),
+      resolve: async () => [{ address: '172.18.0.5' }],
+    });
+    await post('/providers/litellm/v1/chat/completions', account);
+    expect(captured[0]?.url).toBe('http://litellm:4000/v1/chat/completions');
+    expect(sentContent(captured)).toBe('My account is ⟦ACCOUNT_1⟧');
+    expect(settlements[0]?.privacy?.route).toBe('cloud');
+  });
+
+  test('once the owner confirms that exact address, it gets requests as written, private ones too', async () => {
+    const store = await inSpace({
+      model_on_device_url: 'http://127.0.0.1:11434/v1',
+      private_agent_ids: ['agt_1'],
+    });
+    const { captured, post, settlements } = await start({ store });
+    const response = await post('/providers/openai-compatible/v1/chat/completions', account);
+    expect(response.status).toBe(200);
+    expect(sentContent(captured)).toBe(`My account is ${SAM.account}`);
     expect(settlements[0]?.privacy?.route).toBe('on_device');
+    // The confirmation names one address: the proxy on the network is still redacted, and
+    // the private agent's conversation is held back there rather than sent.
+    const other = await start({ store, resolve: async () => [{ address: '172.18.0.5' }] });
+    const refused = await other.post('/providers/litellm/v1/chat/completions', account);
+    expect(refused.status).toBe(409);
+    expect(other.captured).toHaveLength(0);
+  });
+
+  test('a confirmed address that now resolves somewhere public is not trusted', async () => {
+    const store = await inSpace({ model_on_device_url: 'http://litellm:4000/v1/' });
+    const { captured, post, settlements } = await start({ store });
+    await post('/providers/litellm/v1/chat/completions', account);
+    expect(sentContent(captured)).toBe('My account is ⟦ACCOUNT_1⟧');
+    expect(settlements[0]?.privacy?.route).toBe('cloud');
+  });
+});
+
+describe('every request names whose data it carries', () => {
+  const service = (spaceId: string, sourceJobId: string | null): GatewayPrincipal => ({
+    ...principal('companies-scan'),
+    attemptId: 'scan:1',
+    privacy: { kind: 'service', purpose: 'companies', spaceId, sourceJobId },
+  });
+
+  test('a principal with no scope is refused before anything is reserved or sent', async () => {
+    const unscoped = { ...principal() } as Partial<GatewayPrincipal>;
+    delete unscoped.privacy;
+    const { captured, post, reserved } = await start({
+      principal: unscoped as GatewayPrincipal,
+    });
+    const response = await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+      'privacy_scope_missing',
+    );
+    expect(captured).toHaveLength(0);
+    expect(reserved).toHaveLength(0);
+  });
+
+  test("a service call that names a space gets that space's settings", async () => {
+    const store = new MemoryPrivacyStore();
+    await store.saveSettings('spc_1', { private_space: true }, null);
+    const { captured, post } = await start({ store, principal: service('spc_1', null) });
+    const response = await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: [{ role: 'user', content: 'Your invoice from the garden centre is attached.' }],
+    });
+    expect(response.status).toBe(409);
+    expect(captured).toHaveLength(0);
+  });
+
+  test('a gateway cannot be opened without a router', () => {
+    const options = {
+      authenticate: async () => principal(),
+      budget: { reserve: async () => ({ id: '1' }), settle: async () => {} },
+      providers: PROVIDERS,
+    };
+    // @ts-expect-error `privacy` is required: leaving it out does not compile.
+    expect(() => createModelGateway(options)).toThrow('A model gateway needs a privacy router');
+  });
+
+  test('a principal without a scope does not compile', () => {
+    // @ts-expect-error `privacy` is required on every principal.
+    const unscoped: GatewayPrincipal = {
+      jobId: 'j',
+      attemptId: 'a',
+      epoch: 0,
+      revision: 0,
+      maxRequests: 1,
+      maxTokens: 1,
+      allowedModels: [],
+    };
+    expect(unscoped.jobId).toBe('j');
+  });
+});
+
+describe('what memory learned in private conversations', () => {
+  const FACT = 'Has bipolar disorder and sees Dr. Okafor every month';
+  const learned = async (local: boolean) => {
+    const store = new MemoryPrivacyStore();
+    store.scopes.set('job_chat', {
+      spaceId: 'spc_1',
+      conversationId: 'job_chat',
+      agentId: null,
+      turnId: 'trn_1',
+    });
+    store.scopes.set('job_private', {
+      spaceId: 'spc_1',
+      conversationId: 'job_private',
+      agentId: 'agt_1',
+      turnId: 'trn_2',
+    });
+    store.memory.set('spc_1', [FACT, 'Takes "lithium" at night']);
+    await store.saveSettings(
+      'spc_1',
+      {
+        private_agent_ids: ['agt_1'],
+        ...(local
+          ? { local_model: { base_url: 'http://127.0.0.1:11434/v1', model: 'llama3.3' } }
+          : {}),
+      },
+      null,
+    );
+    return store;
+  };
+
+  test('is swapped out of a cloud request wherever it appears, and back into the reply', async () => {
+    const { captured, post } = await start({
+      store: await learned(false),
+      reply: () =>
+        new Response(
+          sse([
+            { choices: [{ index: 0, delta: { content: 'Noted: ⟦PRIVATE_1⟧.' } }] },
+            { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } },
+          ]),
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+    });
+    const response = await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: [
+        { role: 'system', content: `What you know about them:\n- ${FACT}` },
+        {
+          role: 'user',
+          content: JSON.stringify({ claims: [{ content: 'Takes "lithium" at night' }] }),
+        },
+      ],
+    });
+    const sent = captured[0]?.body ?? '';
+    expect(sent).not.toContain('bipolar');
+    expect(sent).not.toContain('lithium');
+    expect(sent).toContain('⟦PRIVATE_');
+    expect((await readChat(response)).text).toBe(`Noted: ${FACT}.`);
+  });
+
+  test('stays as written on a request that goes to the local model', async () => {
+    const store = await learned(true);
+    const { captured, post, settlements } = await start({ store, job: 'job_private' });
+    await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: [{ role: 'system', content: `What you know about them:\n- ${FACT}` }],
+    });
+    expect(settlements[0]?.privacy?.route).toBe('local');
+    expect(captured[0]?.body).toContain(FACT);
+  });
+
+  test('is recalled into an attempt only when it stays on the local model', async () => {
+    const router = (store: MemoryPrivacyStore) =>
+      new PrivacyRouter({ store, resolve: async () => [{ address: '93.184.216.34' }] });
+    const engine = { protocol: 'chat/completions' as const };
+    const withLocal = router(await learned(true));
+    expect(await withLocal.recallsPrivateMemory('job_private', 'a', engine)).toBe(true);
+    expect(await withLocal.recallsPrivateMemory('job_chat', 'a', engine)).toBe(false);
+    // With no local model a private conversation is asked about, and goes redacted if at all.
+    const without = router(await learned(false));
+    expect(await without.recallsPrivateMemory('job_private', 'a', engine)).toBe(false);
+    // An engine that speaks another protocol cannot use the local model.
+    expect(
+      await withLocal.recallsPrivateMemory('job_private', 'a', { protocol: 'responses' }),
+    ).toBe(false);
+  });
+
+  test('capture records why a message is private, and a topic it finds is kept', async () => {
+    const store = await learned(false);
+    const router = new PrivacyRouter({ store });
+    expect(await router.captureOrigin('job_private', 'hello')).toBe('agent');
+    expect(await router.captureOrigin('job_chat', 'Book a table for two')).toBeNull();
+    expect(await router.captureOrigin('job_chat', 'My therapist says I should rest')).toBe(
+      'therapy',
+    );
+    expect((await store.conversation('job_chat')).sensitive).toBe('therapy');
+    // Every later message in that conversation is private too.
+    expect(await router.captureOrigin('job_chat', 'Book a table for two')).toBe('therapy');
+    expect(await router.captureOrigin('job_unknown', 'anything')).toBeNull();
+  });
+});
+
+describe('the local model is used at the address that was checked', () => {
+  test('a name is resolved for the request and the request goes to that address', async () => {
+    const store = new MemoryPrivacyStore();
+    store.scopes.set('job_chat', {
+      spaceId: 'spc_1',
+      conversationId: 'job_chat',
+      agentId: 'agt_1',
+      turnId: 'trn_1',
+    });
+    await store.saveSettings(
+      'spc_1',
+      {
+        private_agent_ids: ['agt_1'],
+        local_model: { base_url: 'http://ollama.lan:11434/v1', model: 'llama3.3' },
+      },
+      null,
+    );
+    // The name answers privately when checked and publicly after: a rebinding attempt.
+    let lookups = 0;
+    const resolve = async () => [{ address: lookups++ === 0 ? '192.168.1.20' : '93.184.216.34' }];
+    const { captured, post, settlements } = await start({ store, resolve });
+    await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+    expect(settlements[0]?.privacy?.route).toBe('local');
+    expect(captured[0]?.url).toBe('http://192.168.1.20:11434/v1/chat/completions');
+    expect(captured[0]?.headers.host).toBe('ollama.lan:11434');
+    // The next request checks again, and a public answer keeps it off that address.
+    const next = await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+    expect(next.status).toBe(409);
+    expect(captured).toHaveLength(1);
   });
 });
 

@@ -39,6 +39,10 @@ export type ExtractionBatch = {
   snapshot: SpaceGeneration;
   /** The zone Tier 0 resolves this source's relative dates against. */
   time_zone: string | null;
+  /** The conversation this source was said in, so its privacy applies to the call that reads it. */
+  source_job_id: string | null;
+  /** Why the source was private when it was captured, or null. */
+  private_origin: string | null;
 };
 function toWork(row: Record<string, unknown>): MemoryWork {
   return memoryWork.parse({
@@ -78,6 +82,12 @@ export async function claimWork(
     const text = (
       await visibleSourceText(tx, toSource(evidence), evidence.content as string)
     ).slice(row.segment_start, row.segment_end);
+    const [capture] = await tx`select job_id from memory_capture
+      where source_id = ${row.source_id} and job_id is not null limit 1`;
+    const privateOrigin = (evidence.private_origin as string | null) ?? null;
+    // What was learned in a private conversation is shown to the model only
+    // while it reads another message from a private conversation.
+    const snapshotPrivate = privateOrigin !== null;
     // The claims this evidence is most likely about come first, so an update to
     // something said weeks ago can name the claim it replaces; the newest fill
     // the rest of the snapshot.
@@ -88,10 +98,19 @@ export async function claimWork(
           join memory_index_manifest m on m.space_id = i.space_id and m.generation = i.generation
           where i.space_id = ${scope.spaceId} and c.audience = ${evidence.audience} and not c.hidden
             and i.revision = c.head_revision and i.tokens @@ to_tsquery('simple', ${query})
+            and (${snapshotPrivate} or not exists (select 1 from memory_references ref
+              join memory_sources p on p.id = ref.source_id
+              where ref.claim_id = c.id and ref.revision = c.head_revision
+                and p.private_origin is not null))
           group by i.claim_id order by score desc, i.claim_id desc limit ${EXTRACTION_LIMITS.claims - 8}`
       : [];
-    const newest =
-      await tx`select id from memory_claims where space_id = ${scope.spaceId} and audience = ${evidence.audience} and not hidden order by id desc limit ${EXTRACTION_LIMITS.claims}`;
+    const newest = await tx`select c.id from memory_claims c
+      where c.space_id = ${scope.spaceId} and c.audience = ${evidence.audience} and not c.hidden
+        and (${snapshotPrivate} or not exists (select 1 from memory_references ref
+          join memory_sources p on p.id = ref.source_id
+          where ref.claim_id = c.id and ref.revision = c.head_revision
+            and p.private_origin is not null))
+      order by c.id desc limit ${EXTRACTION_LIMITS.claims}`;
     const candidates = [...new Set([...related, ...newest].map((row) => row.id as string))]
       .slice(0, EXTRACTION_LIMITS.claims)
       .map((id) => ({ id }));
@@ -112,6 +131,8 @@ export async function claimWork(
       claims,
       snapshot: generation(space),
       time_zone: (evidence.time_zone as string | null) ?? null,
+      source_job_id: capture?.job_id ? String(capture.job_id) : null,
+      private_origin: privateOrigin,
     };
   });
 }

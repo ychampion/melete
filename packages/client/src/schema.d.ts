@@ -10412,6 +10412,7 @@ export interface paths {
                             base_url: string;
                             model: string;
                         } | null;
+                        model_on_device?: boolean;
                         private_agent_ids?: components["schemas"]["__schema22"][];
                         private_space?: boolean;
                         remove_known_values?: components["schemas"]["__schema24"][];
@@ -14340,6 +14341,8 @@ export interface components {
                 has_key: boolean;
                 model: string;
             } | null;
+            model_address: string | null;
+            model_address_local: boolean;
             model_on_device: boolean;
             private_agent_ids: components["schemas"]["__schema245"][];
             private_space: boolean;

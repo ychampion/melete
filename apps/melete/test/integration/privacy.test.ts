@@ -26,6 +26,7 @@ const provider: GatewayProvider = {
   protocols: ['chat/completions'],
 };
 const principal = (jobId: string): GatewayPrincipal => ({
+  privacy: { kind: 'job' },
   jobId,
   attemptId: ATTEMPT,
   epoch: 1,
@@ -190,5 +191,118 @@ describe.if(handle !== null)('the privacy router over Postgres', () => {
     });
     expect((sent.body.messages as { content: string }[])[0]?.content).toBe('account ⟦ACCOUNT_1⟧');
     expect(KEEP_PRIVATE).not.toBe(SEND_REDACTED);
+  });
+
+  test('a topic once found stays found, whatever other writes land beside it', async () => {
+    const store = new PostgresPrivacyStore(sql, () => KEY);
+    await store.updateConversation(CONVERSATION, SPACE, { askedAttemptId: ATTEMPT });
+    // The gate recording questions and answers while the router marks the topic.
+    await Promise.all([
+      store.updateConversation(CONVERSATION, SPACE, { sensitive: 'therapy' }),
+      ...Array.from({ length: 20 }, (_, i) =>
+        store.updateConversation(CONVERSATION, SPACE, {
+          askedAttemptId: i % 2 ? null : ATTEMPT,
+          consentTurnId: `trn_${i}`,
+        }),
+      ),
+    ]);
+    // A write that names the topic as empty does not clear it either.
+    await store.updateConversation(CONVERSATION, SPACE, { sensitive: null, consent: 'declined' });
+    const state = await store.conversation(CONVERSATION);
+    expect(state.sensitive).toBe('therapy');
+    expect(state.consent).toBe('declined');
+    // Only the named fields change.
+    await store.updateConversation(CONVERSATION, SPACE, { consent: 'allowed' });
+    expect(await store.conversation(CONVERSATION)).toMatchObject({
+      sensitive: 'therapy',
+      consent: 'allowed',
+    });
+  });
+
+  test('marking the space or an agent private takes back an earlier "send a redacted version"', async () => {
+    const live = router();
+    const store = live.store;
+    await sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone, standing_instruction)
+      values ('agt_counsel', ${SPACE}, 'Counsel', 'listener', 'blue', 'soft', 'brown', 'warm', ''),
+        ('agt_errands', ${SPACE}, 'Errands', 'helper', 'green', 'soft', 'brown', 'warm', '')`;
+    const withAgent = 'job_01JPRIVACYAGENT0000000000';
+    const otherAgent = 'job_01JPRIVACYOTHER0000000000';
+    await sql`insert into job (id, space_id, title, objective, kind, agent_id)
+      values (${withAgent}, ${SPACE}, 'Talk', 'Talk', 'chat', 'agt_counsel'),
+        (${otherAgent}, ${SPACE}, 'Errands', 'Errands', 'chat', 'agt_errands')`;
+    for (const id of [CONVERSATION, withAgent, otherAgent])
+      await store.updateConversation(id, SPACE, { sensitive: 'finance', consent: 'allowed' });
+
+    await updateSettings(live, SPACE, { private_agent_ids: ['agt_counsel'] });
+    expect((await store.conversation(withAgent)).consent).toBeNull();
+    expect((await store.conversation(otherAgent)).consent).toBe('allowed');
+    expect((await store.conversation(CONVERSATION)).consent).toBe('allowed');
+    const refused = await live
+      .prepare({
+        principal: principal(withAgent),
+        provider,
+        protocol: 'chat/completions',
+        body: ask('hello'),
+      })
+      .then(
+        () => null,
+        (error: { code?: string }) => error.code,
+      );
+    expect(refused).toBe('privacy_confirmation_required');
+
+    await updateSettings(live, SPACE, { private_space: true });
+    expect((await store.conversation(otherAgent)).consent).toBeNull();
+    expect((await store.conversation(CONVERSATION)).consent).toBeNull();
+    // The topic the answer was about is untouched.
+    expect((await store.conversation(CONVERSATION)).sensitive).toBe('finance');
+  });
+
+  test('a memory call carries its conversation, so a sensitive conversation stays off the cloud model', async () => {
+    const live = router();
+    await live.store.updateConversation(CONVERSATION, SPACE, { sensitive: 'therapy' });
+    const memoryCall = (sourceJobId: string | null, spaceId = SPACE): GatewayPrincipal => ({
+      ...principal(`memory:${spaceId}`),
+      attemptId: 'memory:work_1',
+      privacy: { kind: 'service', purpose: 'memory', spaceId, sourceJobId },
+    });
+    // On its own this sentence names no topic, so only the conversation can keep it private.
+    const body = ask('I cried at work again, same as with my dad.');
+    const outcome = (caller: GatewayPrincipal) =>
+      live.prepare({ principal: caller, provider, protocol: 'chat/completions', body }).then(
+        (prepared) => prepared.route,
+        (error: { code?: string }) => error.code,
+      );
+    expect(await outcome(memoryCall(CONVERSATION))).toBe('privacy_confirmation_required');
+    // A job the conversation started is the same conversation.
+    expect(await outcome(memoryCall(CHILD))).toBe('privacy_confirmation_required');
+    // A call that carries no conversation is routed on its own words.
+    expect(await outcome(memoryCall(null))).toBe('cloud');
+    // A conversation from another space, or one that does not exist, is refused.
+    expect(await outcome(memoryCall(CONVERSATION, 'sp_01JOTHERSPACE00000000000000'))).toBe(
+      'privacy_scope_mismatch',
+    );
+    expect(await outcome(memoryCall('job_01JNOSUCHJOB000000000000000'))).toBe(
+      'privacy_scope_unknown',
+    );
+    // What a memory call carries does not mark the conversation it names.
+    const plain = 'job_01JPRIVACYPLAIN0000000000';
+    await sql`insert into job (id, space_id, title, objective, kind)
+      values (${plain}, ${SPACE}, 'Plain', 'Plain', 'chat')`;
+    const carried = await live
+      .prepare({
+        principal: memoryCall(plain),
+        provider,
+        protocol: 'chat/completions',
+        body: ask('Summarise my therapy session notes from Tuesday.'),
+      })
+      .then(
+        () => null,
+        (error: { code?: string }) => error.code,
+      );
+    expect(carried).toBe('privacy_confirmation_required');
+    expect((await live.store.conversation(plain)).sensitive).toBeNull();
+    // Once the person agreed to a redacted version, memory may read it redacted too.
+    await live.store.updateConversation(CONVERSATION, SPACE, { consent: 'allowed' });
+    expect(await outcome(memoryCall(CONVERSATION))).toBe('cloud');
   });
 });

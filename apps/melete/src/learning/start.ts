@@ -33,9 +33,9 @@ export async function startLearning(
   jobs: JobService,
   env: Env,
   workers: boolean,
-  fake?: GatewayOptions['fake'],
-  signIn?: ProviderSignIn,
-  privacy?: GatewayOptions['privacy'],
+  fake: GatewayOptions['fake'] | undefined,
+  signIn: ProviderSignIn | undefined,
+  privacy: GatewayOptions['privacy'],
 ) {
   const gateway = await openProposalGateway({
     db: jobs.db,

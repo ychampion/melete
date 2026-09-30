@@ -50,8 +50,8 @@ export async function startEffectBoundary(
     /** The owner's provider sign-ins, shared with the API that manages them. */
     signIn?: ProviderSignIn;
     /** The service's privacy router: what model requests may carry and where they go. */
-    privacy?: PrivacyRouter;
-  } = {},
+    privacy: PrivacyRouter;
+  },
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
     throw new Error(

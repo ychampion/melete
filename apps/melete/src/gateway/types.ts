@@ -11,10 +11,29 @@ export type GatewayPrivacyReceipt = {
   local_detection?: 'off' | 'used' | 'failed';
 };
 
+/**
+ * Whose data a request carries, so the privacy router applies the right
+ * space's settings and the right conversation's privacy. Every principal names
+ * one; there is no default.
+ *
+ * - `job`: an engine attempt. The space, conversation and agent are read from
+ *   the job itself.
+ * - `service`: one of the service's own calls (memory, a mailbox scan, a
+ *   reviewer, a voice or phone integration). `spaceId` is the space it works
+ *   for. `sourceJobId` names the conversation whose words it carries, so that
+ *   conversation's private agent, sensitive topic and answers apply to it too;
+ *   null when it carries none.
+ */
+export type GatewayPrivacyScope =
+  | { kind: 'job' }
+  | { kind: 'service'; purpose: string; spaceId: string; sourceJobId: string | null };
+
 /** Service-owned authorization, rechecked transactionally by the budget adapter. */
 export interface GatewayPrincipal {
   jobId: string;
   attemptId: string;
+  /** Whose data this request carries, for the privacy router. Required: see `GatewayPrivacyScope`. */
+  privacy: GatewayPrivacyScope;
   epoch: number;
   revision: number;
   maxRequests: number;
