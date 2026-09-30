@@ -126,6 +126,13 @@
         "zod-openapi": "6.0.2",
       },
     },
+    "packages/device": {
+      "name": "melete-device",
+      "version": "0.1.0-pre",
+      "bin": {
+        "melete-device": "./src/cli.ts",
+      },
+    },
     "packages/knowledge": {
       "name": "@melete/knowledge",
       "version": "0.1.0-pre",
@@ -653,6 +660,8 @@
     "luxon": ["luxon@3.7.2", "", {}, "sha512-vtEhXh/gNjI9Yg1u4jX/0YVPMvxzHuGgCm6tC5kZyb08yjGWGnqAjGJvcXbqQR2P3MyMEFnRbpcdFS6PBcLqew=="],
 
     "mailparser": ["mailparser@3.9.24", "", { "dependencies": { "@zone-eu/mailsplit": "5.4.16", "encoding-japanese": "2.3.0", "he": "1.2.0", "html-to-text": "10.0.1", "iconv-lite": "0.7.3", "libmime": "5.4.3", "linkify-it": "5.0.2", "nodemailer": "10.0.3", "punycode.js": "2.3.1", "tlds": "1.261.0" } }, "sha512-uK9B6Ynof9sh8fqHr5cclIN3q5/QL1LpEIrknLMp6UkrsOOxXW0Egt/o0COhkU0PuLZisn7l4ISpjGJTlA59sA=="],
+
+    "melete-device": ["melete-device@workspace:packages/device"],
 
     "mime": ["mime@3.0.0", "", { "bin": { "mime": "cli.js" } }, "sha512-jSCU7/VB1loIWBZe14aEYHU/+1UMEHoaO7qxCOVJOw9GgH72VAWppxNcjU+x9a2k3GSIBXNKxXQFqRvvZ7vr3A=="],
 

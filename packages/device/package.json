@@ -1,0 +1,31 @@
+{
+  "name": "melete-device",
+  "version": "0.1.0-pre",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Connect your own computer to your Melete agent: run commands, use files in folders you choose, open pages and take screenshots, with your approval.",
+  "bin": {
+    "melete-device": "./src/cli.ts"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src",
+    "!src/**/*.test.ts",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "scripts": {
+    "start": "bun src/cli.ts",
+    "test": "bun test"
+  }
+}

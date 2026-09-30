@@ -64,6 +64,10 @@ export type PermissionDecision = Body<paths['/permissions/{id}'], 'post'>;
 export type RuleBounds = Extract<PermissionDecision, { option: 'always' }>['bounds'];
 export type PermissionOutcome = Success<Ok<paths['/permissions/{id}'], 'post'>>;
 export type Rule = Success<Ok<paths['/rules'], 'get'>>['rules'][number];
+/** A computer the person connected, with what Settings and the computer itself allow. */
+export type Device = Ok<paths['/devices'], 'get'>['devices'][number];
+export type DeviceCapabilities = Device['capabilities'];
+export type DevicePairing = Ok<paths['/devices/pairings'], 'post'>;
 /** What Melete learned from the person's corrections, and skills it wrote for itself. */
 export type LearnedList = Ok<paths['/learned'], 'get'>;
 export type LearnedItem = LearnedList['items'][number];

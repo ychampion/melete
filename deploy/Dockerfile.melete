@@ -29,6 +29,7 @@ RUN apt-get update \
 # Manifests first, so a source-only change does not re-resolve dependencies.
 COPY package.json bun.lock ./
 COPY packages/contracts/package.json packages/contracts/
+COPY packages/device/package.json packages/device/
 COPY packages/client/package.json packages/client/
 COPY packages/knowledge/package.json packages/knowledge/
 COPY packages/runtime-hermes/package.json packages/runtime-hermes/

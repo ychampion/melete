@@ -2,7 +2,8 @@
  * Settings: the only place the technology shows. Saved details in plain
  * language with edit, forget and why; what Melete learned, with its state and
  * what can be done with it; connections with their state and what
- * each may do; standing rules with their limits and revoke.
+ * each may do; the person's own computers; standing rules with their limits
+ * and revoke.
  */
 import { type ReactNode, useState } from 'react';
 import { logoFor } from '../chat/parts.tsx';
@@ -16,6 +17,7 @@ import type { Connection, MemoryItem, Rule } from '../experience/types.ts';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
+import { DevicesTab } from './Devices.tsx';
 import { LearnedTab } from './Learned.tsx';
 
 const SOURCE_LABEL: Record<MemoryItem['source'], string> = {
@@ -255,8 +257,12 @@ export function SettingsScreen({ tab }: { tab: string }) {
   const memory = useLoad(() => adapter.memory(), []);
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
-  const current = tab === 'connections' || tab === 'rules' || tab === 'learned' ? tab : 'memory';
+  const current =
+    tab === 'connections' || tab === 'devices' || tab === 'rules' || tab === 'learned'
+      ? tab
+      : 'memory';
   const [learnedCount, setLearnedCount] = useState<number | undefined>(undefined);
+  const [deviceCount, setDeviceCount] = useState<number | undefined>(undefined);
   const items = memory.data?.items ?? [];
   const list = connections.data?.connections ?? [];
   const byId = new Map(list.map((c) => [c.id, c]));
@@ -307,6 +313,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
               label: 'Connections',
               count: list.filter((c) => c.status === 'connected').length,
             },
+            { value: 'devices', label: 'Devices', count: deviceCount },
             { value: 'rules', label: 'Rules', count: rules.data?.rules.length ?? 0 },
           ]}
         />
@@ -372,6 +379,8 @@ export function SettingsScreen({ tab }: { tab: string }) {
           </div>
         ) : current === 'learned' ? (
           <LearnedTab onCount={setLearnedCount} />
+        ) : current === 'devices' ? (
+          <DevicesTab onCount={setDeviceCount} />
         ) : current === 'connections' ? (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>

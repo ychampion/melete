@@ -34,6 +34,8 @@ export function mountPrincipals(
   app.use('*', async (c, next) => {
     if (['/health', '/setup', '/login', '/oauth/client-metadata.json'].includes(c.req.path))
       return next();
+    // A paired computer's companion has no session; each of its routes checks its token.
+    if (c.req.path.startsWith('/device/')) return next();
     const actor = c.get('owner').id;
     const path = c.req.path;
     const parts = path.split('/').filter(Boolean);

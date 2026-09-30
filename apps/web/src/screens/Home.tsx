@@ -273,6 +273,10 @@ function DecisionCard({
       .trim();
   const from = field('From');
   const to = field('To') ?? permission?.draft?.recipient;
+  /** What will run or change on a connected computer, exactly as it will be sent. */
+  const onComputer = (permission?.preview?.facts ?? []).filter((fact) =>
+    ['Command', 'Runs in', 'File', 'Page'].includes(fact.label),
+  );
   const amount = linked ? amountWords(linked.item) : null;
   const state = linked ? statusOf(linked.item, now) : null;
 
@@ -314,6 +318,18 @@ function DecisionCard({
               {to ?? ''}
             </span>
           ) : null}
+        </div>
+      ) : null}
+      {onComputer.length ? (
+        <div className="decision-preview">
+          {onComputer.map((fact) => (
+            <span key={fact.label} className="decision-meta">
+              {fact.label}:{' '}
+              <code style={{ fontSize: 12, color: 'var(--text)', overflowWrap: 'anywhere' }}>
+                {fact.value}
+              </code>
+            </span>
+          ))}
         </div>
       ) : null}
       {permission && !permission.draft && permission.why.length > 0 && !from && !to ? (

@@ -216,3 +216,30 @@ test('a draft card offers sending only while its draft can still be sent', () =>
   // Other actions keep their own primary action.
   expect(projectCards(base, mail, 'draft')[0]?.primary_action ?? null).toBeNull();
 });
+
+test('a permission for a connected computer shows the exact command and where it runs', () => {
+  const run: ActionRow = {
+    ...base,
+    kind: 'device.run',
+    effectClass: 'write_external',
+    connectionId: 'device-connection',
+    canonicalPayload: { command: 'echo hello', cwd: 'Projects', timeout_ms: 30000 },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const shown = projectPermission({
+    id: 'apr_device',
+    version: 'v1',
+    action: run,
+    connection: { id: 'device-connection', label: 'Test laptop', provider: 'device' },
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: true,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+  });
+  // Asked before it runs, never phrased as already done.
+  expect(shown.what).toBe('Run a command on your computer');
+  expect(shown.preview?.facts).toEqual([
+    { label: 'Command', value: 'echo hello' },
+    { label: 'Runs in', value: 'Projects' },
+  ]);
+});
