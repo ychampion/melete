@@ -13,6 +13,7 @@ import {
   projectPermission,
   projectPermissionDecision,
   projectQuestionDecision,
+  STOPPED_NOTE,
   SUPERSEDED_NOTE,
   safeUrl,
   senderAddress,
@@ -189,6 +190,18 @@ test('a permission a later message made stale reads as replaced, not as a refusa
       at: new Date('2026-09-25T09:00:00.000Z'),
     }).outcome,
   ).toBe('replaced');
+});
+
+test('a permission a stop withdrew reads as withdrawn, not as a refusal', () => {
+  expect(
+    projectPermissionDecision({
+      approvalId: 'apr_one',
+      decision: 'denied',
+      ruleSaved: false,
+      note: STOPPED_NOTE,
+      at: new Date('2026-09-25T09:00:00.000Z'),
+    }).outcome,
+  ).toBe('withdrawn');
 });
 
 test('a draft card offers sending only while its draft can still be sent', () => {

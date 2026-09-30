@@ -399,6 +399,8 @@ export function senderAddress(configuration: unknown): string | null {
 
 /** The note on a permission a later message in its conversation made stale. */
 export const SUPERSEDED_NOTE = 'replaced';
+/** The note on a permission withdrawn because the person stopped the turn it waited in. */
+export const STOPPED_NOTE = 'stopped';
 
 /**
  * A decided permission as the conversation shows it. An approval that saved a
@@ -419,7 +421,9 @@ export function projectPermissionDecision(input: {
       input.decision === 'denied'
         ? input.note === SUPERSEDED_NOTE
           ? 'replaced'
-          : 'deny'
+          : input.note === STOPPED_NOTE
+            ? 'withdrawn'
+            : 'deny'
         : input.ruleSaved
           ? 'always'
           : 'allow_once',

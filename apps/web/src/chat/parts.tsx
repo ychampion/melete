@@ -777,7 +777,7 @@ export function FilePreview({ file }: { file: NonNullable<Permission['file']> })
 
 /** What a decided permission card says it came to; null while it waits. */
 export function permissionOutcome(
-  decided: PermissionOption | 'replaced' | 'closed' | null,
+  decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null,
 ): string | null {
   return decided === 'allow_once'
     ? 'Allowed once'
@@ -787,9 +787,11 @@ export function permissionOutcome(
         ? 'Denied'
         : decided === 'replaced'
           ? 'Replaced by your new message'
-          : decided === 'closed'
-            ? 'Decided'
-            : null;
+          : decided === 'withdrawn'
+            ? 'Withdrawn when you stopped'
+            : decided === 'closed'
+              ? 'Decided'
+              : null;
 }
 
 export function PermissionCard({
@@ -801,7 +803,7 @@ export function PermissionCard({
   busy = false,
 }: {
   permission: Permission;
-  decided: PermissionOption | 'replaced' | 'closed' | null;
+  decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null;
   onDecide: (option: PermissionOption, bounds?: RuleBounds) => void;
   touch?: boolean;
   /** Drawn without its footer, when the phone carries the decision in a bottom bar. */

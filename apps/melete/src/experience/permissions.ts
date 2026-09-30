@@ -11,6 +11,7 @@ import {
   plainText,
   projectPermission,
   recipientText,
+  STOPPED_NOTE,
   SUPERSEDED_NOTE,
   senderAddress,
 } from './projectors.ts';
@@ -109,6 +110,12 @@ export class ExperiencePermissions {
           throw new ServiceError(
             'permission_replaced',
             'Your new message replaced this request.',
+            409,
+          );
+        if (approval.decided_by === STOPPED_NOTE)
+          throw new ServiceError(
+            'permission_withdrawn',
+            'This was withdrawn when you stopped.',
             409,
           );
         if (job.space_id !== spaceId || permissionVersion(approval) !== input.version)

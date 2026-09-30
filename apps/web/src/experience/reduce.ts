@@ -28,13 +28,14 @@ export type TurnBlock =
   | { type: 'receipt'; receipt: Receipt; reversed: boolean }
   /**
    * `decided` is the option chosen, here or as the stream's decision reports
-   * it; `replaced` means a later message made the request stale; `closed`
+   * it; `replaced` means a later message made the request stale; `withdrawn`
+   * means the person stopped the turn while it waited; `closed`
    * means its action moved on past approval without a decision item saying which way.
    */
   | {
       type: 'permission';
       permission: Permission;
-      decided: PermissionOption | 'replaced' | 'closed' | null;
+      decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null;
     }
   /** `answered` is the option id, or `closed` when the turn moved on after an answer given elsewhere. */
   | { type: 'question'; question: Question; answered: string | null };
@@ -433,7 +434,7 @@ export function setDelivery(
 export function markPermission(
   transcript: Transcript,
   id: string,
-  option: PermissionOption | 'replaced',
+  option: PermissionOption | 'replaced' | 'withdrawn',
 ): Transcript {
   return {
     ...transcript,
@@ -458,7 +459,8 @@ export function applyDecision(transcript: Transcript, decision: ExperienceDecisi
     return decision.outcome === 'allow_once' ||
       decision.outcome === 'always' ||
       decision.outcome === 'deny' ||
-      decision.outcome === 'replaced'
+      decision.outcome === 'replaced' ||
+      decision.outcome === 'withdrawn'
       ? markPermission(transcript, decision.id, decision.outcome)
       : transcript;
   }
