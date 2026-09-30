@@ -74,6 +74,11 @@ export const SANDBOX_SETTINGS = Object.keys(envSchema.in.shape).filter(
   (name) => name.startsWith('MELETE_SANDBOX_') || name.startsWith('MELETE_E2B_'),
 );
 
+/** Every voice setting the service reads, from its own schema. */
+export const VOICE_SETTINGS = Object.keys(envSchema.in.shape).filter(
+  (name) => name.startsWith('ELEVENLABS_') || name.startsWith('MELETE_VOICE_'),
+);
+
 /**
  * Docker's default json-file log has no size limit, so one talkative container
  * fills the disk that Postgres and the volumes share. A bound is a rotated
@@ -385,6 +390,12 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     'the service receives every sandbox setting',
     unforwarded.length === 0,
     `add to the melete environment as \${NAME:-}: ${unforwarded.join(', ')}`,
+  );
+  const unvoiced = VOICE_SETTINGS.filter((name) => !(name in (melete?.environment ?? {})));
+  say(
+    'the service receives every voice setting',
+    unvoiced.length === 0,
+    `add to the melete environment as \${NAME:-}: ${unvoiced.join(', ')}`,
   );
 
   return results;

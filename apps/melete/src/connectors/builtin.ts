@@ -10,8 +10,11 @@
  * 3. It does not lean on isolation the running deployment lacks.
  *
  * Files, web fetch and artifact publishing pass all three everywhere. Speech
- * generation passes once a speech-capable provider is configured; it is a
- * `spend`, so every call still needs an approval and a budget reservation.
+ * generation passes once a speech-capable provider is configured, and
+ * transcription once a provider that transcribes is; each is a `spend`, so
+ * every call still needs an approval and a budget reservation. Transcription
+ * is its own row beside Speech, so a space that already has Speech gains it
+ * when such a provider is added, and either can be revoked alone.
  * In-cell execution passes only where the cell is a container, because the
  * container is what bounds a command. A sandbox passes where the operator asked
  * for one on this service's own Docker engine (`MELETE_SANDBOX_PROVIDER=docker`):
@@ -47,6 +50,8 @@ export type BuiltinEnvironment = {
   cellIsolated: boolean;
   /** True when a speech-capable provider is configured. */
   speechConfigured: boolean;
+  /** True when a provider that transcribes is configured. */
+  transcriptionConfigured: boolean;
   /** The sandbox every space is given, or null when the deployment asked for none. */
   sandbox?: SandboxConnectionConfig | null;
 };
@@ -82,6 +87,13 @@ export const BUILTIN_CONNECTIONS: readonly Builtin[] = [
     when: (environment) => environment.speechConfigured,
   },
   {
+    key: 'transcription',
+    provider: 'generation',
+    label: 'Transcription',
+    scopes: ['audio.transcribe'],
+    when: (environment) => environment.transcriptionConfigured,
+  },
+  {
     key: 'exec',
     provider: 'exec',
     label: 'Code in the workspace',
@@ -103,11 +115,18 @@ export function builtinEnvironment(
   env: {
     MELETE_RUNTIME_ADAPTER: string;
     MELETE_RUNTIME_SUPERVISOR: string;
+    ELEVENLABS_API_KEY?: string;
     OPENAI_API_KEY?: string;
     OPENAI_COMPAT_BASE_URL?: string;
     MELETE_ENABLE_FAKE_PROVIDER?: boolean;
   } & Partial<Omit<DockerSandboxEnv, 'MELETE_RUNTIME_ADAPTER'>>,
 ): BuiltinEnvironment {
+  const capabilities = capabilitiesFromEnv({
+    ELEVENLABS_API_KEY: env.ELEVENLABS_API_KEY,
+    OPENAI_API_KEY: env.OPENAI_API_KEY,
+    OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
+    MELETE_ENABLE_FAKE_PROVIDER: String(env.MELETE_ENABLE_FAKE_PROVIDER ?? false),
+  });
   return {
     sandbox: defaultSandboxConfig({
       ...env,
@@ -116,12 +135,8 @@ export function builtinEnvironment(
     cellIsolated:
       env.MELETE_RUNTIME_ADAPTER === 'docker' ||
       (env.MELETE_RUNTIME_ADAPTER === 'hermes' && env.MELETE_RUNTIME_SUPERVISOR === 'docker'),
-    speechConfigured:
-      capabilitiesFromEnv({
-        OPENAI_API_KEY: env.OPENAI_API_KEY,
-        OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
-        MELETE_ENABLE_FAKE_PROVIDER: String(env.MELETE_ENABLE_FAKE_PROVIDER ?? false),
-      }).speech !== null,
+    speechConfigured: capabilities.speech !== null,
+    transcriptionConfigured: capabilities.transcription !== null,
   };
 }
 

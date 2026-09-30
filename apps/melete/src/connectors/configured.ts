@@ -53,6 +53,7 @@ import { createSandboxExecConnector } from './sandbox-exec.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
 import { type AccountClient, signedInAccess } from './signed-in.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
+import { createTranscriptionConnector } from './transcribe.ts';
 import { createCapabilityConnector } from './tts.ts';
 import type { Connector } from './types.ts';
 import { createWebConnector, databasePublicReads, type PrivateContext } from './web.ts';
@@ -326,6 +327,17 @@ export class ConnectorFactory {
       // hold. A second path to the world would be a second place to get those
       // right.
       const configured = capabilitiesFromEnv(options.env ?? process.env);
+      // Speech and transcription are separate default rows, told apart by which default each is.
+      if (row.configuration?.builtin === 'transcription') {
+        if (!configured.transcription) return undefined;
+        return createTranscriptionConnector({
+          workRoot: options.workRoot,
+          spacesRoot: options.spacesRoot,
+          adapter: configured.transcription,
+          provider: configured.provider,
+          unitCostUsd: configured.transcriptionUnitCostUsd,
+        });
+      }
       if (!configured.speech) return undefined;
       return createCapabilityConnector({
         spacesRoot: options.spacesRoot,

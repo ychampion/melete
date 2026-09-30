@@ -1294,6 +1294,203 @@
   }
 }
 
+/* ---------- voice: push-to-talk in the composer ---------- */
+.mic-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  color: var(--muted);
+  background: transparent;
+}
+.mic-btn:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--hover);
+  color: var(--heading);
+}
+.mic-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.mic-btn[data-state="recording"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.mic-btn:disabled {
+  cursor: default;
+}
+.mic-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--danger);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+.mic-time {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+@keyframes mic-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.composer-note {
+  padding: 6px 12px 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.composer-note:empty {
+  display: none;
+}
+
+/* ---------- voice mode: the panel where the composer was ---------- */
+.voice-panel {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 14px 14px 16px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  box-shadow:
+    0 1px 2px #1d1b160a,
+    0 10px 28px -18px #1d1b1633;
+  outline: none;
+}
+.voice-panel:focus-visible {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+.voice-orb {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.voice-orb > span {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--control);
+  transition: transform 0.2s;
+}
+.voice-panel[data-phase="listening"] .voice-orb > span {
+  background: var(--primary);
+  animation: voice-breathe 1.8s ease-in-out infinite;
+}
+.voice-panel[data-phase="thinking"] .voice-orb > span {
+  background: var(--primary);
+  animation: mic-pulse 1s ease-in-out infinite;
+}
+.voice-panel[data-phase="speaking"] .voice-orb > span {
+  background: var(--success);
+  animation: voice-breathe 0.7s ease-in-out infinite;
+}
+@keyframes voice-breathe {
+  50% {
+    transform: scale(1.5);
+  }
+}
+.voice-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.voice-phase {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.voice-caption {
+  margin: 0;
+  font-family: var(--font-voice);
+  font-size: 17px;
+  line-height: 24px;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.voice-link {
+  align-self: flex-start;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary);
+  background: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.voice-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.voice-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+}
+.voice-btn:hover {
+  background: var(--hover);
+}
+.voice-btn[aria-pressed="true"] {
+  background: var(--soft);
+}
+.voice-btn[data-variant="end"] {
+  color: var(--danger);
+}
+.voice-btn:focus-visible,
+.voice-link:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+@media (max-width: 767px) {
+  .voice-panel {
+    flex-wrap: wrap;
+    gap: 10px 12px;
+  }
+  .voice-actions {
+    width: 100%;
+  }
+  .voice-btn {
+    flex: 1;
+    justify-content: center;
+    height: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mic-btn .mic-dot,
+  .voice-panel[data-phase] .voice-orb > span {
+    animation: none;
+  }
+}
 /* Why an action was taken, under its receipt or its permission card. */
 .because {
   display: flex;

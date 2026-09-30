@@ -10,6 +10,7 @@ import {
   failureReport,
   providerSettings,
   sandboxProject,
+  voiceSettings,
 } from './configure.ts';
 import { DEFAULT_NODE_NAME } from './tailscale-origin.ts';
 
@@ -68,6 +69,15 @@ describe('the provider the configuration is written for', () => {
       MELETE_ENABLE_TEST_CONNECTOR: 'false',
       FIREWORKS_API_KEY: 'fw-secret',
     });
+  });
+
+  test('an ElevenLabs key in the environment is written; none leaves voice off', () => {
+    expect(voiceSettings({ ELEVENLABS_API_KEY: ' el-key ' })).toEqual({
+      ELEVENLABS_API_KEY: 'el-key',
+    });
+    expect(voiceSettings({})).toEqual({});
+    expect(voiceSettings({ ELEVENLABS_API_KEY: '  ' })).toEqual({});
+    expect(() => voiceSettings({ ELEVENLABS_API_KEY: 'el key' })).toThrow(ConfigureRefusal);
   });
 
   test('a production run without its key is refused, naming the variable to set', () => {

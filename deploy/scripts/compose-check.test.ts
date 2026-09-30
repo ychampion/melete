@@ -12,6 +12,7 @@ import {
   defaultComposePath,
   loadCompose,
   SANDBOX_SETTINGS,
+  VOICE_SETTINGS,
 } from './compose-check.ts';
 
 const compose = loadCompose(defaultComposePath());
@@ -76,6 +77,17 @@ describe('the check catches the mistakes that would matter', () => {
     expect(failures(compose)).not.toContain(name);
     const dropped: ComposeFile = structuredClone(compose);
     delete dropped.services?.melete?.environment?.MELETE_SANDBOX_PROJECT;
+    expect(failures(dropped)).toContain(name);
+  });
+
+  test('a voice setting the service is not handed', () => {
+    const name = 'the service receives every voice setting';
+    expect(VOICE_SETTINGS).toEqual(
+      expect.arrayContaining(['ELEVENLABS_API_KEY', 'MELETE_VOICE_DAILY_SECONDS']),
+    );
+    expect(failures(compose)).not.toContain(name);
+    const dropped: ComposeFile = structuredClone(compose);
+    delete dropped.services?.melete?.environment?.ELEVENLABS_API_KEY;
     expect(failures(dropped)).toContain(name);
   });
 

@@ -143,7 +143,8 @@ export function actionKind(kind: string): ToolKind {
         : ['device.list_files', 'device.read_file', 'device.write_file'].includes(kind)
           ? 'file'
           : 'tool';
-  if (kind === 'artifact.publish' || kind === 'audio.synthesize') return 'artifact';
+  if (kind === 'artifact.publish' || kind === 'audio.synthesize' || kind === 'audio.transcribe')
+    return 'artifact';
   return 'connector';
 }
 
@@ -222,6 +223,8 @@ function actionInput(row: ActionRow): ToolSummary | null {
       return summary('File', quote(filename(payload.path ?? payload.name), 'file'));
     case 'audio.synthesize':
       return summary('Spoken text', quote(payload.text, 'request'));
+    case 'audio.transcribe':
+      return summary('Recording', quote(filename(payload.source), 'file'));
     default:
       return null;
   }
@@ -306,6 +309,8 @@ function actionOutput(row: ActionRow, status: ToolStatus, raw: string): ToolSumm
       return summary('Published');
     case 'audio.synthesize':
       return summary('Audio ready');
+    case 'audio.transcribe':
+      return summary('Transcript ready');
     default:
       return summary('Done');
   }

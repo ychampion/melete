@@ -34,6 +34,8 @@ describe('default connections', () => {
       'artifacts',
       'exec',
       'files',
+      // Speech and transcription: two rows of the one generation provider.
+      'generation',
       'generation',
       'sandbox',
       'web',
@@ -80,14 +82,31 @@ describe('default connections', () => {
     ).toBe('deny_all');
     const wanted = BUILTIN_CONNECTIONS.find((builtin) => builtin.key === 'sandbox');
     const sandbox = defaultSandboxConfig(env, inContainer);
-    expect(wanted?.when?.({ cellIsolated: true, speechConfigured: false, sandbox })).toBe(true);
-    expect(wanted?.when?.({ cellIsolated: true, speechConfigured: false, sandbox: null })).toBe(
-      false,
-    );
+    expect(
+      wanted?.when?.({
+        cellIsolated: true,
+        speechConfigured: false,
+        transcriptionConfigured: false,
+        sandbox,
+      }),
+    ).toBe(true);
+    expect(
+      wanted?.when?.({
+        cellIsolated: true,
+        speechConfigured: false,
+        transcriptionConfigured: false,
+        sandbox: null,
+      }),
+    ).toBe(false);
     // The row reads back as an ordinary sandbox connection.
     expect(
       storedSandboxConnection.parse({
-        ...wanted?.configuration?.({ cellIsolated: true, speechConfigured: false, sandbox }),
+        ...wanted?.configuration?.({
+          cellIsolated: true,
+          speechConfigured: false,
+          transcriptionConfigured: false,
+          sandbox,
+        }),
         builtin: 'sandbox',
       }).sandbox.adapter,
     ).toBe('docker');
@@ -112,6 +131,7 @@ describe('default connections', () => {
     expect(builtinEnvironment(base)).toEqual({
       cellIsolated: false,
       speechConfigured: false,
+      transcriptionConfigured: false,
       sandbox: null,
     });
     expect(builtinEnvironment({ ...base, MELETE_RUNTIME_SUPERVISOR: 'docker' }).cellIsolated).toBe(
@@ -126,21 +146,22 @@ describe('default connections', () => {
         MELETE_RUNTIME_SUPERVISOR: 'docker',
       }).cellIsolated,
     ).toBe(false);
-    expect(builtinEnvironment({ ...base, OPENAI_API_KEY: 'configured' }).speechConfigured).toBe(
-      true,
-    );
+    expect(builtinEnvironment({ ...base, OPENAI_API_KEY: 'configured' })).toMatchObject({
+      speechConfigured: true,
+      transcriptionConfigured: false,
+    });
+    // ElevenLabs speaks and transcribes; it wins over an OpenAI key beside it.
+    expect(
+      builtinEnvironment({ ...base, OPENAI_API_KEY: 'configured', ELEVENLABS_API_KEY: 'key' }),
+    ).toMatchObject({ speechConfigured: true, transcriptionConfigured: true });
     const wanted = (environment: ReturnType<typeof builtinEnvironment>) =>
       BUILTIN_CONNECTIONS.filter((builtin) => builtin.when?.(environment) ?? true).map(
         (builtin) => builtin.key,
       );
     expect(wanted(builtinEnvironment(base))).toEqual(['files', 'web', 'artifacts']);
-    expect(wanted({ cellIsolated: true, speechConfigured: true })).toEqual([
-      'files',
-      'web',
-      'artifacts',
-      'generation',
-      'exec',
-    ]);
+    expect(
+      wanted({ cellIsolated: true, speechConfigured: true, transcriptionConfigured: true }),
+    ).toEqual(['files', 'web', 'artifacts', 'generation', 'transcription', 'exec']);
   });
 });
 

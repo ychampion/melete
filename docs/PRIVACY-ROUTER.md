@@ -200,6 +200,11 @@ What it does not do:
   after your approval where one is needed: a payment has to carry the real
   account. Text to speech (`connectors/tts.ts`) sends the script you approved to
   its own speech service directly, not through the gateway.
+- Voice (push-to-talk and voice mode, [VOICE](VOICE.md#privacy)) sends audio and
+  the words read aloud to ElevenLabs directly, not through the gateway, so none
+  of it is redacted. Instead voice is off in a space or with an agent marked
+  private, and in a conversation found sensitive: the service refuses before it
+  reads any audio, and the buttons say why.
 - Anything a cloud model already received before a conversation was marked
   private, or before a topic was recognised, stays with that provider.
 

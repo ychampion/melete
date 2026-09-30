@@ -35,6 +35,14 @@ import { mountReactions, type SpaceResolver } from './api/reactions.ts';
 import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
+import {
+  mountVoice,
+  PostgresVoiceAllowance,
+  type VoiceProviders,
+  voiceLimitsFromEnv,
+  voicePrivacyFrom,
+  voiceProvidersFromEnv,
+} from './api/voice.ts';
 import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
@@ -195,6 +203,8 @@ export type AppDeps = {
   companies?: Partial<CompaniesDeps>;
   /** The owner's model-provider sign-ins. Left out, built from `sql` and the master key. */
   providerSignIn?: ProviderSignIn;
+  /** The voice providers. Left out, whatever the environment configures. */
+  voice?: VoiceProviders;
   /** The router every model gateway of this service uses; Settings → Privacy edits it. */
   privacy?: PrivacyRouter;
   /** The model connected in the app. Left out, built from `db` and the sign-ins. */
@@ -312,6 +322,15 @@ export function createApp(deps: AppDeps) {
       : defaultPrivacyRouter());
   // Before the experience routes, which answer every operation they do not implement.
   if (deps.db) mountPrivacy(app, { router: () => privacy, providerUrl: providerAddress(deps.env) });
+  if (deps.db)
+    mountVoice(app, {
+      db: deps.db,
+      allowance: deps.sql ? new PostgresVoiceAllowance(deps.sql) : undefined,
+      providers: deps.voice ?? voiceProvidersFromEnv(deps.env),
+      limits: voiceLimitsFromEnv(deps.env),
+      // Voice goes to its provider directly, so it follows the router's private marks.
+      privacy: voicePrivacyFrom(privacy),
+    });
   if (deps.db) mountPush(app, deps.push ?? new PushService(deps.db, pushConfig(deps.env)));
   if (deps.db)
     mountExperience(app, {

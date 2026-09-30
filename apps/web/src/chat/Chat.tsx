@@ -70,6 +70,8 @@ import {
   UserBubble,
 } from './parts.tsx';
 import { pauseOrStop } from './pause.ts';
+import { VoicePanel } from './VoiceMode.tsx';
+import { useVoiceStatus } from './voice.ts';
 import './chat.css';
 
 /** One-tap changes to a draft waiting on a decision; each is sent as the person's next message. */
@@ -445,6 +447,12 @@ function useTranscript() {
   return value;
 }
 
+/**
+ * Voice mode asked for from a new chat: the chat is made first, and the screen
+ * for it opens straight into voice mode.
+ */
+let voiceOnArrival: string | null = null;
+
 export function ChatScreen({ id }: { id: string | null }) {
   const { agents, refreshConversations } = useApp();
   const conversationId = id && id !== 'new' ? id : null;
@@ -465,6 +473,17 @@ export function ChatScreen({ id }: { id: string | null }) {
   const wide = useMedia('(min-width: 1180px)');
   // The case panel follows the width until the person opens or closes it.
   const [caseChoice, setCaseChoice] = useState<boolean | null>(null);
+  // The conversation's own agent counts once it exists; before that, the one a new chat gets.
+  const voicePlace = {
+    conversationId,
+    agentId: conversationId ? null : (agentId ?? agents[0]?.id ?? null),
+  };
+  const voice = useVoiceStatus(voicePlace);
+  const [voiceOpen, setVoiceOpen] = useState(() => {
+    const arriving = conversationId !== null && voiceOnArrival === conversationId;
+    if (arriving) voiceOnArrival = null;
+    return arriving;
+  });
   /** The agent's computer is opened by the person and stays as they left it. */
   const [computerOpen, setComputerOpen] = useState(false);
 
@@ -713,6 +732,43 @@ export function ChatScreen({ id }: { id: string | null }) {
       });
   };
 
+  const startVoice = async () => {
+    // A private space or agent, or a sensitive conversation: say why rather than open.
+    if (voice?.off_reason) {
+      toast({ kind: 'err', title: 'Voice is off here', sub: voice.off_reason });
+      return;
+    }
+    if (conversationId) {
+      setVoiceOpen(true);
+      return;
+    }
+    const agent = agentId ?? agents[0]?.id;
+    if (!agent) {
+      toast({ kind: 'err', title: 'Create an agent first', sub: 'Every chat is handled by one.' });
+      return;
+    }
+    const created = await adapter.createConversation({ title: 'Voice chat', agent_id: agent });
+    if (created.data === null) {
+      toast({
+        kind: 'err',
+        title: 'Couldn’t start the chat',
+        sub: created.error ?? created.unavailable ?? '',
+      });
+      return;
+    }
+    voiceOnArrival = created.data.conversation.id;
+    refreshConversations();
+    navigate(`/chat/${created.data.conversation.id}`);
+  };
+
+  const showDecision = () => {
+    const card = scrollRef.current?.querySelector<HTMLElement>(
+      '.permission[data-pending="true"], .question',
+    );
+    card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card?.focus({ preventScroll: true });
+  };
+
   const title = conversation?.title ?? 'New chat';
   // A stop reads the case again: the item no longer names this job.
   const [caseRead, setCaseRead] = useState(0);
@@ -737,6 +793,18 @@ export function ChatScreen({ id }: { id: string | null }) {
   const caseOpen = Boolean(found) && !touch && (caseChoice ?? wide);
   const agent = agentById(agents, agentId);
   const lastId = last?.id ?? null;
+  const voiceButton = (size: number) =>
+    voice?.voice_mode ? (
+      <IconButton
+        name="voice"
+        label={voiceOpen ? 'End voice mode' : 'Voice mode'}
+        size={size}
+        iconSize={size > 32 ? 20 : 16}
+        on={voiceOpen}
+        aria-pressed={voiceOpen}
+        onClick={() => (voiceOpen ? setVoiceOpen(false) : void startVoice())}
+      />
+    ) : null;
   // A new tool entry on the stream is when the computer most likely changed.
   const toolPulse = `${transcript.status}:${transcript.turns.reduce(
     (count, turn) => count + turn.trail.length,
@@ -774,7 +842,12 @@ export function ChatScreen({ id }: { id: string | null }) {
         ) : undefined
       }
       rail={!found && !showComputer}
-      phoneActions={computerToggle(44)}
+      phoneActions={
+        <>
+          {voiceButton(44)}
+          {computerToggle(44)}
+        </>
+      }
       panel={
         showComputer ? (
           <ComputerPanel
@@ -804,6 +877,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             <h1 className="clamp1">{title}</h1>
             <AgentChip agentId={agentId} onChange={setConversationAgent} />
             <div className="grow" />
+            {touch ? null : voiceButton(32)}
             {computerToggle()}
             {found ? (
               <IconButton
@@ -894,6 +968,25 @@ export function ChatScreen({ id }: { id: string | null }) {
               ))}
             </div>
           </div>
+          {voiceOpen && conversationId ? (
+            <div className="chat-foot">
+              <div className="chat-foot-inner">
+                <VoicePanel
+                  conversationId={conversationId}
+                  transcript={transcript}
+                  onSend={send}
+                  onEnd={() => {
+                    setVoiceOpen(false);
+                    // Back to the control that opened it, for a keyboard user.
+                    requestAnimationFrame(() =>
+                      document.querySelector<HTMLElement>('[aria-label="Voice mode"]')?.focus(),
+                    );
+                  }}
+                  onShowDecision={showDecision}
+                />
+              </div>
+            </div>
+          ) : null}
           {pending ? (
             <div className="decide-bar">
               <span className="decide-caption">
@@ -925,7 +1018,7 @@ export function ChatScreen({ id }: { id: string | null }) {
               ) : null}
             </div>
           ) : null}
-          <div className="chat-foot" hidden={Boolean(pending)}>
+          <div className="chat-foot" hidden={Boolean(pending) || voiceOpen}>
             <div className="chat-foot-inner">
               {!stuck ? (
                 <button
@@ -978,6 +1071,15 @@ export function ChatScreen({ id }: { id: string | null }) {
                   }
                   onStop={() =>
                     conversationId && void reportFailure(adapter.stop(conversationId), 'stop')
+                  }
+                  voice={
+                    voice?.push_to_talk
+                      ? {
+                          maxSeconds: voice.max_recording_seconds,
+                          place: voicePlace,
+                          off: voice.off_reason,
+                        }
+                      : undefined
                   }
                 />
               )}

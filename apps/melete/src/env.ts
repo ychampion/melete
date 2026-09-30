@@ -340,6 +340,35 @@ const variables = z.object({
   MELETE_DEFAULT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
   MELETE_SPEECH_MODEL: unsetWhenBlank(z.string().optional()),
   /**
+   * ElevenLabs, for everything voice (docs/VOICE.md). The key alone turns on
+   * speech, transcription, push-to-talk and voice mode, and speech prefers it
+   * over an OpenAI key. Each model and voice left empty uses the default there.
+   */
+  ELEVENLABS_API_KEY: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  ELEVENLABS_VOICE_ID: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9]{1,64}$/, 'use a voice id from your ElevenLabs voice library')
+      .optional(),
+  ),
+  ELEVENLABS_SECOND_VOICE_ID: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9]{1,64}$/, 'use a voice id from your ElevenLabs voice library')
+      .optional(),
+  ),
+  ELEVENLABS_SPEECH_MODEL: unsetWhenBlank(z.string().min(1).max(120).optional()),
+  ELEVENLABS_STREAMING_MODEL: unsetWhenBlank(z.string().min(1).max(120).optional()),
+  ELEVENLABS_TRANSCRIPTION_MODEL: unsetWhenBlank(z.string().min(1).max(120).optional()),
+  /** Seconds of push-to-talk recording one person may have transcribed in a day. */
+  MELETE_VOICE_DAILY_SECONDS: unsetWhenBlank(z.coerce.number().int().nonnegative().default(1800)),
+  /** Characters of replies one person may have read aloud in a day. */
+  MELETE_VOICE_DAILY_CHARACTERS: unsetWhenBlank(
+    z.coerce.number().int().nonnegative().default(20_000),
+  ),
+  /** Voice mode sessions one person may start in a day. */
+  MELETE_VOICE_DAILY_SESSIONS: unsetWhenBlank(z.coerce.number().int().nonnegative().default(30)),
+  /**
    * Automatic memory reads what a person says in chat with this model, through
    * the model gateway. Unset, it uses the default provider and model; `off`
    * keeps structured observations only and makes no model call.
