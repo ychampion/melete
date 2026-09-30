@@ -70,6 +70,7 @@ import { cors } from 'hono/cors';
 import type { z } from 'zod';
 import { mountCompaniesMock } from './companies.ts';
 import { mountExperienceMock } from './experience.ts';
+import { mountFeedbackMock } from './feedback.ts';
 import { mountLearnedMock } from './learned.ts';
 import { mountPushMock } from './push.ts';
 import type { Runner } from './runner.ts';
@@ -236,6 +237,8 @@ export function createMockApp(deps: AppDeps) {
     experience.signedOut = false;
     return send(ownerResponse, owned(account));
   });
+
+  mountFeedbackMock(app, deps, () => account?.email ?? null);
 
   // ------------------------------------------------------------------
   // health, spaces

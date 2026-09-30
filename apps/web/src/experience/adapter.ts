@@ -9,6 +9,7 @@
  * that gets one is not drawn.
  */
 import { createMeleteClient, errorMessage, readSse, subscribeEvents } from '@melete/client';
+import { recordingFetch } from '../feedback/diagnostics.ts';
 import { markValueMoment } from './push.ts';
 import type {
   AccountSignInStart,
@@ -33,6 +34,10 @@ import type {
   Draft,
   EngineSkill,
   ExperienceEvent,
+  FeedbackCreate,
+  FeedbackList,
+  FeedbackReport,
+  FeedbackStatus,
   Home,
   LearnedItemResult,
   LearnedList,
@@ -92,7 +97,11 @@ export const API_BASE_URL: string = new URL(
   .toString()
   .replace(/\/+$/, '');
 
-export const client = createMeleteClient({ baseUrl: API_BASE_URL });
+// Failed requests are remembered, without their bodies, for a problem report.
+export const client = createMeleteClient({
+  baseUrl: API_BASE_URL,
+  fetch: recordingFetch(globalThis.fetch.bind(globalThis)),
+});
 
 const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
 
@@ -468,6 +477,23 @@ export const adapter = {
   artifactUrl: (id: string) => `${API_BASE_URL}/artifacts/${encodeURIComponent(id)}/content`,
   search: (q: string) =>
     guard<{ results: SearchResult[] }>(() => api.GET('/search', { params: { query: { q } } })),
+
+  /* ---------- problem reports ---------- */
+  sendFeedback: (report: FeedbackCreate) =>
+    guard<{ report: FeedbackReport }>(() => api.POST('/feedback', { body: report })),
+  feedback: (status?: FeedbackStatus) =>
+    guard<FeedbackList>(() =>
+      api.GET('/feedback', { params: { query: status ? { status } : {} } }),
+    ),
+  feedbackReport: (id: string) =>
+    guard<{ report: FeedbackReport }>(() => api.GET('/feedback/{id}', path(id))),
+  setFeedbackStatus: (id: string, status: FeedbackStatus, note?: string | null) =>
+    guard<{ report: FeedbackReport }>(() =>
+      api.PATCH('/feedback/{id}', {
+        ...path(id),
+        body: { status, ...(note !== undefined ? { note } : {}) },
+      }),
+    ),
 };
 
 export type Adapter = typeof adapter;

@@ -13,6 +13,7 @@ import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import { givenName } from '../experience/profile.ts';
 import type { Connection, MemoryItem, Rule } from '../experience/types.ts';
+import { FeedbackTab } from '../feedback/FeedbackTab.tsx';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
@@ -322,14 +323,18 @@ const ruleWhen = (rule: Rule) => {
   return `${rule.used} of ${rule.bounds.count_cap} used · until ${expires} · asks again after ${rule.bounds.reconsent_after_days} day${rule.bounds.reconsent_after_days === 1 ? '' : 's'}`;
 };
 
-export function SettingsScreen({ tab }: { tab: string }) {
+export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: string | null }) {
   const { profile, signOut } = useApp();
   const [leaving, setLeaving] = useState(false);
   const memory = useLoad(() => adapter.memory(), []);
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
   const current =
-    tab === 'connections' || tab === 'rules' || tab === 'learned' || tab === 'notifications'
+    tab === 'connections' ||
+    tab === 'rules' ||
+    tab === 'learned' ||
+    tab === 'notifications' ||
+    tab === 'feedback'
       ? tab
       : 'memory';
   const [learnedCount, setLearnedCount] = useState<number | undefined>(undefined);
@@ -385,6 +390,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
               count: list.filter((c) => c.status === 'connected').length,
             },
             { value: 'rules', label: 'Rules', count: rules.data?.rules.length ?? 0 },
+            { value: 'feedback', label: 'Feedback' },
           ]}
         />
         {current === 'memory' ? (
@@ -449,6 +455,8 @@ export function SettingsScreen({ tab }: { tab: string }) {
           </div>
         ) : current === 'notifications' ? (
           <NotificationsTab />
+        ) : current === 'feedback' ? (
+          <FeedbackTab selected={detail} />
         ) : current === 'learned' ? (
           <LearnedTab onCount={setLearnedCount} />
         ) : current === 'connections' ? (

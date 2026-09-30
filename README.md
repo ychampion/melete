@@ -229,6 +229,7 @@ in with ChatGPT.
 - [Memory](docs/MEMORY.md) and [learning](docs/LEARNING.md)
 - [Architecture](docs/ARCHITECTURE.md) and [threat model](docs/THREAT-MODEL.md)
 - [Building a client](docs/CLIENT.md): the API and how the app uses it
+- [Problem reports](docs/FEEDBACK.md): reporting a problem from the app, and pulling one by its id to fix it
 - [Contributing](CONTRIBUTING.md): setting up, testing and sending changes
 
 ## Licence and credits

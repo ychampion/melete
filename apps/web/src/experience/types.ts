@@ -178,3 +178,10 @@ export type ScanProgress = Ok<paths['/spaces/{spaceId}/companies/scan/{scanId}']
 /** What the person is waiting on: money owed to them, and replies nobody has sent. */
 export type WaitingOn = Ok<paths['/waiting-on'], 'get'>;
 export type WaitingOnEntry = WaitingOn['top'][number];
+
+/* ---------- problem reports ---------- */
+
+export type FeedbackList = Ok<paths['/feedback'], 'get'>;
+export type FeedbackReport = FeedbackList['reports'][number];
+export type FeedbackStatus = FeedbackReport['status'];
+export type FeedbackCreate = Body<paths['/feedback'], 'post'>;

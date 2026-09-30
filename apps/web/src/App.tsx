@@ -237,7 +237,10 @@ export function App() {
   } else if (head === 'automations') {
     screen = <AutomationsScreen />;
   } else if (head === 'settings') {
-    screen = <SettingsScreen tab={second ?? 'memory'} />;
+    screen = <SettingsScreen tab={second ?? 'memory'} detail={route.parts[2] ?? null} />;
+  } else if (head === 'feedback') {
+    // The report panel opens over Home; the shell's host reads this address.
+    screen = <HomeScreen />;
   } else {
     if (head) navigate('/');
     screen = <HomeScreen />;
