@@ -228,7 +228,8 @@ export class ExperienceEvents {
       .where(
         and(
           eq(job.spaceId, spaceId),
-          eq(job.kind, 'chat'),
+          // A routine's thread is read like a chat, so its runs project the same way.
+          inArray(job.kind, ['chat', 'routine']),
           jobId ? eq(job.id, jobId) : gt(job.updatedAt, recentSince),
           ownJob(job.principalId, principalId),
         ),

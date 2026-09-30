@@ -11,7 +11,7 @@ import {
 import { and, desc, eq, ilike, inArray, ne, sql } from 'drizzle-orm';
 import { describeDate } from '../dates.ts';
 import type { Database } from '../db/client.ts';
-import { action, connection, experienceProfile, job, task } from '../db/schema.ts';
+import { action, agent, connection, experienceProfile, job, task } from '../db/schema.ts';
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
 import type { ExperienceEffects } from './effects.ts';
@@ -65,6 +65,17 @@ export class ExperienceHome {
       .select()
       .from(experienceProfile)
       .where(eq(experienceProfile.spaceId, spaceId));
+    // A space set up before setup was recorded here has an agent to show for it.
+    const onboarded =
+      Boolean(row?.onboardedAt) ||
+      // Read only while setup is not recorded, so a set-up account's profile needs no agent list.
+      (
+        await this.db
+          .select({ id: agent.id })
+          .from(agent)
+          .where(eq(agent.spaceId, spaceId))
+          .limit(1)
+      ).length > 0;
     return {
       profile: {
         ...profileInput.parse(
@@ -77,6 +88,8 @@ export class ExperienceHome {
               }
             : { name: 'there', time_zone: 'UTC', day_hours: { start: '08:00', end: '22:00' } },
         ),
+        onboarded,
+        time_zone_confirmed: Boolean(row?.timeZoneConfirmedAt),
         sending_address: await this.sendingAddress(spaceId),
       },
     };
@@ -100,20 +113,36 @@ export class ExperienceHome {
       .limit(1);
     return mailbox ? senderAddress(mailbox.configuration) : null;
   }
+  /**
+   * Saves the profile. Setup and a chosen time zone are recorded once and
+   * never forgotten by a later save that leaves them out. Changing the zone
+   * counts as choosing it. Says whether the zone moved, so the caller can move
+   * the routines that follow it.
+   */
   async saveProfile(spaceId: string, raw: unknown) {
     const input = profileInput.parse(raw);
+    const [before] = await this.db
+      .select()
+      .from(experienceProfile)
+      .where(eq(experienceProfile.spaceId, spaceId));
+    const timeZone = canonicalTimeZone(input.time_zone);
+    const moved = timeZone !== canonicalTimeZone(before?.timeZone ?? 'UTC');
+    const now = new Date();
     const values = {
       spaceId,
       name: input.name,
-      timeZone: canonicalTimeZone(input.time_zone),
+      timeZone,
       dayStart: input.day_hours.start,
       dayEnd: input.day_hours.end,
+      onboardedAt: before?.onboardedAt ?? (input.onboarded ? now : null),
+      timeZoneConfirmedAt:
+        before?.timeZoneConfirmedAt ?? (input.time_zone_confirmed || moved ? now : null),
     };
     await this.db
       .insert(experienceProfile)
       .values(values)
       .onConflictDoUpdate({ target: experienceProfile.spaceId, set: values });
-    return this.profile(spaceId);
+    return { ...(await this.profile(spaceId)), moved: moved ? timeZone : null };
   }
   async tasks(spaceId: string) {
     const rows = await this.db

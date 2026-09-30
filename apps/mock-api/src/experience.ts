@@ -99,6 +99,9 @@ const PROPOSAL_WORDS: Record<string, { what: string; where: string; reversible: 
   'browser.reserve': { what: 'Hold a table through the browser', where: 'Resy', reversible: false },
 };
 
+/** A run the mock keeps no thread for. */
+const NO_RESULT = { conversation_id: null, turn_id: null, summary: null, reason: null };
+
 class MockExperienceError extends Error {
   constructor(
     readonly status: 400 | 401 | 404 | 409,
@@ -149,6 +152,11 @@ export class ExperienceMock {
   /** The address messages leave from, when a mailbox that can send is connected. */
   sendingAddress: string | null = null;
   readonly computer: ComputerMock;
+  /** Setup finished or skipped, and a time zone chosen, as the service records them. */
+  onboarded = false;
+  timeZoneConfirmed = false;
+  /** Checks and replaces the account's password; set by the account routes. */
+  changePassword: ((current: string, next: string) => boolean) | null = null;
   constructor(readonly deps: AppDeps & { experienceSpeed?: number }) {
     this.computer = new ComputerMock(deps.store, deps.spaceId, deps.computer ?? true, () =>
       this.now(),
@@ -342,6 +350,8 @@ export class ExperienceMock {
       time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       day_hours: { start: '08:00', end: '22:00' },
     });
+    this.onboarded = true;
+    this.timeZoneConfirmed = true;
     for (const [title, done] of [
       ['Send Priya the Kyoto list', false],
       ['Renew passport before Oct 3', false],
@@ -462,24 +472,32 @@ export class ExperienceMock {
         title,
         schedule: scheduleSentence(cron, this.profile.time_zone),
         enabled,
+        conversation_id: newId('job'),
         runs: [
           {
+            ...NO_RESULT,
             id: newId('run'),
             status: 'done',
             started_at: iso(at(0, 8, 30)),
             finished_at: iso(at(0, 8, 31)),
+            summary:
+              'Three things today: the dentist at 10, lunch with Priya, and the passport form.',
           },
           {
+            ...NO_RESULT,
             id: newId('run'),
             status: 'done',
             started_at: iso(at(-1, 8, 30)),
             finished_at: iso(at(-1, 8, 31)),
+            summary: 'A quiet day: no meetings, and two tasks still open.',
           },
           {
+            ...NO_RESULT,
             id: newId('run'),
             status: 'failed',
             started_at: iso(at(-3, 8, 30)),
             finished_at: iso(at(-3, 8, 32)),
+            reason: 'It failed: the calendar could not be reached.',
           },
         ],
       });
@@ -1404,6 +1422,7 @@ export class ExperienceMock {
         `${Number(minute)} ${Number(hour)} * * ${[...new Set(input.weekdays)].sort().join(',')}`,
         this.profile.time_zone,
       ),
+      conversation_id: newId('job'),
       runs: [],
     });
     this.automations.set(value.id, value);
@@ -1419,6 +1438,14 @@ export class ExperienceMock {
     return `${name}: ${leaf}`;
   }
   /** Placeholders the welcome scenario fills from setup. */
+  profileView() {
+    return {
+      ...this.profile,
+      onboarded: this.onboarded || this.agents.size > 0,
+      time_zone_confirmed: this.timeZoneConfirmed,
+      sending_address: this.sendingAddress,
+    };
+  }
   fill(text: string) {
     return text
       .replaceAll('{{melete_calls_you}}', this.profile.name.split(' ')[0] ?? this.profile.name)
@@ -1610,10 +1637,34 @@ export class ExperienceMock {
         return { reasons: [`You saved this detail: ${item.value}`], output: null, used_at: null };
       }
       case 'GET /profile':
-        return { profile: { ...this.profile, sending_address: this.sendingAddress } };
-      case 'PATCH /profile':
-        this.profile = C.profileInput.parse(input);
-        return { profile: { ...this.profile, sending_address: this.sendingAddress } };
+        return { profile: this.profileView() };
+      case 'PATCH /profile': {
+        const next = C.profileInput.parse(input);
+        this.onboarded ||= Boolean(next.onboarded);
+        this.timeZoneConfirmed ||=
+          Boolean(next.time_zone_confirmed) || next.time_zone !== this.profile.time_zone;
+        this.profile = C.profileInput.parse({
+          name: next.name,
+          time_zone: next.time_zone,
+          day_hours: next.day_hours,
+        });
+        return { profile: this.profileView() };
+      }
+      case 'POST /account/password': {
+        const value = C.passwordChange.parse(input);
+        if (!this.changePassword) return C.unavailable('Passwords are not kept in this scenario.');
+        if (!this.changePassword(value.current_password, value.new_password))
+          throw new MockExperienceError(
+            400,
+            'Your current password is not right.',
+            'wrong_password',
+          );
+        return { status: 'ok' };
+      }
+      case 'POST /password-reset':
+        return C.unavailable(
+          'This Melete cannot send you email yet. Ask the person who runs it to print you a reset link.',
+        );
       case 'GET /home': {
         const tasks = [...this.tasks.values()].filter((task) => !task.done);
         return {
@@ -1623,6 +1674,7 @@ export class ExperienceMock {
             : C.unavailable('No calendar is connected in this scenario.'),
           tasks,
           open_task_count: tasks.length,
+          routine_results: [],
         };
       }
       case 'GET /tasks':
@@ -1706,10 +1758,12 @@ export class ExperienceMock {
         });
       case 'POST /automations/{id}/test':
         required(this.automations, id).runs.unshift({
+          ...NO_RESULT,
           id: newId('run'),
           status: 'done',
           started_at: this.now(),
           finished_at: this.now(),
+          summary: 'Nothing new since the last run.',
         });
         return { status: 'ok' };
       case 'GET /experience/connections':

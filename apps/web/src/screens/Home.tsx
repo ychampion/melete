@@ -19,6 +19,7 @@ import { amountWords, matches, money } from '../companies/format.ts';
 import { statusOf } from '../companies/Ledger.tsx';
 import { AgentFace } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import { Button, Checkbox, Input, Status } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
@@ -50,6 +51,7 @@ import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { blankAgent } from './Agents.tsx';
 import { PushOffer } from './Notifications.tsx';
+import { RoutineResults } from './RoutineResults.tsx';
 import './home.css';
 import { WaitingOnSection } from './WaitingOnSection.tsx';
 
@@ -742,6 +744,9 @@ function DayColumn({ now }: { now: number }) {
           ) : null}
         </section>
       ) : null}
+      {tasks.error && !tasks.data ? (
+        <LoadError compact what="your tasks" error={tasks.error} onRetry={tasks.reload} />
+      ) : null}
       {tasks.data ? (
         <section className="home-section" aria-labelledby="home-tasks">
           <div className="home-section-head">
@@ -911,7 +916,9 @@ export function HomeScreen() {
             <h1 className="brief-greeting voice">{data?.greeting ?? 'Hello'}</h1>
             {line ? <p className="brief-line voice">{line}</p> : null}
           </header>
-          {home.error ? <p className="home-error">{home.error}</p> : null}
+          {home.error ? (
+            <LoadError what="your day" error={home.error} onRetry={home.reload} />
+          ) : null}
           <div className="home-compose">
             <Composer
               value={text}
@@ -950,6 +957,7 @@ export function HomeScreen() {
           <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
           <WaitingOnSection now={now} />
+          <RoutineResults results={data?.routine_results ?? []} now={now} />
           <InMotion now={now} />
         </div>
         <DayColumn now={now} />

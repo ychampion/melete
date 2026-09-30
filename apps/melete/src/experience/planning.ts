@@ -6,13 +6,14 @@ import {
   triggerSpec,
   unavailable,
 } from '@melete/contracts';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import {
   artifact,
   attempt,
   event,
   experienceProfile,
+  experienceTurn,
   job,
   planMilestone,
   trigger,
@@ -21,7 +22,7 @@ import { newId } from '../ids.ts';
 import type { JobRow } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 import { ownJob } from '../principals/authority.ts';
-import { object, plainText } from './projectors.ts';
+import { answerText, object, plainText } from './projectors.ts';
 import { type ExperienceService, experienceMissing } from './service.ts';
 
 export const stateLabel = (
@@ -42,7 +43,7 @@ export function scheduleSentence(cron: string, zone: string): string {
   if (!/^\d+$/.test(minute ?? '') || !/^\d+$/.test(hour ?? '') || day !== '*' || month !== '*')
     return `On a custom schedule (${zone})`;
   const weekdays =
-    weekday === '*'
+    weekday === '*' || weekday === '0,1,2,3,4,5,6'
       ? 'Every day'
       : weekday === '1,2,3,4,5'
         ? 'Every weekday'
@@ -58,6 +59,26 @@ export function scheduleSentence(cron: string, zone: string): string {
             .join(', ')}`;
   const clock = `${Number(hour) % 12 || 12}:${String(minute).padStart(2, '0')} ${Number(hour) < 12 ? 'AM' : 'PM'}`;
   return `${weekdays} at ${clock} (${zone})`;
+}
+
+/** The first lines of an answer, short enough for a card. */
+export function excerpt(answer: string, limit = 280): string | null {
+  const text = answerText(answer).replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text;
+}
+
+/** Why a run did not simply finish, in words the person can act on. */
+function runReason(status: string, outcome: string | null, detail: unknown): string | null {
+  if (status === 'done' || status === 'working' || status === 'queued') return null;
+  const value = object(detail);
+  if (outcome === 'failed')
+    return `It failed: ${plainText(value.reason, 'the run stopped with an error.', 300)}`;
+  if (outcome === 'budget_exhausted') return 'It ran out of time or allowance before it finished.';
+  if (outcome === 'fenced') return 'It was stopped before it finished.';
+  if (outcome === 'completed')
+    return 'It finished, but something it did could not be confirmed. Open the result to check.';
+  return 'It is waiting for you. Open the result to answer.';
 }
 
 export class ExperiencePlanning {
@@ -216,6 +237,14 @@ export class ExperiencePlanning {
       .where(eq(attempt.jobId, row.jobId))
       .orderBy(desc(attempt.startedAt))
       .limit(20);
+    const turnIds = runs.flatMap((run) => (run.turnId ? [run.turnId] : []));
+    const turns = turnIds.length
+      ? await this.db
+          .select()
+          .from(experienceTurn)
+          .where(and(eq(experienceTurn.jobId, row.jobId), inArray(experienceTurn.id, turnIds)))
+      : [];
+    const turnById = new Map(turns.map((turn) => [turn.id, turn]));
     const endings = runs.length
       ? await this.db
           .select({ attemptId: event.attemptId, payload: event.payload })
@@ -243,24 +272,95 @@ export class ExperiencePlanning {
           ? scheduleSentence(spec.cron, spec.timezone)
           : 'When the connected app has an update',
       enabled: row.enabled,
-      runs: runs.map((run) => ({
-        id: run.id,
-        status:
+      conversation_id: row.jobId,
+      runs: runs.map((run) => {
+        const status =
           run.outcome === 'completed'
             ? incomplete.has(run.id)
               ? 'needs_you'
               : 'done'
-            : run.outcome === 'failed'
+            : run.outcome === 'failed' || run.outcome === 'budget_exhausted'
               ? 'failed'
               : run.outcome === 'fenced'
                 ? 'stopped'
                 : run.endedAt
                   ? 'needs_you'
-                  : 'working',
-        started_at: run.startedAt.toISOString(),
-        finished_at: run.endedAt?.toISOString() ?? null,
-      })),
+                  : 'working';
+        const turn = run.turnId ? turnById.get(run.turnId) : undefined;
+        return {
+          id: run.id,
+          status,
+          started_at: run.startedAt.toISOString(),
+          finished_at: run.endedAt?.toISOString() ?? null,
+          conversation_id: turn ? row.jobId : null,
+          turn_id: turn?.id ?? null,
+          summary: turn ? excerpt(turn.answer) : null,
+          reason: runReason(status, run.outcome, run.outcomeDetail),
+        };
+      }),
     });
+  }
+  /** The newest run of each routine that ran in the last day, newest first. */
+  async recentResults(spaceId: string) {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const rows = await this.db
+      .select({ trigger, title: job.title })
+      .from(trigger)
+      .innerJoin(job, eq(job.id, trigger.jobId))
+      .where(
+        and(
+          eq(job.spaceId, spaceId),
+          eq(job.kind, 'routine'),
+          eq(trigger.kind, 'schedule'),
+          ownJob(),
+          inArray(
+            job.id,
+            this.db
+              .select({ id: attempt.jobId })
+              .from(attempt)
+              .where(and(isNotNull(attempt.turnId), gt(attempt.startedAt, since))),
+          ),
+        ),
+      )
+      .limit(20);
+    const results = [];
+    for (const entry of rows) {
+      const view = await this.automation(entry.trigger, entry.title);
+      const run = view.runs.find(
+        (item) => item.turn_id && Date.parse(item.started_at) > since.getTime(),
+      );
+      if (run)
+        results.push({
+          automation_id: view.id,
+          title: view.title,
+          conversation_id: view.conversation_id,
+          run,
+        });
+    }
+    return results.sort((a, b) => b.run.started_at.localeCompare(a.run.started_at));
+  }
+  /**
+   * Moves every routine in the space to a new time zone. A routine set for
+   * 8:30 stays at 8:30 on the person's clock, and the zone's own rules carry
+   * it across daylight-saving changes.
+   */
+  async retimeSchedules(spaceId: string, zone: string) {
+    const rows = await this.db
+      .select({ trigger })
+      .from(trigger)
+      .innerJoin(job, eq(job.id, trigger.jobId))
+      .where(and(eq(job.spaceId, spaceId), eq(job.kind, 'routine'), eq(trigger.kind, 'schedule')));
+    let changed = 0;
+    for (const { trigger: row } of rows) {
+      const spec = triggerSpec.parse(row.spec);
+      if (spec.kind !== 'schedule' || spec.timezone === zone) continue;
+      await this.db
+        .update(trigger)
+        .set({ spec: triggerSpec.parse({ ...spec, timezone: zone }) })
+        .where(eq(trigger.id, row.id));
+      changed++;
+    }
+    if (changed) await this.triggers?.syncSchedules();
   }
   async automations(spaceId: string) {
     const rows = await this.db

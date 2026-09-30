@@ -11,6 +11,7 @@ import {
   NO_DECISIONS,
   useLoad,
 } from './experience/hooks.ts';
+import { onboardedProfile } from './experience/profile.ts';
 import type { Agent, Capabilities, Conversation } from './experience/types.ts';
 import { navigate, useRoute } from './router.ts';
 import { AgentsScreen } from './screens/Agents.tsx';
@@ -19,19 +20,19 @@ import { ChatsScreen } from './screens/Chats.tsx';
 import { CompaniesScreen } from './screens/Companies.tsx';
 import { HomeScreen } from './screens/Home.tsx';
 import { OnboardingScreen, SignInScreen } from './screens/Onboarding.tsx';
+import { PasswordResetScreen } from './screens/PasswordReset.tsx';
 import { PlansScreen } from './screens/Plans.tsx';
 import { SettingsScreen } from './screens/Settings.tsx';
 import { toast } from './shell/Shell.tsx';
+import { TimeZonePrompt } from './shell/TimeZonePrompt.tsx';
 import { useTheme } from './theme.ts';
 
-const ONBOARDED_KEY = 'melete.onboarded';
-
-function readOnboarded(): boolean | null {
+/** Where builds before the service kept setup kept it: only a finished setup is carried over. */
+function finishedOnThisBrowser(): boolean {
   try {
-    const stored = window.localStorage.getItem(ONBOARDED_KEY);
-    return stored === null ? null : stored === 'true';
+    return window.localStorage.getItem('melete.onboarded') === 'true';
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -75,9 +76,10 @@ export function App() {
   }, []);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationsError, setConversationsError] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<Decisions>(NO_DECISIONS);
-  const [agentsLoaded, setAgentsLoaded] = useState(false);
-  const [onboardedStored, setOnboardedStored] = useState<boolean | null>(readOnboarded);
+  // Finished here before the saved profile says so; the service keeps the record.
+  const [onboardedHere, setOnboardedHere] = useState(false);
   const [capabilities, setCapabilities] = useState<Capabilities>({
     calendar: false,
     browser: false,
@@ -87,9 +89,9 @@ export function App() {
   });
 
   const refreshAgents = useCallback(() => {
+    // A list that failed to load keeps what was last read; it never decides setup.
     void adapter.agents().then((result) => {
       if (result.data) setAgents(result.data.agents);
-      setAgentsLoaded(true);
     });
   }, []);
   // One refresh reads the conversations and what waits on the person, so the
@@ -98,6 +100,7 @@ export function App() {
     void Promise.all([adapter.conversations(), adapter.permissions(), adapter.questions()]).then(
       ([listed, permissions, questions]) => {
         if (listed.data) setConversations(listed.data.conversations);
+        setConversationsError(listed.data ? null : (listed.error ?? listed.unavailable));
         setDecisions((previous) => ({
           permissions: permissions.data
             ? permissions.data.permissions
@@ -146,12 +149,16 @@ export function App() {
     return () => clearInterval(timer);
   }, [signedIn, refreshConversations]);
 
+  const saved = profile.data?.profile ?? null;
+  // Setup is recorded on the service by whoever finishes or skips it, so every
+  // browser agrees and a list that fails to load can never send a set-up
+  // account back through it. This only says so here at once.
   const setOnboarded = useCallback((next: boolean) => {
-    setOnboardedStored(next);
+    setOnboardedHere(next);
     try {
-      window.localStorage.setItem(ONBOARDED_KEY, String(next));
+      window.localStorage.removeItem('melete.onboarded');
     } catch {
-      // A browser with storage blocked still gets a working session.
+      // Storage blocked: there is nothing kept here to clear.
     }
   }, []);
 
@@ -163,15 +170,22 @@ export function App() {
     }
     setAgents([]);
     setConversations([]);
+    setConversationsError(null);
     setDecisions(NO_DECISIONS);
-    setAgentsLoaded(false);
+    setOnboardedHere(false);
     setSignedOut(true);
     navigate('/welcome');
   }, []);
 
-  // Nothing in the contract records setup. A stored flag wins; otherwise an
-  // instance with agents already made has been set up.
-  const onboarded = onboardedStored ?? (agentsLoaded ? agents.length > 0 : true);
+  const onboarded = onboardedHere || saved?.onboarded === true;
+  // Setup finished before the service kept the record is recorded there once.
+  useEffect(() => {
+    if (!signedIn || !saved || saved.onboarded || !finishedOnThisBrowser()) return;
+    setOnboarded(true);
+    void adapter.saveProfile(onboardedProfile(saved)).then((result) => {
+      if (result.data) profile.set(result.data);
+    });
+  }, [signedIn, saved, setOnboarded, profile.set]);
 
   const value = useMemo<AppContextValue>(
     () => ({
@@ -181,6 +195,7 @@ export function App() {
       setOnboarded,
       agents,
       conversations,
+      conversationsError,
       decisions,
       refreshProfile,
       refreshConversations,
@@ -197,6 +212,7 @@ export function App() {
       setOnboarded,
       agents,
       conversations,
+      conversationsError,
       decisions,
       refreshConversations,
       refreshAgents,
@@ -220,7 +236,9 @@ export function App() {
   const [head, second] = route.parts;
 
   let screen: React.ReactNode;
-  if (!signedIn || head === 'welcome') {
+  if (head === 'reset') {
+    screen = <PasswordResetScreen />;
+  } else if (!signedIn || head === 'welcome') {
     screen = <SignInScreen signedIn={signedIn} />;
   } else if (!onboarded || head === 'setup') {
     screen = <OnboardingScreen />;
@@ -253,5 +271,10 @@ export function App() {
     screen = <HomeScreen />;
   }
 
-  return <AppContext.Provider value={value}>{screen}</AppContext.Provider>;
+  return (
+    <AppContext.Provider value={value}>
+      {screen}
+      {signedIn && onboarded && head !== 'setup' && head !== 'reset' ? <TimeZonePrompt /> : null}
+    </AppContext.Provider>
+  );
 }

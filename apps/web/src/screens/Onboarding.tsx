@@ -12,7 +12,9 @@ import { MeleteMark } from '../design/mark.tsx';
 import { Button, Chip, Field, Input, Segmented, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { lookOf, messageKey, useApp, useLoad, useMedia } from '../experience/hooks.ts';
-import { givenName } from '../experience/profile.ts';
+import { givenName, onboardedProfile } from '../experience/profile.ts';
+import { keptAnswer, SETUP_QUESTIONS, SKIP_REPLY } from '../experience/setup-answers.ts';
+import { browserTimeZone, setupTimeZone } from '../experience/timezone.ts';
 import type { AgentInput, MemoryItem, TourStage } from '../experience/types.ts';
 import { navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
@@ -575,6 +577,11 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                     Email me a link instead
                   </Button>
                 )}
+                {creating ? null : (
+                  <Button variant="ghost" size="sm" onClick={() => navigate('/reset')}>
+                    Forgot your password?
+                  </Button>
+                )}
               </form>
               {notice ? (
                 <div
@@ -1032,45 +1039,8 @@ function Card({
   );
 }
 
-/**
- * Four quick questions. Each answer is a detail the person states outright,
- * saved on its own key the moment it is chosen, so setup never pretends and
- * Settings › Memory shows exactly what was kept.
- */
-const QUESTIONS = [
-  {
-    key: 'pref.home.city',
-    ask: 'Where are you based? I use it for time zones, weather and how far things are.',
-    choices: ['New York', 'London', 'Somewhere else'],
-    reply: (answer: string) =>
-      answer === 'Somewhere else'
-        ? 'No problem, I’ll pick it up from your calendar.'
-        : `${answer}. Noted, and I’ll assume that time zone unless you travel.`,
-  },
-  {
-    key: 'pref.people.names',
-    ask: 'Who should I know by name?',
-    choices: ['Alex and Priya', 'My family', 'My team at work'],
-    reply: (answer: string) =>
-      `Got it. When you say “${answer.split(' ')[0]}”, I’ll know who you mean.`,
-  },
-  {
-    key: 'pref.focus.this-month',
-    ask: 'What eats your week right now?',
-    choices: ['Meetings and follow-ups', 'Email and admin', 'A launch at work', 'Family logistics'],
-    reply: (answer: string) =>
-      answer === 'A launch at work'
-        ? 'A launch. I’ll offer to set it up as a plan when you’re ready.'
-        : 'That’s the kind of thing I take off your plate first. I’ll start there.',
-  },
-  {
-    key: 'pref.checkins.style',
-    ask: 'How should I check in?',
-    choices: ['Morning brief at 8:30', 'Only when it matters', 'Never first'],
-    reply: () =>
-      'Perfect, that’s plenty to start. I’ll remember these and learn the rest as we go.',
-  },
-] as const;
+/** Four quick questions; see experience/setup-answers.ts for what is kept. */
+const QUESTIONS = SETUP_QUESTIONS;
 
 type Exchange = { id: number; who: 'agent' | 'you'; text: string };
 let exchangeId = 0;
@@ -1104,7 +1074,7 @@ export function OnboardingScreen() {
   });
   const [busy, setBusy] = useState(false);
   const [asked, setAsked] = useState(0);
-  const [log, setLog] = useState<Exchange[]>(() => [exchange('agent', QUESTIONS[0].ask)]);
+  const [log, setLog] = useState<Exchange[]>(() => [exchange('agent', QUESTIONS[0]?.ask ?? '')]);
   const [kept, setKept] = useState<MemoryItem[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -1115,9 +1085,26 @@ export function OnboardingScreen() {
   const completed = useRef({ agentId: '', chatId: '', messageKey: messageKey(), brief: false });
   const total = 5;
 
-  const answer = async (choice: string) => {
+  const [typed, setTyped] = useState('');
+  const skip = () => {
     const question = QUESTIONS[asked];
     if (!question || saving) return;
+    setUnsaved(null);
+    setTyped('');
+    const next = QUESTIONS[asked + 1];
+    setLog((previous) => [
+      ...previous,
+      exchange('agent', SKIP_REPLY),
+      ...(next ? [exchange('agent', next.ask)] : []),
+    ]);
+    setAsked(asked + 1);
+  };
+  const answer = async (raw: string) => {
+    const question = QUESTIONS[asked];
+    if (!question || saving) return;
+    // Only what the person said is kept; a stand-in answer is a skip.
+    const choice = keptAnswer(raw);
+    if (!choice) return skip();
     setSaving(true);
     setUnsaved(null);
     setLog((previous) => [...previous, exchange('you', choice)]);
@@ -1135,6 +1122,7 @@ export function OnboardingScreen() {
       return;
     }
     const item = saved.data.item;
+    setTyped('');
     setKept((previous) => [...previous.filter((entry) => entry.id !== item.id), item]);
     setAnswers((previous) => ({ ...previous, [question.key]: choice }));
     const next = QUESTIONS[asked + 1];
@@ -1153,11 +1141,13 @@ export function OnboardingScreen() {
       toast({ kind: 'err', title });
       setBusy(false);
     };
-    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    // The zone the person chose before, or this browser's: never the account's default.
     const savedProfile = await adapter.saveProfile({
       name: name.trim() || profile?.name || 'You',
-      time_zone: profile?.time_zone ?? timeZone,
+      time_zone: setupTimeZone(profile, browserTimeZone()),
       day_hours: profile?.day_hours ?? { start: '08:00', end: '22:00' },
+      time_zone_confirmed: true,
+      onboarded: true,
     });
     if (!savedProfile.data)
       return fail(savedProfile.error ?? savedProfile.unavailable ?? 'Couldn’t save your profile');
@@ -1456,7 +1446,7 @@ export function OnboardingScreen() {
     card = (
       <Card
         title={`Let ${agent.name || 'your agent'} get to know you`}
-        sub="Four quick questions, so it can help from day one. Each answer is kept under Settings › Memory and can be changed there."
+        sub="Four quick questions, so it can help from day one. Answer in your own words or skip any of them. What you say is kept under Settings › Memory and can be changed there."
         footer={
           <>
             {back}
@@ -1537,12 +1527,39 @@ export function OnboardingScreen() {
               </div>
             ) : null}
             {question ? (
-              <div className="row" style={{ gap: 6, flexWrap: 'wrap', paddingLeft: 34 }}>
-                {question.choices.map((choice) => (
-                  <Chip key={choice} disabled={saving} onClick={() => void answer(choice)}>
-                    {choice}
-                  </Chip>
-                ))}
+              <div className="col" style={{ gap: 8, paddingLeft: 34 }}>
+                {question.suggestions.length ? (
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                    {question.suggestions.map((choice) => (
+                      <Chip key={choice} disabled={saving} onClick={() => void answer(choice)}>
+                        {choice}
+                      </Chip>
+                    ))}
+                  </div>
+                ) : null}
+                <form
+                  className="row"
+                  style={{ gap: 6, flexWrap: 'wrap' }}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void answer(typed);
+                  }}
+                >
+                  <Input
+                    value={typed}
+                    onChange={(event) => setTyped(event.target.value)}
+                    placeholder={question.placeholder}
+                    aria-label={question.ask}
+                    width="min(100%, 280px)"
+                    maxLength={500}
+                  />
+                  <Button size="sm" type="submit" disabled={saving || !typed.trim()}>
+                    Save
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={saving} onClick={skip}>
+                    Skip
+                  </Button>
+                </form>
               </div>
             ) : null}
           </div>
@@ -1752,6 +1769,9 @@ export function OnboardingScreen() {
           variant="ghost"
           onClick={() => {
             setOnboarded(true);
+            // Skipping is recorded too, so setup is not offered again on another device.
+            if (profile && !profile.onboarded)
+              void adapter.saveProfile(onboardedProfile(profile)).then(() => refreshProfile());
             navigate('/');
           }}
         >

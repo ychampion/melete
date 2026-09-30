@@ -829,6 +829,10 @@ export const experienceProfile = pgTable('experience_profile', {
   timeZone: text('time_zone').notNull().default('UTC'),
   dayStart: text('day_start').notNull().default('08:00'),
   dayEnd: text('day_end').notNull().default('22:00'),
+  /** When the person finished or skipped setup. Kept here so no browser has to remember it. */
+  onboardedAt: timestamp('onboarded_at', { withTimezone: true }),
+  /** When the person chose or confirmed their time zone; until then it is only a default. */
+  timeZoneConfirmedAt: timestamp('time_zone_confirmed_at', { withTimezone: true }),
 });
 
 export const task = pgTable('task', {

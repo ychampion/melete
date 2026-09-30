@@ -201,6 +201,11 @@ export function createMockApp(deps: AppDeps) {
           created_at: store.now().toISOString(),
         };
   if (deps.setupNeeded) experience.signedOut = true;
+  experience.changePassword = (current, next) => {
+    if (!account || current !== account.password) return false;
+    account.password = next;
+    return true;
+  };
   const owned = (row: NonNullable<typeof account>) => ({
     owner: { id: row.id, email: row.email, created_at: row.created_at },
   });

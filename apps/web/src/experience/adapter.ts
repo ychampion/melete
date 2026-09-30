@@ -160,6 +160,18 @@ export const adapter = {
   signInChatGPT: () => guard<{ status: 'ok' }>(() => api.POST('/signin/chatgpt')),
   /** Ends the session; the next request needs a new sign-in. */
   signOut: () => guard<{ status: 'ok' }>(() => api.POST('/signout')),
+  /** Sets a new password; every other session is signed out. */
+  changePassword: (current_password: string, new_password: string) =>
+    guard<{ status: 'ok' }>(() =>
+      api.POST('/account/password', { body: { current_password, new_password } }),
+    ),
+  /** Mails a reset link when this install can send mail; otherwise says why not. */
+  requestPasswordReset: (email: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/password-reset', { body: { email } })),
+  consumePasswordReset: (token: string, new_password: string) =>
+    guard<{ status: 'ok' }>(() =>
+      api.POST('/password-reset/consume', { body: { token, new_password } }),
+    ),
 
   /* ---------- home, tasks ---------- */
   home: () => guard<Home>(() => api.GET('/home')),

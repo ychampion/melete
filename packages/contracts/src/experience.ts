@@ -364,6 +364,11 @@ export const conversation = z.strictObject({
   plan_id: id.nullable(),
   /** Present while a turn is under way, or when it finished with steps. */
   progress: conversationProgress.optional(),
+  /**
+   * Set when this is the thread a routine writes each run into. The routine's
+   * schedule adds to it; a message from the person starts a chat instead.
+   */
+  automation_id: id.optional(),
 });
 export type Conversation = z.infer<typeof conversation>;
 export const conversationTurn = z.strictObject({
@@ -565,8 +570,14 @@ export const profileInput = z.strictObject({
     start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
     end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
   }),
+  /** True once the person has finished or skipped setup. It is never unset. */
+  onboarded: z.boolean().optional(),
+  /** True when the person chose this time zone, or confirmed it. It is never unset. */
+  time_zone_confirmed: z.boolean().optional(),
 });
 export const profileView = profileInput.extend({
+  onboarded: z.boolean(),
+  time_zone_confirmed: z.boolean(),
   /**
    * The address messages leave from: the connected mailbox that can send, when
    * there is one. It is read from the connection, not set here.
@@ -574,6 +585,26 @@ export const profileView = profileInput.extend({
   sending_address: z.string().max(4000).nullable(),
 });
 export const profileResponse = z.strictObject({ profile: profileView });
+export const automationRun = z.strictObject({
+  id,
+  status: turnStatus,
+  started_at: date,
+  finished_at: date.nullable(),
+  /** The thread this run wrote into, and the turn that holds its answer. */
+  conversation_id: id.nullable(),
+  turn_id: id.nullable(),
+  /** The start of what the run said, when it said anything. */
+  summary: z.string().max(600).nullable(),
+  /** Why a run failed or stopped, or what it is waiting for, in a sentence. */
+  reason: z.string().max(600).nullable(),
+});
+/** The newest run of a routine, for the place the person looks first. */
+export const routineResult = z.strictObject({
+  automation_id: id,
+  title: text,
+  conversation_id: id,
+  run: automationRun,
+});
 export const homeResponse = z.strictObject({
   greeting: text,
   date: text,
@@ -582,18 +613,16 @@ export const homeResponse = z.strictObject({
   upcoming: experienceResult(z.array(experienceCalendarEvent)),
   tasks: z.array(experienceTask),
   open_task_count: count,
-});
-export const automationRun = z.strictObject({
-  id,
-  status: turnStatus,
-  started_at: date,
-  finished_at: date.nullable(),
+  /** Routines that ran in the last day, newest first. */
+  routine_results: z.array(routineResult),
 });
 export const experienceAutomation = z.strictObject({
   id,
   title: text,
   schedule: text,
   enabled: z.boolean(),
+  /** The thread every run of this routine writes into. */
+  conversation_id: id,
   runs: z.array(automationRun),
 });
 export const automationList = z.strictObject({ automations: z.array(experienceAutomation) });
@@ -685,6 +714,16 @@ export const experienceSearchResult = z.strictObject({
 export const experienceSearch = z.strictObject({ results: z.array(experienceSearchResult) });
 export const magicLinkRequest = z.strictObject({ email: z.email() });
 export const magicLinkConsume = z.strictObject({ token: z.string().min(32).max(200) });
+const newPassword = z.string().min(8).max(1024);
+export const passwordChange = z.strictObject({
+  current_password: z.string().min(1).max(1024),
+  new_password: newPassword,
+});
+export const passwordResetRequest = z.strictObject({ email: z.email().max(254) });
+export const passwordResetConsume = z.strictObject({
+  token: z.string().min(20).max(200),
+  new_password: newPassword,
+});
 
 /** Shared operation table makes the mock and OpenAPI cover precisely the same surface. */
 export const experienceOperations = {
@@ -781,6 +820,16 @@ export const experienceOperations = {
   'POST /signin/chatgpt': { response: notAvailable },
   /** Ends the session behind the cookie; the next request needs a new sign-in. */
   'POST /signout': { response: experienceOk },
+  /** Checks the current password, sets the new one and signs out every other session. */
+  'POST /account/password': { request: passwordChange, response: experienceOk },
+  /**
+   * Mails a one-time reset link when the account's own mailbox is connected.
+   * Without one it answers not_available, and the person who runs the install
+   * prints a link with `bun run reset-password`.
+   */
+  'POST /password-reset': { request: passwordResetRequest, response: experienceOk },
+  /** Sets a new password from a one-time link and signs out every session. */
+  'POST /password-reset/consume': { request: passwordResetConsume, response: experienceOk },
   'GET /browser/sessions/{id}': { response: browserResponse },
   'POST /browser/sessions/{id}/control': { request: browserControl, response: browserResponse },
   'GET /experience/now-playing': { response: nowPlaying },

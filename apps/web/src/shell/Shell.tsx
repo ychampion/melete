@@ -18,6 +18,7 @@ import {
 } from 'react';
 import { AgentFace } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import {
   Avatar,
@@ -232,7 +233,7 @@ function Sidebar({
   onPalette: () => void;
 }) {
   const route = useRoute();
-  const { conversations, agents, profile } = useApp();
+  const { conversations, conversationsError, agents, profile, refreshConversations } = useApp();
   const decisions = useDecisions();
   const activeChat = route.parts[0] === 'chat' ? (route.parts[1] ?? null) : null;
   const chats = [...conversations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
@@ -321,7 +322,17 @@ function Sidebar({
             </a>
           );
         })}
-        {conversations.length === 0 ? <div className="recent-empty">Nothing yet</div> : null}
+        {conversationsError && conversations.length === 0 ? (
+          <LoadError
+            compact
+            what="your chats"
+            error={conversationsError}
+            onRetry={refreshConversations}
+          />
+        ) : conversations.length === 0 && decisions.loaded ? (
+          // Said only once the list was read: before that there is nothing to say.
+          <div className="recent-empty">Nothing yet</div>
+        ) : null}
       </div>
       <AccountMenu address={address} />
     </aside>
@@ -554,6 +565,9 @@ export function Rail({
           </span>
         </div>
         <div className="col">
+          {tasks.error ? (
+            <LoadError compact what="your tasks" error={tasks.error} onRetry={tasks.reload} />
+          ) : null}
           {list.map((task) => (
             <div key={task.id} className="task-row" data-done={task.done ? 'true' : undefined}>
               <Checkbox

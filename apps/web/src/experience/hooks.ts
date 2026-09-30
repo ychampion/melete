@@ -84,11 +84,14 @@ export function useLoad<T>(load: () => Promise<Result<T>>, deps: unknown[]): Loa
 export type AppContextValue = {
   capabilities: Capabilities;
   profile: Profile | null;
-  /** Set up on this browser. Stored locally: the contract has no onboarding record. */
+  /** Setup is finished or skipped, as the service records it. */
   onboarded: boolean;
+  /** Marks setup done here at once, and on the service when it is not yet recorded. */
   setOnboarded: (next: boolean) => void;
   agents: Agent[];
   conversations: Conversation[];
+  /** Why the chat list could not be read, while it could not; the list keeps what was last read. */
+  conversationsError: string | null;
   /** What waits on the person, read in the same refresh as the conversations. */
   decisions: Decisions;
   refreshProfile: () => void;

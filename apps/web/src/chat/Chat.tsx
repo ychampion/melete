@@ -409,6 +409,34 @@ import { createContext, useContext } from 'react';
 import type { Transcript } from '../experience/reduce.ts';
 
 const TranscriptContext = createContext<{ transcript: Transcript } | null>(null);
+
+/** A routine writes each run here on its schedule; a question about a result starts a chat. */
+function RoutineThreadNote() {
+  return (
+    <div
+      className="row"
+      role="note"
+      style={{
+        gap: 10,
+        padding: '12px 14px',
+        borderRadius: 14,
+        border: '1px solid var(--line)',
+        background: 'var(--surface)',
+        fontSize: 13,
+        color: 'var(--muted)',
+        flexWrap: 'wrap',
+      }}
+    >
+      <Icon name="automations" size={16} />
+      <span className="grow" style={{ minWidth: 200 }}>
+        This routine adds each run here on its schedule. To ask about a result, start a chat.
+      </span>
+      <Button size="sm" variant="outline" icon="plus" onClick={() => navigate('/chat/new')}>
+        New chat
+      </Button>
+    </div>
+  );
+}
 function useTranscript() {
   const value = useContext(TranscriptContext);
   if (!value) throw new Error('useTranscript needs the TranscriptContext');
@@ -932,21 +960,25 @@ export function ChatScreen({ id }: { id: string | null }) {
                   ))}
                 </div>
               ) : null}
-              <Composer
-                value={text}
-                onChange={setText}
-                onSend={() => void send(text)}
-                state={conversationId ? composerState : 'send'}
-                working={working}
-                autoFocus={!touch}
-                onPause={() => conversationId && void pauseTurn(conversationId)}
-                onResume={() =>
-                  conversationId && void reportFailure(adapter.resume(conversationId), 'resume')
-                }
-                onStop={() =>
-                  conversationId && void reportFailure(adapter.stop(conversationId), 'stop')
-                }
-              />
+              {conversation?.automation_id ? (
+                <RoutineThreadNote />
+              ) : (
+                <Composer
+                  value={text}
+                  onChange={setText}
+                  onSend={() => void send(text)}
+                  state={conversationId ? composerState : 'send'}
+                  working={working}
+                  autoFocus={!touch}
+                  onPause={() => conversationId && void pauseTurn(conversationId)}
+                  onResume={() =>
+                    conversationId && void reportFailure(adapter.resume(conversationId), 'resume')
+                  }
+                  onStop={() =>
+                    conversationId && void reportFailure(adapter.stop(conversationId), 'stop')
+                  }
+                />
+              )}
             </div>
           </div>
         </div>

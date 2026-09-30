@@ -16,7 +16,7 @@ import { and, asc, eq, gt, inArray, or, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
 import { z } from 'zod';
 import { ServiceError } from '../api/errors.ts';
-import { connection, event, job, space, trigger } from '../db/schema.ts';
+import { connection, event, experienceTurn, job, space, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -295,8 +295,19 @@ export class TriggerService {
     });
     // Each scheduled occurrence has its own attempt and spending allowance.
     if (row.kind === 'routine' && registration.kind === 'schedule') {
-      row = { ...row, currentTurnId: newId('turn') };
-      await tx.update(job).set({ currentTurnId: row.currentTurnId }).where(eq(job.id, row.id));
+      const turnId = newId('turn');
+      row = { ...row, currentTurnId: turnId };
+      await tx.update(job).set({ currentTurnId: turnId }).where(eq(job.id, row.id));
+      // Each run is a turn in the routine's own thread: the instruction it was
+      // given, then its answer, cards and approvals, where the person can read them.
+      if (row.agentId)
+        await tx.insert(experienceTurn).values({
+          id: turnId,
+          jobId: row.id,
+          agentId: row.agentId,
+          submissionId: `routine:${registration.id}:${received.seq}`,
+          text: row.objective,
+        });
     }
     return this.jobs.move(
       tx,

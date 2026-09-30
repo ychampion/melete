@@ -114,3 +114,23 @@ export const mcpToken = pgTable(
     index('mcp_token_expires_idx').on(table.expiresAt),
   ],
 );
+
+/**
+ * A one-time way back in after a forgotten password. Only a digest is stored.
+ * `via` says who asked for it: the operator's command on the host, or a
+ * message to the account's own mailbox.
+ */
+export const passwordReset = pgTable(
+  'password_reset',
+  {
+    tokenHash: text('token_hash').primaryKey(),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    via: text('via').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('password_reset_principal_created_idx').on(table.principalId, table.createdAt)],
+);

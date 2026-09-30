@@ -1,0 +1,162 @@
+/**
+ * Settings › Account: the time zone routines run on, and the password.
+ * Changing the password signs out every other device.
+ */
+import { useState } from 'react';
+import { Button, Field, Input, Select } from '../design/primitives.tsx';
+import { adapter } from '../experience/adapter.ts';
+import { useApp } from '../experience/hooks.ts';
+import { browserTimeZone, timeZoneChoices, zoneLabel } from '../experience/timezone.ts';
+import { toast } from '../shell/Shell.tsx';
+
+function TimeZoneField() {
+  const { profile, refreshProfile } = useApp();
+  const [busy, setBusy] = useState(false);
+  if (!profile) return null;
+  const here = browserTimeZone();
+  const save = async (zone: string) => {
+    setBusy(true);
+    const saved = await adapter.saveProfile({
+      name: profile.name,
+      time_zone: zone,
+      day_hours: profile.day_hours,
+      time_zone_confirmed: true,
+    });
+    setBusy(false);
+    if (!saved.data) {
+      toast({
+        kind: 'err',
+        title: 'Couldn’t change the time zone',
+        sub: saved.error ?? saved.unavailable ?? '',
+      });
+      return;
+    }
+    refreshProfile();
+    toast({
+      kind: 'ok',
+      title: `Time zone set to ${zoneLabel(zone)}`,
+      sub: 'Routines keep their time of day on this clock.',
+    });
+  };
+  return (
+    <div className="col" style={{ gap: 8 }}>
+      <Field label="Time zone">
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          <Select
+            label="Time zone"
+            value={profile.time_zone}
+            onChange={(zone) => void save(zone)}
+            width="min(100%, 320px)"
+            options={timeZoneChoices(profile.time_zone).map((zone) => ({
+              value: zone,
+              label: zoneLabel(zone),
+            }))}
+          />
+          {here && here !== profile.time_zone ? (
+            <Button variant="outline" size="sm" loading={busy} onClick={() => void save(here)}>
+              Use this device’s ({zoneLabel(here)})
+            </Button>
+          ) : null}
+        </div>
+      </Field>
+      <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+        Routines such as the morning brief run on this clock, through daylight-saving changes.
+      </span>
+    </div>
+  );
+}
+
+function PasswordForm() {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [again, setAgain] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <form
+      className="col"
+      style={{ gap: 10, maxWidth: 360 }}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (next.length < 8) return setProblem('The new password needs at least 8 characters.');
+        if (next !== again) return setProblem('The two new passwords are not the same.');
+        setBusy(true);
+        setProblem(null);
+        void adapter.changePassword(current, next).then((result) => {
+          setBusy(false);
+          if (result.data === null) {
+            setProblem(result.error ?? result.unavailable ?? 'Couldn’t change the password.');
+            return;
+          }
+          setCurrent('');
+          setNext('');
+          setAgain('');
+          toast({
+            kind: 'ok',
+            title: 'Password changed',
+            sub: 'Other devices were signed out. This one stays signed in.',
+          });
+        });
+      }}
+    >
+      <Field label="Current password">
+        <Input
+          type="password"
+          value={current}
+          onChange={(event) => setCurrent(event.target.value)}
+          autoComplete="current-password"
+          width="100%"
+        />
+      </Field>
+      <Field label="New password">
+        <Input
+          type="password"
+          value={next}
+          onChange={(event) => setNext(event.target.value)}
+          placeholder="At least 8 characters"
+          autoComplete="new-password"
+          width="100%"
+        />
+      </Field>
+      <Field label="New password again">
+        <Input
+          type="password"
+          value={again}
+          onChange={(event) => setAgain(event.target.value)}
+          autoComplete="new-password"
+          width="100%"
+        />
+      </Field>
+      {problem ? (
+        <span role="alert" style={{ fontSize: 13, color: 'var(--danger)' }}>
+          {problem}
+        </span>
+      ) : null}
+      <div className="row">
+        <Button
+          type="submit"
+          variant="outline"
+          loading={busy}
+          disabled={!current || !next || !again}
+        >
+          Change password
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+export function AccountSettings() {
+  return (
+    <div className="col" style={{ gap: 20 }}>
+      <TimeZoneField />
+      <div className="col" style={{ gap: 8 }}>
+        <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>Password</span>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+          Forgot it? Sign out and choose “Forgot your password?” on the sign-in page.
+        </span>
+        <PasswordForm />
+      </div>
+    </div>
+  );
+}
