@@ -73,6 +73,15 @@ function shapePoints(kind: FaceShape): string {
   return points.join(' ');
 }
 
+/** The stroke that rounds a drawn surface's corners, in viewBox units. */
+const ROUNDING: Record<FaceShape, number> = {
+  square: 1,
+  diamond: 1,
+  blob: 8,
+  gear: 8,
+  octagon: 12,
+};
+
 function Shape({
   kind,
   fill,
@@ -108,7 +117,7 @@ function Shape({
     <polygon
       points={shapePoints(kind)}
       strokeLinejoin="round"
-      strokeWidth={kind === 'octagon' ? 12 : 8}
+      strokeWidth={ROUNDING[kind]}
       fill={fill}
       stroke={stroke}
       {...extra}
@@ -118,6 +127,80 @@ function Shape({
 
 function Pill({ x, y, w, h, fill }: { x: number; y: number; w: number; h: number; fill: string }) {
   return <rect x={x} y={y} width={w} height={h} rx={Math.min(w, h) / 2} fill={fill} />;
+}
+
+/** The soft glow behind a face: its own colour, scaled to the face and capped. */
+export function faceGlow(color: string, size: number): string {
+  const blur = Math.min(18, Math.max(4, Math.round(size * 0.16)));
+  return `drop-shadow(0 0 ${blur}px color-mix(in srgb, ${color} 55%, transparent))`;
+}
+
+/**
+ * The eyes for a state, drawn on the 100-unit face. Idle eyes are tall and
+ * open; working eyes look down at the task; thinking eyes look up and aside;
+ * done eyes smile.
+ */
+function Eyes({ state, eye }: { state: FaceState; eye: string }) {
+  switch (state) {
+    case 'done':
+      return (
+        <path
+          d="M31 52q7-10 14 0M55 52q7-10 14 0"
+          stroke={eye}
+          strokeWidth="6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="none"
+        />
+      );
+    case 'failed':
+      return (
+        <path
+          d="M32 45l12 6M68 45l-12 6"
+          stroke={eye}
+          strokeWidth="6"
+          strokeLinecap="round"
+          fill="none"
+        />
+      );
+    case 'inactive':
+      return <path d="M32 51h12M56 51h12" stroke={eye} strokeWidth="6" strokeLinecap="round" />;
+    case 'working':
+      return (
+        <>
+          <Pill x={35} y={48} w={10} h={11} fill={eye} />
+          <Pill x={58} y={48} w={10} h={11} fill={eye} />
+        </>
+      );
+    case 'invalid':
+      return (
+        <>
+          <Pill x={34} y={46} w={10} h={10} fill={eye} />
+          <Pill x={56} y={46} w={10} h={10} fill={eye} />
+        </>
+      );
+    case 'thinking':
+      return (
+        <>
+          <Pill x={35} y={41} w={10} h={12} fill={eye} />
+          <Pill x={58} y={41} w={10} h={12} fill={eye} />
+        </>
+      );
+    case 'deep':
+      return (
+        <>
+          <Pill x={33} y={47} w={11} h={7} fill={eye} />
+          <Pill x={56} y={47} w={11} h={7} fill={eye} />
+        </>
+      );
+    default:
+      return (
+        <>
+          <Pill x={33} y={41} w={11} h={17} fill={eye} />
+          <Pill x={56} y={41} w={11} h={17} fill={eye} />
+        </>
+      );
+  }
 }
 
 export function AgentFace({
@@ -145,7 +228,7 @@ export function AgentFace({
           width: size,
           height: size,
           flexShrink: 0,
-          filter: glow ? `drop-shadow(0 0 ${Math.round(size * 0.22)}px ${color}80)` : undefined,
+          filter: glow ? faceGlow(color, size) : undefined,
         }}
         aria-hidden="true"
       >
@@ -159,57 +242,14 @@ export function AgentFace({
     );
   }
 
-  let eyesEl: React.ReactNode;
-  if (eyes === 'none') eyesEl = null;
-  else if (state === 'done')
-    eyesEl = (
-      <path
-        d="M31 51q7-9 14 0M55 51q7-9 14 0"
-        stroke={eye}
-        strokeWidth="5"
-        strokeLinecap="round"
-        fill="none"
-      />
-    );
-  else if (state === 'failed')
-    eyesEl = (
-      <path d="M32 46l12 6M68 46l-12 6" stroke={eye} strokeWidth="5" strokeLinecap="round" />
-    );
-  else if (state === 'inactive')
-    eyesEl = <path d="M32 50h12M56 50h12" stroke={eye} strokeWidth="5" strokeLinecap="round" />;
-  else if (state === 'invalid' || state === 'working')
-    eyesEl = (
-      <>
-        <Pill x={34} y={46} w={9} h={9} fill={eye} />
-        <Pill x={57} y={46} w={9} h={9} fill={eye} />
-      </>
-    );
-  else if (state === 'thinking')
-    eyesEl = (
-      <>
-        <Pill x={33} y={45} w={10} h={10} fill={eye} />
-        <Pill x={57} y={45} w={10} h={10} fill={eye} />
-      </>
-    );
-  else if (state === 'deep')
-    eyesEl = (
-      <>
-        <Pill x={33} y={47} w={10} h={7} fill={eye} />
-        <Pill x={57} y={47} w={10} h={7} fill={eye} />
-      </>
-    );
-  else
-    eyesEl = (
-      <>
-        <Pill x={33} y={42} w={10} h={16} fill={eye} />
-        <Pill x={57} y={42} w={10} h={16} fill={eye} />
-      </>
-    );
+  // Small faces (lists, chat) drop the fine facets and draw the eyes a little
+  // larger so they stay legible. Every face gets a hairline edge of about
+  // three quarters of a pixel, so light colours keep their outline on paper.
+  const small = size < 32;
+  const edge = ROUNDING[shape] + (1.5 * 100) / size;
+  const eyeScale = size <= 20 ? 1.2 : small ? 1.1 : 1;
 
-  const filters = [
-    glow ? `drop-shadow(0 0 ${Math.round(size * 0.22)}px ${color}80)` : '',
-    state === 'inactive' ? 'saturate(.6)' : '',
-  ]
+  const filters = [glow ? faceGlow(color, size) : '', state === 'inactive' ? 'saturate(.6)' : '']
     .filter(Boolean)
     .join(' ');
 
@@ -220,6 +260,7 @@ export function AgentFace({
       height={size}
       viewBox="0 0 100 100"
       fill="none"
+      shapeRendering="geometricPrecision"
       style={{ flexShrink: 0, overflow: 'visible', filter: filters || undefined }}
       aria-hidden="true"
     >
@@ -229,27 +270,48 @@ export function AgentFace({
         </clipPath>
       </defs>
       <g className="af-body">
-        <g>
-          <Shape kind={shape} fill={color} stroke={color} />
-        </g>
+        <Shape
+          kind={shape}
+          stroke="#000000"
+          extra={{ strokeWidth: edge, strokeOpacity: 0.12, strokeLinejoin: 'round' }}
+        />
+        <Shape kind={shape} fill={color} stroke={color} />
         <g className="af-facets" clipPath={`url(#${clipId})`}>
-          <g opacity=".22" transform="rotate(30 50 50) translate(16 -12) scale(.88)">
+          <g
+            opacity={small ? 0.16 : 0.22}
+            transform="rotate(30 50 50) translate(16 -12) scale(.88)"
+          >
             <Shape kind={shape} fill="#ffffff" stroke="#ffffff" />
           </g>
-          <g opacity=".14" transform="rotate(-24 50 50) translate(-14 14) scale(.9)">
+          <g
+            opacity={small ? 0.08 : 0.12}
+            transform="rotate(-24 50 50) translate(-14 14) scale(.9)"
+          >
             <Shape kind={shape} fill="#000000" stroke="#000000" />
           </g>
-          <rect
-            x="-20"
-            y="38"
-            width="140"
-            height="22"
-            fill="#ffffff"
-            opacity=".10"
-            transform="rotate(-38 50 50)"
-          />
+          {small ? null : (
+            <rect
+              x="-20"
+              y="40"
+              width="140"
+              height="18"
+              fill="#ffffff"
+              opacity=".08"
+              transform="rotate(-38 50 50)"
+            />
+          )}
         </g>
-        <g className="af-eyes">{eyesEl}</g>
+        {eyes === 'none' ? null : (
+          <g className="af-eyes">
+            {eyeScale === 1 ? (
+              <Eyes state={state} eye={eye} />
+            ) : (
+              <g transform={`translate(50 50) scale(${eyeScale}) translate(-50 -50)`}>
+                <Eyes state={state} eye={eye} />
+              </g>
+            )}
+          </g>
+        )}
       </g>
     </svg>
   );
