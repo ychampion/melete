@@ -63,11 +63,15 @@ copy needs no `bun install`, and it leaves the installation's tree untouched.
 ```bash
 cd melete
 git fetch --tags origin
+tag="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
 mkdir -p -m 700 ~/melete-backups
 release="$(mktemp -d)"
-git archive v0.2.0 | tar -x -C "$release"
-bun run "$release/deploy/scripts/upgrade.ts" v0.2.0 --repository "$PWD" --dry-run
+git archive "$tag" | tar -x -C "$release"
+bun run "$release/deploy/scripts/upgrade.ts" "$tag" --repository "$PWD" --dry-run
 ```
+
+The `tag=` line picks the newest release; `git tag --list 'v*'` shows every
+one, and to upgrade to another, set `tag` to its name instead.
 
 The backup parent must exist before the first run; the `mkdir` creates the
 default one, `~/melete-backups`, private to you. Run the same command without

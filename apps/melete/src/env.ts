@@ -263,23 +263,29 @@ const variables = z.object({
     .string()
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/)
     .default('melete_work'),
-  MELETE_RUNTIME_START_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  MELETE_RUNTIME_START_TIMEOUT_MS: unsetWhenBlank(
+    z.coerce.number().int().positive().default(120_000),
+  ),
   /** Stdio MCP servers run in containers beside the attempts; these are the runners' images. */
-  MELETE_MCP_NODE_IMAGE: z
-    .string()
-    .min(1)
-    .default(
-      'node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85',
-    ),
-  MELETE_MCP_PYTHON_IMAGE: z
-    .string()
-    .min(1)
-    .default(
-      'ghcr.io/astral-sh/uv:0.12.17-python3.12-alpine@sha256:4c7eb663267624fa1f5b0316b3a51b427578bcb1d93459e1b6dfb5e9875beb0f',
-    ),
+  MELETE_MCP_NODE_IMAGE: unsetWhenBlank(
+    z
+      .string()
+      .min(1)
+      .default(
+        'node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85',
+      ),
+  ),
+  MELETE_MCP_PYTHON_IMAGE: unsetWhenBlank(
+    z
+      .string()
+      .min(1)
+      .default(
+        'ghcr.io/astral-sh/uv:0.12.17-python3.12-alpine@sha256:4c7eb663267624fa1f5b0316b3a51b427578bcb1d93459e1b6dfb5e9875beb0f',
+      ),
+  ),
   /** The port a server with named destinations uses as its proxy, inside the service container. */
-  MELETE_MCP_EGRESS_PORT: z.coerce.number().int().min(1).max(65535).default(8789),
-  MELETE_MCP_IDLE_MS: z.coerce.number().int().positive().default(600_000),
+  MELETE_MCP_EGRESS_PORT: unsetWhenBlank(z.coerce.number().int().min(1).max(65535).default(8789)),
+  MELETE_MCP_IDLE_MS: unsetWhenBlank(z.coerce.number().int().positive().default(600_000)),
   /** Browser credentials and endpoint are service-owned; neither is sent to the runtime cell. */
   MELETE_BROWSER_URL: z.url().optional(),
   MELETE_BROWSER_SPACE: z
@@ -332,7 +338,7 @@ const variables = z.object({
    * engine names none by default, so this is the usual ceiling on one reply.
    */
   MELETE_DEFAULT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
-  MELETE_SPEECH_MODEL: z.string().optional(),
+  MELETE_SPEECH_MODEL: unsetWhenBlank(z.string().optional()),
   /**
    * Automatic memory reads what a person says in chat with this model, through
    * the model gateway. Unset, it uses the default provider and model; `off`

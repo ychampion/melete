@@ -164,6 +164,25 @@ describe('the engine limits', () => {
     expect(env.MELETE_PUBLIC_URL).toBeUndefined();
   });
 
+  test('Compose passes the plugin, start-up and speech settings through, and empty keeps the default', () => {
+    const composed = composeServiceEnvironment();
+    const names = [
+      'MELETE_MCP_NODE_IMAGE',
+      'MELETE_MCP_PYTHON_IMAGE',
+      'MELETE_MCP_EGRESS_PORT',
+      'MELETE_MCP_IDLE_MS',
+      'MELETE_RUNTIME_START_TIMEOUT_MS',
+      'MELETE_SPEECH_MODEL',
+    ];
+    for (const name of names) expect(composed[name]).toBe('');
+    const env = loadEnv(composed);
+    const defaults = loadEnv({});
+    for (const name of names)
+      expect(env[name as keyof typeof env]).toEqual(defaults[name as keyof typeof defaults]);
+    expect(env.MELETE_MCP_EGRESS_PORT).toBe(8789);
+    expect(loadEnv({ MELETE_MCP_IDLE_MS: '60000' }).MELETE_MCP_IDLE_MS).toBe(60000);
+  });
+
   test('the defaults are the ones the engine configuration renders', () => {
     const env = loadEnv({});
     expect(env.MELETE_ENGINE_MAX_TURNS).toBe(DEFAULT_ENGINE_MAX_TURNS);
