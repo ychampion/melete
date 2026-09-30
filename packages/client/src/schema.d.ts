@@ -16391,6 +16391,12 @@ export interface components {
             conversation_id: components["schemas"]["__schema210"];
             created_at: components["schemas"]["__schema214"];
             draft?: components["schemas"]["__schema231"];
+            file?: {
+                bytes: components["schemas"]["__schema215"];
+                content: string;
+                path: components["schemas"]["__schema211"];
+                truncated: boolean;
+            };
             id: components["schemas"]["__schema210"];
             options: components["schemas"]["__schema230"][];
             preview: components["schemas"]["__schema221"] | null;

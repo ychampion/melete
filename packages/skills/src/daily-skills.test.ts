@@ -45,3 +45,15 @@ describe.each([
     expect(picks(text)).not.toContain(name);
   });
 });
+
+test('the mail skills a chat uses say the person sends a draft from its card', () => {
+  // A chat cannot send mail, so offering to send there is a promise that cannot be kept.
+  for (const name of ['write-a-draft', 'draft-follow-up', 'triage-the-inbox']) {
+    const body = (skills.find((skill) => skill.frontmatter.name === name)?.body ?? '').replace(
+      /\s+/g,
+      ' ',
+    );
+    expect(body).toContain('send it from its draft card');
+    expect(body).not.toMatch(/approv/i);
+  }
+});

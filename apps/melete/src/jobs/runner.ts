@@ -43,6 +43,8 @@ import {
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { STOPPED_NOTE } from '../experience/projectors.ts';
+import { withdrawPendingPermissions } from '../experience/service.ts';
 import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { spaceAuthority } from '../principals/authority.ts';
@@ -840,6 +842,8 @@ export class AttemptRunner {
         .update(experienceTurn)
         .set({ status: 'stopped', finishedAt: new Date() })
         .where(eq(experienceTurn.id, turn.id));
+      // Nothing the stopped turn asked for may still be allowed afterwards.
+      await withdrawPendingPermissions(tx, jobId, STOPPED_NOTE);
       await tx
         .update(attempt)
         .set({

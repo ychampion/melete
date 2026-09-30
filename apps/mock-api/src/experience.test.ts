@@ -387,3 +387,37 @@ test('a new message makes a pending draft send stale, as the service does', asyn
     ),
   ).toEqual([[permission.id, 'replaced']]);
 });
+
+test('stop withdraws a waiting permission, and a later allow says so', async () => {
+  const { mock, chat } = await chatFixture();
+  const drafts = C.experienceOperations['GET /conversations/{id}/drafts'].response.parse(
+    (await call(mock, `/conversations/${chat.id}/drafts`)).body,
+  );
+  const draft = C.experienceDraft.parse(drafts.drafts[0]);
+  const send = C.experienceOperations['POST /drafts/{id}/send'].response.parse(
+    (await call(mock, `/drafts/${draft.id}/send`, 'POST')).body,
+  );
+  const permission = C.permissionCard.parse(send.permission);
+  expect((await call(mock, `/conversations/${chat.id}/stop`, 'POST')).response.status).toBe(200);
+  expect(
+    C.experienceOperations['GET /permissions'].response.parse(
+      (await call(mock, '/permissions')).body,
+    ).permissions,
+  ).toHaveLength(0);
+  const allowed = await call(mock, `/permissions/${permission.id}`, 'POST', {
+    option: 'allow_once',
+    version: permission.version,
+  });
+  expect(allowed.response.status).toBe(409);
+  expect(allowed.body).toMatchObject({
+    error: { code: 'permission_withdrawn', message: 'This was withdrawn when you stopped.' },
+  });
+  const stream = C.experienceEventPage.parse(
+    (await call(mock, `/conversations/${chat.id}/events?limit=200`)).body,
+  );
+  expect(
+    stream.events.flatMap((event) =>
+      event.item.type === 'decision' ? [[event.item.decision.id, event.item.decision.outcome]] : [],
+    ),
+  ).toEqual([[permission.id, 'withdrawn']]);
+});

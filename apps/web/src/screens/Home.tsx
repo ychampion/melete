@@ -312,10 +312,15 @@ function DecisionCard({
         ) : null}
       </div>
       <p className="decision-title voice">{title}</p>
-      {permission && (permission.draft || from || to) ? (
+      {permission && (permission.draft || permission.file || from || to) ? (
         <div className="decision-preview">
           {permission.draft ? (
             <div className="clamp2 decision-draft">{permission.draft.body}</div>
+          ) : null}
+          {permission.file && !permission.draft ? (
+            <div className="clamp2 decision-draft">
+              {permission.file.content || 'This file is empty.'}
+            </div>
           ) : null}
           {from || to ? (
             <span className="decision-meta">

@@ -1026,7 +1026,10 @@ export class BrokerService implements BrokerOperations {
       await checkAttempt(tx, job, claims);
       const access = await agentAccess(tx, job.id);
       if (access.chat && directSend(request.kind))
-        throw new BrokerFault('scope_denied', 'Review the draft and use its send control.');
+        throw new BrokerFault(
+          'scope_denied',
+          'In a chat the person sends a draft from its draft card. Say the draft is ready.',
+        );
       const { tool, connector } = await this.tool(
         tx,
         job,
@@ -1227,7 +1230,10 @@ export class BrokerService implements BrokerOperations {
       if (stored.job_id !== job.id) throw new BrokerFault('action_not_found');
       const access = await agentAccess(tx, job.id);
       if (access.chat && directSend(stored.kind))
-        throw new BrokerFault('scope_denied', 'Review the draft and use its send control.');
+        throw new BrokerFault(
+          'scope_denied',
+          'In a chat the person sends a draft from its draft card. Say the draft is ready.',
+        );
       const { tool } = await this.tool(tx, job, claims, stored.connection_id, stored.kind);
       // An in-cell intent is executed by the runtime that proposes it, not replayed here.
       if (tool.execution === 'in_cell' && ['approved', 'admitted'].includes(stored.status))

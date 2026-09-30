@@ -161,7 +161,8 @@ export const filesManifest: ConnectorManifest = {
     },
     {
       name: 'files.write',
-      description: 'Write a UTF-8 file. Declare expect to make it a checked deliverable.',
+      description:
+        'Write a UTF-8 file, only when the owner asks for a file or the work is a document to keep. Answers, drafts, tables and plans go in the reply instead. Declare expect to make it a checked deliverable.',
       input_schema: inputSchema(
         {
           path: pathSchema,

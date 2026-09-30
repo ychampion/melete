@@ -157,4 +157,7 @@ test('a declared critique and a declared acceptance start out pending', () => {
   );
   expect(named(results, 'critique')).toMatchObject({ status: 'pending', advisory: true });
   expect(named(results, 'human')).toMatchObject({ status: 'pending', advisory: false });
+  // The model reads this line back in the write's result, and repeats it to the person.
+  expect(named(results, 'human').detail).toBe('waiting for the person to look over the file');
+  expect(named(results, 'human').detail).not.toMatch(/accept|owner|artifact|human/i);
 });

@@ -26101,6 +26101,31 @@
           "draft": {
             "$ref": "#/components/schemas/__schema231"
           },
+          "file": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "$ref": "#/components/schemas/__schema211"
+              },
+              "bytes": {
+                "$ref": "#/components/schemas/__schema215"
+              },
+              "content": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "bytes",
+              "content",
+              "truncated"
+            ],
+            "additionalProperties": false
+          },
           "review": {
             "$ref": "#/components/schemas/__schema225"
           },

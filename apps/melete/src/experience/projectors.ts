@@ -8,6 +8,8 @@ import {
   experienceDecision,
   experienceDraft,
   experienceReceipt,
+  PERMISSION_FILE_PREVIEW_CHARS,
+  type PermissionCard,
   permissionCard,
   type ResultCard,
   resultCard,
@@ -36,8 +38,14 @@ export const object = (input: unknown): Record<string, unknown> =>
     ? (input as Record<string, unknown>)
     : {};
 const array = (input: unknown): unknown[] => (Array.isArray(input) ? input : []);
+/**
+ * Words only an internal record carries: a tool's name, a field of an action
+ * record or a credential, or a model's id. A tool name counts only as one, a
+ * known verb after the app's name standing on its own, so an address at
+ * email.com, a site like web.dev or a file called test.txt stays ordinary text.
+ */
 export const BACKEND_VOCABULARY =
-  /\b(?:email|calendar|files|web|test)\.[a-z_][\w.-]*|\b(?:canonical_payload|payload_hash|tool_call|model_actual|access_token|refresh_token|chain.of.thought)\b|\b(?:gpt-|claude-|deepseek)[\w.-]*/i;
+  /(?<![\w@.-])(?:email|calendar|files|web|test)\.(?:search|read|draft|send|discard|list|create|update|delete|write|move|restore|share|fetch|echo|inspect)(?:_[a-z]+)*(?![\w-]|\.[a-z])|\b(?:canonical_payload|payload_hash|tool_call|model_actual|access_token|refresh_token|chain.of.thought)\b|(?<![@.])\b(?:gpt-|claude-|deepseek-)[\w.-]*/i;
 
 /** Titles and labels are content, never a channel for an internal record or credential. */
 export function plainText(value: unknown, fallback: string, limit = 4000): string {
@@ -433,13 +441,19 @@ export function recipientText(payload: Record<string, unknown>): string {
   const raw = payload.to ?? payload.recipient;
   return plainText(Array.isArray(raw) ? raw.join(', ') : raw, 'The selected recipient');
 }
+/** Files the app can show as text; anything else is offered as a download. */
+const readable = (mime: string) => mime.startsWith('text/') || mime === 'application/json';
+
 export function projectArtifact(row: typeof artifact.$inferSelect): ResultCard {
   return resultCard.parse({
     id: row.id,
     title: plainText(filename(row.path), 'File'),
     meta: 'File',
     facts: [{ label: 'Size', value: `${row.size} bytes` }],
-    primary_action: null,
+    // The handle is the artifact id; the app reads it from the content route.
+    primary_action: readable(row.mime)
+      ? { kind: 'open', label: 'Open', handle: row.id }
+      : { kind: 'download', label: 'Download', handle: row.id },
     secondary_actions: [],
     source_connection: null,
   });
@@ -506,6 +520,8 @@ export function senderAddress(configuration: unknown): string | null {
 
 /** The note on a permission a later message in its conversation made stale. */
 export const SUPERSEDED_NOTE = 'replaced';
+/** The note on a permission withdrawn because the person stopped the turn it waited in. */
+export const STOPPED_NOTE = 'stopped';
 
 /**
  * A decided permission as the conversation shows it. An approval that saved a
@@ -526,7 +542,9 @@ export function projectPermissionDecision(input: {
       input.decision === 'denied'
         ? input.note === SUPERSEDED_NOTE
           ? 'replaced'
-          : 'deny'
+          : input.note === STOPPED_NOTE
+            ? 'withdrawn'
+            : 'deny'
         : input.ruleSaved
           ? 'always'
           : 'allow_once',
@@ -552,6 +570,35 @@ export function projectQuestionDecision(input: {
   });
 }
 
+/**
+ * The file a write would save, as the person reviews it: the path and the
+ * exact text, with only control characters taken out. Content past the preview
+ * limit is cut and marked, never silently dropped.
+ */
+export function proposedFile(payload: Record<string, unknown>): PermissionCard['file'] | null {
+  // A path is shown as given: names like "test.txt" or "email.md" are ordinary files.
+  const path =
+    typeof payload.path === 'string'
+      ? payload.path
+          .replace(/\p{Cc}/gu, '')
+          .trim()
+          .slice(0, 1000)
+      : '';
+  if (!path || typeof payload.content !== 'string') return null;
+  const shown = payload.content.replace(/\p{Cc}/gu, (character) =>
+    ['\n', '\r', '\t'].includes(character) ? character : '',
+  );
+  let content = shown.slice(0, PERMISSION_FILE_PREVIEW_CHARS);
+  // Never end on half of a character.
+  if (/[\uD800-\uDBFF]$/.test(content)) content = content.slice(0, -1);
+  return {
+    path,
+    bytes: Buffer.byteLength(payload.content, 'utf8'),
+    content,
+    truncated: content.length < shown.length,
+  };
+}
+
 export function projectPermission(input: {
   id: string;
   version: string;
@@ -569,16 +616,27 @@ export function projectPermission(input: {
   const payload = object(input.action.canonicalPayload);
   const isSend = input.action.kind.endsWith('.send');
   const draft = isSend ? draftForReview(input.action) : null;
+  const file = input.action.kind === 'files.write' ? proposedFile(payload) : null;
   const canApprove = !isSend || Boolean(draft);
   const base = actionLabel(input.action)
     .replace(/^Sent /, 'Send ')
     .replace(/^Created /, 'Create ')
     .replace(/^Updated /, 'Update ')
-    .replace(/^Removed /, 'Remove ');
-  const what = input.action.kind.endsWith('.send')
+    .replace(/^Removed /, 'Remove ')
+    .replace(/^Saved /, 'Save ')
+    .replace(/^Moved /, 'Move ');
+  const what = isSend
     ? `${base} to ${recipientText(payload)}`
-    : (DEVICE_ASKS[input.action.kind] ?? base);
+    : file
+      ? `Save ${file.path}`
+      : (DEVICE_ASKS[input.action.kind] ?? base);
   const facts = [
+    ...(file
+      ? [
+          { label: 'File', value: file.path },
+          { label: 'Size', value: `${file.bytes} bytes` },
+        ]
+      : []),
     ...deviceFacts(input.action.kind, payload),
     ...(draft
       ? [
@@ -627,6 +685,7 @@ export function projectPermission(input: {
           'The full message cannot be shown safely. Prepare a new draft before sending.',
         ],
     ...(draft ? { draft } : {}),
+    ...(file ? { file } : {}),
     options: !canApprove
       ? ['deny']
       : input.canAlways
