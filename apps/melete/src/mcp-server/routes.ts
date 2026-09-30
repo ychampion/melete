@@ -284,12 +284,12 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
       `<h1>Let ${escapeHtml(client.name)} use Melete?</h1>
 ${whoIsAsking(client)}
 <p>Signed in as <strong>${escapeHtml(session.active.owner.email)}</strong>. If you agree, this assistant can, as you, ${where}:</p>
-<ul><li>see what companies owe you, and ask Melete to chase one;</li>
+<ul><li>see what companies owe you, and ask Melete to chase one: you approve its first message here in Melete, and it follows up within the limits you set;</li>
 <li>ask Melete to send an email, which waits for you to approve the exact text here in Melete;</li>
 <li>save and look up details you tell it;</li>
 <li>see where those jobs stand.</li></ul>
 <p>When you answer, you go back to <strong>${escapeHtml(returnHost)}</strong>. Continue only if that is where you started.</p>
-<p class="muted">It cannot send anything without your approval. You can disconnect it at any time in Melete, under Settings, Connections.</p>
+<p class="muted">Every email it proposes waits for your approval. You can disconnect it at any time in Melete, under Settings, Connections.</p>
 <form method="post" action="${escapeHtml(addresses.authorize)}">${hidden}
 <button class="allow" type="submit" name="decision" value="allow">Allow</button>
 <button type="submit" name="decision" value="deny">Deny</button></form>`,

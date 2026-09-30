@@ -578,6 +578,8 @@ export async function bootstrap(
         connections,
         browserSessions: browser?.sessions,
         stdioLauncher,
+        // A space or agent the person marked private reads no public web pages.
+        privateContext: ({ spaceId, agentId }) => privacy.marksPrivate(spaceId, agentId),
       });
       catalog = new RuntimeCatalog(handle.db, registry);
       // Sandboxes are the service's own: their providers come from the same

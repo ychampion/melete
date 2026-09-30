@@ -109,10 +109,13 @@ const when = (value: unknown): string | undefined => {
     ? undefined
     : `${at.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 };
-const pageTitle = (value: unknown) =>
-  typeof value === 'string'
-    ? /<title[^>]*>([^<]{1,500})<\/title>/i.exec(value)?.[1]?.replace(/&amp;/g, '&')
-    : undefined;
+/** A read page names its title; a receipt from before that carries the page itself. */
+const pageTitle = (detail: Record<string, unknown>) =>
+  typeof detail.title === 'string' && detail.title.trim()
+    ? detail.title
+    : typeof detail.body === 'string'
+      ? /<title[^>]*>([^<]{1,500})<\/title>/i.exec(detail.body)?.[1]?.replace(/&amp;/g, '&')
+      : undefined;
 
 /** A stable id no longer than the contract allows, whatever the source identifiers were. */
 export function toolId(prefix: string, ...parts: string[]): string {
@@ -273,7 +276,7 @@ function actionOutput(row: ActionRow, status: ToolStatus, raw: string): ToolSumm
     case 'files.restore':
       return summary('Restored');
     case 'web.fetch':
-      return summary('Page read', quote(pageTitle(detail.body), 'page'));
+      return summary('Page read', quote(pageTitle(detail), 'page'));
     case 'device.list_files':
       return summary(count(array(detail.entries).length, 'item', 'items'));
     case 'device.read_file':

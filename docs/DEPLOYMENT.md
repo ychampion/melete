@@ -101,7 +101,7 @@ Then check the configuration and start the stack:
 
 ```bash
 bun run compose:check
-docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 180
+docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
 docker compose -f deploy/docker-compose.yml ps
 ```
 
@@ -633,8 +633,9 @@ the table below, for example
 `bun run deploy/scripts/configure.ts --provider anthropic --model <model id>`
 with `ANTHROPIC_API_KEY` exported. An OpenAI-compatible endpoint needs
 `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`. The `chatgpt` provider
-needs no key: the owner signs in once the stack is running. A run whose key is
-missing is refused, and nothing is written.
+needs no key: the owner signs in once the stack is running, through the
+[sign-in routes](#signing-in-to-a-provider). A run whose key is missing is
+refused, and nothing is written.
 
 The `--fake` configuration is the reproducible local demonstration, and only it
 turns on the scripted provider and the test connector: no provider key is
@@ -691,6 +692,10 @@ gateway refuses a provider whose key is empty: for a server that checks no key,
 set `OPENAI_COMPAT_API_KEY` to any non-empty value. Left empty, an `https://`
 endpoint falls back to `OPENAI_API_KEY`; a plain `http://` endpoint never
 receives `OPENAI_API_KEY`.
+
+With `OPENAI_API_KEY` or `OPENAI_COMPAT_BASE_URL` set, the agent can also turn
+text into speech. `MELETE_SPEECH_MODEL` names the text-to-speech model it uses;
+left empty, it is `gpt-4o-mini-tts`.
 
 `MELETE_DEFAULT_MAX_OUTPUT_TOKENS` (default `4096`) is the output limit the
 gateway gives a model request that names none. The runtime names none unless its
@@ -752,7 +757,9 @@ whole installation.
 
 **ChatGPT.** To use it instead of an OpenAI key, set
 `MELETE_DEFAULT_PROVIDER=chatgpt` and `MELETE_DEFAULT_MODEL` to a model the
-account's plan serves, then sign in. Model access and usage limits
+account's plan serves, then sign in with the routes in the table below, as the
+owner, from a signed-in session, or with **Sign in with ChatGPT** under **Settings → Models**.
+Model access and usage limits
 are those of the ChatGPT plan. The sign-in follows the flow of the open-source
 Codex CLI and presents its public client, which `MELETE_CHATGPT_CLIENT_ID`
 replaces when set. ChatGPT sign-in works for as long as OpenAI keeps this
@@ -946,6 +953,11 @@ nothing summarised. For a model Melete does know, this may lower the window and
 not raise it, because the same catalog figure is what the model gateway's
 accounting is keyed on.
 
+`MELETE_RUNTIME_START_TIMEOUT_MS` (default `120000`) is how long, in
+milliseconds, an attempt's container may take to start and answer before the
+attempt is ended. Raise it on a slow host where the first start after an
+upgrade takes longer.
+
 ## Memory extraction
 
 Deployment memory can extract structured observations without a model. If
@@ -978,7 +990,8 @@ through the same socket, one per connection, with a volume of their own and no
 network unless their owner named a destination; [CONNECTORS](CONNECTORS.md#where-a-server-runs)
 describes each restriction. The service pulls their images on first use, so
 the host needs to reach the registries the catalog names. These settings
-change them; the defaults need none:
+change them; the defaults need none. Set them in `deploy/.env` and recreate the
+service:
 
 | Setting | Default | What it chooses |
 | --- | --- | --- |
@@ -1105,21 +1118,22 @@ first command the same `-f` files you started the stack with, so it reaches the
 browser worker and the Tailscale node when you use them. It stops the stack and
 removes its containers and named volumes: the database, your spaces, artifacts,
 the work directory, the removal journal and, with the Tailscale file, the node
-key. The sweep catches the per-attempt containers, networks and volumes the
-service creates while it runs: those carry Melete's own labels rather than
-Compose's, so they are matched by label and by the Compose project name, which
-the sweep reads from `deploy/.env`. Delete `deploy/.env` last, because it holds
+key. The sweep catches the containers, networks and volumes the service creates
+while it runs, for each attempt and for each packaged plugin: those carry
+Melete's own labels rather than Compose's, so they are matched by label and by
+the Compose project name, which the sweep reads from `deploy/.env`. Delete `deploy/.env` last, because it holds
 the master key that unseals anything you backed up.
 
 ```bash
 docker compose -f deploy/docker-compose.yml down -v --rmi local --remove-orphans
 # Started it with the browser worker or Tailscale? Add the same -f files to that line.
-owned=label=com.melete.attempt-supervisor=v1
 name=$(tr -d '\r' < deploy/.env | sed -n 's/^COMPOSE_PROJECT_NAME=//p')
 project=label=com.melete.project=${name:-melete}
-docker ps -aq --filter "$owned" --filter "$project" | xargs -r docker rm -f
-docker network ls -q --filter "$owned" --filter "$project" | xargs -r docker network rm
-docker volume ls -q --filter "$owned" --filter "$project" | xargs -r docker volume rm
+for owned in label=com.melete.attempt-supervisor=v1 label=com.melete.mcp-launcher=v1; do
+  docker ps -aq --filter "$owned" --filter "$project" | xargs -r docker rm -f
+  docker network ls -q --filter "$owned" --filter "$project" | xargs -r docker network rm
+  docker volume ls -q --filter "$owned" --filter "$project" | xargs -r docker volume rm
+done
 rm -f deploy/.env
 ```
 

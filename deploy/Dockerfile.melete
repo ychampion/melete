@@ -4,18 +4,14 @@
 # on `edge` for the API, `database` for Postgres, and isolated runtime networks
 # as the cells' only broker/gateway peer.
 
-FROM node:24.14.0-bookworm-slim AS promoter-node
+FROM node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8 AS promoter-node
 FROM oven/bun:1.3.13-slim@sha256:7e8ed3961db1cdedf17d516dda87948cfedbd294f53bf16462e5b57ed3fff0f1
 
 # The trusted promoter uses Node's process permission boundary without file write grants.
 COPY --from=promoter-node /usr/local/bin/node /usr/local/bin/node
 
 # Only the service controls the local engine socket. Runtime containers never receive it.
-COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=docker:27.5.1-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c /usr/local/bin/docker /usr/local/bin/docker
 
 ENV NODE_ENV=production
 
