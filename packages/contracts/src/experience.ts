@@ -554,6 +554,19 @@ export const memoryItemList = z.strictObject({
  * nothing new they say in chat is kept, and "forget ..." still works.
  */
 export const memorySettings = z.strictObject({ capture: z.boolean() });
+/**
+ * Whether conversations in this space read public web pages: GET and HEAD
+ * only, public addresses only, never signed in. On unless it is turned
+ * off; a private space or agent stays offline whatever this says.
+ */
+export const webReadSettings = z.strictObject({ enabled: z.boolean() });
+export const webReadStatus = z
+  .strictObject({
+    enabled: z.boolean(),
+    /** False when the space has no web connection for the setting to apply to. */
+    available: z.boolean(),
+  })
+  .meta({ id: 'WebReadStatus' });
 export const memoryExplanation = z.strictObject({
   reasons: z.array(text),
   output: z.string().nullable(),
@@ -858,6 +871,8 @@ export const experienceOperations = {
   'GET /memory/items/{id}/why': { response: memoryExplanation },
   'GET /memory/settings': { response: memorySettings },
   'PUT /memory/settings': { request: memorySettings, response: memorySettings },
+  'GET /web/settings': { response: webReadStatus },
+  'PUT /web/settings': { request: webReadSettings, response: webReadStatus },
   'GET /memory/beliefs': { response: beliefList },
   'GET /memory/beliefs/{id}/history': { response: beliefHistory },
   'POST /memory/beliefs/{id}/block': { response: experienceOk },
