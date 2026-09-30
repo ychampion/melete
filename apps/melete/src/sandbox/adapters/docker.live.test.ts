@@ -430,6 +430,12 @@ if (!live) {
           await delay(500);
         }
         expect(title).toStartWith('Example Domain');
+        const out = process.env.MELETE_SANDBOX_LIVE_OUT;
+        if (out)
+          await writeFile(
+            path.join(out, 'sandbox-example.png'),
+            await host.computer(handle, { kind: 'screenshot' }, signal()),
+          );
       }
     });
   });

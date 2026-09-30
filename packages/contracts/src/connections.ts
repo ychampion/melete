@@ -128,6 +128,9 @@ export type SandboxAdapter = z.infer<typeof sandboxAdapter>;
  */
 export const sandboxAdapterTakesKey = (adapter: SandboxAdapter): boolean => adapter !== 'docker';
 
+/** The adapters whose sandboxes have a desktop for the `computer.*` tools. */
+export const sandboxAdapterHasDesktop = (adapter: SandboxAdapter): boolean => adapter === 'docker';
+
 export const SANDBOX_EGRESS_KINDS = ['deny_all', 'cidr_allowlist', 'open'] as const;
 export const SANDBOX_PERSISTENCE = ['ephemeral', 'pause', 'snapshot'] as const;
 
@@ -333,17 +336,27 @@ export function connectionInstallation(
       return err('A CIDR allow-list needs at least one range.');
     const config: SandboxConnectionConfig =
       rest.egress === 'cidr_allowlist' ? { ...rest, cidrs: cidrs ?? [] } : rest;
+    // A desktop grant is kept only where the adapter's sandboxes have a desktop.
+    const granted = sandboxAdapterHasDesktop(config.adapter)
+      ? scopes
+      : scopes.filter((scope) => !scope.startsWith('computer.'));
     if (!sandboxAdapterTakesKey(config.adapter)) {
       // A key sent to an adapter that has no account would be sealed and never read.
       if (request.credentials && Object.keys(request.credentials).length)
         return err(sandboxCredentialRefusal(config.adapter, '') ?? EXACTLY_ONE);
-      return ok({ kind, provider: 'sandbox', config, credentials: null, scopes });
+      return ok({ kind, provider: 'sandbox', config, credentials: null, scopes: granted });
     }
     const credentials = sandboxCredentials.safeParse(request.credentials);
     if (!credentials.success) return err('A sandbox needs credentials.api_key only.');
     const malformed = sandboxCredentialRefusal(config.adapter, credentials.data.api_key);
     if (malformed) return err(malformed);
-    return ok({ kind, provider: 'sandbox', config, credentials: credentials.data, scopes });
+    return ok({
+      kind,
+      provider: 'sandbox',
+      config,
+      credentials: credentials.data,
+      scopes: granted,
+    });
   }
   if (kind === 'ics') {
     if (!request.ics || request.credentials)
