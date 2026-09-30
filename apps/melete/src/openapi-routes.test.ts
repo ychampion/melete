@@ -44,6 +44,7 @@ function servedRoutes(): string[] {
     proposer: stub,
     evaluator: stub,
     browserSessions: stub,
+    sandboxComputers: stub,
     memory: stub,
     removals: stub,
     broker: stub,

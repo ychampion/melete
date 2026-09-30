@@ -167,3 +167,65 @@ jobs:
         run: docker build -t melete-web:ci -f deploy/Dockerfile.web .
       - name: Build the runtime image
         run: docker build -t melete-runtime:ci -f packages/runtime-hermes/Dockerfile packages/runtime-hermes
+
+  docker-sandbox:
+    name: Docker sandboxes on a real engine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      # The workspace suite records sessions; the same disposable server as the test job.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: melete_test
+          POSTGRES_PASSWORD: melete_test
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U melete_test -d postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Report the Docker versions
+        run: docker version
+      - name: Build the sandbox image
+        run: docker build -t melete-sandbox:local -f deploy/Dockerfile.sandbox .
+      # On the runner itself the adapter offers deny-all only: the shared sandbox and workspace
+      # suites, the container's own limits, a real task, the idle stop and the desktop.
+      - name: Run the adapter against the engine
+        env:
+          MELETE_SANDBOX_LIVE: docker
+          MELETE_SANDBOX_LIVE_OUT: sandbox-shots
+          DATABASE_URL: postgres://melete_test:melete_test@127.0.0.1:5432/postgres
+        run: |
+          mkdir -p sandbox-shots
+          bun test apps/melete/src/sandbox/adapters/docker.live.test.ts --timeout=300000 --max-concurrency=1
+      # Open egress needs the caller in a container on the same engine, as the service is in
+      # the Compose deployment, so it can join each sandbox's network as its only way out.
+      - name: Reach the internet only through the service
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/repo -w /repo \
+            -e MELETE_SANDBOX_LIVE=docker \
+            -e MELETE_SANDBOX_LIVE_OUT=/repo/sandbox-shots \
+            "oven/bun:$(cat .bun-version)" \
+            bun test apps/melete/src/sandbox/adapters/docker.live.test.ts --timeout=300000 --test-name-pattern 'open egress'
+      # What the sandbox desktop showed: the test page after the agent's input, and a public
+      # page reached through the service.
+      - name: Keep the desktop screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sandbox-desktop-${{ github.run_id }}
+          path: sandbox-shots/
+          if-no-files-found: warn
+          retention-days: 7

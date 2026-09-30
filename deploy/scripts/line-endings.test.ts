@@ -16,11 +16,15 @@ const inContainers = (path: string) =>
   /(^|\/)Dockerfile[^/]*$/.test(path) ||
   path.startsWith('packages/runtime-hermes/') ||
   path.startsWith('deploy/config/') ||
+  path.startsWith('deploy/sandbox/') ||
   path === 'deploy/.env.example';
 
 /** Scripts must be text outright; the directories may leave detection to Git. */
 const mustBeText = (path: string) =>
-  /\.(sh|py)$/.test(path) || /(^|\/)Dockerfile[^/]*$/.test(path) || path === 'deploy/.env.example';
+  /\.(sh|py)$/.test(path) ||
+  /(^|\/)Dockerfile[^/]*$/.test(path) ||
+  path.startsWith('deploy/sandbox/') ||
+  path === 'deploy/.env.example';
 
 /** `git check-attr -z` prints path, attribute, value triples. */
 function attributes(paths: string[]) {
@@ -37,6 +41,7 @@ test('what containers execute checks out with LF endings on every system', () =>
   const files = git('ls-files', '-z').split('\0').filter(Boolean).filter(inContainers);
   expect(files).toContain('packages/runtime-hermes/entrypoint.sh');
   expect(files).toContain('deploy/Dockerfile.melete');
+  expect(files).toContain('deploy/sandbox/melete-desktop');
   const loose: string[] = [];
   for (const [path, value] of attributes(files)) {
     const text = mustBeText(path) ? ['set'] : ['set', 'auto'];

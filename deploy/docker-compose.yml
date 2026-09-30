@@ -139,6 +139,18 @@ services:
       MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS: ${MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS:-}
       MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT: ${MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT:-}
       MELETE_E2B_PLAN: ${MELETE_E2B_PLAN:-}
+      # A computer for every agent on this engine (docs/sandbox-docker.md). Set
+      # MELETE_SANDBOX_PROVIDER=docker with MELETE_SANDBOX_PROJECT, and build the
+      # image with --profile sandbox.
+      MELETE_SANDBOX_PROVIDER: ${MELETE_SANDBOX_PROVIDER:-}
+      MELETE_SANDBOX_DOCKER_IMAGE: ${MELETE_SANDBOX_DOCKER_IMAGE:-}
+      MELETE_SANDBOX_DOCKER_CPUS: ${MELETE_SANDBOX_DOCKER_CPUS:-}
+      MELETE_SANDBOX_DOCKER_MEMORY_MB: ${MELETE_SANDBOX_DOCKER_MEMORY_MB:-}
+      MELETE_SANDBOX_DOCKER_PIDS: ${MELETE_SANDBOX_DOCKER_PIDS:-}
+      MELETE_SANDBOX_DOCKER_DISK_MB: ${MELETE_SANDBOX_DOCKER_DISK_MB:-}
+      MELETE_SANDBOX_DOCKER_EGRESS: ${MELETE_SANDBOX_DOCKER_EGRESS:-}
+      MELETE_SANDBOX_DOCKER_IDLE_SECONDS: ${MELETE_SANDBOX_DOCKER_IDLE_SECONDS:-}
+      MELETE_SANDBOX_EGRESS_PORT: ${MELETE_SANDBOX_EGRESS_PORT:-}
       # Plugin runners (docs/DEPLOYMENT.md, "Isolation and image provenance"). Empty uses each default.
       MELETE_MCP_NODE_IMAGE: ${MELETE_MCP_NODE_IMAGE:-}
       MELETE_MCP_PYTHON_IMAGE: ${MELETE_MCP_PYTHON_IMAGE:-}
@@ -192,6 +204,20 @@ services:
     build:
       context: ../packages/runtime-hermes
       dockerfile: Dockerfile
+    entrypoint: ["/bin/true"]
+    network_mode: none
+    restart: "no"
+    logging: *bounded-logs
+
+  # Builds the agents' computer image, only with --profile sandbox: it is large
+  # (a desktop and a browser) and only a docker sandbox provider uses it. The
+  # service starts one container per agent from it; nothing runs here.
+  sandbox-image:
+    image: ${MELETE_SANDBOX_DOCKER_IMAGE:-melete-sandbox:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.sandbox
+    profiles: [sandbox]
     entrypoint: ["/bin/true"]
     network_mode: none
     restart: "no"

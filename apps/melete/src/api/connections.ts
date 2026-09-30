@@ -1264,19 +1264,19 @@ async function requestedShape(
     }
     // Then the key, while it is still only in memory: a key the provider
     // refuses never becomes a row or a sealed secret. Only the closed code
-    // crosses back, never the provider's own words.
+    // crosses back, never the provider's own words. An adapter with no key is
+    // asked whether its engine answers at all.
+    const credentials = installation.credentials;
     const probe = createSandboxProvider(installation.config, {
       credential: (use) =>
-        use(
-          sandboxCredentialValue(
-            installation.config.adapter,
-            JSON.stringify(installation.credentials),
-          ),
-        ),
+        credentials
+          ? use(sandboxCredentialValue(installation.config.adapter, JSON.stringify(credentials)))
+          : Promise.reject(new Error('this adapter takes no key')),
       project: sandbox.project,
       e2bPlan: sandbox.e2bPlan,
       snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
       ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
+      ...(sandbox.docker ? { docker: sandbox.docker } : {}),
     });
     let answered: 'ok' | 'unavailable';
     try {
@@ -1288,7 +1288,7 @@ async function requestedShape(
       throw new ServiceError('invalid_request', CONNECTION_CHECK_DETAIL.unavailable, 400);
     return {
       scopes: installation.scopes,
-      secret: JSON.stringify(installation.credentials),
+      secret: credentials ? JSON.stringify(credentials) : null,
       configuration: { kind: 'sandbox', sandbox: installation.config },
     };
   }
