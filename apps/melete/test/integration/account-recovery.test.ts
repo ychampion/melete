@@ -145,6 +145,55 @@ describeWithDb('changing and resetting a password', () => {
     expect(again.status).toBe(400);
   });
 
+  test('one link used twice at once sets exactly one password', async () => {
+    const { api } = await signedIn();
+    const issued = await operatorReset(database().sql, email, undefined);
+    if (!issued.ok) throw new Error('reset was not issued');
+    const tries = ['racing-password-1', 'racing-password-2'];
+    const statuses = await Promise.all(
+      tries.map(
+        async (next) =>
+          (
+            await api.request(
+              '/password-reset/consume',
+              json({ token: issued.code, new_password: next }),
+            )
+          ).status,
+      ),
+    );
+    expect(statuses.sort()).toEqual([200, 400]);
+    const signIns = await Promise.all(
+      tries.map(
+        async (next) => (await api.request('/login', json({ email, password: next }))).status,
+      ),
+    );
+    expect(signIns.filter((status) => status === 200)).toHaveLength(1);
+  });
+
+  test('a reset also ends what connected apps were granted', async () => {
+    await signedIn();
+    const [owner] = await database().sql`select p.id, s.id as space_id from principal p
+      join space s on s.owner_principal_id = p.id where p.email = ${email} limit 1`;
+    if (!owner) throw new Error('no owner');
+    await database().sql`insert into mcp_client (id, name, redirect_uris)
+      values ('mcp_client_test', 'Test app', ${JSON.stringify(['https://app.example.test/cb'])}::jsonb)`;
+    for (const kind of ['access', 'refresh'])
+      await database().sql`insert into mcp_token (token_hash, kind, family, client_id, principal_id,
+        space_id, resource, scope, expires_at)
+        values (${`hash-${kind}`}, ${kind}, 'family-1', 'mcp_client_test', ${owner.id},
+        ${owner.space_id}, 'https://melete.test/mcp', 'melete', now() + interval '1 day')`;
+    const issued = await operatorReset(database().sql, email, undefined);
+    if (!issued.ok) throw new Error('reset was not issued');
+    const used = await app().request(
+      '/password-reset/consume',
+      json({ token: issued.code, new_password: 'reset-password-6' }),
+    );
+    expect(used.status).toBe(200);
+    const live = await database()
+      .sql`select count(*)::int as n from mcp_token where revoked_at is null`;
+    expect(Number(live[0]?.n)).toBe(0);
+  });
+
   test('an expired link is refused and guessing links is throttled', async () => {
     const { api } = await signedIn();
     const issued = await operatorReset(database().sql, email, undefined);

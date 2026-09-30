@@ -151,6 +151,10 @@ export function mountPassword(
       if (!reset) return false;
       await tx`update password_reset set used_at = now() where token_hash = ${digest(input.token)}`;
       await setPassword(tx, String(reset.principal_id), input.new_password, null);
+      // A reset is how someone gets back in after losing the account, so what
+      // connected apps were granted ends with the sessions.
+      await tx`update mcp_token set revoked_at = now()
+        where principal_id = ${reset.principal_id} and revoked_at is null`;
       await tx`update password_reset set used_at = now()
         where principal_id = ${reset.principal_id} and used_at is null`;
       return true;
