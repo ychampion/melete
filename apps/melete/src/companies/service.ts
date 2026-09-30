@@ -51,6 +51,7 @@ export function gatewayExtractor(options: {
   providers: GatewayProvider[];
   currentProviders?: GatewayOptions['currentProviders'];
   fetch?: GatewayOptions['fetch'];
+  privacy: GatewayOptions['privacy'];
 }): CompanyExtractor {
   const open = async (): Promise<ScanExtractor> => {
     const gateway = await openExtractionGateway({
@@ -59,6 +60,7 @@ export function gatewayExtractor(options: {
       providers: options.providers,
       ...(options.currentProviders ? { currentProviders: options.currentProviders } : {}),
       ...(options.fetch ? { fetch: options.fetch } : {}),
+      privacy: options.privacy,
       maxCalls: SCAN_CALL_CEILING,
     });
     return {
@@ -139,6 +141,7 @@ function dailyCallsSetting(): number {
  */
 export function configuredExtractor(
   env: Env,
+  privacy: GatewayOptions['privacy'],
   sql?: Sql,
   settings?: ModelSettingsService,
   fetch?: GatewayOptions['fetch'],
@@ -151,6 +154,7 @@ export function configuredExtractor(
     if (!extraction) return scriptedExtractor();
     return gatewayExtractor({
       ...extraction,
+      privacy,
       providers: providers(),
       ...(settings ? { currentProviders: (configured) => settings.providers(configured) } : {}),
       ...(fetch ? { fetch } : {}),
@@ -167,6 +171,7 @@ export function configuredExtractor(
   const extractorFor = (choice: ServiceModel) =>
     gatewayExtractor({
       ...choice,
+      privacy,
       providers: configured,
       currentProviders: source.providers,
       ...(fetch ? { fetch } : {}),
@@ -230,6 +235,8 @@ export function companiesDeps(options: {
   sql?: Sql;
   registry?: ConnectorRegistry;
   env: Env;
+  /** The service's privacy router, for the scan's model calls. */
+  privacy: GatewayOptions['privacy'];
   jobs?: JobService;
   triggers?: TriggerService;
   /** The model and keys connected in the app. */
@@ -250,7 +257,12 @@ export function companiesDeps(options: {
       options.sql && options.registry
         ? spaceMailbox({ sql: options.sql, registry: options.registry })
         : () => null,
-    extractor: configuredExtractor(options.env, options.sql, options.modelSettings),
+    extractor: configuredExtractor(
+      options.env,
+      options.privacy,
+      options.sql,
+      options.modelSettings,
+    ),
     ...(dailyCalls === undefined ? {} : { dailyCalls }),
     // Without a job service there is nothing to create a job on, and the route's
     // stub refuses. The route records `job_id` and `handling` itself once this

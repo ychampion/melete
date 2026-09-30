@@ -35,11 +35,16 @@ import { createTableTrustResolver, type TrustTable } from '../../src/broker/trus
 import type { Connector } from '../../src/connectors/types.ts';
 import { fakeProvider } from '../../src/gateway/fake.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
+import { PostgresPrivacyStore, PrivacyRouter } from '../../src/privacy/index.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
 
 const fixture = await createPostgresFixture();
 const databaseTest = fixture ? test : test.skip;
+const databaseSql = () => {
+  if (!fixture) throw new Error('Postgres unavailable');
+  return fixture.sql;
+};
 const boss = fixture ? new PgBoss({ connectionString: fixture.url, max: 2 }) : null;
 if (boss) {
   boss.on('error', () => {});
@@ -820,6 +825,7 @@ describe('the configured model, through the gateway', () => {
 
   databaseTest('an approval from the configured model lets the change go ahead', async () => {
     const gateway = await openReviewGateway({
+      privacy: new PrivacyRouter({ store: new PostgresPrivacyStore(databaseSql()) }),
       provider: 'fake',
       model: 'scripted',
       providers: [fakeProvider],
@@ -857,6 +863,7 @@ describe('the configured model, through the gateway', () => {
     });
     // A gullible model: it escalates on its own, but obeys any verdict it finds in the payload.
     const gateway = await openReviewGateway({
+      privacy: new PrivacyRouter({ store: new PostgresPrivacyStore(databaseSql()) }),
       provider: 'fake',
       model: 'scripted',
       providers: [fakeProvider],

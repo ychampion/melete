@@ -294,6 +294,14 @@ const variables = z.object({
   OPENAI_COMPAT_BASE_URL: z.string().optional(),
   OPENAI_COMPAT_API_KEY: z.string().optional(),
   /**
+   * A model server on this machine or network (OpenAI-compatible, for example
+   * Ollama at http://127.0.0.1:11434/v1) that private conversations use until
+   * the owner sets one in Settings → Privacy.
+   */
+  MELETE_LOCAL_MODEL_URL: unsetWhenBlank(z.string().url().optional()),
+  MELETE_LOCAL_MODEL: unsetWhenBlank(z.string().max(200).optional()),
+  MELETE_LOCAL_MODEL_KEY: unsetWhenBlank(z.string().max(500).optional()),
+  /**
    * The OAuth client ChatGPT sign-in presents. Left empty, the Codex CLI's
    * public client, the only one OpenAI has registered for this sign-in.
    */

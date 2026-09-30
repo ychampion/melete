@@ -13,6 +13,7 @@ import { BrokerFault } from '../broker/errors.ts';
 import { loadAction } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
+import { saveWebReadSetting, webReadSetting } from '../connectors/web.ts';
 import type { Database } from '../db/client.ts';
 import { action, artifact, connection, experienceDraftSend } from '../db/schema.ts';
 import type { QuestionService } from '../jobs/questions.ts';
@@ -72,6 +73,8 @@ const SPACE_OWNER_SURFACES = new Set([
   'GET /experience/connections',
   'GET /rules',
   'DELETE /rules/{id}',
+  'GET /web/settings',
+  'PUT /web/settings',
   'GET /approval-settings',
   'PUT /approval-settings',
   'POST /agents',
@@ -179,8 +182,9 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       );
     },
     'GET /memory/items': (spaceId, c) =>
-      memory?.list(spaceId, c.get('owner').id, c.req.query('after') ?? null) ??
-      unavailable('Your saved details are not connected yet.'),
+      memory?.list(spaceId, c.get('owner').id, c.req.query('after') ?? null, {
+        forAssistant: mcpActorOf(c.env) !== undefined,
+      }) ?? unavailable('Your saved details are not connected yet.'),
     'PATCH /memory/items/{id}': (spaceId, c, input) =>
       memory?.edit(spaceId, c.get('owner').id, c.req.param('id') ?? '', input) ??
       unavailable('Your saved details are not connected yet.'),
@@ -196,6 +200,14 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'PUT /memory/settings': (_spaceId, c, input) =>
       memory?.saveSettings(c.get('owner').id, input) ??
       unavailable('Your saved details are not connected yet.'),
+    'GET /web/settings': (spaceId) =>
+      deps.sql
+        ? webReadSetting(deps.sql, spaceId)
+        : unavailable('Web reading is not connected yet.'),
+    'PUT /web/settings': (spaceId, _c, input) =>
+      deps.sql
+        ? saveWebReadSetting(deps.sql, spaceId, input.enabled === true)
+        : unavailable('Web reading is not connected yet.'),
     'GET /memory/beliefs': (spaceId, c) =>
       beliefs?.list(spaceId, c.get('owner').id) ?? unavailable(NOT_CONNECTED),
     'GET /memory/beliefs/{id}/history': (spaceId, c) =>

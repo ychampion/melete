@@ -98,6 +98,8 @@ export async function openProposalGateway(options: {
   source?: ServiceModelSource;
   fake?: GatewayOptions['fake'];
   fetch?: GatewayOptions['fetch'];
+  /** The service's privacy router. */
+  privacy: GatewayOptions['privacy'];
 }) {
   type Call = Admission & ServiceModel;
   const tokens = new Map<string, Call>();
@@ -165,6 +167,7 @@ export async function openProposalGateway(options: {
     ...(options.source ? { currentProviders: options.source.providers } : {}),
     fake: options.fake,
     fetch: options.fetch,
+    privacy: options.privacy,
     defaultProvider: options.provider,
     timeoutMs: PROPOSAL_LIMITS.timeout_ms,
     maxRequestBytes: 8192,
@@ -176,6 +179,13 @@ export async function openProposalGateway(options: {
       const principal: GatewayPrincipal = {
         jobId: admission.jobId,
         attemptId: `proposal:${admission.episodeId}`,
+        // The corrected conversation's own privacy decides where its episode may go.
+        privacy: {
+          kind: 'service',
+          purpose: 'learning',
+          spaceId: admission.spaceId,
+          sourceJobId: admission.jobId,
+        },
         epoch: 0,
         revision: 0,
         maxRequests: 1,
