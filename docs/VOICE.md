@@ -1,0 +1,120 @@
+# Voice
+
+Melete can listen and speak. One ElevenLabs API key turns on four things:
+
+| Feature | What it does |
+| --- | --- |
+| Speech (`audio.synthesize`) | Reads a script aloud and saves the audio as a WAV file in the space's finished work. |
+| Transcription (`audio.transcribe`) | Turns an audio or video file from the space's files into a transcript, with each speaker labelled and timed, saved as Markdown in the space's finished work. |
+| Push-to-talk | A microphone button in the chat's message box. Tap to record, tap again to stop. The words appear in the box for you to read, change and send. |
+| Voice mode | A hands-free conversation in a chat. You talk, Melete answers out loud, and you can talk over it to stop it. |
+
+Without a key none of these appear, and nothing else changes.
+
+## Set it up
+
+1. Create an API key in your ElevenLabs account. Give it access to text to
+   speech, speech to text and single-use tokens.
+2. Put it in `deploy/.env`:
+
+   ```bash
+   ELEVENLABS_API_KEY=your-key
+   ```
+
+   Or export it before the first `configure.ts` run, which writes it for you:
+
+   ```bash
+   read -rs ELEVENLABS_API_KEY && export ELEVENLABS_API_KEY
+   bun run deploy/scripts/configure.ts
+   unset ELEVENLABS_API_KEY
+   ```
+
+3. Recreate the service: `docker compose -f deploy/docker-compose.yml up -d melete`.
+
+Every existing space gains a **Speech** and a **Transcription** connection at
+the next start. Either can be removed in Settings like any other connection,
+and a removed one is not added back.
+
+The key stays in the service. The browser never receives it: voice mode is
+given a single-use token that works once and expires after 15 minutes.
+
+The microphone needs a secure page: `https://`, or `localhost` on the machine
+itself. Over plain `http://` from another device, the browser refuses the
+microphone and Melete says so.
+
+## Settings
+
+All optional. An empty value uses the default.
+
+| Setting | Default | What it sets |
+| --- | --- | --- |
+| `ELEVENLABS_VOICE_ID` | `JBFqnCBsd6RMkjVDRZzb` | The voice for speech and voice mode, from your ElevenLabs voice library. |
+| `ELEVENLABS_SECOND_VOICE_ID` | the first voice | The second voice in a two-person script. |
+| `ELEVENLABS_SPEECH_MODEL` | `eleven_multilingual_v2` | The model that makes speech files. |
+| `ELEVENLABS_STREAMING_MODEL` | `eleven_flash_v2_5` | The model that reads replies in voice mode, chosen for low delay. |
+| `ELEVENLABS_TRANSCRIPTION_MODEL` | `scribe_v2` | The model for transcription and push-to-talk. Voice mode listens with `scribe_v2_realtime`, the only realtime model. |
+| `MELETE_VOICE_DAILY_SECONDS` | `1800` | Seconds of push-to-talk recording one person may have transcribed in a day. |
+| `MELETE_VOICE_DAILY_CHARACTERS` | `20000` | Characters of replies one person may have read aloud in a day. |
+| `MELETE_VOICE_DAILY_SESSIONS` | `30` | Voice mode conversations one person may start in a day. |
+
+A day is the last 24 hours, counted per person across all their spaces. A
+request the speech service refuses does not count; one that was sent and never
+answered does, because the service may have done the work.
+
+## What each feature does
+
+### Speech and transcription
+
+These are capabilities an agent uses while it works, for example to turn a
+script into an episode or a recorded call into notes. Each one is a paid call,
+so each asks for your approval first, with the exact file and settings shown,
+and is held against the job's budget. The result is a file in the space's
+finished work, and the receipt records its size and content hash.
+
+Transcription reads files up to 100 MB in these formats: AAC, FLAC, M4A, MKV,
+MOV, MP3, MP4, MPEG, OGG, Opus, WAV and WebM. The transcript starts a new
+paragraph when the speaker changes, and after a minute of one speaker.
+
+If an OpenAI key is set and no ElevenLabs key, speech uses OpenAI and there is
+no transcription, push-to-talk or voice mode.
+
+### Push-to-talk
+
+- A recording can be up to 2 minutes. The recorder stops itself at 2 minutes.
+- A recording can be up to 5 MB. Two minutes of speech is well under that.
+- The words are never sent for you. They land in the message box, after
+  anything already typed there.
+- The recording is not kept. It is passed to ElevenLabs once and discarded.
+
+### Voice mode
+
+Open it with the voice button in a chat's header. In a new chat, the button
+starts the chat first.
+
+- **Listening**: say what you need. When you pause, what you said is sent as an
+  ordinary message in the chat, exactly as if you had typed it. Memory, rules,
+  approvals and the tool trail work the same way.
+- **Thinking**: Melete is working on it. The trail shows what it is doing.
+- **Speaking**: the reply is read aloud a sentence or two at a time, as it
+  arrives. Start talking and it stops.
+- **Mute** stops sending your microphone without ending voice mode. **End**, or
+  Escape, closes it and releases the microphone.
+
+Decisions are never made by voice. When a reply needs your decision, voice
+mode says "This needs your decision. It is on the screen." and stops reading.
+The card is in the chat above; **Show the decision** brings it into view.
+
+Neither your voice nor the spoken reply is stored. Your words are kept as the
+chat message they became, and the reply as the chat message it already is.
+
+## If something goes wrong
+
+Every problem is shown in the chat in plain words, for example:
+
+| You see | It means |
+| --- | --- |
+| Melete can’t use your microphone. | The browser refused the microphone. Allow it for this site in the browser's site settings. |
+| Voice messages can be up to 2 minutes. | The recording was longer than the limit. |
+| You have used today’s allowance… | The person reached a daily limit above. It frees up as the day's use ages past 24 hours. |
+| The speech service could not … just now. | ElevenLabs refused or did not answer. Check the key and your ElevenLabs quota. |
+| The voice connection ended. | The realtime connection closed. Press **Start again**; it opens a new session. |

@@ -790,6 +790,17 @@ such as a model name it does not serve) ends the message at once. The service
 log records each of these as `memory: <reason>`, and `/health` reports
 `memory.waiting` and `memory.failed` (messages given up in the last day).
 
+### Voice
+
+`ELEVENLABS_API_KEY` turns on speech, transcription, push-to-talk in chat and
+voice mode; speech then uses ElevenLabs in preference to `OPENAI_API_KEY`.
+`ELEVENLABS_VOICE_ID`, `ELEVENLABS_SECOND_VOICE_ID`, `ELEVENLABS_SPEECH_MODEL`,
+`ELEVENLABS_STREAMING_MODEL` and `ELEVENLABS_TRANSCRIPTION_MODEL` choose voices
+and models. `MELETE_VOICE_DAILY_SECONDS` (default `1800`),
+`MELETE_VOICE_DAILY_CHARACTERS` (default `20000`) and
+`MELETE_VOICE_DAILY_SESSIONS` (default `30`) are what one person may use in a
+day. [VOICE](VOICE.md) describes each setting and feature.
+
 ## Sandboxes
 
 Sandboxes: connect E2B, Modal or Daytona in Settings → Connections → Sandbox.
