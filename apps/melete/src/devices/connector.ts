@@ -28,14 +28,25 @@ import {
   type DeviceFolder,
   type DeviceTool,
   type DispatchResult,
+  deviceChannelOf,
+  type JsonObject,
   type JsonValue,
   type Receipt,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { BrokerFault } from '../broker/errors.ts';
+import type { Query } from '../broker/records.ts';
+import { ConnectorFaultError } from '../connectors/faults.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
 import { type DeviceHub, sharedDeviceHub } from './hub.ts';
-import { DevicePathError, devicePath, namesLocalNetwork, openableUrl } from './paths.ts';
+import {
+  DevicePathError,
+  devicePath,
+  namesLocalNetwork,
+  openableUrl,
+  pageAddress,
+} from './paths.ts';
 
 const pathArgument = {
   type: 'string',
@@ -43,6 +54,42 @@ const pathArgument = {
   maxLength: 1024,
   description:
     'A shared folder name, then a path inside it with forward slashes, e.g. "Projects/notes/todo.md". device.status lists the folder names.',
+};
+
+const tabArgument = {
+  type: 'integer',
+  minimum: 0,
+  description: 'The tab id device.browser_open returned.',
+};
+/** What an element was when the tab was last read; also what the extension checks before acting. */
+const elementShape = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    role: { type: 'string', maxLength: 40 },
+    name: { type: 'string', maxLength: 300 },
+    tag: { type: 'string', maxLength: 40 },
+    shows: { type: 'string', maxLength: 300 },
+    target: { type: 'string', maxLength: 2048 },
+  },
+  required: ['role', 'name'],
+};
+const expectArgument = {
+  type: 'object',
+  additionalProperties: false,
+  description:
+    'Filled in by Melete from the latest device.browser_read of the tab: the page and the element the person approves. Leave it out.',
+  properties: {
+    url: { type: 'string', maxLength: 2048 },
+    title: { type: 'string', maxLength: 1024 },
+    element: elementShape,
+  },
+  required: ['url', 'element'],
+};
+const refArgument = {
+  type: 'string',
+  pattern: '^e[0-9]{1,5}$',
+  description: 'The ref device.browser_read gave the element, like "e12".',
 };
 
 type ToolShape = {
@@ -135,6 +182,58 @@ export const DEVICE_TOOL_SHAPES: Record<DeviceTool, ToolShape> = {
     requires_approval: false,
     verify: false,
   },
+  browser_open: {
+    description:
+      "Open a page in the person's own browser, where they are already signed in. Use this for any site that needs their account: bills, insurance, school, government and other portals. Returns a tab id for the other browser tools.",
+    input_schema: object({ url: { type: 'string', minLength: 1, maxLength: 2048 } }, ['url']),
+    effect_class: 'write_reversible',
+    requires_approval: false,
+    verify: false,
+  },
+  browser_read: {
+    description:
+      "Read a tab opened with device.browser_open in the person's own browser: its address, title, visible text, and the links, buttons and fields on it, each with a ref for device.browser_click and device.browser_type.",
+    input_schema: object({ tab_id: tabArgument }, ['tab_id']),
+    effect_class: 'read',
+    requires_approval: false,
+    verify: false,
+  },
+  browser_click: {
+    description:
+      "Click a link or button, by the ref device.browser_read gave it, in a tab of the person's own browser. Read the tab first: the person approves the page and the element that read showed, and nothing is clicked if either has changed since.",
+    input_schema: object({ tab_id: tabArgument, ref: refArgument, expect: expectArgument }, [
+      'tab_id',
+      'ref',
+    ]),
+    effect_class: 'write_external',
+    requires_approval: true,
+    verify: false,
+  },
+  browser_type: {
+    description:
+      "Type text into a field, by the ref device.browser_read gave it, in a tab of the person's own browser. Password fields are never typed into. The person approves it first.",
+    input_schema: object(
+      {
+        tab_id: tabArgument,
+        ref: refArgument,
+        text: { type: 'string', maxLength: DEVICE_LIMITS.max_typed_chars },
+        submit: { type: 'boolean', description: 'Press Enter after typing.' },
+        expect: expectArgument,
+      },
+      ['tab_id', 'ref', 'text'],
+    ),
+    effect_class: 'write_external',
+    requires_approval: true,
+    verify: false,
+  },
+  browser_screenshot: {
+    description:
+      "Take a screenshot of a tab opened with device.browser_open in the person's own browser.",
+    input_schema: object({ tab_id: tabArgument }, ['tab_id']),
+    effect_class: 'read',
+    requires_approval: false,
+    verify: false,
+  },
 };
 
 export const deviceToolName = (tool: DeviceTool) => `device.${tool}`;
@@ -173,6 +272,7 @@ export function effectiveCapabilities(
     files: granted.files && local.files,
     open_url: granted.open_url && local.open_url,
     screenshot: granted.screenshot && local.screenshot,
+    browser: Boolean(granted.browser && local.browser),
   };
 }
 
@@ -190,6 +290,7 @@ const CAPABILITY_WORDS: Record<keyof DeviceCapabilities, string> = {
   files: 'Using files',
   open_url: 'Opening web pages',
   screenshot: 'Taking screenshots',
+  browser: 'Using your browser',
 };
 
 type DeviceRow = {
@@ -238,6 +339,40 @@ const runResult = z.object({
 });
 const openResult = z.object({ opened: z.literal(true) });
 const screenshotResult = z.object({ png_base64: z.string() });
+const tabResult = z.object({
+  tab_id: z.number().int().nonnegative(),
+  url: z.string().max(4096),
+  title: z.string().max(1024),
+});
+const pageResult = tabResult.extend({
+  text: z.string(),
+  truncated: z.boolean(),
+  elements: z
+    .array(
+      z.object({
+        ref: z.string().regex(/^e[0-9]{1,5}$/),
+        role: z.string().max(40),
+        name: z.string().max(300),
+        tag: z.string().max(40).optional(),
+        shows: z.string().max(300).optional(),
+        target: z.string().max(2048).optional(),
+      }),
+    )
+    .max(DEVICE_LIMITS.max_page_elements),
+});
+
+/** The page and element a click or an entry is approved against. */
+const approvedTarget = z.strictObject({
+  url: z.string().max(2048),
+  title: z.string().max(1024).optional(),
+  element: z.strictObject({
+    role: z.string().max(40),
+    name: z.string().max(300),
+    tag: z.string().max(40).optional(),
+    shows: z.string().max(300).optional(),
+    target: z.string().max(2048).optional(),
+  }),
+});
 
 const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const cap = (text: string, bytes: number) => {
@@ -315,7 +450,28 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
       // collecting the request and posting the answer back.
       return timeout + 15_000;
     }
-    return tool === 'screenshot' ? 45_000 : 30_000;
+    return tool === 'screenshot' || tool === 'browser_screenshot' ? 45_000 : 30_000;
+  };
+
+  const tabOf = (payload: Record<string, unknown>) => {
+    const tab = payload.tab_id;
+    if (typeof tab !== 'number' || !Number.isInteger(tab) || tab < 0)
+      throw new DevicePathError('Name a tab by the id device.browser_open returned.');
+    return tab;
+  };
+  const refOf = (payload: Record<string, unknown>) => {
+    if (typeof payload.ref !== 'string' || !/^e[0-9]{1,5}$/.test(payload.ref))
+      throw new DevicePathError('Name the element by the ref device.browser_read gave it.');
+    return payload.ref;
+  };
+
+  const expectOf = (payload: Record<string, unknown>) => {
+    const parsed = approvedTarget.safeParse(payload.expect);
+    if (!parsed.success)
+      throw new DevicePathError(
+        'Read the tab with device.browser_read first; a click or an entry is approved against that read.',
+      );
+    return parsed.data;
   };
 
   /** Arguments as they will be sent, or a refusal in plain words. */
@@ -372,9 +528,28 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         };
       }
       case 'open_url':
-        // The companion opens a local address only when the person approved
+      case 'browser_open':
+        // The computer opens a local address only when the person approved
         // this action, which is what this mark tells it.
         return { url: openableUrl(payload.url), ...(approved ? { local_approved: true } : {}) };
+      case 'browser_read':
+      case 'browser_screenshot':
+        return { tab_id: tabOf(payload) };
+      case 'browser_click':
+        return { tab_id: tabOf(payload), ref: refOf(payload), expect: expectOf(payload) };
+      case 'browser_type': {
+        if (typeof payload.text !== 'string' || payload.text.length > DEVICE_LIMITS.max_typed_chars)
+          throw new DevicePathError(
+            `The text to type is required, up to ${DEVICE_LIMITS.max_typed_chars.toLocaleString('en')} characters.`,
+          );
+        return {
+          tab_id: tabOf(payload),
+          ref: refOf(payload),
+          text: payload.text,
+          submit: payload.submit === true,
+          expect: expectOf(payload),
+        };
+      }
       default:
         return {};
     }
@@ -451,7 +626,8 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
       case 'open_url':
         openResult.parse(result);
         return { detail: { url: String(sent.url) }, ref: null };
-      case 'screenshot': {
+      case 'screenshot':
+      case 'browser_screenshot': {
         const parsed = screenshotResult.parse(result);
         const bytes = Buffer.from(parsed.png_base64, 'base64');
         if (bytes.byteLength > DEVICE_LIMITS.max_screenshot_bytes)
@@ -466,6 +642,7 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         const hash = digest(bytes);
         return {
           detail: {
+            ...(tool === 'browser_screenshot' ? { tab_id: Number(sent.tab_id) } : {}),
             path: `device/${file}`,
             bytes: bytes.byteLength,
             width: bytes.readUInt32BE(16),
@@ -473,6 +650,57 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
             content_hash: hash,
           },
           ref: hash,
+        };
+      }
+      case 'browser_open':
+      case 'browser_click': {
+        const parsed = tabResult.parse(result);
+        return {
+          detail: {
+            tab_id: parsed.tab_id,
+            ...(tool === 'browser_click' ? { ref: String(sent.ref) } : {}),
+            url: cap(parsed.url, 2048),
+            title: cap(parsed.title, 300),
+          },
+          ref: null,
+        };
+      }
+      case 'browser_type': {
+        const parsed = tabResult.parse(result);
+        return {
+          detail: {
+            tab_id: parsed.tab_id,
+            ref: String(sent.ref),
+            // What was typed is in the approved action; the receipt does not repeat it.
+            characters: String(sent.text).length,
+            submitted: sent.submit === true,
+            url: cap(parsed.url, 2048),
+            title: cap(parsed.title, 300),
+          },
+          ref: null,
+        };
+      }
+      case 'browser_read': {
+        const parsed = pageResult.parse(result);
+        return {
+          detail: {
+            tab_id: parsed.tab_id,
+            url: cap(parsed.url, 2048),
+            title: cap(parsed.title, 300),
+            text: cap(parsed.text, DEVICE_LIMITS.max_page_text_bytes).replaceAll('\0', '\uFFFD'),
+            truncated: parsed.truncated,
+            // Kept whole, as the page described them: a click or an entry is
+            // approved against these and the extension compares them exactly.
+            elements: parsed.elements.map((element) => ({
+              ref: element.ref,
+              role: element.role,
+              name: element.name,
+              ...(element.tag === undefined ? {} : { tag: element.tag }),
+              ...(element.shows === undefined ? {} : { shows: element.shows }),
+              ...(element.target === undefined ? {} : { target: element.target }),
+            })),
+          },
+          ref: null,
         };
       }
       default:
@@ -484,12 +712,55 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
     name: device.name,
     platform: device.platform,
     online: hub.online(device.id),
+    browser_connected: hub.online(device.id, 'browser'),
     allows: effectiveCapabilities(device.capabilities, device.local_capabilities),
     folders: device.folders.map((folder) => folder.name),
   });
 
+  /**
+   * Bind a click or an entry to what the person will see: the tab's page
+   * address (origin and path; a query can hold secrets and is left out) and
+   * title, and the element the ref named, all from the latest read of that tab
+   * on this computer. Whatever the model put there is replaced. Without such a
+   * read, or with a ref that read did not give, it is refused here.
+   */
+  const bind = async (payload: JsonObject, tx: Query): Promise<JsonObject> => {
+    const tab = payload.tab_id;
+    const ref = payload.ref;
+    const [read] =
+      typeof tab === 'number'
+        ? await tx`select receipt from action
+            where connection_id = ${options.connectionId} and kind = 'device.browser_read'
+              and status = 'succeeded' and receipt->'detail'->>'tab_id' = ${String(tab)}
+            order by (receipt->>'received_at')::timestamptz desc limit 1`
+        : [];
+    const detail = (read?.receipt as { detail?: Record<string, unknown> } | undefined)?.detail;
+    const element = (Array.isArray(detail?.elements) ? detail.elements : []).find(
+      (entry) => (entry as { ref?: unknown }).ref === ref,
+    ) as Record<string, JsonValue> | undefined;
+    const address = typeof detail?.url === 'string' ? pageAddress(detail.url) : null;
+    if (!detail || !element || !address)
+      throw new BrokerFault(
+        'payload_invalid',
+        `Read tab ${String(tab)} with device.browser_read first; ${String(ref)} must come from its latest read.`,
+      );
+    const { ref: _ref, ...described } = element;
+    return {
+      ...payload,
+      expect: {
+        url: address,
+        ...(typeof detail.title === 'string' ? { title: detail.title } : {}),
+        element: described,
+      },
+    };
+  };
+
   return {
     manifest,
+    /** Only a click and an entry name a ref; everything else passes as proposed. */
+    async prepare(payload, _ctx, tx) {
+      return typeof payload.ref === 'string' ? bind(payload, tx) : payload;
+    },
     catalog: {
       audience: 'owner',
       source: 'connector',
@@ -501,12 +772,26 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         'device.run': ['run a command on my laptop', 'terminal on my computer', 'shell'],
         'device.open_url': ['open this page in my browser', 'show me the page'],
         'device.screenshot': ['look at my screen', 'screenshot'],
+        'device.browser_open': [
+          'log in',
+          'my account',
+          'pay my bill',
+          'insurance portal',
+          'school portal',
+          'government website',
+          'signed in',
+        ],
+        'device.browser_read': ['read the page in my browser', 'what does my account say'],
+        'device.browser_click': ['click the button', 'click the link'],
+        'device.browser_type': ['fill in the form', 'type into the field'],
+        'device.browser_screenshot': ['screenshot of the page'],
       },
     },
 
     asksFirst(action) {
       return (
-        action.kind === deviceToolName('open_url') &&
+        (action.kind === deviceToolName('open_url') ||
+          action.kind === deviceToolName('browser_open')) &&
         namesLocalNetwork(action.canonical_payload.url)
       );
     },
@@ -547,20 +832,31 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         if (error instanceof DevicePathError) return refused(error.message);
         throw error;
       }
+      const channel = deviceChannelOf(tool);
       const outcome = await hub.call(
         device.id,
         { id: action.id, tool, arguments: sent },
         timeoutFor(tool, sent),
         ctx.signal,
+        channel,
       );
-      if (outcome.kind === 'not_delivered')
-        return refused(
-          outcome.reason === 'disconnected'
-            ? `${device.name} was disconnected, so nothing was sent.`
-            : outcome.reason === 'capability_off'
-              ? `${capability ? CAPABILITY_WORDS[capability] : 'This'} was turned off for ${device.name} before it collected this, so nothing was sent.`
-              : `${device.name} is not connected right now, so nothing was sent.`,
-        );
+      if (outcome.kind === 'not_delivered') {
+        if (outcome.reason === 'disconnected')
+          return refused(`${device.name} was disconnected, so nothing was sent.`);
+        if (outcome.reason === 'capability_off')
+          return refused(
+            `${capability ? CAPABILITY_WORDS[capability] : 'This'} was turned off for ${device.name} before it collected this, so nothing was sent.`,
+          );
+        // Nothing left the service. The action waits for the computer, or for
+        // its browser, and goes as soon as it connects again.
+        throw new ConnectorFaultError({
+          kind: 'destination_offline',
+          detail:
+            channel === 'browser'
+              ? `The browser on ${device.name} is not connected right now; this waits for it.`
+              : `${device.name} is not connected right now; this waits for it.`,
+        });
+      }
       if (outcome.kind === 'no_answer')
         return {
           outcome: 'unknown',
@@ -623,7 +919,7 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
 
     /** The connection is gone: nothing more is handed to the computer. */
     async retire() {
-      hub.disconnect(options.deviceId);
+      hub.disconnect(options.deviceId, false);
     },
   };
 }

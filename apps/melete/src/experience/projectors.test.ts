@@ -218,6 +218,50 @@ test('a draft card offers sending only while its draft can still be sent', () =>
   expect(projectCards(base, mail, 'draft')[0]?.primary_action ?? null).toBeNull();
 });
 
+test('a click names the page and element from the read, with anything hidden written out', () => {
+  const click: ActionRow = {
+    ...base,
+    kind: 'device.browser_click',
+    effectClass: 'write_external',
+    connectionId: 'device-connection',
+    canonicalPayload: {
+      tab_id: 41,
+      ref: 'e3',
+      expect: {
+        url: 'https://bank.example/settings',
+        title: `Settings${String.fromCodePoint(0x202e)}`,
+        element: {
+          role: 'button',
+          name: 'Save',
+          tag: 'button',
+          shows: 'Delete account',
+          target: 'https://bank.example/close',
+        },
+      },
+    },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const shown = projectPermission({
+    id: 'apr_click',
+    version: 'v1',
+    action: click,
+    connection: { id: 'device-connection', label: 'Test laptop', provider: 'device' },
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: false,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+  });
+  expect(shown.what).toBe('Click in your browser');
+  expect(shown.preview?.facts).toEqual([
+    { label: 'Page', value: 'https://bank.example/settings' },
+    { label: 'Title', value: 'Settings<U+202E>' },
+    {
+      label: 'Element',
+      value: 'button "Save", showing "Delete account", going to https://bank.example/close',
+    },
+  ]);
+});
+
 test('a permission for a connected computer writes out what would not show', () => {
   const run: ActionRow = {
     ...base,

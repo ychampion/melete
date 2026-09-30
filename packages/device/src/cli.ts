@@ -9,15 +9,18 @@
  *   melete-device allow <what>    turn on commands, files, open_url or screenshot
  *   melete-device deny <what>     turn one off
  *   melete-device forget          delete the token kept on this computer
+ *   melete-device browser install let the Melete browser extension reach this companion
+ *   melete-device browser-host    run by the browser itself, never by hand
  *
  * Pairing options, for use without prompts:
  *   --url <address> --code <code> --name <name> --folder <path> (repeatable)
- *   --allow commands,files,open_url,screenshot
+ *   --allow commands,files,open_url,screenshot,browser
  */
 import { lstat, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { DeviceAgent, defaultName, pair } from './agent.ts';
+import { EXTENSION_ID, hostMain, installHost } from './browser.ts';
 import {
   CAPABILITY_NAMES,
   type Capabilities,
@@ -126,6 +129,10 @@ async function pairCommand(options: Options) {
         'Allow running commands (each one still needs your approval in Melete)?',
         false,
       );
+      capabilities.browser = await prompt.yes(
+        'Allow using your own browser through the Melete extension (clicks and typing need your approval)?',
+        false,
+      );
     }
     if (!address || !code) throw new Error('An address and a code are both needed.');
     const config = await pair({
@@ -209,6 +216,23 @@ async function main() {
           throw new Error(`Say which: ${CAPABILITY_NAMES.join(', ')}`);
         config.capabilities[name as keyof Capabilities] = command === 'allow';
       });
+    case 'browser':
+      if (args[0] === 'install') {
+        const written = await installHost({
+          extensionId: options.flags.get('extension-id')?.at(-1) ?? EXTENSION_ID,
+        });
+        say('The Melete extension can now reach this companion. Written:');
+        for (const line of written) say(`  ${line}`);
+        say('Load the extension from packages/device/extension (chrome://extensions → Developer');
+        say('mode → Load unpacked), then switch it on from its toolbar button.');
+        return;
+      }
+      say('Usage: melete-device browser install [--extension-id <id>]');
+      process.exitCode = 1;
+      return;
+    case 'browser-host':
+      // Standard output belongs to the browser here: nothing else may be printed.
+      return hostMain(await readConfig().catch(() => null));
     case 'forget':
       await forgetConfig();
       return say('The token on this computer was deleted. Revoke it in Settings → Devices too.');

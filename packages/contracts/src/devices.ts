@@ -16,7 +16,13 @@ import { z } from 'zod';
 import { timestamp } from './common.ts';
 
 /** What a connected computer may be asked to do. Each is off unless the person turns it on. */
-export const DEVICE_CAPABILITIES = ['commands', 'files', 'open_url', 'screenshot'] as const;
+export const DEVICE_CAPABILITIES = [
+  'commands',
+  'files',
+  'open_url',
+  'screenshot',
+  'browser',
+] as const;
 export type DeviceCapability = (typeof DEVICE_CAPABILITIES)[number];
 
 export const deviceCapabilities = z
@@ -25,6 +31,12 @@ export const deviceCapabilities = z
     files: z.boolean(),
     open_url: z.boolean(),
     screenshot: z.boolean(),
+    /**
+     * Use the person's own browser, signed in as them, through the browser
+     * extension they installed and switched on. Off unless chosen; absent in
+     * settings saved before it existed, which reads as off.
+     */
+    browser: z.boolean().default(false),
   })
   .meta({ id: 'DeviceCapabilities' });
 export type DeviceCapabilities = z.infer<typeof deviceCapabilities>;
@@ -35,6 +47,7 @@ export const DEFAULT_DEVICE_CAPABILITIES: DeviceCapabilities = {
   files: true,
   open_url: true,
   screenshot: false,
+  browser: false,
 };
 
 export const DEVICE_PLATFORMS = ['windows', 'macos', 'linux', 'other'] as const;
@@ -71,6 +84,8 @@ export const DEVICE_LIMITS = {
    * a command before it runs, so a longer one is refused rather than shown cut.
    */
   max_command_chars: 3_000,
+  /** The most text one browser entry types, shown whole in its approval for the same reason. */
+  max_typed_chars: 3_000,
   /** Each of stdout and stderr is kept up to this many bytes; the rest is counted and dropped. */
   max_output_bytes: 65_536,
   /** The largest file read or written in one call. */
@@ -81,6 +96,10 @@ export const DEVICE_LIMITS = {
   max_screenshot_bytes: 8_388_608,
   /** The most folders one computer may offer. */
   max_folders: 20,
+  /** The most page text one browser read returns. */
+  max_page_text_bytes: 131_072,
+  /** The most interactive elements one browser read lists. */
+  max_page_elements: 200,
 } as const;
 
 /** How the agent asks for one thing on the computer. The tool name is `device.<tool>`. */
@@ -92,6 +111,11 @@ export const DEVICE_TOOLS = [
   'run',
   'open_url',
   'screenshot',
+  'browser_open',
+  'browser_read',
+  'browser_click',
+  'browser_type',
+  'browser_screenshot',
 ] as const;
 export type DeviceTool = (typeof DEVICE_TOOLS)[number];
 
@@ -104,7 +128,22 @@ export const DEVICE_TOOL_CAPABILITY: Record<DeviceTool, DeviceCapability | null>
   run: 'commands',
   open_url: 'open_url',
   screenshot: 'screenshot',
+  browser_open: 'browser',
+  browser_read: 'browser',
+  browser_click: 'browser',
+  browser_type: 'browser',
+  browser_screenshot: 'browser',
 };
+
+/**
+ * Where on the computer a request is carried out. The companion answers
+ * `main`; the browser extension, through the companion's browser bridge,
+ * answers `browser`. Each holds its own outbound poll.
+ */
+export const DEVICE_CHANNELS = ['main', 'browser'] as const;
+export type DeviceChannel = (typeof DEVICE_CHANNELS)[number];
+export const deviceChannelOf = (tool: DeviceTool): DeviceChannel =>
+  tool.startsWith('browser_') ? 'browser' : 'main';
 
 export const deviceView = z
   .strictObject({
@@ -118,6 +157,8 @@ export const deviceView = z
     local_capabilities: deviceCapabilities,
     folders: z.array(deviceFolder),
     status: z.enum(['online', 'offline', 'revoked']),
+    /** Whether the browser extension on this computer is switched on and connected now. */
+    browser_connected: z.boolean(),
     companion_version: z.string().nullable(),
     paired_at: timestamp,
     last_seen_at: timestamp.nullable(),
@@ -195,6 +236,15 @@ export const DEVICE_ERROR_CODES = [
   'too_large',
   'invalid_request',
   'failed',
+  /** The browser tab named is not one this computer opened for the agent. */
+  'unknown_tab',
+  /** Password fields and similar are never typed into or read. */
+  'protected_field',
+  /**
+   * The tab is no longer on the page, or the ref no longer names the element,
+   * that the person approved; nothing was done.
+   */
+  'page_changed',
 ] as const;
 export const deviceResult = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(true), result: z.record(z.string(), z.unknown()) }),

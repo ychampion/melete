@@ -138,7 +138,7 @@ export function actionKind(kind: string): ToolKind {
   if (family === 'device')
     return kind === 'device.run'
       ? 'sandbox'
-      : kind === 'device.open_url'
+      : kind === 'device.open_url' || kind.startsWith('device.browser_')
         ? 'browser'
         : ['device.list_files', 'device.read_file', 'device.write_file'].includes(kind)
           ? 'file'
@@ -353,6 +353,39 @@ export function actionCall(input: {
     output_summary: actionOutput(row, status, input.raw),
     detail: actionDetail(row, status, input.approvalId ?? null),
     parent: null,
+  });
+}
+
+/**
+ * An action for the person's own computer is waiting for that computer to
+ * connect. It says what it will do, and goes by itself when the computer is
+ * back; stopping the conversation cancels it.
+ */
+export function deviceWaitCall(input: {
+  action: ActionRow;
+  connection: ConnectionRow;
+  key: string;
+  at: Date;
+}): ToolCall {
+  const [doing] = ACTION_VERBS[input.action.kind] ?? ['Using your computer'];
+  const computer = plainText(input.connection.label, 'your computer', 60);
+  const browser = input.action.kind.startsWith('device.browser_');
+  return toolCall.parse({
+    id: toolId('wait', input.key),
+    kind: 'retry',
+    title: clip(
+      browser ? `Waiting for your browser on ${computer}` : `Waiting for ${computer}`,
+      TOOL_TITLE_LIMIT,
+    ),
+    status: 'done',
+    started_at: input.at.toISOString(),
+    ended_at: input.at.toISOString(),
+    input_summary: actionInput(input.action),
+    output_summary: summary(
+      clip(`${doing} as soon as it connects. Stop the conversation to cancel.`, TOOL_SUMMARY_LIMIT),
+    ),
+    detail: null,
+    parent: toolId('action', input.action.id),
   });
 }
 

@@ -19,6 +19,8 @@ export type Capabilities = {
   files: boolean;
   open_url: boolean;
   screenshot: boolean;
+  /** Let the browser extension carry out browser work in the person's own browser. */
+  browser: boolean;
 };
 export type Folder = { name: string; path: string };
 
@@ -38,9 +40,10 @@ export const DEFAULT_LOCAL_CAPABILITIES: Capabilities = {
   files: true,
   open_url: true,
   screenshot: false,
+  browser: false,
 };
 
-export const CAPABILITY_NAMES = ['commands', 'files', 'open_url', 'screenshot'] as const;
+export const CAPABILITY_NAMES = ['commands', 'files', 'open_url', 'screenshot', 'browser'] as const;
 
 export function configDir(env: Record<string, string | undefined> = process.env): string {
   if (env.MELETE_DEVICE_CONFIG_DIR) return env.MELETE_DEVICE_CONFIG_DIR;
@@ -69,7 +72,10 @@ export function folderName(path: string, taken: readonly Folder[]): string {
 
 export async function readConfig(dir = configDir()): Promise<DeviceConfig | null> {
   try {
-    return JSON.parse(await readFile(configPath(dir), 'utf8')) as DeviceConfig;
+    const config = JSON.parse(await readFile(configPath(dir), 'utf8')) as DeviceConfig;
+    // Settings saved before a capability existed read it as off.
+    config.capabilities = { ...DEFAULT_LOCAL_CAPABILITIES, ...config.capabilities };
+    return config;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;

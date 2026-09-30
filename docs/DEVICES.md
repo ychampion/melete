@@ -49,6 +49,7 @@ computer's choice always wins, and it is checked on the computer before anything
 | Run commands | `device.run` | **Off** | Every command asks you first, showing the exact command |
 | Open web pages | `device.open_url` | On | Only for a page on the computer itself or its local network (see below) |
 | Take screenshots | `device.screenshot` | Off | No |
+| Use my browser, signed in as me | `device.browser_open`, `device.browser_read`, `device.browser_click`, `device.browser_type`, `device.browser_screenshot` | Off | Clicking and typing ask you first; opening and reading a page follow the agent's own setting |
 
 `device.status` is always available: it tells the agent whether the computer is online, what it
 allows, and the names of its shared folders.
@@ -70,6 +71,7 @@ screenshot, which is kept with the task's files.
 | Largest file read or written | 1 MB |
 | Entries in one folder listing | 500 |
 | Largest screenshot | 8 MB |
+| Page text in one browser read | 128 KB, and up to 200 links, buttons and fields |
 | Shared folders per computer | 20 |
 
 ## What it cannot do
@@ -124,8 +126,64 @@ bun packages/device/src/cli.ts deny commands
 - **From the computer:** `bun packages/device/src/cli.ts forget` deletes the token kept there.
   Disconnect it in Settings too, so the token cannot be used again.
 
+## Use your own browser
+
+Many sites have no way in except signing in: utility bills, insurance, school and government
+portals. For those, the agent can use your own Chrome, Edge or Brave, where you are already signed
+in, instead of a browser of its own where it would need your password.
+
+1. Allow **Use my browser, signed in as me** for the computer in **Settings → Devices**, and on the
+   computer: `bun packages/device/src/cli.ts allow browser`.
+2. Let the extension reach the companion (this writes a small file and, on Windows, a registry
+   entry under your own user, for Chrome, Chromium, Edge and Brave):
+
+   ```sh
+   bun packages/device/src/cli.ts browser install
+   ```
+
+3. In the browser, open `chrome://extensions` (or `edge://extensions`), turn on **Developer mode**,
+   choose **Load unpacked**, and pick `packages/device/extension`.
+4. Click the Melete button in the toolbar and choose **Switch on**. The button shows **ON** while
+   the agent may use the browser. **Stop** switches it off at once.
+
+While it is on:
+
+- The agent works only in tabs it opened. They are grouped under **Melete**, and each shows a bar
+  saying **Melete is using this tab** with a **Stop** button. Your other tabs are never read or
+  touched.
+- Clicking and typing wait for your approval. The card shows the page's address (without the part
+  after `?`), its title, the element as the agent last read it (for example `button "Delete
+  account"`), and the text to type. If the tab has moved to another page, or that element has
+  changed, by the time your approval arrives, nothing is clicked or typed and the agent is told why.
+- Fields for passwords, passcodes, one-time codes, and card numbers or security codes are never
+  typed into. That includes fields that only say so in their name, label or autofill hint, and
+  fields that draw their text as dots. The agent asks you to enter them.
+- Opening a page on your computer or your local network waits for your approval of that address.
+- The extension has no permission to read cookies, and nothing sends your sign-in anywhere. It
+  stays in your browser.
+- Every request is written to the companion's activity log, marked `[browser]`.
+
+### Why an extension
+
+Driving a browser through its remote debugging port would need a separate profile, because current
+browsers refuse remote debugging on your everyday profile, so you would have to sign in to every
+site again, and anything on the computer that found the port could drive the browser too. A small
+extension keeps your existing sign-ins, is limited to the tabs it opens, shows that it is working,
+and talks only to the companion through the browser's own native messaging, with no port open.
+The cost is a one-time install of the extension.
+
+### Which browser the agent uses
+
+When your own browser is available, the agent is told to use it for any site that needs signing
+in, and to keep the cloud browser for public pages only. If the computer is off, a step that needs
+signing in waits for it rather than moving to the cloud browser.
+
 ## When the computer is off
 
-A request for a computer that is not connected is not sent, and the action says so. A request the
-computer collected but never answered, for example because it went to sleep mid-command, is
-recorded as unknown rather than retried, because it may have run.
+A step that needs your computer, or your browser on it, waits for it. The conversation shows
+**Waiting for** the computer, with what it will do, and the rest of Melete carries on. When the
+computer or the browser connects again, the step goes by itself and the conversation continues. To
+cancel instead, stop the conversation: nothing waiting in it is sent afterwards.
+
+A request the computer collected but never answered, for example because it went to sleep
+mid-command, is recorded as unknown rather than retried, because it may have run.

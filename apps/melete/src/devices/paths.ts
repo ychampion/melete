@@ -92,3 +92,17 @@ export function namesLocalNetwork(value: unknown): boolean {
     LOCAL_SUFFIXES.some((suffix) => host.endsWith(suffix))
   );
 }
+
+/**
+ * A page's address as a permission shows it and the browser checks it: the
+ * origin and the path. The query and fragment are left out, because they can
+ * carry tokens and change without the page changing.
+ */
+export function pageAddress(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) ? `${url.origin}${url.pathname}` : null;
+  } catch {
+    return null;
+  }
+}

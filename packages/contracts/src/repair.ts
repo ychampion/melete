@@ -35,6 +35,8 @@ import { sha256Hex } from './effects.ts';
  * - `unsupported_route` this route cannot do it, and definitively did not.
  * - `uncertain_outcome` the answer was lost. It may or may not have happened.
  * - `bad_output` it ran and what came back does not pass its own validation.
+ * - `destination_offline` the destination is a computer that is not connected
+ *   right now. Nothing was sent; the action waits until it connects again.
  * - `unclassified` the connector does not know. Treated as unrepairable.
  */
 export const CONNECTOR_FAULT_KINDS = [
@@ -46,6 +48,7 @@ export const CONNECTOR_FAULT_KINDS = [
   'unsupported_route',
   'uncertain_outcome',
   'bad_output',
+  'destination_offline',
   'unclassified',
 ] as const;
 export const connectorFaultKind = z.enum(CONNECTOR_FAULT_KINDS);
@@ -97,6 +100,7 @@ export const REPAIR_DECISIONS = [
   'verified_completion',
   'retry_with_backoff',
   'park_until_retry_after',
+  'park_until_reconnect',
   'refresh_credential_once',
   'stop_connection_revoked',
   'rediscover_schema',

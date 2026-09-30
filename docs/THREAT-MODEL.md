@@ -606,7 +606,14 @@ authenticates every call with a device token; nothing on the computer listens.
 - **What it does not contain.** An approved command runs as the person, with their rights, and is
   not confined to the shared folder. The approval shows the exact command; that is the control.
 - **Lost answers.** A request the computer collected but did not answer is recorded as `unknown`
-  and never re-sent blindly; one it never collected is refused as not sent.
+  and never re-sent blindly. One it never collected waits for the computer (parked, like a rate
+  limit) and is sent when the computer connects again; a stopped conversation sends nothing that
+  waited.
+- **The person's browser.** Browser work goes to an extension the person installs and switches on,
+  through native messaging to the companion; no port is opened. The extension acts only in tabs it
+  opened, shows a bar with Stop on each, refuses password, one-time-code and card fields, and has
+  no cookie permission. Clicks and typing need approval. Page text it returns is untrusted content,
+  like any page the cloud browser reads.
 
 ## Tailnet access boundary
 

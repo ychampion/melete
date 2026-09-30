@@ -594,10 +594,27 @@ const devicePaths = () => ({
     get: {
       tags: ['devices'],
       summary: 'Wait for work for this computer (companion)',
-      description: 'Answers as soon as there is work, or empty after about 25 seconds.',
+      description:
+        'Answers as soon as there is work, or empty after about 25 seconds. `channel=browser` ' +
+        'is the browser bridge, which collects only browser work.',
       security: [{ device: [] }],
+      requestParams: {
+        query: z.object({ channel: z.enum(['main', 'browser']).optional() }),
+      },
       responses: {
         '200': jsonResponse('Work to do', devicePollResponse),
+        '401': problem('Token unknown or revoked'),
+        '403': problem('Using the browser is turned off for this computer'),
+      },
+    },
+  },
+  '/device/browser/leave': {
+    post: {
+      tags: ['devices'],
+      summary: 'The browser extension was switched off (companion)',
+      security: [{ device: [] }],
+      responses: {
+        '200': jsonResponse('Received', z.strictObject({ status: z.literal('ok') })),
         '401': problem('Token unknown or revoked'),
       },
     },

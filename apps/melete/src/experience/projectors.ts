@@ -164,6 +164,17 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'device.run': ['Running a command on your computer', 'Ran a command on your computer'],
   'device.open_url': ['Opening a page on your computer', 'Opened a page on your computer'],
   'device.screenshot': ['Looking at your screen', 'Looked at your screen'],
+  'device.browser_open': ['Opening a page in your browser', 'Opened a page in your browser'],
+  'device.browser_read': ['Reading a page in your browser', 'Read a page in your browser'],
+  'device.browser_click': ['Clicking in your browser', 'Clicked in your browser'],
+  'device.browser_type': [
+    'Filling in a field in your browser',
+    'Filled in a field in your browser',
+  ],
+  'device.browser_screenshot': [
+    'Looking at a page in your browser',
+    'Looked at a page in your browser',
+  ],
 };
 /** What a permission card asks for a connected computer, before anything has run. */
 const DEVICE_ASKS: Record<string, string> = {
@@ -171,6 +182,8 @@ const DEVICE_ASKS: Record<string, string> = {
   'device.write_file': 'Save a file on your computer',
   'device.open_url': 'Open a page on your computer',
   'device.screenshot': 'Look at your screen',
+  'device.browser_click': 'Click in your browser',
+  'device.browser_type': 'Fill in a field in your browser',
 };
 
 /**
@@ -195,8 +208,27 @@ export function showInvisible(text: string): string {
  * longer one), so it is always shown whole, with anything invisible in it
  * written out.
  */
+/** An element as a person reads it: `button "Delete account"`, and what it shows or leads to when that says more. */
+function describeElement(element: Record<string, unknown>): string {
+  const text = (value: unknown) => (typeof value === 'string' ? value : '');
+  const role = text(element.role) || 'element';
+  return [
+    `${role} "${text(element.name)}"`,
+    ...(text(element.shows) ? [`showing "${text(element.shows)}"`] : []),
+    ...(text(element.target) ? [`going to ${text(element.target)}`] : []),
+  ].join(', ');
+}
+
 function deviceFacts(kind: string, payload: Record<string, unknown>) {
   if (!kind.startsWith('device.')) return [];
+  const expected =
+    payload.expect && typeof payload.expect === 'object'
+      ? (payload.expect as { url?: unknown; title?: unknown; element?: unknown })
+      : undefined;
+  const element =
+    expected?.element && typeof expected.element === 'object'
+      ? (expected.element as Record<string, unknown>)
+      : undefined;
   const fact = (label: string, value: unknown, limit: number = DEVICE_LIMITS.max_command_chars) =>
     typeof value === 'string' && value.length
       ? [
@@ -212,6 +244,13 @@ function deviceFacts(kind: string, payload: Record<string, unknown>) {
     ...fact('File', payload.path),
     ...fact('Content', payload.content),
     ...fact('Page', payload.url),
+    // A click or an entry names what the person saw in the latest read of the
+    // tab: its address without the query, its title, and the element.
+    ...fact('Page', expected?.url),
+    ...fact('Title', expected?.title),
+    ...fact('Element', element ? describeElement(element) : undefined),
+    ...fact('Text', payload.text, DEVICE_LIMITS.max_typed_chars),
+    ...(payload.submit === true ? [{ label: 'Then', value: 'Press Enter to submit' }] : []),
     ...(namesLocalNetwork(payload.url)
       ? [{ label: 'Network', value: 'This page is on your computer or your local network' }]
       : []),
