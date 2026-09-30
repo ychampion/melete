@@ -1,6 +1,6 @@
 # The browser controller is a separate Node process, with only its own runtime
 # dependencies. No Melete configuration, credentials, or database client is copied.
-FROM node:24.14.0-bookworm-slim
+FROM node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8
 
 ENV NODE_ENV=production \
     PLAYWRIGHT_BROWSERS_PATH=/opt/chromium \
@@ -19,10 +19,13 @@ RUN npm init --yes \
     && chown 10003:10003 /space
 
 COPY apps/melete/src/workers/browser/ apps/melete/src/workers/browser/
-# The egress relay shares the web connector's public-address predicate. Its
-# contract and connector imports are types and are erased by Node.
+# The egress relay shares the web connector's public-address predicate. The
+# connector's own runtime imports come along; its other imports are types and
+# are erased by Node.
 COPY apps/melete/src/connectors/web.ts apps/melete/src/connectors/web.ts
+COPY apps/melete/src/connectors/readable.ts apps/melete/src/connectors/readable.ts
 COPY apps/melete/src/connectors/types.ts apps/melete/src/connectors/types.ts
+COPY apps/melete/src/broker/errors.ts apps/melete/src/broker/errors.ts
 
 USER 10003:10003
 

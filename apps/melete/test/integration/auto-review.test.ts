@@ -123,6 +123,8 @@ async function setup(
     autoReview?: Partial<NonNullable<BrokerOptions['autoReview']>>;
     /** How many guests the connector's calendar says an updated event has; left out, it cannot say. */
     guests?: () => number | Promise<number>;
+    /** Kinds the connector itself always leaves to the person. */
+    asksFirst?: readonly string[];
   } = {},
 ) {
   if (!fixture) throw new Error('Postgres fixture unavailable');
@@ -149,6 +151,12 @@ async function setup(
   const connector: Connector = {
     manifest,
     ...(guests ? { existingGuests: async () => guests() } : {}),
+    ...(options.asksFirst
+      ? {
+          asksFirst: (action: { kind: string }) =>
+            options.asksFirst?.includes(action.kind) === true,
+        }
+      : {}),
     async execute(action) {
       dispatched.push(action.kind);
       return {
@@ -243,6 +251,21 @@ describe('auto-review tiers', () => {
     expect((await s.propose('tasks.create', { title: 'B' })).status).toBe('needs_approval');
     expect((await s.propose('tasks.list', {})).status).toBe('succeeded');
     expect(seen).toHaveLength(0);
+  });
+
+  databaseTest('an action the connector asks first on stays with the person', async () => {
+    const { reviewer, seen } = scripted(approve);
+    const s = await setup({
+      reviewer,
+      settings: { classes: { sandbox: true, app_changes: true } },
+      asksFirst: ['tasks.rename', 'browser.fill'],
+    });
+    const renamed = await s.propose('tasks.rename', { title: 'A' });
+    expect(renamed.status).toBe('needs_approval');
+    const filled = await s.propose('browser.fill', { label: 'Search', value: 'flights' });
+    expect(filled.status).toBe('needs_approval');
+    expect(seen).toHaveLength(0);
+    expect(s.dispatched).toHaveLength(0);
   });
 
   databaseTest('by default the reviewer is never asked: reviewable classes start off', async () => {

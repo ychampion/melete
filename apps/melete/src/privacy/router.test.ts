@@ -985,3 +985,18 @@ describe('the router refuses rather than guesses', () => {
     expect(new GatewayError(409, 'privacy_confirmation_required').status).toBe(409);
   });
 });
+
+test('a space or agent the person marked private is reported as such, and a change applies at once', async () => {
+  const store = new MemoryPrivacyStore();
+  const router = new PrivacyRouter({ store });
+  expect(await router.marksPrivate('spc_1', 'agt_1')).toBe(false);
+  await store.saveSettings('spc_1', { private_agent_ids: ['agt_1'] }, null);
+  router.invalidate('spc_1');
+  expect(await router.marksPrivate('spc_1', 'agt_1')).toBe(true);
+  expect(await router.marksPrivate('spc_1', 'agt_2')).toBe(false);
+  expect(await router.marksPrivate('spc_1', null)).toBe(false);
+  await store.saveSettings('spc_1', { private_space: true }, null);
+  router.invalidate('spc_1');
+  expect(await router.marksPrivate('spc_1', null)).toBe(true);
+  expect(await router.marksPrivate('spc_2', null)).toBe(false);
+});

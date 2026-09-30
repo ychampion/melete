@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { supersededExecution } from '../connectors/catalog.ts';
 import { MAX_TOOL_SCHEMA_BYTES, toolSchemaFits } from '../connectors/schema-budget.ts';
 import { type Connector, connectorAllowsAudience } from '../connectors/types.ts';
+import { offersPersonsBrowser, routedDescription } from '../devices/routing.ts';
 import { type AgentAccess, agentAccess, directSend } from '../experience/access.ts';
 import { appendToolTrace } from '../experience/tools.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
@@ -424,6 +425,12 @@ export class ToolCatalog {
       }
     };
     const providers = connections.map((row) => String(row.provider));
+    // The person's own browser takes sign-in work from the cloud browser; see devices/routing.ts.
+    const personsBrowser = offersPersonsBrowser(
+      connections
+        .filter((row) => !(access.allowed && !access.allowed.includes(row.id)))
+        .map((row) => ({ provider: String(row.provider), scopes: row.scopes })),
+    );
     for (const row of connections) {
       // A conversation's persona bounds which connections and verbs are offered.
       if ((access.chat && !access.agentId) || (access.allowed && !access.allowed.includes(row.id)))
@@ -451,7 +458,7 @@ export class ToolCatalog {
         const source = connector.catalog?.source ?? 'connector';
         const tool: ToolSpec = {
           name: declared.name,
-          description: declared.description,
+          description: routedDescription(declared.name, declared.description, personsBrowser),
           input_schema: declared.input_schema,
           effect_class: declared.effect_class,
           connection_id: row.id,

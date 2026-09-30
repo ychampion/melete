@@ -552,8 +552,12 @@ export class BrokerService implements BrokerOperations {
       tool.effect_class !== 'read' && tool.name !== 'email.draft' && tool.name !== 'email.discard';
     const agentAsks = Boolean(access.agentId && access.asksBeforeActing);
     const provider = this.options.connectors.get(action.connection_id)?.manifest.provider ?? '';
+    // The connector itself says the person decides this one, whatever the settings.
+    const connectorAsks =
+      this.options.connectors.get(action.connection_id)?.asksFirst?.(action) === true;
     const requiresApproval =
       needsApproval(tool) ||
+      connectorAsks ||
       (agentAsks && changes) ||
       // "Ask me for everything": every change waits for the person.
       (settings?.mode === 'ask' && changes) ||
@@ -628,8 +632,9 @@ export class BrokerService implements BrokerOperations {
       const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
       auto = {
         tier,
-        outcome:
-          tier.tier === 'sandbox' && allowed && !needsApproval(tool)
+        outcome: connectorAsks
+          ? 'person'
+          : tier.tier === 'sandbox' && allowed && !needsApproval(tool)
             ? 'sandbox_approved'
             : // An agent set to ask before acting promises that sends, bookings and payments
               // wait for the person, so its calendar changes do. A reversible app change is
@@ -1606,6 +1611,29 @@ export class BrokerService implements BrokerOperations {
       if (action.retry_after_at && Date.parse(action.retry_after_at) > now) {
         return { action, context: null };
       }
+      // A conversation that was stopped sends nothing more, however long an
+      // action of it waited for its destination.
+      if (['cancelled', 'failed', 'completed'].includes(job.state))
+        return {
+          action: await this.rejectDispatch(tx, job, action, 'the conversation was stopped'),
+          context: null,
+        };
+      // The person's approval of this action has its own expiry. An action that
+      // waited past it for its destination is refused, not sent on an old yes.
+      const [given] = action.authorization_ref
+        ? await tx`select expires_at from approval
+            where id = ${action.authorization_ref} and action_id = ${action.id}`
+        : [];
+      if (given?.expires_at && new Date(given.expires_at).getTime() <= Date.now())
+        return {
+          action: await this.rejectDispatch(
+            tx,
+            job,
+            action,
+            'its approval expired while it waited',
+          ),
+          context: null,
+        };
       const inCell =
         this.options.connectors
           .get(action.connection_id)

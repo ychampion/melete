@@ -41,6 +41,9 @@ import type {
   Conversation,
   ConversationCreate,
   ConversationPrivacy,
+  Device,
+  DeviceCapabilities,
+  DevicePairing,
   Draft,
   EngineSkill,
   ExperienceEvent,
@@ -326,6 +329,16 @@ export const adapter = {
     ),
   revokeRule: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/rules/{id}', path(id))),
 
+  /* ---------- the person's own computers ---------- */
+  devices: () => guard<{ devices: Device[] }>(() => api.GET('/devices')),
+  pairDevice: (capabilities: DeviceCapabilities) =>
+    guard<DevicePairing>(() => api.POST('/devices/pairings', { body: { capabilities } })),
+  changeDevice: (id: string, capabilities: Partial<DeviceCapabilities>) =>
+    guard<{ device: Device }>(() =>
+      api.PATCH('/devices/{id}', { ...path(id), body: { capabilities } }),
+    ),
+  revokeDevice: (id: string) =>
+    guard<{ device: Device }>(() => api.POST('/devices/{id}/revoke', path(id))),
   /* ---------- other assistants connected over MCP ---------- */
   assistants: () => guard<{ clients: ConnectedAssistant[] }>(() => api.GET('/mcp/clients')),
   /** Ends every token the assistant holds for this person; answered with 204 and no body. */
@@ -485,6 +498,12 @@ export const adapter = {
   connections: () =>
     guard<{ connections: import('./types.ts').Connection[] }>(() =>
       api.GET('/experience/connections'),
+    ),
+  /** Whether conversations in this space read public web pages; on unless turned off. */
+  webReads: () => guard<{ enabled: boolean; available: boolean }>(() => api.GET('/web/settings')),
+  saveWebReads: (enabled: boolean) =>
+    guard<{ enabled: boolean; available: boolean }>(() =>
+      api.PUT('/web/settings', { body: { enabled } }),
     ),
   /** The kinds that can be installed, each with the fields its form needs. */
   connectionKinds: () =>
