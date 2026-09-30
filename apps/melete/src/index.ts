@@ -92,6 +92,7 @@ import type { ProcedureProposer } from './learning/proposer.ts';
 import { expireEpisodes } from './learning/retention.ts';
 import { mountLearning } from './learning/routes.ts';
 import { startLearning } from './learning/start.ts';
+import { mountMcpServer } from './mcp-server/routes.ts';
 import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { withMemoryRuntime } from './memory/context.ts';
@@ -111,6 +112,8 @@ import { withPrivacyGate } from './privacy/gate.ts';
 import { defaultPrivacyRouter, PostgresPrivacyStore, PrivacyRouter } from './privacy/index.ts';
 import { mountPrivacy } from './privacy/routes.ts';
 import { engineProtocol, providerAddress, servicePrivacyRouter } from './privacy/service.ts';
+import { mountPush } from './push/routes.ts';
+import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
 import { assertDockerEngine } from './runtime/docker-engine.ts';
@@ -177,6 +180,8 @@ export type AppDeps = {
   broker?: BrokerService;
   registry?: ConnectorRegistry;
   sql?: Sql;
+  /** Phone presence. Left out, built from the database and the VAPID keys in the environment. */
+  push?: PushService;
   /** Overrides for the company map: a test's store, extractor or handler. */
   companies?: Partial<CompaniesDeps>;
   /** The owner's model-provider sign-ins. Left out, built from `sql` and the master key. */
@@ -275,6 +280,7 @@ export function createApp(deps: AppDeps) {
         : defaultPrivacyRouter());
     mountPrivacy(app, { router: () => privacy, providerUrl: providerAddress(deps.env) });
   }
+  if (deps.db) mountPush(app, deps.push ?? new PushService(deps.db, pushConfig(deps.env)));
   if (deps.db)
     mountExperience(app, {
       db: deps.db,
@@ -300,6 +306,14 @@ export function createApp(deps: AppDeps) {
         triggers: deps.triggers,
       }),
       ...deps.companies,
+    });
+  if (deps.db && deps.sql)
+    mountMcpServer(app, {
+      db: deps.db,
+      sql: deps.sql,
+      env: deps.env,
+      broker: deps.broker,
+      registry: deps.registry,
     });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory)
@@ -444,6 +458,7 @@ export async function bootstrap(
   let registry: ConnectorRegistry | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
+  let pushDispatcher: PushDispatcher | undefined;
   let signIn: ProviderSignIn | undefined;
   let sandboxes: SandboxWiring | undefined;
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
@@ -462,6 +477,7 @@ export async function bootstrap(
           learning?.close(),
           events?.close(),
           companyReplies?.stop(),
+          pushDispatcher?.stop(),
           triggers?.stop(),
           runner?.stop(),
           operations?.stop(),
@@ -846,6 +862,14 @@ export async function bootstrap(
               }),
           });
           await companyReplies.start();
+        }
+        // Pushes to people's devices, when this installation has its VAPID keys.
+        if (handle) {
+          pushDispatcher = new PushDispatcher(
+            new PushService(handle.db, pushConfig(env)),
+            triggers.jobs.boss,
+          );
+          await pushDispatcher.start();
         }
       }
       if (options.workers === false) await replies?.recover();

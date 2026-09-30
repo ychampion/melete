@@ -46,7 +46,9 @@ import type {
 import { isWaiting, waitingOn } from '../experience/waiting.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
+import { PushOffer } from './Notifications.tsx';
 import './home.css';
+import { WaitingOnSection } from './WaitingOnSection.tsx';
 
 const PROMPTS: { label: string; icon: IconName; text: string }[] = [
   {
@@ -934,7 +936,9 @@ export function HomeScreen() {
               ))}
             </div>
           </div>
+          <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
+          <WaitingOnSection now={now} />
           <InMotion now={now} />
         </div>
         <DayColumn now={now} />

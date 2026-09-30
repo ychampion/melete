@@ -822,6 +822,37 @@ make at most `MELETE_COMPANIES_DAILY_CALLS` calls in any 24 hours, 500 when it i
 unset, and each scan reads at most fifty messages. A message past the allowance
 is read on a later scan. Set these in `deploy/.env` and recreate the service.
 
+## Phone notifications
+
+The web app installs to a phone's Home Screen or a desktop as an app, and can
+receive Web Push: one push when a decision is waiting, one when a chase
+settles, and a weekly "what came back". Pushes are signed with this
+installation's own VAPID key pair and encrypted for each browser (RFC 8291), so
+no third-party service is involved beyond the browser's own push service, which
+sees neither the words nor who they are for.
+
+`configure.ts` writes the key pair to `deploy/.env` as `MELETE_VAPID_PUBLIC_KEY`
+and `MELETE_VAPID_PRIVATE_KEY`. An installation configured before push existed
+gets a pair with `bun run deploy/scripts/vapid-keys.ts`; add the two lines to
+`deploy/.env` and recreate the service. Without the keys the web app does not
+offer push and everything else works the same. `MELETE_VAPID_SUBJECT` is who a
+push service contacts about this installation, `mailto:` the owner when unset.
+
+A subscription is accepted only for the browser push services (Google, Mozilla,
+Apple, Microsoft). `MELETE_PUSH_EXTRA_ORIGINS` adds other origins, comma
+separated, for a self-hosted push server; leave it empty otherwise.
+
+Browsers offer push only on a secure origin: `https://`, such as the Tailscale
+address in [From a phone or a laptop](#from-a-phone-or-a-laptop), or
+`localhost`. On an iPhone or iPad (iOS 16.4 or later), add Melete to the Home
+Screen from Safari's Share menu and open it from there; Safari in a tab does not
+receive pushes.
+
+Each person chooses under Settings › Notifications what is pushed, at most how
+many a day, and how close together events are grouped into one push. Nothing is
+sent outside their day hours, in their own time zone, and every push says why
+it was sent.
+
 ## Engine limits
 
 Three settings bound what one attempt's engine may do. All have working

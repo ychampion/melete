@@ -1,5 +1,5 @@
 /**
- * `bun run conformance` lists the ten scenarios and what each one will
+ * `bun run conformance` lists the eleven scenarios and what each one will
  * assert, then runs the suite.
  *
  * Scenarios 1 through 5 use disposable databases and scripted runtimes;

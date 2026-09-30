@@ -155,6 +155,10 @@ export class AccountSignIns<Installed> {
     authorize_url: string;
     redirect_uri: string;
     expires_at: string;
+    /** Where the person signs in: the authorization endpoint's origin. */
+    issuer: string;
+    /** Everything the sign-in asks for, one scope each. */
+    scopes: string[];
   }> {
     this.sweep();
     const spaceId = await this.hooks.authorize(actor, request.space_id);
@@ -170,6 +174,8 @@ export class AccountSignIns<Installed> {
       authorize_url: authorizeUrl(issuer, state, challenge),
       redirect_uri: issuer.redirectUri,
       expires_at: new Date(until).toISOString(),
+      issuer: new URL(issuer.authorizeUrl).origin,
+      scopes: issuer.scopes.split(/\s+/).filter(Boolean),
     };
   }
 

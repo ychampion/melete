@@ -9,7 +9,10 @@
  * that gets one is not drawn.
  */
 import { createMeleteClient, errorMessage, readSse, subscribeEvents } from '@melete/client';
+import { markValueMoment } from './push.ts';
 import type {
+  AccountSignInStart,
+  AccountSignInStatus,
   ActionResolution,
   Agent,
   AgentInput,
@@ -17,6 +20,8 @@ import type {
   Automation,
   AutomationCreate,
   BrowserSession,
+  CatalogEntry,
+  ConnectedAssistant,
   ConnectionChecked,
   ConnectionCreate,
   ConnectionInstalled,
@@ -47,6 +52,10 @@ import type {
   PrivacySettingsUpdate,
   Profile,
   ProfileInput,
+  PushDevice,
+  PushSettings,
+  PushSettingsUpdate,
+  PushSubscriptionInput,
   Question,
   Reaction,
   Receipt,
@@ -116,6 +125,12 @@ async function guard<T>(
 }
 
 const api = client.api;
+
+/** A decision made is the first moment Melete was worth hearing from. */
+function worthHearing<T>(result: Result<T>): Result<T> {
+  if (result.data !== null) markValueMoment();
+  return result;
+}
 const path = (id: string) => ({ params: { path: { id } } });
 
 export const adapter = {
@@ -203,11 +218,11 @@ export const adapter = {
   decide: (id: string, option: 'allow_once' | 'deny', version: string) =>
     guard<PermissionOutcome>(() =>
       api.POST('/permissions/{id}', { ...path(id), body: { option, version } }),
-    ),
+    ).then(worthHearing),
   decideAlways: (id: string, version: string, bounds: RuleBounds) =>
     guard<PermissionOutcome>(() =>
       api.POST('/permissions/{id}', { ...path(id), body: { option: 'always', version, bounds } }),
-    ),
+    ).then(worthHearing),
   permissions: () => guard<{ permissions: Permission[] }>(() => api.GET('/permissions')),
   undo: (id: string) =>
     guard<{ receipt: Receipt }>(() => api.POST('/receipts/{id}/undo', path(id))),
@@ -216,7 +231,18 @@ export const adapter = {
   answer: (id: string, option_id: string) =>
     guard<{ status: 'ok' }>(() =>
       api.POST('/quick-answers/{id}', { ...path(id), body: { option_id } }),
-    ),
+    ).then(worthHearing),
+
+  /* ---------- phone presence ---------- */
+  pushPublicKey: () => guard<{ public_key: string | null }>(() => api.GET('/push/public-key')),
+  pushDevices: () => guard<{ subscriptions: PushDevice[] }>(() => api.GET('/push/subscriptions')),
+  subscribePush: (input: PushSubscriptionInput) =>
+    guard<{ subscription: PushDevice }>(() => api.POST('/push/subscriptions', { body: input })),
+  removePushDevice: (id: string) =>
+    guard<{ subscription: PushDevice }>(() => api.DELETE('/push/subscriptions/{id}', path(id))),
+  pushSettings: () => guard<{ settings: PushSettings }>(() => api.GET('/push/settings')),
+  savePushSettings: (patch: PushSettingsUpdate) =>
+    guard<{ settings: PushSettings }>(() => api.PATCH('/push/settings', { body: patch })),
   rules: () => guard<{ rules: Rule[] }>(() => api.GET('/rules')),
   /* ---------- reactions: a glyph on a message, either direction ---------- */
   messageEvents: (conversationId: string, signal: AbortSignal) =>
@@ -246,6 +272,22 @@ export const adapter = {
       }),
     ),
   revokeRule: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/rules/{id}', path(id))),
+
+  /* ---------- other assistants connected over MCP ---------- */
+  assistants: () => guard<{ clients: ConnectedAssistant[] }>(() => api.GET('/mcp/clients')),
+  /** Ends every token the assistant holds for this person; answered with 204 and no body. */
+  disconnectAssistant: async (clientId: string): Promise<Result<{ status: 'ok' }>> => {
+    try {
+      const outcome = await api.DELETE('/mcp/clients/{clientId}', {
+        params: { path: { clientId } },
+      });
+      return outcome.response.ok
+        ? { data: { status: 'ok' }, error: null, unavailable: null }
+        : settle(outcome);
+    } catch {
+      return { data: null, error: OFFLINE, unavailable: null };
+    }
+  },
 
   /* ---------- what Melete learned ---------- */
   learned: (spaceId: string) =>
@@ -366,7 +408,23 @@ export const adapter = {
       api.GET('/experience/connections'),
     ),
   /** The kinds that can be installed, each with the fields its form needs. */
-  connectionKinds: () => guard<{ kinds: ConnectionKind[] }>(() => api.GET('/connection-kinds')),
+  connectionKinds: () =>
+    guard<{ kinds: ConnectionKind[]; catalog?: CatalogEntry[] }>(() =>
+      api.GET('/connection-kinds'),
+    ),
+  /** Starts signing in to an account; the answer names where, what it asks for, and the page to open. */
+  startAccountSignIn: (provider: 'google' | 'microsoft') =>
+    guard<AccountSignInStart>(() =>
+      provider === 'google'
+        ? api.POST('/google-sign-ins', { body: {} })
+        : api.POST('/microsoft-sign-ins', { body: {} }),
+    ),
+  accountSignInStatus: (provider: 'google' | 'microsoft', id: string) =>
+    guard<AccountSignInStatus>(() =>
+      provider === 'google'
+        ? api.GET('/google-sign-ins/{id}', path(id))
+        : api.GET('/microsoft-sign-ins/{id}', path(id)),
+    ),
   /** The body is built from a kind's descriptor; the service validates it per kind. */
   installConnection: (body: Record<string, unknown>) =>
     guard<ConnectionInstalled>(() =>
