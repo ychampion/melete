@@ -27,6 +27,7 @@ import type { BrowserSessionService } from '../workers/browser/routes.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
 import type { ComposeExecutor } from './compose.ts';
 import { createInternalServer } from './internal-server.ts';
+import { configuredReviewGateway } from './review-gateway.ts';
 import type { BrokerService } from './service.ts';
 import type { TrustResolver } from './trust.ts';
 
@@ -75,7 +76,13 @@ export async function startEffectBoundary(
       browserSessions: dependencies.browserSessions ?? browser?.sessions,
     }));
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
+  let review: Awaited<ReturnType<typeof configuredReviewGateway>> | undefined;
   try {
+    review = await configuredReviewGateway(
+      env,
+      dependencies.signIn ?? providerSignIn(handle.sql, env),
+      env.MELETE_ENABLE_FAKE_PROVIDER ? dependencies.fakeProvider : undefined,
+    );
     const certificates = new Map<string, Pick<SecureContextOptions, 'key' | 'cert'>>();
     if (env.MELETE_GATEWAY_TLS_DIR) {
       for (const host of new Set(
@@ -116,6 +123,11 @@ export async function startEffectBoundary(
       resolveScopedGrant: resolveChaseScopedGrant,
       recordStandingScope: recordChaseScope,
       chaseFollowUp: chaseFollowUpPort,
+      autoReview: {
+        reviewer: review?.reviewer ?? null,
+        timeoutMs: env.MELETE_REVIEW_TIMEOUT_MS,
+        hourlyLimit: env.MELETE_REVIEW_HOURLY_LIMIT,
+      },
       broker: dependencies.broker,
       composeExecutor: dependencies.composeExecutor,
       catalog: {
@@ -136,6 +148,10 @@ export async function startEffectBoundary(
       void internal.broker
         .resumeParked()
         .catch(() => process.stderr.write('parked action resume failed\n'));
+      // A review a restart cut short goes to the person instead of waiting forever.
+      void internal.broker
+        .escalateStaleReviews(env.MELETE_REVIEW_TIMEOUT_MS * 2 + 15_000)
+        .catch(() => process.stderr.write('stale review escalation failed\n'));
     }, 15_000);
     recovery.unref();
     return {
@@ -150,7 +166,11 @@ export async function startEffectBoundary(
           try {
             await registry.close();
           } finally {
-            await browser?.pool.close();
+            try {
+              await browser?.pool.close();
+            } finally {
+              await review?.close();
+            }
           }
         }
       },
@@ -162,7 +182,11 @@ export async function startEffectBoundary(
       try {
         await registry.close();
       } finally {
-        await browser?.pool.close();
+        try {
+          await browser?.pool.close();
+        } finally {
+          await review?.close();
+        }
       }
     }
     throw error;

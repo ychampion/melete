@@ -9,6 +9,7 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
+import { actionReviewView } from '../broker/auto-review.ts';
 import { appendEvent, loadAction, recordId } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
@@ -227,6 +228,7 @@ export class ExperienceEffects {
       actionProjectionRow(source),
       { id: String(row.connection_id), label: String(row.label), provider: String(row.provider) },
       undo,
+      await actionReviewView(this.sql, source.id),
     );
   }
 

@@ -120,7 +120,7 @@ export function createMockApp(deps: AppDeps) {
       origin: (origin) => origin ?? '*',
       credentials: true,
       allowHeaders: ['content-type', 'accept', 'last-event-id', 'idempotency-key'],
-      allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     }),
   );
 

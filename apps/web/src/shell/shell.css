@@ -339,6 +339,79 @@
   text-decoration: none;
   color: inherit;
 }
+/* Settings → Approvals */
+.approvals-modes {
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.approvals-modes > .list-row:first-of-type {
+  border-top: 0;
+}
+.approvals-row {
+  align-items: flex-start;
+  padding: 12px 14px;
+}
+label.approvals-row {
+  cursor: pointer;
+}
+.approvals-row .radio,
+.approvals-row .toggle {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.approvals-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+}
+.approvals-sub {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+  max-width: 560px;
+}
+.approvals-tag {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.approvals-head {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--heading);
+  margin: 4px 0 0;
+}
+[data-inactive="true"] > .approvals-row {
+  opacity: 0.55;
+}
+.approvals-always {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+}
+.approvals-always li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--text);
+}
+.approvals-lock {
+  flex-shrink: 0;
+  color: var(--muted);
+}
 .side-panel {
   display: flex;
   flex-direction: column;

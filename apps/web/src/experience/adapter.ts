@@ -14,6 +14,8 @@ import type {
   Agent,
   AgentInput,
   AgentTemplate,
+  ApprovalSettings,
+  ApprovalSettingsView,
   Automation,
   AutomationCreate,
   BrowserSession,
@@ -211,6 +213,9 @@ export const adapter = {
       api.POST('/quick-answers/{id}', { ...path(id), body: { option_id } }),
     ),
   rules: () => guard<{ rules: Rule[] }>(() => api.GET('/rules')),
+  approvalSettings: () => guard<ApprovalSettingsView>(() => api.GET('/approval-settings')),
+  saveApprovalSettings: (body: ApprovalSettings) =>
+    guard<ApprovalSettingsView>(() => api.PUT('/approval-settings', { body })),
   /* ---------- reactions: a glyph on a message, either direction ---------- */
   messageEvents: (conversationId: string, signal: AbortSignal) =>
     subscribeEvents(client, { jobId: conversationId, signal }),

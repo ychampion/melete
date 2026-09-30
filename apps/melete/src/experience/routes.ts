@@ -65,6 +65,8 @@ const SPACE_OWNER_SURFACES = new Set([
   'GET /experience/connections',
   'GET /rules',
   'DELETE /rules/{id}',
+  'GET /approval-settings',
+  'PUT /approval-settings',
   'POST /agents',
   'PATCH /agents/{id}',
 ]);
@@ -180,6 +182,11 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'POST /permissions/{id}': (spaceId, c, input) =>
       permissions?.decide(spaceId, c.req.param('id') ?? '', input) ??
       unavailable('Permissions are not connected yet.'),
+    'GET /approval-settings': (spaceId) =>
+      permissions?.approvalSettings(spaceId) ?? unavailable('Approvals are not connected yet.'),
+    'PUT /approval-settings': (spaceId, _c, input) =>
+      permissions?.saveApprovalSettings(spaceId, input) ??
+      unavailable('Approvals are not connected yet.'),
     'GET /rules': (spaceId) =>
       permissions?.rules(spaceId) ?? unavailable('Rules are not connected yet.'),
     'DELETE /rules/{id}': (spaceId, c) =>

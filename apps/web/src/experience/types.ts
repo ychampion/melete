@@ -64,6 +64,11 @@ export type PermissionDecision = Body<paths['/permissions/{id}'], 'post'>;
 export type RuleBounds = Extract<PermissionDecision, { option: 'always' }>['bounds'];
 export type PermissionOutcome = Success<Ok<paths['/permissions/{id}'], 'post'>>;
 export type Rule = Success<Ok<paths['/rules'], 'get'>>['rules'][number];
+/** Which of an agent's actions auto-review may decide without asking the person. */
+export type ApprovalSettingsView = Success<Ok<paths['/approval-settings'], 'get'>>;
+export type ApprovalSettings = Body<paths['/approval-settings'], 'put'>;
+/** What auto-review decided about one action, on its card or receipt. */
+export type ActionReview = NonNullable<Permission['review']>;
 /** What Melete learned from the person's corrections, and skills it wrote for itself. */
 export type LearnedList = Ok<paths['/learned'], 'get'>;
 export type LearnedItem = LearnedList['items'][number];

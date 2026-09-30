@@ -857,6 +857,64 @@ export const experienceDraftSend = pgTable('experience_draft_send', {
   discardedAt: timestamp('discarded_at', { withTimezone: true }),
 });
 
+/**
+ * How a person's space lets auto-review stand in for them. No row is the
+ * default: auto-review for work inside the agent's own sandbox, and the
+ * person asked for everything else.
+ */
+export const approvalReviewPolicy = pgTable(
+  'approval_review_policy',
+  {
+    spaceId: text('space_id')
+      .primaryKey()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    mode: text('mode').notNull().default('auto_review'),
+    classes: jsonb('classes').notNull().default({}),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check('approval_review_policy_mode', sql`${t.mode} in ('ask', 'auto_review')`)],
+);
+
+/**
+ * One row per action that auto-review decided instead of asking the person,
+ * or sent to the person with its reason. It is the audit trail, and the rate
+ * limits count from it.
+ */
+export const actionReview = pgTable(
+  'action_review',
+  {
+    id: text('id').primaryKey(),
+    actionId: text('action_id')
+      .notNull()
+      .references(() => action.id, { onDelete: 'cascade' }),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    /** `sandbox`, `reviewable` or `person`. */
+    tier: text('tier').notNull(),
+    actionClass: text('action_class'),
+    /** `policy` (a fixed rule) or `reviewer` (the model review). */
+    decidedBy: text('decided_by').notNull(),
+    /** `approved` or `escalated`. */
+    outcome: text('outcome').notNull(),
+    risk: text('risk'),
+    reason: text('reason').notNull(),
+    model: text('model'),
+    latencyMs: integer('latency_ms'),
+    createdAt: created(),
+  },
+  (t) => [
+    uniqueIndex('action_review_action_idx').on(t.actionId),
+    index('action_review_space_idx').on(t.spaceId, t.createdAt),
+    index('action_review_job_idx').on(t.jobId, t.createdAt),
+    check('action_review_outcome', sql`${t.outcome} in ('approved', 'escalated')`),
+    check('action_review_decided_by', sql`${t.decidedBy} in ('policy', 'reviewer')`),
+  ],
+);
+
 export const schema = {
   owner,
   principal,
@@ -893,4 +951,6 @@ export const schema = {
   experienceRuleUse,
   experienceUndo,
   experienceDraftSend,
+  approvalReviewPolicy,
+  actionReview,
 };

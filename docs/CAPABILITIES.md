@@ -130,6 +130,51 @@ private. Selection rechecks membership under the existing revocation lock;
 revocation cancels queued reuse and fences already delivered context. Rollback
 removes subsequent procedure delivery.
 
+## Auto-review
+
+Auto-review decides some actions that would otherwise wait for the person.
+Before the person is asked, the broker puts each such action in one of three
+tiers, from the tool, the exact payload and where its values came from. It
+works this out again at admission and does not trust what the proposal decided.
+
+- **Sandbox.** Reads, and changes that stay in the agent's own workspace:
+  commands, files, filling or clicking in its own browser, and mail drafts. A
+  fixed rule approves these when the person's `sandbox` switch is on (the
+  default). With the switch off, those changes ask. No model is called.
+- **Reviewable.** A reversible change in a connected app, or an event with no
+  guests on the person's own calendar. An independent reviewer judges it. It
+  goes ahead only when the person switched that class on (`app_changes` or
+  `calendar`, both off by default) and the reviewer approves at low risk. The
+  reviewer's approval is stored as an ordinary approval, bound to the payload
+  hash, job revision and expiry. An agent set to ask before acting keeps asking
+  for calendar changes.
+- **Person.** Anything that spends, sends, submits or publishes, deletes or
+  removes, or carries a password, key, code or card detail. Also any recipient,
+  destination or amount whose origin is not the person or a verified connection.
+  These always ask. The reviewer is never called, and admission withdraws a
+  reviewer's approval for an action that now falls here.
+
+The reviewer is a separate call to the installation's model, made through the
+service's own gateway. Its system prompt is fixed. The action, the person's
+instruction, recent messages and the origin of each deciding value travel in
+one JSON document that the prompt declares untrusted. The answer must be exactly
+one JSON object with a verdict, a risk, a reason and a nonce drawn after the
+payload was fixed. A timeout, a failed call, a wrong nonce, extra text or an
+unknown key sends the action to the person, and so does an approval above low
+risk. The reviewer can approve or escalate. It never denies for the person.
+
+An escalation reaches the agent as its tool result, with the reason and an
+instruction to wait rather than look for another way. The person sees the same
+reason on the card ("Escalated: ..."). A space may ask for 60 reviews an hour.
+After three escalations in a row, a job's actions go straight to the person.
+Every decision is an `action_review` row and a `notice` event. A receipt for an
+action auto-review approved says so ("Auto-reviewed: ..."), next to its undo
+where one exists. Settings → Approvals offers "Ask me for everything" (every
+change waits), "Auto-review low-risk", and a switch for each class.
+[auto-review.test.ts](../apps/melete/test/integration/auto-review.test.ts)
+exercises each tier, every reviewer failure, both limits and recovery after a
+restart.
+
 ## Verification
 
 ```sh

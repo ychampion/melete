@@ -790,6 +790,21 @@ such as a model name it does not serve) ends the message at once. The service
 log records each of these as `memory: <reason>`, and `/health` reports
 `memory.waiting` and `memory.failed` (messages given up in the last day).
 
+### Auto-review
+
+People choose in Settings → Approvals whether an agent's low-risk actions can go
+ahead without asking them (see [CAPABILITIES](CAPABILITIES.md#auto-review)). An
+action that is reviewed is judged by a separate call to the default provider and
+model, made through the same gateway. `MELETE_REVIEW_MODEL` names a different
+model for this, with `MELETE_REVIEW_PROVIDER` when another provider serves it.
+`MELETE_REVIEW_MODEL=off` runs no reviewer, and every action it would have
+reviewed asks the person. `MELETE_REVIEW_TIMEOUT_MS` (default `12000`) is how
+long one review may take. `MELETE_REVIEW_HOURLY_LIMIT` (default `60`) is how
+many reviews one space may ask for in an hour. A review that times out, fails or
+gives an unreadable answer, and any review past the hourly limit, goes to the
+person instead. Work inside an agent's own sandbox is decided by a fixed rule
+and never calls the model.
+
 ## Sandboxes
 
 Sandboxes: connect E2B, Modal or Daytona in Settings → Connections → Sandbox.

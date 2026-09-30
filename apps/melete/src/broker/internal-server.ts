@@ -36,6 +36,7 @@ export function createInternalServer(options: {
   resolveScopedGrant?: BrokerOptions['resolveScopedGrant'];
   recordStandingScope?: BrokerOptions['recordStandingScope'];
   chaseFollowUp?: BrokerOptions['chaseFollowUp'];
+  autoReview?: BrokerOptions['autoReview'];
   /** A broker the service already built, shared with its own routes. */
   broker?: BrokerService;
   gatewayFetch?: GatewayOptions['fetch'];
@@ -74,6 +75,7 @@ export function createInternalServer(options: {
       resolveScopedGrant: options.resolveScopedGrant,
       recordStandingScope: options.recordStandingScope,
       chaseFollowUp: options.chaseFollowUp,
+      autoReview: options.autoReview,
     });
   const app = createBrokerApp({
     broker,

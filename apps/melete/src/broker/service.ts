@@ -61,6 +61,20 @@ import {
   resolveEffectAuthority,
   saveBinding,
 } from './authority.ts';
+import {
+  AUTO_REVIEW_DEFAULTS,
+  type AutoReviewOptions,
+  actionReviewView,
+  deciding,
+  escalationReason,
+  loadApprovalSettings,
+  recordReview,
+  reviewerApproves,
+  reviewInput,
+  reviewLimit,
+  reviewTier,
+  type TierDecision,
+} from './auto-review.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
 import { type CatalogOptions, resolveToolAlias, SKILL_READ_TOOL, ToolCatalog } from './catalog.ts';
 import { CHASE_FOLLOW_UP_TOOL, type ChaseFollowUpPort } from './chase.ts';
@@ -80,6 +94,7 @@ import {
 } from './records.ts';
 import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } from './repair.ts';
 import { RESUME_ACTION_TOOL } from './resume.ts';
+import { type ReviewInput, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
 import {
   collectOriginFields,
@@ -153,6 +168,12 @@ export type BrokerOptions = {
   composeExecutor?: ComposeExecutor;
   /** The service runner must finalize its attempt before changing the job state. */
   deferApprovalWaitToRunner?: boolean;
+  /**
+   * Auto-review: the person's approval settings decide which actions go ahead
+   * without asking them. Absent, every action that needs approval asks, as
+   * before; the service always passes it.
+   */
+  autoReview?: AutoReviewOptions;
 };
 
 export type StandingGrantInput = {
@@ -179,6 +200,21 @@ type Admissibility = {
   requires_approval: boolean;
   /** The approval a scoped grant rests on, which admission records as the authorization. */
   authorized_by: string | null;
+  /**
+   * What auto-review makes of an action that would ask the person: approved by
+   * the sandbox rule, put to the reviewer, or left for the person to decide.
+   * Null when auto-review is off or the action asks nobody anyway.
+   */
+  auto: { tier: TierDecision; outcome: 'sandbox_approved' | 'review' | 'person' } | null;
+};
+
+/** A review to run once the proposal's transaction has committed. */
+type PendingReview = {
+  action_id: string;
+  job_id: string;
+  space_id: string;
+  tier: TierDecision;
+  input: ReviewInput;
 };
 
 const question =
@@ -190,6 +226,12 @@ const ownerAnswered = (action: Action) =>
 
 /** The longest a connector may ask one dispatch to take. */
 const MAX_DISPATCH_BUDGET_MS = 10 * 60_000;
+/** The limits a caller set, so an unset one keeps its default. */
+const definedOnly = (options: AutoReviewOptions) => ({
+  ...(options.hourlyLimit === undefined ? {} : { hourlyLimit: options.hourlyLimit }),
+  ...(options.breakerRun === undefined ? {} : { breakerRun: options.breakerRun }),
+  ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+});
 const needsApproval = (tool: ConnectorTool) =>
   tool.requires_approval || tool.effect_class === 'write_external' || tool.effect_class === 'spend';
 
@@ -271,6 +313,11 @@ export class BrokerService implements BrokerOperations {
       (!Number.isSafeInteger(options.approvalTtlMs) || options.approvalTtlMs <= 0)
     )
       throw new Error('approvalTtlMs must be a positive integer');
+  }
+
+  /** Whether an independent reviewer is configured for auto-review. */
+  get reviewerAvailable(): boolean {
+    return Boolean(this.options.autoReview?.reviewer);
   }
 
   async authorize(claims: CapabilityClaims): Promise<void> {
@@ -446,6 +493,18 @@ export class BrokerService implements BrokerOperations {
     };
   }
 
+  /**
+   * The tool result's sentence. An action auto-review sent to the person says
+   * why, and tells the agent to wait rather than find another way round.
+   */
+  private async reviewedMessage(action: Action, repeated: boolean): Promise<string> {
+    const message = dispositionMessage(action, repeated);
+    if (action.status !== 'needs_approval' || !this.options.autoReview) return message;
+    const review = await actionReviewView(this.sql, action.id);
+    if (review?.outcome !== 'escalated') return message;
+    return `Auto-review sent this to the person to decide: ${review.reason} ${message} Wait for their answer; do not try another way to do the same thing.`;
+  }
+
   private async proposalView(
     action: Action,
     key: string,
@@ -464,7 +523,7 @@ export class BrokerService implements BrokerOperations {
       approval_id: approval?.id ?? null,
       intent_key: action.intent_key ?? key,
       repeated,
-      message: dispositionMessage(action, repeated),
+      message: await this.reviewedMessage(action, repeated),
       origin_warnings: originWarnings.parse(approval?.origin_warnings ?? []),
     };
   }
@@ -483,15 +542,22 @@ export class BrokerService implements BrokerOperations {
     phase: StandingGrantInput['phase'] = 'proposal',
   ): Promise<Admissibility> {
     const access = await agentAccess(tx, job.id);
+    const settings = this.options.autoReview ? await loadApprovalSettings(tx, job.space_id) : null;
+    const changes =
+      tool.effect_class !== 'read' && tool.name !== 'email.draft' && tool.name !== 'email.discard';
+    const agentAsks = Boolean(access.agentId && access.asksBeforeActing);
+    const provider = this.options.connectors.get(action.connection_id)?.manifest.provider ?? '';
     const requiresApproval =
       needsApproval(tool) ||
-      Boolean(
-        access.agentId &&
-          access.asksBeforeActing &&
-          tool.effect_class !== 'read' &&
-          tool.name !== 'email.draft' &&
-          tool.name !== 'email.discard',
-      );
+      (agentAsks && changes) ||
+      // "Ask me for everything": every change waits for the person.
+      (settings?.mode === 'ask' && changes) ||
+      // With the sandbox switch off, work in the agent's own workspace asks too.
+      (settings?.mode === 'auto_review' &&
+        !settings.classes.sandbox &&
+        changes &&
+        reviewTier({ tool, provider, payload: action.canonical_payload, doubts: [] }).tier ===
+          'sandbox');
     const gated = isTrustGatedEffect(tool.effect_class);
     const fields = gated ? collectOriginFields(action.canonical_payload, action.kind) : [];
     const warnings = await resolveOriginWarnings(
@@ -525,12 +591,52 @@ export class BrokerService implements BrokerOperations {
         warnings.length === 0 &&
         this.options.resolveStandingGrant !== undefined &&
         (await this.options.resolveStandingGrant(tx, input)));
+    let auto: Admissibility['auto'] = null;
+    if (settings?.mode === 'auto_review' && requiresApproval && !granted) {
+      // Silence about an origin is `unknown`, which keeps the action with the person.
+      const doubts = await resolveOriginWarnings(
+        tx,
+        this.options.resolveTrust ?? createTableTrustResolver({}),
+        {
+          space_id: job.space_id,
+          job_id: job.id,
+          connection_id: action.connection_id,
+          kind: action.kind,
+          effect_class: tool.effect_class,
+          canonical_payload: action.canonical_payload,
+          fields: deciding(action.canonical_payload, action.kind),
+        },
+      );
+      const tier = reviewTier({
+        tool,
+        provider,
+        payload: action.canonical_payload,
+        doubts: [...doubts, ...warnings],
+      });
+      const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
+      auto = {
+        tier,
+        outcome:
+          tier.tier === 'sandbox' && allowed && !needsApproval(tool)
+            ? 'sandbox_approved'
+            : // An agent set to ask before acting promises that sends, bookings and payments
+              // wait for the person, so its calendar changes do. A reversible app change is
+              // none of those, and the person switched that class on themselves.
+              tier.tier === 'reviewable' &&
+                allowed &&
+                (!agentAsks || tier.actionClass === 'app_changes')
+              ? 'review'
+              : 'person',
+      };
+    }
+    const sandboxApproved = auto?.outcome === 'sandbox_approved';
     return {
       warnings,
       warnings_hash: hashOriginWarnings(warnings),
       standing_grant: granted,
-      requires_approval: requiresApproval && !granted,
+      requires_approval: requiresApproval && !granted && !sandboxApproved,
       authorized_by: authorizedBy,
+      auto,
     };
   }
 
@@ -538,6 +644,7 @@ export class BrokerService implements BrokerOperations {
     return {
       id: row.id as string,
       decision: (row.decision ?? null) as 'approved' | 'denied' | null,
+      decided_by: (row.decided_by ?? null) as string | null,
       job_revision: row.job_revision as number,
       expires_at: (row.expires_at ?? null) as string | Date | null,
       origin_warnings: originWarnings.parse(row.origin_warnings ?? []),
@@ -550,18 +657,44 @@ export class BrokerService implements BrokerOperations {
     action: Action,
     approvalId: string,
     classified: Admissibility,
+    escalated?: string,
   ) {
     await appendEvent(tx, job.id, action.attempt_id, 'approval_requested', {
       action_id: action.id,
       approval_id: approvalId,
       origin_warnings: classified.warnings,
       origin_warnings_hash: classified.warnings_hash,
+      ...(escalated ? { auto_review: { outcome: 'escalated', reason: escalated } } : {}),
     });
     if (job.state === 'running' && !this.options.deferApprovalWaitToRunner)
       await this.moveJob(tx, job, 'waiting_for_approval', {
         kind: 'approval',
         action_ids: [action.id],
       });
+  }
+
+  /**
+   * An approval the reviewer gave for an action that is no longer the
+   * reviewer's to decide: the person's settings changed, or the action now
+   * reads as one that always asks. The approval is withdrawn and the person
+   * asked, and admission then refuses on the undecided approval.
+   */
+  private async withdrawReviewApproval(
+    tx: Query,
+    job: LockedJob,
+    action: Action,
+    approvalId: string,
+    classified: Admissibility,
+  ) {
+    const reason = 'Auto-review no longer covers this action, so it is yours to decide.';
+    const [row] = await tx`update approval set decision = null, decided_at = null,
+      decided_by = null, requested_at = now() where id = ${approvalId} returning *`;
+    if (!row) throw new Error('Approval update returned no record');
+    await tx`update action_review set outcome = 'escalated', reason = ${reason}
+      where action_id = ${action.id}`;
+    await this.setStatus(tx, action, 'needs_approval');
+    await this.askOwner(tx, job, action, approvalId, classified, reason);
+    return this.approvalRow(row);
   }
 
   /**
@@ -610,6 +743,214 @@ export class BrokerService implements BrokerOperations {
     if (action.status !== 'needs_approval') await this.setStatus(tx, action, 'needs_approval');
     await this.askOwner(tx, job, action, held.id, classified);
     return this.approvalRow(row);
+  }
+
+  /**
+   * The review this action is waiting for, or null when the person is asked
+   * now. Null too when this space or job has used up its reviews, or the
+   * installation runs no reviewer: those go to the person with the reason.
+   */
+  private async pendingReview(
+    tx: Query,
+    context: { job: LockedJob; action: Action; tool: ConnectorTool; claims: CapabilityClaims },
+    classified: Admissibility,
+    connector: Connector,
+  ): Promise<PendingReview | null> {
+    const options = this.options.autoReview;
+    if (!options?.reviewer || classified.auto?.outcome !== 'review') return null;
+    const { job, action, tool } = context;
+    if (
+      await reviewLimit(
+        tx,
+        { space_id: job.space_id, job_id: job.id },
+        { ...AUTO_REVIEW_DEFAULTS, ...definedOnly(options) },
+      )
+    )
+      return null;
+    const input = await reviewInput(tx, {
+      job,
+      action,
+      tool,
+      app: connector.manifest.name,
+      resolver: this.options.resolveTrust ?? createTableTrustResolver({}),
+    });
+    // The record of a review under way, so one a crash interrupts is found and sent on.
+    await appendEvent(tx, job.id, context.claims.attempt_id, 'notice', {
+      kind: 'auto_review_started',
+      action_id: action.id,
+      tier: classified.auto.tier.tier,
+      action_class: classified.auto.tier.actionClass,
+    });
+    return {
+      action_id: action.id,
+      job_id: job.id,
+      space_id: job.space_id,
+      tier: classified.auto.tier,
+      input,
+    };
+  }
+
+  /**
+   * An action auto-review would have put to the reviewer but cannot: the
+   * reason goes on record and on the card. Returns the reason, or undefined.
+   */
+  private async recordPolicyEscalation(
+    tx: Query,
+    context: { job: LockedJob; action: Action; claims: CapabilityClaims },
+    classified: Admissibility,
+  ): Promise<string | undefined> {
+    const options = this.options.autoReview;
+    if (!options || classified.auto?.outcome !== 'review') return undefined;
+    const { job, action } = context;
+    const reason = !options.reviewer
+      ? 'No reviewer is set up on this installation, so this one is yours to decide.'
+      : ((await reviewLimit(
+          tx,
+          { space_id: job.space_id, job_id: job.id },
+          { ...AUTO_REVIEW_DEFAULTS, ...definedOnly(options) },
+        )) ?? undefined);
+    if (!reason) return undefined;
+    await recordReview(tx, {
+      action_id: action.id,
+      job_id: job.id,
+      space_id: job.space_id,
+      attempt_id: context.claims.attempt_id,
+      tier: classified.auto.tier.tier,
+      action_class: classified.auto.tier.actionClass,
+      decided_by: 'policy',
+      outcome: 'escalated',
+      risk: null,
+      reason,
+    });
+    return reason;
+  }
+
+  /**
+   * Ask the reviewer with nothing locked, then settle its answer under the job
+   * lock. The answer counts only if nothing else decided the action meanwhile
+   * and the action is still one the person lets the reviewer decide; otherwise
+   * the person is asked. A timeout, a failure or an unreadable answer asks the
+   * person too. Returns the action as it stands afterwards.
+   */
+  private async settleReview(claims: CapabilityClaims, pending: PendingReview): Promise<Action> {
+    const options = this.options.autoReview;
+    const started = Date.now();
+    const verdict = options?.reviewer
+      ? await reviewWithin(
+          options.reviewer,
+          pending.input,
+          options.timeoutMs ?? AUTO_REVIEW_DEFAULTS.timeoutMs,
+        )
+      : ({ verdict: 'none', failure: 'unavailable', reason: 'No reviewer is set up.' } as const);
+    const latency = Date.now() - started;
+    return this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, pending.job_id);
+      const action = await loadAction(tx, pending.action_id, true);
+      const [asked] = await tx`select id from approval where action_id = ${action.id}`;
+      if (action.status !== 'proposed' || asked) return action;
+      await checkAttempt(tx, job, claims);
+      const { tool } = await this.tool(tx, job, claims, action.connection_id, action.kind);
+      const classified = await this.classify(tx, job, action, tool, 'proposal');
+      if (!classified.requires_approval) return action;
+      const approved = reviewerApproves(verdict) && classified.auto?.outcome === 'review';
+      const reason = approved
+        ? verdict.verdict === 'approve'
+          ? verdict.reason
+          : ''
+        : classified.auto?.outcome === 'review'
+          ? escalationReason(verdict)
+          : 'Your approval settings changed while this was being reviewed.';
+      const stored = await loadBinding(tx, action);
+      const approvalId = recordId('apr');
+      await tx`insert into approval
+        (id, action_id, job_revision, payload_hash, expires_at, origin_warnings,
+          decision, decided_at, decided_by)
+        values (${approvalId}, ${action.id}, ${job.revision}, ${action.payload_hash},
+          ${(stored.tuple.expires_at ?? null) as string | null},
+          ${JSON.stringify(classified.warnings)}::jsonb,
+          ${approved ? 'approved' : null}, ${approved ? new Date().toISOString() : null},
+          ${approved ? 'auto_review' : null})`;
+      await recordReview(tx, {
+        action_id: action.id,
+        job_id: job.id,
+        space_id: job.space_id,
+        attempt_id: claims.attempt_id,
+        tier: pending.tier.tier,
+        action_class: pending.tier.actionClass,
+        decided_by: 'reviewer',
+        outcome: approved ? 'approved' : 'escalated',
+        risk: verdict.verdict === 'none' ? null : verdict.risk,
+        reason,
+        model: options?.reviewer?.model ?? null,
+        latency_ms: latency,
+      });
+      if (approved) await this.setStatus(tx, action, 'approved');
+      else {
+        await this.setStatus(tx, action, 'needs_approval');
+        await this.askOwner(tx, job, action, approvalId, classified, reason);
+      }
+      return loadAction(tx, action.id);
+    });
+  }
+
+  /**
+   * A review a crash interrupted: the action is still `proposed`, nobody was
+   * asked, and the review's own time is long past. It goes to the person.
+   * Called by the recovery sweep.
+   */
+  async escalateStaleReviews(olderThanMs = 60_000): Promise<number> {
+    const stale = await this.sql`select a.id from action a
+      join event e on e.job_id = a.job_id and e.type = 'notice'
+        and e.payload->>'kind' = 'auto_review_started' and e.payload->>'action_id' = a.id
+      where a.status = 'proposed'
+        and not exists (select 1 from approval p where p.action_id = a.id)
+        and not exists (select 1 from action_review r where r.action_id = a.id)
+        and e.created_at < clock_timestamp() - make_interval(secs => ${olderThanMs / 1000})
+      limit 50`;
+    let sent = 0;
+    for (const row of stale) {
+      const original = await loadAction(this.sql, String(row.id));
+      sent += await this.sql.begin(async (tx) => {
+        const job = await lockJob(tx, original.job_id);
+        const action = await loadAction(tx, original.id, true);
+        const [asked] = await tx`select id from approval where action_id = ${action.id}`;
+        if (action.status !== 'proposed' || asked) return 0;
+        const reason = 'The review did not finish, so this one is yours to decide.';
+        const stored = await loadBinding(tx, action);
+        const approvalId = recordId('apr');
+        await tx`insert into approval
+          (id, action_id, job_revision, payload_hash, expires_at, origin_warnings)
+          values (${approvalId}, ${action.id}, ${job.revision}, ${action.payload_hash},
+            ${(stored.tuple.expires_at ?? null) as string | null}, '[]'::jsonb)`;
+        await recordReview(tx, {
+          action_id: action.id,
+          job_id: job.id,
+          space_id: job.space_id,
+          attempt_id: action.attempt_id,
+          tier: 'reviewable',
+          action_class: null,
+          decided_by: 'policy',
+          outcome: 'escalated',
+          risk: null,
+          reason,
+        });
+        await this.setStatus(tx, action, 'needs_approval');
+        await appendEvent(tx, job.id, action.attempt_id, 'approval_requested', {
+          action_id: action.id,
+          approval_id: approvalId,
+          origin_warnings: [],
+          origin_warnings_hash: hashOriginWarnings([]),
+          auto_review: { outcome: 'escalated', reason },
+        });
+        if (job.state === 'running' && !this.options.deferApprovalWaitToRunner)
+          await this.moveJob(tx, job, 'waiting_for_approval', {
+            kind: 'approval',
+            action_ids: [action.id],
+          });
+        return 1;
+      });
+    }
+    return sent;
   }
 
   async propose(
@@ -719,14 +1060,14 @@ export class BrokerService implements BrokerOperations {
                 'A retried proposal must use the same content',
               );
             }
-            return { action: existing, key, repeated: true };
+            return { action: existing, key, repeated: true, pending: null };
           }
         }
       }
       // The unique index is the durable half of this; the job row lock is what
       // makes two live attempts take their turn rather than race.
       const [prior] = await tx`select * from action where intent_key = ${key} for update`;
-      if (prior) return { action: actionFromRow(prior), key, repeated: true };
+      if (prior) return { action: actionFromRow(prior), key, repeated: true, pending: null };
       const id = recordId('act');
       const [row] = await tx`insert into action
         (id, job_id, attempt_id, connection_id, kind, effect_class, canonical_payload, payload_hash, idempotency_key, intent_key)
@@ -752,18 +1093,39 @@ export class BrokerService implements BrokerOperations {
         { action_id: id, kind: request.kind, payload_hash: canonical.hash, intent_key: key },
         ref ?? undefined,
       );
+      const review = { job, action: created, tool, claims };
       if (classified.requires_approval) {
+        // A reviewable action waits as `proposed`, with no card, while the
+        // reviewer is asked outside this transaction; anything else asks now.
+        const pending = await this.pendingReview(tx, review, classified, connector);
+        if (pending) return { action: await loadAction(tx, id), key, repeated: false, pending };
         const approvalId = recordId('apr');
         await tx`insert into approval
           (id, action_id, job_revision, payload_hash, expires_at, origin_warnings)
           values (${approvalId}, ${id}, ${job.revision}, ${canonical.hash}, ${expiresAt},
             ${JSON.stringify(classified.warnings)}::jsonb)`;
         await this.setStatus(tx, created, 'needs_approval');
-        await this.askOwner(tx, job, created, approvalId, classified);
-      }
-      return { action: await loadAction(tx, id), key, repeated: false };
+        const escalated = await this.recordPolicyEscalation(tx, review, classified);
+        await this.askOwner(tx, job, created, approvalId, classified, escalated);
+      } else if (classified.auto?.outcome === 'sandbox_approved')
+        await recordReview(tx, {
+          action_id: id,
+          job_id: job.id,
+          space_id: job.space_id,
+          attempt_id: claims.attempt_id,
+          tier: 'sandbox',
+          action_class: 'sandbox',
+          decided_by: 'policy',
+          outcome: 'approved',
+          risk: null,
+          reason: classified.auto.tier.reason,
+        });
+      return { action: await loadAction(tx, id), key, repeated: false, pending: null };
     });
-    const { action, key, repeated } = proposal;
+    const { key, repeated } = proposal;
+    const action = proposal.pending
+      ? await this.settleReview(claims, proposal.pending)
+      : proposal.action;
     // Repeated proposals retrieve the durable disposition; unknown is never replayed.
     if (action.status === 'proposed' || action.status === 'approved') {
       await this.admit(claims, action.id, action.payload_hash);
@@ -944,7 +1306,13 @@ export class BrokerService implements BrokerOperations {
         if (classified.requires_approval) {
           const [row] = await tx`select * from approval where action_id = ${id}
             and payload_hash = ${action.payload_hash} for update`;
-          const approval = await this.holdApproval(tx, job, action, row, classified);
+          let approval = await this.holdApproval(tx, job, action, row, classified);
+          if (
+            approval.decided_by === 'auto_review' &&
+            approval.decision === 'approved' &&
+            classified.auto?.outcome !== 'review'
+          )
+            approval = await this.withdrawReviewApproval(tx, job, action, approval.id, classified);
           // A doubt about where a value came from is refused in its own words,
           // before the bookkeeping states get a chance to answer instead.
           if (
