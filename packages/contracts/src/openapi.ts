@@ -70,6 +70,13 @@ import { space, triggerSpec } from './entities.ts';
 import { eventPage, eventQuery } from './events.ts';
 import { executionSettlement, executionStartResponse } from './execution-admission.ts';
 import { experiencePaths } from './experience-openapi.ts';
+import {
+  createFeedbackRequest,
+  feedbackListQuery,
+  feedbackListResponse,
+  feedbackResponse,
+  updateFeedbackRequest,
+} from './feedback.ts';
 import { hookObservation } from './hooks.ts';
 import {
   engineSkillApprovalRequest,
@@ -584,6 +591,7 @@ export function buildOpenApiDocument() {
         { name: 'companies' },
         { name: 'push' },
         { name: 'assistants' },
+        { name: 'feedback' },
       ],
       paths: {
         '/push/public-key': {
@@ -2490,6 +2498,61 @@ export function buildOpenApiDocument() {
               '404': problem('No such item for this person'),
               '409': problem('The item is already settled or dropped'),
               '503': problem('Stopping is not connected yet'),
+            },
+          },
+        },
+
+        '/feedback': {
+          post: {
+            tags: ['feedback'],
+            summary: 'Report a problem with the app',
+            description:
+              'Stores what the person wrote and what the page said about itself, and answers with a ' +
+              'short id such as `FB-7K3Q` to quote when asking for a fix. Console lines, request ' +
+              'addresses and the route are redacted again before they are stored. Each person may ' +
+              'send a few reports in a short time; more are refused until the window passes.',
+            requestBody: json(createFeedbackRequest),
+            responses: {
+              '201': jsonResponse('Stored', feedbackResponse),
+              '400': problem('Invalid request'),
+              '401': problem('A session is required'),
+              '429': rateLimited('Too many reports from this person in a short time'),
+            },
+          },
+          get: {
+            tags: ['feedback'],
+            summary: 'List problem reports, newest first',
+            description:
+              'The person who runs the installation sees every report and `can_manage` is true. ' +
+              'Anyone else sees only the reports they sent.',
+            requestParams: { query: feedbackListQuery },
+            responses: {
+              '200': jsonResponse('Reports', feedbackListResponse),
+              '401': problem('A session is required'),
+            },
+          },
+        },
+
+        '/feedback/{id}': {
+          get: {
+            tags: ['feedback'],
+            summary: 'Read one problem report with its page details',
+            requestParams: idParam('id', 'Report id, such as FB-7K3Q'),
+            responses: {
+              '200': jsonResponse('Report', feedbackResponse),
+              '404': problem('No such report, or not one this person sent'),
+            },
+          },
+          patch: {
+            tags: ['feedback'],
+            summary: 'Change a report’s status, with an optional note',
+            requestParams: idParam('id', 'Report id, such as FB-7K3Q'),
+            requestBody: json(updateFeedbackRequest),
+            responses: {
+              '200': jsonResponse('Updated', feedbackResponse),
+              '400': problem('Invalid request'),
+              '403': problem('Only the person who runs the installation changes a status'),
+              '404': problem('No such report'),
             },
           },
         },

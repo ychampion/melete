@@ -70,6 +70,7 @@ import { cors } from 'hono/cors';
 import type { z } from 'zod';
 import { mountCompaniesMock } from './companies.ts';
 import { mountExperienceMock } from './experience.ts';
+import { mountFeedbackMock } from './feedback.ts';
 import { mountLearnedMock } from './learned.ts';
 import { mountPrivacyMock } from './privacy.ts';
 import { mountPushMock } from './push.ts';
@@ -99,6 +100,8 @@ export type AppDeps = {
   seedExperience?: boolean;
   /** Start as a fresh install: no account, and signed out until one is made. */
   setupNeeded?: boolean;
+  /** The agent's browser and sandbox. On unless a demonstration of a fresh install turns it off. */
+  computer?: boolean;
 };
 
 type ErrorBody = z.infer<typeof errorResponse>;
@@ -129,6 +132,7 @@ export function createMockApp(deps: AppDeps) {
   // Before the experience routes, which answer every operation they do not implement.
   mountPrivacyMock(app, deps, () => experience.chats);
   const experience = mountExperienceMock(app, deps);
+  experience.computer.mount(app);
   if (deps.seedExperience) experience.seed();
   // The companies surface is agreed but not yet in openapi.json, so it mounts
   // its own routes rather than going through the contract's operation table.
@@ -236,6 +240,8 @@ export function createMockApp(deps: AppDeps) {
     experience.signedOut = false;
     return send(ownerResponse, owned(account));
   });
+
+  mountFeedbackMock(app, deps, () => account?.email ?? null);
 
   // ------------------------------------------------------------------
   // health, spaces

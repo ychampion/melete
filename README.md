@@ -211,7 +211,7 @@ in with ChatGPT.
 
 ## More it can do
 
-- Teach it by correcting it, then see, pause or remove what it learned in **Settings → What I've learned**.
+- Teach it by correcting it, then see, pause or remove what it learned in **Settings → Memory**.
 - Start your day with a short brief of your calendar, your tasks and the decisions waiting on you.
 - Correct or forget anything it remembers, and a forgotten fact stays gone after a restore.
 
@@ -229,6 +229,7 @@ in with ChatGPT.
 - [Memory](docs/MEMORY.md) and [learning](docs/LEARNING.md)
 - [Architecture](docs/ARCHITECTURE.md) and [threat model](docs/THREAT-MODEL.md)
 - [Building a client](docs/CLIENT.md): the API and how the app uses it
+- [Problem reports](docs/FEEDBACK.md): reporting a problem from the app, and pulling one by its id to fix it
 - [Contributing](CONTRIBUTING.md): setting up, testing and sending changes
 
 ## Licence and credits
