@@ -523,6 +523,59 @@ describe('model gateway effect boundary', () => {
     expect(budget.spent).toBe(budget.reservations[0]?.maxOutputTokens ?? -1);
   });
 
+  test('a long answer that keeps arriving is not cut off; a provider that goes quiet is', async () => {
+    const encoder = new TextEncoder();
+    // Twelve pieces 40 ms apart: about half a second in all, against a limit
+    // of 150 ms on silence. The whole answer takes longer than the limit, and
+    // no gap in it does.
+    const slowStream = (stallAfter: number | null) =>
+      new ReadableStream<Uint8Array>({
+        async start(controller) {
+          for (let piece = 0; piece < 12; piece++) {
+            if (stallAfter !== null && piece === stallAfter) {
+              await Bun.sleep(600);
+            } else await Bun.sleep(40);
+            controller.enqueue(
+              encoder.encode(
+                `data: {"model":"served","choices":[{"delta":{"content":"part ${piece} "}}]}\n\n`,
+              ),
+            );
+          }
+          controller.enqueue(
+            encoder.encode(
+              'data: {"model":"served","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":12,"total_tokens":17}}\n\ndata: [DONE]\n\n',
+            ),
+          );
+          controller.close();
+        },
+      });
+    const serve = (stallAfter: number | null) => async (request: Request) =>
+      new Response(slowStream(stallAfter), {
+        headers: { 'content-type': 'text/event-stream' },
+        signal: request.signal,
+      } as ResponseInit);
+    const long = await start({ timeoutMs: 150, fetch: serve(null) });
+    const started = performance.now();
+    const answer = await (
+      await long.post('/providers/openai/v1/chat/completions', {
+        model: 'fixture-chat',
+        stream: true,
+      })
+    ).text();
+    expect(performance.now() - started).toBeGreaterThan(150);
+    expect(answer).toContain('part 11');
+    expect(answer).toContain('[DONE]');
+    expect(long.budget.settlements[0]).toMatchObject({ status: 'succeeded' });
+
+    const quiet = await start({ timeoutMs: 150, fetch: serve(3) });
+    const cut = await quiet
+      .post('/providers/openai/v1/chat/completions', { model: 'fixture-chat', stream: true })
+      .then((response) => response.text())
+      .catch(() => 'connection closed');
+    expect(cut).not.toContain('part 11');
+    expect(quiet.budget.settlements[0]).toMatchObject({ status: 'unknown' });
+  });
+
   test('absolute-form proxy requests only admit configured inference endpoints', async () => {
     const { port, budget } = await start();
     const result = await new Promise<string>((resolve, reject) => {

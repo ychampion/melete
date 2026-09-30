@@ -40,6 +40,7 @@ export interface GatewayOptions {
   /** Test injection or a service-owned transport; never selected by a request. */
   fetch?: (request: Request) => Promise<Response>;
   fake?: ReturnType<typeof createScriptedProvider>;
+  /** How long a provider may go without sending anything before the call ends. */
   timeoutMs?: number;
   maxRequestBytes?: number;
   maxResponseBytes?: number;
@@ -150,7 +151,15 @@ export function createModelGateway(options: GatewayOptions): Server {
     let settled = false;
     const started = performance.now();
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), options.timeoutMs ?? 60_000);
+    // A limit on silence, not on length: each chunk from the provider restarts
+    // it, so a long answer that keeps arriving is not cut off part way and
+    // asked for again from the start. A provider that goes quiet still ends.
+    const idleMs = options.timeoutMs ?? 60_000;
+    let timer = setTimeout(() => abort.abort(), idleMs);
+    const heard = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => abort.abort(), idleMs);
+    };
     const cancelled = () => {
       if (!response.writableFinished) abort.abort();
     };
@@ -297,6 +306,7 @@ export function createModelGateway(options: GatewayOptions): Server {
             }),
           );
       settlement.httpStatus = result.status;
+      heard();
       if (!result.ok || !result.body) {
         // Provider errors may contain injected keys or internal request diagnostics.
         await result.body?.cancel();
@@ -328,6 +338,7 @@ export function createModelGateway(options: GatewayOptions): Server {
         for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
+          heard();
           collector.feed(value);
           settlement.modelActual = collector.modelActual;
           const output = redactor.feed(value);
