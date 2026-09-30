@@ -178,7 +178,7 @@ export const DEVICE_TOOL_SHAPES: Record<DeviceTool, ToolShape> = {
       {
         tab_id: tabArgument,
         ref: refArgument,
-        text: { type: 'string', maxLength: 10_000 },
+        text: { type: 'string', maxLength: DEVICE_LIMITS.max_typed_chars },
         submit: { type: 'boolean', description: 'Press Enter after typing.' },
       },
       ['tab_id', 'ref', 'text'],
@@ -471,8 +471,10 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
       case 'browser_click':
         return { tab_id: tabOf(payload), ref: refOf(payload) };
       case 'browser_type': {
-        if (typeof payload.text !== 'string' || payload.text.length > 10_000)
-          throw new DevicePathError('The text to type is required, up to 10,000 characters.');
+        if (typeof payload.text !== 'string' || payload.text.length > DEVICE_LIMITS.max_typed_chars)
+          throw new DevicePathError(
+            `The text to type is required, up to ${DEVICE_LIMITS.max_typed_chars.toLocaleString('en')} characters.`,
+          );
         return {
           tab_id: tabOf(payload),
           ref: refOf(payload),

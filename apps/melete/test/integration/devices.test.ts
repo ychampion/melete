@@ -9,7 +9,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type CapabilityClaims, DEVICE_LIMITS } from '@melete/contracts';
+import { type CapabilityClaims, DEVICE_LIMITS, type RuntimeAdapter } from '@melete/contracts';
 import { BrowserBridge } from '../../../../packages/device/src/browser.ts';
 import {
   ApiError,
@@ -27,6 +27,7 @@ import { loadEnv } from '../../src/env.ts';
 import { projectPermission } from '../../src/experience/projectors.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
+import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -607,4 +608,122 @@ withDb("the person's own browser", () => {
     expect(routedDescription('device.browser_open', 'Open.', true)).toBe(`Open.${SIGNED_IN_NOTE}`);
     expect(routedDescription('email.send', 'Send.', true)).toBe('Send.');
   });
+});
+
+withDb('what waited for the computer, when the person stops or time runs out', () => {
+  const connectionOf = async (deviceId: string) =>
+    String(
+      (await need().sql`select connection_id from paired_device where id = ${deviceId}`)[0]
+        ?.connection_id,
+    );
+
+  /** A conversation with an agent and a turn under way, as the chat makes one. */
+  const conversation = async (scopes: string[]) => {
+    const s = need();
+    const claims = await s.job(scopes);
+    const agentId = recordId('agt');
+    await s.sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone,
+        standing_instruction, asks_before_acting)
+      values (${agentId}, ${claims.space_id}, 'Helper', 'helper', 'blue', 'plain', 'dark', 'plain',
+        '', false)`;
+    const turnId = recordId('turn');
+    await s.sql`update job set kind = 'chat', agent_id = ${agentId} where id = ${claims.job_id}`;
+    await s.sql`insert into experience_turn (id, job_id, agent_id, submission_id, text, status)
+      values (${turnId}, ${claims.job_id}, ${agentId}, ${recordId('sub')}, 'tidy my notes', 'running')`;
+    await s.sql`update job set current_turn_id = ${turnId} where id = ${claims.job_id}`;
+    return claims;
+  };
+
+  test('Stop in the conversation cancels what waited for the computer', async () => {
+    const s = need();
+    const { config, agent, log } = await s.computer();
+    sharedDeviceHub.disconnect(config.device_id, false);
+    const claims = await conversation(['device.list_files']);
+    const proposal = await s.broker.propose(claims, {
+      kind: 'device.list_files',
+      connection_id: await connectionOf(config.device_id),
+      payload: { path: 'Shared' },
+    });
+    expect(proposal.status).toBe('admitted');
+    // What the Stop button does: the conversation waits for the person again.
+    const runner = new AttemptRunner(s.jobs, {} as RuntimeAdapter, { key: 'k'.repeat(40) });
+    await runner.stopConversation(claims.job_id);
+    await connected(agent, async () => {
+      await s.broker.resumeParked();
+      await Bun.sleep(300);
+    });
+    expect(log.some((line) => line.includes('→ list_files'))).toBe(false);
+    const [row] =
+      await s.sql`select status, reconciliation from action where id = ${proposal.action_id}`;
+    expect(row?.status).toBe('failed');
+    expect(row?.reconciliation).toMatchObject({ reason: 'the conversation was stopped' });
+  }, 60_000);
+
+  test('an approval that runs out while the computer is off is not used', async () => {
+    const s = need();
+    const broker = new BrokerService({ sql: s.sql, connectors: registry, approvalTtlMs: 3_000 });
+    const { config, agent, log } = await s.computer({ grant: { commands: true } });
+    sharedDeviceHub.disconnect(config.device_id, false);
+    const claims = await s.job(['device.run']);
+    const proposal = await broker.propose(claims, {
+      kind: 'device.run',
+      connection_id: await connectionOf(config.device_id),
+      payload: { command: 'echo late', cwd: 'Shared' },
+    });
+    expect(proposal.status).toBe('needs_approval');
+    await broker.decide(proposal.action_id, {
+      decision: 'approved',
+      payload_hash: proposal.payload_hash,
+    });
+    await broker.admit(claims, proposal.action_id, proposal.payload_hash);
+    expect((await broker.dispatch(proposal.action_id)).status).toBe('admitted');
+    await Bun.sleep(3_500);
+    await connected(agent, async () => {
+      await broker.resumeParked();
+      await Bun.sleep(300);
+    });
+    expect(log.some((line) => line.includes('→ run echo late'))).toBe(false);
+    const [row] =
+      await s.sql`select status, reconciliation from action where id = ${proposal.action_id}`;
+    expect(row?.status).toBe('failed');
+    expect(row?.reconciliation).toMatchObject({ reason: 'its approval expired while it waited' });
+  }, 60_000);
+
+  test('typed text too long to show whole is refused, and a submit is shown', async () => {
+    const s = need();
+    const { config } = await s.computer({ grant: { browser: true } });
+    const connectionId = await connectionOf(config.device_id);
+    const claims = await s.job(['device.browser_type']);
+    expect(
+      await rejectionOf(
+        s.broker.propose(claims, {
+          kind: 'device.browser_type',
+          connection_id: connectionId,
+          payload: { tab_id: 4, ref: 'e2', text: 'x'.repeat(DEVICE_LIMITS.max_typed_chars + 1) },
+        }),
+      ),
+    ).toMatchObject({ code: 'payload_invalid' });
+    const card = projectPermission({
+      id: 'apr_type',
+      version: 'v1',
+      action: {
+        id: 'act_type',
+        jobId: claims.job_id,
+        attemptId: claims.attempt_id,
+        kind: 'device.browser_type',
+        effectClass: 'write_external',
+        connectionId,
+        canonicalPayload: { tab_id: 4, ref: 'e2', text: 'hello', submit: true },
+        receipt: null,
+        status: 'needs_approval',
+        createdAt: new Date(),
+        resolvedAt: null,
+      },
+      connection: { id: connectionId, label: 'Test laptop', provider: 'device' },
+      reasons: ['This change needs your permission before it happens.'],
+      canAlways: false,
+      requestedAt: new Date(),
+    });
+    expect(card.preview?.facts).toContainEqual({ label: 'Then', value: 'Press Enter to submit' });
+  }, 60_000);
 });

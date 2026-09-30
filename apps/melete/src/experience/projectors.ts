@@ -188,7 +188,8 @@ function deviceFacts(kind: string, payload: Record<string, unknown>) {
       ? [{ label: 'Tab', value: String(payload.tab_id) }]
       : []),
     ...fact('Element', payload.ref),
-    ...fact('Text', payload.text),
+    ...fact('Text', payload.text, DEVICE_LIMITS.max_typed_chars),
+    ...(payload.submit === true ? [{ label: 'Then', value: 'Press Enter to submit' }] : []),
   ];
 }
 

@@ -84,6 +84,8 @@ export const DEVICE_LIMITS = {
    * a command before it runs, so a longer one is refused rather than shown cut.
    */
   max_command_chars: 3_000,
+  /** The most text one browser entry types, shown whole in its approval for the same reason. */
+  max_typed_chars: 3_000,
   /** Each of stdout and stderr is kept up to this many bytes; the rest is counted and dropped. */
   max_output_bytes: 65_536,
   /** The largest file read or written in one call. */

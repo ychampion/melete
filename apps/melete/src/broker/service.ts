@@ -1199,6 +1199,22 @@ export class BrokerService implements BrokerOperations {
           action: await this.rejectDispatch(tx, job, action, 'the conversation was stopped'),
           context: null,
         };
+      // The person's approval of this action has its own expiry. An action that
+      // waited past it for its destination is refused, not sent on an old yes.
+      const [given] = action.authorization_ref
+        ? await tx`select expires_at from approval
+            where id = ${action.authorization_ref} and action_id = ${action.id}`
+        : [];
+      if (given?.expires_at && new Date(given.expires_at).getTime() <= Date.now())
+        return {
+          action: await this.rejectDispatch(
+            tx,
+            job,
+            action,
+            'its approval expired while it waited',
+          ),
+          context: null,
+        };
       const inCell =
         this.options.connectors
           .get(action.connection_id)
