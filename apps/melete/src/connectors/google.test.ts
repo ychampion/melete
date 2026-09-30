@@ -435,6 +435,33 @@ describe('Google Calendar through the calendar tools', () => {
     expect(google.events.get(googleEventId('act_event2'))?.status).toBe('cancelled');
   });
 
+  test('an update reads how many guests the event has now, not counting the account itself', async () => {
+    const { google, connector } = await calendar();
+    await connector.execute(
+      mailAction('calendar.create', event, 'act_event4'),
+      mailContext('act_event4'),
+    );
+    const update = mailAction(
+      'calendar.update',
+      { ...event, summary: 'Moved', uid: 'act_event4', etag: '"1"' },
+      'act_update4',
+    );
+    expect(await connector.existingGuests(update, mailContext('act_update4'))).toBe(0);
+    const stored = google.events.get(googleEventId('act_event4'));
+    if (!stored) throw new Error('event not stored');
+    stored.attendees = [
+      { email: 'me@example.com', self: true, organizer: true },
+      { email: 'alex@example.com' },
+    ];
+    expect(await connector.existingGuests(update, mailContext('act_update4'))).toBe(1);
+    const missing = mailAction(
+      'calendar.update',
+      { ...event, uid: 'act_missing', etag: '"1"' },
+      'act_update5',
+    );
+    await expect(connector.existingGuests(missing, mailContext('act_update5'))).rejects.toThrow();
+  });
+
   test('a refused write raises the same typed faults as the CalDAV calendar', async () => {
     const google = await fake({ grant: ['openid', 'email', GOOGLE_SCOPES.mailRead] });
     const connector = new GoogleCalendarConnector({

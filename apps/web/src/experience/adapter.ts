@@ -19,6 +19,8 @@ import type {
   AgentComputer,
   AgentInput,
   AgentTemplate,
+  ApprovalSettings,
+  ApprovalSettingsView,
   Automation,
   AutomationCreate,
   BrowserControl,
@@ -251,6 +253,9 @@ export const adapter = {
   savePushSettings: (patch: PushSettingsUpdate) =>
     guard<{ settings: PushSettings }>(() => api.PATCH('/push/settings', { body: patch })),
   rules: () => guard<{ rules: Rule[] }>(() => api.GET('/rules')),
+  approvalSettings: () => guard<ApprovalSettingsView>(() => api.GET('/approval-settings')),
+  saveApprovalSettings: (body: ApprovalSettings) =>
+    guard<ApprovalSettingsView>(() => api.PUT('/approval-settings', { body })),
   /* ---------- reactions: a glyph on a message, either direction ---------- */
   messageEvents: (conversationId: string, signal: AbortSignal) =>
     subscribeEvents(client, { jobId: conversationId, signal }),

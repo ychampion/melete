@@ -122,6 +122,10 @@ export async function sweepOperational(
 const SPACE_KEYED_OPERATIONAL = [
   'browser_recipe_candidate',
   'experience_profile',
+  // How the person lets auto-review answer for them, and what it decided.
+  // The decisions went with their jobs; named again so the phase is whole.
+  'approval_review_policy',
+  'action_review',
   'knowledge_record',
   'skill',
   'task',
