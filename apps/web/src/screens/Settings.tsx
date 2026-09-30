@@ -1,8 +1,9 @@
 /**
- * Settings: the only place the technology shows. Saved details in plain
- * language with edit, forget and why; what Melete learned, with its state and
- * what can be done with it; connections with their state and what
- * each may do; standing rules with their limits and revoke.
+ * Settings: the only place the technology shows. Memory holds the saved
+ * details in plain language with edit, forget and why, and the lessons and
+ * skills Melete learned, with their state and what can be done with them;
+ * then connections with their state and what each may do, and standing rules
+ * with their limits and revoke.
  */
 import { type ReactNode, useState } from 'react';
 import { logoFor } from '../chat/parts.tsx';
@@ -330,14 +331,9 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
   const current =
-    tab === 'connections' ||
-    tab === 'rules' ||
-    tab === 'learned' ||
-    tab === 'notifications' ||
-    tab === 'feedback'
+    tab === 'connections' || tab === 'rules' || tab === 'notifications' || tab === 'feedback'
       ? tab
       : 'memory';
-  const [learnedCount, setLearnedCount] = useState<number | undefined>(undefined);
   const items = memory.data?.items ?? [];
   const list = connections.data?.connections ?? [];
   const byId = new Map(list.map((c) => [c.id, c]));
@@ -382,7 +378,6 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           onChange={(next) => navigate(`/settings/${next}`)}
           tabs={[
             { value: 'memory', label: 'Memory', count: items.length },
-            { value: 'learned', label: 'What I’ve learned', count: learnedCount },
             { value: 'notifications', label: 'Notifications' },
             {
               value: 'connections',
@@ -394,71 +389,80 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           ]}
         />
         {current === 'memory' ? (
-          <div className="col" style={{ gap: 12 }}>
-            <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-              Agents use these quietly. Anything here can be changed or forgotten, and Melete can
-              say why it used one.
-            </p>
-            {memory.error ? (
-              <p style={{ color: 'var(--danger)', fontSize: 13 }}>{memory.error}</p>
-            ) : null}
-            <div className="card-12" style={{ overflow: 'hidden' }}>
-              <div style={{ height: 1 }} />
-              {items.map((item) => (
-                <MemoryRow
-                  key={item.id}
-                  item={item}
-                  onChange={(next) =>
-                    memory.set({ items: items.map((i) => (i.id === next.id ? next : i)) })
-                  }
-                  onDelete={() =>
-                    void adapter.deleteMemory(item.id).then((r) => {
-                      if (r.data === null) {
-                        toast({
-                          kind: 'err',
-                          title: r.error ?? r.unavailable ?? 'Couldn’t forget that',
-                        });
-                        return;
-                      }
-                      memory.set({ items: items.filter((i) => i.id !== item.id) });
-                      toast({ kind: 'ok', title: `Forgot “${item.key}”` });
-                    })
-                  }
-                />
-              ))}
-              {memory.data && items.length === 0 ? (
-                <div
-                  className="col"
-                  style={{
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '32px 24px',
-                    textAlign: 'center',
-                  }}
-                >
-                  <span
+          <div className="col" style={{ gap: 28 }}>
+            <section className="col" style={{ gap: 12 }} aria-labelledby="memory-details">
+              <h2 id="memory-details" className="settings-subhead">
+                Details
+              </h2>
+              <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
+                Agents use these quietly. Anything here can be changed or forgotten, and Melete can
+                say why it used one.
+              </p>
+              {memory.error ? (
+                <p style={{ color: 'var(--danger)', fontSize: 13 }}>{memory.error}</p>
+              ) : null}
+              <div className="card-12" style={{ overflow: 'hidden' }}>
+                <div style={{ height: 1 }} />
+                {items.map((item) => (
+                  <MemoryRow
+                    key={item.id}
+                    item={item}
+                    onChange={(next) =>
+                      memory.set({ items: items.map((i) => (i.id === next.id ? next : i)) })
+                    }
+                    onDelete={() =>
+                      void adapter.deleteMemory(item.id).then((r) => {
+                        if (r.data === null) {
+                          toast({
+                            kind: 'err',
+                            title: r.error ?? r.unavailable ?? 'Couldn’t forget that',
+                          });
+                          return;
+                        }
+                        memory.set({ items: items.filter((i) => i.id !== item.id) });
+                        toast({ kind: 'ok', title: `Forgot “${item.key}”` });
+                      })
+                    }
+                  />
+                ))}
+                {memory.data && items.length === 0 ? (
+                  <div
+                    className="col"
                     style={{
-                      fontFamily: 'var(--font-head)',
-                      fontSize: 16,
-                      fontWeight: 600,
-                      color: 'var(--heading)',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '32px 24px',
+                      textAlign: 'center',
                     }}
                   >
-                    Nothing remembered yet
-                  </span>
-                  <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-                    Melete adds to this list as you talk, and tells you when it does.
-                  </span>
-                </div>
-              ) : null}
-            </div>
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-head)',
+                        fontSize: 16,
+                        fontWeight: 600,
+                        color: 'var(--heading)',
+                      }}
+                    >
+                      Nothing remembered yet
+                    </span>
+                    <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+                      Melete adds to this list as you talk, and tells you when it does.
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            </section>
+            <section className="col" style={{ gap: 12 }} aria-labelledby="memory-lessons">
+              <h2 id="memory-lessons" className="settings-subhead">
+                Lessons and skills
+              </h2>
+              <LearnedTab />
+            </section>
           </div>
         ) : current === 'notifications' ? (
           <NotificationsTab />
         ) : current === 'feedback' ? (
           <FeedbackTab selected={detail} />
-        ) : current === 'learned' ? (
-          <LearnedTab onCount={setLearnedCount} />
         ) : current === 'connections' ? (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>

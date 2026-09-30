@@ -211,7 +211,7 @@ in with ChatGPT.
 
 ## More it can do
 
-- Teach it by correcting it, then see, pause or remove what it learned in **Settings → What I've learned**.
+- Teach it by correcting it, then see, pause or remove what it learned in **Settings → Memory**.
 - Start your day with a short brief of your calendar, your tasks and the decisions waiting on you.
 - Correct or forget anything it remembers, and a forgotten fact stays gone after a restore.
 
