@@ -741,6 +741,17 @@ export class BrokerService implements BrokerOperations {
           }
         }
       }
+      // A conversation goes on after a turn that left an effect uncertain, and
+      // the same effect asked for from a later turn is that one: it is not sent
+      // again, nor asked for again, until the person has settled it.
+      if (tool.effect_class !== 'read') {
+        const [uncertain] = await tx`select * from action where job_id = ${job.id}
+          and connection_id = ${request.connection_id} and kind = ${request.kind}
+          and payload_hash = ${canonical.hash}
+          and status in ('dispatched', 'unknown', 'unresolved')
+          order by created_at desc limit 1 for update`;
+        if (uncertain) return { action: actionFromRow(uncertain), key, repeated: true };
+      }
       // The unique index is the durable half of this; the job row lock is what
       // makes two live attempts take their turn rather than race.
       const [prior] = await tx`select * from action where intent_key = ${key} for update`;
