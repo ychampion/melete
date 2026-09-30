@@ -11,6 +11,8 @@
 import { createMeleteClient, errorMessage, readSse, subscribeEvents } from '@melete/client';
 import { markValueMoment } from './push.ts';
 import type {
+  AccountSignInStart,
+  AccountSignInStatus,
   ActionResolution,
   Agent,
   AgentInput,
@@ -18,6 +20,7 @@ import type {
   Automation,
   AutomationCreate,
   BrowserSession,
+  CatalogEntry,
   ConnectedAssistant,
   ConnectionChecked,
   ConnectionCreate,
@@ -382,7 +385,23 @@ export const adapter = {
       api.GET('/experience/connections'),
     ),
   /** The kinds that can be installed, each with the fields its form needs. */
-  connectionKinds: () => guard<{ kinds: ConnectionKind[] }>(() => api.GET('/connection-kinds')),
+  connectionKinds: () =>
+    guard<{ kinds: ConnectionKind[]; catalog?: CatalogEntry[] }>(() =>
+      api.GET('/connection-kinds'),
+    ),
+  /** Starts signing in to an account; the answer names where, what it asks for, and the page to open. */
+  startAccountSignIn: (provider: 'google' | 'microsoft') =>
+    guard<AccountSignInStart>(() =>
+      provider === 'google'
+        ? api.POST('/google-sign-ins', { body: {} })
+        : api.POST('/microsoft-sign-ins', { body: {} }),
+    ),
+  accountSignInStatus: (provider: 'google' | 'microsoft', id: string) =>
+    guard<AccountSignInStatus>(() =>
+      provider === 'google'
+        ? api.GET('/google-sign-ins/{id}', path(id))
+        : api.GET('/microsoft-sign-ins/{id}', path(id)),
+    ),
   /** The body is built from a kind's descriptor; the service validates it per kind. */
   installConnection: (body: Record<string, unknown>) =>
     guard<ConnectionInstalled>(() =>
