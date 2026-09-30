@@ -115,7 +115,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     events.progress(spaceId, jobId, turnId, stage);
   /** The conversation's own job and the command jobs it started, all the caller's own. */
   const conversationJobs = async (spaceId: string, id: string) => {
-    await service.requireConversation(spaceId, id);
+    await service.requireThread(spaceId, id);
     const linked = deps.sql
       ? await deps.sql`select j.id from job j where j.experience_parent_id = ${id}
           and j.space_id = ${spaceId} ${ownJobClause(deps.sql, 'j')}`
@@ -136,8 +136,16 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     (spaceId: string, c: Context, input: Record<string, unknown>) => Promise<unknown> | unknown
   > = {
     'GET /profile': (spaceId) => home.profile(spaceId),
-    'PATCH /profile': (spaceId, _c, input) => home.saveProfile(spaceId, input),
-    'GET /home': (spaceId) => home.home(spaceId),
+    'PATCH /profile': async (spaceId, _c, input) => {
+      const { profile, moved } = await home.saveProfile(spaceId, input);
+      // Routines keep their local hour when the person's time zone changes.
+      if (moved) await planning.retimeSchedules(spaceId, moved);
+      return { profile };
+    },
+    'GET /home': async (spaceId) => ({
+      ...(await home.home(spaceId)),
+      routine_results: await planning.recentResults(spaceId),
+    }),
     'GET /tasks': (spaceId) => home.tasks(spaceId),
     'POST /tasks': (spaceId, _c, input) => home.saveTask(spaceId, input),
     'PATCH /tasks/{id}': (spaceId, c, input) =>
@@ -268,7 +276,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       unavailable('Undo is not connected yet.'),
     'GET /conversations/{id}/events': async (spaceId, c) => {
       const id = c.req.param('id') ?? '';
-      await service.requireConversation(spaceId, id);
+      await service.requireThread(spaceId, id);
       const since = readEventCursor(c.req.header('Last-Event-ID'), c.req.query('since'));
       return c.req.header('Accept')?.includes('text/event-stream')
         ? events.response(spaceId, since, c.req.raw.signal, id)
@@ -382,7 +390,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'POST /conversations': (spaceId, _c, input) => service.createConversation(spaceId, input),
     'GET /conversations/{id}': async (spaceId, c) => ({
       conversation: await service.view(
-        await service.requireConversation(spaceId, c.req.param('id') ?? ''),
+        await service.requireThread(spaceId, c.req.param('id') ?? ''),
       ),
     }),
     'PATCH /conversations/{id}/agent': (spaceId, c, input) =>

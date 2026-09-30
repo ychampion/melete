@@ -16,7 +16,16 @@ import {
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { action, agent, approval, connection, event, experienceTurn, job } from '../db/schema.ts';
+import {
+  action,
+  agent,
+  approval,
+  connection,
+  event,
+  experienceTurn,
+  job,
+  trigger,
+} from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -32,6 +41,7 @@ export function conversationView(
   row: JobRow,
   turn?: typeof experienceTurn.$inferSelect | null,
   progress?: ConversationProgress,
+  automationId?: string,
 ): Conversation {
   const status = row.paused
     ? 'paused'
@@ -53,6 +63,7 @@ export function conversationView(
     updated_at: row.updatedAt.toISOString(),
     plan_id: row.planId,
     ...(progress ? { progress } : {}),
+    ...(automationId ? { automation_id: automationId } : {}),
   });
 }
 
@@ -220,6 +231,26 @@ export class ExperienceService {
     return row;
   }
 
+  /**
+   * A thread the person can read: one of their chats, or the thread one of
+   * their routines writes each run into.
+   */
+  async requireThread(spaceId: string, id: string) {
+    const [row] = await this.db
+      .select()
+      .from(job)
+      .where(
+        and(
+          eq(job.id, id),
+          eq(job.spaceId, spaceId),
+          inArray(job.kind, ['chat', 'routine']),
+          ownJob(),
+        ),
+      );
+    if (!row) throw experienceMissing();
+    return row;
+  }
+
   async view(row: JobRow) {
     const [turn] = row.currentTurnId
       ? await this.db
@@ -241,10 +272,19 @@ export class ExperienceService {
       recent && this.progress
         ? await this.progress(row.spaceId, row.id, turn.id, stage)
         : undefined;
+    const [schedule] =
+      row.kind === 'routine'
+        ? await this.db
+            .select({ id: trigger.id })
+            .from(trigger)
+            .where(and(eq(trigger.jobId, row.id), eq(trigger.kind, 'schedule')))
+            .limit(1)
+        : [];
     return conversationView(
       row,
       turn,
       progress && (progress.steps_done > 0 || progress.current) ? progress : undefined,
+      schedule?.id,
     );
   }
 
@@ -322,7 +362,7 @@ export class ExperienceService {
   }
 
   async messages(spaceId: string, id: string) {
-    await this.requireConversation(spaceId, id);
+    await this.requireThread(spaceId, id);
     const rows = await this.db
       .select()
       .from(experienceTurn)
@@ -345,7 +385,13 @@ export class ExperienceService {
   }
 
   async message(spaceId: string, id: string, raw: unknown, key?: string) {
-    await this.requireConversation(spaceId, id);
+    const thread = await this.requireThread(spaceId, id);
+    if (thread.kind === 'routine')
+      throw new ServiceError(
+        'routine_thread',
+        'This is where a routine writes its runs. Start a chat to ask about a result.',
+        409,
+      );
     const value = conversationMessage.parse(raw);
     if (!this.submissions) return unavailable('Conversations are not ready yet.');
     // Prefixing an opaque submission key prevents a collision with another space or API caller.

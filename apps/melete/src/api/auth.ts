@@ -31,6 +31,7 @@ import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
 import type { RequestSource } from './listener.ts';
 import { LoginThrottle } from './login-throttle.ts';
+import { mountPassword } from './password.ts';
 
 export const SESSION_COOKIE = 'melete_session';
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -270,6 +271,8 @@ export function mountAuth(
           '/signin/google',
           '/signin/apple',
           '/signin/chatgpt',
+          '/password-reset',
+          '/password-reset/consume',
         ].includes(c.req.path));
     // A body is counted as it arrives, so one sent without a length, or with a
     // false one, is dropped at the limit rather than read and parsed whole.
@@ -311,6 +314,14 @@ export function mountAuth(
     deps.sql && deps.registry
       ? new ExperienceSignIn(deps.sql, deps.registry, env.MELETE_PUBLIC_URL)
       : undefined;
+  if (deps.sql)
+    mountPassword(app, {
+      sql: deps.sql,
+      sessionCookie: SESSION_COOKIE,
+      signIn,
+      publicUrl: env.MELETE_PUBLIC_URL,
+      clock: loginThrottle.clock,
+    });
   app.post('/signin/magic-link', async (c) => {
     const input = magicLinkRequest.parse(await c.req.json());
     return c.json(

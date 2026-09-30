@@ -13,6 +13,7 @@ import {
   type FaceShape,
 } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
 import {
   Badge,
@@ -205,12 +206,17 @@ function AgentEditor({
   agentId,
   initial,
   connections,
+  connectionsError = null,
+  onRetryConnections,
   onSaved,
   onClose,
 }: {
   agentId: string | null;
   initial: AgentInput;
   connections: Connection[];
+  /** Why the connections could not be read; the Access tab says so instead of "none". */
+  connectionsError?: string | null;
+  onRetryConnections?: () => void;
   onSaved: (agent: Agent) => void;
   onClose: () => void;
 }) {
@@ -520,7 +526,13 @@ function AgentEditor({
                   </div>
                 );
               })}
-              {connections.length === 0 ? (
+              {connectionsError && connections.length === 0 ? (
+                <LoadError
+                  what="your connections"
+                  error={connectionsError}
+                  onRetry={() => onRetryConnections?.()}
+                />
+              ) : connections.length === 0 ? (
                 <span style={{ fontSize: 13, color: 'var(--muted)' }}>
                   Nothing is connected yet.
                 </span>
@@ -621,6 +633,8 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
       agentId={current?.id ?? null}
       initial={initial}
       connections={connections.data?.connections.filter((c) => c.status === 'connected') ?? []}
+      connectionsError={connections.error}
+      onRetryConnections={connections.reload}
       onSaved={(agent) => {
         refreshAgents();
         toast({ kind: 'ok', title: `${agent.name} is ready.` });

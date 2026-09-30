@@ -8,6 +8,7 @@
 import { type ReactNode, useState } from 'react';
 import { logoFor } from '../chat/parts.tsx';
 import { Icon } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
 import { Badge, Button, TabsUnderline, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
@@ -19,6 +20,7 @@ import { models } from '../models/api.ts';
 import { ModelLine, ModelsTab } from '../models/ModelConnect.tsx';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { AccountSettings } from './AccountSettings.tsx';
 import { ApprovalsTab } from './Approvals.tsx';
 import { MemoryPanel } from './Beliefs.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
@@ -258,7 +260,8 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
     tab === 'feedback' ||
     tab === 'models' ||
     tab === 'approvals' ||
-    tab === 'privacy'
+    tab === 'privacy' ||
+    tab === 'account'
       ? tab
       : 'memory';
   const [deviceCount, setDeviceCount] = useState<number | undefined>(undefined);
@@ -310,14 +313,21 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
             {
               value: 'connections',
               label: 'Connections',
-              count: list.filter((c) => c.status === 'connected').length,
+              count: connections.error
+                ? undefined
+                : list.filter((c) => c.status === 'connected').length,
             },
             { value: 'devices', label: 'Devices', count: deviceCount },
             { value: 'approvals', label: 'Approvals' },
-            { value: 'rules', label: 'Rules', count: rules.data?.rules.length ?? 0 },
+            {
+              value: 'rules',
+              label: 'Rules',
+              count: rules.error ? undefined : rules.data?.rules.length,
+            },
             { value: 'feedback', label: 'Feedback' },
             { value: 'models', label: 'Models' },
             { value: 'privacy', label: 'Privacy' },
+            { value: 'account', label: 'Account' },
           ]}
         />
         {current === 'privacy' ? <PrivacyTab /> : null}
@@ -333,6 +343,8 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           <FeedbackTab selected={detail} />
         ) : current === 'models' ? (
           <ModelsTab loaded={model} />
+        ) : current === 'account' ? (
+          <AccountSettings />
         ) : current === 'connections' ? (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
@@ -341,7 +353,11 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
             </p>
             <WebReads />
             {connections.error ? (
-              <p style={{ color: 'var(--danger)', fontSize: 13 }}>{connections.error}</p>
+              <LoadError
+                what="your connections"
+                error={connections.error}
+                onRetry={connections.reload}
+              />
             ) : null}
             <div className="col" style={{ gap: 8 }}>
               {list.map((connection) => (
@@ -359,7 +375,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                 />
               ))}
             </div>
-            {connections.data && list.length === 0 ? (
+            {connections.data && !connections.error && list.length === 0 ? (
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>Nothing is connected yet.</span>
             ) : null}
             <AddConnection onInstalled={connections.reload} />
@@ -372,7 +388,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
               it and the agent asks again next time.
             </p>
             {rules.error ? (
-              <p style={{ color: 'var(--danger)', fontSize: 13 }}>{rules.error}</p>
+              <LoadError what="your rules" error={rules.error} onRetry={rules.reload} />
             ) : null}
             <div className="card-12" style={{ overflow: 'hidden' }}>
               <div style={{ height: 1 }} />
@@ -418,7 +434,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                   </div>
                 );
               })}
-              {rules.data && rules.data.rules.length === 0 ? (
+              {rules.data && !rules.error && rules.data.rules.length === 0 ? (
                 <div
                   className="col"
                   style={{

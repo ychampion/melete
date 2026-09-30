@@ -309,6 +309,26 @@ export class EmailConnector implements Connector {
     );
   }
 
+  /** Password reset mail is fixed-purpose, like sign-in mail, and goes only to the mailbox's own address. */
+  async sendPasswordResetLink(
+    spaceId: string,
+    email: string,
+    url: string,
+    minutes: number,
+  ): Promise<void> {
+    if (!this.canSendSignIn(spaceId, email)) throw new Error('Sign-in mailbox mismatch');
+    await this.use((transport) =>
+      transport.send({
+        to: [email],
+        cc: [],
+        bcc: [],
+        subject: 'Reset your Melete password',
+        body: `Use this link to choose a new Melete password. It expires in ${minutes} minutes and can be used once. Choosing a new password signs you out everywhere.\n\n${url}\n\nIf you did not ask for this, ignore this email; your password stays as it is.`,
+        messageId: `<reset.${randomUUID()}@melete.local>`,
+      }),
+    );
+  }
+
   private success(
     action: Action,
     detail: JsonObject,

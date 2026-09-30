@@ -39,7 +39,8 @@
     "dev:web": "bun run --cwd apps/web dev",
     "evals": "bun run evals/run.ts",
     "companies:demo": "bun run apps/melete/src/companies/demo.ts",
-    "feedback": "bun run apps/melete/src/feedback/cli.ts"
+    "feedback": "bun run apps/melete/src/feedback/cli.ts",
+    "reset-password": "bun run apps/melete/src/account/reset-password.ts"
   },
   "type": "module",
   "workspaces": [
