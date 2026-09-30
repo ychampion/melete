@@ -10,12 +10,14 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
+import { actionReviewView } from '../broker/auto-review.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import { appendEvent, loadAction, recordId } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { DEFAULT_BUDGET } from '../jobs/service.ts';
 import { MCP_COMMAND_PREFIX } from '../mcp-server/actor.ts';
+import { actionBecause } from '../memory/basis.ts';
 import { ownJobClause, requestPrincipal } from '../principals/authority.ts';
 import { type ActionRow, draftForReview, object, projectReceipt } from './projectors.ts';
 import { experienceMissing } from './service.ts';
@@ -247,6 +249,8 @@ export class ExperienceEffects {
       actionProjectionRow(source),
       { id: String(row.connection_id), label: String(row.label), provider: String(row.provider) },
       undo,
+      await actionReviewView(this.sql, source.id),
+      await actionBecause(this.sql, spaceId, source.id),
     );
   }
 
