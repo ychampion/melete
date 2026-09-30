@@ -58,6 +58,11 @@ curator:
 checkpoints:
   enabled: false
 
+# The engine is updated by pinning a new release, never from inside an attempt.
+# Its own update check would run git against the source checkout on every start.
+updates:
+  check: false
+
 agent:
   # A runaway ceiling, not a cost control. Left unset this is unlimited, which
   # means a looping run is bounded only by wall time. What an attempt may spend
@@ -70,6 +75,9 @@ agent:
   # product pointer, its profile line and its host runtime block, which
   # describe the engine's install rather than the attempt.
   host_prompt: false
+  # An attempt's input is text. Deciding how to pass images otherwise probes
+  # the model endpoint, here the broker, for a local model server on every start.
+  image_input_mode: text
 
 # Read at the top level, not under `agent:`. Replaces the engine's api_server
 # hint, which describes MEDIA: file tags no Melete surface renders.

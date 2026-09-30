@@ -67,14 +67,32 @@ test('background tool entries leave an open permission alone', () => {
   ).toEqual({ 'apr-1': null });
 });
 
-test('an action moving on from approval closes its own permission and no other', () => {
+test('an action finishing past approval closes its own permission and no other', () => {
   expect(
     decided([
       event({ type: 'tool', tool: tool('action:a1', 'needs_approval', 'apr-1') }),
       permission('apr-1'),
       event({ type: 'tool', tool: tool('action:a2', 'needs_approval', 'apr-2') }),
       permission('apr-2'),
-      event({ type: 'tool', tool: tool('action:a1', 'running') }),
+      event({ type: 'tool', tool: tool('action:a1', 'done') }),
     ]),
   ).toEqual({ 'apr-1': 'closed', 'apr-2': null });
+});
+
+test('the waiting action read again as under way leaves its permission open', () => {
+  expect(
+    decided([
+      event({ type: 'tool', tool: tool('action:a1', 'needs_approval', 'apr-1') }),
+      permission('apr-1'),
+      event({ type: 'tool', tool: tool('action:a1', 'running') }),
+      event({ type: 'tool', tool: tool('action:a1', 'done') }),
+    ]),
+  ).toEqual({ 'apr-1': 'closed' });
+  expect(
+    decided([
+      event({ type: 'tool', tool: tool('action:a1', 'needs_approval', 'apr-1') }),
+      permission('apr-1'),
+      event({ type: 'tool', tool: tool('action:a1', 'running') }),
+    ]),
+  ).toEqual({ 'apr-1': null });
 });

@@ -31,6 +31,8 @@ export const PROCESS_WORKSPACE = 'the current directory (.)';
 
 /** One engine per attempt; only the service can inspect the parked-action ledger. */
 export class SupervisedHermesRuntime implements RuntimeAdapter {
+  /** Engines still being stopped after their attempt reported, by job. */
+  private readonly stopping = new Set<{ jobId: string; done: Promise<void> }>();
   constructor(
     readonly supervisor: RuntimeSupervisor,
     readonly sql: MemorySql,
@@ -89,19 +91,39 @@ export class SupervisedHermesRuntime implements RuntimeAdapter {
       signal.throwIfAborted();
       return await adapter.start(bundle, sink, signal);
     } finally {
-      // The outcome, or the engine's own failure, is what the attempt reports. An
-      // engine that finished but would not stop is recorded, never turned into a
-      // lost attempt that runs again.
-      await instance.stop().catch((error: unknown) => {
-        process.stderr.write(
-          `runtime stop failed for ${bundle.attempt.id}: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
-      });
-      this.onTiming({
-        attemptId: bundle.attempt.id,
-        coldStartMs: instance.coldStartMs,
-        wallMs: Date.now() - started,
-      });
+      // The outcome, or the engine's own failure, is what the attempt reports,
+      // and it is reported without waiting for the engine to stop: the run is
+      // over, and the attempt's capability is fenced once its outcome commits.
+      // An engine that finished but would not stop is recorded, never turned
+      // into a lost attempt that runs again. `released` waits for the stop, and
+      // the supervisor's close waits for it as well.
+      const entry = {
+        jobId: bundle.attempt.job_id,
+        done: instance
+          .stop()
+          .catch((error: unknown) => {
+            process.stderr.write(
+              `runtime stop failed for ${bundle.attempt.id}: ${error instanceof Error ? error.message : String(error)}\n`,
+            );
+          })
+          .finally(() => {
+            this.stopping.delete(entry);
+            this.onTiming({
+              attemptId: bundle.attempt.id,
+              coldStartMs: instance.coldStartMs,
+              wallMs: Date.now() - started,
+            });
+          }),
+      };
+      this.stopping.add(entry);
     }
+  }
+
+  /** Resolves once no engine that ran for these jobs is still being stopped. */
+  async released(jobIds: readonly string[]): Promise<void> {
+    const ids = new Set(jobIds);
+    await Promise.all(
+      [...this.stopping].filter((entry) => ids.has(entry.jobId)).map((entry) => entry.done),
+    );
   }
 }

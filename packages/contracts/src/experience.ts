@@ -168,6 +168,8 @@ export const standingRule = z.strictObject({
   created_at: date,
 });
 export type StandingRule = z.infer<typeof standingRule>;
+/** How much of a proposed file a permission card carries. */
+export const PERMISSION_FILE_PREVIEW_CHARS = 20_000;
 export const permissionCard = z.strictObject({
   id,
   conversation_id: id,
@@ -177,6 +179,18 @@ export const permissionCard = z.strictObject({
   version: id,
   preview: resultCard.nullable(),
   draft: experienceDraft.optional(),
+  /**
+   * A file this request would save: where it goes and what it says, so it is
+   * never approved unseen. `truncated` marks content cut at the preview limit.
+   */
+  file: z
+    .strictObject({
+      path: text,
+      bytes: count,
+      content: z.string().max(PERMISSION_FILE_PREVIEW_CHARS),
+      truncated: z.boolean(),
+    })
+    .optional(),
   /** Present when auto-review looked at this first and sent it to the person. */
   review: actionReview.optional(),
   /** When permission was asked for; the queue is oldest first. */
@@ -386,7 +400,9 @@ export const experienceDecision = z.strictObject({
   id,
   /**
    * `replaced` is a permission a later message in the same conversation made
-   * stale: it can no longer be allowed, and nothing it covered is sent.
+   * stale: it can no longer be allowed, and nothing it covered is sent. On a
+   * permission, `withdrawn` means the person stopped the turn while it waited,
+   * with the same effect.
    */
   outcome: z.enum(['allow_once', 'always', 'deny', 'replaced', 'answered', 'withdrawn']),
   /** The chosen answer, for an answered question. */
@@ -403,6 +419,8 @@ export const experienceEvent = z.strictObject({
   item: z.union([
     trailStep,
     z.strictObject({ type: z.literal('text_delta'), text: z.string() }),
+    /** The model's reasoning as it writes it, for the trail; never part of the answer. */
+    z.strictObject({ type: z.literal('reasoning'), text: z.string() }),
     z.strictObject({ type: z.literal('card'), card: resultCard }),
     z.strictObject({ type: z.literal('receipt'), receipt: experienceReceipt }),
     z.strictObject({ type: z.literal('permission'), permission: permissionCard }),

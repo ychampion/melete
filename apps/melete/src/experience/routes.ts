@@ -30,7 +30,7 @@ import { AGENT_TEMPLATES } from './agents.ts';
 import { ExperienceBeliefs } from './beliefs.ts';
 import { type ComputerBinding, projectComputer } from './computer.ts';
 import { ExperienceEffects } from './effects.ts';
-import { ExperienceEvents } from './events.ts';
+import { type EventChanges, ExperienceEvents } from './events.ts';
 import { ExperienceHome } from './home.ts';
 import { ExperienceMemory } from './memory.ts';
 import { ExperiencePermissions } from './permissions.ts';
@@ -52,6 +52,8 @@ export type ExperienceDeps = {
   /** Provisions a space's memory on its owner's first use. */
   memoryProvision?: (spaceId: string, principalId: string) => Promise<void>;
   triggers?: TriggerService;
+  /** Commit notifications for live conversation streams. */
+  changes?: EventChanges;
   /** A browser worker is configured, so a conversation's agent can have a browser. */
   browser?: boolean;
 };
@@ -98,13 +100,17 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       : undefined;
   const home = new ExperienceHome(deps.db, ownerEffects);
   const planning = new ExperiencePlanning(service, deps.triggers);
-  const events = new ExperienceEvents(deps.db, {
-    permission: (spaceId, id) => permissions?.card(spaceId, id) ?? Promise.resolve(undefined),
-    question: async (spaceId, id) =>
-      (await questions.list(spaceId)).questions.find((item) => item.id === id),
-    because: async (spaceId, actionId) =>
-      deps.sql ? actionBecause(deps.sql, spaceId, actionId) : [],
-  });
+  const events = new ExperienceEvents(
+    deps.db,
+    {
+      permission: (spaceId, id) => permissions?.card(spaceId, id) ?? Promise.resolve(undefined),
+      question: async (spaceId, id) =>
+        (await questions.list(spaceId)).questions.find((item) => item.id === id),
+      because: async (spaceId, actionId) =>
+        deps.sql ? actionBecause(deps.sql, spaceId, actionId) : [],
+    },
+    deps.changes,
+  );
   service.progress = (spaceId, jobId, turnId, stage) =>
     events.progress(spaceId, jobId, turnId, stage);
   /** The conversation's own job and the command jobs it started, all the caller's own. */

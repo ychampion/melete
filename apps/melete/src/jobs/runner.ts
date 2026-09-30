@@ -43,6 +43,8 @@ import {
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { STOPPED_NOTE } from '../experience/projectors.ts';
+import { withdrawPendingPermissions } from '../experience/service.ts';
 import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { spaceAuthority } from '../principals/authority.ts';
@@ -53,6 +55,7 @@ import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
 import { FairScheduler } from './fair-scheduler.ts';
 import { requireCurrentAttempt } from './fence.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
+import { LIMIT_REACHED_NOTE } from './limits.ts';
 import { persistQuestions, resolveQuestions } from './questions.ts';
 import {
   ATTEMPT_QUEUES,
@@ -746,11 +749,18 @@ export class AttemptRunner {
         .update(experienceTurn)
         .set({
           status: turnStatus,
-          ...('summary' in outcome
-            ? { answer: outcome.summary }
-            : outcome.kind === 'waiting_for_input' && outcome.draft
-              ? { answer: outcome.draft }
-              : {}),
+          // A conversation turn that hit a limit keeps what it already said and
+          // ends with a plain sentence, not the name of the limit.
+          ...(row.kind === 'chat' && outcome.kind === 'budget_exhausted'
+            ? {
+                answer: sql`case when ${experienceTurn.answer} = '' then ${LIMIT_REACHED_NOTE}
+                  else ${experienceTurn.answer} || ${`\n\n${LIMIT_REACHED_NOTE}`} end`,
+              }
+            : 'summary' in outcome
+              ? { answer: outcome.summary }
+              : outcome.kind === 'waiting_for_input' && outcome.draft
+                ? { answer: outcome.draft }
+                : {}),
           finishedAt: new Date(),
         })
         .where(eq(experienceTurn.id, row.currentTurnId));
@@ -832,6 +842,8 @@ export class AttemptRunner {
         .update(experienceTurn)
         .set({ status: 'stopped', finishedAt: new Date() })
         .where(eq(experienceTurn.id, turn.id));
+      // Nothing the stopped turn asked for may still be allowed afterwards.
+      await withdrawPendingPermissions(tx, jobId, STOPPED_NOTE);
       await tx
         .update(attempt)
         .set({

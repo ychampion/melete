@@ -112,7 +112,8 @@ export const emailManifest: ConnectorManifest = {
     },
     {
       name: 'email.draft',
-      description: 'Keep a local draft in the action record for review.',
+      description:
+        'Prepare a draft for the person to review. In a chat you cannot send it: the person sends it from its draft card.',
       input_schema: outgoingSchema,
       effect_class: 'write_reversible',
       required_scopes: ['email.draft'],

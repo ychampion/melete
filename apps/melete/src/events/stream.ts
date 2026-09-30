@@ -135,6 +135,17 @@ export class EventStream {
     for (const client of this.clients) client.notify();
   }
 
+  /**
+   * Call `listener` whenever an event may have been committed: on each
+   * notification, and on the polling tick that repairs missed ones. It carries
+   * no data; the listener reads Postgres itself. Returns the unsubscribe.
+   */
+  subscribe(listener: () => void): () => void {
+    const client: Client = { notify: listener, close: () => {}, buffered: () => 0 };
+    this.add(client);
+    return () => this.remove(client);
+  }
+
   private add(client: Client): void {
     this.clients.add(client);
     if (this.pollTimer !== undefined) return;

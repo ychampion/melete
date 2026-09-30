@@ -221,6 +221,31 @@
 .trail-head:hover {
   background: var(--hover);
 }
+/* A header with nothing beneath it to open. */
+.trail-head[data-static="true"] {
+  padding-left: 6px;
+}
+.trail-head[data-static="true"]:hover {
+  background: none;
+}
+/* The model's reasoning, as it wrote it: quieter than anything it said to the person. */
+.trail-reasoning {
+  margin: 2px 0 8px 26px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* While it is still being written, the newest lines stay in view. */
+.trail-reasoning[data-live="true"] {
+  max-height: 152px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column-reverse;
+}
 .trail-steps {
   display: flex;
   flex-direction: column;
@@ -581,6 +606,26 @@
   padding: 18px 20px;
   font-size: 15px;
   line-height: 24px;
+}
+.permission-file {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.permission-file-text {
+  align-self: stretch;
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: var(--radius-block);
+  background: var(--soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .permission-foot {
   display: flex;

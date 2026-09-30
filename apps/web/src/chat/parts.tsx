@@ -19,9 +19,11 @@ import {
   Select,
   Status,
 } from '../design/primitives.tsx';
+import { adapter } from '../experience/adapter.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
 import { lookOf } from '../experience/hooks.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
+import { OPEN_TEXT_LIMIT_BYTES } from '../experience/text-prefix.ts';
 import { type ToolEntry, toolOf } from '../experience/trace.ts';
 import type {
   ActionResolution,
@@ -221,21 +223,38 @@ function ToolLines({ tool }: { tool: ToolEntry }) {
 
 const RUNNING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
 
-export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
+/**
+ * What the agent did for a turn, drawn above its answer. The header is live
+ * while the turn runs and says how long it took once it ends; the steps and
+ * the model's reasoning open beneath it. They are open while the agent works
+ * and nothing has been said yet, and closed once the answer arrives or the
+ * turn ends, unless the person opened or closed them, or the job kept going
+ * after it first settled (a chase: the send, then the reply and the
+ * follow-up), which stays open so what it did after the send is in view.
+ */
+export function Trail({
+  turn,
+  now,
+  answering = false,
+}: {
+  turn: TranscriptTurn;
+  now: number;
+  /** Whether the answer is being drawn beneath. */
+  answering?: boolean;
+}) {
   const running = RUNNING.includes(turn.status);
   const dones = turn.trail.filter(
     (s): s is Extract<TrailStep, { type: 'done' }> => s.type === 'done',
   );
-  // A job that keeps going after it first settles (a chase: the send, then the
-  // reply and the follow-up) is read from its last resting line, and stays open
-  // so what it did after the send is in view.
   const doneStep = running ? undefined : dones.at(-1);
   const continued =
     turn.trail.findIndex((s) => s.type === 'done') < turn.trail.length - 1 && dones.length > 0;
   const [open, setOpen] = useState<boolean | null>(null);
+  const stepsId = useId();
   const steps = turn.trail.filter((s) => s.type !== 'done');
-  if (turn.trail.length === 0) return null;
-  const expanded = open ?? (!doneStep || continued);
+  if (turn.trail.length === 0 && !running) return null;
+  const expandable = steps.length > 0;
+  const expanded = expandable && (open ?? (running ? !answering : continued));
   const elapsed = doneStep
     ? Math.max(1, Math.round(doneStep.elapsed_ms / 1000))
     : Math.max(0, Math.round((now - new Date(turn.turn.created_at).getTime()) / 1000));
@@ -257,36 +276,62 @@ export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
         <span className="pulse" style={{ animationDelay: '.4s' }} />
       </span>
       <span>{turn.status === 'paused' ? `Paused · ${elapsed}s` : `Working · ${elapsed}s`}</span>
+      {!expanded && turn.live ? (
+        <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
+          · {turn.live.title}
+        </span>
+      ) : null}
     </>
-  ) : turn.status === 'stopped' ? (
-    <span>Stopped after {elapsed}s</span>
-  ) : turn.status === 'needs_you' ? (
-    <span>Waiting for you · {elapsed}s</span>
-  ) : turn.status === 'failed' ? (
-    <span>Stopped without finishing</span>
   ) : (
-    <span>Worked for {elapsed}s</span>
+    <>
+      {turn.status === 'stopped' ? (
+        <span>Stopped after {elapsed}s</span>
+      ) : turn.status === 'needs_you' ? (
+        <span>Waiting for you · {elapsed}s</span>
+      ) : turn.status === 'failed' ? (
+        <span>Stopped without finishing</span>
+      ) : (
+        <span>Worked for {elapsed}s</span>
+      )}
+      {rest ? (
+        <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
+          · {rest}
+        </span>
+      ) : null}
+    </>
   );
   return (
-    <div className="col" style={{ gap: 4 }}>
-      <button
-        type="button"
-        className="trail-head"
-        aria-expanded={expanded}
-        onClick={() => setOpen(!expanded)}
-      >
-        <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={14} />
-        {head}
-        {!expanded && rest ? (
-          <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
-            · {rest}
-          </span>
-        ) : null}
-      </button>
+    <div className="col trail" style={{ gap: 4 }}>
+      {expandable ? (
+        <button
+          type="button"
+          className="trail-head"
+          aria-expanded={expanded}
+          aria-controls={stepsId}
+          onClick={() => setOpen(!expanded)}
+        >
+          <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={14} />
+          {head}
+        </button>
+      ) : (
+        <div className="trail-head" data-static="true">
+          {head}
+        </div>
+      )}
       {expanded ? (
-        <div className="trail-steps">
+        <div className="trail-steps" id={stepsId}>
           {steps.map((step, index) => {
             const key = `${step.type}-${index}`;
+            if (step.type === 'reasoning')
+              return (
+                <div
+                  key={key}
+                  className="trail-reasoning"
+                  data-live={running && index === steps.length - 1 ? 'true' : undefined}
+                >
+                  {step.text.trim()}
+                </div>
+              );
             if (step.type === 'say')
               return (
                 <div key={key} className="trail-say">
@@ -342,7 +387,7 @@ export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
               </div>
             );
           })}
-          {running && steps.length > 0 ? (
+          {running ? (
             <div className="trail-row">
               <span className="trail-icon">
                 <span style={{ color: 'var(--primary)', display: 'flex' }}>
@@ -351,18 +396,6 @@ export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
               </span>
               <span style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>
                 {turn.status === 'paused' ? 'Paused' : (turn.live?.title ?? 'Still working')}
-              </span>
-            </div>
-          ) : null}
-          {doneStep ? (
-            <div className="trail-row">
-              <span className="trail-icon">
-                <span style={{ color: 'var(--success)', display: 'flex' }}>
-                  <Icon name="circleCheck" size={16} />
-                </span>
-              </span>
-              <span style={{ flex: 1, fontSize: 13, fontWeight: 500, color: 'var(--heading)' }}>
-                Worked for {elapsed}s{rest ? ` · ${rest}` : ''}
               </span>
             </div>
           ) : null}
@@ -381,6 +414,91 @@ function Paragraphs({ text }: { text: string }) {
         // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are a cut of one string, in order
         <p key={index}>{part.trim()}</p>
       ))}
+    </>
+  );
+}
+
+/* ---------- saved file ---------- */
+
+/**
+ * A file the agent saved: a text file opens here, in a dialog that reads it
+ * from the service; anything else downloads.
+ */
+function SavedFileAction({
+  id,
+  name,
+  label,
+  view,
+  primary,
+  size,
+  touch,
+}: {
+  id: string;
+  name: string;
+  label: string;
+  view: boolean;
+  primary: boolean;
+  size: 'sm' | 'xl';
+  touch: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [shown, setShown] = useState<{ text: string; truncated: boolean } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const href = adapter.artifactUrl(id);
+  if (!view)
+    return (
+      <a className={`btn btn-${size} btn-${primary ? 'primary' : 'outline'}`} href={href} download>
+        {label}
+      </a>
+    );
+  const show = async () => {
+    setOpen(true);
+    setError(null);
+    const result = await adapter.artifactText(id);
+    if (result.data !== null) setShown(result.data);
+    else setError(result.error ?? result.unavailable ?? 'Couldn’t open this file.');
+  };
+  return (
+    <>
+      <Button
+        size={size}
+        variant={primary ? undefined : 'outline'}
+        block={touch}
+        onClick={() => void show()}
+      >
+        {label}
+      </Button>
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        title={name}
+        width={720}
+        footer={
+          <>
+            <a className="btn btn-md btn-outline" href={href} download>
+              Download
+            </a>
+            <Button onClick={() => setOpen(false)}>Close</Button>
+          </>
+        }
+      >
+        {error ? (
+          <p role="alert" className="permission-why">
+            {error}
+          </p>
+        ) : shown === null ? (
+          <p className="permission-why">Opening…</p>
+        ) : (
+          <>
+            <pre className="permission-file-text">{shown.text || 'This file is empty.'}</pre>
+            {shown.truncated ? (
+              <p className="permission-why">
+                This shows the first {OPEN_TEXT_LIMIT_BYTES / 1024} KB. Download to see all of it.
+              </p>
+            ) : null}
+          </>
+        )}
+      </Dialog>
     </>
   );
 }
@@ -416,6 +534,19 @@ export function ResultCard({
   const draftBody = draft?.body ?? card.facts.find((f) => f.label === 'Draft')?.value ?? null;
   const [broken, setBroken] = useState(false);
   const action = (a: NonNullable<ResultCardData['primary_action']>, primary: boolean) => {
+    if ((a.kind === 'open' || a.kind === 'download') && !a.url && a.handle.startsWith('art_'))
+      return (
+        <SavedFileAction
+          key={a.handle}
+          id={a.handle}
+          name={card.title}
+          label={a.label}
+          view={a.kind === 'open'}
+          primary={primary}
+          size={size}
+          touch={touch}
+        />
+      );
     if (a.kind === 'open' || a.kind === 'download') {
       return a.url ? (
         <a
@@ -693,9 +824,52 @@ export function ReviewNote({ review }: { review: ActionReview }) {
 
 const DAYS = [1, 7, 14, 30] as const;
 
+/** How much of a proposed file shows before "Show all". */
+const FILE_PREVIEW_LINES = 12;
+const FILE_PREVIEW_CHARS = 1200;
+
+/**
+ * The exact text a file write would save, so it is never approved unseen. It
+ * is shown as written, not rendered: what is reviewed is what lands on disk.
+ */
+export function FilePreview({ file }: { file: NonNullable<Permission['file']> }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const lines = file.content.split('\n');
+  const long = lines.length > FILE_PREVIEW_LINES || file.content.length > FILE_PREVIEW_CHARS;
+  const shown =
+    long && !open
+      ? `${lines.slice(0, FILE_PREVIEW_LINES).join('\n').slice(0, FILE_PREVIEW_CHARS).trimEnd()}\n…`
+      : file.content;
+  return (
+    <div className="permission-file">
+      <pre id={id} className="permission-file-text">
+        {file.content ? shown : 'This file is empty.'}
+      </pre>
+      {file.truncated && (open || !long) ? (
+        <span className="permission-caption">
+          Showing the first {file.content.length.toLocaleString()} characters of{' '}
+          {file.bytes.toLocaleString()} bytes.
+        </span>
+      ) : null}
+      {long ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-expanded={open}
+          aria-controls={id}
+          onClick={() => setOpen((value) => !value)}
+        >
+          {open ? 'Show less' : 'Show all'}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 /** What a decided permission card says it came to; null while it waits. */
 export function permissionOutcome(
-  decided: PermissionOption | 'replaced' | 'closed' | null,
+  decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null,
 ): string | null {
   return decided === 'allow_once'
     ? 'Allowed once'
@@ -705,9 +879,11 @@ export function permissionOutcome(
         ? 'Denied'
         : decided === 'replaced'
           ? 'Replaced by your new message'
-          : decided === 'closed'
-            ? 'Decided'
-            : null;
+          : decided === 'withdrawn'
+            ? 'Withdrawn when you stopped'
+            : decided === 'closed'
+              ? 'Decided'
+              : null;
 }
 
 export function PermissionCard({
@@ -719,7 +895,7 @@ export function PermissionCard({
   busy = false,
 }: {
   permission: Permission;
-  decided: PermissionOption | 'replaced' | 'closed' | null;
+  decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null;
   onDecide: (option: PermissionOption, bounds?: RuleBounds) => void;
   touch?: boolean;
   /** Drawn without its footer, when the phone carries the decision in a bottom bar. */
@@ -750,10 +926,15 @@ export function PermissionCard({
       active.closest('.decide-bar') !== null;
     if (lost) cardRef.current?.focus({ preventScroll: true });
   }, [decided]);
-  const fields = permission.why.slice(1).map((line) => {
-    const [label = '', ...value] = line.split(': ');
-    return { label, value: value.join(': ') };
-  });
+  // "Label: value" lines are fields; any other reason ("For your request.") reads as a sentence.
+  const reasons = permission.why.slice(1);
+  const notes = reasons.filter((line) => !line.includes(': '));
+  const fields = reasons
+    .filter((line) => line.includes(': '))
+    .map((line) => {
+      const [label = '', ...value] = line.split(': ');
+      return { label, value: value.join(': ') };
+    });
   const draft = permission.draft;
   if (draft && !fields.some((field) => field.label.toLowerCase() === 'to'))
     fields.push({
@@ -793,6 +974,11 @@ export function PermissionCard({
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
           <span className="permission-what">{permission.what}</span>
           <span className="permission-why">{permission.why[0]}</span>
+          {notes.map((note) => (
+            <span key={note} className="permission-why">
+              {note}
+            </span>
+          ))}
           <BecauseLine because={permission.because} />
         </div>
         {outcome ? (
@@ -817,6 +1003,7 @@ export function PermissionCard({
           {permission.preview && !draft ? (
             <ResultCard card={permission.preview} readOnly touch={touch} />
           ) : null}
+          {permission.file ? <FilePreview file={permission.file} /> : null}
           {draft ? (
             <div className="permission-draft">
               {draft.subject ? <div className="draft-subject">{draft.subject}</div> : null}

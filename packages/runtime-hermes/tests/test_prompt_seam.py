@@ -86,3 +86,21 @@ def test_the_image_installs_melete_identity_as_the_engine_soul():
     assert 'cp /opt/melete-runtime/SOUL.md "$HERMES_HOME/SOUL.md"' in script
     assert "COPY config/SOUL.md /opt/melete-runtime/SOUL.md" in (
         PACKAGE / "Dockerfile").read_text(encoding="utf-8")
+
+
+def test_a_checkout_carrying_the_earlier_patch_is_moved_to_this_one_and_nothing_else_is():
+    """The upgrade path in miniature: the pin, an earlier patch, the current patch."""
+    module = bridge()
+    pinned = "alpha\nbeta\ngamma\n"
+    changes = [("alpha\n", "alpha one\n"), ("gamma\n", "gamma two\n")]
+    expected = module.digest(pinned)
+    earlier = module.patched(pinned, expected, changes[:1])
+    current = module.patched(pinned, expected, changes)
+    assert module.patched(earlier, expected, changes, (1,)) == current
+    assert module.patched(current, expected, changes, (1,)) == current
+    # Without the earlier version named, the earlier patch is refused.
+    with pytest.raises(ValueError):
+        module.patched(earlier, expected, changes)
+    # Anything else about the file still has to match the pin.
+    with pytest.raises(ValueError):
+        module.patched(earlier.replace("beta", "delta"), expected, changes, (1,))

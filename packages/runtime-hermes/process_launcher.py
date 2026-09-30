@@ -3,18 +3,53 @@
 The source checkout stays untouched. This small aiohttp startup wrapper reports
 the bound socket, since Hermes's API_SERVER_PORT=0 log only prints the requested
 port. The supervisor reads the report from the attempt's private temporary home.
+
+A spare engine (MELETE_RUNTIME_SPARE=1) is started before its attempt exists. It
+imports the engine against the configuration the attempt will have, less the
+attempt's capability, then waits for one line on stdin naming the attempt's
+working directory and environment, and starts from there as an engine started
+with them would. Any module that reads one of those values, or the working
+directory, while it is imported would have read a value the attempt does not
+have, so the spare reports that and exits instead of being used. The Melete
+plugin, loaded on the way, fetches the attempt's tools only once it has one.
 """
+import importlib
 import json
 import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-from aiohttp import web
+SPARE_READY = 'melete-spare:ready'
+SPARE_UNUSABLE = 'melete-spare:unusable'
+# What an engine imports on its way to its first run, heaviest first.
+PREWARM = (
+    'hermes_cli.main',
+    'gateway.run',
+    'run_agent',
+    'gateway.platforms.api_server',
+    'openai',
+    'aiohttp.web',
+    'requests',
+    'tools.tool_search',
+    'nemo_relay',
+    'agent.outbound_webhooks',
+)
+# Modules known to ask for the working directory at import without keeping it
+# for anything an attempt does: Rich shortens paths in the tracebacks it draws,
+# tempfile lists it as a last-resort candidate after TEMP and TMP, and the
+# engine's own startup compares sys.path entries to put its root first.
+KEEPS_NO_WORKING_DIRECTORY = frozenset(('rich', 'tempfile', 'hermes_cli._startup_fast'))
+# Reads of an attempt's value known not to keep it. The gateway's runner looks
+# at TERMINAL_CWD as it is imported only to fill in a default when none is set;
+# a spare has its own set, which the attempt's replaces.
+READS_NOT_KEPT = frozenset((('TERMINAL_CWD', 'gateway.run'),))
 
 
 @contextmanager
 def report_listener(path: Path):
+    from aiohttp import web
+
     original = web.TCPSite.start
 
     async def start(site):
@@ -35,7 +70,149 @@ def report_listener(path: Path):
         web.TCPSite.start = original
 
 
+def reads_working_directory(frame) -> bool:
+    """Whether a call to getcwd from `frame` depends on the working directory.
+
+    Resolving an absolute path asks for it without using it (ntpath.realpath
+    always does); otherwise whoever resolved the path is the one asking.
+    """
+    if frame is not None:
+        source = frame.f_code.co_filename
+        if 'ntpath' in source or 'posixpath' in source:
+            path = frame.f_locals.get('path')
+            if isinstance(path, (str, bytes)) and os.path.isabs(path):
+                return False
+            frame = frame.f_back
+    if frame is None:
+        return True
+    return frame.f_globals.get('__name__') not in KEEPS_NO_WORKING_DIRECTORY
+
+
+def reader(frame) -> str | None:
+    """The module that read an environment value, past os and the mapping machinery."""
+    # The mapping methods live in _collections_abc, which names itself collections.abc.
+    while frame is not None and frame.f_globals.get('__name__') in (
+        'os',
+        '_collections_abc',
+        'collections.abc',
+    ):
+        frame = frame.f_back
+    return None if frame is None else frame.f_globals.get('__name__')
+
+
+@contextmanager
+def watch_reads(names):
+    """Record what is read of the named environment values and the working directory."""
+    seen = set()
+    environ_type = type(os.environ)
+    original_getitem = environ_type.__getitem__
+    original_contains = environ_type.__contains__
+    original_getcwd, original_getcwdb = os.getcwd, os.getcwdb
+
+    def note(key, frame):
+        if key in names and (key, reader(frame)) not in READS_NOT_KEPT:
+            seen.add(key)
+
+    def getitem(self, key):
+        note(key, sys._getframe(1))
+        return original_getitem(self, key)
+
+    def contains(self, key):
+        note(key, sys._getframe(1))
+        return original_contains(self, key)
+
+    def getcwd():
+        if reads_working_directory(sys._getframe(1)):
+            seen.add('cwd')
+        return original_getcwd()
+
+    def getcwdb():
+        if reads_working_directory(sys._getframe(1)):
+            seen.add('cwd')
+        return original_getcwdb()
+
+    environ_type.__getitem__ = getitem
+    environ_type.__contains__ = contains
+    os.getcwd, os.getcwdb = getcwd, getcwdb
+    try:
+        yield seen
+    finally:
+        environ_type.__getitem__ = original_getitem
+        environ_type.__contains__ = original_contains
+        os.getcwd, os.getcwdb = original_getcwd, original_getcwdb
+
+
+def prewarm(names) -> set:
+    """Import the engine ahead of its attempt; returns whatever of the attempt was read."""
+    with watch_reads(names) as seen:
+        for module in PREWARM:
+            try:
+                importlib.import_module(module)
+            except Exception:
+                # The engine imports it again when it needs it, and fails there if it must.
+                pass
+        try:
+            # The client package loads most of itself on first use. A client
+            # that is never sent anything, pointed nowhere, loads it now.
+            from openai import OpenAI
+
+            client = OpenAI(api_key='prewarm', base_url='http://127.0.0.1:9/v1', max_retries=0)
+            client.chat.completions  # noqa: B018
+            client.close()
+        except Exception:
+            pass
+        try:
+            # What the first request made anyway: urllib's default opener, whose
+            # HTTPS handler loads the system's certificates, and the engine's
+            # one shared context for its CA bundle, which the runner has named.
+            import urllib.request
+
+            if urllib.request._opener is None:
+                urllib.request.install_opener(urllib.request.build_opener())
+            from agent.ssl_verify import resolve_httpx_verify
+
+            resolve_httpx_verify()
+        except Exception:
+            pass
+    return set(seen)
+
+
+def receive_attempt(spare_cwd: str | None) -> None:
+    """Take the attempt's working directory and environment from the supervisor."""
+    line = sys.stdin.readline()
+    if not line:
+        raise SystemExit('The supervisor closed the spare engine before handing it an attempt')
+    handoff = json.loads(line)
+    environment = handoff['env']
+    if not isinstance(environment, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in environment.items()
+    ):
+        raise SystemExit('Invalid attempt handoff')
+    if os.environ.get('TERMINAL_CWD') != spare_cwd:
+        # The configuration named the terminal's directory as the engine loaded,
+        # and it would have replaced the attempt's own value just the same.
+        environment = {key: value for key, value in environment.items() if key != 'TERMINAL_CWD'}
+    os.environ.update(environment)
+    for key in ('MELETE_RUNTIME_SPARE', 'MELETE_RUNTIME_SPARE_KEYS'):
+        os.environ.pop(key, None)
+    os.chdir(handoff['cwd'])
+    # What was held back for the attempt, the plugin's tools among it, now has one.
+    hooks = sys.modules.get('melete_runtime_hooks')
+    if hooks is not None:
+        hooks.attempt_arrived()
+
+
 if __name__ == '__main__':
+    if os.environ.get('MELETE_RUNTIME_SPARE') == '1':
+        watched = frozenset(filter(None, os.environ.get('MELETE_RUNTIME_SPARE_KEYS', '').split(',')))
+        spare_cwd = os.environ.get('TERMINAL_CWD')
+        sys.argv = ['hermes']
+        read = prewarm(watched)
+        if read:
+            print(f'{SPARE_UNUSABLE} {",".join(sorted(read))}', flush=True)
+            raise SystemExit(3)
+        print(SPARE_READY, flush=True)
+        receive_attempt(spare_cwd)
     os.environ['API_SERVER_PORT'] = '0'
     sys.argv = ['hermes', 'gateway', 'run']
     with report_listener(Path(os.environ['MELETE_RUNTIME_ADDRESS_FILE'])):

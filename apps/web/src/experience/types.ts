@@ -51,7 +51,11 @@ export type StreamGap = {
 };
 /** Which way a permission or question went, as the stream records it. */
 export type ExperienceDecision = Extract<EventItem, { type: 'decision' }>['decision'];
-export type TrailStep = Extract<EventItem, { type: 'say' | 'action' | 'note' | 'done' }>;
+/** A step in the trail. Reasoning arrives in pieces and is kept as one step until something else happens. */
+export type TrailStep = Extract<
+  EventItem,
+  { type: 'say' | 'action' | 'note' | 'done' | 'reasoning' }
+>;
 export type Source = Extract<EventItem, { type: 'action' }>['sources'][number];
 export type ResultCard = Success<Ok<paths['/conversations/{id}/cards'], 'get'>>['cards'][number];
 export type CardAction = NonNullable<ResultCard['primary_action']>;

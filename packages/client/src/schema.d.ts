@@ -2657,6 +2657,10 @@ export interface paths {
                                     /** @constant */
                                     type: "text_delta";
                                 } | {
+                                    text: string;
+                                    /** @constant */
+                                    type: "reasoning";
+                                } | {
                                     card: components["schemas"]["__schema222"];
                                     /** @constant */
                                     type: "card";
@@ -15788,7 +15792,7 @@ export interface components {
         __schema65: number;
         /** @default 200 */
         __schema66: number;
-        __schema67: ("job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice" | "reaction" | "gap" | "hook_event" | "hook_error")[];
+        __schema67: ("job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "reasoning_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice" | "reaction" | "gap" | "hook_event" | "hook_error")[];
         __schema68: {
             allowed_scopes: components["schemas"]["__schema70"];
             audience: components["schemas"]["__schema72"];
@@ -16535,6 +16539,12 @@ export interface components {
             conversation_id: components["schemas"]["__schema211"];
             created_at: components["schemas"]["__schema215"];
             draft?: components["schemas"]["__schema232"];
+            file?: {
+                bytes: components["schemas"]["__schema216"];
+                content: string;
+                path: components["schemas"]["__schema212"];
+                truncated: boolean;
+            };
             id: components["schemas"]["__schema211"];
             options: components["schemas"]["__schema231"][];
             preview: components["schemas"]["__schema222"] | null;
@@ -17209,7 +17219,7 @@ export interface components {
         __schema358: string | null;
         __schema359: string | null;
         /** @enum {string} */
-        __schema360: "job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice" | "reaction" | "gap" | "hook_event" | "hook_error";
+        __schema360: "job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "reasoning_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice" | "reaction" | "gap" | "hook_event" | "hook_error";
         __schema361: string;
         __schema362: string;
         __schema363: string;
@@ -18104,6 +18114,14 @@ export interface components {
             text: string;
             /** @constant */
             type: "text_delta";
+        } | {
+            at: components["schemas"]["__schema146"];
+            attempt_id: components["schemas"]["__schema550"];
+            dedup_key: components["schemas"]["__schema552"];
+            local_seq: components["schemas"]["__schema551"];
+            text: string;
+            /** @constant */
+            type: "reasoning_delta";
         } | {
             arguments: components["schemas"]["__schema305"];
             at: components["schemas"]["__schema146"];

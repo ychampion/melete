@@ -381,6 +381,8 @@ export type AttemptOutcome = z.infer<typeof attemptOutcome>;
 export const RUNTIME_EVENT_TYPES = [
   'turn_started',
   'text_delta',
+  /** The model's reasoning as it is written, when its provider returns it. */
+  'reasoning_delta',
   'tool_call_proposed',
   'tool_result',
   'action_requested',
@@ -422,6 +424,7 @@ export const runtimeEvent = z.discriminatedUnion('type', [
     turn: z.number().int().nonnegative(),
   }),
   z.object({ ...runtimeEventBase, type: z.literal('text_delta'), text: z.string() }),
+  z.object({ ...runtimeEventBase, type: z.literal('reasoning_delta'), text: z.string() }),
   z.object({
     ...runtimeEventBase,
     type: z.literal('tool_call_proposed'),
@@ -461,8 +464,9 @@ export type RuntimeEvent = z.infer<typeof runtimeEvent>;
 /** The one and only dedup key format. Both sides compute it the same way. */
 export const dedupKey = (attemptId: string, localSeq: number): string => `${attemptId}:${localSeq}`;
 
-/** Text deltas are best-effort; a gap in them is shown as an ellipsis, never as lost history. */
-export const isDurableRuntimeEvent = (type: RuntimeEventType): boolean => type !== 'text_delta';
+/** Text and reasoning deltas are best-effort; a gap in them is shown as an ellipsis, never as lost history. */
+export const isDurableRuntimeEvent = (type: RuntimeEventType): boolean =>
+  type !== 'text_delta' && type !== 'reasoning_delta';
 
 /**
  * What a runtime must implement. The service owns the loop around it: one

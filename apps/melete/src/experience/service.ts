@@ -34,7 +34,7 @@ import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { ownJob } from '../principals/authority.ts';
 import { agentValues, agentView } from './agents.ts';
-import { answerText, plainText, SUPERSEDED_NOTE } from './projectors.ts';
+import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
 
 export const experienceMissing = () => new ServiceError('not_found', 'That item is not here.', 404);
 export function conversationView(
@@ -70,12 +70,18 @@ export function conversationView(
 /**
  * A new message in a conversation changes what was asked for, so every
  * permission still waiting in it is stale: the draft it would send was written
- * for the request before this one. Each is decided as denied by `replaced`, in
- * the same transaction that accepts the message, so it can never be allowed
- * afterwards and nothing it covered is sent. That includes the
+ * for the request before this one. Stopping the turn withdraws them the same
+ * way: the person said to stop, so nothing the turn asked for goes ahead. Each
+ * is decided as denied with the note that says why (`replaced` or `stopped`),
+ * in the same transaction that accepts the message or stops the turn, so it can
+ * never be allowed afterwards and nothing it covered is sent. That includes the
  * send of a reviewed draft, which runs as a command job under the conversation.
  */
-export async function supersedePendingPermissions(tx: Transaction, conversationId: string) {
+export async function withdrawPendingPermissions(
+  tx: Transaction,
+  conversationId: string,
+  note: typeof SUPERSEDED_NOTE | typeof STOPPED_NOTE,
+) {
   const pending = await tx
     .select({ approval, action })
     .from(approval)
@@ -92,7 +98,7 @@ export async function supersedePendingPermissions(tx: Transaction, conversationI
   for (const { approval: stale, action: effect } of pending) {
     await tx
       .update(approval)
-      .set({ decision: 'denied', decidedAt: new Date(), decidedBy: SUPERSEDED_NOTE })
+      .set({ decision: 'denied', decidedAt: new Date(), decidedBy: note })
       .where(eq(approval.id, stale.id));
     await tx.update(action).set({ status: 'denied' }).where(eq(action.id, effect.id));
     // The same record the broker keeps for every status an action moves through.
@@ -101,7 +107,7 @@ export async function supersedePendingPermissions(tx: Transaction, conversationI
       attemptId: effect.attemptId,
       type: 'action_status_changed',
       payload: { action_id: effect.id, from: effect.status, to: 'denied' },
-      dedupKey: `${stale.id}:${SUPERSEDED_NOTE}:status`,
+      dedupKey: `${stale.id}:${note}:status`,
     });
     await appendEvent(tx, {
       jobId: effect.jobId,
@@ -111,7 +117,7 @@ export async function supersedePendingPermissions(tx: Transaction, conversationI
         approval_id: stale.id,
         action_id: effect.id,
         decision: 'denied',
-        note: SUPERSEDED_NOTE,
+        note,
         payload_hash: effect.payloadHash,
       },
       dedupKey: `${stale.id}:decision`,
@@ -153,7 +159,7 @@ export class ExperienceService {
           text,
         });
         await tx.update(job).set({ currentTurnId: turnId }).where(eq(job.id, row.id));
-        await supersedePendingPermissions(tx, row.id);
+        await withdrawPendingPermissions(tx, row.id, SUPERSEDED_NOTE);
       };
     }
   }

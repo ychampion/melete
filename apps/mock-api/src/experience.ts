@@ -738,7 +738,10 @@ export class ExperienceMock {
         kind !== 'connector' && kind !== 'web' && !step.sources.length,
       );
     }
-    if (step.step === 'say') {
+    if (step.step === 'reason') {
+      const text = answerText(this.fill(step.text));
+      if (text) this.event(chat, { type: 'reasoning', text });
+    } else if (step.step === 'say') {
       this.flush(chat);
       this.event(chat, {
         type: 'say',
@@ -1063,16 +1066,7 @@ export class ExperienceMock {
       throw new MockExperienceError(409, 'Finish the current request first.');
     // A new message makes every permission still waiting in this conversation
     // stale, as the service does: it is replaced, and can never be allowed.
-    for (const permission of [...this.permissions.values()]) {
-      if (permission.conversation_id !== chat.view.id) continue;
-      this.permissions.delete(permission.id);
-      this.replaced.add(permission.id);
-      if (permission.draft) {
-        const { draft } = this.findDraft(required(this.permissionDrafts, permission.id));
-        draft.status = 'draft';
-      }
-      this.decided(chat, 'permission', permission.id, 'replaced');
-    }
+    this.closePending(chat, 'replaced');
     const turn = C.conversationTurn.parse({
       id: newId('turn'),
       conversation_id: chat.view.id,
@@ -1308,15 +1302,38 @@ export class ExperienceMock {
     this.event(chat, { type: 'permission', permission });
     return { draft, permission, receipt: null };
   }
-  /** Permissions a later message made stale; none of them can be decided again. */
-  readonly replaced = new Set<string>();
+  /**
+   * Permissions a later message made stale or a stop withdrew; none of them can
+   * be decided again.
+   */
+  readonly closed = new Map<string, 'replaced' | 'withdrawn'>();
+  /** Close every permission still waiting in a conversation, as the service does. */
+  closePending(chat: Parameters<typeof this.event>[0], outcome: 'replaced' | 'withdrawn') {
+    for (const permission of [...this.permissions.values()]) {
+      if (permission.conversation_id !== chat.view.id) continue;
+      this.permissions.delete(permission.id);
+      this.closed.set(permission.id, outcome);
+      if (permission.draft) {
+        const { draft } = this.findDraft(required(this.permissionDrafts, permission.id));
+        draft.status = 'draft';
+      }
+      this.decided(chat, 'permission', permission.id, outcome);
+    }
+  }
   decide(id: string, raw: unknown) {
     const input = C.permissionDecision.parse(raw);
-    if (this.replaced.has(id))
+    const closed = this.closed.get(id);
+    if (closed === 'replaced')
       throw new MockExperienceError(
         409,
         'Your new message replaced this request.',
         'permission_replaced',
+      );
+    if (closed === 'withdrawn')
+      throw new MockExperienceError(
+        409,
+        'This was withdrawn when you stopped.',
+        'permission_withdrawn',
       );
     if (this.permissionProposals.has(id)) {
       const permission = this.permissions.get(id);
@@ -1576,6 +1593,7 @@ export class ExperienceMock {
         } else {
           chat.stopped = true;
           this.state(chat, 'stopped');
+          this.closePending(chat, 'withdrawn');
         }
         return { conversation: chat.view };
       }

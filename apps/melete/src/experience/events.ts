@@ -27,6 +27,7 @@ import {
 } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { LIMIT_REACHED_NOTE } from '../jobs/limits.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import {
   answerText,
@@ -210,6 +211,13 @@ async function shownTool(tx: Transaction, jobId: string, id: string, item: 'tool
   return parsed.success ? parsed.data : undefined;
 }
 
+/** Something that says an event may have been committed; see `EventStream.subscribe`. */
+export type EventChanges = { subscribe(listener: () => void): () => void };
+/** How long a stream waits for new events when nothing says one was committed. */
+export const EXPERIENCE_POLL_MS = 1000;
+/** The least time between two reads of one stream, so a burst of commits is read as one page. */
+export const EXPERIENCE_READ_GAP_MS = 50;
+
 /** Projection has its own durable rows on the existing stream; reconnects never re-label history. */
 export class ExperienceEvents {
   constructor(
@@ -228,6 +236,8 @@ export class ExperienceEvents {
       /** What an action rested on, named on its receipt. */
       because?: (spaceId: string, actionId: string) => Promise<BecauseLink[]>;
     },
+    /** Commit notifications, so a live stream reads new events when they land rather than on its next poll. */
+    readonly changes?: EventChanges,
   ) {}
 
   /**
@@ -416,6 +426,10 @@ export class ExperienceEvents {
             }
           } else if (source.type === 'text_delta') {
             await emit(source, { type: 'text_delta', text: answerText(payload.text) });
+          } else if (source.type === 'reasoning_delta') {
+            // The same filter as the answer: reasoning is shown, so it is content.
+            const text = answerText(payload.text);
+            if (text) await emit(source, { type: 'reasoning', text });
           } else if (
             source.type === 'action_status_changed' &&
             payload.to === 'succeeded' &&
@@ -508,6 +522,9 @@ export class ExperienceEvents {
                   `file:${file.id}`,
                 );
             } else if (payload.experience_completed === false) {
+              // The saved turn ends with this sentence; a page following live reads it too.
+              if (source.jobId === id && outcome.kind === 'budget_exhausted')
+                await emit(source, { type: 'note', text: LIMIT_REACHED_NOTE });
               if (!settled)
                 await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
             } else if (outcome.kind === 'failed')
@@ -661,9 +678,19 @@ export class ExperienceEvents {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let wake: (() => void) | undefined;
     const encoder = new TextEncoder();
+    // A commit anywhere may be one of this conversation's; the read decides.
+    // One that lands while a read is under way is remembered, not lost.
+    let changed = false;
+    const unsubscribe = this.changes?.subscribe(() => {
+      changed = true;
+      wake?.();
+    });
+    let lastRead = Date.now();
+    let lastWrite = Date.now();
     const close = () => {
       closed = true;
       if (timer) clearTimeout(timer);
+      unsubscribe?.();
       wake?.();
       signal.removeEventListener('abort', close);
     };
@@ -683,18 +710,28 @@ export class ExperienceEvents {
                   `id: ${next.seq}\nevent: ${next.item.type}\ndata: ${JSON.stringify(next)}\n\n`,
                 ),
               );
+              lastWrite = Date.now();
               return;
             }
-            await new Promise<void>((resolve) => {
-              wake = resolve;
-              timer = setTimeout(resolve, 1000);
-            });
+            if (!changed)
+              await new Promise<void>((resolve) => {
+                wake = resolve;
+                timer = setTimeout(resolve, EXPERIENCE_POLL_MS);
+              });
             wake = undefined;
+            if (timer) clearTimeout(timer);
+            const since = Date.now() - lastRead;
+            if (since < EXPERIENCE_READ_GAP_MS) await Bun.sleep(EXPERIENCE_READ_GAP_MS - since);
             if (closed) break;
+            changed = false;
+            lastRead = Date.now();
             const page = await self.page(spaceId, cursor, jobId, 100, principalId);
             buffered = page.events;
-            if (!buffered.length) {
+            // Another conversation's commits wake this stream too; a keepalive
+            // goes out at the polling pace, not on each of those.
+            if (!buffered.length && Date.now() - lastWrite >= EXPERIENCE_POLL_MS) {
               controller.enqueue(encoder.encode(': keepalive\n\n'));
+              lastWrite = Date.now();
               return;
             }
           }

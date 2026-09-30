@@ -1,12 +1,15 @@
 """Apply only the reviewed seams to Hermes v2026.9.7.
 
-Three observer seams, and one prompt seam: `agent.host_prompt: false` leaves out
-the engine's own product pointer, its profile line and its host runtime block,
-which describe the engine's install rather than the attempt. The prompt seam is
-inert unless that key is set.
+Three observer seams, one prompt seam and one reasoning seam. The prompt seam:
+`agent.host_prompt: false` leaves out the engine's own product pointer, its
+profile line and its host runtime block, which describe the engine's install
+rather than the attempt. It is inert unless that key is set. The reasoning seam
+puts the model's reasoning on a run's event stream as `reasoning.delta`, beside
+the `message.delta` text the stream already carries.
 
 All four original source hashes are checked before any write. A subsequent
-run accepts only the same patch, never an arbitrary nearby upstream version.
+run accepts only the same patch, or a named earlier version of it, never an
+arbitrary nearby upstream version.
 The support module is copied into the runtime's import root so plugin loading
 and the HTTP executor share one context variable, independent of plugin aliases.
 """
@@ -106,8 +109,28 @@ def _join_tier(parts: List[Optional[str]]) -> str:
 """),
             ("            None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))\n",
              "            None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server, hook_sink=_hook_sink))\n"),
+            # The reasoning seam: what the model writes as reasoning reaches the
+            # run's stream as it is written, as its text already does.
+            ("    def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:\n",
+             """    def _reasoning_cb(delta: Optional[str]) -> None:  # Melete reasoning seam
+        if not delta or run_id not in self._run_streams:
+            return
+        with suppress(Exception):
+            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "reasoning.delta", delta=delta))
+
+    def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
+"""),
+            ("        self._active_run_agents[run_id] = agent\n",
+             "        agent.reasoning_callback = _reasoning_cb  # Melete reasoning seam\n        self._active_run_agents[run_id] = agent\n"),
         ],
     ),
+}
+
+# A checkout patched by an earlier reviewed version of a file's patch is
+# restored through that version, named by how many of the current changes it made.
+EARLIER_VERSIONS = {
+    # Before the reasoning seam.
+    "gateway/platforms/api_server_runs.py": (7,),
 }
 
 
@@ -115,19 +138,37 @@ def digest(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()
 
 
-def patched(content: str, expected_hash: str, changes: list[tuple[str, str]]) -> str:
+def restored(content: str, changes: list[tuple[str, str]]) -> str | None:
+    """The source with these changes taken out, or None when it does not carry them."""
+    original = content
+    for before, after in reversed(changes):
+        if original.count(after) != 1:
+            return None
+        original = original.replace(after, before, 1)
+    return original
+
+
+def patched(
+    content: str,
+    expected_hash: str,
+    changes: list[tuple[str, str]],
+    earlier: tuple[int, ...] = (),
+) -> str:
     original = content
     if digest(original) != expected_hash:
-        for before, after in reversed(changes):
-            if original.count(after) != 1:
-                raise ValueError(
-                    "Source is neither the audited pin nor this version of the reviewed observer "
-                    "patch. A checkout carrying an earlier patch version has to be restored to the "
-                    "pinned commit before this one is applied."
-                )
-            original = original.replace(after, before, 1)
-        if digest(original) != expected_hash:
+        candidates = [restored(content, changes)]
+        candidates += [restored(content, changes[:count]) for count in earlier]
+        found = [candidate for candidate in candidates if candidate is not None]
+        if not found:
+            raise ValueError(
+                "Source is neither the audited pin nor a reviewed version of the observer "
+                "patch. A checkout carrying another patch has to be restored to the pinned "
+                "commit before this one is applied."
+            )
+        pinned = [candidate for candidate in found if digest(candidate) == expected_hash]
+        if not pinned:
             raise ValueError("Restored source does not match the audited pin")
+        original = pinned[0]
     result = original
     for before, after in changes:
         if result.count(before) != 1:
@@ -142,7 +183,9 @@ def main() -> None:
     for name, (expected_hash, changes) in PATCHES.items():
         target = root / name
         current = target.read_text(encoding="utf-8")
-        prepared.append((target, patched(current, expected_hash, changes)))
+        prepared.append(
+            (target, patched(current, expected_hash, changes, EARLIER_VERSIONS.get(name, ())))
+        )
     support = Path(__file__).resolve().parents[1] / "runtime_support" / "melete_runtime_hooks.py"
     prepared.append((root / "melete_runtime_hooks.py", support.read_text(encoding="utf-8")))
     for target, content in prepared:

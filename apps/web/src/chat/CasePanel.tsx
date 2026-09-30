@@ -118,7 +118,9 @@ export function caseSteps(found: Case, transcript: Transcript): Step[] {
           ? 'You said not to send it'
           : permission.decided === 'replaced'
             ? 'Replaced by your new message'
-            : `Asked once for ${company.name}`,
+            : permission.decided === 'withdrawn'
+              ? 'Withdrawn when you stopped'
+              : `Asked once for ${company.name}`,
       state: allowed ? 'done' : 'now',
     });
   }
