@@ -21,15 +21,36 @@ const HAS_EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 const JWT = /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g;
 /** `Bearer abc…` and `Basic abc…` in a logged header. */
 const AUTH_SCHEME = /\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]+/gi;
-/** `name=value` or `name: value` where the name says the value is sensitive. */
+/**
+ * `name=value` or `name: value` where the name says the value is sensitive.
+ * The match starts at the telling word and the rest of the name is bounded, so
+ * a long run of such words costs one pass rather than one pass per word.
+ */
 const SENSITIVE_PAIR =
-  /\b([A-Za-z_-]*(?:token|secret|password|passwd|session|cookie|authorization|api[-_]?key|credential)[A-Za-z_-]*)(["']?\s*[:=]\s*["']?)([^\s"'&;,}]+)/gi;
+  /((?:token|secret|password|passwd|session|cookie|authorization|api[-_]?key|credential)[A-Za-z_-]{0,128})(["']?\s*[:=]\s*["']?)([^\s"'&;,}]+)/gi;
 /** A long run of key-like characters: session ids, API keys, hex digests. */
 const LONG_TOKEN = /\b[A-Za-z0-9_-]{32,}\b/g;
+/**
+ * Text past this many times `max` is cut before redaction: nothing past it
+ * could be shown, and the address pattern slows with the square of a long
+ * unbroken run.
+ */
+const INPUT_FACTOR = 4;
+
+/**
+ * Text cut to `limit` at its last space, so no half of a token is left at the
+ * end to escape the patterns. A run with no space in it is one long token.
+ */
+function bounded(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+  const cut = value.slice(0, limit);
+  for (let at = cut.length - 1; at > 0; at--) if (/\s/.test(cut[at] ?? '')) return cut.slice(0, at);
+  return REDACTED;
+}
 
 /** Redact free text: emails, bearer credentials, JWTs, sensitive pairs and long tokens. */
 export function redactText(value: string, max = 1000): string {
-  const redacted = value
+  const redacted = bounded(value, max * INPUT_FACTOR)
     .replace(JWT, REDACTED)
     .replace(AUTH_SCHEME, (_, scheme: string) => `${scheme} ${REDACTED}`)
     .replace(SENSITIVE_PAIR, (_, key: string, sep: string) => `${key}${sep}${REDACTED}`)

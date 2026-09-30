@@ -78,4 +78,22 @@ describe('redactText', () => {
     );
     expect(redactText('x'.repeat(5000)).length).toBeLessThanOrEqual(1000);
   });
+
+  test('a sensitive name glued to other letters still has its value replaced', () => {
+    expect(redactText('x9token=abc123 done')).toBe(`x9token=${REDACTED} done`);
+  });
+
+  test('a line made of sensitive-looking words takes one pass, not one per word', () => {
+    const started = performance.now();
+    expect(redactText('token-'.repeat(666))).toBe(`${REDACTED}-`);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  test('very long text is cut at a space before it is redacted', () => {
+    const started = performance.now();
+    const out = redactText(`${'word '.repeat(50)}${'k'.repeat(200_000)}`, 100);
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(out).not.toContain('kkkk');
+    expect(redactText(`ok ${'k'.repeat(900)}`, 100)).toBe('ok');
+  });
 });
