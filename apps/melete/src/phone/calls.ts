@@ -72,6 +72,13 @@ async function lineConversation(deps: CallRecordDeps, line: Line): Promise<strin
   return created;
 }
 
+/** How a conversation Melete started reads in its job's trail. */
+function outboundTitle(call: Pick<CallRow, 'channel' | 'action_id' | 'remote_number'>) {
+  return call.channel === 'whatsapp'
+    ? `Contacted ${call.remote_number} on WhatsApp`
+    : `Called ${call.remote_number}`;
+}
+
 const minutes = (seconds: number | null) =>
   seconds === null
     ? ''
@@ -94,15 +101,18 @@ async function trace(sql: Sql, jobId: string, attemptId: string | null, call: To
 export async function startInbound(
   deps: CallRecordDeps,
   line: Line,
-  input: { callerId?: string; conversationId?: string },
+  input: { callerId?: string; calledNumber?: string; conversationId?: string },
 ) {
   const caller = normalizeNumber(input.callerId);
+  // A WhatsApp conversation names the line's WhatsApp phone number id as the number called.
+  const whatsapp = line.stored.phone.whatsapp?.phone_number_id;
+  const channel = whatsapp && input.calledNumber?.trim() === whatsapp ? 'whatsapp' : 'phone';
   const person = caller !== null && line.stored.phone.allowed_callers.includes(caller);
   const conversationId = input.conversationId?.trim() || null;
   const id = newId('call');
   const [inserted] = await deps.sql<{ id: string; party: string }[]>`insert into phone_call
-      (id, connection_id, space_id, direction, party, remote_number, conversation_id, status)
-    values (${id}, ${line.id}, ${line.spaceId}, 'inbound', ${person ? 'person' : 'unknown'},
+      (id, connection_id, space_id, direction, channel, party, remote_number, conversation_id, status)
+    values (${id}, ${line.id}, ${line.spaceId}, 'inbound', ${channel}, ${person ? 'person' : 'unknown'},
       ${caller ?? 'withheld'}, ${conversationId}, 'in_progress')
     on conflict (connection_id, conversation_id) where conversation_id is not null do nothing
     returning id, party`;
@@ -112,7 +122,7 @@ export async function startInbound(
     : await deps.sql<{ id: string; party: string }[]>`select id, party from phone_call
         where connection_id = ${line.id} and conversation_id = ${conversationId}`;
   const call = existing ?? { id, party: 'unknown' };
-  if (inserted && !person) await noteStranger(deps, line, call.id, caller);
+  if (inserted && !person) await noteStranger(deps, line, call.id, caller, channel);
   return {
     callId: call.id,
     opening:
@@ -125,6 +135,7 @@ async function noteStranger(
   line: Line,
   callId: string,
   caller: string | null,
+  channel: 'phone' | 'whatsapp',
 ) {
   const [recent] = await deps.sql`select count(*)::int as calls from phone_call
     where connection_id = ${line.id} and party = 'unknown' and remote_number = ${caller ?? 'withheld'}
@@ -136,13 +147,21 @@ async function noteStranger(
   await trace(deps.sql, jobId, null, {
     id: `phone:${callId}`,
     kind: 'connector',
-    title: caller ? `Took a call from ${caller}` : 'Took a call from a withheld number',
+    title:
+      channel === 'whatsapp'
+        ? `Heard from ${caller ?? 'an unknown sender'} on WhatsApp`
+        : caller
+          ? `Took a call from ${caller}`
+          : 'Took a call from a withheld number',
     status: 'done',
     started_at: now,
     ended_at: now,
     input_summary: null,
     output_summary: {
-      text: 'Not one of your numbers, so the caller heard a short message and the call ended.',
+      text:
+        channel === 'whatsapp'
+          ? 'Not one of your numbers, so they got a short reply and nothing more.'
+          : 'Not one of your numbers, so the caller heard a short message and the call ended.',
     },
     detail: { type: 'receipt', id: callId },
     parent: null,
@@ -215,7 +234,7 @@ export async function finishCall(
     await trace(deps.sql, ended.job_id, ended.attempt_id, {
       id: `phone:${ended.id}`,
       kind: 'connector',
-      title: `Called ${ended.remote_number}`,
+      title: outboundTitle(ended),
       status: 'done',
       started_at: new Date(ended.created_at).toISOString(),
       ended_at: new Date().toISOString(),
@@ -261,13 +280,13 @@ export async function finishCall(
     await appendToolTrace(tx, jobId, null, {
       id: `phone:${ended.id}`,
       kind: 'connector',
-      title: 'Took your call',
+      title: ended.channel === 'whatsapp' ? 'Talked with you on WhatsApp' : 'Took your call',
       status: 'done',
       started_at: new Date(ended.created_at).toISOString(),
       ended_at: new Date().toISOString(),
       input_summary: null,
       output_summary: {
-        text: length ? `You talked for ${length}.` : 'The call ended.',
+        text: length ? `You talked for ${length}.` : 'The conversation ended.',
         ...(outcome ? { quote: { text: outcome, from: 'event' as const } } : {}),
       },
       detail: { type: 'receipt', id: ended.id },
@@ -330,7 +349,7 @@ export async function callNotConnected(
   await trace(deps.sql, failed.job_id, failed.attempt_id, {
     id: `phone:${failed.id}`,
     kind: 'connector',
-    title: `Called ${failed.remote_number}`,
+    title: outboundTitle(failed),
     status: 'failed',
     started_at: new Date(failed.created_at).toISOString(),
     ended_at: new Date().toISOString(),

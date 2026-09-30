@@ -18,9 +18,12 @@ export type LineIds = {
   phone_number_id?: string;
   secret_id?: string;
   webhook_id?: string;
+  /** The person's WhatsApp number, when the line answers it too. */
+  whatsapp_phone_number_id?: string;
 };
 
-export type Provisioned = Required<LineIds> & { webhook_secret: string };
+export type Provisioned = Required<Omit<LineIds, 'whatsapp_phone_number_id'>> &
+  Pick<LineIds, 'whatsapp_phone_number_id'> & { webhook_secret: string };
 
 /** The header ElevenLabs sends the line's key in, besides the bearer token. */
 export const LINE_KEY_HEADER = 'x-melete-key';
@@ -154,11 +157,18 @@ export async function provisionLine(
     made.phone_number_id = await client.importNumber(
       numberBody(input.config, input.credentials, input.label, made.agent_id),
     );
+    // The WhatsApp number was connected in ElevenLabs by the person; the line only answers it.
+    const whatsapp = input.config.whatsapp?.phone_number_id;
+    if (whatsapp) {
+      await client.assignWhatsApp(whatsapp, made.agent_id);
+      made.whatsapp_phone_number_id = whatsapp;
+    }
     return {
       agent_id: made.agent_id,
       phone_number_id: made.phone_number_id,
       secret_id: made.secret_id,
       webhook_id: made.webhook_id,
+      ...(whatsapp ? { whatsapp_phone_number_id: whatsapp } : {}),
       webhook_secret: webhook.webhook_secret,
     };
   } catch (error) {
@@ -175,6 +185,8 @@ export async function provisionLine(
 export async function teardownLine(client: ElevenLabsClient, ids: LineIds): Promise<boolean> {
   let complete = true;
   const steps: Array<[string | undefined, (id: string) => Promise<void>]> = [
+    // The WhatsApp number is the person's own; it is released from the agent, never deleted.
+    [ids.whatsapp_phone_number_id, (id) => client.assignWhatsApp(id, null)],
     [ids.phone_number_id, (id) => client.deleteNumber(id)],
     [ids.agent_id, (id) => client.deleteAgent(id)],
     [ids.webhook_id, (id) => client.deleteWebhook(id)],
@@ -203,6 +215,10 @@ export function provisioningProblem(error: unknown, telephony: 'twilio' | 'sip_t
     return error.step === 'number' && telephony === 'sip_trunk'
       ? 'ElevenLabs would not import the SIP trunk number. SIP trunking needs an ElevenLabs Enterprise plan.'
       : 'The ElevenLabs API key does not have access to Agents. Give it that access and try again.';
+  if (error.step === 'whatsapp')
+    return error.status === 404 || error.status === 422
+      ? 'ElevenLabs has no WhatsApp number with that phone number id. Connect the number in ElevenLabs under Agents, WhatsApp, and copy its id.'
+      : 'ElevenLabs could not give the WhatsApp number to the line. Try again shortly.';
   if (error.step === 'number')
     return telephony === 'twilio'
       ? 'ElevenLabs could not import the number. Check the Twilio account SID, the auth token, and that the number belongs to that account.'

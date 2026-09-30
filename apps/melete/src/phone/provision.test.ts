@@ -190,6 +190,54 @@ describe('setting a phone line up at ElevenLabs', () => {
     expect(words).not.toContain('bad sid');
   });
 
+  test('a line with WhatsApp gives the person’s WhatsApp number to the same agent, and only releases it', async () => {
+    const stub = stubElevenLabs();
+    const made = await provisionLine(new ElevenLabsClient('xi-key', { fetch: stub.fetcher }), {
+      ...input,
+      config: {
+        ...twilio,
+        whatsapp: { phone_number_id: '106540352242922', template_language: 'en' },
+      },
+    });
+    expect(made.whatsapp_phone_number_id).toBe('106540352242922');
+    expect(stub.seen.at(-1)).toEqual({
+      method: 'PATCH',
+      path: '/v1/convai/whatsapp-accounts/106540352242922',
+      key: 'xi-key',
+      body: { assigned_agent_id: 'agent_el', enable_messaging: true },
+    });
+    const teardown = stubElevenLabs();
+    await teardownLine(new ElevenLabsClient('xi-key', { fetch: teardown.fetcher }), made);
+    // Released from the agent first, and never deleted: the WhatsApp number is the person's own.
+    expect(teardown.seen[0]).toMatchObject({
+      method: 'PATCH',
+      path: '/v1/convai/whatsapp-accounts/106540352242922',
+      body: { assigned_agent_id: null },
+    });
+    expect(
+      teardown.seen.some(
+        (request) => request.method === 'DELETE' && request.path.includes('whatsapp'),
+      ),
+    ).toBe(false);
+    // A WhatsApp id ElevenLabs does not know takes the whole line down again, in plain words.
+    const unknown = stubElevenLabs({
+      'PATCH /v1/convai/whatsapp-accounts/999999': () => ({ status: 404 }),
+    });
+    const error = await provisionLine(new ElevenLabsClient('xi-key', { fetch: unknown.fetcher }), {
+      ...input,
+      config: { ...twilio, whatsapp: { phone_number_id: '999999', template_language: 'en' } },
+    }).catch((thrown: unknown) => thrown);
+    expect(provisioningProblem(error, 'twilio')).toContain(
+      'no WhatsApp number with that phone number id',
+    );
+    expect(unknown.seen.slice(-4).map((request) => request.method)).toEqual([
+      'DELETE',
+      'DELETE',
+      'DELETE',
+      'DELETE',
+    ]);
+  });
+
   test('each failure is told in words the person can act on', () => {
     expect(provisioningProblem(new ElevenLabsError('secret', 401), 'twilio')).toContain(
       'refused the API key',

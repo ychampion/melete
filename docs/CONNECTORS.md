@@ -143,7 +143,7 @@ client, or a `MELETE_PUBLIC_URL` to return the browser to.
 | iCloud Calendar, Fastmail Calendar | `caldav` | email address, app password |
 | Google Calendar (read only) | `ics` | the calendar's secret address in iCal format |
 | Other mail, other calendar, calendar feed, MCP server | each kind | every field the kind takes |
-| Phone line (ElevenLabs) | `phone` | name, ElevenLabs API key, number, Twilio SID and token or SIP trunk address and credentials, own numbers |
+| Phone line and WhatsApp (ElevenLabs) | `phone` | name, ElevenLabs API key, number, Twilio SID and token or SIP trunk address and credentials, own numbers, optionally the WhatsApp number id and templates |
 
 Each provider entry's password field says where that provider issues app
 passwords. `POST /connections` takes exactly one configuration block:
@@ -155,7 +155,7 @@ passwords. `POST /connections` takes exactly one configuration block:
 | Calendar feed (ICS address) | `caldav` | `ics`: one HTTPS or `webcal` address | the address itself | `calendar.list` |
 | MCP over HTTP | `mcp` | `mcp`: see [Installed MCP servers](#installed-mcp-servers) | optional token fields | declared in the block |
 | MCP from a package or image | `mcp` | `mcp_stdio`: see [the advanced path](#the-advanced-path) | `mcp_stdio.secret_env` | declared in the block |
-| Phone line | `phone` | `phone`: see [Phone calls](#phone-calls-through-elevenlabs) | `credentials.api_key` and the Twilio or SIP fields | `phone.call` |
+| Phone line | `phone` | `phone`: see [Phone calls](#phone-calls-through-elevenlabs) | `credentials.api_key` and the Twilio or SIP fields | `phone.call`, and `whatsapp.message` and `whatsapp.call` with WhatsApp templates |
 
 `scopes` may narrow the grants of the first three kinds; left empty it means all
 of them, and a scope outside the kind is refused. `space_id` may be left out, in
@@ -959,6 +959,51 @@ is calling, presenting the line key.
   automated assistant that only takes calls from its owner"), and the call ends
   without a model call. The person gets a note in the line's conversation, at
   most one an hour for the same number.
+
+### WhatsApp on the same line
+
+A phone line can also answer the person's WhatsApp Business number. WhatsApp is
+part of the phone connection rather than a kind of its own: ElevenLabs connects
+a WhatsApp number to an agent, and the line already has one agent with its
+custom LLM endpoint, key and end-of-call webhook. The WhatsApp number is served
+by that same agent, and every turn arrives at the same endpoint.
+
+ElevenLabs offers no API for connecting a WhatsApp number; that is done in
+ElevenLabs under Agents, WhatsApp, which runs Meta's sign-up. The person then
+gives the line:
+
+| Field | What it does |
+| --- | --- |
+| `phone.whatsapp.phone_number_id` | the id ElevenLabs shows for the number; the line's agent is assigned to it on installation (`PATCH /v1/convai/whatsapp-accounts/{id}`) |
+| `phone.whatsapp.message_template` | the Meta-approved template a chat Melete starts opens with; without it, `whatsapp.message` is not offered |
+| `phone.whatsapp.call_template` | the approved template that asks permission to call; without it, `whatsapp.call` is not offered |
+| `phone.whatsapp.template_language` | the templates' language code (`en`) |
+
+A grant the line cannot use is not kept, so a line without templates holds only
+`phone.call`. Revoking the line releases the WhatsApp number from the agent
+(`assigned_agent_id: null`) before the rest is removed; the number stays
+connected in ElevenLabs, because it is the person's own.
+
+- **The person's own WhatsApp:** ElevenLabs asks `/inbound` with the WhatsApp
+  user id as `caller_id` and the WhatsApp phone number id as `called_number`.
+  A user id is the number without its plus sign, so the same list of own
+  numbers decides. The person reaches Melete as themself, and replies are
+  written to be read or heard.
+- **Anyone else on WhatsApp:** one reply that names nobody, and a note
+  ("Heard from" the number "on WhatsApp").
+- **`whatsapp.message`:** starts a chat with someone else from the message
+  template (`POST /v1/convai/whatsapp/outbound-message`), filled in with the
+  approved `template_values`; replies are answered within the approved context.
+  The template itself should say an AI assistant is writing for the person.
+- **`whatsapp.call`:** places a WhatsApp call
+  (`POST /v1/convai/whatsapp/outbound-call`) with the same fixed opening as a
+  phone call. Someone who has not allowed calls from the number is first sent
+  the permission template, and the call follows once they allow it.
+
+Both are approval-bound like `phone.call`, with the same payload, the callee's
+calling hours, and one daily limit shared by calls and chats. The call row
+records its channel, and the trail says "Contacted" the number "on WhatsApp".
+The end-of-call report is handled as for a phone call.
 
 ### After a call
 

@@ -86,6 +86,14 @@ const elevenlabs: Fetch = async (input, init) => {
     return reply(200, { agent_id: `agent_${++agentCount}` });
   if (route === 'POST /v1/convai/phone-numbers')
     return reply(200, { phone_number_id: `phnum_${agentCount}` });
+  if (route === 'POST /v1/convai/whatsapp/outbound-message')
+    return reply(200, { conversation_id: `conv_wa_${seen.length}` });
+  if (route === 'POST /v1/convai/whatsapp/outbound-call')
+    return reply(200, {
+      success: true,
+      message: 'ok',
+      conversation_id: `conv_wacall_${seen.length}`,
+    });
   if (route.startsWith('POST /v1/convai/twilio/outbound-call')) {
     const answer = callAnswer();
     return reply(answer.status, answer.body);
@@ -233,7 +241,7 @@ async function harness() {
       space_id: spaceId,
       epoch: 1,
       revision: 0,
-      scopes: ['phone.call'],
+      scopes: ['phone.call', 'whatsapp.message', 'whatsapp.call'],
       budget: { max_actions: 20, max_output_tokens: 10_000, max_usd_est: 2 },
       exp: Math.floor(Date.now() / 1000) + 3600,
     };
@@ -283,7 +291,7 @@ withDb('a phone line through ElevenLabs', () => {
       .catalog?.find((entry) => entry.id === 'phone');
     expect(reachable).toMatchObject({
       available: true,
-      covers: ['calls'],
+      covers: ['calls', 'messages'],
       connect: { method: 'form', kind_id: 'phone' },
     });
     const unreachable = connectionKindListResponse
@@ -762,6 +770,204 @@ withDb('a phone line through ElevenLabs', () => {
       const [call] =
         await h.sql`select status, failure from phone_call where action_id = ${proposal.action_id}`;
       expect(call).toEqual({ status: 'failed', failure: 'Nobody answered.' });
+    });
+  });
+
+  describe('the same line on WhatsApp', () => {
+    const WHATSAPP_ID = '106540352242922';
+    let wa: Awaited<ReturnType<NonNullable<typeof h>['installLine']>>;
+    const day = zoneAt(10 * 60, 18 * 60);
+    const contact = (overrides: Record<string, unknown> = {}) => ({
+      phone_number: '+442071234567',
+      purpose: 'Confirm Tuesday',
+      may_share: 'Her first name',
+      must_not_agree_to: 'Any fee',
+      callee_time_zone: day,
+      ...overrides,
+    });
+    const approve = async (
+      claims: CapabilityClaims,
+      kind: string,
+      body: Record<string, unknown>,
+    ) => {
+      if (!h) throw new Error('Postgres unavailable');
+      const proposal = await h.broker.propose(claims, {
+        kind,
+        connection_id: wa.id,
+        payload: body as JsonObject,
+      });
+      expect(proposal.status).toBe('needs_approval');
+      await h.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      return proposal;
+    };
+
+    test('installing gives the WhatsApp number to the line’s agent and grants what its templates allow', async () => {
+      if (!h) throw new Error('Postgres unavailable');
+      const before = seen.length;
+      wa = await h.installLine({
+        number: '+14155550133',
+        daily_call_limit: 2,
+        whatsapp: {
+          phone_number_id: WHATSAPP_ID,
+          message_template: 'melete_hello',
+          call_template: 'melete_may_call',
+          template_language: 'en_GB',
+        },
+      });
+      const requests = seen.slice(before);
+      const agent = requests.find((request) => request.path === '/v1/convai/agents/create');
+      expect(requests.find((request) => request.method === 'PATCH')).toEqual({
+        method: 'PATCH',
+        path: `/v1/convai/whatsapp-accounts/${WHATSAPP_ID}`,
+        key: API_KEY,
+        body: {
+          assigned_agent_id: `agent_${agentCount}`,
+          enable_messaging: true,
+        },
+      });
+      expect(agent).toBeDefined();
+      const [row] = await h.sql`select scopes, configuration from connection where id = ${wa.id}`;
+      expect(row?.scopes).toEqual(['phone.call', 'whatsapp.message', 'whatsapp.call']);
+      expect(row?.configuration.elevenlabs.whatsapp_phone_number_id).toBe(WHATSAPP_ID);
+    });
+
+    test('a stranger on WhatsApp gets one reply and the person a WhatsApp note; the person reaches Melete', async () => {
+      if (!h) throw new Error('Postgres unavailable');
+      const stranger = phoneInboundResponse.parse(
+        await (
+          await h.app.request(
+            `/phone/${wa.id}/inbound`,
+            turnRequest(wa.key, {
+              caller_id: '447700900123',
+              called_number: WHATSAPP_ID,
+              conversation_id: 'conv_wa_stranger',
+            }),
+          )
+        ).json(),
+      );
+      expect(stranger.conversation_config_override.agent.first_message).toBe(STRANGER_OPENING);
+      const [note] =
+        await h.sql`select e.payload from event e join phone_line l on l.job_id = e.job_id
+        where l.connection_id = ${wa.id} and e.payload->>'kind' = 'tool_trace'`;
+      expect(note?.payload.call.title).toBe('Heard from +447700900123 on WhatsApp');
+      const [call] =
+        await h.sql`select channel, party from phone_call where id = ${stranger.custom_llm_extra_body.call_id}`;
+      expect(call).toEqual({ channel: 'whatsapp', party: 'unknown' });
+      // The person's WhatsApp id is their number without the plus sign.
+      const person = phoneInboundResponse.parse(
+        await (
+          await h.app.request(
+            `/phone/${wa.id}/inbound`,
+            turnRequest(wa.key, {
+              caller_id: OWN_NUMBER.slice(1),
+              called_number: WHATSAPP_ID,
+              conversation_id: 'conv_wa_person',
+            }),
+          )
+        ).json(),
+      );
+      expect(person.conversation_config_override.agent.first_message).toContain('Hi Zara');
+      script = { text: 'Noted.', calls: [] };
+      await h.app.request(
+        `/phone/${wa.id}/llm/v1/chat/completions`,
+        turnRequest(wa.key, {
+          messages: [{ role: 'user', content: 'What is on tomorrow?' }],
+          elevenlabs_extra_body: { call_id: person.custom_llm_extra_body.call_id },
+        }),
+      );
+      expect(asked.at(-1)?.system).toContain('on WhatsApp');
+      expect(recalled.at(-1)).toBe('What is on tomorrow?');
+    });
+
+    test('a WhatsApp chat and call are approved effects, bound to the number, and share the day’s limit', async () => {
+      if (!h) throw new Error('Postgres unavailable');
+      const claims = await h.seedJob();
+      const message = await approve(
+        claims,
+        'whatsapp.message',
+        contact({ template_values: ['Zara'] }),
+      );
+      // A changed number is a new action the approval does not cover.
+      const changed = await h.broker.propose(claims, {
+        kind: 'whatsapp.message',
+        connection_id: wa.id,
+        payload: contact({
+          phone_number: '+442079999999',
+          template_values: ['Zara'],
+        }) as JsonObject,
+      });
+      expect(
+        await rejectionOf(h.broker.admit(claims, message.action_id, changed.payload_hash)),
+      ).toMatchObject({ code: 'approval_hash_mismatch' });
+      let before = seen.length;
+      await h.broker.admit(claims, message.action_id, message.payload_hash);
+      expect((await h.broker.dispatch(message.action_id)).status).toBe('succeeded');
+      const [chat] =
+        await h.sql`select id, channel from phone_call where action_id = ${message.action_id}`;
+      expect(chat?.channel).toBe('whatsapp');
+      expect(
+        seen.slice(before).find((request) => request.path.includes('outbound-message'))?.body,
+      ).toEqual({
+        whatsapp_phone_number_id: WHATSAPP_ID,
+        whatsapp_user_id: '442071234567',
+        template_name: 'melete_hello',
+        template_language_code: 'en_GB',
+        template_params: [{ type: 'body', parameters: [{ type: 'text', text: 'Zara' }] }],
+        agent_id: `agent_${agentCount}`,
+        conversation_initiation_client_data: { custom_llm_extra_body: { call_id: chat?.id } },
+      });
+      const call = await approve(claims, 'whatsapp.call', contact({ purpose: 'Call to confirm' }));
+      before = seen.length;
+      await h.broker.admit(claims, call.action_id, call.payload_hash);
+      expect((await h.broker.dispatch(call.action_id)).status).toBe('succeeded');
+      const [placed] = await h.sql`select id from phone_call where action_id = ${call.action_id}`;
+      expect(
+        seen.slice(before).find((request) => request.path.includes('whatsapp/outbound-call'))?.body,
+      ).toEqual({
+        whatsapp_phone_number_id: WHATSAPP_ID,
+        whatsapp_user_id: '442071234567',
+        whatsapp_call_permission_request_template_name: 'melete_may_call',
+        whatsapp_call_permission_request_template_language_code: 'en_GB',
+        agent_id: `agent_${agentCount}`,
+        conversation_initiation_client_data: {
+          conversation_config_override: { agent: { first_message: outboundOpening('Zara') } },
+          custom_llm_extra_body: { call_id: placed?.id },
+        },
+      });
+      // Two contacts today on a line allowed two: a phone call now is refused, and nothing is dialled.
+      const third = await approve(claims, 'phone.call', contact({ purpose: 'One more' }));
+      before = seen.length;
+      await h.broker.admit(claims, third.action_id, third.payload_hash);
+      expect((await h.broker.dispatch(third.action_id)).status).toBe('failed');
+      expect(seen.slice(before).some((request) => request.path.includes('outbound'))).toBe(false);
+    });
+
+    test('revoking releases the WhatsApp number from the agent before removing the rest', async () => {
+      if (!h) throw new Error('Postgres unavailable');
+      const current = connectionResponse.parse(
+        await (await h.app.request(`/connections/${wa.id}`, h.as(h.cookie))).json(),
+      ).connection;
+      const before = seen.length;
+      await h.app.request(
+        `/connections/${wa.id}/lifecycle`,
+        h.as(h.cookie, { kind: 'revoke', expected_generation: current.generation }),
+      );
+      const requests = seen.slice(before);
+      expect(requests[0]).toMatchObject({
+        method: 'PATCH',
+        path: `/v1/convai/whatsapp-accounts/${WHATSAPP_ID}`,
+        body: { assigned_agent_id: null },
+      });
+      expect(requests.map((request) => request.method)).toEqual([
+        'PATCH',
+        'DELETE',
+        'DELETE',
+        'DELETE',
+        'DELETE',
+      ]);
     });
   });
 

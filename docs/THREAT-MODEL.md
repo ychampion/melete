@@ -420,6 +420,12 @@ Placing a call is `phone.call`, an external effect bound to its approval:
 - Each call is held to the callee's local calling hours and to a daily limit.
 - The opening line always says an AI assistant is calling.
 
+A WhatsApp number on the line uses the same routes and the same key. Its inbound
+conversations are told apart by the WhatsApp phone number id, and anyone who is
+not one of the person's numbers gets one reply and nothing more. `whatsapp.message`
+and `whatsapp.call` are approval-bound like `phone.call`, share its calling hours and
+daily limit, and can only start from templates Meta approved.
+
 What remains:
 
 - Caller id is not authentication. A caller who fakes one of the person's own
@@ -428,6 +434,8 @@ What remains:
   and read by memory. Nothing is sent, paid or changed during a call, and every
   follow-up waits for the person's answer in Melete. List only numbers whose
   carrier the person trusts, and leave the list empty to keep every caller out.
+  A WhatsApp sender id is tied to the account that holds the number, which is
+  harder to fake than caller id, but the same list decides both.
 - A model that is persuaded can still say more than it should. The rules are
   instructions to the model; the structural limit is what the model is given. On
   a call Melete placed, the memory it is given is chosen by the approved

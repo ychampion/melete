@@ -166,6 +166,7 @@ export function mountPhone(app: Hono, deps: PhoneRouteDeps) {
       throw new ServiceError('invalid_request', 'The call start could not be read.', 400);
     const started = await startInbound(records, line, {
       ...(parsed.data.caller_id ? { callerId: parsed.data.caller_id } : {}),
+      ...(parsed.data.called_number ? { calledNumber: parsed.data.called_number } : {}),
       ...(parsed.data.conversation_id ? { conversationId: parsed.data.conversation_id } : {}),
     });
     return c.json(
@@ -245,6 +246,7 @@ export function mountPhone(app: Hono, deps: PhoneRouteDeps) {
           connection_id: call.connection_id,
           job_id: call.job_id,
           direction: call.direction,
+          channel: call.channel ?? 'phone',
           party: call.party,
           remote_number: call.remote_number,
           purpose: call.context?.purpose ?? null,
