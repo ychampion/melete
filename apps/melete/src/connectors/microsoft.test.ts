@@ -295,6 +295,30 @@ describe('Outlook calendar through the calendar tools', () => {
     return { microsoft, connector };
   }
 
+  test('an update reads the event’s attendees, and a missing list is no answer', async () => {
+    const { microsoft, connector } = await calendar();
+    await connector.execute(
+      mailAction('calendar.create', event, 'act_event7'),
+      mailContext('act_event7'),
+    );
+    const [stored] = [...microsoft.events.values()];
+    if (!stored) throw new Error('event not stored');
+    const update = mailAction(
+      'calendar.update',
+      { ...event, summary: 'Moved', uid: 'act_event7', etag: '"1"' },
+      'act_update7',
+    );
+    stored.attendees = [];
+    expect(await connector.existingGuests(update, mailContext('act_update7'))).toBe(0);
+    stored.attendees = [
+      { emailAddress: { address: 'alex@example.com' }, type: 'required' },
+      { emailAddress: { address: 'sam@example.com' }, type: 'optional' },
+    ];
+    expect(await connector.existingGuests(update, mailContext('act_update7'))).toBe(2);
+    delete stored.attendees;
+    await expect(connector.existingGuests(update, mailContext('act_update7'))).rejects.toThrow();
+  });
+
   test('an event carries its action, so a second create for it cannot make a second event', async () => {
     const { microsoft, connector } = await calendar();
     const create = mailAction('calendar.create', event, 'act_event1');

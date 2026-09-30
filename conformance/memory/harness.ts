@@ -617,6 +617,7 @@ async function runScenario(
           where job_id = ${conversation} and type = 'notice' and payload->>'kind' = 'user_message'`;
         const owner = { ...space.scope, principalId: space.scope.ownerId };
         await captureChat({
+          privacyOrigin: async () => null,
           sql,
           journal: journal.journal,
           scopeForJob: async (id) => {

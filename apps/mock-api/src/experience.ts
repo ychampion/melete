@@ -12,6 +12,7 @@ import {
   projectCards,
 } from '../../melete/src/experience/projectors.ts';
 import type { AppDeps } from './app.ts';
+import { MockBeliefError, MockBeliefs } from './beliefs.ts';
 import { ComputerMock } from './computer.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { newId } from './store.ts';
@@ -97,6 +98,7 @@ const PROPOSAL_WORDS: Record<string, { what: string; where: string; reversible: 
     reversible: true,
   },
   'browser.reserve': { what: 'Hold a table through the browser', where: 'Resy', reversible: false },
+  'tasks.create': { what: 'Add a task', where: 'Tasks', reversible: true },
 };
 
 class MockExperienceError extends Error {
@@ -126,11 +128,18 @@ export class ExperienceMock {
   >();
   readonly sentReceipts = new Map<string, C.ExperienceReceipt>();
   readonly rules = new Map<string, C.StandingRule>();
+  /** Settings → Approvals, as the person last saved them. */
+  approvalSettings: C.ApprovalSettings = structuredClone(C.DEFAULT_APPROVAL_SETTINGS);
   readonly questions = new Map<string, Question>();
   readonly plans = new Map<string, Plan>();
   readonly tasks = new Map<string, ReturnType<typeof C.experienceTask.parse>>();
   readonly automations = new Map<string, ReturnType<typeof C.experienceAutomation.parse>>();
   readonly memories = new Map<string, ReturnType<typeof C.memoryItem.parse>>();
+  /** What the mock believes about the person, with its history and rewinds. */
+  readonly beliefs = new MockBeliefs(
+    () => this.deps.store.now(),
+    () => this.profile.time_zone,
+  );
   /** Answers given during setup, by key, so the first message can refer to one. */
   readonly answers = new Map<string, string>();
   /** Set once the welcome scenario has played; every later message picks by text. */
@@ -493,6 +502,7 @@ export class ExperienceMock {
     );
     japan.conversation_ids = [kyoto.id];
     this.start('Passport renewal', atlas.id, 'Which documents do I need to renew in person?');
+    this.beliefs.seed(kyoto.id);
   }
   /**
    * Every experience event is also a store event on the conversation's job, so
@@ -850,7 +860,11 @@ export class ExperienceMock {
           options: ['allow_once', 'always', 'deny'],
           version: newId('v'),
           preview: chat.lastCard,
+          ...(step.auto_review
+            ? { review: { ...step.auto_review, outcome: 'escalated', reviewed_at: this.now() } }
+            : {}),
           created_at: this.now(),
+          because: this.beliefs.becauseFor(`${proposal.what} ${proposal.where}`),
         });
         proposal.permissionId = permission.id;
         this.permissions.set(permission.id, permission);
@@ -867,9 +881,11 @@ export class ExperienceMock {
           id: newId('receipt'),
           what: proposal.what
             .replace(/^Add an event to your calendar/, 'Added to your calendar')
-            .replace(/^Hold a table/, 'Held a table'),
+            .replace(/^Hold a table/, 'Held a table')
+            .replace(/^Add a task/, 'Added a task'),
           where: proposal.where,
           when: this.now(),
+          because: this.beliefs.becauseFor(`${proposal.what} ${proposal.where}`),
           ...(words?.reversible
             ? {
                 undo: {
@@ -877,6 +893,9 @@ export class ExperienceMock {
                   valid_until: new Date(Date.now() + 10 * 60_000).toISOString(),
                 },
               }
+            : {}),
+          ...(step.auto_review
+            ? { review: { ...step.auto_review, outcome: 'auto_approved', reviewed_at: this.now() } }
             : {}),
         });
         chat.receipts.push(receipt);
@@ -1428,6 +1447,14 @@ export class ExperienceMock {
     if (this.signedOut && !key.startsWith('POST /signin'))
       throw new MockExperienceError(401, 'A session is required.');
     const id = c.req.param('id') ?? '';
+    try {
+      const answered = this.beliefs.handle(key, id, input, c.req.query());
+      if (answered !== undefined) return answered;
+    } catch (error) {
+      if (error instanceof MockBeliefError)
+        throw new MockExperienceError(error.status, error.message);
+      throw error;
+    }
     switch (key) {
       case 'GET /agents/templates':
         return AGENT_TEMPLATES;
@@ -1529,6 +1556,11 @@ export class ExperienceMock {
         return this.decide(id, input);
       case 'GET /rules':
         return { rules: [...this.rules.values()] };
+      case 'GET /approval-settings':
+        return { settings: this.approvalSettings, reviewer_available: true };
+      case 'PUT /approval-settings':
+        this.approvalSettings = C.approvalSettings.parse(input);
+        return { settings: this.approvalSettings, reviewer_available: true };
       case 'DELETE /rules/{id}':
         required(this.rules, id);
         this.rules.delete(id);

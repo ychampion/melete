@@ -36,7 +36,7 @@ export const healthResponse = z.object({
       status: z.enum(['ok', 'waiting']),
       waiting: z.number().int().nonnegative(),
       failed: z.number().int().nonnegative(),
-      reason: z.enum(['provider_unavailable', 'daily_budget']).nullable(),
+      reason: z.enum(['provider_unavailable', 'provider_slow', 'daily_budget']).nullable(),
     })
     .optional(),
   time: timestamp,

@@ -7,6 +7,7 @@
 
 export * from './api.ts';
 export * from './artifacts.ts';
+export * from './beliefs.ts';
 export * from './broker.ts';
 export * from './browser.ts';
 export * from './browser-live.ts';
@@ -36,6 +37,7 @@ export * from './model-settings.ts';
 export { buildOpenApiDocument, OPENAPI_VERSION, openApiJson } from './openapi.ts';
 export * from './plugins.ts';
 export * from './principals.ts';
+export * from './privacy.ts';
 export * from './provenance.ts';
 export * from './provider-signin.ts';
 export * from './push.ts';

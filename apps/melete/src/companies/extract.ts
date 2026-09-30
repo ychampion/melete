@@ -24,6 +24,8 @@ import { z } from 'zod';
 
 /** What the model is asked about: one message, already selected by the prefilter. */
 export type ExtractionRequest = {
+  /** The space whose mailbox this is, so its privacy settings apply to the call. */
+  spaceId: string;
   messageId: string;
   companyName: string;
   domain: string;

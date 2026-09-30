@@ -10,6 +10,7 @@ import {
 import { BrokerService } from '../../apps/melete/src/broker/service.ts';
 import type { Connector } from '../../apps/melete/src/connectors/types.ts';
 import { lexicalQuery } from '../../apps/melete/src/memory/recall.ts';
+import { defaultPrivacyRouter } from '../../apps/melete/src/privacy/index.ts';
 import { rejectionOf, seedJob } from '../../apps/melete/test/helpers/broker.ts';
 import { testDatabase } from '../../apps/melete/test/helpers/database.ts';
 
@@ -157,6 +158,7 @@ describe('typed lifecycle waits', () => {
       const s = await setup();
       const capabilityKey = 'lifecycle-http-fixture-signing-key-00000000';
       const internal = createInternalServer({
+        privacy: defaultPrivacyRouter(),
         sql: sql(),
         connectors: { get: () => undefined },
         broker: s.broker,
