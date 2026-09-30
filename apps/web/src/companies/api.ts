@@ -11,6 +11,7 @@
  * which is the one place the interface learns which space it is looking at.
  */
 import { API_BASE_URL, client, type Result } from '../experience/adapter.ts';
+import { markValueMoment } from '../experience/push.ts';
 import type {
   CompanyMap,
   LedgerDetail,
@@ -18,6 +19,7 @@ import type {
   LedgerItemStatus,
   ScanProgress,
   ScanStarted,
+  WaitingOn,
 } from '../experience/types.ts';
 
 const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
@@ -67,11 +69,34 @@ export const companiesApi = {
       `/spaces/${encodeURIComponent(spaceId)}/companies/scan/${encodeURIComponent(scanId)}`,
     ),
   item: (id: string) => call<LedgerDetail>(`/ledger/${encodeURIComponent(id)}`),
-  setStatus: (id: string, status: Extract<LedgerItemStatus, 'dropped' | 'settled'>) =>
-    call<LedgerItem>(`/ledger/${encodeURIComponent(id)}`, { method: 'PATCH', body: { status } }),
+  setStatus: async (id: string, status: Extract<LedgerItemStatus, 'dropped' | 'settled'>) => {
+    const result = await call<LedgerItem>(`/ledger/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: { status },
+    });
+    // Money back is the first moment Melete was worth hearing from.
+    if (result.data !== null && status === 'settled') markValueMoment();
+    return result;
+  },
   handle: (id: string) =>
     call<{ job_id: string }>(`/ledger/${encodeURIComponent(id)}/handle`, { method: 'POST' }),
   /** Stop the job handling an item: the item goes back to found, with no job. */
   stop: (id: string) =>
     call<LedgerItem>(`/ledger/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
+  /** Money owed to the person and replies they are waiting on, in one view; one space when named. */
+  waitingOn: (spaceId?: string) =>
+    call<WaitingOn>(
+      spaceId ? `/waiting-on?space_id=${encodeURIComponent(spaceId)}` : '/waiting-on',
+    ),
+  /** Start chasing a reply the person is waiting on. */
+  chaseReply: (id: string) =>
+    call<{ job_id: string }>(`/waiting-on/replies/${encodeURIComponent(id)}/chase`, {
+      method: 'POST',
+    }),
+  /** Dismiss a reply the person is no longer waiting on; a chase on it stops. */
+  dropReply: (id: string) =>
+    call<{ id: string; status: LedgerItemStatus }>(
+      `/waiting-on/replies/${encodeURIComponent(id)}/drop`,
+      { method: 'POST' },
+    ),
 };

@@ -18,6 +18,7 @@ import { messageText, type ScanMessage } from './messages.ts';
 import { prefilter } from './prefilter.ts';
 import type { CompanyStore, Owner, ScanRecord, StoredMessage } from './repository.ts';
 import { type AdmissionContext, admitAll, noDrops } from './validate.ts';
+import { findAwaitedReplies } from './waiting.ts';
 
 export const DEFAULT_WINDOW_DAYS = 90;
 
@@ -78,7 +79,8 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
   let session: ScanExtractor | undefined;
   let calls = 0;
   try {
-    const messages = await options.mailbox.recent(options.readLimit ?? 50);
+    const readLimit = options.readLimit ?? 50;
+    const messages = await options.mailbox.recent(readLimit);
     reason = SCAN_FAILED.after;
     const grouped = prefilter(messages, {
       now,
@@ -225,6 +227,49 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
     }
     found = await options.store.saveItems(options.owner, record.id, admitted);
     await options.store.markExtracted(options.owner, answered);
+
+    // What the person is still waiting to hear back about, when the mailbox can
+    // read what they sent. It is its own finding: a Sent folder that cannot be
+    // read is counted, and the company map stands without it.
+    if (options.mailbox.sent) {
+      try {
+        const sent = await options.mailbox.sent(readLimit);
+        // A read that comes back short of its limit is not proof it reached the
+        // end of the inbox: the connector withholds sign-in codes and the like
+        // after it has read, and a message with no Message-ID is not kept. So
+        // only what the read reaches back to is judged.
+        const waiting = findAwaitedReplies({
+          sent,
+          inbox: messages,
+          inboxComplete: false,
+          now,
+        });
+        // The sentence each one rests on is checked against this text later.
+        await options.store.saveMessages(
+          options.owner,
+          record.id,
+          waiting.awaited.map((entry) => {
+            const message = sent.find((candidate) => candidate.messageId === entry.messageId);
+            return {
+              messageId: entry.messageId,
+              subject: entry.subject,
+              from: message?.from ?? '',
+              receivedAt: entry.sentAt,
+              text: entry.text,
+            };
+          }),
+        );
+        counts.awaited_new = await options.store.saveAwaited(
+          options.owner,
+          record.id,
+          waiting.awaited,
+          waiting.answered,
+        );
+        counts.awaited_replies = waiting.awaited.length;
+      } catch {
+        counts.sent_unreadable = 1;
+      }
+    }
     counts.proposed = admitted.length;
     await options.store.closeScan(options.owner, record.id, {
       status: 'done',

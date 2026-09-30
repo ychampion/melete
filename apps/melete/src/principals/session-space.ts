@@ -74,6 +74,34 @@ export async function ensurePersonalSpace(
 }
 
 /**
+ * The selected space itself, while the principal may still use it (for a
+ * shared space, under the membership generation it was chosen with), or
+ * undefined. Nothing falls back: a grant made for one space is never answered
+ * in another.
+ */
+export async function selectedSpace(
+  db: Database,
+  principalId: string,
+  selection: SpaceSelection,
+): Promise<SessionSpace | undefined> {
+  try {
+    const access = await spaceAuthority(db, selection.spaceId, principalId);
+    const kind = access.space.kind === 'shared' ? 'shared' : 'personal';
+    if (kind === 'shared' && access.generation !== selection.generation) return undefined;
+    return {
+      spaceId: selection.spaceId,
+      kind,
+      role: access.role,
+      generation: access.generation,
+      created: false,
+    };
+  } catch (error) {
+    if (error instanceof ServiceError) return undefined;
+    throw error;
+  }
+}
+
+/**
  * The space comes from the authenticated principal and from nothing else. A
  * stored selection holds only while the principal may still use that space, and
  * for a shared space only under the membership generation it was chosen with:
@@ -86,22 +114,8 @@ export async function resolveSessionSpace(
   principalId: string,
   selection: SpaceSelection | null,
 ): Promise<SessionSpace> {
-  if (selection) {
-    try {
-      const access = await spaceAuthority(db, selection.spaceId, principalId);
-      const kind = access.space.kind === 'shared' ? 'shared' : 'personal';
-      if (kind === 'personal' || access.generation === selection.generation)
-        return {
-          spaceId: selection.spaceId,
-          kind,
-          role: access.role,
-          generation: access.generation,
-          created: false,
-        };
-    } catch (error) {
-      if (!(error instanceof ServiceError)) throw error;
-    }
-  }
+  const selected = selection ? await selectedSpace(db, principalId, selection) : undefined;
+  if (selected) return selected;
   const personal = await ensurePersonalSpace(db, principalId, spacesRoot);
   return {
     spaceId: personal.spaceId,

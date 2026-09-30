@@ -64,6 +64,12 @@ export type PermissionDecision = Body<paths['/permissions/{id}'], 'post'>;
 export type RuleBounds = Extract<PermissionDecision, { option: 'always' }>['bounds'];
 export type PermissionOutcome = Success<Ok<paths['/permissions/{id}'], 'post'>>;
 export type Rule = Success<Ok<paths['/rules'], 'get'>>['rules'][number];
+export type PushSettings = Ok<paths['/push/settings'], 'get'>['settings'];
+export type PushSettingsUpdate = Body<paths['/push/settings'], 'patch'>;
+export type PushDevice = Ok<paths['/push/subscriptions'], 'get'>['subscriptions'][number];
+export type PushSubscriptionInput = Body<paths['/push/subscriptions'], 'post'>;
+/** Another assistant the person let use Melete over MCP. */
+export type ConnectedAssistant = Ok<paths['/mcp/clients'], 'get'>['clients'][number];
 /** What Melete learned from the person's corrections, and skills it wrote for itself. */
 export type LearnedList = Ok<paths['/learned'], 'get'>;
 export type LearnedItem = LearnedList['items'][number];
@@ -101,6 +107,10 @@ export type Connection = Success<
 >['connections'][number];
 /** A kind of connection that can be installed, with the fields its form needs. */
 export type ConnectionKind = Ok<paths['/connection-kinds'], 'get'>['kinds'][number];
+/** Something a person can connect here, with how and whether it is offered now. */
+export type CatalogEntry = NonNullable<Ok<paths['/connection-kinds'], 'get'>['catalog']>[number];
+export type AccountSignInStart = Ok<paths['/google-sign-ins'], 'post'>;
+export type AccountSignInStatus = Ok<paths['/google-sign-ins/{id}'], 'get'>;
 export type ConnectionField = ConnectionKind['fields'][number];
 export type ConnectionItemField = NonNullable<ConnectionField['item_fields']>[number];
 export type ConnectionCreate = Body<paths['/connections'], 'post'>;
@@ -157,3 +167,6 @@ export type LedgerDetail = Ok<paths['/ledger/{id}'], 'get'>;
 export type LedgerMessage = NonNullable<LedgerDetail['message']>;
 export type ScanStarted = Ok<paths['/spaces/{spaceId}/companies/scan'], 'post'>;
 export type ScanProgress = Ok<paths['/spaces/{spaceId}/companies/scan/{scanId}'], 'get'>;
+/** What the person is waiting on: money owed to them, and replies nobody has sent. */
+export type WaitingOn = Ok<paths['/waiting-on'], 'get'>;
+export type WaitingOnEntry = WaitingOn['top'][number];
