@@ -12,6 +12,7 @@ import {
   projectCards,
 } from '../../melete/src/experience/projectors.ts';
 import type { AppDeps } from './app.ts';
+import { MockBeliefError, MockBeliefs } from './beliefs.ts';
 import { ComputerMock } from './computer.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { newId } from './store.ts';
@@ -134,6 +135,11 @@ export class ExperienceMock {
   readonly tasks = new Map<string, ReturnType<typeof C.experienceTask.parse>>();
   readonly automations = new Map<string, ReturnType<typeof C.experienceAutomation.parse>>();
   readonly memories = new Map<string, ReturnType<typeof C.memoryItem.parse>>();
+  /** What the mock believes about the person, with its history and rewinds. */
+  readonly beliefs = new MockBeliefs(
+    () => this.deps.store.now(),
+    () => this.profile.time_zone,
+  );
   /** Answers given during setup, by key, so the first message can refer to one. */
   readonly answers = new Map<string, string>();
   /** Set once the welcome scenario has played; every later message picks by text. */
@@ -496,6 +502,7 @@ export class ExperienceMock {
     );
     japan.conversation_ids = [kyoto.id];
     this.start('Passport renewal', atlas.id, 'Which documents do I need to renew in person?');
+    this.beliefs.seed(kyoto.id);
   }
   /**
    * Every experience event is also a store event on the conversation's job, so
@@ -857,6 +864,7 @@ export class ExperienceMock {
             ? { review: { ...step.auto_review, outcome: 'escalated', reviewed_at: this.now() } }
             : {}),
           created_at: this.now(),
+          because: this.beliefs.becauseFor(`${proposal.what} ${proposal.where}`),
         });
         proposal.permissionId = permission.id;
         this.permissions.set(permission.id, permission);
@@ -877,6 +885,7 @@ export class ExperienceMock {
             .replace(/^Add a task/, 'Added a task'),
           where: proposal.where,
           when: this.now(),
+          because: this.beliefs.becauseFor(`${proposal.what} ${proposal.where}`),
           ...(words?.reversible
             ? {
                 undo: {
@@ -1438,6 +1447,14 @@ export class ExperienceMock {
     if (this.signedOut && !key.startsWith('POST /signin'))
       throw new MockExperienceError(401, 'A session is required.');
     const id = c.req.param('id') ?? '';
+    try {
+      const answered = this.beliefs.handle(key, id, input, c.req.query());
+      if (answered !== undefined) return answered;
+    } catch (error) {
+      if (error instanceof MockBeliefError)
+        throw new MockExperienceError(error.status, error.message);
+      throw error;
+    }
     switch (key) {
       case 'GET /agents/templates':
         return AGENT_TEMPLATES;

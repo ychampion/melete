@@ -471,6 +471,11 @@ withDb('principal and shared-space authority', () => {
     expect(ownerTrust.fields).toHaveLength(1);
     await handle.sql`insert into memory_contexts (id, space_id, job_id, attempt_id, job_revision, policy_generation, data_revision, access_generation, audience, purpose, items, recipe, token_budget, recall_status)
       values ('shared-delivery', ${sharedId}, ${active.id}, ${claimed.claims.attempt_id}, 0, 1, 0, 1, '["space"]', 'responsibility', '[{"excerpt":"SHARED_KNOWLEDGE"}]', 'fixture', '{}', 'complete')`;
+    // What memory handed an action, copied when it was proposed: one of the
+    // member's, and one that is not theirs.
+    await handle.sql`insert into memory_action_basis (action_id, space_id, job_id, attempt_id, items) values
+      ('member-action', ${sharedId}, ${active.id}, ${claimed.claims.attempt_id}, '[{"claim_id":"clm_member"}]'),
+      ('other-action', ${sharedId}, 'other-job', 'other-attempt', '[{"claim_id":"clm_other"}]')`;
     const abort = new AbortController();
     const replay = await stream.response({
       after: 0,
@@ -554,6 +559,12 @@ withDb('principal and shared-space authority', () => {
       await handle.sql`select items, invalidated_at from memory_contexts where id = 'shared-delivery'`;
     expect(delivered?.items).toEqual([]);
     expect(delivered?.invalidated_at).not.toBeNull();
+    const bases =
+      await handle.sql`select action_id, items from memory_action_basis where space_id = ${sharedId} order by action_id`;
+    expect(bases.map((row) => [row.action_id, row.items])).toEqual([
+      ['member-action', []],
+      ['other-action', [{ claim_id: 'clm_other' }]],
+    ]);
     expect(
       await (await api.request('/snapshot', { headers: { Cookie: memberCookie } })).text(),
     ).not.toContain(active.id);

@@ -216,6 +216,10 @@ const MEMORY_TABLES = [
   'memory_rejections',
   'memory_capture',
   'memory_model_calls',
+  'memory_action_basis',
+  'memory_blocks',
+  'memory_rewinds',
+  'memory_digests',
   'memory_spaces',
 ] as const;
 
