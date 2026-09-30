@@ -1,6 +1,6 @@
 # Melete
 
-The open-source, always-on agent with its own computer: any model, your machine, every action approved.
+The open-source, always-on agent with its own computer: any model, your machine, you approve what matters.
 
 > Melete is in early beta. You can run it yourself today, and hosted Melete is
 > coming soon.
@@ -9,7 +9,8 @@ The open-source, always-on agent with its own computer: any model, your machine,
 
 Hand Melete a loose end, like a refund you were promised or a reply you're
 still waiting for. It writes from your own address, waits for the answer, and
-follows up until it's settled. You approve every message before it goes out.
+follows up until it's settled. You approve the first message, and it follows up
+within the limits you set.
 
 ## What it does
 
@@ -18,7 +19,6 @@ follows up until it's settled. You approve every message before it goes out.
 - **Has its own computer.** Code and commands run in a cloud sandbox on
   [E2B](https://e2b.dev), [Modal](https://modal.com) or
   [Daytona](https://www.daytona.io), and a separate browser handles web forms.
-  You can take over that browser to sign in yourself.
 - **Works with your model.** Anthropic, OpenAI, Google, Fireworks, your ChatGPT
   account, or a model on your own network.
 - **Connects to your accounts.** Gmail, Google Calendar and Outlook connect by
@@ -198,8 +198,7 @@ in with ChatGPT.
   connection, and the agent's terminal runs there, with a receipt for each
   command.
 - **A browser.** The [browser worker](docs/browser-worker.md) fills forms in its
-  own isolated browser, and you can take over its page to sign in to a site
-  yourself.
+  own isolated browser.
 
 ## Security
 
