@@ -270,9 +270,10 @@ type Engine = {
  * An engine started before its attempt exists, for the configuration the next
  * attempt is expected to have. Only an attempt whose configuration, less its
  * capability, is exactly `key` can take it. `engine` settles once the engine
- * has loaded, with nothing when it could not be started or used.
+ * has loaded, with nothing when it could not be started or used. `abandon`
+ * stops it wherever it has got to, and it then settles with nothing.
  */
-type Spare = { key: string; engine: Promise<Engine | undefined> };
+type Spare = { key: string; engine: Promise<Engine | undefined>; abandon: () => void };
 
 export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
   readonly kind = 'process' as const;
@@ -311,14 +312,19 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
   warm(model: AttemptBundle['model'], tools: AttemptBundle['tools'] = []): void {
     if (!this.prewarm || this.spare || this.shutdown.signal.aborted) return;
     const config = this.engineConfig(model, attemptEngineFeatures(tools));
-    const engine = this.startSpare(config).catch((error: unknown) => {
+    const abandoned = new AbortController();
+    const engine = this.startSpare(config, abandoned.signal).catch((error: unknown) => {
       process.stderr.write(
         `spare engine not started: ${error instanceof Error ? error.message : String(error)}\n`,
       );
       return undefined;
     });
     // Held from now, so an attempt that starts while it loads waits for it.
-    const spare: Spare = { key: JSON.stringify(config), engine };
+    const spare: Spare = {
+      key: JSON.stringify(config),
+      engine,
+      abandon: () => abandoned.abort(),
+    };
     this.spare = spare;
     this.starting.add(engine);
     void engine.then((ready) => {
@@ -500,10 +506,14 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
    * A spare runs the launcher's import phase with the configuration the next
    * attempt is expected to have, less its capability, and then waits.
    */
-  private async startSpare(config: EngineConfig): Promise<Engine | undefined> {
+  private async startSpare(
+    config: EngineConfig,
+    abandoned: AbortSignal,
+  ): Promise<Engine | undefined> {
+    const ended = AbortSignal.any([this.shutdown.signal, abandoned]);
     await this.checkEngineRoot();
     const engine = await this.createEngine(config, newId('att'));
-    if (this.shutdown.signal.aborted) {
+    if (ended.aborted) {
       await engine.stop();
       return undefined;
     }
@@ -522,7 +532,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
     );
     const usable = await new Promise<boolean>((resolve) => {
       const settle = (ready: boolean) => {
-        this.shutdown.signal.removeEventListener('abort', stopping);
+        ended.removeEventListener('abort', stopping);
         resolve(ready);
       };
       const stopping = () => settle(false);
@@ -530,15 +540,17 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
       // said before this listened is read from there.
       const check = () => {
         if (engine.log.includes(SPARE_READY)) settle(true);
-        else if (engine.log.includes(SPARE_UNUSABLE) || child.exitCode !== null) settle(false);
+        // Ended while it was being spawned: the listener below would never hear it.
+        else if (engine.log.includes(SPARE_UNUSABLE) || child.exitCode !== null || ended.aborted)
+          settle(false);
       };
       child.stdout?.on('data', check);
       child.once('exit', () => settle(false));
       child.once('error', () => settle(false));
-      this.shutdown.signal.addEventListener('abort', stopping, { once: true });
+      ended.addEventListener('abort', stopping, { once: true });
       check();
     });
-    if (usable && child.exitCode === null && !this.shutdown.signal.aborted) return engine;
+    if (usable && child.exitCode === null && !ended.aborted) return engine;
     if (engine.log.includes(SPARE_UNUSABLE)) {
       // The engine read something of its attempt while it loaded; every later
       // spare would too, so attempts go back to starting their own.
@@ -554,15 +566,44 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
    * The spare, when it was prepared for exactly this configuration: however far
    * along it is, it is ahead of an engine started now. Any other spare is stopped.
    */
-  private async takeSpare(key: string): Promise<Engine | undefined> {
+  private async takeSpare(key: string, signal: AbortSignal): Promise<Engine | undefined> {
     const spare = this.spare;
     if (!spare) return undefined;
     this.spare = undefined;
-    if (spare.key !== key) {
+    const setAside = () => {
+      spare.abandon();
       void spare.engine.then((engine) => engine?.stop()).catch(() => {});
+    };
+    if (spare.key !== key) {
+      setAside();
       return undefined;
     }
-    const engine = await spare.engine;
+    // The attempt waits for the spare no longer than it would for an engine of
+    // its own to start, and not at all once it is cancelled.
+    const allowance = this.options.startupTimeoutMs ?? 60_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancel = () => {};
+    const given = new Promise<'cancelled' | 'late'>((resolve) => {
+      cancel = () => resolve('cancelled');
+      timer = setTimeout(() => resolve('late'), allowance);
+      if (signal.aborted) cancel();
+      else signal.addEventListener('abort', cancel, { once: true });
+    });
+    const engine = await Promise.race([spare.engine, given]);
+    clearTimeout(timer);
+    signal.removeEventListener('abort', cancel);
+    if (engine === 'cancelled' || engine === 'late') {
+      setAside();
+      if (engine === 'late') {
+        // Every later attempt would wait out the same allowance first.
+        this.prewarm = false;
+        process.stderr.write(
+          `Spare engines are off: a spare had not loaded after ${Math.round(allowance / 1000)}s\n`,
+        );
+      }
+      signal.throwIfAborted();
+      return undefined;
+    }
     if (engine?.child?.exitCode === null) return engine;
     await engine?.stop().catch(() => {});
     return undefined;
@@ -584,7 +625,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
       TERMINAL_CWD: workspace,
     };
     let engine = this.prewarm
-      ? await this.takeSpare(JSON.stringify(this.engineConfig(bundle.model, features)))
+      ? await this.takeSpare(JSON.stringify(this.engineConfig(bundle.model, features)), signal)
       : undefined;
     try {
       if (engine) {

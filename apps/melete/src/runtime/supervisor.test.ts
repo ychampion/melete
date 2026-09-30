@@ -422,12 +422,14 @@ server.serve_forever()
     // A stand-in that follows the launcher's spare protocol: it says it is
     // ready, takes one line naming the attempt, and then serves what it ended
     // up with, including whether it started as a spare.
-    const launcher = (spare: 'ready' | 'unusable') => `import http.server, json, os, pathlib, sys
+    const launcher = (
+      spare: 'ready' | 'unusable' | 'stuck',
+    ) => `import http.server, json, os, pathlib, sys, time
 was_spare = os.environ.get('MELETE_RUNTIME_SPARE') == '1'
 with open(pathlib.Path(__file__).parent / 'starts.log', 'a') as log:
     log.write('spare\\n' if was_spare else 'cold\\n')
 if was_spare:
-    ${spare === 'ready' ? "print('melete-spare:ready', flush=True)" : "print('melete-spare:unusable MELETE_ATTEMPT_TOKEN', flush=True); sys.exit(3)"}
+    ${spare === 'ready' ? "print('melete-spare:ready', flush=True)" : spare === 'stuck' ? 'time.sleep(3600)' : "print('melete-spare:unusable MELETE_ATTEMPT_TOKEN', flush=True); sys.exit(3)"}
     handoff = json.loads(sys.stdin.readline())
     os.environ.update(handoff['env'])
     for key in ('MELETE_RUNTIME_SPARE', 'MELETE_RUNTIME_SPARE_KEYS'):
@@ -460,7 +462,7 @@ server.serve_forever()
       env: Record<string, string>;
       config: string;
     };
-    async function fixture(spare: 'ready' | 'unusable') {
+    async function fixture(spare: 'ready' | 'unusable' | 'stuck', startupTimeoutMs = 10_000) {
       const root = await mkdtemp(join(tmpdir(), 'melete-process-spare-'));
       const runtimePackage = join(root, 'runtime');
       await mkdir(join(root, 'engine', '.git'), { recursive: true });
@@ -475,7 +477,7 @@ server.serve_forever()
         runtimePackage,
         workRoot: join(root, 'work'),
         python: resolvePython(),
-        startupTimeoutMs: 10_000,
+        startupTimeoutMs,
         prewarm: true,
       });
       const seen = async (baseUrl: string) => (await (await fetch(baseUrl)).json()) as Seen;
@@ -553,6 +555,43 @@ server.serve_forever()
         await rm(root, { recursive: true, force: true });
       }
     }, 60_000);
+    test('one that never finishes loading holds its attempt no longer than an engine start', async () => {
+      const { root, supervisor, seen, records, starts } = await fixture('stuck', 3_000);
+      try {
+        supervisor.warm(bundle.model);
+        const started = Date.now();
+        const instance = await supervisor.launch(bundle, new AbortController().signal);
+        expect((await seen(instance.baseUrl)).was_spare).toBe(false);
+        // Within its own start-up allowance plus a cold start, not forever.
+        expect(Date.now() - started).toBeLessThan(15_000);
+        // Stopping asks for a spare; none is started once one never loaded.
+        await instance.stop();
+        // The spare that never loaded is stopped, not left beside the service.
+        for (let tries = 0; tries < 50 && (await records()).length; tries++) await Bun.sleep(100);
+        expect(await records()).toEqual([]);
+        await supervisor.close();
+        expect(await starts()).toEqual(['spare', 'cold']);
+      } finally {
+        await supervisor.close().catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+    test('an attempt cancelled while its spare still loads ends at once', async () => {
+      const { root, supervisor } = await fixture('stuck', 20_000);
+      try {
+        supervisor.warm(bundle.model);
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(new Error('cancelled')), 500);
+        const started = Date.now();
+        const failure = await supervisor.launch(bundle, controller.signal).catch((e: unknown) => e);
+        expect(failure).toBeInstanceOf(Error);
+        expect(Date.now() - started).toBeLessThan(5_000);
+      } finally {
+        await supervisor.close().catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 30_000);
   });
   test('stopping an owned process also stops its live child', async () => {
     const parent = spawn(
