@@ -1,5 +1,6 @@
 import { type ExtractionProposal, extractionChangeSet } from '@melete/contracts';
 import { z } from 'zod';
+import { reanchorSpans } from '../privacy/memory.ts';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import {
   EXTRACTION_LIMITS,
@@ -108,5 +109,10 @@ export async function proposeExtraction(
     );
   }
   if (response.length > 128000) throw new MemoryError('extraction_response_size');
-  return extractionChangeSet.parse(JSON.parse(response)).proposals;
+  // The model read the evidence redacted: its offsets are moved to where its quotes are.
+  return reanchorSpans(
+    extractionChangeSet.parse(JSON.parse(response)).proposals,
+    batch.text,
+    batch.work.segment_start,
+  );
 }

@@ -11,6 +11,8 @@ import { serviceTransaction } from '../db/transaction.ts';
 import { createModelGateway, type GatewayOptions, type GatewayProvider } from '../gateway/index.ts';
 import { EngineSkillService } from '../learning/engine-skills.ts';
 import { learningRuntimeFetch } from '../learning/runtime-route.ts';
+import { withPlaceholderResolution } from '../privacy/broker.ts';
+import { defaultPrivacyRouter, type PrivacyRouter } from '../privacy/index.ts';
 import { matchesServiceKey } from './capability.ts';
 import { PostgresGatewayBudget } from './gateway-budget.ts';
 import { createBrokerApp } from './http.ts';
@@ -47,6 +49,8 @@ export function createInternalServer(options: {
   artifactCritic?: ArtifactCritic;
   artifactRoots?: ArtifactRoots;
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
+  /** Where model requests may go and what they may carry; left out, the default router. */
+  privacy?: PrivacyRouter;
 }) {
   const broker =
     options.broker ??
@@ -116,20 +120,28 @@ export function createInternalServer(options: {
     fake: options.fake,
     connectTls: options.connectTls,
     fetch: options.gatewayFetch,
-    brokerFetch: learningRuntimeFetch({
-      sql: options.sql,
-      capabilityKey: options.capabilityKey,
-      broker,
-      skills,
-      onError: (error) =>
-        process.stderr.write(
-          `learning route: ${error instanceof Error ? error.message : 'unknown error'}\n`,
-        ),
-      fallback: (request) =>
-        request.method === 'GET' && new URL(request.url).pathname === '/actions'
-          ? reads.fetch(request)
-          : app.fetch(request),
-    }),
+    privacy: options.privacy,
+    // A placeholder still in a runtime payload is resolved before the broker reads it.
+    brokerFetch: withPlaceholderResolution(
+      learningRuntimeFetch({
+        sql: options.sql,
+        capabilityKey: options.capabilityKey,
+        broker,
+        skills,
+        onError: (error) =>
+          process.stderr.write(
+            `learning route: ${error instanceof Error ? error.message : 'unknown error'}\n`,
+          ),
+        fallback: (request) =>
+          request.method === 'GET' && new URL(request.url).pathname === '/actions'
+            ? reads.fetch(request)
+            : app.fetch(request),
+      }),
+      {
+        capabilityKey: options.capabilityKey,
+        router: () => options.privacy ?? defaultPrivacyRouter(),
+      },
+    ),
     onError: (error) => process.stderr.write(`model gateway: ${error.message}\n`),
   });
   return { server, broker, budget };

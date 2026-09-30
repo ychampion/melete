@@ -1,3 +1,16 @@
+/**
+ * Where a request went and what was swapped out of it, never the values. The
+ * same shape as the contract's `privacyReceipt`, written out here because the
+ * release scripts load this file with nothing but Bun's own modules.
+ */
+export type GatewayPrivacyReceipt = {
+  route: 'cloud' | 'local' | 'ask' | 'on_device';
+  protected: number;
+  categories: Record<string, number>;
+  placeholders: string[];
+  local_detection?: 'off' | 'used' | 'failed';
+};
+
 /** Service-owned authorization, rechecked transactionally by the budget adapter. */
 export interface GatewayPrincipal {
   jobId: string;
@@ -49,6 +62,8 @@ export interface GatewaySettlement {
   latencyMs: number;
   status: 'succeeded' | 'failed' | 'unknown';
   httpStatus: number | null;
+  /** Where the request went and what was swapped out of it, never the values. */
+  privacy?: GatewayPrivacyReceipt;
 }
 
 export interface GatewayBudget {

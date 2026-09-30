@@ -92,6 +92,8 @@ export async function openProposalGateway(options: {
   providers: NonNullable<GatewayOptions['providers']>;
   fake?: GatewayOptions['fake'];
   fetch?: GatewayOptions['fetch'];
+  /** The service's privacy router; left out, the default one. */
+  privacy?: GatewayOptions['privacy'];
 }) {
   const tokens = new Map<string, Admission>();
   const principals = new WeakMap<GatewayPrincipal, Admission>();
@@ -149,6 +151,7 @@ export async function openProposalGateway(options: {
     providers: options.providers,
     fake: options.fake,
     fetch: options.fetch,
+    privacy: options.privacy,
     defaultProvider: options.provider,
     timeoutMs: PROPOSAL_LIMITS.timeout_ms,
     maxRequestBytes: 8192,

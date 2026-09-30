@@ -10,6 +10,7 @@ import {
   modelContextWindow,
   REQUEST_FRAMING_TOKENS,
 } from '@melete/contracts';
+import { defaultPrivacyRouter, localEndpoint, type PrivacyRouter } from '../privacy/index.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import {
@@ -55,6 +56,12 @@ export interface GatewayOptions {
   onError?: (error: Error) => void;
   /** The broker shares this internal listener; it applies its own attempt/API authorization. */
   brokerFetch?: (request: Request) => Response | Promise<Response>;
+  /**
+   * Decides where each request may go and swaps sensitive details for
+   * placeholders. Left out, the default router redacts with default settings;
+   * `false` sends requests as written and is only for tests of the transport.
+   */
+  privacy?: PrivacyRouter | false;
 }
 
 function header(request: IncomingMessage, name: string): string {
@@ -243,8 +250,18 @@ export function createModelGateway(options: GatewayOptions): Server {
       // sooner than the engine's trigger, so a long conversation was rejected
       // here before it could ever be compacted.
       // Remote media and built-in tools cannot be metered by this text-only gateway.
-      const encoded = JSON.stringify(body);
       if (containsRemoteInput(body)) throw new GatewayError(400, 'unmetered_input_denied');
+      // Where this request may go and what it may carry: private conversations
+      // go to the person's own model, everything else leaves with its sensitive
+      // details swapped for placeholders. A refusal happens before anything is
+      // reserved, and nothing below sees the unredacted body again.
+      const router = options.privacy === false ? null : (options.privacy ?? defaultPrivacyRouter());
+      const prepared = router
+        ? await router.prepare({ principal, provider, protocol, body })
+        : null;
+      const outbound = prepared?.body ?? body;
+      const local = prepared?.local ?? null;
+      const encoded = JSON.stringify(outbound);
       const inputTokens = estimateInputTokens(encoded) + REQUEST_FRAMING_TOKENS;
       if (
         inputTokens >
@@ -252,12 +269,12 @@ export function createModelGateway(options: GatewayOptions): Server {
       )
         throw new GatewayError(413, 'input_context_exceeded');
       const estimatedTokens = inputTokens + requested;
-      if (!provider.fake && !provider.apiKey && !provider.signedIn)
+      if (!local && !provider.fake && !provider.apiKey && !provider.signedIn)
         throw new GatewayError(503, 'provider_key_unavailable');
       // Opened before anything is reserved, so a provider nobody is signed in
       // to refuses the call without charging the job.
-      const signedIn = provider.fake ? undefined : await provider.signedIn?.current();
-      const credential = signedIn?.token ?? provider.apiKey;
+      const signedIn = local || provider.fake ? undefined : await provider.signedIn?.current();
+      const credential = local ? local.apiKey : (signedIn?.token ?? provider.apiKey);
       reservation = await options.budget.reserve({
         principal,
         requestId: randomUUID(),
@@ -274,6 +291,7 @@ export function createModelGateway(options: GatewayOptions): Server {
         latencyMs: 0,
         status: 'unknown',
         httpStatus: null,
+        ...(prepared ? { privacy: prepared.receipt } : {}),
       };
       if (abort.signal.aborted) throw new GatewayError(504, 'request_aborted');
       const headers = new Headers({
@@ -281,21 +299,24 @@ export function createModelGateway(options: GatewayOptions): Server {
         accept: 'application/json, text/event-stream',
       });
       for (const [name, value] of Object.entries(signedIn?.headers ?? {})) headers.set(name, value);
-      if (protocol === 'messages') {
+      if (local) {
+        if (credential) headers.set('authorization', `Bearer ${credential}`);
+      } else if (protocol === 'messages') {
         headers.set('x-api-key', credential ?? 'fake');
         headers.set('anthropic-version', '2023-06-01');
       } else headers.set('authorization', `Bearer ${credential ?? 'fake'}`);
-      const result = provider.fake
-        ? await fake(body, principal.attemptId, protocol)
-        : await transport(
-            new Request(upstream.href, {
-              method: 'POST',
-              headers,
-              body: encoded,
-              redirect: 'error',
-              signal: abort.signal,
-            }),
-          );
+      const result =
+        provider.fake && !local
+          ? await fake(outbound, principal.attemptId, protocol)
+          : await transport(
+              new Request((local ? localEndpoint(local, 'chat/completions') : upstream).href, {
+                method: 'POST',
+                headers,
+                body: encoded,
+                redirect: 'error',
+                signal: abort.signal,
+              }),
+            );
       settlement.httpStatus = result.status;
       if (!result.ok || !result.body) {
         // Provider errors may contain injected keys or internal request diagnostics.
@@ -315,7 +336,12 @@ export function createModelGateway(options: GatewayOptions): Server {
         throw new GatewayError(502, 'unexpected_provider_response');
       }
       const collector = new UsageCollector(streaming, options.maxResponseBytes);
-      const redactor = new SecretRedactor(signedIn ? [...secrets, signedIn.token] : secrets);
+      const redactor = new SecretRedactor(
+        [...secrets, signedIn?.token, local?.apiKey].filter((key): key is string => !!key),
+      );
+      // Real values go back in before the reply leaves the gateway; the
+      // provider's placeholders are all the provider ever saw.
+      const rehydrator = prepared?.rehydrator ?? null;
       const buffered: string[] = [];
       if (streaming) {
         response.writeHead(result.status, {
@@ -332,14 +358,16 @@ export function createModelGateway(options: GatewayOptions): Server {
           settlement.modelActual = collector.modelActual;
           const output = redactor.feed(value);
           if (streaming) {
-            if (output) await writeChunk(response, output, abort.signal);
+            const visible = rehydrator && output ? rehydrator.push(output) : output;
+            if (visible) await writeChunk(response, visible, abort.signal);
           } else buffered.push(output);
         }
         collector.finish();
       } finally {
         await reader.cancel().catch(() => {});
       }
-      const tail = redactor.feed(new Uint8Array(), true);
+      const rest = redactor.feed(new Uint8Array(), true);
+      const tail = streaming && rehydrator ? rehydrator.push(rest) + rehydrator.end() : rest;
       settlement.modelActual = collector.modelActual;
       settlement.usage = collector.completed ? collector.usage : null;
       settlement.status = collector.completed ? 'succeeded' : 'unknown';
@@ -354,7 +382,8 @@ export function createModelGateway(options: GatewayOptions): Server {
           'content-type': 'application/json',
           'cache-control': 'no-store',
         });
-        response.end(buffered.join('') + tail);
+        const whole = buffered.join('') + tail;
+        response.end(rehydrator ? rehydrator.json(whole) : whole);
       }
     } catch (error) {
       // Rejections can answer before the POST body was read, and an unread body

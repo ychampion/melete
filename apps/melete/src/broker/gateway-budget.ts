@@ -228,6 +228,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
           http_status: result.httpStatus,
           usage_uncertain: usage === null,
           late,
+          ...(result.privacy ? { privacy: result.privacy } : {}),
         },
         dedup,
       );

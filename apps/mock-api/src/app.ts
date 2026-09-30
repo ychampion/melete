@@ -71,6 +71,7 @@ import type { z } from 'zod';
 import { mountCompaniesMock } from './companies.ts';
 import { mountExperienceMock } from './experience.ts';
 import { mountLearnedMock } from './learned.ts';
+import { mountPrivacyMock } from './privacy.ts';
 import type { Runner } from './runner.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { MockConflict, newId, type Store } from './store.ts';
@@ -120,10 +121,12 @@ export function createMockApp(deps: AppDeps) {
       origin: (origin) => origin ?? '*',
       credentials: true,
       allowHeaders: ['content-type', 'accept', 'last-event-id', 'idempotency-key'],
-      allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     }),
   );
 
+  // Before the experience routes, which answer every operation they do not implement.
+  mountPrivacyMock(app, deps, () => experience.chats);
   const experience = mountExperienceMock(app, deps);
   if (deps.seedExperience) experience.seed();
   // The companies surface is agreed but not yet in openapi.json, so it mounts

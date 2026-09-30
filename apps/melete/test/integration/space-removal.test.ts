@@ -335,6 +335,10 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   procedure_candidate: 'operational',
   question: 'operational',
   sandbox_session: 'operational',
+  privacy_conversation: 'operational',
+  privacy_request: 'operational',
+  privacy_settings: 'operational',
+  privacy_vault: 'operational',
   skill: 'operational',
   task: 'operational',
   // After the jobs and actions that `restrict` them.
@@ -619,6 +623,15 @@ describe.if(handle !== null)('removing a space', () => {
       values (${`sbx_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'fake',
         ${`sbx_provider_${seeded.spaceId}`}, 'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'closed',
         now(), now())`;
+    // The privacy router's rows: settings, a sealed vault, a conversation's state, an audit row.
+    const conversation = `job_privacy_${seeded.spaceId}`;
+    await sql`insert into privacy_settings (space_id, settings) values (${seeded.spaceId}, '{}'::jsonb)`;
+    await sql`insert into privacy_vault (conversation_id, space_id, sealed)
+      values (${conversation}, ${seeded.spaceId}, 'sealed-box-v1:x')`;
+    await sql`insert into privacy_conversation (conversation_id, space_id, sensitive)
+      values (${conversation}, ${seeded.spaceId}, 'finance')`;
+    await sql`insert into privacy_request (space_id, conversation_id, job_id, attempt_id, route)
+      values (${seeded.spaceId}, ${conversation}, ${conversation}, 'att_privacy', 'cloud')`;
     const sandboxes = sandboxRemovalTeardown(
       new SandboxSessions(sql, { leaseSeconds: 300, workspaceRetentionSeconds: 3_600 }),
       () => new FakeSandboxProvider(),

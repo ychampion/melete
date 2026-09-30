@@ -23,6 +23,7 @@ import type {
   ConnectionKind,
   Conversation,
   ConversationCreate,
+  ConversationPrivacy,
   Draft,
   EngineSkill,
   ExperienceEvent,
@@ -30,6 +31,8 @@ import type {
   LearnedItemResult,
   LearnedList,
   LedgerAction,
+  LocalModelCheck,
+  LocalModelCheckRequest,
   MemoryExplanation,
   MemoryItem,
   MemoryItemCreate,
@@ -38,6 +41,10 @@ import type {
   PermissionOutcome,
   Plan,
   PlanCreate,
+  PrivacyPreview,
+  PrivacyReveal,
+  PrivacySettings,
+  PrivacySettingsUpdate,
   Profile,
   ProfileInput,
   Question,
@@ -310,6 +317,22 @@ export const adapter = {
     guard<{ status: 'ok' }>(() => api.DELETE('/memory/items/{id}', path(id))),
   memoryWhy: (id: string) =>
     guard<MemoryExplanation>(() => api.GET('/memory/items/{id}/why', path(id))),
+
+  /* ---------- privacy ---------- */
+  privacySettings: () => guard<PrivacySettings>(() => api.GET('/privacy/settings')),
+  savePrivacy: (body: PrivacySettingsUpdate) =>
+    guard<PrivacySettings>(() => api.PUT('/privacy/settings', { body })),
+  previewPrivacy: (text: string) =>
+    guard<PrivacyPreview>(() => api.POST('/privacy/preview', { body: { text } })),
+  checkLocalModel: (body: LocalModelCheckRequest) =>
+    guard<LocalModelCheck>(() => api.POST('/privacy/local-model/check', { body })),
+  conversationPrivacy: (id: string) =>
+    guard<ConversationPrivacy>(() => api.GET('/conversations/{id}/privacy', path(id))),
+  /** The real values behind one answer's placeholders, for this screen only. */
+  revealPrivacy: (id: string, turnId: string) =>
+    guard<PrivacyReveal>(() =>
+      api.POST('/conversations/{id}/privacy/reveal', { ...path(id), body: { turn_id: turnId } }),
+    ),
 
   /* ---------- plans ---------- */
   plans: () => guard<{ plans: Plan[] }>(() => api.GET('/plans')),

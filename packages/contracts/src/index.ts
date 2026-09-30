@@ -32,6 +32,7 @@ export * from './model-budget.ts';
 export { buildOpenApiDocument, OPENAPI_VERSION, openApiJson } from './openapi.ts';
 export * from './plugins.ts';
 export * from './principals.ts';
+export * from './privacy.ts';
 export * from './provenance.ts';
 export * from './provider-signin.ts';
 export * from './reactions.ts';

@@ -35,9 +35,11 @@ export async function startLearning(
   workers: boolean,
   fake?: GatewayOptions['fake'],
   signIn?: ProviderSignIn,
+  privacy?: GatewayOptions['privacy'],
 ) {
   const gateway = await openProposalGateway({
     db: jobs.db,
+    privacy,
     provider: env.MELETE_DEFAULT_PROVIDER,
     model: env.MELETE_DEFAULT_MODEL,
     // The same explicitly configured fake provider covers the proposal call.

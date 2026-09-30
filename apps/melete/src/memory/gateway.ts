@@ -45,6 +45,8 @@ export type MemoryGatewayOptions = {
   fetch?: GatewayOptions['fetch'];
   /** How long one call may take; the extraction limit unless a test shortens it. */
   timeoutMs?: number;
+  /** The service's privacy router; what the person wrote is redacted before it is read. */
+  privacy?: GatewayOptions['privacy'];
 };
 
 export async function openMemoryGateway(options: MemoryGatewayOptions) {
@@ -95,6 +97,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
     providers: options.providers,
     fake: options.fake,
     fetch: options.fetch,
+    privacy: options.privacy,
     defaultProvider: options.provider,
     timeoutMs: options.timeoutMs ?? EXTRACTION_LIMITS.timeout_ms,
     maxRequestBytes: 256 * 1024,
@@ -215,6 +218,7 @@ export async function configuredMemoryGateway(
   sql: MemorySql,
   env: Env,
   fake?: GatewayOptions['fake'],
+  privacy?: GatewayOptions['privacy'],
 ) {
   const setting = env.MELETE_MEMORY_MODEL?.trim();
   if (setting === 'off') return null;
@@ -225,5 +229,6 @@ export async function configuredMemoryGateway(
     providers: configuredProviders(env, () => {}),
     dailyCalls: env.MELETE_MEMORY_DAILY_CALLS,
     fake,
+    privacy,
   });
 }
