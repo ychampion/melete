@@ -34,6 +34,11 @@ const TYPED: Record<string, string> = {
   'mcp_stdio.allowed_scopes': 'mcp_notes.search, mcp_notes.add',
   'sandbox.image': 'base',
   'credentials.api_key': 'sandbox-key-value',
+  'phone.on_behalf_of': 'Zara',
+  'phone.number': '+14155550100',
+  'phone.allowed_callers': '+14155550199',
+  'credentials.twilio_account_sid': `AC${'c'.repeat(32)}`,
+  'credentials.twilio_auth_token': 'twilio-token-value',
 };
 const TOOL_ROWS = [
   { name: 'search', alias: 'search', required_scopes: 'mcp_notes.search', effect_class: 'read' },
@@ -66,6 +71,7 @@ test('a form drawn only from the served descriptors installs every kind', async 
     'mail',
     'mcp',
     'mcp_stdio',
+    'phone',
     'sandbox',
   ]);
 
@@ -88,7 +94,10 @@ test('a form drawn only from the served descriptors installs every kind', async 
     expect([kind.id, created.status]).toEqual([kind.id, 201]);
     const view = connectionResponse.parse(JSON.parse(created.text));
     expect(view.check?.code).toBe('ok');
-    for (const field of kind.fields.filter((item) => item.secret))
+    // An optional secret left blank, such as the SIP fields of a Twilio line, has nothing to leak.
+    for (const field of kind.fields.filter(
+      (item) => item.secret && String(values.fields[item.path] ?? '').trim(),
+    ))
       expect(created.text).not.toContain(String(values.fields[field.path]).trim());
     if (kind.id === 'mail') {
       // Numbers and switches arrive typed, optional blanks are left out, a password is not trimmed.
