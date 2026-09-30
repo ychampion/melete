@@ -154,6 +154,32 @@ withDb('beliefs a person can see and correct', () => {
   });
 });
 
+withDb('don’t learn again, while a message is being read', () => {
+  test('a block written after the message was read but before it is saved is honoured', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    await pref(db, scope, 'pref.music.genre', 'jazz', '2026-09-02T09:00:00Z');
+    const id = await keyed(db, scope, 'pref.music.genre');
+    const journal = await journalFor('race');
+    const again = await record(
+      db,
+      scope,
+      {
+        identity: 'pref.music.genre:blues',
+        text: 'I like blues.',
+        eventAt: '2026-09-03T09:00:00Z',
+      },
+      [{ key: 'pref.music.genre', content: 'blues', quote: 'blues', kind: 'preference' }],
+      { beforeLock: () => blockBelief(db.sql, experienceScope(scope), id, journal).then(() => {}) },
+    );
+    expect(again.claim_ids).toEqual([]);
+    expect(await listBeliefs(db.sql, scope, 'UTC')).toEqual([]);
+    const reasons =
+      await db.sql`select reason from memory_rejections where space_id = ${scope.spaceId}`;
+    expect(reasons.map((row) => row.reason)).toEqual(['blocked_by_person']);
+  });
+});
+
 withDb('rewinding a day', () => {
   test('undoing a day is exact, and undoing the undo puts everything back', async () => {
     if (!db) return;
@@ -232,6 +258,84 @@ withDb('rewinding a day', () => {
         ?.changes.map((c) => c.change)
         .sort(),
     ).toEqual(['corrected', 'learned']);
+  });
+
+  test('undoing a day keeps a belief the person changed on a later day', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const zone = 'Europe/Berlin';
+    await db.sql`insert into experience_profile (space_id, time_zone) values (${scope.spaceId}, ${zone})`;
+    const dayOne = localDay(new Date(Date.now() - 3 * 86_400_000), zone);
+    const dayTwo = addDays(dayOne, 1);
+    const on = (day: string, time: string) => zonedInstant(day, time, zone);
+
+    // Day one: coffee and gym learned.
+    await pref(db, scope, 'pref.coffee.order', 'flat white', on(dayOne, '09:00').toISOString());
+    const coffee = await keyed(db, scope, 'pref.coffee.order');
+    await setRecordedAt(db, coffee, on(dayOne, '09:05'));
+    await pref(db, scope, 'pref.gym.days', 'tuesdays', on(dayOne, '18:00').toISOString());
+    const gym = await keyed(db, scope, 'pref.gym.days');
+    await setRecordedAt(db, gym, on(dayOne, '18:05'));
+    // Day two: the person corrects the coffee.
+    const coffeeBelief = (await listBeliefs(db.sql, scope, zone)).find((b) => b.id === coffee);
+    await new ExperienceMemory(db.sql).edit(scope.spaceId, scope.ownerId, coffee, {
+      value: 'oat flat white',
+      version: coffeeBelief?.version,
+    });
+    await setRecordedAt(db, coffee, on(dayTwo, '10:00'));
+
+    const window = await resolveTarget(db.sql, scope, { day: dayOne }, zone);
+    const preview = await previewRewind(db.sql, scope, window);
+    expect(preview.steps.map((step) => [step.label, step.from, step.to])).toEqual([
+      ['Gym: days', 'tuesdays', null],
+    ]);
+    expect(preview.skipped).toEqual(['Coffee: order: kept — you changed this later.']);
+    const rewind = await applyRewind(db.sql, scope, window, { day: dayOne });
+    expect(rewind.skipped).toEqual(['Coffee: order: kept — you changed this later.']);
+    expect(
+      (await listBeliefs(db.sql, scope, zone)).map((belief) => [belief.id, belief.value]),
+    ).toEqual([[coffee, 'oat flat white']]);
+    // Undoing the rewind brings the gym back and leaves the correction alone.
+    await undoRewind(db.sql, scope, rewind.id);
+    expect(
+      (await listBeliefs(db.sql, scope, zone))
+        .map((belief) => [belief.id, belief.value])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    ).toEqual(
+      [
+        [coffee, 'oat flat white'],
+        [gym, 'tuesdays'],
+      ].sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    );
+  });
+
+  test('a value put back by undoing a later day still belongs to the day it was learned', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const zone = 'UTC';
+    const dayOne = localDay(new Date(Date.now() - 4 * 86_400_000), zone);
+    const dayTwo = addDays(dayOne, 1);
+    const on = (day: string, time: string) => zonedInstant(day, time, zone);
+    // Day one: coffee learned. Day two: the person corrects it. Then day two is undone.
+    await pref(db, scope, 'pref.coffee.order', 'flat white', on(dayOne, '09:00').toISOString());
+    const coffee = await keyed(db, scope, 'pref.coffee.order');
+    await setRecordedAt(db, coffee, on(dayOne, '09:05'));
+    const [belief] = await listBeliefs(db.sql, scope, zone);
+    await new ExperienceMemory(db.sql).edit(scope.spaceId, scope.ownerId, coffee, {
+      value: 'oat flat white',
+      version: belief?.version,
+    });
+    await setRecordedAt(db, coffee, on(dayTwo, '10:00'));
+    const dayTwoWindow = await resolveTarget(db.sql, scope, { day: dayTwo }, zone);
+    await applyRewind(db.sql, scope, dayTwoWindow, { day: dayTwo });
+    expect((await listBeliefs(db.sql, scope, zone)).map((b) => b.value)).toEqual(['flat white']);
+    // The value now in effect was learned on day one, so undoing day one sets it aside.
+    const dayOneWindow = await resolveTarget(db.sql, scope, { day: dayOne }, zone);
+    const preview = await previewRewind(db.sql, scope, dayOneWindow);
+    expect(preview.skipped).toEqual([]);
+    expect(preview.steps.map((step) => [step.label, step.from, step.to])).toEqual([
+      ['Coffee: order', 'flat white', null],
+    ]);
   });
 
   test('a belief set aside by a rewind is learned again when it is said again', async () => {

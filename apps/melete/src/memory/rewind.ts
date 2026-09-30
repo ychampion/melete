@@ -9,7 +9,9 @@
  * content stays so undoing the rewind can bring it back exactly. The steps are
  * recorded with a snapshot of what each belief held, and undoing replays them
  * in reverse. A belief that changed again after the rewind is left as it is and
- * named, rather than overwritten.
+ * named, rather than overwritten. Rewinding a window likewise leaves alone, and
+ * names, a belief whose current value was set after the window: undoing one
+ * day never takes back a later day's change, least of all the person's own.
  */
 import type { BeliefChange, ClaimRevision, MemoryRewind, RewindTarget } from '@melete/contracts';
 import { beliefVersion, subjectLabel } from './beliefs.ts';
@@ -82,18 +84,56 @@ async function snapshot(tx: MemoryTx, claimId: string, revision: number): Promis
   };
 }
 
-/** Revisions rewinds and their undos published, which are never themselves "learned". */
+/**
+ * Revisions rewinds and their undos published, which are never themselves
+ * "learned", each mapped to the revision whose value it published again.
+ */
 async function rewindRevisions(tx: MemoryTx, spaceId: string) {
   const rows = await tx`select steps, undo_steps from memory_rewinds where space_id = ${spaceId}`;
-  const produced = new Set<string>();
+  const produced = new Map<string, number>();
   for (const row of rows) {
-    for (const step of (row.steps as RewindStep[]) ?? [])
+    const steps = (row.steps as RewindStep[]) ?? [];
+    for (const step of steps)
       if (step.action === 'restore' && step.produced)
-        produced.add(`${step.claim_id}:${step.produced}`);
-    for (const step of (row.undo_steps as UndoStep[] | null) ?? [])
-      if (step.produced) produced.add(`${step.claim_id}:${step.produced}`);
+        produced.set(`${step.claim_id}:${step.produced}`, step.to.revision);
+    for (const step of (row.undo_steps as UndoStep[] | null) ?? []) {
+      const undid = steps.find((s) => s.claim_id === step.claim_id && s.action === 'restore');
+      if (step.produced && undid)
+        produced.set(`${step.claim_id}:${step.produced}`, undid.from.revision);
+    }
   }
   return produced;
+}
+
+/** The revision a value was first written in, looking through rewinds that published it again. */
+function originOf(produced: Map<string, number>, claimId: string, revision: number) {
+  let current = revision;
+  for (let hops = 0; hops < 1000; hops++) {
+    const next = produced.get(`${claimId}:${current}`);
+    if (next === undefined || next === current) return current;
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * Why a belief's current value is kept by a rewind of a window, or null when it
+ * may be rewound: its value was set after the window ended, by the person
+ * (a correction, or a settled question) or by something learned later.
+ */
+async function keptReason(
+  tx: MemoryTx,
+  claimId: string,
+  revision: number,
+  recordedAt: Date,
+  window: RewindWindow,
+) {
+  if (recordedAt < window.end) return null;
+  const [owner] = await tx`select 1 from memory_references ref
+    join memory_sources s on s.id = ref.source_id
+    where ref.claim_id = ${claimId} and ref.revision = ${revision}
+      and (s.source_type = 'owner_edit' or s.stream = 'owner-corrections') limit 1`;
+  return owner ? 'kept — you changed this later.' : 'kept — it changed again later.';
 }
 
 /** The steps a rewind of this window would take now, and what it would leave. */
@@ -122,6 +162,15 @@ async function planSteps(tx: MemoryTx, scope: MemoryScope, window: RewindWindow)
         !produced.has(`${head.id}:${row.revision}`),
     );
     if (!learned.length) continue;
+    const origin = originOf(produced, head.id, head.head_revision);
+    const originRow = revisions.find((row) => Number(row.revision) === origin);
+    const kept = originRow
+      ? await keptReason(tx, head.id, origin, new Date(String(originRow.recorded_at)), window)
+      : null;
+    if (kept) {
+      skipped.push(`${label}: ${kept}`);
+      continue;
+    }
     const before = revisions
       .filter((row) => new Date(String(row.recorded_at)) < window.start)
       .at(-1);
