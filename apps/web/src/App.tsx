@@ -239,7 +239,15 @@ export function App() {
   } else if (head === 'settings') {
     // What Melete learned now lives under Memory; old links land there.
     if (second === 'learned') window.location.replace('#/settings/memory');
-    screen = <SettingsScreen tab={second === 'learned' ? 'memory' : (second ?? 'memory')} />;
+    screen = (
+      <SettingsScreen
+        tab={second === 'learned' ? 'memory' : (second ?? 'memory')}
+        detail={route.parts[2] ?? null}
+      />
+    );
+  } else if (head === 'feedback') {
+    // The report panel opens over Home; the shell's host reads this address.
+    screen = <HomeScreen />;
   } else {
     if (head) navigate('/');
     screen = <HomeScreen />;

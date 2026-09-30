@@ -29,7 +29,7 @@ import type {
   StandingGrantResolver,
 } from '../broker/service.ts';
 import { recipientText } from './projectors.ts';
-import { resolveExperienceGrant, ruleKinds, ruleRecipient } from './rules.ts';
+import { isAssistantCommand, resolveExperienceGrant, ruleKinds, ruleRecipient } from './rules.ts';
 
 /** How many follow-ups one "Allow once" can cover in a chase. */
 export const CHASE_FOLLOW_UP_CAP = 3;
@@ -176,9 +176,14 @@ export const resolveChaseGrant: StandingGrantResolver = async (tx, input) =>
 /** The chase scope asked about a payload with doubts: the approval it rests on, or null. */
 export const resolveChaseScopedGrant: ScopedGrantResolver = chaseCover;
 
-/** A person's standing rules first, then the chase scope of the job. */
+/**
+ * A person's standing rules first, then the chase scope of the job. Nothing an
+ * assistant asked for is admitted this way: each such message waits for the
+ * person to approve its exact text.
+ */
 export const resolvePersonGrant: StandingGrantResolver = async (tx, input) =>
-  (await resolveExperienceGrant(tx, input)) || resolveChaseGrant(tx, input);
+  !isAssistantCommand(input.job.experience_command_key) &&
+  ((await resolveExperienceGrant(tx, input)) || resolveChaseGrant(tx, input));
 
 /** The job's open chase scope and the approved message it rests on, or null. */
 async function openScope(tx: Query, job: LockedJob) {

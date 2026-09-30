@@ -14,6 +14,8 @@ import { adapter } from '../experience/adapter.ts';
 import { lookOf, messageKey, useApp, useLoad, useMedia } from '../experience/hooks.ts';
 import { givenName } from '../experience/profile.ts';
 import type { AgentInput, MemoryItem, TourStage } from '../experience/types.ts';
+import { models } from '../models/api.ts';
+import { ActiveModel, ModelConnect } from '../models/ModelConnect.tsx';
 import { navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
 import { blankAgent, LookFields, reaches, toggleReach } from './Agents.tsx';
@@ -468,10 +470,13 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                       <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
                         Sign in with your ChatGPT account
                       </span>
-                      <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
-                        OpenAI confirms who you are and shares your name, email address and profile
-                        picture with this installation. Your ChatGPT password stays with OpenAI.
-                      </span>
+                      {chatgpt?.ready ? (
+                        <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
+                          OpenAI confirms who you are and shares your name, email address and
+                          profile picture with this installation. Your ChatGPT password stays with
+                          OpenAI.
+                        </span>
+                      ) : null}
                       {chatgpt?.ready ? (
                         <Button
                           icon="arrowUpRight"
@@ -507,9 +512,15 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                           </span>
                           <span>
                             {chatgpt?.reason ??
-                              'This installation has no ChatGPT sign-in client yet. The person who runs it needs to add one.'}
+                              'This installation hasn’t set up ChatGPT sign-in yet.'}
                           </span>
                         </div>
+                      )}
+                      {chatgpt?.ready ? null : (
+                        <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
+                          When it’s set up, OpenAI shares your name and email with Melete. Your
+                          ChatGPT password stays with OpenAI.
+                        </span>
                       )}
                     </section>
                   ) : null}
@@ -1082,6 +1093,13 @@ export function OnboardingScreen() {
           : true,
   );
   const connections = useLoad(() => adapter.connections(), []);
+  const model = useLoad(() => models.settings(), []);
+  // Asked once, before the tour, when the owner has no model that can answer.
+  const [modelStep, setModelStep] = useState<'unknown' | 'ask' | 'done'>('unknown');
+  useEffect(() => {
+    if (modelStep !== 'unknown' || model.loading) return;
+    setModelStep(model.data?.can_edit && !model.data.active.connected ? 'ask' : 'done');
+  }, [modelStep, model.loading, model.data]);
   const [step, setStep] = useState(1);
   const [stage, setStage] = useState(0);
   const [name, setName] = useState(givenName(profile));
@@ -1223,7 +1241,35 @@ export function OnboardingScreen() {
   );
 
   let card: ReactNode;
-  if (step === 1) {
+  if (modelStep === 'ask' && model.data) {
+    const connected = model.data.active.connected;
+    card = (
+      <Card
+        title="Connect a model"
+        sub="Choose the model your agents answer with: paste an API key from your provider, or sign in to ChatGPT. You can change it any time in Settings › Models."
+        footer={
+          <>
+            <div className="grow" />
+            {connected ? null : (
+              <Button variant="ghost" onClick={() => setModelStep('done')}>
+                Skip for now
+              </Button>
+            )}
+            <Button
+              iconRight="chevronRight"
+              disabled={!connected}
+              onClick={() => setModelStep('done')}
+            >
+              Continue
+            </Button>
+          </>
+        }
+      >
+        <ActiveModel settings={model.data} onChanged={model.set} />
+        <ModelConnect settings={model.data} onChanged={model.set} />
+      </Card>
+    );
+  } else if (step === 1) {
     card = (
       <Card
         title="Welcome to Melete"

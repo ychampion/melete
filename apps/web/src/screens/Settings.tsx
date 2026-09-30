@@ -13,10 +13,17 @@ import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import { givenName } from '../experience/profile.ts';
 import type { Connection, Rule } from '../experience/types.ts';
+import { FeedbackTab } from '../feedback/FeedbackTab.tsx';
+import { models } from '../models/api.ts';
+import { ModelLine, ModelsTab } from '../models/ModelConnect.tsx';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { MemoryPanel } from './Beliefs.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
+import { NotificationsTab } from './Notifications.tsx';
+
+const dateOf = (iso: string | null) =>
+  iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
 
 const ACCESS_LABEL: Record<Connection['access'], string> = {
   read_only: 'Read only',
@@ -95,6 +102,77 @@ export function ConnectionCard({
   );
 }
 
+/**
+ * Other assistants the person let use Melete, each with a way to disconnect it.
+ * An installation that does not offer the MCP endpoint answers with an error,
+ * and then there is nothing here to list or disconnect.
+ */
+function ConnectedAssistants() {
+  const assistants = useLoad(() => adapter.assistants(), []);
+  const [ending, setEnding] = useState<string | null>(null);
+  if (!assistants.data) return null;
+  const clients = assistants.data.clients;
+  return (
+    <section className="col" style={{ gap: 8, marginTop: 12 }} aria-labelledby="assistants-head">
+      <h2
+        id="assistants-head"
+        style={{ fontSize: 15, fontWeight: 600, color: 'var(--heading)', margin: 0 }}
+      >
+        Connected assistants
+      </h2>
+      <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560, margin: 0 }}>
+        Other assistants you let use Melete as you. Disconnecting one ends its access at once.
+      </p>
+      {clients.length === 0 ? (
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>No assistant is connected.</span>
+      ) : (
+        <div className="card-12" style={{ overflow: 'hidden' }}>
+          <div style={{ height: 1 }} />
+          {clients.map((client) => (
+            <div key={client.client_id} className="list-row" style={{ minHeight: 60 }}>
+              <Icon name="connectors" size={18} />
+              <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
+                <span
+                  className="clamp1"
+                  style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
+                >
+                  {client.name}
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                  Connected since {dateOf(client.since)}
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                loading={ending === client.client_id}
+                disabled={ending !== null}
+                aria-label={`Disconnect ${client.name}`}
+                onClick={() => {
+                  setEnding(client.client_id);
+                  void adapter.disconnectAssistant(client.client_id).then((r) => {
+                    setEnding(null);
+                    if (r.data === null) {
+                      toast({ kind: 'err', title: r.error ?? 'Couldn’t disconnect' });
+                      return;
+                    }
+                    assistants.set({
+                      clients: clients.filter((c) => c.client_id !== client.client_id),
+                    });
+                    toast({ kind: 'ok', title: `Disconnected ${client.name}` });
+                  });
+                }}
+              >
+                Disconnect
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 const ruleWhen = (rule: Rule) => {
   const expires = new Date(rule.bounds.expires_at).toLocaleDateString('en-US', {
     month: 'short',
@@ -103,12 +181,20 @@ const ruleWhen = (rule: Rule) => {
   return `${rule.used} of ${rule.bounds.count_cap} used · until ${expires} · asks again after ${rule.bounds.reconsent_after_days} day${rule.bounds.reconsent_after_days === 1 ? '' : 's'}`;
 };
 
-export function SettingsScreen({ tab }: { tab: string }) {
+export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: string | null }) {
   const { profile, signOut } = useApp();
   const [leaving, setLeaving] = useState(false);
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
-  const current = tab === 'connections' || tab === 'rules' ? tab : 'memory';
+  const model = useLoad(() => models.settings(), []);
+  const current =
+    tab === 'connections' ||
+    tab === 'rules' ||
+    tab === 'notifications' ||
+    tab === 'feedback' ||
+    tab === 'models'
+      ? tab
+      : 'memory';
   const list = connections.data?.connections ?? [];
   const byId = new Map(list.map((c) => [c.id, c]));
 
@@ -132,6 +218,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>
               Signing out ends this session on every open tab; nothing saved here is lost.
             </span>
+            {model.data ? <ModelLine settings={model.data} /> : null}
           </div>
           <Button
             variant="outline"
@@ -152,16 +239,25 @@ export function SettingsScreen({ tab }: { tab: string }) {
           onChange={(next) => navigate(`/settings/${next}`)}
           tabs={[
             { value: 'memory', label: 'Memory' },
+            { value: 'notifications', label: 'Notifications' },
             {
               value: 'connections',
               label: 'Connections',
               count: list.filter((c) => c.status === 'connected').length,
             },
             { value: 'rules', label: 'Rules', count: rules.data?.rules.length ?? 0 },
+            { value: 'feedback', label: 'Feedback' },
+            { value: 'models', label: 'Models' },
           ]}
         />
         {current === 'memory' ? (
           <MemoryPanel />
+        ) : current === 'notifications' ? (
+          <NotificationsTab />
+        ) : current === 'feedback' ? (
+          <FeedbackTab selected={detail} />
+        ) : current === 'models' ? (
+          <ModelsTab loaded={model} />
         ) : current === 'connections' ? (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
@@ -191,6 +287,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>Nothing is connected yet.</span>
             ) : null}
             <AddConnection onInstalled={connections.reload} />
+            <ConnectedAssistants />
           </div>
         ) : (
           <div className="col" style={{ gap: 12 }}>

@@ -15,7 +15,13 @@ import {
   SUPERSEDED_NOTE,
   senderAddress,
 } from './projectors.ts';
-import { permissionVersion, ruleKinds, ruleRecipient, ruleView } from './rules.ts';
+import {
+  isAssistantCommand,
+  permissionVersion,
+  ruleKinds,
+  ruleRecipient,
+  ruleView,
+} from './rules.ts';
 import { experienceMissing } from './service.ts';
 
 export class ExperiencePermissions {
@@ -26,7 +32,8 @@ export class ExperiencePermissions {
   ) {}
 
   async find(spaceId: string, id: string) {
-    const [row] = await this.sql`select p.*, j.experience_parent_id, c.label, c.provider,
+    const [row] = await this.sql`select p.*, j.experience_parent_id, j.experience_command_key,
+      c.label, c.provider,
       c.configuration, a.job_id, a.connection_id from approval p join action a on a.id = p.action_id
       join job j on j.id = a.job_id join connection c on c.id = a.connection_id
       where p.id = ${id} and j.space_id = ${spaceId} and c.space_id = ${spaceId}
@@ -68,7 +75,11 @@ export class ExperiencePermissions {
         sender: senderAddress(row.configuration),
       },
       reasons,
-      canAlways: warnings.length === 0 && Boolean(ruleKinds[action.kind]),
+      // A rule could never cover what an assistant asks for, so none is offered on its card.
+      canAlways:
+        warnings.length === 0 &&
+        Boolean(ruleKinds[action.kind]) &&
+        !isAssistantCommand(row.experience_command_key),
       requestedAt: new Date(row.requested_at),
       because: await actionBecause(this.sql, spaceId, action.id),
     });

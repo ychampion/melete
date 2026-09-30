@@ -30,6 +30,7 @@ import {
   useMedia,
   useNow,
 } from '../experience/hooks.ts';
+import { inlineSpans } from '../experience/inline.ts';
 import {
   answerOf,
   latestTurn,
@@ -55,6 +56,7 @@ import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { CasePanel, useCase } from './CasePanel.tsx';
 import { Composer } from './Composer.tsx';
+import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
 import {
   ActionBar,
   PermissionCard,
@@ -66,6 +68,7 @@ import {
   UnknownCard,
   UserBubble,
 } from './parts.tsx';
+import { pauseOrStop } from './pause.ts';
 import './chat.css';
 
 /** One-tap changes to a draft waiting on a decision; each is sent as the person's next message. */
@@ -76,6 +79,35 @@ const FINISHED: TurnStatus[] = ['done', 'stopped', 'failed'];
 
 function titleFor(text: string): string {
   return shortTitle(text) || 'New chat';
+}
+
+type Outcome = { data: unknown; error: string | null; unavailable: string | null };
+
+/** A control that did not take says why, instead of doing nothing. */
+async function reportFailure(pending: Promise<Outcome>, verb: string) {
+  const result = await pending;
+  if (result.data === null)
+    toast({
+      kind: 'err',
+      title: `Couldn’t ${verb}`,
+      sub: result.unavailable ?? result.error ?? '',
+    });
+}
+
+/** Pausing mid-step needs the engine's help; without it, stopping keeps the progress. */
+async function pauseTurn(id: string) {
+  const result = await pauseOrStop({
+    pause: () => adapter.pause(id),
+    stop: () => adapter.stop(id),
+  });
+  if (result.outcome === 'stopped')
+    toast({
+      kind: 'info',
+      title: 'Stopped this turn',
+      sub: 'This assistant can’t pause mid-step, so it stopped. Your progress is saved.',
+    });
+  else if (result.outcome === 'failed')
+    toast({ kind: 'err', title: 'Couldn’t pause', sub: result.reason });
 }
 
 function AgentChip({
@@ -318,15 +350,23 @@ function TurnView({
   );
 }
 
-/** A line with its **bold** spans drawn bold; everything else stays plain text. */
+/** A line with its bold, italic and code spans drawn; everything else stays plain text. */
 function Line({ line }: { line: string }) {
-  const parts = line.split(/\*\*(.+?)\*\*/g);
   return (
     <>
-      {parts.map((part, index) =>
-        // biome-ignore lint/suspicious/noArrayIndexKey: the parts are a cut of one line, in order
-        index % 2 === 1 ? <strong key={index}>{part}</strong> : part,
-      )}
+      {inlineSpans(line).map((span, index) => {
+        // The spans are a cut of one line, in order, so their place is their key.
+        const key = `${index}:${span.kind}`;
+        if (span.kind === 'strong') return <strong key={key}>{span.text}</strong>;
+        if (span.kind === 'em') return <em key={key}>{span.text}</em>;
+        if (span.kind === 'code')
+          return (
+            <code key={key} className="answer-code">
+              {span.text}
+            </code>
+          );
+        return <span key={key}>{span.text}</span>;
+      })}
     </>
   );
 }
@@ -395,6 +435,8 @@ export function ChatScreen({ id }: { id: string | null }) {
   const wide = useMedia('(min-width: 1180px)');
   // The case panel follows the width until the person opens or closes it.
   const [caseChoice, setCaseChoice] = useState<boolean | null>(null);
+  /** The agent's computer is opened by the person and stays as they left it. */
+  const [computerOpen, setComputerOpen] = useState(false);
 
   const last = latestTurn(transcript);
   const composerState = transcript.composer;
@@ -665,6 +707,25 @@ export function ChatScreen({ id }: { id: string | null }) {
   const caseOpen = Boolean(found) && !touch && (caseChoice ?? wide);
   const agent = agentById(agents, agentId);
   const lastId = last?.id ?? null;
+  // A new tool entry on the stream is when the computer most likely changed.
+  const toolPulse = `${transcript.status}:${transcript.turns.reduce(
+    (count, turn) => count + turn.trail.length,
+    0,
+  )}`;
+  const computer = useComputer(conversationId, computerOpen && Boolean(conversationId), toolPulse);
+  const showComputer = computerOpen && Boolean(conversationId);
+  const computerLabel = `${showComputer ? 'Hide' : 'Show'} ${agent?.name ?? 'Melete'}’s computer`;
+  const computerToggle = (size?: number) =>
+    conversationId ? (
+      <IconButton
+        name="monitor"
+        label={computerLabel}
+        on={showComputer}
+        aria-expanded={showComputer}
+        {...(size ? { size, iconSize: 20 } : {})}
+        onClick={() => setComputerOpen(!showComputer)}
+      />
+    ) : null;
 
   return (
     <Shell
@@ -682,9 +743,18 @@ export function ChatScreen({ id }: { id: string | null }) {
           </>
         ) : undefined
       }
-      rail={!found}
+      rail={!found && !showComputer}
+      phoneActions={computerToggle(44)}
       panel={
-        found && caseOpen ? (
+        showComputer ? (
+          <ComputerPanel
+            agent={agent}
+            computer={computer.computer}
+            error={computer.error}
+            onClose={() => setComputerOpen(false)}
+            onChanged={() => void computer.refresh()}
+          />
+        ) : found && caseOpen ? (
           <CasePanel
             found={found}
             transcript={transcript}
@@ -704,6 +774,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             <h1 className="clamp1">{title}</h1>
             <AgentChip agentId={agentId} onChange={setConversationAgent} />
             <div className="grow" />
+            {computerToggle()}
             {found ? (
               <IconButton
                 name="panelRight"
@@ -868,9 +939,13 @@ export function ChatScreen({ id }: { id: string | null }) {
                 state={conversationId ? composerState : 'send'}
                 working={working}
                 autoFocus={!touch}
-                onPause={() => conversationId && void adapter.pause(conversationId)}
-                onResume={() => conversationId && void adapter.resume(conversationId)}
-                onStop={() => conversationId && void adapter.stop(conversationId)}
+                onPause={() => conversationId && void pauseTurn(conversationId)}
+                onResume={() =>
+                  conversationId && void reportFailure(adapter.resume(conversationId), 'resume')
+                }
+                onStop={() =>
+                  conversationId && void reportFailure(adapter.stop(conversationId), 'stop')
+                }
               />
             </div>
           </div>

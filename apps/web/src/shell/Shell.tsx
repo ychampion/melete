@@ -38,6 +38,7 @@ import { adapter } from '../experience/adapter.ts';
 import { agentById, lookOf, useApp, useDecisions, useLoad, useMedia } from '../experience/hooks.ts';
 import { givenName } from '../experience/profile.ts';
 import type { CalendarEvent, Conversation } from '../experience/types.ts';
+import { FeedbackHost, openFeedback } from '../feedback/FeedbackPanel.tsx';
 import { href, navigate, useRoute } from '../router.ts';
 import { useTheme } from '../theme.ts';
 import { CommandPalette } from './CommandPalette.tsx';
@@ -215,6 +216,7 @@ function AccountMenu({ address }: { address: string | null }) {
           </Menu>
         </Popover>
       </div>
+      <IconButton name="bug" label="Report a problem" onClick={() => openFeedback()} />
       <IconButton
         name="sliders"
         label="Settings"
@@ -786,6 +788,7 @@ export function Shell({
           </div>
         </div>
         <CommandPalette open={palette} onClose={() => setPalette(false)} />
+        <FeedbackHost />
         <ToastStack />
       </div>
     </RailContext.Provider>
