@@ -72,6 +72,11 @@ export const memorySources = pgTable(
     originTrust: text('origin_trust').notNull().default('inferred'),
     // The zone Tier 0 resolves relative dates against, captured at import time.
     timeZone: text('time_zone'),
+    // Why the conversation this came from was private when it was captured:
+    // its space or agent was marked private, or its topic was sensitive. What
+    // memory learns from it is recalled only into requests that stay on the
+    // person's own model.
+    privateOrigin: text('private_origin'),
   },
   (t) => [
     uniqueIndex('memory_source_identity').on(
@@ -87,6 +92,10 @@ export const memorySources = pgTable(
     check(
       'memory_source_trust',
       sql`${t.originTrust} in ('owner','verified_connector','external_content','inferred')`,
+    ),
+    check(
+      'memory_source_private_origin',
+      sql`${t.privateOrigin} is null or ${t.privateOrigin} in ('space','agent','health','therapy','finance')`,
     ),
   ],
 );

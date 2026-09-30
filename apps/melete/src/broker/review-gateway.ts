@@ -55,6 +55,8 @@ export type ReviewGatewayOptions = {
   provider: string;
   model: string;
   providers: NonNullable<GatewayOptions['providers']>;
+  /** The service's privacy router: the reviewed job's space and conversation privacy apply. */
+  privacy: GatewayOptions['privacy'];
   /** The model and keys each review uses, read per review. */
   source?: ServiceModelSource;
   fake?: GatewayOptions['fake'];
@@ -125,6 +127,7 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
     ...(options.source ? { currentProviders: options.source.providers } : {}),
     fake: options.fake,
     fetch: options.fetch,
+    privacy: options.privacy,
     defaultProvider: options.provider,
     timeoutMs: options.timeoutMs,
     maxRequestBytes: 128 * 1024,
@@ -223,6 +226,7 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
  */
 export async function configuredReviewGateway(
   env: Env,
+  privacy: GatewayOptions['privacy'],
   signIn?: ProviderSignIn,
   fake?: GatewayOptions['fake'],
   connected: {
@@ -238,6 +242,7 @@ export async function configuredReviewGateway(
     provider: pinned.provider || env.MELETE_DEFAULT_PROVIDER,
     model: pinned.model || env.MELETE_DEFAULT_MODEL,
     providers: configuredProviders(env, () => {}, signIn),
+    privacy,
     source: serviceModelSource({ env, settings: connected.settings, pinned }),
     fake,
     ...(connected.fetch ? { fetch: connected.fetch } : {}),

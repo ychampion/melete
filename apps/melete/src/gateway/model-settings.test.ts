@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import type { Server } from 'node:http';
 import type { Database } from '../db/client.ts';
 import { loadEnv } from '../env.ts';
+import { defaultPrivacyRouter } from '../privacy/index.ts';
 import { createModelGateway, type GatewayProvider, providersFromEnv } from './index.ts';
 import { checkedBaseUrl, ModelSettingsService, modelIds } from './model-settings.ts';
 
@@ -176,6 +177,7 @@ describe('the gateway reads its providers per call', () => {
       authenticate: async () => ({
         jobId: 'job',
         attemptId: 'att',
+        privacy: { kind: 'job' as const },
         epoch: 1,
         revision: 1,
         maxRequests: 5,
@@ -183,6 +185,7 @@ describe('the gateway reads its providers per call', () => {
         allowedModels: [{ provider: 'openai', model: 'fixture-chat' }],
       }),
       budget: { reserve: async () => ({ id: 'r' }), settle: async () => {} },
+      privacy: defaultPrivacyRouter(),
       providers: configured,
       currentProviders: async (base): Promise<GatewayProvider[]> =>
         base.map((provider) =>
