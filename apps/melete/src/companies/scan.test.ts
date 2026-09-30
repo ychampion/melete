@@ -504,11 +504,9 @@ describe('what the person is still waiting to hear back about', () => {
       });
     const full = await scan(50);
     expect(full.counts.awaited_replies).toBe(0);
-    // The same inbox read to its end: nothing there answers them, so they wait,
-    // along with those the demonstration inbox would have answered.
-    expect((await scan(60)).counts.awaited_replies).toBeGreaterThanOrEqual(
-      AWAITED_SENT_INDEXES.length,
-    );
+    // A read that comes back short of its limit is judged the same way: the
+    // connector may have withheld messages it read, so it is not the whole inbox.
+    expect((await scan(60)).counts.awaited_replies).toBe(0);
   });
 });
 

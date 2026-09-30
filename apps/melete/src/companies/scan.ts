@@ -234,11 +234,14 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
     if (options.mailbox.sent) {
       try {
         const sent = await options.mailbox.sent(readLimit);
-        // A read that came back short of its limit reached the end of the inbox.
+        // A read that comes back short of its limit is not proof it reached the
+        // end of the inbox: the connector withholds sign-in codes and the like
+        // after it has read, and a message with no Message-ID is not kept. So
+        // only what the read reaches back to is judged.
         const waiting = findAwaitedReplies({
           sent,
           inbox: messages,
-          inboxComplete: messages.length < readLimit,
+          inboxComplete: false,
           now,
         });
         // The sentence each one rests on is checked against this text later.

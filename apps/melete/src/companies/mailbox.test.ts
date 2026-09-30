@@ -437,3 +437,55 @@ test('scanned mail with two From headers is filed under no company', async () =>
   expect(grouped.companies).toEqual([]);
   expect(grouped.counts.noSender).toBe(1);
 });
+
+test('a sign-in code withheld from a full inbox read does not make it look like the whole inbox', async () => {
+  // Fifty messages from the last two days fill the read, and the connector
+  // withholds one of them, a verification code, after reading it. A question
+  // sent ten days ago could have been answered before all of them, so it is
+  // not judged.
+  const at = Date.parse(UNDATED);
+  const transport = new MailDouble();
+  transport.messages = Array.from({ length: 50 }, (_, index) =>
+    index === 7
+      ? message(100 + index, 'Your verification code', 'Your verification code is 449120.')
+      : message(100 + index, `Note ${index}`, 'Just a note.'),
+  ).map((entry, index) => ({
+    ...entry,
+    message_id: `<${100 + index}@elsewhere${index}.example>`,
+    from: `Someone <someone${index}@elsewhere${index}.example>`,
+    date: new Date(at - (index + 1) * 3_600_000).toISOString(),
+  }));
+  transport.outbox = [
+    {
+      ...message(
+        200,
+        'Quote for the shelves',
+        'Could you send the quote for the shelves?',
+        new Date(at - 10 * 86_400_000).toISOString(),
+        'Sam Okafor <accounts@thackeraylane.example>',
+      ),
+      message_id: '<200@thackeraylane.example>',
+      to: 'Joinery <hello@joinery.example>',
+      to_addresses: ['hello@joinery.example'],
+      automated: false,
+    },
+  ];
+  const registry = new ConnectorRegistry();
+  registry.register(CONNECTION, new EmailConnector(config, secret, () => transport));
+  const reader = connectorMailbox({
+    registry,
+    connectionId: CONNECTION,
+    spaceId: SPACE,
+    undatedAt: UNDATED,
+  });
+  expect(await reader.recent(50)).toHaveLength(49);
+  const outcome = await runScan({
+    store: new MemoryCompanyStore(),
+    mailbox: reader,
+    extractor: scriptedExtractor(),
+    owner: { spaceId: SPACE, principalId: 'own_01J0000000000000000000000B' },
+    now: new Date(UNDATED),
+  });
+  expect(outcome.status).toBe('done');
+  expect(outcome.counts.awaited_replies).toBe(0);
+});
