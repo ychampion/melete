@@ -53,6 +53,31 @@ any other message. Approval fatigue, misleading summaries, harmful reads within
 granted scope and social engineering of the owner rest on the owner's judgement
 rather than on these checks.
 
+### Meeting notes and the Recall.ai webhook
+
+A meeting notetaker brings back what people said in a call, and anyone in that
+call can say anything. The transcript is treated like a hostile page: the
+service's background model reads it only between markers, in a call that has
+no tools, and the answer is parsed as one JSON object of notes or dropped. The
+notes reach the conversation as a message the person reads; a follow-up in it
+is text and nothing acts on it, and the history the next turn reads marks the
+notes as coming from the meeting. Memory keeps the transcript as
+`external_content`. Every effect a later turn proposes still needs its own
+approval (`meeting text never becomes an action` in the integration test).
+
+`POST /webhooks/meetings/{connectionId}` is the one route that takes a request
+with no session. It checks Recall.ai's signature (`webhook-id`,
+`webhook-timestamp`, `webhook-signature`, HMAC-SHA256 over
+`{id}.{timestamp}.{body}` with the connection's sealed `whsec_` secret,
+compared in constant time) before reading the body, and refuses a timestamp
+more than five minutes away, a connection without a secret, an unknown
+connection and a bad signature with the same 401. A verified event can only
+move the named notetaker's next check to now; it cannot create a notetaker,
+deliver notes or reach another connection, because the worker always fetches
+the bot and its transcript from Recall.ai with the connection's own key. The
+body is capped at the public-route limit. A replayed event within the window
+causes one extra check and nothing else.
+
 ## Attacker 2: a malicious skill file
 
 Skill text is not a capability credential. Broker admission still checks the

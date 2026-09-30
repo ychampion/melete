@@ -840,6 +840,89 @@ adapter cannot enforce is refused when the connection is installed.
   runs the same suites against Daytona with `MELETE_SANDBOX_LIVE=daytona` and
   `DAYTONA_API_KEY`.
 
+## Meeting notes (Recall.ai)
+
+A `meetings` connection lets the assistant send a notetaker into a Zoom, Google
+Meet or Microsoft Teams call and bring back the transcript, a summary, the
+decisions and the follow-ups. The notetaker is a
+[Recall.ai](https://docs.recall.ai) meeting bot. The catalog lists it as a form
+entry, `meetings`:
+
+| Field | Where it goes | Notes |
+| --- | --- | --- |
+| Recall.ai region | `meetings.region` | `us-east-1`, `us-west-2`, `eu-central-1` or `ap-northeast-1`: the region the workspace and key belong to |
+| Recall.ai API key | `credentials.api_key` | sealed, never returned |
+| ElevenLabs API key | `credentials.elevenlabs_api_key` | optional, sealed |
+| Recall.ai webhook secret | `credentials.webhook_secret` | optional, sealed; the `whsec_` verification secret |
+
+Installing it asks Recall.ai for one page of bots with the key, so a refused
+key leaves the connection failing.
+
+`meeting.join` takes `meeting_url`, an optional `join_at` (ISO 8601, at most 30
+days ahead; a time within a minute of now means "join now") and an optional
+`bot_name`. It is `write_external` and always asks first. Before the payload is
+hashed for approval the connector checks the link (https, and a Zoom, Meet or
+Teams host), writes the notetaker's name so it always says it is a notetaker
+and for whom ("Notetaker for Zara", or the asked name with "(notetaker)"
+added), and writes the chat message it posts on arrival: that the meeting is
+being recorded and transcribed. The person approves those exact values; a
+different link is a different action with its own approval. Once approved, the
+connector creates the bot with `POST /api/v1/bot/` (`meeting_url`, `bot_name`,
+`join_at`, `recording_config`, `chat.on_bot_join` sent to `everyone`, and the
+action id in `metadata`) and records it in `meeting_bot`, keyed by the action,
+so one approval never makes two notetakers.
+
+The notes come back through a worker in the service:
+
+- **Polling (the default).** Without a webhook, each notetaker is asked about
+  with `GET /api/v1/bot/{id}/` a minute apart from when it is due to join. A
+  meeting that has not finished twelve hours after it was due is given up on,
+  and the conversation is told.
+- **Webhooks.** With `MELETE_PUBLIC_URL` set and a webhook secret in the
+  connection, point a Recall.ai webhook (configured per environment in the
+  Recall dashboard) at `<MELETE_PUBLIC_URL>/webhooks/meetings/<connection id>`.
+  A verified event makes the worker check that notetaker at once, and the
+  minute poll becomes a fallback every fifteen minutes. The webhook never
+  carries the notes; they are always fetched from Recall.ai with the key.
+
+When the bot's newest status is `done`, the transcript comes from Recall.ai's
+own transcription (`recordings[].media_shortcuts.transcript`, downloaded from
+its pre-signed address). With an ElevenLabs key, the bot records only the mixed
+video, and ElevenLabs Scribe (`POST /v1/speech-to-text`, `model_id: scribe_v1`,
+`diarize: true`, `source_url` set to Recall's pre-signed recording address)
+transcribes it with speaker labels; the recording never passes through this
+service. A `fatal` status, a missing recording or a refused key ends the
+notetaker with a plain sentence in the conversation.
+
+The transcript is written to the space's files as
+`artifacts/meetings/<date>-<platform>-<id>.md` and recorded as an artifact of
+the conversation. The conversation that sent the notetaker then gets one
+finished step in its tool trail ("Brought back the meeting notes", with the
+file) and one message with a summary, the decisions and the follow-ups, which
+the next turn also reads. The summary is written by the service's background
+reader (the memory model, within its daily budget) in one call with no tools;
+a meeting longer than that call takes is summarised from its first part, and
+the message says so. Without a background reader, the message carries the
+transcript's location only. The transcript is offered to memory as a document
+somebody else wrote, so anything recalled from it is `external_content`.
+
+What people say in a meeting is untrusted input. It reaches a model only as
+marked data in a call with no tools, and it reaches the conversation as notes
+to read: a follow-up is text, never an action, and nothing in the completion
+path proposes one. Joining automatically from calendar events is not built;
+each notetaker is sent by an approved `meeting.join`.
+
+Evidence: [meetings.test.ts](../apps/melete/src/meetings/meetings.test.ts)
+checks the Recall.ai and ElevenLabs request shapes against a stub `fetch`, the
+link and name rules, the webhook signature, and that meeting text reaches the
+reader only as marked data;
+[meetings.test.ts](../apps/melete/test/integration/meetings.test.ts) covers,
+against Postgres, `the approval is bound to the link: a changed link is
+refused`, `the worker polls until done, writes the transcript in its own space
+and reports in the conversation, and meeting text never becomes an action`, and
+`a webhook without a valid signature changes nothing; a signed one only checks
+now`. No test calls Recall.ai or ElevenLabs.
+
 ## Composing read results
 
 `compose` accepts a list of named reads and a JavaScript function body operating
