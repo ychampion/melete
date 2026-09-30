@@ -8,7 +8,7 @@ tools that act as that person:
 | Tool | What it does |
 | --- | --- |
 | `waiting_on` | Lists what companies owe the person: refunds, credits, deposits and promises Melete found in their mailbox, each with the `item_id` to pass to `handle`. |
-| `handle` | Asks Melete to chase one owed item. Melete starts the chase and returns its `job_id`. Asking again for the same item returns the same chase. |
+| `handle` | Asks Melete to chase one owed item. Melete starts the chase and returns its `job_id`. Asking again for the same item returns the same chase. The person approves its first message in Melete, as for a chase they start themselves. |
 | `safe_send` | Proposes an email from the person's connected mailbox. It returns "Awaiting your approval in Melete." The person reads the exact text in Melete and approves it there; only then does Melete send it. |
 | `remember` | Saves a detail under a topic and a name. Melete records it as saved by that assistant, not as the person's own words, so a message that uses it shows a warning on its approval card. |
 | `recall` | Looks up the details the person saved. |
@@ -16,9 +16,12 @@ tools that act as that person:
 
 Every tool calls the same route the person would call signed in to Melete, so
 an assistant can do what that person can do in their own space, and only that.
-Every message it asks for goes through Melete's broker and waits for the
+Every email `safe_send` proposes goes through Melete's broker and waits for the
 person's approval of its exact words, whatever standing permissions the person
-has saved for their own chats.
+has saved for their own chats. A chase started with `handle` runs as one the
+person started: they approve its first message, and approving it also covers up
+to three follow-ups that repeat it to the same recipient, within the limits they
+set in **Settings → Rules**.
 
 ## What the installation needs
 
