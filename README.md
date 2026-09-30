@@ -169,7 +169,7 @@ the key it reads first:
 | `openai` | `OPENAI_API_KEY` |
 | `google` | `GOOGLE_API_KEY` |
 | `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`, which can point at a model server on your own network |
-| `chatgpt` | No key. Once Melete is running, you sign in to your ChatGPT account through its [sign-in routes](docs/DEPLOYMENT.md#signing-in-to-a-provider). |
+| `chatgpt` | No key. Once Melete is running, you sign in to your ChatGPT account under **Settings → Models**, or through its [sign-in routes](docs/DEPLOYMENT.md#signing-in-to-a-provider). |
 
 Write the model's name the way the provider does. To change provider or model
 later, edit `MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL` and the key in

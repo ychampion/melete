@@ -708,7 +708,7 @@ whole installation.
 **ChatGPT.** To use it instead of an OpenAI key, set
 `MELETE_DEFAULT_PROVIDER=chatgpt` and `MELETE_DEFAULT_MODEL` to a model the
 account's plan serves, then sign in with the routes in the table below, as the
-owner, from a signed-in session. The web app does not show this sign-in yet.
+owner, from a signed-in session, or with **Sign in with ChatGPT** under **Settings → Models**.
 Model access and usage limits
 are those of the ChatGPT plan. The sign-in follows the flow of the open-source
 Codex CLI and presents its public client, which `MELETE_CHATGPT_CLIENT_ID`
