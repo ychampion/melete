@@ -112,9 +112,12 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
     // succeed (too large, or refused by the provider): asking again would not help.
     // An answer with nothing readable in it gets one more try, not the whole budget.
     else if (
-      ['extraction_budget', 'extraction_call_refused', 'extraction_provider_refused'].includes(
-        code,
-      ) ||
+      [
+        'extraction_budget',
+        'extraction_call_refused',
+        'extraction_provider_refused',
+        'extraction_kept_private',
+      ].includes(code) ||
       (code === 'extraction_unreadable' && batch.work.fence >= 2)
     ) {
       await options.sql.begin(async (tx) => {

@@ -19,6 +19,7 @@ import { procedureCandidate, procedureEvaluation } from '../../src/learning/sche
 import { recordsFixtureSuite } from '../../src/learning/suites/records.ts';
 import type { EvaluationSuite } from '../../src/learning/suites/types.ts';
 import { newId } from '../../src/memory/db.ts';
+import { PostgresPrivacyStore, PrivacyRouter } from '../../src/privacy/index.ts';
 import { learningFixture, learningScope, rejectsWith, wake } from './learning-fixtures.ts';
 
 const runtime = new ScriptedRecordRuntime();
@@ -26,6 +27,7 @@ const fixture = await learningFixture(runtime);
 let steps = ['sort-typed-values', 'keep-header-and-rows'];
 const gateway = fixture
   ? await openProposalGateway({
+      privacy: new PrivacyRouter({ store: new PostgresPrivacyStore(fixture.handle.sql) }),
       db: fixture.handle.db,
       provider: 'fake',
       model: 'scripted-proposer-v1',

@@ -18,6 +18,7 @@ export default defineConfig({
     './src/spaces/schema.ts',
     './src/sandbox/schema.ts',
     './src/feedback/schema.ts',
+    './src/privacy/schema.ts',
   ],
   out: './drizzle',
   strict: true,

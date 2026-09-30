@@ -10,6 +10,7 @@ import { type McpWorker, openMcpWorker } from '../../src/connectors/mcp.ts';
 import { mcpConnector } from '../../src/connectors/mcp-connector.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
+import { defaultPrivacyRouter } from '../../src/privacy/index.ts';
 import { mcpFixtureConfig } from '../fixtures/mcp-config.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -344,6 +345,7 @@ databaseTest(
       expect(calls).toBe(0);
       const capabilityKey = 'mcp-http-receipt-proof-signing-key-0000';
       internal = createInternalServer({
+        privacy: defaultPrivacyRouter(),
         sql: fixture.sql,
         connectors: registry,
         broker,

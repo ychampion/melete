@@ -24,6 +24,7 @@ import { ModelSettingsService } from '../gateway/model-settings.ts';
 import { startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
+import type { PrivacyRouter } from '../privacy/router.ts';
 import type { BrowserSessionService } from '../workers/browser/routes.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
 import type { ComposeExecutor } from './compose.ts';
@@ -50,9 +51,11 @@ export async function startEffectBoundary(
     registry?: ConnectorRegistry;
     /** The owner's provider sign-ins, shared with the API that manages them. */
     signIn?: ProviderSignIn;
+    /** The service's privacy router: what model requests may carry and where they go. */
+    privacy: PrivacyRouter;
     /** The model connected in the app; left out, read from this database. */
     modelSettings?: ModelSettingsService;
-  } = {},
+  },
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
     throw new Error(
@@ -83,6 +86,7 @@ export async function startEffectBoundary(
   try {
     review = await configuredReviewGateway(
       env,
+      dependencies.privacy,
       dependencies.signIn ?? providerSignIn(handle.sql, env),
       env.MELETE_ENABLE_FAKE_PROVIDER ? dependencies.fakeProvider : undefined,
       { settings: modelSettings },
@@ -122,6 +126,7 @@ export async function startEffectBoundary(
       defaultMaxTokens: env.MELETE_DEFAULT_MAX_OUTPUT_TOKENS,
       fake: env.MELETE_ENABLE_FAKE_PROVIDER ? dependencies.fakeProvider : undefined,
       connectTls: (host) => certificates.get(host),
+      privacy: dependencies.privacy,
       resolveAuthority: dependencies.resolveAuthority,
       resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
       resolveStandingGrant: resolvePersonGrant,

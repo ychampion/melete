@@ -15,6 +15,7 @@ import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { configuredMemoryGateway } from '../../src/memory/gateway.ts';
+import { PostgresPrivacyStore, PrivacyRouter } from '../../src/privacy/index.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
@@ -362,12 +363,24 @@ describeWithDb('the model, connected in the app', () => {
             usage: { prompt_tokens: 40, completion_tokens: 5, total_tokens: 45 },
           });
     };
-    const memory = await configuredMemoryGateway(database().sql, api.env, undefined, {
-      settings: api.settings,
-      fetch: provider,
-    });
+    const memory = await configuredMemoryGateway(
+      database().sql,
+      api.env,
+      undefined,
+      new PrivacyRouter({ store: new PostgresPrivacyStore(database().sql) }),
+      {
+        settings: api.settings,
+        fetch: provider,
+      },
+    );
     if (!memory) throw new Error('memory extraction is off');
-    const companies = configuredExtractor(api.env, undefined, api.settings, provider);
+    const companies = configuredExtractor(
+      api.env,
+      new PrivacyRouter({ store: new PostgresPrivacyStore(database().sql) }),
+      undefined,
+      api.settings,
+      provider,
+    );
     const read = (workId: string) =>
       memory.gateway.chat(
         {
@@ -378,7 +391,7 @@ describeWithDb('the model, connected in the app', () => {
           max_tokens: 100,
           signal: AbortSignal.timeout(10_000),
         },
-        { ownerId: 'own_model_settings', spaceId: 'sp_model_settings', workId },
+        { ownerId: 'own_model_settings', spaceId: 'sp_model_settings', workId, sourceJobId: null },
       );
     const scan = (spaceId: string) =>
       runScan({
@@ -471,10 +484,23 @@ describeWithDb('the model, connected in the app', () => {
             usage: { prompt_tokens: 40, completion_tokens: 5, total_tokens: 45 },
           });
     };
-    const review = await configuredReviewGateway(api.env, undefined, undefined, {
-      settings: api.settings,
-      fetch: provider,
-    });
+    // The reviewed action's job exists, so the privacy router can read its space.
+    await database()
+      .sql`insert into space (id, name, git_path) values ('sp_model_settings', 'Personal', 'test/sp_model_settings')
+        on conflict do nothing`;
+    await database()
+      .sql`insert into job (id, space_id, title, objective) values ('job_model_settings', 'sp_model_settings', 'Tasks', 'Rename a task')
+        on conflict do nothing`;
+    const review = await configuredReviewGateway(
+      api.env,
+      new PrivacyRouter({ store: new PostgresPrivacyStore(database().sql) }),
+      undefined,
+      undefined,
+      {
+        settings: api.settings,
+        fetch: provider,
+      },
+    );
     if (!review) throw new Error('auto-review is off');
     const input: ReviewInput = {
       action: {

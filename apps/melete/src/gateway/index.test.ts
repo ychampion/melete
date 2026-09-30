@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import type { Server } from 'node:http';
 import { connect } from 'node:net';
 import { connect as connectTls } from 'node:tls';
+import { defaultPrivacyRouter } from '../privacy/index.ts';
 import { selfSignedPair } from './fixtures/self-signed.ts';
 import {
   createModelGateway,
@@ -18,6 +19,7 @@ import {
 import { SecretRedactor, UsageCollector } from './metering.ts';
 
 const principal: GatewayPrincipal = {
+  privacy: { kind: 'job' },
   jobId: 'job-test',
   attemptId: 'attempt-test',
   epoch: 1,
@@ -70,6 +72,7 @@ afterEach(async () => {
 });
 
 const gatewayDefaults = (budget: GatewayBudget = new TestBudget()): GatewayOptions => ({
+  privacy: defaultPrivacyRouter(),
   authenticate: async (token) => {
     if (token !== 'attempt-capability') throw new GatewayError(401, 'invalid_capability');
     return principal;

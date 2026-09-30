@@ -22,6 +22,7 @@ import { ApprovalsTab } from './Approvals.tsx';
 import { MemoryPanel } from './Beliefs.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 import { NotificationsTab } from './Notifications.tsx';
+import { PrivacyTab } from './Privacy.tsx';
 
 const dateOf = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
@@ -253,7 +254,8 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
     tab === 'notifications' ||
     tab === 'feedback' ||
     tab === 'models' ||
-    tab === 'approvals'
+    tab === 'approvals' ||
+    tab === 'privacy'
       ? tab
       : 'memory';
   const list = connections.data?.connections ?? [];
@@ -310,8 +312,10 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
             { value: 'rules', label: 'Rules', count: rules.data?.rules.length ?? 0 },
             { value: 'feedback', label: 'Feedback' },
             { value: 'models', label: 'Models' },
+            { value: 'privacy', label: 'Privacy' },
           ]}
         />
+        {current === 'privacy' ? <PrivacyTab /> : null}
         {current === 'memory' ? (
           <MemoryPanel />
         ) : current === 'approvals' ? (
@@ -354,7 +358,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
             <AddConnection onInstalled={connections.reload} />
             <ConnectedAssistants />
           </div>
-        ) : (
+        ) : current === 'privacy' ? null : (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
               Each rule came from an “Always allow” you chose. It has a limit and an expiry; revoke
