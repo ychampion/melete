@@ -31,6 +31,17 @@ const OUTPUT_LINES = 40;
 const LINE_LIMIT = 240;
 const HIDDEN = '[hidden]';
 
+/**
+ * Secrets in the shapes commands print most that the credential pattern does
+ * not cover: a quoted key in JSON (`"password": "…"`) and a connection string
+ * that carries a password (`postgres://user:pass@host`).
+ */
+const QUOTED_SECRET =
+  /["'][A-Za-z_-]{0,64}(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie|credential)[A-Za-z_-]{0,64}["']\s*[:=]/i;
+const URL_PASSWORD = /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s/@:]+:[^\s/@]+@/i;
+const secretLine = (line: string) =>
+  CREDENTIAL.test(line) || QUOTED_SECRET.test(line) || URL_PASSWORD.test(line);
+
 const clipLine = (line: string) =>
   line.length <= LINE_LIMIT ? line : `${line.slice(0, LINE_LIMIT - 1)}…`;
 
@@ -52,7 +63,7 @@ export function terminalText(value: unknown, limit: number, keep: 'first' | 'las
         .replace(/\p{Cc}/gu, '')
         .trimEnd(),
     )
-    .map((line) => (CREDENTIAL.test(line) ? HIDDEN : clipLine(line)));
+    .map((line) => (secretLine(line) ? HIDDEN : clipLine(line)));
   while (lines.length && !lines[lines.length - 1]) lines.pop();
   const chosen = keep === 'last' ? lines.slice(-OUTPUT_LINES) : lines.slice(0, OUTPUT_LINES);
   let text = chosen.join('\n');

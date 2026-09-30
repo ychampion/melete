@@ -81,3 +81,28 @@ test('terminal text keeps the last lines, strips escapes and hides a credential 
   expect(text).toBe('first\n[hidden]\nbold');
   expect(terminalText('ab '.repeat(2000), 100, 'first').length).toBe(100);
 });
+
+test('a quoted secret key and a password in a connection string hide their lines', () => {
+  const text = terminalText(
+    [
+      '{',
+      '  "user": "melete",',
+      '  "password": "hunter2",',
+      '}',
+      'DATABASE_URL=postgres://melete:s3cret@db:5432/melete',
+      'see https://example.test/a:b@c for the notes',
+    ].join('\n'),
+    4000,
+    'last',
+  );
+  expect(text).toBe(
+    [
+      '{',
+      '  "user": "melete",',
+      '[hidden]',
+      '}',
+      '[hidden]',
+      'see https://example.test/a:b@c for the notes',
+    ].join('\n'),
+  );
+});
