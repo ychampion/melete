@@ -15,6 +15,7 @@ import type { Database } from '../db/client.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
+import { recordSettled } from '../push/service.ts';
 import { company, companyMessage, companyScan, ledgerItem } from './schema.ts';
 import { computeTotals, DEFAULT_CURRENCY } from './totals.ts';
 import { dedupeKey } from './validate.ts';
@@ -506,9 +507,25 @@ export class PostgresCompanyStore implements CompanyStore {
   async setStatus(owner: Owner, id: string, status: LedgerItemStatus): Promise<LedgerItem | null> {
     const [row] = await this.db
       .update(ledgerItem)
-      .set({ status })
+      .set({
+        status,
+        // The first time it settles is when it came back; a later edit keeps that.
+        settledAt: status === 'settled' ? sql`coalesce(${ledgerItem.settledAt}, now())` : null,
+      })
       .where(and(ownedItem(owner), eq(ledgerItem.id, id)))
       .returning();
+    if (row && status === 'settled') {
+      const [named] = await this.db
+        .select({ name: company.name })
+        .from(company)
+        .where(eq(company.id, row.companyId));
+      await recordSettled(this.db, {
+        id: row.id,
+        principalId: row.principalId,
+        summary: named ? `${named.name}: ${row.summary}` : row.summary,
+        jobId: row.jobId ?? row.lastJobId,
+      });
+    }
     return row ? itemView(row) : null;
   }
 

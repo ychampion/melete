@@ -30,6 +30,8 @@ export const QUEUES = {
   operation: 'melete.operation',
   /** Looks for a company writing back to a chase that is waiting on a reply. */
   companyReplies: 'melete.company-replies',
+  /** Sends what a person's devices may be told, once a minute. */
+  pushDispatch: 'melete.push-dispatch',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];

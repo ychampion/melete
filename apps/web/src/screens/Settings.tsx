@@ -17,6 +17,7 @@ import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 import { LearnedTab } from './Learned.tsx';
+import { NotificationsTab } from './Notifications.tsx';
 
 const SOURCE_LABEL: Record<MemoryItem['source'], string> = {
   onboarding: 'You told Melete during setup',
@@ -255,7 +256,10 @@ export function SettingsScreen({ tab }: { tab: string }) {
   const memory = useLoad(() => adapter.memory(), []);
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
-  const current = tab === 'connections' || tab === 'rules' || tab === 'learned' ? tab : 'memory';
+  const current =
+    tab === 'connections' || tab === 'rules' || tab === 'learned' || tab === 'notifications'
+      ? tab
+      : 'memory';
   const [learnedCount, setLearnedCount] = useState<number | undefined>(undefined);
   const items = memory.data?.items ?? [];
   const list = connections.data?.connections ?? [];
@@ -302,6 +306,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
           tabs={[
             { value: 'memory', label: 'Memory', count: items.length },
             { value: 'learned', label: 'What I’ve learned', count: learnedCount },
+            { value: 'notifications', label: 'Notifications' },
             {
               value: 'connections',
               label: 'Connections',
@@ -370,6 +375,8 @@ export function SettingsScreen({ tab }: { tab: string }) {
               ) : null}
             </div>
           </div>
+        ) : current === 'notifications' ? (
+          <NotificationsTab />
         ) : current === 'learned' ? (
           <LearnedTab onCount={setLearnedCount} />
         ) : current === 'connections' ? (

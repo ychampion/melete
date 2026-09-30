@@ -146,6 +146,14 @@ import {
   startSignInRequest,
   startSignInResponse,
 } from './provider-signin.ts';
+import {
+  pushPublicKeyResponse,
+  pushSettingsResponse,
+  pushSettingsUpdate,
+  pushSubscriptionList,
+  pushSubscriptionRequest,
+  pushSubscriptionResponse,
+} from './push.ts';
 import { personReactionRequest, reactionListResponse, reactionResponse } from './reactions.ts';
 import { jobRepairsResponse } from './repair.ts';
 import {
@@ -371,8 +379,61 @@ export function buildOpenApiDocument() {
         { name: 'browser' },
         { name: 'learning' },
         { name: 'companies' },
+        { name: 'push' },
       ],
       paths: {
+        '/push/public-key': {
+          get: {
+            tags: ['push'],
+            summary: 'The key a browser subscribes with, or null when push is not configured',
+            responses: { '200': jsonResponse('Public key', pushPublicKeyResponse) },
+          },
+        },
+        '/push/subscriptions': {
+          get: {
+            tags: ['push'],
+            summary: 'This person’s devices that receive pushes',
+            responses: { '200': jsonResponse('Subscriptions', pushSubscriptionList) },
+          },
+          post: {
+            tags: ['push'],
+            summary: 'Subscribe this device; the same endpoint again updates it',
+            description:
+              'Only endpoints on a known browser push service, or an origin the operator added, are accepted, with a P-256 public key and a 16-byte secret.',
+            requestBody: json(pushSubscriptionRequest),
+            responses: {
+              '201': jsonResponse('Subscribed', pushSubscriptionResponse),
+              '400': problem(
+                'Not a push service this installation sends to, or keys a browser does not subscribe with',
+              ),
+              '503': problem('Push is not configured'),
+            },
+          },
+        },
+        '/push/subscriptions/{id}': {
+          delete: {
+            tags: ['push'],
+            summary: 'Stop pushes to one of this person’s devices',
+            requestParams: idParam('id', 'Subscription id'),
+            responses: {
+              '200': jsonResponse('Removed', pushSubscriptionResponse),
+              '404': problem('No such subscription for this person'),
+            },
+          },
+        },
+        '/push/settings': {
+          get: {
+            tags: ['push'],
+            summary: 'What Melete pushes, how often, and the quiet hours read from the profile',
+            responses: { '200': jsonResponse('Settings', pushSettingsResponse) },
+          },
+          patch: {
+            tags: ['push'],
+            summary: 'Change what Melete pushes and how often',
+            requestBody: json(pushSettingsUpdate),
+            responses: { '200': jsonResponse('Settings', pushSettingsResponse) },
+          },
+        },
         '/episodes': {
           get: {
             tags: ['learning'],
