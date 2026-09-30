@@ -76,8 +76,8 @@ You need Docker, Bun and an API key for your model provider.
 
 ```bash
 git clone https://github.com/ychampion/melete.git && cd melete && bun install --frozen-lockfile
-read -rs FIREWORKS_API_KEY && export FIREWORKS_API_KEY && bun run deploy/scripts/configure.ts && unset FIREWORKS_API_KEY
-docker compose -f deploy/docker-compose.yml up -d --build --wait
+read -rs FIREWORKS_API_KEY && export FIREWORKS_API_KEY; bun run deploy/scripts/configure.ts; unset FIREWORKS_API_KEY
+docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
 ```
 
 The second line waits for you to paste your Fireworks API key and press Enter.
@@ -169,7 +169,7 @@ the key it reads first:
 | `openai` | `OPENAI_API_KEY` |
 | `google` | `GOOGLE_API_KEY` |
 | `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`, which can point at a model server on your own network |
-| `chatgpt` | No key. You sign in with your ChatGPT account once Melete is running. |
+| `chatgpt` | No key. Once Melete is running, you sign in to your ChatGPT account through its [sign-in routes](docs/DEPLOYMENT.md#signing-in-to-a-provider). |
 
 Write the model's name the way the provider does. To change provider or model
 later, edit `MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL` and the key in

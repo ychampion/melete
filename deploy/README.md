@@ -8,7 +8,7 @@ real model provider whose key is in the environment, including independent
 secrets and the socket group, and `--fake` configures a scripted provider for a
 demo that needs no model key instead. It refuses to overwrite an
 existing file. Start with
-`docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 180`.
+`docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300`.
 The README explains provider configuration and the first sign-in.
 
 The service receives `/var/run/docker.sock`. This grants **host-root equivalent**
