@@ -299,6 +299,20 @@ const variables = z.object({
   MELETE_MEMORY_DAILY_CALLS: z.coerce.number().int().nonnegative().default(200),
 
   /**
+   * The model a phone call is answered with, turn by turn, through the service's
+   * own gateway. Left unset, the default provider and model.
+   */
+  MELETE_PHONE_PROVIDER: unsetWhenBlank(z.string().optional()),
+  MELETE_PHONE_MODEL: unsetWhenBlank(z.string().optional()),
+  /** ElevenLabs' API base, for a phone line. A regional residency server can stand in. */
+  MELETE_ELEVENLABS_API_URL: unsetWhenBlank(
+    z
+      .url()
+      .refine((value) => new URL(value).protocol === 'https:', 'Use an https:// address.')
+      .default('https://api.elevenlabs.io'),
+  ),
+
+  /**
    * What the engine in an attempt's cell is bounded by. Each is read again from
    * the environment when an attempt starts, which is where it is applied, but it
    * is checked here so a malformed value stops the service on boot rather than

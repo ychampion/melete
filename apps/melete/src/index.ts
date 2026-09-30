@@ -100,6 +100,7 @@ import { configuredMemoryGateway } from './memory/gateway.ts';
 import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { startServiceMemory } from './memory/start.ts';
+import { mountPhone, type PhoneRouteDeps } from './phone/routes.ts';
 import {
   refusedForRemoval,
   requestPrincipal,
@@ -177,6 +178,8 @@ export type AppDeps = {
   companies?: Partial<CompaniesDeps>;
   /** The owner's model-provider sign-ins. Left out, built from `sql` and the master key. */
   providerSignIn?: ProviderSignIn;
+  /** A phone call's model and memory recall; left out, the deployment's own. */
+  phone?: Pick<PhoneRouteDeps, 'model' | 'recall'>;
 };
 
 export function createApp(deps: AppDeps) {
@@ -220,6 +223,12 @@ export function createApp(deps: AppDeps) {
   if (deps.removals && deps.db && deps.sql)
     mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
   if (connections) mountConnections(app, connections);
+  if (connections)
+    mountPhone(app, {
+      ...connections,
+      ...(deps.jobs ? { jobs: deps.jobs } : {}),
+      ...deps.phone,
+    });
   if (deps.db)
     mountProviderSignIn(app, {
       db: deps.db,

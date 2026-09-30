@@ -131,6 +131,7 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'browser.submit': ['Submitting a form', 'Submitted a form'],
   'artifact.publish': ['Publishing a file', 'Published a file'],
   'audio.synthesize': ['Making audio', 'Made audio'],
+  'phone.call': ['Placing a call', 'Placed a call'],
   'test.read': ['Checking the connected app', 'Checked the connected app'],
   'test.send': ['Sending a message', 'Sent a message'],
 };

@@ -66,6 +66,9 @@ import { connection, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
+import { ElevenLabsClient, ElevenLabsError } from '../phone/elevenlabs.ts';
+import { lineKeyDigest, newLineKey } from '../phone/keys.ts';
+import { provisioningProblem, provisionLine, teardownLine } from '../phone/provision.ts';
 import { ownedSpace, spaceAuthority } from '../principals/authority.ts';
 import {
   checkSandboxConfiguration,
@@ -265,16 +268,18 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         ...(mcpReason ? { unavailable_reason: mcpReason } : {}),
       }),
     );
-    const forms = kinds.map(
-      (kind): ConnectionCatalogEntry => ({
+    const forms = kinds.map((kind): ConnectionCatalogEntry => {
+      const reason = kind.kind === 'phone' ? phoneUnavailable(deps.env) : undefined;
+      return {
         id: kind.id,
         title: kind.title,
         description: kind.description,
         covers: [KIND_COVERS[kind.kind]],
         connect: { method: 'form', kind_id: kind.id },
-        available: true,
-      }),
-    );
+        available: !reason,
+        ...(reason ? { unavailable_reason: reason } : {}),
+      };
+    });
     return [...accounts, ...servers, ...forms];
   };
 
@@ -412,7 +417,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           );
     }
     const id = newId('conn');
-    const stored = await storedShape(installation, id, spaceId, factory);
+    const stored = await storedShape(installation, id, spaceId, label, factory);
 
     const generation = await serviceTransaction(deps.db, async (tx) => {
       await requireInstaller(tx, spaceId, actor, installation.kind, true);
@@ -464,7 +469,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           provider: installation.provider,
           label,
           scopes: stored.scopes,
-          secretRef: stored.secret ? await secrets.put(spaceId, stored.secret) : null,
+          secretRef:
+            stored.secretRef ?? (stored.secret ? await secrets.put(spaceId, stored.secret) : null),
           configuration: plugin ? { ...stored.configuration, plugin } : stored.configuration,
           status: 'disabled',
           setupState: 'connecting',
@@ -472,6 +478,10 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         .returning({ generation: connection.generation });
       if (!created) throw new Error('Connection installation was not created');
       return created.generation;
+    }).catch(async (error: unknown) => {
+      // What was set up elsewhere for a row that was never written is taken down again.
+      await stored.undo?.();
+      throw error;
     });
     // A lifecycle change during the handshake owns the newer state, on both success and failure.
     const stillInstalling = and(
@@ -1005,6 +1015,7 @@ const KIND_COVERS = {
   mcp: 'tools',
   mcp_stdio: 'tools',
   sandbox: 'execution',
+  phone: 'calls',
 } as const satisfies Record<
   ConnectionKindDescriptor['kind'],
   ConnectionCatalogEntry['covers'][number]
@@ -1094,27 +1105,39 @@ async function personalSpace(db: Database, actor: string): Promise<string> {
  * configuration keeps only what is safe to read back from a database dump of
  * that column: endpoints and account names, never a password, token or feed address.
  */
+type StoredShape = {
+  scopes: string[];
+  secret: string | null;
+  configuration: Record<string, unknown>;
+  /** A secret already sealed, when the configuration has to name it. */
+  secretRef?: string;
+  /** Takes down what installing set up elsewhere, when the row is never written. */
+  undo?: () => Promise<void>;
+};
+
 async function storedShape(
   installation: Installation,
   id: string,
   spaceId: string,
+  label: string,
   factory: ConnectorFactory,
-): Promise<{ scopes: string[]; secret: string | null; configuration: Record<string, unknown> }> {
+): Promise<StoredShape> {
   if (signedIn(installation))
     return {
       scopes: installation.scopes,
       secret: JSON.stringify(installation.credential),
       configuration: { kind: installation.kind, account: installation.account },
     };
-  return requestedShape(installation, id, spaceId, factory);
+  return requestedShape(installation, id, spaceId, label, factory);
 }
 
 async function requestedShape(
   installation: ConnectionInstallation,
   id: string,
   spaceId: string,
+  label: string,
   factory: ConnectorFactory,
-): Promise<{ scopes: string[]; secret: string | null; configuration: Record<string, unknown> }> {
+): Promise<StoredShape> {
   if (installation.kind === 'mcp') {
     const { url, ...policy } = installation.config;
     const config = mcpServerConfig.parse({ ...policy, endpoint: { transport: 'http', url } });
@@ -1206,6 +1229,7 @@ async function requestedShape(
       configuration: { server: config },
     };
   }
+  if (installation.kind === 'phone') return phoneShape(installation, id, spaceId, label, factory);
   if (installation.kind === 'sandbox') {
     const sandbox = factory.options.sandbox;
     if (!sandbox)
@@ -1304,4 +1328,80 @@ async function requestedShape(
     );
   }
   return { scopes: installation.scopes, ...shape };
+}
+
+const PHONE_ADDRESS_NEEDED =
+  'Calls need the https:// address ElevenLabs reaches this service at. Set MELETE_PUBLIC_URL to it.';
+
+/** Why this installation cannot offer a phone line yet, or nothing when it can. */
+function phoneUnavailable(env: Env): string | undefined {
+  return env.MELETE_PUBLIC_URL?.startsWith('https://') ? undefined : PHONE_ADDRESS_NEEDED;
+}
+
+/**
+ * A phone line is set up at ElevenLabs before its row is written: the agent,
+ * the webhook, the line key's secret and the imported number. The row keeps
+ * their ids and the key's digest; the key itself goes to ElevenLabs alone. A
+ * set-up that fails is taken down and reported in plain words, with nothing
+ * written here.
+ */
+async function phoneShape(
+  installation: Extract<ConnectionInstallation, { kind: 'phone' }>,
+  id: string,
+  spaceId: string,
+  label: string,
+  factory: ConnectorFactory,
+): Promise<StoredShape> {
+  const phone = factory.options.phone;
+  if (!phone?.publicUrl?.startsWith('https://'))
+    throw new ServiceError('public_url_required', PHONE_ADDRESS_NEEDED, 409);
+  const client = new ElevenLabsClient(installation.credentials.api_key, {
+    ...(phone.apiBase ? { base: phone.apiBase } : {}),
+    ...(phone.fetch ? { fetch: phone.fetch } : {}),
+  });
+  const lineKey = newLineKey();
+  let made: Awaited<ReturnType<typeof provisionLine>>;
+  try {
+    made = await provisionLine(client, {
+      connectionId: id,
+      publicUrl: phone.publicUrl,
+      label,
+      config: installation.config,
+      credentials: installation.credentials,
+      lineKey,
+    });
+  } catch (error) {
+    throw new ServiceError(
+      'phone_setup_failed',
+      provisioningProblem(error, installation.config.telephony),
+      error instanceof ElevenLabsError && error.status !== null && error.status < 500 ? 400 : 502,
+    );
+  }
+  const { webhook_secret: webhookSecret, ...ids } = made;
+  const undo = async () => {
+    await teardownLine(client, ids).catch(() => false);
+  };
+  let secretRef: string;
+  try {
+    secretRef = await factory.secrets.put(
+      spaceId,
+      JSON.stringify({ ...installation.credentials, webhook_secret: webhookSecret }),
+    );
+  } catch (error) {
+    await undo();
+    throw error;
+  }
+  return {
+    scopes: installation.scopes,
+    secret: null,
+    secretRef,
+    undo,
+    configuration: {
+      kind: 'phone',
+      phone: installation.config,
+      elevenlabs: ids,
+      line_key_digest: lineKeyDigest(lineKey),
+      key_ref: secretRef,
+    },
+  };
 }
