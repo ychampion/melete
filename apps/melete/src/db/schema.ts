@@ -143,6 +143,45 @@ export const providerCredential = pgTable('provider_credential', {
   createdAt: created(),
 });
 
+/**
+ * A model provider's API key the owner entered in the app, one row per
+ * provider for the whole installation. The key is one sealed box bound to the
+ * provider name; only its last four characters are kept in the clear, for the
+ * screen that says which key is set. A key the operator put in the
+ * environment is never stored here and always wins.
+ */
+export const modelProviderKey = pgTable('model_provider_key', {
+  provider: text('provider').primaryKey(),
+  ownerId: text('owner_id')
+    .notNull()
+    .references(() => owner.id, { onDelete: 'cascade' }),
+  secretId: text('secret_id').notNull(),
+  ciphertext: text('ciphertext').notNull(),
+  lastFour: text('last_four').notNull(),
+  /** Only for the OpenAI-compatible endpoint: its version prefix, ending in a slash. */
+  baseUrl: text('base_url'),
+  createdAt: created(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * The model the owner chose in the app for new attempts. One row at most; with
+ * none, MELETE_DEFAULT_PROVIDER and MELETE_DEFAULT_MODEL decide.
+ */
+export const modelDefault = pgTable(
+  'model_default',
+  {
+    id: text('id').primaryKey().default('installation'),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => owner.id, { onDelete: 'cascade' }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [check('model_default_single_row', sql`${table.id} = 'installation'`)],
+);
+
 export const connection = pgTable(
   'connection',
   {

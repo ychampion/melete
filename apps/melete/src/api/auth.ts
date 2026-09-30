@@ -269,6 +269,7 @@ export function mountAuth(
           '/signin/magic-link/consume',
           '/signin/google',
           '/signin/apple',
+          '/signin/chatgpt',
         ].includes(c.req.path));
     // A body is counted as it arrives, so one sent without a length, or with a
     // false one, is dropped at the limit rather than read and parsed whole.
@@ -328,6 +329,11 @@ export function mountAuth(
     app.post(`/signin/${provider}`, (c) =>
       c.json(unavailable('Use your password or an email sign-in link.')),
     );
+  // Sign in with ChatGPT needs a client that OpenAI issues to the operator;
+  // until an installation has one, the sign-in card says so.
+  app.post('/signin/chatgpt', (c) =>
+    c.json(unavailable('This installation hasn’t set up ChatGPT sign-in yet.')),
+  );
   /**
    * Ends the session the cookie names. The row is removed rather than flagged,
    * so a later request with the same cookie is unauthorized, and the cookie

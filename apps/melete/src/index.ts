@@ -26,6 +26,7 @@ import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
 import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
+import { mountModelSettings } from './api/model-settings.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
 import { mountProviderSignIn } from './api/provider-signin.ts';
@@ -62,9 +63,12 @@ import { DeviceService } from './devices/service.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { mountExperience } from './experience/routes.ts';
+import type { FeedbackLimiter } from './feedback/rate-limit.ts';
+import { mountFeedback } from './feedback/routes.ts';
 import { providerSignIn } from './gateway/configured.ts';
 import type { ProviderSignIn } from './gateway/credentials.ts';
 import type { GatewayOptions } from './gateway/index.ts';
+import { ModelSettingsService } from './gateway/model-settings.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
@@ -184,6 +188,10 @@ export type AppDeps = {
   companies?: Partial<CompaniesDeps>;
   /** The owner's model-provider sign-ins. Left out, built from `sql` and the master key. */
   providerSignIn?: ProviderSignIn;
+  /** The model connected in the app. Left out, built from `db` and the sign-ins. */
+  modelSettings?: ModelSettingsService;
+  /** How many problem reports one person may send in a short time; a test supplies its clock. */
+  feedbackLimiter?: FeedbackLimiter;
 };
 
 export function createApp(deps: AppDeps) {
@@ -235,11 +243,15 @@ export function createApp(deps: AppDeps) {
         policy: deps.policy ?? (deps.jobs ? new PolicyService(deps.jobs) : undefined),
       }),
     );
-  if (deps.db)
-    mountProviderSignIn(app, {
-      db: deps.db,
-      signIn: deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined),
-    });
+  const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
+  // One reader of the model connected in the app, for its routes and the companies scan.
+  const modelSettings =
+    deps.modelSettings ??
+    (deps.db ? new ModelSettingsService({ db: deps.db, env: deps.env, signIn }) : undefined);
+  if (deps.db && modelSettings) {
+    mountProviderSignIn(app, { db: deps.db, signIn });
+    mountModelSettings(app, { db: deps.db, settings: modelSettings });
+  }
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -287,6 +299,7 @@ export function createApp(deps: AppDeps) {
       memoryJournal: deps.memory?.journal,
       memoryProvision: deps.memory?.provision,
       triggers: deps.triggers,
+      browser: Boolean(deps.browserSessions),
     });
   if (deps.db)
     mountCompanies(app, {
@@ -297,6 +310,7 @@ export function createApp(deps: AppDeps) {
         env: deps.env,
         jobs: deps.jobs,
         triggers: deps.triggers,
+        modelSettings,
       }),
       ...deps.companies,
     });
@@ -308,6 +322,7 @@ export function createApp(deps: AppDeps) {
       broker: deps.broker,
       registry: deps.registry,
     });
+  if (deps.db) mountFeedback(app, { db: deps.db, version: VERSION, limiter: deps.feedbackLimiter });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory)
     app.route(
@@ -450,6 +465,7 @@ export async function bootstrap(
   let companyReplies: CompanyReplyPoller | undefined;
   let pushDispatcher: PushDispatcher | undefined;
   let signIn: ProviderSignIn | undefined;
+  let modelSettings: ModelSettingsService | undefined;
   let sandboxes: SandboxWiring | undefined;
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
@@ -505,6 +521,8 @@ export async function bootstrap(
       await expireEpisodes(handle.sql);
       // One sign-in service, so the API and the gateway share one refresh per provider.
       signIn = providerSignIn(handle.sql, env);
+      // One reader of the model chosen in the app, for the API, the runner and the gateway.
+      modelSettings = new ModelSettingsService({ db: handle.db, env, signIn });
       episodeRetention = setInterval(() => {
         void expireEpisodes(handle.sql).catch(() =>
           process.stderr.write('episode retention failed\n'),
@@ -587,7 +605,10 @@ export async function bootstrap(
     // Automatic memory: what a person says in chat is read by the memory model
     // through the gateway, within a per-person daily budget.
     if (handle && queue && options.workers !== false)
-      memoryGateway = await configuredMemoryGateway(handle.sql, env, options.fakeProvider);
+      memoryGateway = await configuredMemoryGateway(handle.sql, env, options.fakeProvider, {
+        settings: modelSettings,
+        signIn,
+      });
     if (handle && queue && env.MELETE_RUNTIME_ADAPTER === 'docker') {
       deploymentMemory = await startDeploymentMemory({
         sql: handle.sql,
@@ -655,6 +676,7 @@ export async function bootstrap(
           connections,
           registry,
           signIn,
+          modelSettings,
         });
         const Supervisor =
           env.MELETE_RUNTIME_SUPERVISOR === 'docker'
@@ -719,6 +741,10 @@ export async function bootstrap(
         artifactRoots: { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
+        // A model chosen in the app applies from the next attempt.
+        ...(env.MELETE_RUNTIME_ADAPTER !== 'stub' && modelSettings
+          ? { resolveModel: modelSettings.activeChoice.bind(modelSettings) }
+          : {}),
         loadCatalog: catalog?.forAttempt,
         liveConnectionScopes: !env.MELETE_ENABLE_TEST_CONNECTOR,
         // The scopes the space's active connections grant, and the lifecycle
@@ -755,6 +781,7 @@ export async function bootstrap(
         options.workers !== false,
         options.fakeProvider,
         signIn,
+        modelSettings,
       );
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
@@ -787,6 +814,7 @@ export async function bootstrap(
           connections,
           registry,
           signIn,
+          modelSettings,
         });
       // A removal outlives the request that asked for it and the process that
       // was running it, so it is resumed at startup and every minute after.
@@ -892,6 +920,7 @@ export async function bootstrap(
     registry,
     sql: handle?.sql,
     providerSignIn: signIn,
+    modelSettings,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';

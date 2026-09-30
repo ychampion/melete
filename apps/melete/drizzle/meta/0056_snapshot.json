@@ -1,5 +1,5 @@
 {
-  "id": "916959be-d069-43f3-9a97-f4d42850c420",
+  "id": "73b5f06f-5b8e-449c-ac4b-9e819132323d",
   "prevId": "f35e78cb-d2b4-469e-803d-34650ebf52cc",
   "version": "7",
   "dialect": "postgresql",
@@ -11375,8 +11375,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.device_pairing": {
-      "name": "device_pairing",
+    "public.feedback": {
+      "name": "feedback",
       "schema": "",
       "columns": {
         "id": {
@@ -11385,8 +11385,8 @@
           "primaryKey": true,
           "notNull": true
         },
-        "space_id": {
-          "name": "space_id",
+        "installation_id": {
+          "name": "installation_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -11395,19 +11395,44 @@
           "name": "principal_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "code_hash": {
-          "name": "code_hash",
+        "message": {
+          "name": "message",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "capabilities": {
-          "name": "capabilities",
+        "route": {
+          "name": "route",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "app_version": {
+          "name": "app_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "context": {
+          "name": "context",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -11416,205 +11441,47 @@
           "notNull": true,
           "default": "now()"
         },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "used_at": {
-          "name": "used_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "device_id": {
-          "name": "device_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "device_pairing_code_idx": {
-          "name": "device_pairing_code_idx",
-          "columns": [
-            {
-              "expression": "code_hash",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "device_pairing_space_idx": {
-          "name": "device_pairing_space_idx",
-          "columns": [
-            {
-              "expression": "space_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "device_pairing_space_id_space_id_fk": {
-          "name": "device_pairing_space_id_space_id_fk",
-          "tableFrom": "device_pairing",
-          "tableTo": "space",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.paired_device": {
-      "name": "paired_device",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "space_id": {
-          "name": "space_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "connection_id": {
-          "name": "connection_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "platform": {
-          "name": "platform",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "token_hash": {
-          "name": "token_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "capabilities": {
-          "name": "capabilities",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "local_capabilities": {
-          "name": "local_capabilities",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "folders": {
-          "name": "folders",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "companion_version": {
-          "name": "companion_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "paired_by": {
-          "name": "paired_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "paired_at": {
-          "name": "paired_at",
+        "updated_at": {
+          "name": "updated_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "last_seen_at": {
-          "name": "last_seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "revoked_at": {
-          "name": "revoked_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
-        "paired_device_token_idx": {
-          "name": "paired_device_token_idx",
+        "feedback_installation_created_idx": {
+          "name": "feedback_installation_created_idx",
           "columns": [
             {
-              "expression": "token_hash",
+              "expression": "installation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
-          "isUnique": true,
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
         },
-        "paired_device_connection_idx": {
-          "name": "paired_device_connection_idx",
+        "feedback_principal_created_idx": {
+          "name": "feedback_principal_created_idx",
           "columns": [
             {
-              "expression": "connection_id",
+              "expression": "principal_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "paired_device_space_idx": {
-          "name": "paired_device_space_idx",
-          "columns": [
+            },
             {
-              "expression": "space_id",
+              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -11627,12 +11494,12 @@
         }
       },
       "foreignKeys": {
-        "paired_device_space_id_space_id_fk": {
-          "name": "paired_device_space_id_space_id_fk",
-          "tableFrom": "paired_device",
-          "tableTo": "space",
+        "feedback_installation_id_owner_id_fk": {
+          "name": "feedback_installation_id_owner_id_fk",
+          "tableFrom": "feedback",
+          "tableTo": "owner",
           "columnsFrom": [
-            "space_id"
+            "installation_id"
           ],
           "columnsTo": [
             "id"
@@ -11640,24 +11507,29 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "paired_device_connection_id_connection_id_fk": {
-          "name": "paired_device_connection_id_connection_id_fk",
-          "tableFrom": "paired_device",
-          "tableTo": "connection",
+        "feedback_principal_id_principal_id_fk": {
+          "name": "feedback_principal_id_principal_id_fk",
+          "tableFrom": "feedback",
+          "tableTo": "principal",
           "columnsFrom": [
-            "connection_id"
+            "principal_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "feedback_status_check": {
+          "name": "feedback_status_check",
+          "value": "\"feedback\".\"status\" in ('open', 'fixing', 'fixed', 'wontfix')"
+        }
+      },
       "isRLSEnabled": false
     }
   },

@@ -9,6 +9,8 @@ import { recordId } from '../../broker/records.ts';
 export type BrowserObservation = {
   id: string;
   url: string;
+  /** Absent from a worker that predates it. */
+  title?: string;
   tree: string;
   /** Empty when the worker withheld the picture, as after a person hands back control. */
   screenshot: string;
@@ -84,6 +86,7 @@ export function browserArtifactSink(sql: Sql, spacesRoot: string): BrowserArtifa
     return {
       id: observation.id,
       url: observation.url,
+      ...(observation.title ? { title: observation.title } : {}),
       schema: observation.schema,
       ...handles,
     };

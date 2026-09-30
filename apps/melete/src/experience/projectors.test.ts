@@ -3,6 +3,7 @@ import { estimateTokens } from '@melete/skills';
 import { AGENT_TEMPLATES, agentIdentity } from './agents.ts';
 import {
   type ActionRow,
+  answerText,
   BACKEND_VOCABULARY,
   plainText,
   projectActionGroup,
@@ -242,4 +243,12 @@ test('a permission for a connected computer shows the exact command and where it
     { label: 'Command', value: 'echo hello' },
     { label: 'Runs in', value: 'Projects' },
   ]);
+});
+
+test('answer text keeps prose that starts with a bracket and drops whole records', () => {
+  expect(answerText('\n\n[')).toBe('\n\n[');
+  expect(answerText('[your name]\n\nSay the word')).toBe('[your name]\n\nSay the word');
+  expect(answerText('[the guide](https://example.com)')).toBe('[the guide](https://example.com)');
+  expect(answerText('{"tool":"email.send","to":"a@b.c"}')).toBe('');
+  expect(answerText(' [1, 2, 3] ')).toBe('');
 });
