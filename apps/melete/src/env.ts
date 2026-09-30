@@ -288,6 +288,14 @@ const variables = z.object({
   OPENAI_COMPAT_BASE_URL: z.string().optional(),
   OPENAI_COMPAT_API_KEY: z.string().optional(),
   /**
+   * A model server on this machine or network (OpenAI-compatible, for example
+   * Ollama at http://127.0.0.1:11434/v1) that private conversations use until
+   * the owner sets one in Settings → Privacy.
+   */
+  MELETE_LOCAL_MODEL_URL: unsetWhenBlank(z.string().url().optional()),
+  MELETE_LOCAL_MODEL: unsetWhenBlank(z.string().max(200).optional()),
+  MELETE_LOCAL_MODEL_KEY: unsetWhenBlank(z.string().max(500).optional()),
+  /**
    * The OAuth client ChatGPT sign-in presents. Left empty, the Codex CLI's
    * public client, the only one OpenAI has registered for this sign-in.
    */
@@ -325,6 +333,17 @@ const variables = z.object({
   MELETE_MEMORY_PROVIDER: z.string().optional(),
   /** Extraction calls one person's memory may make in a day. */
   MELETE_MEMORY_DAILY_CALLS: z.coerce.number().int().nonnegative().default(200),
+  /**
+   * Auto-review asks this model whether a reversible action may go ahead
+   * without the person. Unset, it uses the default provider and model; `off`
+   * runs no reviewer, and every action it would have reviewed asks the person.
+   */
+  MELETE_REVIEW_MODEL: z.string().optional(),
+  MELETE_REVIEW_PROVIDER: z.string().optional(),
+  /** How long one review may take before the action goes to the person. */
+  MELETE_REVIEW_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(20_000).default(12_000),
+  /** Reviews one space may ask for in an hour; past it, the person is asked. */
+  MELETE_REVIEW_HOURLY_LIMIT: z.coerce.number().int().nonnegative().default(60),
 
   /**
    * What the engine in an attempt's cell is bounded by. Each is read again from

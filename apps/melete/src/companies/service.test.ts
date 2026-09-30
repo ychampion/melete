@@ -10,6 +10,7 @@
 import { describe, expect, test } from 'bun:test';
 import { loadEnv } from '../env.ts';
 import type { GatewayProvider } from '../gateway/types.ts';
+import { defaultPrivacyRouter } from '../privacy/index.ts';
 import { FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
 import { DEFAULT_EXTRACTION_MODEL } from './gateway.ts';
 import { fixtureMailbox } from './mailbox.ts';
@@ -67,6 +68,7 @@ describe('the live extractor’s budget', () => {
   test('belongs to one scan, so one person’s scans cannot spend another’s', async () => {
     const { seen, fetch } = upstream();
     const extractor = gatewayExtractor({
+      privacy: defaultPrivacyRouter(),
       provider: 'openai',
       model: DEFAULT_EXTRACTION_MODEL,
       providers: [provider],
@@ -103,6 +105,7 @@ describe('the live extractor’s budget', () => {
   test('closes the gateway a scan opened when that scan ends', async () => {
     const { seen, fetch } = upstream();
     const live = gatewayExtractor({
+      privacy: defaultPrivacyRouter(),
       provider: 'openai',
       model: DEFAULT_EXTRACTION_MODEL,
       providers: [provider],
@@ -127,6 +130,7 @@ describe('the live extractor’s budget', () => {
     // Closed with its scan: the gateway it held forwards nothing further.
     const before = seen.calls;
     await session?.extract({
+      spaceId: 'sp_01J0000000000000000000000A',
       messageId: '<1@example.test>',
       companyName: 'Example',
       domain: 'example.test',

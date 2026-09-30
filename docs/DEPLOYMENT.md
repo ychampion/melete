@@ -688,6 +688,17 @@ provider with an empty key starts with a warning on the service log, and the
 gateway refuses each model call with `provider_key_unavailable` until the key is
 set.
 
+Every model request passes the [privacy router](PRIVACY-ROUTER.md), which swaps
+sensitive details for placeholders before a cloud provider sees them. Private
+conversations use a local model instead: set one under Settings → Privacy, or
+with `MELETE_LOCAL_MODEL_URL` (an OpenAI-compatible version prefix on this
+machine or a private network, for example `http://127.0.0.1:11434/v1`),
+`MELETE_LOCAL_MODEL` and, when the server needs one, `MELETE_LOCAL_MODEL_KEY`.
+Listed private values and the vault of swapped details are sealed with
+`MELETE_MASTER_KEY`. A configured model whose address is on this machine or
+your network is still redacted for, since it may be a proxy to a cloud service,
+until the owner confirms under Settings → Privacy that it is a model they run.
+
 `MELETE_DEFAULT_MODEL` is the identifier the provider serves, written exactly as
 its API expects it. Fireworks identifiers are full account paths; the default is
 `accounts/fireworks/models/deepseek-v4p1-flash`. The gateway admits only the
@@ -730,9 +741,10 @@ a stored key back, only its last four characters, and a change applies from the
 next reply without a restart.
 
 The model chosen here, and the keys connected here, are also what Melete's own
-background reads use: automatic memory, learning from corrections, and the
-companies scan. `MELETE_MEMORY_PROVIDER` / `MELETE_MEMORY_MODEL` and
-`MELETE_COMPANIES_MODEL` still name a model outright for their own use when set.
+background reads use: automatic memory, learning from corrections, the
+companies scan, and the auto-review reviewer. `MELETE_MEMORY_PROVIDER` /
+`MELETE_MEMORY_MODEL`, `MELETE_COMPANIES_MODEL` and `MELETE_REVIEW_PROVIDER` /
+`MELETE_REVIEW_MODEL` still name a model outright for their own use when set.
 
 A key for the `openai-compatible` endpoint is bound to the address it was saved
 for, whether the owner typed it or `OPENAI_COMPAT_BASE_URL` named it. If that
@@ -851,6 +863,24 @@ again cannot fix (too large for the model, or a request the provider refuses,
 such as a model name it does not serve) ends the message at once. The service
 log records each of these as `memory: <reason>`, and `/health` reports
 `memory.waiting` and `memory.failed` (messages given up in the last day).
+
+### Auto-review
+
+People choose in Settings → Approvals whether an agent's low-risk actions can go
+ahead without asking them (see [CAPABILITIES](CAPABILITIES.md#auto-review)). An
+action that is reviewed is judged by a separate call to the model new chats use
+(the one chosen in Settings → Models, else the default provider and model), made
+through the same gateway with the keys connected there. `MELETE_REVIEW_MODEL`
+names a different model for this, with `MELETE_REVIEW_PROVIDER` when another
+provider serves it.
+`MELETE_REVIEW_MODEL=off` runs no reviewer, and every action it would have
+reviewed asks the person. `MELETE_REVIEW_TIMEOUT_MS` (default `12000`) is how
+long one review may take. `MELETE_REVIEW_HOURLY_LIMIT` (default `60`) is how
+many reviews one space may ask for in an hour. A review that times out, fails or
+gives an unreadable answer, and any review past the hourly limit, goes to the
+person instead, and so does one proposed while the space's other reviews are
+still running past the limit. Work inside an agent's own sandbox is decided by a
+fixed rule and never calls the model.
 
 ## Sandboxes
 

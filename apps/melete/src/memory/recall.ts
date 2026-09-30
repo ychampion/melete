@@ -72,6 +72,12 @@ export type RecallOptions = {
     audience: ReadAudience,
   ) => Promise<Candidate[]>;
   deadlineMs?: number;
+  /**
+   * Include what memory learned in conversations that were private when they
+   * were captured. Only for the person's own view and for requests that stay
+   * on their own model; left out, those items are never returned.
+   */
+  privateOrigin?: boolean;
 };
 export const recipeFor = (options: RecallOptions) =>
   options.embedding
@@ -455,6 +461,16 @@ export async function recall(
       if (options.includeProfile && request.mode === 'current')
         for (const item of await profileCandidates(tx, scope, audience.audiences))
           merged.set(`${item.claim_id}:${item.revision}`, { ...item, score: 1 });
+      // Claim revisions learned from a private conversation, left out unless asked for.
+      const kept = options.privateOrigin
+        ? null
+        : new Set(
+            (
+              await tx`select distinct ref.claim_id, ref.revision from memory_references ref
+                join memory_sources s on s.id = ref.source_id
+                where s.space_id = ${scope.spaceId} and s.private_origin is not null`
+            ).map((row) => `${row.claim_id}:${row.revision}`),
+          );
       const items: RecallItem[] = [];
       let used = 0;
       let truncated = supplement.length > (request.path === 'investigative' ? 200 : 100);
@@ -463,7 +479,7 @@ export async function recall(
       )) {
         if (Date.now() - started > deadlineMs) throw new MemoryError('recall_timeout');
         const item = await itemAt(tx, scope, candidate, request, disputed);
-        if (!item) continue;
+        if (!item || kept?.has(`${item.claim_id}:${item.revision}`)) continue;
         const tokens = itemTokens(item);
         if (used + tokens > request.max_tokens || items.length >= request.limit) {
           truncated = true;

@@ -24,6 +24,7 @@ const restrictions = await mkdtemp(join(tmpdir(), 'melete-brief-scope-'));
 const memory =
   handle && queue
     ? await startDeploymentMemory({
+        privacyOrigin: async () => null,
         sql: handle.sql,
         boss: queue.boss,
         restrictionsDir: restrictions,
