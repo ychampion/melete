@@ -70,6 +70,12 @@ export type RunnerOptions = {
   key: string;
   provider?: string;
   model?: string;
+  /**
+   * The model a new attempt runs on, read when it is claimed, so a model the
+   * owner chooses in the app applies from the next attempt without a restart.
+   * Left out, `provider` and `model` decide.
+   */
+  resolveModel?: (tx: Transaction) => Promise<{ provider: string; model: string }>;
   scopes?: string[];
   liveConnectionScopes?: boolean;
   scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
@@ -153,11 +159,11 @@ export class AttemptRunner {
       }
       if (row.state !== 'queued') return null;
       const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
-      const model = {
+      const chosen = (await this.options.resolveModel?.(tx)) ?? {
         provider: this.options.provider ?? 'stub',
         model: this.options.model ?? 'script',
-        fallback: null,
       };
+      const model = { provider: chosen.provider, model: chosen.model, fallback: null };
       const budget = jobBudget.parse(row.budget);
       const [previous] = await tx
         .select()

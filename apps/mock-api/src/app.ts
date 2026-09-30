@@ -72,6 +72,7 @@ import { mountCompaniesMock } from './companies.ts';
 import { mountExperienceMock } from './experience.ts';
 import { mountFeedbackMock } from './feedback.ts';
 import { mountLearnedMock } from './learned.ts';
+import { mountModelsMock } from './models.ts';
 import { mountPushMock } from './push.ts';
 import type { Runner } from './runner.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
@@ -124,7 +125,7 @@ export function createMockApp(deps: AppDeps) {
       origin: (origin) => origin ?? '*',
       credentials: true,
       allowHeaders: ['content-type', 'accept', 'last-event-id', 'idempotency-key'],
-      allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     }),
   );
 
@@ -135,6 +136,7 @@ export function createMockApp(deps: AppDeps) {
   // its own routes rather than going through the contract's operation table.
   mountCompaniesMock(app, deps, experience);
   mountLearnedMock(app, deps);
+  mountModelsMock(app);
   mountPushMock(app, () => experience.profile);
 
   /**
