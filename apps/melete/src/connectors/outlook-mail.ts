@@ -8,6 +8,7 @@
 import { simpleParser } from 'mailparser';
 import {
   composeMail,
+  type MailFolder,
   type MailMessage,
   type MailTransport,
   type OutgoingMail,
@@ -100,13 +101,14 @@ export class OutlookMailTransport implements MailTransport {
     return toMailMessage(id, await simpleParser(source, { skipImageLinks: true }));
   }
 
-  async search(query: string, limit: number): Promise<MailMessage[]> {
+  async search(query: string, limit: number, folder: MailFolder = 'inbox'): Promise<MailMessage[]> {
     const params = new URLSearchParams({ $top: String(limit), $select: 'id' });
     // Graph orders a search by relevance and refuses $orderby with it.
     if (query) params.set('$search', `"${query.replaceAll('"', '')}"`);
     else params.set('$orderby', 'receivedDateTime desc');
     const messages: MailMessage[] = [];
-    for (const entry of await this.list(`/mailFolders/inbox/messages?${params}`)) {
+    const path = folder === 'sent' ? 'sentitems' : 'inbox';
+    for (const entry of await this.list(`/mailFolders/${path}/messages?${params}`)) {
       if (typeof entry.id !== 'string') continue;
       const message = await this.message(entry.id);
       if (message) messages.push(message);

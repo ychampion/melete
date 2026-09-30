@@ -38,7 +38,7 @@ import {
   safeUrl,
 } from './projectors.ts';
 
-const CREDENTIAL =
+export const CREDENTIAL =
   /\bBearer\s+\S|\bsk-[A-Za-z0-9_-]{8,}|\bgh[opsu]_[A-Za-z0-9]{8,}|\bgithub_pat_|\bxox[abprs]-|\bAKIA[0-9A-Z]{12}|\bAIza[0-9A-Za-z_-]{20}|\beyJ[A-Za-z0-9_-]{8,}\.|sealed-box-v1:|-----BEGIN|(?:^|[^A-Za-z])[A-Za-z_]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie|credential)[A-Za-z_]*\s*[:=]|[A-Za-z0-9+/_-]{40,}/i;
 /** A path segment that reads like a key rather than a word: long, and mixing letters and digits. */
 const TOKEN_SEGMENT = /^(?=[^/]*\d)(?=[^/]*[A-Za-z])[A-Za-z0-9_.~-]{12,}$/;

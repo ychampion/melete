@@ -372,6 +372,41 @@
       "when": 1789232400032,
       "tag": "0052_chase_follow_up_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1789232400033,
+      "tag": "0053_push_presence",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1789232400034,
+      "tag": "0054_awaited_replies",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1789232400035,
+      "tag": "0055_mcp_server",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1789232400036,
+      "tag": "0056_feedback",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1789232400037,
+      "tag": "0057_model_settings",
+      "breakpoints": true
     }
   ]
 }

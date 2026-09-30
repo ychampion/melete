@@ -31,6 +31,17 @@ export type MailMessage = {
   html: string;
   /** The Date header as an ISO instant, when the message carried a usable one. */
   date?: string | null;
+  /** Every To and Cc address as the parser read them, lowercased. */
+  to_addresses?: string[];
+  /** The Message-ID this message answers, from In-Reply-To. */
+  in_reply_to?: string | null;
+  /** The thread's Message-IDs, from References. */
+  references?: string[];
+  /**
+   * A list, bulk or auto-submitted message: List-Unsubscribe, List-Id,
+   * Auto-Submitted other than `no`, or Precedence bulk, list or junk.
+   */
+  automated?: boolean;
 };
 
 /**
@@ -66,7 +77,33 @@ export function toMailMessage(key: number | string, parsed: ParsedMail): MailMes
       parsed.date instanceof Date && !Number.isNaN(parsed.date.getTime())
         ? parsed.date.toISOString()
         : null,
+    to_addresses: [...addressesOf(parsed.to), ...addressesOf(parsed.cc)],
+    in_reply_to: typeof parsed.inReplyTo === 'string' ? parsed.inReplyTo : null,
+    references: Array.isArray(parsed.references)
+      ? parsed.references
+      : typeof parsed.references === 'string'
+        ? parsed.references.split(/\s+/).filter(Boolean)
+        : [],
+    automated: automatedMail(parsed),
   };
+}
+
+/** Whether nobody wrote this message to one person: a list, bulk or robot's mail. */
+function automatedMail(parsed: ParsedMail): boolean {
+  const header = (name: string) => {
+    const value = parsed.headers.get(name);
+    return typeof value === 'string' ? value.trim().toLowerCase() : value ? 'present' : '';
+  };
+  const auto = header('auto-submitted');
+  // The parser gathers every List-* header into one `list` entry.
+  const list = parsed.headers.get('list');
+  const listed =
+    list !== null && typeof list === 'object' && ('unsubscribe' in list || 'id' in list);
+  return (
+    listed ||
+    (auto !== '' && auto !== 'no') ||
+    ['bulk', 'list', 'junk'].includes(header('precedence'))
+  );
 }
 
 /** Every address in a parsed header, groups included, lowercased. */
@@ -105,8 +142,12 @@ export type OutgoingMail = {
   attachments?: MailAttachment[];
 };
 
+/** The folders a search can read: where mail arrives, and where the person's own goes. */
+export type MailFolder = 'inbox' | 'sent';
+
 export interface MailTransport {
-  search(query: string, limit: number): Promise<MailMessage[]>;
+  /** Newest first. The inbox unless `folder` says otherwise. */
+  search(query: string, limit: number, folder?: MailFolder): Promise<MailMessage[]>;
   /** By UID for IMAP, by id for a mailbox that addresses messages that way. */
   read(key: number | string): Promise<MailMessage | null>;
   send(
@@ -238,8 +279,9 @@ export class ImapSmtpTransport implements MailTransport {
     return toMailMessage(uid, await simpleParser(item.source, { skipImageLinks: true }));
   }
 
-  async search(query: string, limit: number): Promise<MailMessage[]> {
-    return this.imap(this.config.inbox ?? 'INBOX', async (client) => {
+  async search(query: string, limit: number, folder: MailFolder = 'inbox'): Promise<MailMessage[]> {
+    const mailbox = folder === 'sent' ? await this.sentFolder() : (this.config.inbox ?? 'INBOX');
+    return this.imap(mailbox, async (client) => {
       const uids = await client.search(query ? { text: query } : { all: true }, { uid: true });
       const messages: MailMessage[] = [];
       for (const uid of (uids || []).slice(-limit).reverse()) {

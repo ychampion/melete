@@ -38,7 +38,8 @@
     "dev:mock": "bun run --cwd apps/mock-api dev",
     "dev:web": "bun run --cwd apps/web dev",
     "evals": "bun run evals/run.ts",
-    "companies:demo": "bun run apps/melete/src/companies/demo.ts"
+    "companies:demo": "bun run apps/melete/src/companies/demo.ts",
+    "feedback": "bun run apps/melete/src/feedback/cli.ts"
   },
   "type": "module",
   "workspaces": [

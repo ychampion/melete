@@ -2,6 +2,7 @@ import type { Env } from '../env.ts';
 import { withSignIn } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
 import { fakeProvider, type GatewayOptions, providersFromEnv } from '../gateway/index.ts';
+import { type ModelSettingsService, serviceModelSource } from '../gateway/model-settings.ts';
 import type { JobService } from '../jobs/service.ts';
 import { ProcedureService } from './procedures.ts';
 import { openProposalGateway } from './proposal-gateway.ts';
@@ -35,11 +36,14 @@ export async function startLearning(
   workers: boolean,
   fake?: GatewayOptions['fake'],
   signIn?: ProviderSignIn,
+  settings?: ModelSettingsService,
 ) {
   const gateway = await openProposalGateway({
     db: jobs.db,
     provider: env.MELETE_DEFAULT_PROVIDER,
     model: env.MELETE_DEFAULT_MODEL,
+    // Proposals use the model new chats use, the one chosen in the app included.
+    source: serviceModelSource({ env, settings }),
     // The same explicitly configured fake provider covers the proposal call.
     // Real provider credentials still stay inside the existing model gateway.
     fake,

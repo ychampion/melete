@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  ACCOUNT_CATALOG,
   CONNECTION_CHECK_DETAIL,
   CONNECTION_KIND_DESCRIPTORS,
   CONNECTION_KIND_SCOPES,
@@ -11,10 +12,12 @@ import {
   connectionRequestProblem,
   connectionResponse,
   createConnectionRequest,
+  MCP_CATALOG,
   modalTokenParts,
   sandboxCredentialRefusal,
 } from './connections.ts';
 import { connectionView } from './entities.ts';
+import { mcpConnectionConfig } from './mcp.ts';
 
 const SPACE = 'sp_01J00000000000000000000000';
 
@@ -600,5 +603,29 @@ describe('the one sandbox credential field', () => {
       ['daytona', 'a:b'],
     ] as const)
       expect(sandboxCredentialRefusal(adapter, key)).toStartWith('credential_invalid:');
+  });
+});
+
+describe('the connector catalog', () => {
+  test('every entry has its own id, and a known server is an address an MCP connection accepts', () => {
+    const ids = [
+      ...ACCOUNT_CATALOG.map((entry) => entry.id),
+      ...MCP_CATALOG.map((entry) => entry.id),
+      ...CONNECTION_KIND_DESCRIPTORS.map((kind) => kind.id),
+    ];
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const entry of MCP_CATALOG) {
+      expect(new URL(entry.url).protocol).toBe('https:');
+      // The suggested id is usable as the installation's own.
+      expect(
+        mcpConnectionConfig.safeParse({
+          id: entry.id,
+          url: entry.url,
+          audience: 'owner',
+          allowed_scopes: [`mcp_${entry.id}.search`],
+          tools: [{ name: 'search', alias: 'search', required_scopes: [`mcp_${entry.id}.search`] }],
+        }).success,
+      ).toBe(true);
+    }
   });
 });
