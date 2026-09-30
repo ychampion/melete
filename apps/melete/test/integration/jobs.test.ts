@@ -57,6 +57,7 @@ const INPUTS: TransitionInput[] = [
   { kind: 'attempt_budget_exhausted' },
   { kind: 'action_unknown' },
   { kind: 'user_input_received' },
+  { kind: 'conversation_continued' },
   { kind: 'approval_decided', decision: 'approved' },
   { kind: 'event_fired' },
   { kind: 'timer_fired' },

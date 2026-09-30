@@ -11,6 +11,8 @@ import { serviceTransaction } from '../db/transaction.ts';
 import { createModelGateway, type GatewayOptions, type GatewayProvider } from '../gateway/index.ts';
 import { EngineSkillService } from '../learning/engine-skills.ts';
 import { learningRuntimeFetch } from '../learning/runtime-route.ts';
+import { withPlaceholderResolution } from '../privacy/broker.ts';
+import type { PrivacyRouter } from '../privacy/index.ts';
 import { matchesServiceKey } from './capability.ts';
 import { PostgresGatewayBudget } from './gateway-budget.ts';
 import { createBrokerApp } from './http.ts';
@@ -24,6 +26,7 @@ export function createInternalServer(options: {
   approvalKey: string;
   boss?: PgBoss;
   providers?: GatewayProvider[];
+  currentProviders?: GatewayOptions['currentProviders'];
   defaultProvider?: string;
   defaultMaxTokens?: GatewayOptions['defaultMaxTokens'];
   dispatchTimeoutMs?: number;
@@ -36,6 +39,7 @@ export function createInternalServer(options: {
   resolveScopedGrant?: BrokerOptions['resolveScopedGrant'];
   recordStandingScope?: BrokerOptions['recordStandingScope'];
   chaseFollowUp?: BrokerOptions['chaseFollowUp'];
+  autoReview?: BrokerOptions['autoReview'];
   /** A broker the service already built, shared with its own routes. */
   broker?: BrokerService;
   gatewayFetch?: GatewayOptions['fetch'];
@@ -47,6 +51,8 @@ export function createInternalServer(options: {
   artifactCritic?: ArtifactCritic;
   artifactRoots?: ArtifactRoots;
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
+  /** Where model requests may go and what they may carry. */
+  privacy: PrivacyRouter;
 }) {
   const broker =
     options.broker ??
@@ -74,6 +80,7 @@ export function createInternalServer(options: {
       resolveScopedGrant: options.resolveScopedGrant,
       recordStandingScope: options.recordStandingScope,
       chaseFollowUp: options.chaseFollowUp,
+      autoReview: options.autoReview,
     });
   const app = createBrokerApp({
     broker,
@@ -111,25 +118,34 @@ export function createInternalServer(options: {
     authenticate: (token) => budget.authenticate(token),
     budget,
     providers: options.providers,
+    currentProviders: options.currentProviders,
     defaultProvider: options.defaultProvider,
     defaultMaxTokens: options.defaultMaxTokens,
     fake: options.fake,
     connectTls: options.connectTls,
     fetch: options.gatewayFetch,
-    brokerFetch: learningRuntimeFetch({
-      sql: options.sql,
-      capabilityKey: options.capabilityKey,
-      broker,
-      skills,
-      onError: (error) =>
-        process.stderr.write(
-          `learning route: ${error instanceof Error ? error.message : 'unknown error'}\n`,
-        ),
-      fallback: (request) =>
-        request.method === 'GET' && new URL(request.url).pathname === '/actions'
-          ? reads.fetch(request)
-          : app.fetch(request),
-    }),
+    privacy: options.privacy,
+    // A placeholder still in a runtime payload is resolved before the broker reads it.
+    brokerFetch: withPlaceholderResolution(
+      learningRuntimeFetch({
+        sql: options.sql,
+        capabilityKey: options.capabilityKey,
+        broker,
+        skills,
+        onError: (error) =>
+          process.stderr.write(
+            `learning route: ${error instanceof Error ? error.message : 'unknown error'}\n`,
+          ),
+        fallback: (request) =>
+          request.method === 'GET' && new URL(request.url).pathname === '/actions'
+            ? reads.fetch(request)
+            : app.fetch(request),
+      }),
+      {
+        capabilityKey: options.capabilityKey,
+        router: () => options.privacy,
+      },
+    ),
     onError: (error) => process.stderr.write(`model gateway: ${error.message}\n`),
   });
   return { server, broker, budget };

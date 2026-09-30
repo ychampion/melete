@@ -147,6 +147,117 @@ test('an engine that fails to stop after completing keeps the completed outcome'
   }
 });
 
+test('the outcome is reported while the engine is still stopping, and released waits for the stop', async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === '/v1/capabilities')
+        return Response.json({
+          object: 'hermes.api_server.capabilities',
+          platform: 'hermes-agent',
+          model: 'fake-scripted-v1',
+          features: {
+            run_submission: true,
+            run_events_sse: true,
+            run_stop: true,
+            run_approval_response: true,
+            runs_idempotency: { supported: true, durable: true, retention_seconds: 86_400 },
+          },
+        });
+      if (path === '/v1/runs' && request.method === 'POST')
+        return Response.json(
+          { run_id: 'run_fixture_1', status: 'started', replayed: false },
+          { status: 202 },
+        );
+      if (path.endsWith('/events'))
+        return new Response(
+          `data: ${JSON.stringify({ event: 'run.completed', output: 'Done' })}
+
+`,
+          { headers: { 'content-type': 'text/event-stream' } },
+        );
+      return Response.json({ ok: true });
+    },
+  });
+  let stopped = false;
+  let finishStop: () => void = () => {};
+  try {
+    const runtime = new SupervisedHermesRuntime(
+      {
+        kind: 'process',
+        launch: async () => ({
+          baseUrl: `http://127.0.0.1:${server.port}`,
+          token: 'engine-key',
+          coldStartMs: 1,
+          workspace: '/work',
+          stop: () =>
+            new Promise<void>((resolve) => {
+              finishStop = () => {
+                stopped = true;
+                resolve();
+              };
+            }),
+        }),
+        close: async () => {},
+      },
+      (async () => []) as unknown as MemorySql,
+    );
+    const job = 'job_01J8ZP3QWABCDEFGHJKMNPQRST';
+    const outcome = await runtime.start(
+      {
+        attempt: {
+          id: 'att_01J8ZP3QWABCDEFGHJKMNPQRST',
+          job_id: job,
+          epoch: 1,
+          revision: 0,
+          token: 'capability.jwt',
+        },
+        job: {
+          title: 'Small',
+          objective: 'Finish',
+          constraints: {},
+          progress_summary: '',
+          unresolved_questions: [],
+          deliverable: {},
+        },
+        inputs: {
+          new_user_messages: [],
+          approval_results: [],
+          trigger_events: [],
+          repair_briefs: [],
+        },
+        since_last: EMPTY_SINCE_LAST,
+        transcript: [],
+        tools: [],
+        skills: [],
+        knowledge: [],
+        workspace: { mount: '/work', files: [] },
+        budget: { max_turns: 2, max_output_tokens: 4000, max_wall_ms: 10_000, max_actions: 0 },
+        model: { provider: 'custom', model: 'fake-scripted-v1', fallback: null },
+      } as unknown as AttemptBundle,
+      { emit: async () => {} },
+      new AbortController().signal,
+    );
+    expect(outcome.kind).toBe('completed');
+    expect(stopped).toBe(false);
+    let released = false;
+    const waiting = runtime.released([job]).then(() => {
+      released = true;
+    });
+    await Bun.sleep(20);
+    expect(released).toBe(false);
+    // Another job's engines are not waited for.
+    await runtime.released(['job_01J8ZP3QWABCDEFGHJKMNPQRSV']);
+    finishStop();
+    await waiting;
+    expect(stopped).toBe(true);
+  } finally {
+    finishStop();
+    server.stop(true);
+  }
+});
+
 test("a job's output budget above the window does not stop an ordinary prompt from launching", async () => {
   // The whole budget is spent across the job's requests; none of them sets it
   // aside from the window, so a short prompt reaches the engine.

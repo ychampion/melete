@@ -8,8 +8,25 @@
 
 export type CalendarParts = { weekday: string; day: number; month: string; year: number };
 
+const formats = new Map<string, Intl.DateTimeFormat>();
+/**
+ * One formatter per locale and options, made once: building one costs far more
+ * than formatting with it, and a time zone's rules do not change while running.
+ * A zone the platform does not know throws here, as the constructor would, and
+ * nothing is kept for it.
+ */
+export function dateFormat(locale: string, options: Intl.DateTimeFormatOptions) {
+  const key = `${locale}|${JSON.stringify(options)}`;
+  let format = formats.get(key);
+  if (!format) {
+    format = new Intl.DateTimeFormat(locale, options);
+    formats.set(key, format);
+  }
+  return format;
+}
+
 export function calendarParts(at: Date, timeZone: string): CalendarParts {
-  const parts = new Intl.DateTimeFormat('en-GB', {
+  const parts = dateFormat('en-GB', {
     timeZone,
     weekday: 'long',
     day: 'numeric',
@@ -40,13 +57,13 @@ export function describeDate(at: Date, timeZone = 'UTC'): string {
 /** "12/09/2026": day first, the way en-GB writes it. */
 export function numericDate(at: Date, timeZone = 'UTC'): string {
   const { day, year } = calendarParts(at, timeZone);
-  const month = new Intl.DateTimeFormat('en-GB', { timeZone, month: '2-digit' }).format(at);
+  const month = dateFormat('en-GB', { timeZone, month: '2-digit' }).format(at);
   return `${String(day).padStart(2, '0')}/${month}/${year}`;
 }
 
 /** "2026-09-12": the calendar day it is at that instant in that zone, sortable as text. */
 export function calendarDay(at: Date, timeZone = 'UTC'): string {
-  const parts = new Intl.DateTimeFormat('en-GB', {
+  const parts = dateFormat('en-GB', {
     timeZone,
     day: '2-digit',
     month: '2-digit',

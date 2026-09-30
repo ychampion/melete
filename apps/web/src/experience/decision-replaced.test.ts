@@ -57,8 +57,31 @@ test('a replaced permission settles as replaced, and the other card keeps waitin
   ]);
 });
 
+test('a permission withdrawn by a stop settles as withdrawn', () => {
+  let transcript = emptyTranscript();
+  transcript = applyEvent(
+    transcript,
+    event({ type: 'permission', permission: permission('apr_stopped') }),
+  );
+  transcript = applyEvent(
+    transcript,
+    event({
+      type: 'decision',
+      decision: {
+        kind: 'permission',
+        id: 'apr_stopped',
+        outcome: 'withdrawn',
+        answer: null,
+        decided_at: AT,
+      },
+    }),
+  );
+  expect(decided(transcript)).toEqual([['apr_stopped', 'withdrawn']]);
+});
+
 test('every decided card says what it came to', () => {
   expect(permissionOutcome('replaced')).toBe('Replaced by your new message');
+  expect(permissionOutcome('withdrawn')).toBe('Withdrawn when you stopped');
   expect(permissionOutcome('deny')).toBe('Denied');
   expect(permissionOutcome(null)).toBeNull();
 });

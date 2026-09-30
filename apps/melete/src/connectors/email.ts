@@ -40,6 +40,7 @@ const search = z
   .object({
     query: z.string().max(1000).default(''),
     limit: z.number().int().min(1).max(50).default(20),
+    folder: z.enum(['inbox', 'sent']).default('inbox'),
   })
   .strict();
 const read = z.object({ uid: z.number().int().positive() }).strict();
@@ -79,13 +80,15 @@ export const emailManifest: ConnectorManifest = {
   tools: [
     {
       name: 'email.search',
-      description: 'Search inbox messages; authentication messages are filtered best-effort.',
+      description:
+        'Search inbox messages, or sent ones with folder "sent"; authentication messages are filtered best-effort.',
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
           query: { type: 'string', maxLength: 1000 },
           limit: { type: 'integer', minimum: 1, maximum: 50 },
+          folder: { type: 'string', enum: ['inbox', 'sent'] },
         },
       },
       effect_class: 'read',
@@ -109,7 +112,8 @@ export const emailManifest: ConnectorManifest = {
     },
     {
       name: 'email.draft',
-      description: 'Keep a local draft in the action record for review.',
+      description:
+        'Prepare a draft for the person to review. In a chat you cannot send it: the person sends it from its draft card.',
       input_schema: outgoingSchema,
       effect_class: 'write_reversible',
       required_scopes: ['email.draft'],
@@ -305,6 +309,26 @@ export class EmailConnector implements Connector {
     );
   }
 
+  /** Password reset mail is fixed-purpose, like sign-in mail, and goes only to the mailbox's own address. */
+  async sendPasswordResetLink(
+    spaceId: string,
+    email: string,
+    url: string,
+    minutes: number,
+  ): Promise<void> {
+    if (!this.canSendSignIn(spaceId, email)) throw new Error('Sign-in mailbox mismatch');
+    await this.use((transport) =>
+      transport.send({
+        to: [email],
+        cc: [],
+        bcc: [],
+        subject: 'Reset your Melete password',
+        body: `Use this link to choose a new Melete password. It expires in ${minutes} minutes and can be used once. Choosing a new password signs you out everywhere.\n\n${url}\n\nIf you did not ask for this, ignore this email; your password stays as it is.`,
+        messageId: `<reset.${randomUUID()}@melete.local>`,
+      }),
+    );
+  }
+
   private success(
     action: Action,
     detail: JsonObject,
@@ -357,7 +381,7 @@ export class EmailConnector implements Connector {
       if (action.kind === 'email.search') {
         const payload = search.parse(action.canonical_payload);
         const messages = await this.use((transport) =>
-          transport.search(payload.query, payload.limit),
+          transport.search(payload.query, payload.limit, payload.folder),
         );
         return this.success(action, {
           messages: messages

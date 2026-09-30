@@ -4,6 +4,12 @@ import {
   CONNECTION_KIND_SCOPES,
   type ConnectorManifest,
 } from '@melete/contracts';
+import { storedSandboxConnection } from '../sandbox/connection.ts';
+import {
+  DEFAULT_SANDBOX_LIFETIME_SECONDS,
+  defaultSandboxConfig,
+  dockerSandboxSettings,
+} from '../sandbox/docker-default.ts';
 import { artifactsManifest } from './artifacts.ts';
 import { BUILTIN_CONNECTIONS, builtinEnvironment } from './builtin.ts';
 import { calendarManifest } from './calendar.ts';
@@ -22,6 +28,7 @@ describe('default connections', () => {
       web: webManifest,
       artifacts: artifactsManifest,
       exec: execManifest,
+      sandbox: sandboxExecManifest,
     };
     expect(BUILTIN_CONNECTIONS.map((builtin) => builtin.provider).sort()).toEqual([
       'artifacts',
@@ -30,6 +37,7 @@ describe('default connections', () => {
       // Speech and transcription: two rows of the one generation provider.
       'generation',
       'generation',
+      'sandbox',
       'web',
     ]);
     for (const builtin of BUILTIN_CONNECTIONS) {
@@ -40,6 +48,75 @@ describe('default connections', () => {
     }
     for (const credentialed of [emailManifest, calendarManifest])
       expect(credentialed.credentials.length).toBeGreaterThan(0);
+  });
+
+  test('a sandbox is a default only where the operator asked for one on the local engine', () => {
+    const env = {
+      MELETE_RUNTIME_ADAPTER: 'docker',
+      MELETE_DOCKER_SOCKET: '/var/run/docker.sock',
+      MELETE_SANDBOX_PROVIDER: 'docker' as const,
+      MELETE_SANDBOX_PROJECT: 'house',
+    };
+    const inContainer = '3f2a9c1b7e4d';
+    expect(defaultSandboxConfig({ ...env, MELETE_SANDBOX_PROVIDER: undefined }, inContainer)).toBe(
+      null,
+    );
+    expect(defaultSandboxConfig({ ...env, MELETE_SANDBOX_PROJECT: undefined }, inContainer)).toBe(
+      null,
+    );
+    expect(defaultSandboxConfig(env, inContainer)).toEqual({
+      adapter: 'docker',
+      image: 'melete-sandbox:local',
+      egress: 'open',
+      persistence: 'pause',
+      lifetime_seconds: DEFAULT_SANDBOX_LIFETIME_SECONDS,
+    });
+    // Outside a container the service cannot be the sandbox's only way out: no network, never more.
+    expect(defaultSandboxConfig(env, 'laptop')?.egress).toBe('deny_all');
+    expect(
+      defaultSandboxConfig({ ...env, MELETE_RUNTIME_ADAPTER: 'hermes' }, inContainer)?.egress,
+    ).toBe('deny_all');
+    expect(
+      defaultSandboxConfig({ ...env, MELETE_SANDBOX_DOCKER_EGRESS: 'deny_all' }, inContainer)
+        ?.egress,
+    ).toBe('deny_all');
+    const wanted = BUILTIN_CONNECTIONS.find((builtin) => builtin.key === 'sandbox');
+    const sandbox = defaultSandboxConfig(env, inContainer);
+    expect(
+      wanted?.when?.({
+        cellIsolated: true,
+        speechConfigured: false,
+        transcriptionConfigured: false,
+        sandbox,
+      }),
+    ).toBe(true);
+    expect(
+      wanted?.when?.({
+        cellIsolated: true,
+        speechConfigured: false,
+        transcriptionConfigured: false,
+        sandbox: null,
+      }),
+    ).toBe(false);
+    // The row reads back as an ordinary sandbox connection.
+    expect(
+      storedSandboxConnection.parse({
+        ...wanted?.configuration?.({
+          cellIsolated: true,
+          speechConfigured: false,
+          transcriptionConfigured: false,
+          sandbox,
+        }),
+        builtin: 'sandbox',
+      }).sandbox.adapter,
+    ).toBe('docker');
+    expect(dockerSandboxSettings(env, inContainer)).toMatchObject({
+      socket: '/var/run/docker.sock',
+      selfId: inContainer,
+      cpus: 1,
+      memoryMb: 2048,
+    });
+    expect(dockerSandboxSettings(env, 'laptop').selfId).toBeUndefined();
   });
 
   test('every default effect that leaves the space waits for approval', () => {
@@ -55,6 +132,7 @@ describe('default connections', () => {
       cellIsolated: false,
       speechConfigured: false,
       transcriptionConfigured: false,
+      sandbox: null,
     });
     expect(builtinEnvironment({ ...base, MELETE_RUNTIME_SUPERVISOR: 'docker' }).cellIsolated).toBe(
       true,

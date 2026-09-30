@@ -20,12 +20,18 @@ import { owner, principal, space } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import { ExperienceSignIn } from '../experience/signin.ts';
 import { newId } from '../ids.ts';
+import { MCP_PUBLIC_PATHS, mcpActorOf, mcpPublicPath } from '../mcp-server/actor.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
-import { resolveSessionSpace, type SessionSpace } from '../principals/session-space.ts';
+import {
+  resolveSessionSpace,
+  type SessionSpace,
+  selectedSpace,
+} from '../principals/session-space.ts';
 import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
 import type { RequestSource } from './listener.ts';
 import { LoginThrottle } from './login-throttle.ts';
+import { mountPassword } from './password.ts';
 
 export const SESSION_COOKIE = 'melete_session';
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -40,6 +46,8 @@ const tooLarge = (c: Context) =>
   c.json({ error: { code: 'request_too_large', message: 'The request is too large.' } }, 413);
 const publicBody = bodyLimit({ maxSize: PUBLIC_BODY_BYTES, onError: tooLarge });
 const sessionBody = bodyLimit({ maxSize: SESSION_BODY_BYTES, onError: tooLarge });
+/** One JSON-RPC message from an assistant: a tool's arguments, never an upload. */
+const mcpBody = bodyLimit({ maxSize: 1024 * 1024, onError: tooLarge });
 /** Browsers that have not signed in to an account before share this many attempts on it. */
 const ACCOUNT_BURST = 10;
 export const credentials = z.object({
@@ -150,6 +158,25 @@ async function readCredentials(c: Context) {
   return parsed.success ? parsed.data : null;
 }
 
+/** The live session a cookie names: its principal and the space it selected. */
+export async function activeSession(db: Database, token: string) {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return undefined;
+  const [active] = await db
+    .select({
+      owner: principal,
+      spaceId: session.spaceId,
+      membershipGeneration: session.membershipGeneration,
+    })
+    .from(session)
+    .innerJoin(
+      principal,
+      eq(principal.id, sql`coalesce(${session.principalId}, ${session.ownerId})`),
+    )
+    .where(and(eq(session.tokenHash, tokenHash(token)), gt(session.expiresAt, new Date())))
+    .limit(1);
+  return active;
+}
+
 export function mountAuth(
   app: Hono,
   deps: {
@@ -191,6 +218,40 @@ export function mountAuth(
 
   app.use('*', async (c, next) => {
     c.header('Cache-Control', 'no-store');
+    // A tool call from Melete's own MCP endpoint, in this process, for the
+    // person its access token names. The environment carrying the actor is set
+    // only by that endpoint; a request from the network never has it.
+    const actor = mcpActorOf(c.env);
+    if (actor) {
+      if (!db) {
+        return c.json(
+          { error: { code: 'database_unavailable', message: 'Configure Postgres.' } },
+          503,
+        );
+      }
+      const [person] = await db
+        .select()
+        .from(principal)
+        .where(eq(principal.id, actor.principalId))
+        .limit(1);
+      if (!person) {
+        return c.json({ error: { code: 'unauthorized', message: 'The access has ended.' } }, 401);
+      }
+      // The grant acts in the space the person consented from, and in no other:
+      // once they may no longer use it there, the access has ended.
+      const resolved = await selectedSpace(db, person.id, {
+        spaceId: actor.spaceId,
+        generation: actor.membershipGeneration,
+      });
+      if (!resolved) {
+        return c.json({ error: { code: 'unauthorized', message: 'The access has ended.' } }, 401);
+      }
+      c.set('owner', publicOwner(person));
+      c.set('sessionSpace', resolved);
+      c.set('experienceSpaceId', resolved.spaceId);
+      return principalContext.run(person.id, () => sessionBody(c, next));
+    }
+    if (c.req.path === MCP_PUBLIC_PATHS.mcp && c.req.method === 'POST') return mcpBody(c, next);
     if (!allowedMutation(c)) {
       return c.json({ error: { code: 'origin_rejected', message: 'Use the same origin.' } }, 403);
     }
@@ -200,6 +261,7 @@ export function mountAuth(
           c.req.path === '/setup' ||
           // An authorization server reads this client's metadata without a session.
           c.req.path === '/oauth/client-metadata.json')) ||
+      mcpPublicPath(c.req.method, c.req.path) ||
       (c.req.method === 'POST' &&
         [
           '/setup',
@@ -208,10 +270,17 @@ export function mountAuth(
           '/signin/magic-link/consume',
           '/signin/google',
           '/signin/apple',
+          '/signin/chatgpt',
+          '/password-reset',
+          '/password-reset/consume',
         ].includes(c.req.path));
     // A body is counted as it arrives, so one sent without a length, or with a
     // false one, is dropped at the limit rather than read and parsed whole.
     if (publicRoute) return publicBody(c, next);
+    // A paired computer's companion holds no session. Every `/device/` route
+    // checks the computer's own token and sets its own body limit; see
+    // devices/routes.ts.
+    if (c.req.path.startsWith('/device/')) return next();
 
     const token = getCookie(c, SESSION_COOKIE);
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
@@ -223,19 +292,7 @@ export function mountAuth(
         503,
       );
     }
-    const [active] = await db
-      .select({
-        owner: principal,
-        spaceId: session.spaceId,
-        membershipGeneration: session.membershipGeneration,
-      })
-      .from(session)
-      .innerJoin(
-        principal,
-        eq(principal.id, sql`coalesce(${session.principalId}, ${session.ownerId})`),
-      )
-      .where(and(eq(session.tokenHash, tokenHash(token)), gt(session.expiresAt, new Date())))
-      .limit(1);
+    const active = await activeSession(db, token);
     if (!active) {
       return c.json({ error: { code: 'unauthorized', message: 'The session has expired.' } }, 401);
     }
@@ -257,6 +314,14 @@ export function mountAuth(
     deps.sql && deps.registry
       ? new ExperienceSignIn(deps.sql, deps.registry, env.MELETE_PUBLIC_URL)
       : undefined;
+  if (deps.sql)
+    mountPassword(app, {
+      sql: deps.sql,
+      sessionCookie: SESSION_COOKIE,
+      signIn,
+      publicUrl: env.MELETE_PUBLIC_URL,
+      clock: loginThrottle.clock,
+    });
   app.post('/signin/magic-link', async (c) => {
     const input = magicLinkRequest.parse(await c.req.json());
     return c.json(
@@ -275,6 +340,11 @@ export function mountAuth(
     app.post(`/signin/${provider}`, (c) =>
       c.json(unavailable('Use your password or an email sign-in link.')),
     );
+  // Sign in with ChatGPT needs a client that OpenAI issues to the operator;
+  // until an installation has one, the sign-in card says so.
+  app.post('/signin/chatgpt', (c) =>
+    c.json(unavailable('This installation hasn’t set up ChatGPT sign-in yet.')),
+  );
   /**
    * Ends the session the cookie names. The row is removed rather than flagged,
    * so a later request with the same cookie is unauthorized, and the cookie

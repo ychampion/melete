@@ -5,6 +5,7 @@ import {
   ConfigureRefusal,
   configureOptions,
   createdMessage,
+  databaseUrl,
   dockerSocketGroup,
   failureReport,
   providerSettings,
@@ -288,5 +289,23 @@ describe('the sandbox label configure writes', () => {
     expect(first).toMatch(/^melete-[0-9a-f]{8}$/);
     expect(loadEnv({ MELETE_SANDBOX_PROJECT: first }).MELETE_SANDBOX_PROJECT).toBe(first);
     expect(sandboxProject()).not.toBe(first);
+  });
+});
+
+describe('the database address configure writes', () => {
+  test('names the user and database Postgres is created with', () => {
+    expect(databaseUrl({ POSTGRES_USER: 'melete', POSTGRES_DB: 'melete' }, 'a1b2')).toBe(
+      'postgres://melete:a1b2@postgres:5432/melete',
+    );
+    const url = new URL(databaseUrl({ POSTGRES_USER: 'assistant', POSTGRES_DB: 'home' }, 'c3d4'));
+    expect(url.username).toBe('assistant');
+    expect(url.pathname).toBe('/home');
+    expect(loadEnv({ DATABASE_URL: url.href }).DATABASE_URL).toBe(url.href);
+  });
+
+  test('falls back to the Compose defaults when the template leaves them empty', () => {
+    expect(databaseUrl({ POSTGRES_USER: '', POSTGRES_DB: ' ' }, 'e5f6')).toBe(
+      'postgres://melete:e5f6@postgres:5432/melete',
+    );
   });
 });

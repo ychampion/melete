@@ -26,6 +26,8 @@ export type MockOptions = {
   setupNeeded?: boolean;
   /** Offer voice; on unless turned off. */
   voice?: boolean;
+  /** Off, conversations have no browser or sandbox, as on a fresh install. */
+  computer?: boolean;
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -44,6 +46,7 @@ export function createMock(options: MockOptions = {}) {
     seedExperience: options.experience?.seed ?? false,
     setupNeeded: options.setupNeeded ?? false,
     voice: options.voice ?? true,
+    computer: options.computer ?? true,
   });
   return { app, store, runner, scenarios, spaceId, connections };
 }
@@ -53,6 +56,7 @@ if (import.meta.main) {
   const { app, spaceId, scenarios } = createMock({
     experience: { seed: process.env.MOCK_SEED !== 'off' },
     setupNeeded: process.env.MELETE_MOCK_SETUP === 'needed',
+    computer: process.env.MELETE_MOCK_COMPUTER !== 'off',
     voice: process.env.MELETE_MOCK_VOICE !== 'off',
   });
   Bun.serve<RealtimeState>({

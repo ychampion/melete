@@ -4,7 +4,7 @@
  * database holds it.
  */
 import type { ExtractionProposal } from '@melete/contracts';
-import { commitExtraction } from '../../src/memory/commit.ts';
+import { commitExtraction, type PublicationHooks } from '../../src/memory/commit.ts';
 import type { MemoryScope } from '../../src/memory/db.ts';
 import { ingest } from '../../src/memory/evidence.ts';
 import { claimWork } from '../../src/memory/work.ts';
@@ -21,7 +21,13 @@ export type Said = {
 export type Claimed = { key: string; content: string; quote: string; kind: string };
 
 /** Ingest one piece of evidence and commit the keyed claims it supports. */
-export async function record(db: TestDatabase, scope: MemoryScope, said: Said, claims: Claimed[]) {
+export async function record(
+  db: TestDatabase,
+  scope: MemoryScope,
+  said: Said,
+  claims: Claimed[],
+  hooks: PublicationHooks = {},
+) {
   const evidence = await ingest(db.sql, scope, {
     stream: said.stream ?? 'chat',
     source_identity: said.identity,
@@ -58,7 +64,7 @@ export async function record(db: TestDatabase, scope: MemoryScope, said: Said, c
       ],
     } as ExtractionProposal;
   });
-  const result = await commitExtraction(db.sql, scope, batch, { proposals });
+  const result = await commitExtraction(db.sql, scope, batch, { proposals }, false, hooks);
   return { ...result, sourceId: evidence.source.source_id };
 }
 

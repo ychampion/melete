@@ -13,6 +13,7 @@ import { type KeyboardEvent, useEffect, useRef } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { IconButton } from '../design/primitives.tsx';
 import type { ComposerState } from '../experience/types.ts';
+import { openFeedback } from '../feedback/FeedbackPanel.tsx';
 import { elapsed, useNowTick, useRecorder } from './voice.ts';
 
 export function Composer({
@@ -72,10 +73,21 @@ export function Composer({
   const recording = recorder.state === 'recording';
   const now = useNowTick(recording);
 
+  // `/feedback`, with or without words after it, opens a problem report instead of sending.
+  const send = () => {
+    const command = /^\/feedback(?:\s+([\s\S]*))?$/i.exec(value.trim());
+    if (command) {
+      onChange('');
+      openFeedback(command[1]?.trim() ?? '');
+      return;
+    }
+    onSend();
+  };
+
   const onKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      if (state === 'send' && canSend) onSend();
+      if (state === 'send' && canSend) send();
     }
   };
 
@@ -114,7 +126,7 @@ export function Composer({
         label="Send"
         variant={canSend ? 'primary' : 'mutedFill'}
         disabled={!canSend}
-        onClick={onSend}
+        onClick={send}
       />
     );
 

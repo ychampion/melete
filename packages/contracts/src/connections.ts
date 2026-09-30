@@ -118,9 +118,18 @@ export const icsConnectionConfig = z
   .strict();
 export type IcsConnectionConfig = z.infer<typeof icsConnectionConfig>;
 
-export const SANDBOX_ADAPTERS = ['e2b', 'daytona', 'modal'] as const;
+export const SANDBOX_ADAPTERS = ['e2b', 'daytona', 'modal', 'docker'] as const;
 export const sandboxAdapter = z.enum(SANDBOX_ADAPTERS);
 export type SandboxAdapter = z.infer<typeof sandboxAdapter>;
+
+/**
+ * The adapters that reach a provider account with a key. `docker` runs on the
+ * Docker engine this service already supervises attempts on, so it has none.
+ */
+export const sandboxAdapterTakesKey = (adapter: SandboxAdapter): boolean => adapter !== 'docker';
+
+/** The adapters whose sandboxes have a desktop for the `computer.*` tools. */
+export const sandboxAdapterHasDesktop = (adapter: SandboxAdapter): boolean => adapter === 'docker';
 
 export const SANDBOX_EGRESS_KINDS = ['deny_all', 'cidr_allowlist', 'open'] as const;
 export const SANDBOX_PERSISTENCE = ['ephemeral', 'pause', 'snapshot'] as const;
@@ -140,7 +149,10 @@ const allowedRange = singleLine(49);
 export const sandboxConnectionConfig = z
   .object({
     adapter: sandboxAdapter,
-    /** A registry reference for Modal, a template name for E2B, a snapshot name for Daytona. */
+    /**
+     * A registry reference for Modal, a template name for E2B, a snapshot name for
+     * Daytona, and an image already on this service's Docker engine for docker.
+     */
     image: singleLine(200),
     egress: z.enum(SANDBOX_EGRESS_KINDS),
     /** Used only with a CIDR allow-list, which needs at least one. */
@@ -179,6 +191,7 @@ export const SANDBOX_CREDENTIAL_FORMAT: Record<SandboxAdapter, string> = {
   e2b: 'the API key on its own, which has no colon in it',
   daytona: 'the API key on its own, which has no colon in it',
   modal: 'the token id and the token secret as one value, `token_id:token_secret`',
+  docker: "nothing: it runs on this service's own Docker engine and takes no key",
 };
 
 /** The one code a credential of the wrong shape is refused with. */
@@ -190,6 +203,8 @@ export const SANDBOX_CREDENTIAL_CODE = 'credential_invalid';
  * still only a request: before it is sealed, split or sent to a provider.
  */
 export function sandboxCredentialRefusal(adapter: SandboxAdapter, key: string): string | null {
+  if (!sandboxAdapterTakesKey(adapter))
+    return `${SANDBOX_CREDENTIAL_CODE}: a ${adapter} sandbox takes ${SANDBOX_CREDENTIAL_FORMAT[adapter]}.`;
   const wrong =
     adapter === 'modal'
       ? !modalTokenParts(key)
@@ -206,7 +221,15 @@ export const CONNECTION_KIND_SCOPES = {
   mail: ['email.search', 'email.read', 'email.draft', 'email.discard', 'email.send'],
   caldav: ['calendar.list', 'calendar.create', 'calendar.update', 'calendar.delete'],
   ics: ['calendar.list'],
-  sandbox: ['terminal.run'],
+  sandbox: [
+    'terminal.run',
+    'computer.screenshot',
+    'computer.open',
+    'computer.click',
+    'computer.type',
+    'computer.key',
+    'computer.scroll',
+  ],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
 export const createConnectionRequest = z.object({
@@ -262,7 +285,8 @@ export type ConnectionInstallation =
       kind: 'sandbox';
       provider: 'sandbox';
       config: SandboxConnectionConfig;
-      credentials: SandboxCredentials;
+      /** Null for an adapter that takes no key. */
+      credentials: SandboxCredentials | null;
       scopes: string[];
     };
 
@@ -312,11 +336,27 @@ export function connectionInstallation(
       return err('A CIDR allow-list needs at least one range.');
     const config: SandboxConnectionConfig =
       rest.egress === 'cidr_allowlist' ? { ...rest, cidrs: cidrs ?? [] } : rest;
+    // A desktop grant is kept only where the adapter's sandboxes have a desktop.
+    const granted = sandboxAdapterHasDesktop(config.adapter)
+      ? scopes
+      : scopes.filter((scope) => !scope.startsWith('computer.'));
+    if (!sandboxAdapterTakesKey(config.adapter)) {
+      // A key sent to an adapter that has no account would be sealed and never read.
+      if (request.credentials && Object.keys(request.credentials).length)
+        return err(sandboxCredentialRefusal(config.adapter, '') ?? EXACTLY_ONE);
+      return ok({ kind, provider: 'sandbox', config, credentials: null, scopes: granted });
+    }
     const credentials = sandboxCredentials.safeParse(request.credentials);
     if (!credentials.success) return err('A sandbox needs credentials.api_key only.');
     const malformed = sandboxCredentialRefusal(config.adapter, credentials.data.api_key);
     if (malformed) return err(malformed);
-    return ok({ kind, provider: 'sandbox', config, credentials: credentials.data, scopes });
+    return ok({
+      kind,
+      provider: 'sandbox',
+      config,
+      credentials: credentials.data,
+      scopes: granted,
+    });
   }
   if (kind === 'ics') {
     if (!request.ics || request.credentials)
@@ -436,6 +476,13 @@ export const mcpSignInRequest = z.union([
     .strict(),
 ]);
 
+/** One permission a sign-in asks for, with the plain words a person reads for it when known. */
+export const requestedScope = z.object({
+  scope: z.string(),
+  label: z.string().optional(),
+});
+export type RequestedScope = z.infer<typeof requestedScope>;
+
 export const mcpSignInStart = z.object({
   sign_in_id: z.string(),
   /** Open this in the person's browser. */
@@ -443,6 +490,13 @@ export const mcpSignInStart = z.object({
   /** Where the authorization server sends the browser back. */
   redirect_uri: z.url(),
   expires_at: timestamp,
+  /**
+   * The authorization server the MCP server named, where the person will sign
+   * in. Show it, with `scopes`, before opening `authorize_url`.
+   */
+  issuer: z.url(),
+  /** What the sign-in asks the server for; empty when the server names no scopes. */
+  scopes: z.array(requestedScope),
 });
 
 export const mcpSignInStatus = z.discriminatedUnion('state', [
@@ -474,6 +528,10 @@ export const accountSignInStart = z.object({
   authorize_url: z.url(),
   redirect_uri: z.url(),
   expires_at: timestamp,
+  /** Where the person will sign in. Show it, with `scopes`, before opening `authorize_url`. */
+  issuer: z.url(),
+  /** Everything the sign-in asks the provider for. */
+  scopes: z.array(requestedScope),
 });
 
 export const accountSignInStatus = z.discriminatedUnion('state', [
@@ -556,7 +614,165 @@ export const connectionKindDescriptor = z
   })
   .meta({ id: 'ConnectionKind' });
 export type ConnectionKindDescriptor = z.infer<typeof connectionKindDescriptor>;
-export const connectionKindListResponse = z.object({ kinds: z.array(connectionKindDescriptor) });
+
+/**
+ * One entry of the connector catalog: something a person can connect, how,
+ * and whether this installation offers it now. A sign-in entry starts at its
+ * sign-in route; a form entry opens the form of the kind it names.
+ */
+export const connectionCatalogEntry = z
+  .object({
+    id: z.string().regex(/^[a-z][a-z0-9_-]*$/),
+    title: z.string(),
+    description: z.string(),
+    /** What a connection made from this entry can do. */
+    covers: z.array(z.enum(['mail', 'calendar', 'tools', 'execution'])),
+    connect: z.discriminatedUnion('method', [
+      z.object({
+        method: z.literal('sign_in'),
+        provider: z.enum(['google', 'microsoft']),
+        /** `POST` here to start; the answer is the address to open in the browser. */
+        start: z.string(),
+        /** Where the person signs in. */
+        issuer: z.url(),
+        /** Everything the sign-in asks the provider for, in plain words. */
+        scopes: z.array(requestedScope),
+      }),
+      z.object({
+        method: z.literal('mcp_sign_in'),
+        /** The server's address, for the `mcp` block of `POST /mcp-sign-ins`. */
+        url: z.url(),
+        /** A short name for the installation's `mcp.id`, which prefixes its grants. */
+        suggested_id: z.string().regex(/^[a-z][a-z0-9_]*$/),
+        start: z.string(),
+      }),
+      z.object({
+        method: z.literal('form'),
+        /** The `id` of the entry in `kinds` whose form connects it. */
+        kind_id: z.string(),
+      }),
+    ]),
+    available: z.boolean(),
+    /** When it is not available, why, in words for the person using this Melete. */
+    unavailable_reason: z.string().optional(),
+    /**
+     * When it is not available, what the operator has to set. Sent only to the
+     * installation's owner, who runs it; everyone else reads `unavailable_reason`.
+     */
+    setup_hint: z.string().optional(),
+    /** Something the person should know before connecting it, such as that it can move money. */
+    warning: z.string().optional(),
+  })
+  .meta({ id: 'ConnectionCatalogEntry' });
+export type ConnectionCatalogEntry = z.infer<typeof connectionCatalogEntry>;
+
+export const connectionKindListResponse = z.object({
+  kinds: z.array(connectionKindDescriptor),
+  /** Everything a person can connect here, sign-ins first. Additive to `kinds`. */
+  catalog: z.array(connectionCatalogEntry).optional(),
+});
+
+/**
+ * Account sign-ins: one consent connects the account's mail and calendar. The
+ * issuer and scopes are the ones the service asks for, fixed in its connectors;
+ * a test holds the two lists equal.
+ */
+export const ACCOUNT_CATALOG = [
+  {
+    id: 'google',
+    title: 'Google',
+    description:
+      'Sign in with Google to connect Gmail and Google Calendar. Mail is read and searched, drafts stay here, and each message is sent and each event changed after you approve it.',
+    covers: ['mail', 'calendar'],
+    provider: 'google',
+    issuer: 'https://accounts.google.com',
+    scopes: [
+      { scope: 'openid', label: 'Confirm who you are' },
+      { scope: 'email', label: 'See your email address' },
+      {
+        scope: 'https://www.googleapis.com/auth/gmail.readonly',
+        label: 'Read your Gmail messages',
+      },
+      {
+        scope: 'https://www.googleapis.com/auth/gmail.send',
+        label: 'Send email as you, each message after you approve it',
+      },
+      {
+        scope: 'https://www.googleapis.com/auth/calendar.events',
+        label: 'See and change events in your Google calendars, each change after you approve it',
+      },
+    ],
+  },
+  {
+    id: 'microsoft',
+    title: 'Microsoft',
+    description:
+      'Sign in with Microsoft to connect Outlook mail and calendar, for Outlook.com and work or school accounts. Each message is sent and each event changed after you approve it.',
+    covers: ['mail', 'calendar'],
+    provider: 'microsoft',
+    issuer: 'https://login.microsoftonline.com',
+    scopes: [
+      { scope: 'openid', label: 'Confirm who you are' },
+      { scope: 'email', label: 'See your email address' },
+      { scope: 'offline_access', label: 'Stay connected until you disconnect' },
+      { scope: 'https://graph.microsoft.com/User.Read', label: 'Read your basic profile' },
+      { scope: 'https://graph.microsoft.com/Mail.Read', label: 'Read your Outlook mail' },
+      {
+        scope: 'https://graph.microsoft.com/Mail.Send',
+        label: 'Send email as you, each message after you approve it',
+      },
+      {
+        scope: 'https://graph.microsoft.com/Calendars.ReadWrite',
+        label: 'See and change your Outlook calendar, each change after you approve it',
+      },
+    ],
+  },
+] as const;
+
+/**
+ * Remote MCP servers known to sign in with OAuth. Their tools are still named
+ * and granted in the installation's `mcp` block, as for any MCP server.
+ */
+export const MCP_CATALOG = [
+  {
+    id: 'notion',
+    title: 'Notion',
+    description: "Search and edit your Notion workspace through Notion's MCP server.",
+    url: 'https://mcp.notion.com/mcp',
+  },
+  {
+    id: 'linear',
+    title: 'Linear',
+    description: "Find, create and update Linear issues and projects through Linear's MCP server.",
+    url: 'https://mcp.linear.app/mcp',
+  },
+  {
+    id: 'atlassian',
+    title: 'Atlassian',
+    description: "Work with Jira and Confluence through Atlassian's MCP server.",
+    url: 'https://mcp.atlassian.com/v2/mcp',
+  },
+  {
+    id: 'sentry',
+    title: 'Sentry',
+    description: "Look into issues and errors through Sentry's MCP server.",
+    url: 'https://mcp.sentry.dev/mcp',
+  },
+  {
+    id: 'stripe',
+    title: 'Stripe',
+    description: "Look up and manage Stripe objects through Stripe's MCP server.",
+    url: 'https://mcp.stripe.com',
+    warning:
+      "Stripe's tools can move money: they can issue refunds, and create payment links and invoices. Mark those tools as spend when you grant them, so each one waits for your approval.",
+  },
+] as const satisfies ReadonlyArray<{
+  id: string;
+  title: string;
+  description: string;
+  url: string;
+  warning?: string;
+}>;
 
 const text = (
   path: string,
@@ -866,17 +1082,19 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
           { value: 'e2b', label: 'E2B' },
           { value: 'daytona', label: 'Daytona' },
           { value: 'modal', label: 'Modal' },
+          { value: 'docker', label: 'This server (Docker)' },
         ],
         default: 'e2b',
       }),
       text('sandbox.image', 'Image or template', {
         placeholder: 'base',
-        help: 'A template name on E2B, a snapshot name on Daytona, a registry reference on Modal.',
+        help: 'A template name on E2B, a snapshot name on Daytona, a registry reference on Modal, an image on this server for Docker.',
       }),
       text('credentials.api_key', 'Provider key', {
         input: 'password',
         secret: true,
-        help: `E2B: ${SANDBOX_CREDENTIAL_FORMAT.e2b}. Daytona: ${SANDBOX_CREDENTIAL_FORMAT.daytona}. Modal: ${SANDBOX_CREDENTIAL_FORMAT.modal}.`,
+        required: false,
+        help: `E2B or Daytona: ${SANDBOX_CREDENTIAL_FORMAT.e2b}. Modal: ${SANDBOX_CREDENTIAL_FORMAT.modal}. Docker: leave it empty.`,
       }),
       text('sandbox.egress', 'What the sandbox may reach', {
         input: 'select',
@@ -920,6 +1138,28 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         asks_first: false,
         default: true,
       },
+      {
+        scope: 'computer.screenshot',
+        label: "Look at the sandbox's screen",
+        effect_class: 'read',
+        asks_first: false,
+        default: true,
+      },
+      ...(
+        [
+          ['computer.open', 'Open a page in the sandbox browser'],
+          ['computer.click', "Click on the sandbox's screen"],
+          ['computer.type', 'Type into the sandbox'],
+          ['computer.key', 'Press keys in the sandbox'],
+          ['computer.scroll', "Scroll the sandbox's screen"],
+        ] as const
+      ).map(([scope, label]) => ({
+        scope,
+        label,
+        effect_class: 'write_reversible' as const,
+        asks_first: false,
+        default: true,
+      })),
     ],
   },
   {

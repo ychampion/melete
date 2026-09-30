@@ -101,7 +101,7 @@ Then check the configuration and start the stack:
 
 ```bash
 bun run compose:check
-docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 180
+docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
 docker compose -f deploy/docker-compose.yml ps
 ```
 
@@ -612,6 +612,31 @@ without a password, runs the same argon2id verification against a placeholder
 hash and returns the same 401, so response time does not reveal which emails
 have accounts.
 
+## Forgotten passwords
+
+A signed-in person changes their password under Settings › Account. It asks for
+the current password. Every other session of that account is signed out, and
+connected apps lose their access and have to be connected again. Wrong current
+passwords are limited per account with the same backoff as sign-in.
+
+Someone who has forgotten theirs chooses "Forgot your password?" on the sign-in
+page. When the owner's own mailbox is connected, the page can mail a reset link
+(30 minutes, at most three an hour). Without one, the person who runs the
+install prints a link on the host:
+
+```bash
+docker compose exec melete bun run reset-password you@example.com
+# Outside Docker, from the checkout, with DATABASE_URL set:
+bun run reset-password you@example.com
+```
+
+The link uses `MELETE_PUBLIC_URL`; without it the command prints a code to paste
+on the reset page instead. A link or code works once, expires after 60 minutes,
+and printing a new one cancels the old printed one; asking for a mailed link
+leaves a printed one working. Choosing a new password signs the account out
+everywhere, connected apps included. Only a digest of each token is stored, and
+attempts to use one are limited per client address.
+
 ## Providers
 
 `configure.ts` writes a production configuration by default: a real provider,
@@ -633,8 +658,9 @@ the table below, for example
 `bun run deploy/scripts/configure.ts --provider anthropic --model <model id>`
 with `ANTHROPIC_API_KEY` exported. An OpenAI-compatible endpoint needs
 `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`. The `chatgpt` provider
-needs no key: the owner signs in once the stack is running. A run whose key is
-missing is refused, and nothing is written.
+needs no key: the owner signs in once the stack is running, through the
+[sign-in routes](#signing-in-to-a-provider). A run whose key is missing is
+refused, and nothing is written.
 
 The `--fake` configuration is the reproducible local demonstration, and only it
 turns on the scripted provider and the test connector: no provider key is
@@ -664,6 +690,17 @@ provider with an empty key starts with a warning on the service log, and the
 gateway refuses each model call with `provider_key_unavailable` until the key is
 set.
 
+Every model request passes the [privacy router](PRIVACY-ROUTER.md), which swaps
+sensitive details for placeholders before a cloud provider sees them. Private
+conversations use a local model instead: set one under Settings → Privacy, or
+with `MELETE_LOCAL_MODEL_URL` (an OpenAI-compatible version prefix on this
+machine or a private network, for example `http://127.0.0.1:11434/v1`),
+`MELETE_LOCAL_MODEL` and, when the server needs one, `MELETE_LOCAL_MODEL_KEY`.
+Listed private values and the vault of swapped details are sealed with
+`MELETE_MASTER_KEY`. A configured model whose address is on this machine or
+your network is still redacted for, since it may be a proxy to a cloud service,
+until the owner confirms under Settings → Privacy that it is a model they run.
+
 `MELETE_DEFAULT_MODEL` is the identifier the provider serves, written exactly as
 its API expects it. Fireworks identifiers are full account paths; the default is
 `accounts/fireworks/models/deepseek-v4p1-flash`. The gateway admits only the
@@ -681,6 +718,10 @@ set `OPENAI_COMPAT_API_KEY` to any non-empty value. Left empty, an `https://`
 endpoint falls back to `OPENAI_API_KEY`; a plain `http://` endpoint never
 receives `OPENAI_API_KEY`.
 
+With `OPENAI_API_KEY` or `OPENAI_COMPAT_BASE_URL` set, the agent can also turn
+text into speech. `MELETE_SPEECH_MODEL` names the text-to-speech model it uses;
+left empty, it is `gpt-4o-mini-tts`.
+
 `MELETE_DEFAULT_MAX_OUTPUT_TOKENS` (default `4096`) is the output limit the
 gateway gives a model request that names none. The runtime names none unless its
 own configuration sets one, so this is the usual ceiling on one reply; a few
@@ -688,6 +729,45 @@ hundred tokens truncates ordinary answers. The limit is reserved against the
 job's output budget until the call settles at its real usage, and it is lowered
 to what the job has left rather than refused. A limit the runtime does name is
 never rewritten: it is honoured, or refused when it exceeds the job's budget.
+
+### Connecting a model in the app
+
+The owner can also connect a model from the web app, in Settings › Models, or
+in the first-run step that appears while no working model is configured. Pick a
+provider, paste its API key (and, for `openai-compatible`, the endpoint's
+address), test the connection, choose a model from the provider's list or type
+its identifier, and use it. The test makes one small call, the provider's model
+list, and says plainly when the key is refused, the address answers 404, or the
+provider does not answer in time. Only the setup owner can change a key or the
+model; every other account sees which model is active.
+
+A key entered this way is sealed with `MELETE_MASTER_KEY` before it is stored,
+so the app refuses to store one while that key is unset. No answer ever carries
+a stored key back, only its last four characters, and a change applies from the
+next reply without a restart.
+
+The model chosen here, and the keys connected here, are also what Melete's own
+background reads use: automatic memory, learning from corrections, the
+companies scan, and the auto-review reviewer. `MELETE_MEMORY_PROVIDER` /
+`MELETE_MEMORY_MODEL`, `MELETE_COMPANIES_MODEL` and `MELETE_REVIEW_PROVIDER` /
+`MELETE_REVIEW_MODEL` still name a model outright for their own use when set.
+
+A key for the `openai-compatible` endpoint is bound to the address it was saved
+for, whether the owner typed it or `OPENAI_COMPAT_BASE_URL` named it. If that
+address later changes, the stored key is not sent to the new one; paste the key
+again for the new address.
+
+Where both are set, the environment wins:
+
+- A provider key in the environment (`FIREWORKS_API_KEY` and the others above,
+  or `OPENAI_COMPAT_API_KEY` for the compatible endpoint) is used for that
+  provider, shown in the app as set by the operator, and cannot be replaced
+  there. Remove it from `deploy/.env` to manage that provider in the app.
+- `OPENAI_COMPAT_BASE_URL` fixes the compatible endpoint's address; the app can
+  then only add a key for that address.
+- `MELETE_DEFAULT_PROVIDER` and `MELETE_DEFAULT_MODEL` are the starting model. A
+  model chosen in the app replaces them for new work until the owner picks
+  "Use the server default", which goes back to them.
 
 ### Signing in to a provider
 
@@ -702,7 +782,9 @@ whole installation.
 
 **ChatGPT.** To use it instead of an OpenAI key, set
 `MELETE_DEFAULT_PROVIDER=chatgpt` and `MELETE_DEFAULT_MODEL` to a model the
-account's plan serves, then sign in. Model access and usage limits
+account's plan serves, then sign in with the routes in the table below, as the
+owner, from a signed-in session, or with **Sign in with ChatGPT** under **Settings → Models**.
+Model access and usage limits
 are those of the ChatGPT plan. The sign-in follows the flow of the open-source
 Codex CLI and presents its public client, which `MELETE_CHATGPT_CLIENT_ID`
 replaces when set. ChatGPT sign-in works for as long as OpenAI keeps this
@@ -801,10 +883,30 @@ and models. `MELETE_VOICE_DAILY_SECONDS` (default `1800`),
 `MELETE_VOICE_DAILY_SESSIONS` (default `30`) are what one person may use in a
 day. [VOICE](VOICE.md) describes each setting and feature.
 
+### Auto-review
+
+People choose in Settings → Approvals whether an agent's low-risk actions can go
+ahead without asking them (see [CAPABILITIES](CAPABILITIES.md#auto-review)). An
+action that is reviewed is judged by a separate call to the model new chats use
+(the one chosen in Settings → Models, else the default provider and model), made
+through the same gateway with the keys connected there. `MELETE_REVIEW_MODEL`
+names a different model for this, with `MELETE_REVIEW_PROVIDER` when another
+provider serves it.
+`MELETE_REVIEW_MODEL=off` runs no reviewer, and every action it would have
+reviewed asks the person. `MELETE_REVIEW_TIMEOUT_MS` (default `12000`) is how
+long one review may take. `MELETE_REVIEW_HOURLY_LIMIT` (default `60`) is how
+many reviews one space may ask for in an hour. A review that times out, fails or
+gives an unreadable answer, and any review past the hourly limit, goes to the
+person instead, and so does one proposed while the space's other reviews are
+still running past the limit. Work inside an agent's own sandbox is decided by a
+fixed rule and never calls the model.
+
 ## Sandboxes
 
 Sandboxes: connect E2B, Modal or Daytona in Settings → Connections → Sandbox.
-The provider's key is entered there and sealed with `MELETE_MASTER_KEY`.
+The provider's key is entered there and sealed with `MELETE_MASTER_KEY`. Or give
+every agent a computer of its own on this host's Docker engine, with no account
+and no key: see [sandbox-docker.md](sandbox-docker.md).
 `configure.ts` writes `MELETE_SANDBOX_PROJECT`, the label that marks this
 installation's sandboxes at the provider; keep it. The other `MELETE_SANDBOX_*`
 settings and `MELETE_E2B_PLAN` are optional, with their defaults listed in
@@ -823,6 +925,37 @@ Model calls are bounded per person: across all their spaces, one person's scans
 make at most `MELETE_COMPANIES_DAILY_CALLS` calls in any 24 hours, 500 when it is
 unset, and each scan reads at most fifty messages. A message past the allowance
 is read on a later scan. Set these in `deploy/.env` and recreate the service.
+
+## Phone notifications
+
+The web app installs to a phone's Home Screen or a desktop as an app, and can
+receive Web Push: one push when a decision is waiting, one when a chase
+settles, and a weekly "what came back". Pushes are signed with this
+installation's own VAPID key pair and encrypted for each browser (RFC 8291), so
+no third-party service is involved beyond the browser's own push service, which
+sees neither the words nor who they are for.
+
+`configure.ts` writes the key pair to `deploy/.env` as `MELETE_VAPID_PUBLIC_KEY`
+and `MELETE_VAPID_PRIVATE_KEY`. An installation configured before push existed
+gets a pair with `bun run deploy/scripts/vapid-keys.ts`; add the two lines to
+`deploy/.env` and recreate the service. Without the keys the web app does not
+offer push and everything else works the same. `MELETE_VAPID_SUBJECT` is who a
+push service contacts about this installation, `mailto:` the owner when unset.
+
+A subscription is accepted only for the browser push services (Google, Mozilla,
+Apple, Microsoft). `MELETE_PUSH_EXTRA_ORIGINS` adds other origins, comma
+separated, for a self-hosted push server; leave it empty otherwise.
+
+Browsers offer push only on a secure origin: `https://`, such as the Tailscale
+address in [From a phone or a laptop](#from-a-phone-or-a-laptop), or
+`localhost`. On an iPhone or iPad (iOS 16.4 or later), add Melete to the Home
+Screen from Safari's Share menu and open it from there; Safari in a tab does not
+receive pushes.
+
+Each person chooses under Settings › Notifications what is pushed, at most how
+many a day, and how close together events are grouped into one push. Nothing is
+sent outside their day hours, in their own time zone, and every push says why
+it was sent.
 
 ## Engine limits
 
@@ -858,6 +991,11 @@ nothing summarised. For a model Melete does know, this may lower the window and
 not raise it, because the same catalog figure is what the model gateway's
 accounting is keyed on.
 
+`MELETE_RUNTIME_START_TIMEOUT_MS` (default `120000`) is how long, in
+milliseconds, an attempt's container may take to start and answer before the
+attempt is ended. Raise it on a slow host where the first start after an
+upgrade takes longer.
+
 ## Memory extraction
 
 Deployment memory can extract structured observations without a model. If
@@ -890,7 +1028,8 @@ through the same socket, one per connection, with a volume of their own and no
 network unless their owner named a destination; [CONNECTORS](CONNECTORS.md#where-a-server-runs)
 describes each restriction. The service pulls their images on first use, so
 the host needs to reach the registries the catalog names. These settings
-change them; the defaults need none:
+change them; the defaults need none. Set them in `deploy/.env` and recreate the
+service:
 
 | Setting | Default | What it chooses |
 | --- | --- | --- |
@@ -1017,21 +1156,22 @@ first command the same `-f` files you started the stack with, so it reaches the
 browser worker and the Tailscale node when you use them. It stops the stack and
 removes its containers and named volumes: the database, your spaces, artifacts,
 the work directory, the removal journal and, with the Tailscale file, the node
-key. The sweep catches the per-attempt containers, networks and volumes the
-service creates while it runs: those carry Melete's own labels rather than
-Compose's, so they are matched by label and by the Compose project name, which
-the sweep reads from `deploy/.env`. Delete `deploy/.env` last, because it holds
+key. The sweep catches the containers, networks and volumes the service creates
+while it runs, for each attempt and for each packaged plugin: those carry
+Melete's own labels rather than Compose's, so they are matched by label and by
+the Compose project name, which the sweep reads from `deploy/.env`. Delete `deploy/.env` last, because it holds
 the master key that unseals anything you backed up.
 
 ```bash
 docker compose -f deploy/docker-compose.yml down -v --rmi local --remove-orphans
 # Started it with the browser worker or Tailscale? Add the same -f files to that line.
-owned=label=com.melete.attempt-supervisor=v1
 name=$(tr -d '\r' < deploy/.env | sed -n 's/^COMPOSE_PROJECT_NAME=//p')
 project=label=com.melete.project=${name:-melete}
-docker ps -aq --filter "$owned" --filter "$project" | xargs -r docker rm -f
-docker network ls -q --filter "$owned" --filter "$project" | xargs -r docker network rm
-docker volume ls -q --filter "$owned" --filter "$project" | xargs -r docker volume rm
+for owned in label=com.melete.attempt-supervisor=v1 label=com.melete.mcp-launcher=v1; do
+  docker ps -aq --filter "$owned" --filter "$project" | xargs -r docker rm -f
+  docker network ls -q --filter "$owned" --filter "$project" | xargs -r docker network rm
+  docker volume ls -q --filter "$owned" --filter "$project" | xargs -r docker volume rm
+done
 rm -f deploy/.env
 ```
 

@@ -91,6 +91,19 @@ export async function seedSpace(
   await sql`insert into magic_link
     (token_hash, owner_id, space_id, connection_id, connection_generation, expires_at)
     values (${hash(newId('tok'))}, ${ownerId}, ${spaceId}, ${connectionId}, 0, now() + interval '1 hour')`;
+  // A member's assistant, connected over MCP from this space, and a code it has not yet used.
+  const assistantId = newId('mcpc');
+  await sql`insert into mcp_client (id, name, redirect_uris)
+    values (${assistantId}, 'Assistant', ${json(['https://assistant.example/callback'])}::text::jsonb)`;
+  await sql`insert into mcp_authorization (code_hash, client_id, principal_id, space_id,
+      membership_generation, redirect_uri, code_challenge, resource, scope, expires_at)
+    values (${hash(newId('code'))}, ${assistantId}, ${memberId}, ${spaceId}, 0,
+      'https://assistant.example/callback', 'challenge', 'https://melete.example/api/mcp', 'melete',
+      now() + interval '10 minutes')`;
+  await sql`insert into mcp_token (token_hash, kind, family, client_id, principal_id, space_id,
+      membership_generation, resource, scope, expires_at)
+    values (${hash(newId('tok'))}, 'access', 'family', ${assistantId}, ${memberId}, ${spaceId}, 0,
+      'https://melete.example/api/mcp', 'melete', now() + interval '1 hour')`;
 
   const agentId = newId('agent');
   await sql`insert into agent
@@ -162,6 +175,17 @@ export async function seedSpace(
   await sql`insert into skill (id, space_id, name, path, frontmatter)
     values (${newId('skl')}, ${spaceId}, 'summarize', 'skills/summarize.md', '{}'::jsonb)`;
   await sql`insert into task (id, space_id, title) values (${newId('task')}, ${spaceId}, 'Do it')`;
+  // A paired computer is its own connection, and a pairing code names its space.
+  const deviceConnectionId = newId('conn');
+  await sql`insert into connection (id, space_id, provider, label, scopes)
+    values (${deviceConnectionId}, ${spaceId}, 'device', 'Laptop', '[]'::jsonb)`;
+  await sql`insert into paired_device (id, space_id, connection_id, name, platform, token_hash,
+      capabilities, local_capabilities, paired_by)
+    values (${newId('dev')}, ${spaceId}, ${deviceConnectionId}, 'Laptop', 'linux',
+      ${newId('tokh')}, '{}'::jsonb, '{}'::jsonb, ${ownerId})`;
+  await sql`insert into device_pairing (id, space_id, principal_id, code_hash, capabilities, expires_at)
+    values (${newId('dpr')}, ${spaceId}, ${ownerId}, ${newId('codeh')}, '{}'::jsonb,
+      now() + interval '10 minutes')`;
   await sql`insert into experience_profile (space_id, name) values (${spaceId}, 'Profile')`;
   await sql`insert into experience_rule
     (id, space_id, connection_id, tool_kind, recipient, recipient_class, origin_trust,
@@ -174,6 +198,11 @@ export async function seedSpace(
   await sql`insert into experience_undo (action_id, handle, valid_until)
     values (${actionId}, ${newId('undo')}, now() + interval '1 hour')`;
   await sql`insert into experience_draft_send (draft_action_id) values (${actionId})`;
+  await sql`insert into approval_review_policy (space_id, mode, classes)
+    values (${spaceId}, 'auto_review', '{"sandbox":true}'::jsonb)`;
+  await sql`insert into action_review (id, action_id, job_id, space_id, tier, decided_by, outcome, reason)
+    values (${newId('rvw')}, ${actionId}, ${jobId}, ${spaceId}, 'sandbox', 'policy', 'approved',
+      'Runs inside the agent workspace.')`;
   await sql`insert into question (id, source, space_id, key, text, because, if_ignored)
     values (${newId('qst')}, 'memory', ${spaceId}, 'home.address', 'Which address is current?',
       ${json(['two revisions disagree'])}::text::jsonb, 'The key stays disputed.')`;
@@ -250,6 +279,11 @@ export async function seedSpace(
     values (${newId('li')}, ${spaceId}, ${principalId}, ${companyId}, 'invoice', 'you_pay', 'high',
       ${json([{ message_id: '<m1@example.test>', quote: 'Your invoice for 148.00' }])}::text::jsonb,
       ${jobId}, 'Invoice due', ${scanId}, 'invoice:example.test')`;
+  await sql`insert into awaited_reply
+    (id, space_id, principal_id, message_id, to_address, subject, sent_at, evidence, job_id, scan_id)
+    values (${newId('awr')}, ${spaceId}, ${principalId}, '<m1@example.test>', 'billing@example.test',
+      'Invoice', now(), ${json({ message_id: '<m1@example.test>', quote: 'Your invoice', start: 0, end: 12 })}::text::jsonb,
+      ${jobId}, ${scanId})`;
 
   await seedMemory(sql, { spaceId, ownerId, jobId, attemptId });
   const claim = await sql<
@@ -364,6 +398,13 @@ async function seedMemory(
     values ((select coalesce(max(event_seq), 0) + 1 from memory_capture), ${spaceId}, 'skipped:asked')`;
   await sql`insert into memory_model_calls (id, owner_id, space_id, work_id, provider, model, reserved_tokens)
     values (${newId('mmc')}, 'own_removal', ${spaceId}, ${newId('mw')}, 'fake', 'fake-scripted-v1', 100)`;
+  // A subject not to learn again, a rewind of a day, and a weekly digest.
+  await sql`insert into memory_blocks (id, space_id, domain_key, label)
+    values (${newId('blk')}, ${spaceId}, 'home.address', 'Home address')`;
+  await sql`insert into memory_rewinds (id, space_id, label, target, window_start, window_end, steps)
+    values (${newId('rwd')}, ${spaceId}, 'Undo a day', '{}'::jsonb, now() - interval '1 day', now(), '[]'::jsonb)`;
+  await sql`insert into memory_digests (id, space_id, week_of, time_zone, window_start, window_end, items)
+    values (${newId('dgs')}, ${spaceId}, '2026-09-27', 'UTC', now() - interval '7 days', now(), '[]'::jsonb)`;
 }
 
 /** The directories a space uses, each with something in it, and one job workspace. */

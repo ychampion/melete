@@ -1,10 +1,12 @@
 /**
  * Automations: routines that run on a schedule. The trigger is a sentence
- * from the service; each card carries its run history and a test run.
- * Creating one takes the days, the time and the agent.
+ * from the service; each card carries its recent runs, what each said or why
+ * it did not finish, a link to the thread with the whole answer, and a test
+ * run. Creating one takes the days, the time and the agent.
  */
 import { useState } from 'react';
 import { Icon } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import {
   Badge,
   Button,
@@ -18,6 +20,7 @@ import {
 import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import type { Automation, AutomationRun } from '../experience/types.ts';
+import { href } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -34,25 +37,78 @@ const when = (iso: string) => {
   return `${day} at ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
 };
 
-function RunRow({ run }: { run: AutomationRun }) {
+export const runLabel = (run: AutomationRun) =>
+  run.status === 'done'
+    ? 'Succeeded'
+    : run.status === 'failed' || run.status === 'stopped'
+      ? 'Failed'
+      : run.status === 'needs_you'
+        ? 'Waiting for you'
+        : 'Running';
+
+export function RunRow({ run }: { run: AutomationRun }) {
   const ok = run.status === 'done';
   const failed = run.status === 'failed' || run.status === 'stopped';
-  const color = ok ? 'var(--success)' : failed ? 'var(--danger)' : 'var(--primary)';
+  const waiting = run.status === 'needs_you';
+  const color = ok
+    ? 'var(--success)'
+    : failed
+      ? 'var(--danger)'
+      : waiting
+        ? 'var(--secondary)'
+        : 'var(--primary)';
   return (
-    <div className="row" style={{ gap: 10, minHeight: 32, flexWrap: 'wrap' }}>
-      <span className="row" style={{ justifyContent: 'center', width: 18, height: 18, color }}>
-        {ok ? (
-          <Icon name="circleCheck" size={16} />
-        ) : failed ? (
-          <Icon name="circleX" size={16} />
-        ) : (
-          <Icon name="loader" size={14} stroke={2} className="spin" />
-        )}
-      </span>
-      <span style={{ fontSize: 13, color: 'var(--text)' }}>
-        {ok ? 'Succeeded' : failed ? 'Failed' : 'Running'}
-      </span>
-      <span style={{ fontSize: 13, color: 'var(--muted)' }}>· {when(run.started_at)}</span>
+    <div className="col" style={{ gap: 2, padding: '6px 0' }}>
+      <div className="row" style={{ gap: 10, minHeight: 24, flexWrap: 'wrap' }}>
+        <span className="row" style={{ justifyContent: 'center', width: 18, height: 18, color }}>
+          {ok ? (
+            <Icon name="circleCheck" size={16} />
+          ) : failed ? (
+            <Icon name="circleX" size={16} />
+          ) : waiting ? (
+            <Icon name="info" size={16} />
+          ) : (
+            <Icon name="loader" size={14} stroke={2} className="spin" />
+          )}
+        </span>
+        <span style={{ fontSize: 13, color: 'var(--text)' }}>{runLabel(run)}</span>
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>· {when(run.started_at)}</span>
+        {run.conversation_id ? (
+          <a
+            href={href(`/chat/${run.conversation_id}`)}
+            style={{ fontSize: 13, marginLeft: 'auto' }}
+            className="section-link"
+          >
+            Open result
+          </a>
+        ) : null}
+      </div>
+      {run.summary ? (
+        <p
+          style={{
+            fontSize: 13,
+            lineHeight: '19px',
+            color: 'var(--secondary)',
+            paddingLeft: 28,
+            overflowWrap: 'anywhere',
+          }}
+        >
+          {run.summary}
+        </p>
+      ) : null}
+      {run.reason ? (
+        <p
+          style={{
+            fontSize: 12,
+            lineHeight: '18px',
+            color: failed ? 'var(--danger)' : 'var(--muted)',
+            paddingLeft: 28,
+            overflowWrap: 'anywhere',
+          }}
+        >
+          {run.reason}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -121,14 +177,19 @@ function RoutineCard({
               if (next) onChange(next);
               toast({
                 kind: 'info',
-                title: `${automation.title} ran now`,
-                sub: 'Nothing goes out that would not go out on schedule.',
+                title: `${automation.title} is running now`,
+                sub: 'Its answer appears in its thread and on Home. Nothing goes out that would not go out on schedule.',
               });
             });
           }}
         >
           Test run
         </Button>
+        {automation.runs.some((run) => run.conversation_id) ? (
+          <a href={href(`/chat/${automation.conversation_id}`)} className="btn btn-sm btn-ghost">
+            All results
+          </a>
+        ) : null}
       </div>
     </div>
   );
@@ -266,7 +327,9 @@ export function AutomationsScreen() {
             <RailToggle />
           </div>
         </div>
-        {data.error ? <p style={{ color: 'var(--danger)', fontSize: 13 }}>{data.error}</p> : null}
+        {data.error ? (
+          <LoadError what="your routines" error={data.error} onRetry={data.reload} />
+        ) : null}
         <div
           style={{
             display: 'grid',
@@ -278,7 +341,7 @@ export function AutomationsScreen() {
             <RoutineCard key={automation.id} automation={automation} onChange={update} />
           ))}
         </div>
-        {data.data && list.length === 0 ? (
+        {data.data && !data.error && list.length === 0 ? (
           <div
             className="col"
             style={{ alignItems: 'center', gap: 8, padding: '32px 24px', textAlign: 'center' }}

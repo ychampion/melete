@@ -17,6 +17,7 @@ import { ProcedureEvaluator } from '../../src/learning/evaluator.ts';
 import { openProposalGateway } from '../../src/learning/proposal-gateway.ts';
 import { ProcedureProposer } from '../../src/learning/proposer.ts';
 import { selectProcedureSkills } from '../../src/learning/selection.ts';
+import { PostgresPrivacyStore, PrivacyRouter } from '../../src/privacy/index.ts';
 import { rejectionOf } from '../helpers/broker.ts';
 import { learningFixture, learningScope, wake } from './learning-fixtures.ts';
 
@@ -26,6 +27,7 @@ const temp = await realpath(tmpdir());
 const root = await mkdtemp(join(temp, 'melete-shared-procedure-'));
 const gateway = fixture
   ? await openProposalGateway({
+      privacy: new PrivacyRouter({ store: new PostgresPrivacyStore(fixture.handle.sql) }),
       db: fixture.handle.db,
       provider: 'fake',
       model: 'scripted-proposer-v1',

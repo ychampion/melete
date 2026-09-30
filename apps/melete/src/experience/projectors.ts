@@ -1,16 +1,22 @@
 import {
+  type ActionReview,
+  type BecauseLink,
+  DEVICE_LIMITS,
   type ExperienceDecision,
   type ExperienceDraft,
   type ExperienceSource,
   experienceDecision,
   experienceDraft,
   experienceReceipt,
+  PERMISSION_FILE_PREVIEW_CHARS,
+  type PermissionCard,
   permissionCard,
   type ResultCard,
   resultCard,
   type TrailStep,
 } from '@melete/contracts';
 import type { action, artifact, connection } from '../db/schema.ts';
+import { namesLocalNetwork } from '../devices/paths.ts';
 
 export type ActionRow = Pick<
   typeof action.$inferSelect,
@@ -32,8 +38,14 @@ export const object = (input: unknown): Record<string, unknown> =>
     ? (input as Record<string, unknown>)
     : {};
 const array = (input: unknown): unknown[] => (Array.isArray(input) ? input : []);
+/**
+ * Words only an internal record carries: a tool's name, a field of an action
+ * record or a credential, or a model's id. A tool name counts only as one, a
+ * known verb after the app's name standing on its own, so an address at
+ * email.com, a site like web.dev or a file called test.txt stays ordinary text.
+ */
 export const BACKEND_VOCABULARY =
-  /\b(?:email|calendar|files|web|test)\.[a-z_][\w.-]*|\b(?:canonical_payload|payload_hash|tool_call|model_actual|access_token|refresh_token|chain.of.thought)\b|\b(?:gpt-|claude-|deepseek)[\w.-]*/i;
+  /(?<![\w@.-])(?:email|calendar|files|web|test)\.(?:search|read|draft|send|discard|list|create|update|delete|write|move|restore|share|fetch|echo|inspect)(?:_[a-z]+)*(?![\w-]|\.[a-z])|\b(?:canonical_payload|payload_hash|tool_call|model_actual|access_token|refresh_token|chain.of.thought)\b|(?<![@.])\b(?:gpt-|claude-|deepseek-)[\w.-]*/i;
 
 /** Titles and labels are content, never a channel for an internal record or credential. */
 export function plainText(value: unknown, fallback: string, limit = 4000): string {
@@ -50,11 +62,27 @@ export function plainText(value: unknown, fallback: string, limit = 4000): strin
     .trim()
     .slice(0, limit);
 }
+/** A whole JSON object or array: an internal record, not something the agent said. */
+function isRecord(value: string): boolean {
+  const text = value.trim();
+  if (!/^[[{]/.test(text)) return false;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === 'object' && parsed !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Answer text, whole or one streamed piece of it. A piece that merely starts
+ * with a bracket ("[your name]", a Markdown link) is prose and is kept.
+ */
 export function answerText(value: unknown): string {
   if (
     typeof value !== 'string' ||
     BACKEND_VOCABULARY.test(value) ||
-    /^[\s]*[[{]/.test(value) ||
+    isRecord(value) ||
     /\b(?:Bearer\s+|sk-[A-Za-z0-9]{12})/.test(value)
   )
     return '';
@@ -80,6 +108,7 @@ export function appName(row: ConnectionRow): string {
     files: 'Files',
     web: 'Web',
     test: 'Test connection',
+    device: 'Computer',
   };
   return names[row.provider] ?? 'Connected app';
 }
@@ -134,7 +163,109 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'audio.transcribe': ['Transcribing a recording', 'Transcribed a recording'],
   'test.read': ['Checking the connected app', 'Checked the connected app'],
   'test.send': ['Sending a message', 'Sent a message'],
+  'device.status': ['Checking your computer', 'Checked your computer'],
+  'device.list_files': [
+    'Looking through files on your computer',
+    'Looked through files on your computer',
+  ],
+  'device.read_file': ['Reading a file on your computer', 'Read a file on your computer'],
+  'device.write_file': ['Saving a file on your computer', 'Saved a file on your computer'],
+  'device.run': ['Running a command on your computer', 'Ran a command on your computer'],
+  'device.open_url': ['Opening a page on your computer', 'Opened a page on your computer'],
+  'device.screenshot': ['Looking at your screen', 'Looked at your screen'],
+  'device.browser_open': ['Opening a page in your browser', 'Opened a page in your browser'],
+  'device.browser_read': ['Reading a page in your browser', 'Read a page in your browser'],
+  'device.browser_click': ['Clicking in your browser', 'Clicked in your browser'],
+  'device.browser_type': [
+    'Filling in a field in your browser',
+    'Filled in a field in your browser',
+  ],
+  'device.browser_screenshot': [
+    'Looking at a page in your browser',
+    'Looked at a page in your browser',
+  ],
 };
+/** What a permission card asks for a connected computer, before anything has run. */
+const DEVICE_ASKS: Record<string, string> = {
+  'device.run': 'Run a command on your computer',
+  'device.write_file': 'Save a file on your computer',
+  'device.open_url': 'Open a page on your computer',
+  'device.screenshot': 'Look at your screen',
+  'device.browser_click': 'Click in your browser',
+  'device.browser_type': 'Fill in a field in your browser',
+};
+
+/**
+ * Characters that change how text around them reads without showing
+ * themselves: direction overrides and isolates, zero-width characters, other
+ * format characters, and controls apart from newline and tab. On a permission
+ * card each is written out as its code point, so what is approved reads the
+ * way it will run.
+ */
+const INVISIBLE = /[\p{Cf}\p{Cc}\u2028\u2029\u115F\u1160\u3164\uFFA0]/gu;
+export function showInvisible(text: string): string {
+  return text.replace(INVISIBLE, (char) =>
+    char === '\n' || char === '\t'
+      ? char
+      : `<U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}>`,
+  );
+}
+
+/**
+ * The exact command, folder, file or page a permission is for, as it will be
+ * sent. A command is never longer than this limit (the connector refuses a
+ * longer one), so it is always shown whole, with anything invisible in it
+ * written out.
+ */
+/** An element as a person reads it: `button "Delete account"`, and what it shows or leads to when that says more. */
+function describeElement(element: Record<string, unknown>): string {
+  const text = (value: unknown) => (typeof value === 'string' ? value : '');
+  const role = text(element.role) || 'element';
+  return [
+    `${role} "${text(element.name)}"`,
+    ...(text(element.shows) ? [`showing "${text(element.shows)}"`] : []),
+    ...(text(element.target) ? [`going to ${text(element.target)}`] : []),
+  ].join(', ');
+}
+
+function deviceFacts(kind: string, payload: Record<string, unknown>) {
+  if (!kind.startsWith('device.')) return [];
+  const expected =
+    payload.expect && typeof payload.expect === 'object'
+      ? (payload.expect as { url?: unknown; title?: unknown; element?: unknown })
+      : undefined;
+  const element =
+    expected?.element && typeof expected.element === 'object'
+      ? (expected.element as Record<string, unknown>)
+      : undefined;
+  const fact = (label: string, value: unknown, limit: number = DEVICE_LIMITS.max_command_chars) =>
+    typeof value === 'string' && value.length
+      ? [
+          {
+            label,
+            value: showInvisible(value.length > limit ? `${value.slice(0, limit)}…` : value),
+          },
+        ]
+      : [];
+  return [
+    ...fact('Command', payload.command),
+    ...fact('Runs in', payload.cwd),
+    ...fact('File', payload.path),
+    ...fact('Content', payload.content),
+    ...fact('Page', payload.url),
+    // A click or an entry names what the person saw in the latest read of the
+    // tab: its address without the query, its title, and the element.
+    ...fact('Page', expected?.url),
+    ...fact('Title', expected?.title),
+    ...fact('Element', element ? describeElement(element) : undefined),
+    ...fact('Text', payload.text, DEVICE_LIMITS.max_typed_chars),
+    ...(payload.submit === true ? [{ label: 'Then', value: 'Press Enter to submit' }] : []),
+    ...(namesLocalNetwork(payload.url)
+      ? [{ label: 'Network', value: 'This page is on your computer or your local network' }]
+      : []),
+  ];
+}
+
 export function actionLabel(row: ActionRow, connection?: ConnectionRow): string {
   return (
     LABELS[row.kind] ??
@@ -196,7 +327,7 @@ export function actionSources(row: ActionRow, connection: ConnectionRow): Experi
       return [
         source(
           'page',
-          pageTitle(detail.body) ?? safeUrl(detail.final_url ?? detail.url),
+          pageTitle(detail) ?? safeUrl(detail.final_url ?? detail.url),
           'Web page',
           detail.final_url ?? detail.url,
         ),
@@ -207,10 +338,13 @@ export function actionSources(row: ActionRow, connection: ConnectionRow): Experi
 }
 const filename = (value: unknown) =>
   typeof value === 'string' ? value.replaceAll('\\', '/').split('/').pop() : undefined;
-const pageTitle = (value: unknown) =>
-  typeof value === 'string'
-    ? /<title[^>]*>([^<]{1,500})<\/title>/i.exec(value)?.[1]?.replace(/&amp;/g, '&')
-    : undefined;
+/** A read page names its title; a receipt from before that carries the page itself. */
+const pageTitle = (detail: Record<string, unknown>) =>
+  typeof detail.title === 'string' && detail.title.trim()
+    ? detail.title
+    : typeof detail.body === 'string'
+      ? /<title[^>]*>([^<]{1,500})<\/title>/i.exec(detail.body)?.[1]?.replace(/&amp;/g, '&')
+      : undefined;
 
 export function projectActionGroup(
   rows: Array<{ action: ActionRow; connection: ConnectionRow }>,
@@ -233,6 +367,8 @@ export function projectReceipt(
   row: ActionRow,
   connection: ConnectionRow,
   undo?: { handle: string; valid_until: string },
+  review?: ActionReview | null,
+  because?: BecauseLink[],
 ) {
   if (
     row.status !== 'succeeded' ||
@@ -246,6 +382,9 @@ export function projectReceipt(
     where: plainText(connection.label, appName(connection)),
     when: row.resolvedAt?.toISOString() ?? row.createdAt.toISOString(),
     ...(undo ? { undo } : {}),
+    // Only an approval auto-review gave is shown here; an escalation was the person's call.
+    ...(review?.outcome === 'auto_approved' ? { review } : {}),
+    ...(because?.length ? { because } : {}),
   });
 }
 
@@ -303,13 +442,19 @@ export function recipientText(payload: Record<string, unknown>): string {
   const raw = payload.to ?? payload.recipient;
   return plainText(Array.isArray(raw) ? raw.join(', ') : raw, 'The selected recipient');
 }
+/** Files the app can show as text; anything else is offered as a download. */
+const readable = (mime: string) => mime.startsWith('text/') || mime === 'application/json';
+
 export function projectArtifact(row: typeof artifact.$inferSelect): ResultCard {
   return resultCard.parse({
     id: row.id,
     title: plainText(filename(row.path), 'File'),
     meta: 'File',
     facts: [{ label: 'Size', value: `${row.size} bytes` }],
-    primary_action: null,
+    // The handle is the artifact id; the app reads it from the content route.
+    primary_action: readable(row.mime)
+      ? { kind: 'open', label: 'Open', handle: row.id }
+      : { kind: 'download', label: 'Download', handle: row.id },
     secondary_actions: [],
     source_connection: null,
   });
@@ -376,6 +521,8 @@ export function senderAddress(configuration: unknown): string | null {
 
 /** The note on a permission a later message in its conversation made stale. */
 export const SUPERSEDED_NOTE = 'replaced';
+/** The note on a permission withdrawn because the person stopped the turn it waited in. */
+export const STOPPED_NOTE = 'stopped';
 
 /**
  * A decided permission as the conversation shows it. An approval that saved a
@@ -396,7 +543,9 @@ export function projectPermissionDecision(input: {
       input.decision === 'denied'
         ? input.note === SUPERSEDED_NOTE
           ? 'replaced'
-          : 'deny'
+          : input.note === STOPPED_NOTE
+            ? 'withdrawn'
+            : 'deny'
         : input.ruleSaved
           ? 'always'
           : 'allow_once',
@@ -422,6 +571,35 @@ export function projectQuestionDecision(input: {
   });
 }
 
+/**
+ * The file a write would save, as the person reviews it: the path and the
+ * exact text, with only control characters taken out. Content past the preview
+ * limit is cut and marked, never silently dropped.
+ */
+export function proposedFile(payload: Record<string, unknown>): PermissionCard['file'] | null {
+  // A path is shown as given: names like "test.txt" or "email.md" are ordinary files.
+  const path =
+    typeof payload.path === 'string'
+      ? payload.path
+          .replace(/\p{Cc}/gu, '')
+          .trim()
+          .slice(0, 1000)
+      : '';
+  if (!path || typeof payload.content !== 'string') return null;
+  const shown = payload.content.replace(/\p{Cc}/gu, (character) =>
+    ['\n', '\r', '\t'].includes(character) ? character : '',
+  );
+  let content = shown.slice(0, PERMISSION_FILE_PREVIEW_CHARS);
+  // Never end on half of a character.
+  if (/[\uD800-\uDBFF]$/.test(content)) content = content.slice(0, -1);
+  return {
+    path,
+    bytes: Buffer.byteLength(payload.content, 'utf8'),
+    content,
+    truncated: content.length < shown.length,
+  };
+}
+
 export function projectPermission(input: {
   id: string;
   version: string;
@@ -431,18 +609,36 @@ export function projectPermission(input: {
   canAlways: boolean;
   /** When permission was asked for. */
   requestedAt: Date;
+  /** Why auto-review sent this to the person, when it looked first. */
+  review?: ActionReview | null;
+  /** The beliefs the action rested on, when any were recorded. */
+  because?: BecauseLink[];
 }) {
   const payload = object(input.action.canonicalPayload);
   const isSend = input.action.kind.endsWith('.send');
   const draft = isSend ? draftForReview(input.action) : null;
+  const file = input.action.kind === 'files.write' ? proposedFile(payload) : null;
   const canApprove = !isSend || Boolean(draft);
   const base = actionLabel(input.action)
     .replace(/^Sent /, 'Send ')
     .replace(/^Created /, 'Create ')
     .replace(/^Updated /, 'Update ')
-    .replace(/^Removed /, 'Remove ');
-  const what = input.action.kind.endsWith('.send') ? `${base} to ${recipientText(payload)}` : base;
+    .replace(/^Removed /, 'Remove ')
+    .replace(/^Saved /, 'Save ')
+    .replace(/^Moved /, 'Move ');
+  const what = isSend
+    ? `${base} to ${recipientText(payload)}`
+    : file
+      ? `Save ${file.path}`
+      : (DEVICE_ASKS[input.action.kind] ?? base);
   const facts = [
+    ...(file
+      ? [
+          { label: 'File', value: file.path },
+          { label: 'Size', value: `${file.bytes} bytes` },
+        ]
+      : []),
+    ...deviceFacts(input.action.kind, payload),
     ...(draft
       ? [
           ...(input.connection.sender ? [{ label: 'From', value: input.connection.sender }] : []),
@@ -490,13 +686,16 @@ export function projectPermission(input: {
           'The full message cannot be shown safely. Prepare a new draft before sending.',
         ],
     ...(draft ? { draft } : {}),
+    ...(file ? { file } : {}),
     options: !canApprove
       ? ['deny']
       : input.canAlways
         ? ['allow_once', 'always', 'deny']
         : ['allow_once', 'deny'],
     version: input.version,
+    ...(input.review?.outcome === 'escalated' ? { review: input.review } : {}),
     created_at: input.requestedAt.toISOString(),
+    ...(input.because?.length ? { because: input.because } : {}),
     preview: {
       id: input.id,
       title: what,

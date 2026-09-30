@@ -30,6 +30,7 @@ import {
   useMedia,
   useNow,
 } from '../experience/hooks.ts';
+import { inlineSpans } from '../experience/inline.ts';
 import {
   answerOf,
   latestTurn,
@@ -41,6 +42,7 @@ import {
   type TranscriptTurn,
   turnIndexForReaction,
 } from '../experience/reduce.ts';
+import { shortTitle } from '../experience/title.ts';
 import type {
   ActionResolution,
   LedgerAction,
@@ -54,6 +56,8 @@ import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { CasePanel, useCase } from './CasePanel.tsx';
 import { Composer } from './Composer.tsx';
+import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
+import { Protected } from './Protected.tsx';
 import {
   ActionBar,
   PermissionCard,
@@ -65,6 +69,7 @@ import {
   UnknownCard,
   UserBubble,
 } from './parts.tsx';
+import { pauseOrStop } from './pause.ts';
 import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
 import './chat.css';
@@ -76,12 +81,36 @@ const WORKING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
 const FINISHED: TurnStatus[] = ['done', 'stopped', 'failed'];
 
 function titleFor(text: string): string {
-  const lower = text.toLowerCase();
-  if (lower.includes('dinner')) return 'Dinner with friends';
-  if (lower.includes('kyoto') || lower.includes('japan')) return 'Kyoto in October';
-  if (lower.includes('passport')) return 'Passport renewal';
-  const clean = text.replace(/[.!?].*$/, '').trim();
-  return clean.length > 42 ? `${clean.slice(0, 40)}…` : clean || 'New chat';
+  return shortTitle(text) || 'New chat';
+}
+
+type Outcome = { data: unknown; error: string | null; unavailable: string | null };
+
+/** A control that did not take says why, instead of doing nothing. */
+async function reportFailure(pending: Promise<Outcome>, verb: string) {
+  const result = await pending;
+  if (result.data === null)
+    toast({
+      kind: 'err',
+      title: `Couldn’t ${verb}`,
+      sub: result.unavailable ?? result.error ?? '',
+    });
+}
+
+/** Pausing mid-step needs the engine's help; without it, stopping keeps the progress. */
+async function pauseTurn(id: string) {
+  const result = await pauseOrStop({
+    pause: () => adapter.pause(id),
+    stop: () => adapter.stop(id),
+  });
+  if (result.outcome === 'stopped')
+    toast({
+      kind: 'info',
+      title: 'Stopped this turn',
+      sub: 'This assistant can’t pause mid-step, so it stopped. Your progress is saved.',
+    });
+  else if (result.outcome === 'failed')
+    toast({ kind: 'err', title: 'Couldn’t pause', sub: result.reason });
 }
 
 function AgentChip({
@@ -286,28 +315,26 @@ function TurnView({
       <div className="turn">
         <div className="turn-text">
           <TurnAvatar agent={agent} status={turn.status} />
-          {showText ? (
-            <p>
-              {text}
-              {turn.streaming ? <span className="caret pulse" aria-hidden="true" /> : null}
-            </p>
-          ) : (
-            <div className="col grow" style={{ paddingTop: 2 }}>
-              <Trail turn={turn} now={now} />
-              {turn.trail.length === 0 && !finished ? (
-                <div className="col" style={{ gap: 10, paddingTop: 6 }}>
-                  <div className="shimmer" style={{ height: 12, width: '82%', borderRadius: 6 }} />
-                  <div className="shimmer" style={{ height: 12, width: '56%', borderRadius: 6 }} />
-                </div>
-              ) : null}
-            </div>
-          )}
+          {/* What the agent did sits above what it says. */}
+          <div className="col grow" style={{ gap: 6, paddingTop: 2, minWidth: 0 }}>
+            <Trail turn={turn} now={now} answering={showText} />
+            {showText ? (
+              <Answer text={text} streaming={turn.streaming} />
+            ) : turn.trail.length === 0 && !finished ? (
+              <div className="col" style={{ gap: 10, paddingTop: 6 }}>
+                <div className="shimmer" style={{ height: 12, width: '82%', borderRadius: 6 }} />
+                <div className="shimmer" style={{ height: 12, width: '56%', borderRadius: 6 }} />
+              </div>
+            ) : null}
+          </div>
         </div>
-        {(showText && turn.trail.length > 0) || hasBlocks || finished ? (
+        {hasBlocks || finished ? (
           <div className="turn-body">
-            {showText ? <Trail turn={turn} now={now} /> : null}
             {rendered}
             {unconfirmed}
+            {finished ? (
+              <Protected conversationId={turn.turn.conversation_id} turnId={turn.turn.id} />
+            ) : null}
             {finished && text.trim() ? (
               <ActionBar
                 turn={turn}
@@ -327,11 +354,93 @@ function TurnView({
   );
 }
 
+/** A line with its bold, italic and code spans drawn; everything else stays plain text. */
+function Line({ line }: { line: string }) {
+  return (
+    <>
+      {inlineSpans(line).map((span, index) => {
+        // The spans are a cut of one line, in order, so their place is their key.
+        const key = `${index}:${span.kind}`;
+        if (span.kind === 'strong') return <strong key={key}>{span.text}</strong>;
+        if (span.kind === 'em') return <em key={key}>{span.text}</em>;
+        if (span.kind === 'code')
+          return (
+            <code key={key} className="answer-code">
+              {span.text}
+            </code>
+          );
+        return <span key={key}>{span.text}</span>;
+      })}
+    </>
+  );
+}
+
+/** The answer as paragraphs: a blank line is a gap, a single break stays a break. */
+function Answer({ text, streaming }: { text: string; streaming: boolean }) {
+  const paragraphs = text.split(/\n\s*\n/).filter((part) => part.trim().length > 0);
+  if (paragraphs.length === 0) paragraphs.push('');
+  return (
+    <div className="answer">
+      {paragraphs.map((paragraph, index) =>
+        /^\s*(?:-{3,}|\*{3,})\s*$/.test(paragraph) ? (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are a cut of one string, in order
+          <hr key={index} className="answer-rule" />
+        ) : (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are a cut of one string, in order
+          <p key={index}>
+            {paragraph
+              .trim()
+              .split('\n')
+              .map((line, at) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: lines of one paragraph, in order
+                <span key={at}>
+                  {at > 0 ? <br /> : null}
+                  <Line line={line} />
+                </span>
+              ))}
+            {streaming && index === paragraphs.length - 1 ? (
+              <span className="caret pulse" aria-hidden="true" />
+            ) : null}
+          </p>
+        ),
+      )}
+    </div>
+  );
+}
+
 /** The transcript reaches the turn views through a tiny context, to keep props short. */
 import { createContext, useContext } from 'react';
 import type { Transcript } from '../experience/reduce.ts';
 
 const TranscriptContext = createContext<{ transcript: Transcript } | null>(null);
+
+/** A routine writes each run here on its schedule; a question about a result starts a chat. */
+function RoutineThreadNote() {
+  return (
+    <div
+      className="row"
+      role="note"
+      style={{
+        gap: 10,
+        padding: '12px 14px',
+        borderRadius: 14,
+        border: '1px solid var(--line)',
+        background: 'var(--surface)',
+        fontSize: 13,
+        color: 'var(--muted)',
+        flexWrap: 'wrap',
+      }}
+    >
+      <Icon name="automations" size={16} />
+      <span className="grow" style={{ minWidth: 200 }}>
+        This routine adds each run here on its schedule. To ask about a result, start a chat.
+      </span>
+      <Button size="sm" variant="outline" icon="plus" onClick={() => navigate('/chat/new')}>
+        New chat
+      </Button>
+    </div>
+  );
+}
 function useTranscript() {
   const value = useContext(TranscriptContext);
   if (!value) throw new Error('useTranscript needs the TranscriptContext');
@@ -370,6 +479,8 @@ export function ChatScreen({ id }: { id: string | null }) {
     if (arriving) voiceOnArrival = null;
     return arriving;
   });
+  /** The agent's computer is opened by the person and stays as they left it. */
+  const [computerOpen, setComputerOpen] = useState(false);
 
   const last = latestTurn(transcript);
   const composerState = transcript.composer;
@@ -684,6 +795,25 @@ export function ChatScreen({ id }: { id: string | null }) {
         onClick={() => (voiceOpen ? setVoiceOpen(false) : void startVoice())}
       />
     ) : null;
+  // A new tool entry on the stream is when the computer most likely changed.
+  const toolPulse = `${transcript.status}:${transcript.turns.reduce(
+    (count, turn) => count + turn.trail.length,
+    0,
+  )}`;
+  const computer = useComputer(conversationId, computerOpen && Boolean(conversationId), toolPulse);
+  const showComputer = computerOpen && Boolean(conversationId);
+  const computerLabel = `${showComputer ? 'Hide' : 'Show'} ${agent?.name ?? 'Melete'}’s computer`;
+  const computerToggle = (size?: number) =>
+    conversationId ? (
+      <IconButton
+        name="monitor"
+        label={computerLabel}
+        on={showComputer}
+        aria-expanded={showComputer}
+        {...(size ? { size, iconSize: 20 } : {})}
+        onClick={() => setComputerOpen(!showComputer)}
+      />
+    ) : null;
 
   return (
     <Shell
@@ -701,10 +831,23 @@ export function ChatScreen({ id }: { id: string | null }) {
           </>
         ) : undefined
       }
-      rail={!found}
-      phoneActions={voiceButton(44)}
+      rail={!found && !showComputer}
+      phoneActions={
+        <>
+          {voiceButton(44)}
+          {computerToggle(44)}
+        </>
+      }
       panel={
-        found && caseOpen ? (
+        showComputer ? (
+          <ComputerPanel
+            agent={agent}
+            computer={computer.computer}
+            error={computer.error}
+            onClose={() => setComputerOpen(false)}
+            onChanged={() => void computer.refresh()}
+          />
+        ) : found && caseOpen ? (
           <CasePanel
             found={found}
             transcript={transcript}
@@ -725,6 +868,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             <AgentChip agentId={agentId} onChange={setConversationAgent} />
             <div className="grow" />
             {touch ? null : voiceButton(32)}
+            {computerToggle()}
             {found ? (
               <IconButton
                 name="panelRight"
@@ -901,20 +1045,28 @@ export function ChatScreen({ id }: { id: string | null }) {
                   ))}
                 </div>
               ) : null}
-              <Composer
-                value={text}
-                onChange={setText}
-                onSend={() => void send(text)}
-                state={conversationId ? composerState : 'send'}
-                working={working}
-                autoFocus={!touch}
-                onPause={() => conversationId && void adapter.pause(conversationId)}
-                onResume={() => conversationId && void adapter.resume(conversationId)}
-                onStop={() => conversationId && void adapter.stop(conversationId)}
-                voice={
-                  voice?.push_to_talk ? { maxSeconds: voice.max_recording_seconds } : undefined
-                }
-              />
+              {conversation?.automation_id ? (
+                <RoutineThreadNote />
+              ) : (
+                <Composer
+                  value={text}
+                  onChange={setText}
+                  onSend={() => void send(text)}
+                  state={conversationId ? composerState : 'send'}
+                  working={working}
+                  autoFocus={!touch}
+                  onPause={() => conversationId && void pauseTurn(conversationId)}
+                  onResume={() =>
+                    conversationId && void reportFailure(adapter.resume(conversationId), 'resume')
+                  }
+                  onStop={() =>
+                    conversationId && void reportFailure(adapter.stop(conversationId), 'stop')
+                  }
+                  voice={
+                    voice?.push_to_talk ? { maxSeconds: voice.max_recording_seconds } : undefined
+                  }
+                />
+              )}
             </div>
           </div>
         </div>

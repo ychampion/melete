@@ -1,0 +1,267 @@
+import { afterAll, describe, expect, test } from 'bun:test';
+import { createHash, randomBytes } from 'node:crypto';
+import {
+  agentResponse,
+  automationResponse,
+  conversationResponse,
+  experienceOperations,
+  homeResponse,
+  profileResponse,
+  triggerSpec,
+  turnList,
+} from '@melete/contracts';
+import { eq } from 'drizzle-orm';
+import { session } from '../../src/db/auth-schema.ts';
+import { owner, space, trigger } from '../../src/db/schema.ts';
+import { loadEnv } from '../../src/env.ts';
+import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
+import { newId } from '../../src/ids.ts';
+import { createApp } from '../../src/index.ts';
+import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
+import { AttemptRunner } from '../../src/jobs/runner.ts';
+import { JobService } from '../../src/jobs/service.ts';
+import { TriggerService } from '../../src/jobs/triggers.ts';
+import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { testDatabase } from '../helpers/database.ts';
+
+const handle = await testDatabase();
+const queue = handle ? await startQueue(handle.url) : null;
+const jobs = handle && queue ? new JobService(handle.db, queue.boss) : null;
+const runner = jobs
+  ? new AttemptRunner(jobs, new StubRuntimeAdapter(), {
+      key: 'routines-fixture-signing-key-32-bytes',
+    })
+  : null;
+const triggers = jobs && runner ? new TriggerService(jobs, runner) : undefined;
+const app = handle
+  ? createApp({
+      db: handle.db,
+      env: loadEnv({ NODE_ENV: 'test' }),
+      jobs: jobs ?? undefined,
+      runner: runner ?? undefined,
+      triggers,
+      sql: handle.sql,
+      checkDatabase: async () => 'ok',
+    })
+  : null;
+const spaceId = newId('sp');
+const ownerId = newId('own');
+const token = randomBytes(32).toString('base64url');
+if (handle) {
+  await handle.db.insert(owner).values({ id: ownerId, email: 'routines@example.test' });
+  await handle.sql`insert into principal (id, email) select id, email from owner where id = ${ownerId}`;
+  await handle.db.insert(space).values({ id: spaceId, name: 'Personal', gitPath: `/s/${spaceId}` });
+  await handle.db.insert(session).values({
+    tokenHash: createHash('sha256').update(token).digest('hex'),
+    ownerId,
+    spaceId,
+    expiresAt: new Date(Date.now() + 600000),
+  });
+}
+const withDb = handle ? describe : describe.skip;
+function required<T>(value: T | null | undefined): T {
+  if (value == null) throw new Error('Expected test fixture');
+  return value;
+}
+async function request(path: string, method = 'GET', body?: unknown) {
+  return required(app).request(path, {
+    method,
+    headers: {
+      Cookie: `melete_session=${token}`,
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+}
+const profile = async () => profileResponse.parse(await (await request('/profile')).json()).profile;
+const hours = { start: '08:00', end: '22:00' };
+
+/** Fires a routine now and ends its run with the outcome given. */
+async function run(
+  routineId: string,
+  outcome:
+    | { kind: 'completed'; summary: string; evidence: [] }
+    | { kind: 'failed'; reason: string; retryable: false },
+) {
+  expect((await request(`/automations/${routineId}/test`, 'POST')).status).toBe(200);
+  const [registration] = await required(handle)
+    .db.select()
+    .from(trigger)
+    .where(eq(trigger.id, routineId));
+  const row = await required(jobs).get(required(registration).jobId);
+  const claimed = required(
+    await required(runner).claim({
+      job_id: row.id,
+      expected_epoch: row.leaseEpoch,
+      expected_version: row.stateVersion,
+      reason: 'event',
+    }),
+  );
+  await required(runner).commitOutcome(claimed.claims, outcome);
+  return row.id;
+}
+
+withDb('routines, time zone and setup as the person sees them', () => {
+  afterAll(async () => {
+    await triggers?.stop();
+    await runner?.stop();
+    await queue?.stop();
+    await handle?.close();
+  }, 30000);
+
+  test('a new account is not set up and its time zone is only a default', async () => {
+    const fresh = await profile();
+    expect(fresh.onboarded).toBe(false);
+    expect(fresh.time_zone).toBe('UTC');
+    expect(fresh.time_zone_confirmed).toBe(false);
+    // Saving the default without choosing it does not count as a choice.
+    await request('/profile', 'PATCH', { name: 'Sam', time_zone: 'UTC', day_hours: hours });
+    expect((await profile()).time_zone_confirmed).toBe(false);
+    await request('/profile', 'PATCH', {
+      name: 'Sam',
+      time_zone: 'UTC',
+      day_hours: hours,
+      time_zone_confirmed: true,
+      onboarded: true,
+    });
+    const saved = await profile();
+    expect(saved.time_zone_confirmed).toBe(true);
+    expect(saved.onboarded).toBe(true);
+    // A later save that leaves the flags out never forgets them.
+    await request('/profile', 'PATCH', { name: 'Sam D', time_zone: 'UTC', day_hours: hours });
+    expect(await profile()).toMatchObject({ onboarded: true, time_zone_confirmed: true });
+  });
+
+  test('each run writes its answer into the routine thread, the list and Home', async () => {
+    const persona = agentResponse.parse(
+      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+    ).agent;
+    const routine = automationResponse.parse(
+      await (
+        await request('/automations/morning-brief', 'POST', { agent_id: persona.id, at: '08:30' })
+      ).json(),
+    ).automation;
+    expect(routine.schedule).toBe('Every day at 8:30 AM (UTC)');
+    expect(routine.runs).toEqual([]);
+
+    const thread = await run(routine.id, {
+      kind: 'completed',
+      summary: 'Two meetings today, and the passport form is still open.',
+      evidence: [],
+    });
+    expect(thread).toBe(routine.conversation_id);
+    const list = experienceOperations['GET /automations'].response.parse(
+      await (await request('/automations')).json(),
+    );
+    const latest = required(list.automations.find((row) => row.id === routine.id)?.runs[0]);
+    expect(latest).toMatchObject({
+      status: 'done',
+      conversation_id: thread,
+      summary: 'Two meetings today, and the passport form is still open.',
+      reason: null,
+    });
+
+    // The thread reads like a chat: the instruction, then the answer.
+    const opened = conversationResponse.parse(
+      await (await request(`/conversations/${thread}`)).json(),
+    ).conversation;
+    expect(opened.automation_id).toBe(routine.id);
+    const turns = turnList.parse(
+      await (await request(`/conversations/${thread}/messages`)).json(),
+    ).turns;
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({
+      id: latest.turn_id,
+      status: 'done',
+      answer: 'Two meetings today, and the passport form is still open.',
+    });
+    expect(turns[0]?.text).toContain('Summarize my upcoming events');
+    // A reply belongs in a chat of its own, not in the routine's schedule.
+    const reply = await request(`/conversations/${thread}/messages`, 'POST', { text: 'More?' });
+    expect(reply.status).toBe(409);
+    // Routine threads stay out of the chat list.
+    const chats = (await (await request('/conversations')).json()) as {
+      conversations: { id: string }[];
+    };
+    expect(chats.conversations.map((chat) => chat.id)).not.toContain(thread);
+
+    const home = homeResponse.parse(await (await request('/home')).json());
+    expect(home.routine_results[0]).toMatchObject({
+      automation_id: routine.id,
+      title: 'Your morning brief',
+      conversation_id: thread,
+      run: { status: 'done', turn_id: latest.turn_id },
+    });
+
+    // A failed run says why.
+    await run(routine.id, {
+      kind: 'failed',
+      reason: 'The calendar could not be reached.',
+      retryable: false,
+    });
+    const failed = experienceOperations['GET /automations'].response.parse(
+      await (await request('/automations')).json(),
+    );
+    expect(failed.automations.find((row) => row.id === routine.id)?.runs[0]).toMatchObject({
+      status: 'failed',
+      reason: 'It failed: The calendar could not be reached.',
+    });
+    const after = turnList.parse(
+      await (await request(`/conversations/${thread}/messages`)).json(),
+    ).turns;
+    expect(after.map((turn) => turn.status)).toEqual(['done', 'failed']);
+  });
+
+  test('changing the time zone moves every routine and keeps its local hour across DST', async () => {
+    const persona = agentResponse.parse(
+      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+    ).agent;
+    const routine = automationResponse.parse(
+      await (
+        await request('/automations', 'POST', {
+          title: 'Weekday check',
+          instruction: 'Check today',
+          weekdays: [0, 1, 2, 3, 4, 5, 6],
+          at: '08:30',
+          agent_id: persona.id,
+        })
+      ).json(),
+    ).automation;
+    expect(routine.schedule).toContain('(UTC)');
+    const saved = await request('/profile', 'PATCH', {
+      name: 'Sam',
+      time_zone: 'America/New_York',
+      day_hours: hours,
+    });
+    expect(saved.status).toBe(200);
+    expect((await profile()).time_zone).toBe('America/New_York');
+    const list = experienceOperations['GET /automations'].response.parse(
+      await (await request('/automations')).json(),
+    );
+    for (const row of list.automations) expect(row.schedule).toContain('(America/New_York)');
+    const [registration] = await required(handle)
+      .db.select()
+      .from(trigger)
+      .where(eq(trigger.id, routine.id));
+    const spec = triggerSpec.parse(required(registration).spec);
+    if (spec.kind !== 'schedule') throw new Error('not a schedule');
+    expect(spec.timezone).toBe('America/New_York');
+    const [registered] = await required(queue).boss.getSchedules(
+      QUEUES.triggerSchedule,
+      routine.id,
+    );
+    expect(registered?.timezone).toBe('America/New_York');
+    // 8:30 in New York is 12:30 UTC before the clocks go back on 1 November, 13:30 after.
+    const next = required(queue).boss.previewSchedule(spec.cron, {
+      tz: spec.timezone,
+      from: new Date('2026-10-30T00:00:00Z'),
+      count: 4,
+    });
+    expect(next.map((at) => at.toISOString())).toEqual([
+      '2026-10-30T12:30:00.000Z',
+      '2026-10-31T12:30:00.000Z',
+      '2026-11-01T13:30:00.000Z',
+      '2026-11-02T13:30:00.000Z',
+    ]);
+  });
+});

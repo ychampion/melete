@@ -80,7 +80,9 @@ export function selfSignedPair(host: string): { cert: Buffer; key: Buffer } {
   const ecdsaWithSha256 = sequence(objectId('1.2.840.10045.4.3.2'));
 
   const serial = randomBytes(16);
-  serial[0] = (serial[0] ?? 0) & 0x7f; // a serial number is a positive integer
+  // A positive integer whose first byte is not zero, so the DER stays minimal:
+  // a leading zero before a byte under 0x80 is an encoding TLS libraries refuse.
+  serial[0] = ((serial[0] ?? 0) & 0x7f) | 0x01;
   const from = new Date(Date.now() - 60_000);
   const until = new Date(Date.now() + 24 * 60 * 60_000);
   const name = sequence(attribute('2.5.4.3', host), attribute('2.5.4.10', 'Melete local tests'));

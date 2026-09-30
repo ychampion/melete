@@ -179,3 +179,21 @@ def test_discovery_continuations_keep_attempt_identity_without_capture_collision
     failure = failure_frame("att_discovery:tools:2")
     assert failure["attempt_id"] == "att_discovery"
     assert failure["capture_id"] == "att_discovery:hook:tools:2:runtime-error"
+
+
+def test_what_waits_for_the_attempt_runs_once_in_order_and_one_failure_stops_nothing(capsys):
+    from melete_runtime_hooks import attempt_arrived, when_attempt_arrives
+
+    ran = []
+
+    def fails():
+        raise RuntimeError("broker unreachable")
+
+    when_attempt_arrives(lambda: ran.append("first"))
+    when_attempt_arrives(fails)
+    when_attempt_arrives(lambda: ran.append("third"))
+    attempt_arrived()
+    assert ran == ["first", "third"]
+    assert "broker unreachable" in capsys.readouterr().err
+    attempt_arrived()
+    assert ran == ["first", "third"]

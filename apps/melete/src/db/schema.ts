@@ -143,6 +143,45 @@ export const providerCredential = pgTable('provider_credential', {
   createdAt: created(),
 });
 
+/**
+ * A model provider's API key the owner entered in the app, one row per
+ * provider for the whole installation. The key is one sealed box bound to the
+ * provider name; only its last four characters are kept in the clear, for the
+ * screen that says which key is set. A key the operator put in the
+ * environment is never stored here and always wins.
+ */
+export const modelProviderKey = pgTable('model_provider_key', {
+  provider: text('provider').primaryKey(),
+  ownerId: text('owner_id')
+    .notNull()
+    .references(() => owner.id, { onDelete: 'cascade' }),
+  secretId: text('secret_id').notNull(),
+  ciphertext: text('ciphertext').notNull(),
+  lastFour: text('last_four').notNull(),
+  /** Only for the OpenAI-compatible endpoint: its version prefix, ending in a slash. */
+  baseUrl: text('base_url'),
+  createdAt: created(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * The model the owner chose in the app for new attempts. One row at most; with
+ * none, MELETE_DEFAULT_PROVIDER and MELETE_DEFAULT_MODEL decide.
+ */
+export const modelDefault = pgTable(
+  'model_default',
+  {
+    id: text('id').primaryKey().default('installation'),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => owner.id, { onDelete: 'cascade' }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [check('model_default_single_row', sql`${table.id} = 'installation'`)],
+);
+
 export const connection = pgTable(
   'connection',
   {
@@ -665,6 +704,72 @@ export const notification = pgTable(
 );
 
 /**
+ * A browser that receives pushes for one person. The endpoint and keys stay in
+ * the service: the person sees a device name and when it was last used.
+ */
+export const pushSubscription = pgTable(
+  'push_subscription',
+  {
+    id: text('id').primaryKey(),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    endpoint: text('endpoint').notNull().unique(),
+    p256dh: text('p256dh').notNull(),
+    auth: text('auth').notNull(),
+    deviceLabel: text('device_label').notNull().default(''),
+    createdAt: created(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  },
+  (t) => [index('push_subscription_principal_idx').on(t.principalId)],
+);
+
+/** What a person wants pushed, and how often. No row means the defaults. */
+export const pushSetting = pgTable('push_setting', {
+  principalId: text('principal_id')
+    .primaryKey()
+    .references(() => principal.id, { onDelete: 'cascade' }),
+  decisions: boolean('decisions').notNull().default(true),
+  settled: boolean('settled').notNull().default(true),
+  weeklySummary: boolean('weekly_summary').notNull().default(true),
+  dailyCap: integer('daily_cap').notNull().default(4),
+  batchMinutes: integer('batch_minutes').notNull().default(10),
+});
+
+/**
+ * One thing worth saying, recorded once by its dedup key. It goes out alone or
+ * folded into a batch, and it cannot exist without saying why.
+ */
+export const pushIntent = pgTable(
+  'push_intent',
+  {
+    id: text('id').primaryKey(),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    /** `decision`, `settled` or `weekly`. */
+    kind: text('kind').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    because: text('because').notNull(),
+    url: text('url').notNull(),
+    dedupKey: text('dedup_key').notNull().unique(),
+    createdAt: created(),
+    /** The batch it went out in; null while it waits. */
+    batchId: text('batch_id'),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    /** Set instead of sending when it stopped being true: the decision was made. */
+    droppedAt: timestamp('dropped_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('push_intent_waiting_idx')
+      .on(t.principalId)
+      .where(sql`sent_at is null and dropped_at is null`),
+    check('push_intent_because_not_empty', sql`length(${t.because}) > 0`),
+  ],
+);
+
+/**
  * The owner's question queue. One open row per job, enforced in the database, so
  * a talkative responsibility cannot turn one queue into its own inbox.
  */
@@ -763,6 +868,10 @@ export const experienceProfile = pgTable('experience_profile', {
   timeZone: text('time_zone').notNull().default('UTC'),
   dayStart: text('day_start').notNull().default('08:00'),
   dayEnd: text('day_end').notNull().default('22:00'),
+  /** When the person finished or skipped setup. Kept here so no browser has to remember it. */
+  onboardedAt: timestamp('onboarded_at', { withTimezone: true }),
+  /** When the person chose or confirmed their time zone; until then it is only a default. */
+  timeZoneConfirmedAt: timestamp('time_zone_confirmed_at', { withTimezone: true }),
 });
 
 export const task = pgTable('task', {
@@ -879,6 +988,64 @@ export const voiceUsage = pgTable(
   ],
 );
 
+/**
+ * How a person's space lets auto-review stand in for them. No row is the
+ * default: auto-review for work inside the agent's own sandbox, and the
+ * person asked for everything else.
+ */
+export const approvalReviewPolicy = pgTable(
+  'approval_review_policy',
+  {
+    spaceId: text('space_id')
+      .primaryKey()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    mode: text('mode').notNull().default('auto_review'),
+    classes: jsonb('classes').notNull().default({}),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check('approval_review_policy_mode', sql`${t.mode} in ('ask', 'auto_review')`)],
+);
+
+/**
+ * One row per action that auto-review decided instead of asking the person,
+ * or sent to the person with its reason. It is the audit trail, and the rate
+ * limits count from it.
+ */
+export const actionReview = pgTable(
+  'action_review',
+  {
+    id: text('id').primaryKey(),
+    actionId: text('action_id')
+      .notNull()
+      .references(() => action.id, { onDelete: 'cascade' }),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    /** `sandbox`, `reviewable` or `person`. */
+    tier: text('tier').notNull(),
+    actionClass: text('action_class'),
+    /** `policy` (a fixed rule) or `reviewer` (the model review). */
+    decidedBy: text('decided_by').notNull(),
+    /** `approved` or `escalated`. */
+    outcome: text('outcome').notNull(),
+    risk: text('risk'),
+    reason: text('reason').notNull(),
+    model: text('model'),
+    latencyMs: integer('latency_ms'),
+    createdAt: created(),
+  },
+  (t) => [
+    uniqueIndex('action_review_action_idx').on(t.actionId),
+    index('action_review_space_idx').on(t.spaceId, t.createdAt),
+    index('action_review_job_idx').on(t.jobId, t.createdAt),
+    check('action_review_outcome', sql`${t.outcome} in ('approved', 'escalated')`),
+    check('action_review_decided_by', sql`${t.decidedBy} in ('policy', 'reviewer')`),
+  ],
+);
+
 export const schema = {
   owner,
   principal,
@@ -915,4 +1082,6 @@ export const schema = {
   experienceRuleUse,
   experienceUndo,
   experienceDraftSend,
+  approvalReviewPolicy,
+  actionReview,
 };

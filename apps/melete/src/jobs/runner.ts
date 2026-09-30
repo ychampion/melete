@@ -26,13 +26,14 @@ import {
   type WaitSpec,
   waitSpec,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
   action,
   attempt,
+  budgetLedger,
   connection,
   event,
   experienceTurn,
@@ -42,6 +43,8 @@ import {
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { STOPPED_NOTE } from '../experience/projectors.ts';
+import { withdrawPendingPermissions } from '../experience/service.ts';
 import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { spaceAuthority } from '../principals/authority.ts';
@@ -52,6 +55,7 @@ import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
 import { FairScheduler } from './fair-scheduler.ts';
 import { requireCurrentAttempt } from './fence.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
+import { LIMIT_REACHED_NOTE } from './limits.ts';
 import { persistQuestions, resolveQuestions } from './questions.ts';
 import {
   ATTEMPT_QUEUES,
@@ -70,6 +74,12 @@ export type RunnerOptions = {
   key: string;
   provider?: string;
   model?: string;
+  /**
+   * The model a new attempt runs on, read when it is claimed, so a model the
+   * owner chooses in the app applies from the next attempt without a restart.
+   * Left out, `provider` and `model` decide.
+   */
+  resolveModel?: (tx: Transaction) => Promise<{ provider: string; model: string }>;
   scopes?: string[];
   liveConnectionScopes?: boolean;
   scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
@@ -153,11 +163,11 @@ export class AttemptRunner {
       }
       if (row.state !== 'queued') return null;
       const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
-      const model = {
+      const chosen = (await this.options.resolveModel?.(tx)) ?? {
         provider: this.options.provider ?? 'stub',
         model: this.options.model ?? 'script',
-        fallback: null,
       };
+      const model = { provider: chosen.provider, model: chosen.model, fallback: null };
       const budget = jobBudget.parse(row.budget);
       const [previous] = await tx
         .select()
@@ -739,11 +749,18 @@ export class AttemptRunner {
         .update(experienceTurn)
         .set({
           status: turnStatus,
-          ...('summary' in outcome
-            ? { answer: outcome.summary }
-            : outcome.kind === 'waiting_for_input' && outcome.draft
-              ? { answer: outcome.draft }
-              : {}),
+          // A conversation turn that hit a limit keeps what it already said and
+          // ends with a plain sentence, not the name of the limit.
+          ...(row.kind === 'chat' && outcome.kind === 'budget_exhausted'
+            ? {
+                answer: sql`case when ${experienceTurn.answer} = '' then ${LIMIT_REACHED_NOTE}
+                  else ${experienceTurn.answer} || ${`\n\n${LIMIT_REACHED_NOTE}`} end`,
+              }
+            : 'summary' in outcome
+              ? { answer: outcome.summary }
+              : outcome.kind === 'waiting_for_input' && outcome.draft
+                ? { answer: outcome.draft }
+                : {}),
           finishedAt: new Date(),
         })
         .where(eq(experienceTurn.id, row.currentTurnId));
@@ -761,6 +778,54 @@ export class AttemptRunner {
         .from(experienceTurn)
         .where(eq(experienceTurn.id, row.currentTurnId));
       if (!turn || ['done', 'stopped', 'failed'].includes(turn.status)) return;
+      // An action parked until its destination is back (a computer that was off,
+      // a rate limit) would otherwise go later by itself. Stopping ends it here,
+      // recorded as the broker records a dispatch it refuses.
+      const parked = await tx
+        .select()
+        .from(action)
+        .where(
+          and(
+            eq(action.jobId, row.id),
+            eq(action.status, 'admitted'),
+            isNotNull(action.retryAfterAt),
+          ),
+        )
+        .for('update');
+      for (const effect of parked) {
+        const reason = 'the conversation was stopped';
+        await tx
+          .update(action)
+          .set({
+            status: 'failed',
+            resolvedAt: new Date(),
+            reconciliation: { reason, retryable: false },
+          })
+          .where(eq(action.id, effect.id));
+        await tx
+          .update(budgetLedger)
+          .set({ settled: 0 })
+          .where(and(eq(budgetLedger.actionId, effect.id), isNull(budgetLedger.settled)));
+        await appendEvent(tx, {
+          jobId: row.id,
+          attemptId: effect.attemptId,
+          type: 'action_status_changed',
+          payload: { action_id: effect.id, from: 'admitted', to: 'failed' },
+          dedupKey: `${effect.id}:stopped:status`,
+        });
+        await appendEvent(tx, {
+          jobId: row.id,
+          attemptId: effect.attemptId,
+          type: 'notice',
+          payload: {
+            action_id: effect.id,
+            phase: 'dispatch_rejected',
+            outcome: 'fenced',
+            reason,
+          },
+          dedupKey: `${effect.id}:stopped`,
+        });
+      }
       await tx
         .update(job)
         .set({
@@ -777,6 +842,8 @@ export class AttemptRunner {
         .update(experienceTurn)
         .set({ status: 'stopped', finishedAt: new Date() })
         .where(eq(experienceTurn.id, turn.id));
+      // Nothing the stopped turn asked for may still be allowed afterwards.
+      await withdrawPendingPermissions(tx, jobId, STOPPED_NOTE);
       await tx
         .update(attempt)
         .set({

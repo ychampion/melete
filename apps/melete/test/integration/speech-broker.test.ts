@@ -8,6 +8,7 @@ import { startEffectBoundary } from '../../src/broker/start.ts';
 import { createTableTrustResolver } from '../../src/broker/trust.ts';
 import { scriptFromWav } from '../../src/connectors/wav.ts';
 import { loadEnv } from '../../src/env.ts';
+import { defaultPrivacyRouter } from '../../src/privacy/index.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -38,6 +39,7 @@ databaseTest(
       MELETE_ENABLE_FAKE_PROVIDER: 'true',
     });
     const boundary = await startEffectBoundary(fixture, env, {
+      privacy: defaultPrivacyRouter(),
       resolveTrust: createTableTrustResolver({
         'episode.wav': { origin_trust: 'external_content' },
       }),
