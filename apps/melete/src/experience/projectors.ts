@@ -195,7 +195,7 @@ export function actionSources(row: ActionRow, connection: ConnectionRow): Experi
       return [
         source(
           'page',
-          pageTitle(detail.body) ?? safeUrl(detail.final_url ?? detail.url),
+          pageTitle(detail) ?? safeUrl(detail.final_url ?? detail.url),
           'Web page',
           detail.final_url ?? detail.url,
         ),
@@ -206,10 +206,13 @@ export function actionSources(row: ActionRow, connection: ConnectionRow): Experi
 }
 const filename = (value: unknown) =>
   typeof value === 'string' ? value.replaceAll('\\', '/').split('/').pop() : undefined;
-const pageTitle = (value: unknown) =>
-  typeof value === 'string'
-    ? /<title[^>]*>([^<]{1,500})<\/title>/i.exec(value)?.[1]?.replace(/&amp;/g, '&')
-    : undefined;
+/** A read page names its title; a receipt from before that carries the page itself. */
+const pageTitle = (detail: Record<string, unknown>) =>
+  typeof detail.title === 'string' && detail.title.trim()
+    ? detail.title
+    : typeof detail.body === 'string'
+      ? /<title[^>]*>([^<]{1,500})<\/title>/i.exec(detail.body)?.[1]?.replace(/&amp;/g, '&')
+      : undefined;
 
 export function projectActionGroup(
   rows: Array<{ action: ActionRow; connection: ConnectionRow }>,

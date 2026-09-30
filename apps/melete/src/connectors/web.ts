@@ -1,16 +1,26 @@
 import { lookup } from 'node:dns/promises';
-import { request as httpRequest } from 'node:http';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
-import type { ConnectorManifest } from '@melete/contracts';
-import type { Connector } from './types.ts';
+import type { Action, ConnectorManifest, DispatchResult } from '@melete/contracts';
+import { BrokerFault } from '../broker/errors.ts';
+import type { Query } from '../broker/records.ts';
+import { readableText } from './readable.ts';
+import type { Connector, ConnectorContext } from './types.ts';
 
 export type ResolvedAddress = { address: string; family: 4 | 6 };
 export type WebResponse = { status: number; headers: Record<string, string>; body: string };
 export type WebTransport = (
   url: URL,
   address: ResolvedAddress,
-  options: { signal?: AbortSignal; maxBytes: number; timeoutMs: number; accept?: string },
+  options: {
+    signal?: AbortSignal;
+    maxBytes: number;
+    timeoutMs: number;
+    accept?: string;
+    /** GET unless named; nothing here sends a body. */
+    method?: 'GET' | 'HEAD';
+  },
 ) => Promise<WebResponse>;
 
 function ipv6Number(address: string): bigint | undefined {
@@ -96,14 +106,40 @@ export function publicPin(addresses: readonly ResolvedAddress[]): ResolvedAddres
   return addresses[0];
 }
 
-/** The transport never resolves again: Host/SNI use the URL while lookup returns the checked IP. */
+/**
+ * The transport never resolves again: Host/SNI use the URL while lookup returns the checked IP.
+ *
+ * The time limit covers the whole exchange, body included: it is the
+ * transport's own timer that settles the promise and tears the connection
+ * down, so a server that answers at once and then trickles one byte at a time
+ * is cut off like one that never answers.
+ */
 export const pinnedWebRequest: WebTransport = (url, address, options) =>
   new Promise((resolve, reject) => {
     const request = url.protocol === 'https:' ? httpsRequest : httpRequest;
     const hostname = url.hostname.replace(/^\[|\]$/g, '');
+    let settled = false;
+    let incoming: IncomingMessage | undefined;
+    const stop = () => {
+      incoming?.destroy();
+      req.destroy();
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', aborted);
+      reject(error);
+      stop();
+    };
+    const aborted = () =>
+      fail(options.signal?.reason instanceof Error ? options.signal.reason : new Error('aborted'));
+    const timer = setTimeout(() => fail(new Error('web request timed out')), options.timeoutMs);
+    options.signal?.addEventListener('abort', aborted, { once: true });
     const req = request(
       url,
       {
+        method: options.method ?? 'GET',
         agent: false,
         signal: options.signal,
         servername: isIP(hostname) ? undefined : hostname,
@@ -117,18 +153,24 @@ export const pinnedWebRequest: WebTransport = (url, address, options) =>
         },
       },
       (response) => {
+        incoming = response;
         const chunks: Buffer[] = [];
         let size = 0;
         response.on('data', (chunk: Buffer) => {
+          if (settled) return;
           size += chunk.length;
           if (size > options.maxBytes) {
-            response.destroy(new Error('web response exceeds the size limit'));
+            fail(new Error('web response exceeds the size limit'));
             return;
           }
           chunks.push(Buffer.from(chunk));
         });
-        response.on('error', reject);
+        response.on('error', fail);
         response.once('end', () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          options.signal?.removeEventListener('abort', aborted);
           const headers: Record<string, string> = {};
           for (const [name, value] of Object.entries(response.headers)) {
             if (value !== undefined)
@@ -142,31 +184,33 @@ export const pinnedWebRequest: WebTransport = (url, address, options) =>
         });
       },
     );
-    const timer = setTimeout(
-      () => req.destroy(new Error('web request timed out')),
-      options.timeoutMs,
-    );
-    req.once('close', () => clearTimeout(timer));
     // A refused certificate or a reset is reported by the request and again by
     // its socket; the second must land on a listener, not end the process.
-    req.on('error', reject);
-    req.end();
+    req.on('error', fail);
+    if (options.signal?.aborted) aborted();
+    else req.end();
   });
 
 export const webManifest: ConnectorManifest = {
   name: 'web',
-  version: '0.1.0',
+  version: '0.2.0',
   provider: 'web',
-  description: 'Fetch public web addresses within the trusted job compartment.',
+  description:
+    'Read public web pages: GET or HEAD only, public addresses only, no sign-in, cookies or forms.',
   credentials: [],
   health: true,
   tools: [
     {
       name: 'web.fetch',
-      description: 'Fetch an HTTP(S) URL. Its full query string is recorded with the action.',
+      description:
+        'Read a public web page (http or https) and get back its readable text, title and links. ' +
+        'Only reads: it never signs in, sends a form or posts. Private and local addresses are refused.',
       input_schema: {
         type: 'object',
-        properties: { url: { type: 'string', format: 'uri' } },
+        properties: {
+          url: { type: 'string', format: 'uri' },
+          method: { type: 'string', enum: ['GET', 'HEAD'] },
+        },
         required: ['url'],
         additionalProperties: false,
       },
@@ -178,20 +222,250 @@ export const webManifest: ConnectorManifest = {
   ],
 };
 
+/**
+ * Whether a space or an agent keeps everything on this machine. A private one
+ * reads nothing from the web beyond what a job was explicitly given.
+ */
+export type PrivateContext = (scope: {
+  spaceId: string;
+  agentId: string | null;
+  jobId: string;
+}) => Promise<boolean>;
+
+/**
+ * Why a job may not read a public page it was not explicitly given, or null
+ * when it may. Asked only for an address outside the job's own domain list.
+ */
+export type PublicReadPolicy = (
+  query: Query | undefined,
+  scope: { jobId: string; spaceId: string },
+) => Promise<string | null>;
+
+export const PUBLIC_READS_OFF =
+  'Reading public web pages is turned off for this space. It can be turned on again in Settings.';
+const PUBLIC_READS_CHATS_ONLY =
+  'Only conversations read public web pages; this work may read only the sites it was given.';
+const PUBLIC_READS_PRIVATE = 'This space or agent is private, so it does not read the web.';
+
+/** Setting on the web connection row; a row that says nothing reads the public web. */
+export const publicReadsEnabled = (configuration: unknown): boolean =>
+  (configuration as { public_reads?: unknown } | null)?.public_reads !== false;
+
+/**
+ * The service's rule, read from the database on every request so a change in
+ * Settings applies to the next page: conversations read public pages unless
+ * the space turned that off or the space or agent is private.
+ */
+export function databasePublicReads(options: {
+  sql: Query;
+  connectionId: string;
+  privateContext?: PrivateContext;
+}): PublicReadPolicy {
+  return async (query, scope) => {
+    const [row] = await (query ?? options.sql)`select j.kind,
+        coalesce(j.agent_id, p.agent_id) as agent_id, c.configuration
+      from job j
+      left join job p on p.id = j.experience_parent_id
+      join connection c on c.id = ${options.connectionId} and c.space_id = j.space_id
+      where j.id = ${scope.jobId} and j.space_id = ${scope.spaceId}`;
+    if (row?.kind !== 'chat') return PUBLIC_READS_CHATS_ONLY;
+    if (!publicReadsEnabled(row.configuration)) return PUBLIC_READS_OFF;
+    if (options.privateContext) {
+      const agentId = row.agent_id ? String(row.agent_id) : null;
+      // A check that cannot answer keeps the space offline rather than guessing.
+      const offline = await options
+        .privateContext({ spaceId: scope.spaceId, agentId, jobId: scope.jobId })
+        .catch(() => true);
+      if (offline) return PUBLIC_READS_PRIVATE;
+    }
+    return null;
+  };
+}
+
+/** The space's setting, as Settings shows it: on unless every web connection says off. */
+export async function webReadSetting(
+  sql: Query,
+  spaceId: string,
+): Promise<{ enabled: boolean; available: boolean }> {
+  const rows = await sql`select configuration from connection
+    where space_id = ${spaceId} and provider = 'web' and status = 'active'`;
+  return {
+    enabled: rows.length > 0 && rows.every((row) => publicReadsEnabled(row.configuration)),
+    available: rows.length > 0,
+  };
+}
+
+/** Turn public reads on or off for every web connection the space has. */
+export async function saveWebReadSetting(
+  sql: Query,
+  spaceId: string,
+  enabled: boolean,
+): Promise<{ enabled: boolean; available: boolean }> {
+  await sql`update connection
+    set configuration = configuration || ${JSON.stringify({ public_reads: enabled })}::jsonb
+    where space_id = ${spaceId} and provider = 'web' and status <> 'revoked'`;
+  return webReadSetting(sql, spaceId);
+}
+
+/** Query parameters whose values are credentials, whatever else the address says. */
+const SECRET_PARAMETER =
+  /(?:^|[_.-])(?:token|key|apikey|secret|password|passwd|pwd|pass|auth|authorization|signature|sig|session|sessionid|sid|code|state|nonce|otp|jwt|credential|credentials|cookie|ticket|hash|hmac)(?:$|[_.-])|^x-amz-|^x-goog-|access|refresh/i;
+/** A value that reads like a key rather than a word: long, and mixing letters and digits. */
+const TOKEN_VALUE = /^(?=.*\d)(?=.*[A-Za-z])[A-Za-z0-9+/=_.~-]{20,}$|^eyJ[A-Za-z0-9_-]{8,}/;
+
+/**
+ * An address as a receipt keeps it: scheme, host, path and the query, with
+ * every credential-shaped value replaced. A search stays readable
+ * (`?q=weather`); an access token does not survive.
+ */
+export function receiptUrl(value: string | URL): string {
+  const url = new URL(value.toString());
+  url.username = '';
+  url.password = '';
+  url.hash = '';
+  if (url.search) {
+    const kept = new URLSearchParams();
+    for (const [name, entry] of url.searchParams)
+      kept.append(
+        name,
+        SECRET_PARAMETER.test(name) || TOKEN_VALUE.test(entry) ? '[redacted]' : entry,
+      );
+    url.search = kept.toString();
+  }
+  return url.href;
+}
+
+const TEXT_TYPE = /^(?:text\/|application\/(?:json|ld\+json|xml|rss\+xml|atom\+xml|xhtml\+xml))/i;
+const HTML_TYPE = /^(?:text\/html|application\/xhtml\+xml)/i;
+
+type Read = { title: string | null; body: string; truncated: boolean; note?: string };
+
+/** What the model is given of a response: readable text, never markup or scripts. */
+function readBody(response: WebResponse, url: URL, method: string, maxChars: number): Read {
+  if (method === 'HEAD') return { title: null, body: '', truncated: false };
+  const type = response.headers['content-type'] ?? '';
+  const sniffedHtml = !type && /^\s*(?:<!doctype html|<html)/i.test(response.body.slice(0, 512));
+  if (!sniffedHtml && type && !TEXT_TYPE.test(type))
+    return {
+      title: null,
+      body: '',
+      truncated: false,
+      note: `This address is not a text page (${type.split(';')[0]}), so its contents were not read.`,
+    };
+  const page =
+    sniffedHtml || HTML_TYPE.test(type)
+      ? readableText(response.body, url.href)
+      : { title: null, text: response.body };
+  return {
+    title: page.title,
+    body: page.text.length > maxChars ? page.text.slice(0, maxChars) : page.text,
+    truncated: page.text.length > maxChars,
+  };
+}
+
+/** What a failed transport says, in words a model can act on. */
+function transportFailure(error: unknown, timeoutMs: number): string {
+  const text = error instanceof Error ? error.message : String(error);
+  const code = (error as { code?: unknown } | null)?.code;
+  if (/size limit/.test(text)) return 'The page is larger than the reading limit.';
+  if (/timed out/.test(text) || code === 'ETIMEDOUT' || code === 'ABORT_ERR')
+    return `The page did not answer within ${Math.round(timeoutMs / 1000)} seconds.`;
+  if (typeof code === 'string' && /ENOTFOUND|EAI_AGAIN|ENODATA|NXDOMAIN/.test(code))
+    return 'The address could not be found.';
+  if (code === 'ECONNREFUSED') return 'The site refused the connection.';
+  if (code === 'ECONNRESET') return 'The site closed the connection.';
+  if (typeof code === 'string' && /CERT|SSL|TLS/.test(code))
+    return 'The site’s certificate could not be verified.';
+  return 'The page could not be read.';
+}
+
+const refused = (reason: string): DispatchResult => ({
+  outcome: 'failed',
+  reason,
+  retryable: false,
+});
+
+/** The host a URL names, as compared with a domain list. */
+const hostOf = (url: URL) =>
+  url.hostname
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '')
+    .toLowerCase();
+
+/**
+ * Whether this address may be read under the job's own terms: any public page
+ * in a public-research job, the listed domains otherwise. Anything else is up
+ * to the public-read policy.
+ */
+const grantedByJob = (url: URL, ctx: Pick<ConnectorContext, 'constraints'>) =>
+  ctx.constraints.public_compartment ||
+  ctx.constraints.allowed_domains.some(
+    (domain) => domain.toLowerCase().replace(/\.$/, '') === hostOf(url),
+  );
+
+/** The first refusal an address earns before anything is looked up, or null. */
+function addressRefusal(url: URL): string | null {
+  if (!['http:', 'https:'].includes(url.protocol))
+    return 'Only http and https addresses can be read.';
+  if (url.username || url.password) return 'Addresses with a user name or password are not read.';
+  const host = hostOf(url);
+  const family = isIP(host);
+  if (family && !isPublicAddress(host))
+    return 'This address points at a private or local network, which is never read.';
+  return null;
+}
+
 export function createWebConnector(
   options: {
     resolve?: (hostname: string) => Promise<ResolvedAddress[]>;
     transport?: WebTransport;
     maxRedirects?: number;
+    /** Raw bytes read from one response. */
     maxBytes?: number;
+    /** One request, headers and body together. */
     timeoutMs?: number;
+    /** Every request of one read, redirects included. */
+    totalTimeoutMs?: number;
+    /** Characters of readable text handed back. */
+    maxChars?: number;
+    /**
+     * Reads beyond the job's own domain list. Without one, a job reads only
+     * what its compartment or its list allows, as before this existed.
+     */
+    publicReads?: PublicReadPolicy;
   } = {},
 ): Connector {
   const resolve = options.resolve ?? resolveHost;
   const transport = options.transport ?? pinnedWebRequest;
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  const totalTimeoutMs = options.totalTimeoutMs ?? 30_000;
+  const maxChars = options.maxChars ?? 60_000;
+  const publicReads: PublicReadPolicy =
+    options.publicReads ?? (async () => 'Only the sites this work was given can be read.');
   return {
     manifest: webManifest,
-    async execute(action, ctx) {
+    /**
+     * Refused at admission, so the model hears why at once and nothing is
+     * recorded as tried. Dispatch checks all of it again, every redirect too.
+     */
+    async prepare(payload, ctx, tx) {
+      if (payload.method !== undefined && payload.method !== 'GET' && payload.method !== 'HEAD')
+        throw new BrokerFault('payload_invalid', 'Only GET and HEAD are used to read the web.');
+      let url: URL;
+      try {
+        url = new URL(String(payload.url));
+      } catch {
+        throw new BrokerFault('payload_invalid', 'The address is not a valid URL.');
+      }
+      const refusal =
+        addressRefusal(url) ??
+        (grantedByJob(url, ctx)
+          ? null
+          : await publicReads(tx, { jobId: ctx.job_id, spaceId: ctx.space_id }));
+      if (refusal) throw new BrokerFault('scope_denied', refusal);
+      return payload;
+    },
+    async execute(action: Action, ctx) {
       if (action.kind !== 'web.fetch') throw new Error('unknown web tool');
       if (
         action.job_id !== ctx.job_id ||
@@ -200,62 +474,100 @@ export function createWebConnector(
       )
         throw new Error('connector action identity mismatch');
       const originalUrl = action.canonical_payload.url;
-      if (typeof originalUrl !== 'string') throw new Error('url must be a string');
-      let url = new URL(originalUrl);
+      if (typeof originalUrl !== 'string') return refused('The address is not a valid URL.');
+      const method = action.canonical_payload.method ?? 'GET';
+      if (method !== 'GET' && method !== 'HEAD')
+        return refused('Only GET and HEAD are used to read the web.');
+      let url: URL;
+      try {
+        url = new URL(originalUrl);
+      } catch {
+        return refused('The address is not a valid URL.');
+      }
+      const deadline = Date.now() + totalTimeoutMs;
       const visited: string[] = [];
       for (let hop = 0; hop <= (options.maxRedirects ?? 5); hop += 1) {
         ctx.signal?.throwIfAborted();
-        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-          throw new Error('only HTTP(S) URLs without credentials are allowed');
+        const early = addressRefusal(url);
+        if (early) return refused(early);
+        if (!grantedByJob(url, ctx)) {
+          // Asked again on every hop: a redirect is a new address, and a
+          // setting changed since admission applies to it.
+          const policy = await publicReads(undefined, { jobId: ctx.job_id, spaceId: ctx.space_id });
+          if (policy !== null) return refused(policy);
         }
-        const hostname = url.hostname
-          .replace(/^\[|\]$/g, '')
-          .replace(/\.$/, '')
-          .toLowerCase();
-        if (
-          !ctx.constraints.public_compartment &&
-          !ctx.constraints.allowed_domains.some(
-            (domain) => domain.toLowerCase().replace(/\.$/, '') === hostname,
-          )
-        ) {
-          throw new Error('private-context job cannot fetch this domain');
-        }
+        const hostname = hostOf(url);
         const family = isIP(hostname);
-        const addresses: ResolvedAddress[] = family
-          ? [{ address: hostname, family: family as 4 | 6 }]
-          : await resolve(hostname);
+        let addresses: ResolvedAddress[];
+        try {
+          addresses = family
+            ? [{ address: hostname, family: family as 4 | 6 }]
+            : await resolve(hostname);
+        } catch (error) {
+          return { outcome: 'failed', reason: transportFailure(error, timeoutMs), retryable: true };
+        }
         const pinned = publicPin(addresses);
-        if (!pinned) throw new Error('URL resolves to a non-public address');
-        visited.push(url.href);
-        const response = await transport(url, pinned, {
-          signal: ctx.signal,
-          maxBytes: options.maxBytes ?? 2 * 1024 * 1024,
-          timeoutMs: options.timeoutMs ?? 15_000,
-        });
+        if (!pinned)
+          return refused('This address points at a private or local network, which is never read.');
+        const remaining = deadline - Date.now();
+        if (remaining <= 0)
+          return {
+            outcome: 'failed',
+            reason: `The page did not answer within ${Math.round(totalTimeoutMs / 1000)} seconds.`,
+            retryable: true,
+          };
+        visited.push(receiptUrl(url));
+        let response: WebResponse;
+        try {
+          response = await transport(url, pinned, {
+            signal: ctx.signal,
+            maxBytes: options.maxBytes ?? 2 * 1024 * 1024,
+            timeoutMs: Math.min(timeoutMs, remaining),
+            method,
+            accept:
+              'text/html, application/xhtml+xml, text/plain, application/json;q=0.9, */*;q=0.5',
+          });
+        } catch (error) {
+          ctx.signal?.throwIfAborted();
+          return {
+            outcome: 'failed',
+            reason: transportFailure(error, Math.min(timeoutMs, remaining)),
+            retryable: true,
+          };
+        }
         if ([301, 302, 303, 307, 308].includes(response.status) && response.headers.location) {
-          url = new URL(response.headers.location, url);
+          try {
+            url = new URL(response.headers.location, url);
+          } catch {
+            return refused('The page redirected to an address that is not valid.');
+          }
           continue;
         }
+        const read = readBody(response, url, method, maxChars);
         return {
           outcome: 'succeeded',
           receipt: {
             action_id: action.id,
             connection_id: action.connection_id,
-            external_ref: url.href,
+            external_ref: receiptUrl(url),
             received_at: new Date().toISOString(),
             late: false,
             detail: {
-              url: originalUrl,
-              final_url: url.href,
+              url: receiptUrl(originalUrl),
+              final_url: receiptUrl(url),
               visited_urls: visited,
+              method,
               status: response.status,
               content_type: response.headers['content-type'] ?? '',
-              body: response.body,
+              title: read.title,
+              body: read.body,
+              truncated: read.truncated,
+              ...(read.note ? { note: read.note } : {}),
             },
           },
         };
       }
-      throw new Error('web redirect limit exceeded');
+      return refused('The page redirected too many times.');
     },
     async verify() {
       return { decision: 'unsupported', reason: 'web reads have no durable effect to verify' };

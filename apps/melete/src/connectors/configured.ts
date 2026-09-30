@@ -47,7 +47,7 @@ import { type AccountClient, signedInAccess } from './signed-in.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
 import { createCapabilityConnector } from './tts.ts';
 import type { Connector } from './types.ts';
-import { createWebConnector } from './web.ts';
+import { createWebConnector, databasePublicReads, type PrivateContext } from './web.ts';
 
 const endpoint = z
   .object({
@@ -179,6 +179,11 @@ export type ConnectorOptions = {
   browserSessions?: BrowserSessionService;
   /** True when attempts run in a container; a default exec connection is inert without it. */
   cellIsolated?: boolean;
+  /**
+   * Whether a space or agent is private. A private one reads no public web
+   * pages beyond what a job was explicitly given. Without it, none is.
+   */
+  privateContext?: PrivateContext;
   /** Plaintext mail and CalDAV to a loopback protocol fixture. Never set from a request. */
   insecureLocalFixtures?: boolean;
   /** Starts stdio MCP servers in isolation; without one, a stdio installation offers nothing. */
@@ -338,7 +343,14 @@ export class ConnectorFactory {
         spaceId: row.spaceId,
       });
     }
-    if (row.provider === 'web') return createWebConnector();
+    if (row.provider === 'web')
+      return createWebConnector({
+        publicReads: databasePublicReads({
+          sql: options.sql,
+          connectionId: row.id,
+          privateContext: options.privateContext,
+        }),
+      });
     if (row.provider === 'sandbox' && stored?.kind === 'sandbox') {
       const sandbox = options.sandbox;
       if (!sandbox || !row.secretRef) return undefined;
