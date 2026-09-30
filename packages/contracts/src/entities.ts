@@ -319,6 +319,8 @@ export const EVENT_TYPES = [
   'attempt_ended',
   'turn_started',
   'text_delta',
+  /** The model's reasoning as it is written, when its provider returns it. Transient like text. */
+  'reasoning_delta',
   'tool_call_proposed',
   'tool_result',
   'action_requested',

@@ -8,6 +8,16 @@
   "model": "scripted-reply-1",
   "runtime_version": "mock-0.1",
   "steps": [
+    {
+      "step": "reason",
+      "delay_ms": 400,
+      "text": "They want the heating repair chased. The thread with the building manager has the reference and the last date; "
+    },
+    {
+      "step": "reason",
+      "delay_ms": 400,
+      "text": "read it first, then draft a short reply for them to approve."
+    },
     { "step": "text", "delay_ms": 500, "text": "Reading the thread with the building manager." },
     {
       "step": "tool",

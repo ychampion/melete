@@ -53,6 +53,12 @@ export const scenarioStep = z.discriminatedUnion('step', [
     delay_ms: z.number().int().nonnegative().default(300),
     emoji: z.string().min(1).max(24),
   }),
+  /** The model's reasoning, streamed into the trail as a reasoning model writes it. */
+  z.object({
+    step: z.literal('reason'),
+    delay_ms: z.number().int().nonnegative().default(300),
+    text: z.string().min(1),
+  }),
   /** One or two plain sentences the agent says to the person about the task. */
   z.object({
     step: z.literal('say'),

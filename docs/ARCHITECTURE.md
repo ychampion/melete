@@ -66,7 +66,12 @@ memory the same way), and then chooses the runtime. With the default
 `MELETE_RUNTIME_ADAPTER=hermes` it starts the effect boundary and a supervisor
 that launches one pinned Hermes engine per attempt (`MELETE_RUNTIME_SUPERVISOR=process`
 for local development with the current user's OS access, `docker` for a
-container per attempt). `MELETE_RUNTIME_ADAPTER=docker` is the Compose path
+container per attempt). The process supervisor keeps one engine loaded ahead of
+the next attempt (`MELETE_ENGINE_PREWARM`, on by default): it imports the engine
+against the configuration that attempt will have, less its capability, and is
+handed the attempt's capability, environment and working directory when it
+arrives. `packages/runtime-hermes/process_launcher.py` refuses to use one that
+read any of those while it loaded. `MELETE_RUNTIME_ADAPTER=docker` is the Compose path
 verified on a Linux host: the service supervises one container per attempt
 through the Docker socket (`pins the image, mounts only the job subpath, and
 isolates its sole broker peer`). `stub` is an explicit scripted choice and

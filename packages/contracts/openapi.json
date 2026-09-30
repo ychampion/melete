@@ -2883,6 +2883,23 @@
                                     "properties": {
                                       "type": {
                                         "type": "string",
+                                        "const": "reasoning"
+                                      },
+                                      "text": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "type",
+                                      "text"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "type": {
+                                        "type": "string",
                                         "const": "card"
                                       },
                                       "card": {
@@ -16056,6 +16073,7 @@
             "attempt_ended",
             "turn_started",
             "text_delta",
+            "reasoning_delta",
             "tool_call_proposed",
             "tool_result",
             "action_requested",
@@ -22773,6 +22791,7 @@
           "attempt_ended",
           "turn_started",
           "text_delta",
+          "reasoning_delta",
           "tool_call_proposed",
           "tool_result",
           "action_requested",
@@ -24633,6 +24652,39 @@
               "type": {
                 "type": "string",
                 "const": "text_delta"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "attempt_id",
+              "local_seq",
+              "dedup_key",
+              "at",
+              "type",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "attempt_id": {
+                "$ref": "#/components/schemas/__schema418"
+              },
+              "local_seq": {
+                "$ref": "#/components/schemas/__schema419"
+              },
+              "dedup_key": {
+                "$ref": "#/components/schemas/__schema420"
+              },
+              "at": {
+                "$ref": "#/components/schemas/__schema114"
+              },
+              "type": {
+                "type": "string",
+                "const": "reasoning_delta"
               },
               "text": {
                 "type": "string"

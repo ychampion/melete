@@ -271,6 +271,7 @@ export function createApp(deps: AppDeps) {
       memoryJournal: deps.memory?.journal,
       memoryProvision: deps.memory?.provision,
       triggers: deps.triggers,
+      changes: deps.events,
     });
   if (deps.db)
     mountCompanies(app, {
@@ -605,7 +606,7 @@ export async function bootstrap(
         });
         await supervisedRuntime.initialize();
       }
-      let hermesRuntime: RuntimeAdapter | undefined;
+      let hermesRuntime: SupervisedHermesRuntime | undefined;
       if (handle && queue && env.MELETE_RUNTIME_ADAPTER !== 'docker') {
         // Memory is part of every Postgres-backed service, whichever runtime
         // carries the attempt; the docker runtime path starts its own.
@@ -643,9 +644,17 @@ export async function bootstrap(
           dockerImage: env.MELETE_RUNTIME_IMAGE,
           dockerNetwork: env.MELETE_RUNTIME_NETWORK,
           dockerWorkVolume: env.MELETE_RUNTIME_WORK_VOLUME,
+          prewarm: env.MELETE_ENGINE_PREWARM,
         });
         // Before any worker can claim a job and launch a replacement engine.
         await supervisor.initialize?.();
+        // The first reply need not wait for an engine to load either.
+        if (env.MELETE_DEFAULT_PROVIDER && env.MELETE_DEFAULT_MODEL)
+          supervisor.warm?.({
+            provider: env.MELETE_DEFAULT_PROVIDER,
+            model: env.MELETE_DEFAULT_MODEL,
+            fallback: null,
+          });
         hermesRuntime = new SupervisedHermesRuntime(
           supervisor,
           handle.sql,
@@ -786,8 +795,13 @@ export async function bootstrap(
           // files phase stops it and waits for it before removing the workspace.
           ...(runner
             ? {
-                stopJobs: (jobIds: readonly string[]) =>
-                  runner?.stopJobs(jobIds) ?? Promise.resolve(),
+                stopJobs: async (jobIds: readonly string[]) => {
+                  await runner?.stopJobs(jobIds);
+                  // An attempt reports before its engine has stopped; the
+                  // engine can hold the workspace until it has. Bounded like
+                  // the runner's own wait.
+                  await Promise.race([hermesRuntime?.released(jobIds), Bun.sleep(10_000)]);
+                },
               }
             : {}),
         });

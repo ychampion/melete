@@ -318,6 +318,7 @@ Experience events have `conversation_id`, `turn_id`, `created_at`, and `item`.
 | `note` | A plain update or interruption notice |
 | `done` | Summary, elapsed time, app names, and source count |
 | `text_delta` | Append to the answer for that turn |
+| `reasoning` | Append to the model's reasoning in that turn's trail; never part of the answer |
 | `card` | The supplied result card |
 | `receipt` | What changed, where, and when |
 | `permission` | The saved permission card |

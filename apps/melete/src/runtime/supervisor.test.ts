@@ -1,6 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AttemptBundle, EMPTY_SINCE_LAST } from '@melete/contracts';
@@ -9,9 +19,11 @@ import { parse } from 'yaml';
 import { EngineRegistry, type ProcessTable, systemProcesses } from './engines.ts';
 import { resolvePython } from './python.ts';
 import {
+  ATTEMPT_ENVIRONMENT_KEYS,
   attemptEnvironment,
   DockerRuntimeSupervisor,
   dockerRunArguments,
+  engineConstants,
   jobWorkspace,
   ProcessRuntimeSupervisor,
   platformEnvironment,
@@ -134,6 +146,7 @@ server.serve_forever()
         max_turns: 150,
         environment_probe: false,
         host_prompt: false,
+        image_input_mode: 'text',
       });
       expect(config.platform_hints.api_server.replace).toBe(API_SERVER_HINT);
       expect(config.compression.enabled).toBe(true);
@@ -392,6 +405,149 @@ server.serve_forever()
       await rm(root, { recursive: true, force: true });
     }
   }, 30_000);
+  test('a spare is handed every value an attempt has that it was not started with', () => {
+    const attempt = attemptEnvironment(bundle, options.brokerUrl, 'api-secret');
+    const constants = engineConstants(options.brokerUrl);
+    const own = Object.keys(attempt).filter((key) => attempt[key] !== constants[key]);
+    // TERMINAL_CWD is the job's directory, set beside the attempt's values.
+    expect([...own, 'TERMINAL_CWD'].sort()).toEqual([...ATTEMPT_ENVIRONMENT_KEYS].sort());
+  });
+  describe('a spare engine', () => {
+    // A stand-in that follows the launcher's spare protocol: it says it is
+    // ready, takes one line naming the attempt, and then serves what it ended
+    // up with, including whether it started as a spare.
+    const launcher = (spare: 'ready' | 'unusable') => `import http.server, json, os, pathlib, sys
+was_spare = os.environ.get('MELETE_RUNTIME_SPARE') == '1'
+with open(pathlib.Path(__file__).parent / 'starts.log', 'a') as log:
+    log.write('spare\\n' if was_spare else 'cold\\n')
+if was_spare:
+    ${spare === 'ready' ? "print('melete-spare:ready', flush=True)" : "print('melete-spare:unusable MELETE_ATTEMPT_TOKEN', flush=True); sys.exit(3)"}
+    handoff = json.loads(sys.stdin.readline())
+    os.environ.update(handoff['env'])
+    for key in ('MELETE_RUNTIME_SPARE', 'MELETE_RUNTIME_SPARE_KEYS'):
+        os.environ.pop(key, None)
+    os.chdir(handoff['cwd'])
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        home = pathlib.Path(os.environ['HERMES_HOME'])
+        data = json.dumps({
+            'was_spare': was_spare,
+            'cwd': os.getcwd(),
+            'env': {key: value for key, value in os.environ.items() if key.startswith(('MELETE_', 'API_SERVER_', 'HERMES_', 'TERMINAL_'))},
+            'config': (home / 'config.yaml').read_text(),
+        }).encode()
+        self.send_response(200)
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+address = pathlib.Path(os.environ['MELETE_RUNTIME_ADDRESS_FILE'])
+address.with_suffix('.tmp').write_text(json.dumps({'port': server.server_port}))
+os.replace(address.with_suffix('.tmp'), address)
+server.serve_forever()
+`;
+    type Seen = {
+      was_spare: boolean;
+      cwd: string;
+      env: Record<string, string>;
+      config: string;
+    };
+    async function fixture(spare: 'ready' | 'unusable') {
+      const root = await mkdtemp(join(tmpdir(), 'melete-process-spare-'));
+      const runtimePackage = join(root, 'runtime');
+      await mkdir(join(root, 'engine', '.git'), { recursive: true });
+      await writeFile(join(root, 'engine', '.git', 'HEAD'), HERMES_PINNED_COMMIT);
+      await mkdir(join(runtimePackage, 'patches'), { recursive: true });
+      await mkdir(join(runtimePackage, 'melete_plugin'));
+      await writeFile(join(runtimePackage, 'patches', 'observer_bridge.py'), '# Fixture only.\n');
+      await writeFile(join(runtimePackage, 'process_launcher.py'), launcher(spare));
+      const supervisor = new ProcessRuntimeSupervisor({
+        ...options,
+        engineRoot: join(root, 'engine'),
+        runtimePackage,
+        workRoot: join(root, 'work'),
+        python: resolvePython(),
+        startupTimeoutMs: 10_000,
+        prewarm: true,
+      });
+      const seen = async (baseUrl: string) => (await (await fetch(baseUrl)).json()) as Seen;
+      const records = () => readdir(join(root, 'work', '.melete-engines')).catch(() => []);
+      const starts = async () =>
+        (await readFile(join(runtimePackage, 'starts.log'), 'utf8').catch(() => ''))
+          .split(/\r?\n/)
+          .filter(Boolean);
+      return { root, supervisor, seen, records, starts };
+    }
+
+    test('takes the attempt it was prepared for, as if it had started with it', async () => {
+      const { root, supervisor, seen, records } = await fixture('ready');
+      try {
+        supervisor.warm(bundle.model);
+        const instance = await supervisor.launch(
+          { ...bundle, time_zone: 'Pacific/Chatham' },
+          new AbortController().signal,
+        );
+        const engine = await seen(instance.baseUrl);
+        expect(engine.was_spare).toBe(true);
+        expect(await realpath(engine.cwd)).toBe(instance.workspace);
+        expect(engine.env.TERMINAL_CWD).toBe(instance.workspace);
+        expect(engine.env.MELETE_ATTEMPT_TOKEN).toBe(bundle.attempt.token);
+        expect(engine.env.MELETE_ATTEMPT_ID).toBe(bundle.attempt.id);
+        expect(engine.env.API_SERVER_KEY).toBe(instance.token);
+        expect(engine.env.HERMES_TIMEZONE).toBe('Pacific/Chatham');
+        expect(engine.env.MELETE_RUNTIME_SPARE).toBeUndefined();
+        // The configuration it started from carries this attempt's capability.
+        expect(parse(engine.config).model.extra_headers).toEqual({
+          'x-melete-capability': bundle.attempt.token,
+        });
+        await instance.stop();
+        // The next attempt's engine is started as this one stops.
+        const next = await supervisor.launch(
+          { ...bundle, attempt: { ...bundle.attempt, id: 'att_01J00000000000000000000001' } },
+          new AbortController().signal,
+        );
+        expect((await seen(next.baseUrl)).was_spare).toBe(true);
+        await next.stop();
+        await supervisor.close();
+        expect(await records()).toEqual([]);
+      } finally {
+        await supervisor.close().catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    test('prepared for another model, it is set aside and the attempt starts its own', async () => {
+      const { root, supervisor, seen } = await fixture('ready');
+      try {
+        supervisor.warm({ provider: 'fake', model: 'another', fallback: null });
+        const instance = await supervisor.launch(bundle, new AbortController().signal);
+        expect((await seen(instance.baseUrl)).was_spare).toBe(false);
+        await instance.stop();
+      } finally {
+        await supervisor.close().catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    test('one that read its attempt while loading is never used, and no more are started', async () => {
+      const { root, supervisor, seen, records, starts } = await fixture('unusable');
+      try {
+        supervisor.warm(bundle.model);
+        const instance = await supervisor.launch(bundle, new AbortController().signal);
+        expect((await seen(instance.baseUrl)).was_spare).toBe(false);
+        // Stopping asks for a spare; none is started once one could not be used.
+        await instance.stop();
+        await supervisor.close();
+        expect(await starts()).toEqual(['spare', 'cold']);
+        expect(await records()).toEqual([]);
+      } finally {
+        await supervisor.close().catch(() => {});
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 60_000);
+  });
   test('stopping an owned process also stops its live child', async () => {
     const parent = spawn(
       process.execPath,

@@ -309,23 +309,21 @@ function TurnView({
       <div className="turn">
         <div className="turn-text">
           <TurnAvatar agent={agent} status={turn.status} />
-          {showText ? (
-            <Answer text={text} streaming={turn.streaming} />
-          ) : (
-            <div className="col grow" style={{ paddingTop: 2 }}>
-              <Trail turn={turn} now={now} />
-              {turn.trail.length === 0 && !finished ? (
-                <div className="col" style={{ gap: 10, paddingTop: 6 }}>
-                  <div className="shimmer" style={{ height: 12, width: '82%', borderRadius: 6 }} />
-                  <div className="shimmer" style={{ height: 12, width: '56%', borderRadius: 6 }} />
-                </div>
-              ) : null}
-            </div>
-          )}
+          {/* What the agent did sits above what it says. */}
+          <div className="col grow" style={{ gap: 6, paddingTop: 2, minWidth: 0 }}>
+            <Trail turn={turn} now={now} answering={showText} />
+            {showText ? (
+              <Answer text={text} streaming={turn.streaming} />
+            ) : turn.trail.length === 0 && !finished ? (
+              <div className="col" style={{ gap: 10, paddingTop: 6 }}>
+                <div className="shimmer" style={{ height: 12, width: '82%', borderRadius: 6 }} />
+                <div className="shimmer" style={{ height: 12, width: '56%', borderRadius: 6 }} />
+              </div>
+            ) : null}
+          </div>
         </div>
-        {(showText && turn.trail.length > 0) || hasBlocks || finished ? (
+        {hasBlocks || finished ? (
           <div className="turn-body">
-            {showText ? <Trail turn={turn} now={now} /> : null}
             {rendered}
             {unconfirmed}
             {finished && text.trim() ? (

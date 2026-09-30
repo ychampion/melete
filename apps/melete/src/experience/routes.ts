@@ -25,7 +25,7 @@ import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import { AGENT_TEMPLATES } from './agents.ts';
 import { ExperienceEffects } from './effects.ts';
-import { ExperienceEvents } from './events.ts';
+import { type EventChanges, ExperienceEvents } from './events.ts';
 import { ExperienceHome } from './home.ts';
 import { ExperienceMemory } from './memory.ts';
 import { ExperiencePermissions } from './permissions.ts';
@@ -47,6 +47,8 @@ export type ExperienceDeps = {
   /** Provisions a space's memory on its owner's first use. */
   memoryProvision?: (spaceId: string, principalId: string) => Promise<void>;
   triggers?: TriggerService;
+  /** Commit notifications for live conversation streams. */
+  changes?: EventChanges;
 };
 /**
  * Rows these routes keep for the space as a whole rather than for one job: the
@@ -85,11 +87,15 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       : undefined;
   const home = new ExperienceHome(deps.db, ownerEffects);
   const planning = new ExperiencePlanning(service, deps.triggers);
-  const events = new ExperienceEvents(deps.db, {
-    permission: (spaceId, id) => permissions?.card(spaceId, id) ?? Promise.resolve(undefined),
-    question: async (spaceId, id) =>
-      (await questions.list(spaceId)).questions.find((item) => item.id === id),
-  });
+  const events = new ExperienceEvents(
+    deps.db,
+    {
+      permission: (spaceId, id) => permissions?.card(spaceId, id) ?? Promise.resolve(undefined),
+      question: async (spaceId, id) =>
+        (await questions.list(spaceId)).questions.find((item) => item.id === id),
+    },
+    deps.changes,
+  );
   service.progress = (spaceId, jobId, turnId, stage) =>
     events.progress(spaceId, jobId, turnId, stage);
   const effects = async (spaceId: string, id: string) => {

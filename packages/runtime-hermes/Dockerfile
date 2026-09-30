@@ -1,8 +1,9 @@
 # The Melete runtime: pinned Hermes configured thin with an observer-only bridge.
 #
 # The three source seams in patches/observer_bridge.py are checked against the
-# audited pin before application. They add compaction observation and bind the
-# plugin's observers to the HTTP run queue. They change no broker decision.
+# audited pin before application. They add compaction observation, bind the
+# plugin's observers to the HTTP run queue and put the model's reasoning on the
+# run's event stream. They change no broker decision.
 # Thin configuration keys are cited in .agents/notes/0009-hermes-surface.md.
 #
 # The container has no route to the internet. docker-compose attaches it only to
@@ -23,7 +24,7 @@ ARG HERMES_COMMIT=2237be355906fbe6065ce1815711eee52b2d646e
 # build. `bun run compose:check` recomputes it from the tracked files and names
 # the value to paste here, so a plugin change without a new pin fails before an
 # image is built.
-ARG MELETE_PLUGIN_SHA=437b26a01e5a007fc893ecdf3567db0f0d4d5c4eaa92fa8613675fa8dc6b076c
+ARG MELETE_PLUGIN_SHA=e060c7a0d84419b116d2ac6c7946d9d73e60a38e103c860de7f176d9b7b44df0
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -82,9 +83,13 @@ RUN chmod +x /usr/local/bin/melete-runtime-entrypoint
 # created. The engine copies its own bundled skills into the writable home on
 # every start; pointing the source at nothing makes that copy do nothing, so the
 # only skills an attempt can ever see are the ones Melete authorised.
+#
+# HERMES_SKIP_SSL_GUARD skips the engine's start-up check that its CA bundle
+# parses. Every call it makes goes to the broker; verification is unchanged.
 ENV HERMES_EXEC_ASK=1 \
     HERMES_ACCEPT_HOOKS=1 \
     HERMES_BUNDLED_SKILLS=/opt/melete-runtime/no-bundled-skills \
+    HERMES_SKIP_SSL_GUARD=1 \
     API_SERVER_ENABLED=1 \
     API_SERVER_HOST=0.0.0.0 \
     API_SERVER_PORT=8790 \
