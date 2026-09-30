@@ -128,6 +128,8 @@ export class ExperienceMock {
   >();
   readonly sentReceipts = new Map<string, C.ExperienceReceipt>();
   readonly rules = new Map<string, C.StandingRule>();
+  /** Conversations read public web pages unless this is turned off. */
+  webReads = true;
   /** Settings → Approvals, as the person last saved them. */
   approvalSettings: C.ApprovalSettings = structuredClone(C.DEFAULT_APPROVAL_SETTINGS);
   readonly questions = new Map<string, Question>();
@@ -1746,6 +1748,11 @@ export class ExperienceMock {
         return { status: 'ok' };
       case 'GET /experience/connections':
         return { connections: this.connections() };
+      case 'GET /web/settings':
+        return { enabled: this.webReads, available: true };
+      case 'PUT /web/settings':
+        this.webReads = input.enabled === true;
+        return { enabled: this.webReads, available: true };
       case 'GET /search': {
         const q = (c.req.query('q') ?? '').toLowerCase();
         const results = [

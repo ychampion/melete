@@ -463,6 +463,12 @@ export const adapter = {
     guard<{ connections: import('./types.ts').Connection[] }>(() =>
       api.GET('/experience/connections'),
     ),
+  /** Whether conversations in this space read public web pages; on unless turned off. */
+  webReads: () => guard<{ enabled: boolean; available: boolean }>(() => api.GET('/web/settings')),
+  saveWebReads: (enabled: boolean) =>
+    guard<{ enabled: boolean; available: boolean }>(() =>
+      api.PUT('/web/settings', { body: { enabled } }),
+    ),
   /** The kinds that can be installed, each with the fields its form needs. */
   connectionKinds: () =>
     guard<{ kinds: ConnectionKind[]; catalog?: CatalogEntry[] }>(() =>
