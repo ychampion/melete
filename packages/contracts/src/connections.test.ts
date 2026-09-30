@@ -364,6 +364,10 @@ function filled(descriptor: ConnectionKindDescriptor): Record<string, unknown> {
     if (field.input === 'email') return 'owner@example.test';
     if (field.input === 'url') return 'https://service.example.test/path/';
     if (field.path.endsWith('egress')) return ['registry.example.test'];
+    if (field.path === 'sms.allowed_numbers') return ['+15557654321'];
+    if (field.path === 'credentials.from_number') return '+15550001111';
+    if (field.path === 'credentials.account_sid') return `AC${'0'.repeat(32)}`;
+    if (field.path === 'credentials.auth_token') return 'a'.repeat(32);
     if (field.input === 'string_list') return ['mcp_notes.search'];
     if (field.path.endsWith('source')) return '@example/notes-server';
     if (field.path === 'name') return 'NOTES_TOKEN';
@@ -398,11 +402,12 @@ describe('connection kind descriptors', () => {
       'mcp',
       'mcp_stdio',
       'sandbox',
+      'sms',
     ]);
     const ids = parsed.kinds.map((kind) => kind.id);
     expect(new Set(ids).size).toBe(ids.length);
     // Every kind keeps an entry for a server no provider entry names.
-    for (const kind of ['caldav', 'ics', 'mail', 'mcp', 'mcp_stdio', 'sandbox', 'command_line'])
+    for (const kind of ['caldav', 'ics', 'mail', 'mcp', 'mcp_stdio', 'sandbox', 'command_line', 'sms'])
       expect(ids).toContain(kind);
     for (const kind of parsed.kinds) {
       const secrets = kind.fields.flatMap((field) => [

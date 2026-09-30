@@ -32,6 +32,7 @@ export default defineConfig({
     './src/intents/schema.ts',
     './src/reach/schema.ts',
     './src/paths/schema.ts',
+    './src/sms/schema.ts',
   ],
   out: './drizzle',
   strict: true,

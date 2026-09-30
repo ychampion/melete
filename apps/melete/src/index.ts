@@ -215,6 +215,8 @@ import { SignalPoller } from './signals/poller.ts';
 import { startObservationRetention } from './signals/retention.ts';
 import { mountSituations } from './situations/routes.ts';
 import { SituationService } from './situations/service.ts';
+import { startSmsReplies } from './sms/inbox.ts';
+import { mountSms } from './sms/routes.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
@@ -562,6 +564,19 @@ export function createApp(deps: AppDeps) {
       triggers: deps.triggers,
       surfaces: deps.roomSurfaces,
     });
+  if (connections) {
+    const factory = connectorFactoryFor(connections.registry, () =>
+      connectorOptionsFromEnv(connections.sql, connections.env),
+    );
+    mountSms(app, {
+      db: connections.db,
+      sql: connections.sql,
+      secrets: factory.secrets,
+      publicUrl: deps.env.MELETE_PUBLIC_URL,
+      twilio: factory.options.twilio,
+      experience,
+    });
+  }
   if (deps.db)
     mountCompanies(app, {
       ...companiesDeps({
@@ -802,6 +817,7 @@ export async function bootstrap(
   let triageClassifier: TriageClassifier | null = null;
   let historySummariser: HistorySummariser | undefined;
   let pushDispatcher: PushDispatcher | undefined;
+  let smsReplies: ReturnType<typeof startSmsReplies> | undefined;
   let signIn: ProviderSignIn | undefined;
   let modelSettings: ModelSettingsService | undefined;
   let sandboxes: SandboxWiring | undefined;
@@ -850,6 +866,7 @@ export async function bootstrap(
           situations?.stop(QUEUES.clockSweep),
           reach?.stop(QUEUES.reachSweep),
           pushDispatcher?.stop(),
+          smsReplies?.stop(),
           triggers?.stop(),
           runner?.stop(),
           runs?.stopWatchdog(),
@@ -1010,6 +1027,12 @@ export async function bootstrap(
         connectorOptionsFromEnv(handle.sql, env),
       );
       sandboxes = startSandboxesFromEnv(handle.sql, env, connectors);
+      // Answers to texts go back from the service itself, once each turn a text began has ended.
+      smsReplies = startSmsReplies({
+        sql: handle.sql,
+        secrets: connectors.secrets,
+        twilio: connectors.options.twilio,
+      });
       // A sandbox connection's key is the only way into its account, so a
       // revocation destroys what the connection holds before the key goes.
       sandboxTeardown = connectors.sandboxTeardownProviders();
@@ -1432,6 +1455,8 @@ export async function bootstrap(
       // nobody waiting on it is settled before the attempt commits.
       runner.settleAbandoned = async (attemptId) =>
         effectBoundary?.broker.settleAbandoned(attemptId);
+      // Answers to texts go back once the turn a text began has ended.
+      if (smsReplies) runner.onSettled.push(() => void smsReplies?.poke());
       if (browser) {
         const sessions = browser.sessions;
         sessions.onPark = (jobId, attemptIds) => {

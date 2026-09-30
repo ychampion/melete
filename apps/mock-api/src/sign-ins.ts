@@ -42,6 +42,7 @@ const COVERS: Record<ConnectionKindDescriptor['kind'], ConnectionCatalogEntry['c
   mcp_stdio: 'tools',
   sandbox: 'execution',
   command_line: 'execution',
+  sms: 'texts',
 };
 
 /** What the service's catalog says about a Google sign-in through Composio. */

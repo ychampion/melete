@@ -4,6 +4,7 @@ import {
   caldavConnectionConfig,
   mailConnectionConfig,
   sandboxAdapterTakesKey,
+  smsConnectionConfig,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
@@ -87,9 +88,11 @@ import { createSandboxExecConnector } from './sandbox-exec.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
 import { type AccountClient, signedInAccess } from './signed-in.ts';
 import { createSkillsConnector } from './skills.ts';
+import { SmsConnector } from './sms.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
 import { createTranscriptionConnector } from './transcribe.ts';
 import { createCapabilityConnector } from './tts.ts';
+import type { TwilioOptions } from './twilio.ts';
 import type { Connector } from './types.ts';
 import {
   createWebConnector,
@@ -292,6 +295,8 @@ export type ConnectorOptions = {
   commandLine?: CommandLineCheckOptions & { awsSts?: StsOptions };
   /** Server addresses for app catalog entries, by entry id. Only a test replaces them. */
   mcpCatalogUrls?: Record<string, string>;
+  /** Replaces Twilio's address and transport. Only a test passes one. */
+  twilio?: TwilioOptions;
 };
 
 /**
@@ -351,6 +356,7 @@ const storedConfiguration = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('outlook_mail'), account: z.email() }),
   z.object({ kind: z.literal('outlook_calendar'), account: z.email() }),
   storedSandboxConnection,
+  z.object({ kind: z.literal('sms'), sms: smsConnectionConfig }),
 ]);
 
 /**
@@ -587,6 +593,18 @@ export class ConnectorFactory {
         }),
       );
     }
+    if (row.provider === 'twilio' && stored?.kind === 'sms' && row.secretRef)
+      return ownerOnly(
+        new SmsConnector(
+          {
+            id: row.id,
+            spaceId: row.spaceId,
+            secretRef: row.secretRef,
+            ...(options.twilio ? { twilio: options.twilio } : {}),
+          },
+          this.secrets,
+        ),
+      );
     if (row.provider === 'test' && options.enableTestConnector)
       return createTestConnector(options.sql);
     if (row.provider === 'command_line') {

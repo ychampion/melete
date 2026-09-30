@@ -34,6 +34,7 @@ import {
 import { REACH_WEBHOOK_PATH } from '../reach/routes.ts';
 import { MULTIPLAYER_UNAVAILABLE, multiplayerEnabled } from '../rooms/preview.ts';
 import { previewPath } from '../sandbox/preview-path.ts';
+import { SMS_WEBHOOK_PATH } from '../sms/routes.ts';
 import { viewPath } from '../viewer/headers.ts';
 import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
@@ -382,6 +383,8 @@ export function mountAuth(
     // The telephony provider's replies, keypresses and receipts carry no
     // session; each is believed only for its signature (see reach/routes.ts).
     if (c.req.method === 'POST' && REACH_WEBHOOK_PATH.test(c.req.path)) return publicBody(c, next);
+    // So does a text to a person's own Twilio connection (see sms/routes.ts).
+    if (c.req.method === 'POST' && SMS_WEBHOOK_PATH.test(c.req.path)) return publicBody(c, next);
     // A paired computer's companion holds no session. Every `/device/` route
     // checks the computer's own token and sets its own body limit; see
     // devices/routes.ts.

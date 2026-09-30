@@ -23,6 +23,7 @@ import type { JobService } from '../jobs/service.ts';
 import { mcpPublicPath } from '../mcp-server/actor.ts';
 import { REACH_WEBHOOK_PATH } from '../reach/routes.ts';
 import { previewPath } from '../sandbox/preview-path.ts';
+import { SMS_WEBHOOK_PATH } from '../sms/routes.ts';
 import { viewPath } from '../viewer/headers.ts';
 import { requireJobAccess, spaceAuthority } from './authority.ts';
 import { PrincipalService } from './service.ts';
@@ -56,6 +57,9 @@ export function mountPrincipals(
     if (viewPath(c.req.method, c.req.path) && !c.get('owner')) return next();
     // So does a preview's; sandbox/preview.ts checks its token.
     if (previewPath(c.req.method, c.req.path) && !c.get('owner')) return next();
+    // A text to a person's own Twilio connection has none either; sms/routes.ts checks its signature.
+    if (c.req.method === 'POST' && SMS_WEBHOOK_PATH.test(c.req.path) && !c.get('owner'))
+      return next();
     const actor = c.get('owner').id;
     const path = c.req.path;
     const parts = path.split('/').filter(Boolean);
