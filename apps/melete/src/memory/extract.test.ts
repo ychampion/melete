@@ -171,4 +171,10 @@ describe('finding a quote', () => {
     expect(found && text.slice(found.start, found.end)).toBe(text);
     expect(findQuote(text, 'nowhere')).toBeNull();
   });
+  test('loosely, after a letter whose lower case is longer, still cites the right characters', () => {
+    // "İ" lowers to two code units; the span must still land on the quoted words.
+    const text = 'Back from İstanbul. My sister Maya lives in Lisbon now.';
+    const found = findQuote(text, 'my sister maya lives in lisbon');
+    expect(found && text.slice(found.start, found.end)).toBe('My sister Maya lives in Lisbon');
+  });
 });

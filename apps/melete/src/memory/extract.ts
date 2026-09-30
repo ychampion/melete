@@ -325,8 +325,14 @@ export function findQuote(
     if (/\s/.test(char)) {
       if (normalized.endsWith(' ')) continue;
       normalized += ' ';
-    } else normalized += char;
-    map.push(i);
+      map.push(i);
+      continue;
+    }
+    // Lower case can be longer than the letter ("İ" is two units); each unit maps back to it.
+    for (const unit of char.split('')) {
+      normalized += unit;
+      map.push(i);
+    }
   }
   const wanted = loose(quote).replace(/\s+/g, ' ').trim();
   for (const candidate of [wanted, wanted.replace(/[.!?,;:]+$/, '')]) {
