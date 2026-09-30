@@ -151,8 +151,14 @@ While it is on:
 - The agent works only in tabs it opened. They are grouped under **Melete**, and each shows a bar
   saying **Melete is using this tab** with a **Stop** button. Your other tabs are never read or
   touched.
-- Clicking and typing wait for your approval, showing the page, the element and the text.
-- Passwords, one-time codes and card numbers are never typed. The agent asks you to enter them.
+- Clicking and typing wait for your approval. The card shows the page's address (without the part
+  after `?`), its title, the element as the agent last read it (for example `button "Delete
+  account"`), and the text to type. If the tab has moved to another page, or that element has
+  changed, by the time your approval arrives, nothing is clicked or typed and the agent is told why.
+- Fields for passwords, passcodes, one-time codes, and card numbers or security codes are never
+  typed into. That includes fields that only say so in their name, label or autofill hint, and
+  fields that draw their text as dots. The agent asks you to enter them.
+- Opening a page on your computer or your local network waits for your approval of that address.
 - The extension has no permission to read cookies, and nothing sends your sign-in anywhere. It
   stays in your browser.
 - Every request is written to the companion's activity log, marked `[browser]`.

@@ -5,8 +5,10 @@
  * scripts cannot see or call them, and the element list they keep is out of
  * the page's reach.
  *
- * Protected fields (passwords, one-time codes, card numbers) are never typed
- * into, and their values are never read.
+ * Protected fields are never typed into, and their values are never read:
+ * password fields, and fields whose name, id, accessible label or autocomplete
+ * says password, passcode, one-time code, OTP, CVV/CVC or card, or whose text
+ * is drawn as dots.
  */
 
 /** Show or remove the bar that says Melete is using this tab, with a Stop button. */
@@ -45,8 +47,101 @@ export function showBar(on) {
   document.documentElement.append(host);
 }
 
-/** The page's text and the things on it that can be clicked or filled, each with a ref. */
+/**
+ * The page's text and the things on it that can be clicked or filled, each
+ * with a ref. Each element is described the way `act` describes it again
+ * before acting: its role, its name, its tag, what it shows when that differs
+ * from its name, and where a link or a form's button leads.
+ */
 export function readPage(maxBytes, maxElements) {
+  const clean = (text) =>
+    String(text ?? '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 300);
+  const PROTECTED_WORDS =
+    /pass(word|code|wd|phrase)|(^|[^a-z])otp([^a-z]|$)|one.?time|cvv|cvc|csc|card/i;
+  const isField = (element) =>
+    element.isContentEditable ||
+    element.tagName === 'TEXTAREA' ||
+    element.tagName === 'SELECT' ||
+    (element.tagName === 'INPUT' &&
+      !['checkbox', 'radio', 'submit', 'button', 'image', 'reset', 'hidden', 'file'].includes(
+        (element.getAttribute('type') ?? 'text').toLowerCase(),
+      ));
+  const isProtected = (element) => {
+    if (!isField(element)) return false;
+    if ((element.getAttribute('type') ?? '').toLowerCase() === 'password') return true;
+    const autocomplete = (element.getAttribute('autocomplete') ?? '').toLowerCase();
+    if (/(^|\s)cc-/.test(autocomplete)) return true;
+    const labelledBy = (element.getAttribute('aria-labelledby') ?? '')
+      .split(/\s+/)
+      .map((id) => (id ? document.getElementById(id)?.textContent : ''))
+      .join(' ');
+    const words = [
+      element.getAttribute('name'),
+      element.id,
+      element.getAttribute('aria-label'),
+      labelledBy,
+      autocomplete,
+    ].join(' ');
+    if (PROTECTED_WORDS.test(words)) return true;
+    // Text drawn as dots is a secret whatever the field is called.
+    const secured = getComputedStyle(element).getPropertyValue('-webkit-text-security');
+    return Boolean(secured) && secured !== 'none';
+  };
+  const describe = (element) => {
+    const tag = element.tagName.toLowerCase();
+    const type = element.getAttribute('type')?.toLowerCase();
+    const role = isProtected(element)
+      ? 'protected field'
+      : element.getAttribute('role') ||
+        (tag === 'a'
+          ? 'link'
+          : tag === 'button' || type === 'submit' || type === 'button'
+            ? 'button'
+            : tag === 'select'
+              ? 'select'
+              : type === 'checkbox' || type === 'radio'
+                ? type
+                : 'field');
+    const buttonValue = tag === 'input' && ['submit', 'button'].includes(type) ? element.value : '';
+    const name = clean(
+      element.getAttribute('aria-label') ||
+        (element.id &&
+          document.querySelector(`label[for="${CSS.escape(element.id)}"]`)?.textContent) ||
+        element.closest('label')?.textContent ||
+        element.getAttribute('placeholder') ||
+        element.getAttribute('title') ||
+        buttonValue ||
+        element.textContent ||
+        element.getAttribute('name') ||
+        '',
+    );
+    const shown = clean(buttonValue || (isField(element) ? '' : element.innerText));
+    const address = (value) => {
+      try {
+        const url = new URL(value, location.href);
+        return `${url.origin}${url.pathname}`;
+      } catch {
+        return '';
+      }
+    };
+    const form = element.form ?? element.closest('form');
+    const target =
+      tag === 'a' && element.hasAttribute('href')
+        ? address(element.getAttribute('href'))
+        : role === 'button' && form
+          ? address(element.getAttribute('formaction') || form.getAttribute('action') || '')
+          : '';
+    return {
+      role,
+      name,
+      tag,
+      ...(shown && shown !== name ? { shows: shown } : {}),
+      ...(target ? { target: target.slice(0, 2048) } : {}),
+    };
+  };
   const visible = (element) => {
     const box = element.getBoundingClientRect();
     const style = getComputedStyle(element);
@@ -61,39 +156,8 @@ export function readPage(maxBytes, maxElements) {
   for (const element of document.querySelectorAll(selector)) {
     if (elements.length >= maxElements) break;
     if (!visible(element)) continue;
-    const isProtected = element.matches(
-      'input[type=password], input[autocomplete*="password"], input[autocomplete*="one-time-code"], input[autocomplete^="cc-"], input[autocomplete*=" cc-"]',
-    );
-    const tag = element.tagName.toLowerCase();
-    const type = element.getAttribute('type')?.toLowerCase();
-    const role =
-      element.getAttribute('role') ||
-      (tag === 'a'
-        ? 'link'
-        : tag === 'button' || type === 'submit' || type === 'button'
-          ? 'button'
-          : tag === 'select'
-            ? 'select'
-            : type === 'checkbox' || type === 'radio'
-              ? type
-              : 'field');
-    const label =
-      element.getAttribute('aria-label') ||
-      (element.id &&
-        document.querySelector(`label[for="${CSS.escape(element.id)}"]`)?.textContent) ||
-      element.closest('label')?.textContent ||
-      element.getAttribute('placeholder') ||
-      element.getAttribute('title') ||
-      (tag === 'input' && ['submit', 'button'].includes(type) ? element.value : '') ||
-      element.textContent ||
-      element.getAttribute('name') ||
-      '';
     refs.push(element);
-    elements.push({
-      ref: `e${refs.length}`,
-      role: isProtected ? 'protected field' : role,
-      name: label.replace(/\s+/g, ' ').trim().slice(0, 300),
-    });
+    elements.push({ ref: `e${refs.length}`, ...describe(element) });
   }
   globalThis.__meleteRefs = refs;
   const full = (document.body?.innerText ?? '').replace(/\n{3,}/g, '\n\n');
@@ -105,33 +169,139 @@ export function readPage(maxBytes, maxElements) {
   return { text, truncated: bytes.byteLength > maxBytes, elements };
 }
 
-/** Click the element `readPage` named `ref`. */
-export function clickRef(ref) {
-  const index = Number(String(ref).slice(1)) - 1;
-  const element = globalThis.__meleteRefs?.[index];
-  if (!element?.isConnected)
-    return { ok: false, code: 'not_found', message: 'That element is gone. Read the page again.' };
-  element.scrollIntoView({ block: 'center' });
-  element.click();
-  return { ok: true };
-}
+/**
+ * Click, or type into, the element `readPage` named `ref`, only if the tab is
+ * still on the page the person approved and the ref still names the element
+ * they approved. Anything else is refused and reported, and nothing is done.
+ * Protected fields are never typed into.
+ */
+export function act(tool, ref, expected, text, submit) {
+  const clean = (value) =>
+    String(value ?? '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 300);
+  const PROTECTED_WORDS =
+    /pass(word|code|wd|phrase)|(^|[^a-z])otp([^a-z]|$)|one.?time|cvv|cvc|csc|card/i;
+  const isField = (element) =>
+    element.isContentEditable ||
+    element.tagName === 'TEXTAREA' ||
+    element.tagName === 'SELECT' ||
+    (element.tagName === 'INPUT' &&
+      !['checkbox', 'radio', 'submit', 'button', 'image', 'reset', 'hidden', 'file'].includes(
+        (element.getAttribute('type') ?? 'text').toLowerCase(),
+      ));
+  const isProtected = (element) => {
+    if (!isField(element)) return false;
+    if ((element.getAttribute('type') ?? '').toLowerCase() === 'password') return true;
+    const autocomplete = (element.getAttribute('autocomplete') ?? '').toLowerCase();
+    if (/(^|\s)cc-/.test(autocomplete)) return true;
+    const labelledBy = (element.getAttribute('aria-labelledby') ?? '')
+      .split(/\s+/)
+      .map((id) => (id ? document.getElementById(id)?.textContent : ''))
+      .join(' ');
+    const words = [
+      element.getAttribute('name'),
+      element.id,
+      element.getAttribute('aria-label'),
+      labelledBy,
+      autocomplete,
+    ].join(' ');
+    if (PROTECTED_WORDS.test(words)) return true;
+    const secured = getComputedStyle(element).getPropertyValue('-webkit-text-security');
+    return Boolean(secured) && secured !== 'none';
+  };
+  const describe = (element) => {
+    const tag = element.tagName.toLowerCase();
+    const type = element.getAttribute('type')?.toLowerCase();
+    const role = isProtected(element)
+      ? 'protected field'
+      : element.getAttribute('role') ||
+        (tag === 'a'
+          ? 'link'
+          : tag === 'button' || type === 'submit' || type === 'button'
+            ? 'button'
+            : tag === 'select'
+              ? 'select'
+              : type === 'checkbox' || type === 'radio'
+                ? type
+                : 'field');
+    const buttonValue = tag === 'input' && ['submit', 'button'].includes(type) ? element.value : '';
+    const name = clean(
+      element.getAttribute('aria-label') ||
+        (element.id &&
+          document.querySelector(`label[for="${CSS.escape(element.id)}"]`)?.textContent) ||
+        element.closest('label')?.textContent ||
+        element.getAttribute('placeholder') ||
+        element.getAttribute('title') ||
+        buttonValue ||
+        element.textContent ||
+        element.getAttribute('name') ||
+        '',
+    );
+    const shown = clean(buttonValue || (isField(element) ? '' : element.innerText));
+    const address = (value) => {
+      try {
+        const url = new URL(value, location.href);
+        return `${url.origin}${url.pathname}`;
+      } catch {
+        return '';
+      }
+    };
+    const form = element.form ?? element.closest('form');
+    const target =
+      tag === 'a' && element.hasAttribute('href')
+        ? address(element.getAttribute('href'))
+        : role === 'button' && form
+          ? address(element.getAttribute('formaction') || form.getAttribute('action') || '')
+          : '';
+    return {
+      role,
+      name,
+      tag,
+      ...(shown && shown !== name ? { shows: shown } : {}),
+      ...(target ? { target: target.slice(0, 2048) } : {}),
+    };
+  };
+  const said = (element) => `${element.role} "${element.name}"`;
 
-/** Type into the field `readPage` named `ref`. Protected fields are refused. */
-export function typeRef(ref, text, submit) {
+  const want = expected && typeof expected === 'object' ? expected : null;
+  if (!want || typeof want.url !== 'string' || !want.element || typeof want.element !== 'object')
+    return {
+      ok: false,
+      code: 'invalid_request',
+      message: 'Nothing is clicked or typed without the page and element the person approved.',
+    };
+  const here = `${location.origin}${location.pathname}`;
+  if (here !== want.url)
+    return {
+      ok: false,
+      code: 'page_changed',
+      message: `The tab is now on ${here}, not on ${want.url} as approved. Nothing was done; read the page again.`,
+    };
   const index = Number(String(ref).slice(1)) - 1;
   const element = globalThis.__meleteRefs?.[index];
   if (!element?.isConnected)
     return { ok: false, code: 'not_found', message: 'That element is gone. Read the page again.' };
-  if (
-    element.matches(
-      'input[type=password], input[autocomplete*="password"], input[autocomplete*="one-time-code"], input[autocomplete^="cc-"], input[autocomplete*=" cc-"]',
-    )
-  )
+  const now = describe(element);
+  for (const key of ['role', 'name', 'tag', 'shows', 'target'])
+    if ((now[key] ?? '') !== (want.element[key] ?? ''))
+      return {
+        ok: false,
+        code: 'page_changed',
+        message: `That element is now ${said(now)}, not ${said(want.element)} as approved. Nothing was done; read the page again.`,
+      };
+  if (tool === 'browser_click') {
+    element.scrollIntoView({ block: 'center' });
+    element.click();
+    return { ok: true };
+  }
+  if (isProtected(element))
     return {
       ok: false,
       code: 'protected_field',
       message:
-        'Passwords, one-time codes and card numbers are never typed. Ask the person to enter it.',
+        'Passwords, one-time codes and card details are never typed. Ask the person to enter it.',
     };
   const editable =
     element.isContentEditable ||

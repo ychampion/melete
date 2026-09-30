@@ -3130,7 +3130,7 @@ export interface paths {
                     } | {
                         error: {
                             /** @enum {string} */
-                            code: "capability_off" | "outside_folders" | "not_found" | "too_large" | "invalid_request" | "failed" | "unknown_tab" | "protected_field";
+                            code: "capability_off" | "outside_folders" | "not_found" | "too_large" | "invalid_request" | "failed" | "unknown_tab" | "protected_field" | "page_changed";
                             message: string;
                         };
                         /** @constant */

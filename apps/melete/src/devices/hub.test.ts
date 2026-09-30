@@ -59,6 +59,20 @@ describe('the device hub', () => {
     expect((await read).kind).toBe('reply');
     expect(await other).toEqual({ kind: 'not_delivered', reason: 'offline' });
   });
+
+  test('what waits for the browser is withdrawn when the browser is turned off', async () => {
+    const hub = new DeviceHub();
+    hub.touch('dev_a', 'browser');
+    const open = hub.call(
+      'dev_a',
+      { id: 'b1', tool: 'browser_open', arguments: { url: 'https://example.com' } },
+      10_000,
+      undefined,
+      'browser',
+    );
+    expect(hub.withdraw('dev_a', (request) => !request.tool.startsWith('browser_'))).toBe(1);
+    expect(await open).toEqual({ kind: 'not_delivered', reason: 'capability_off' });
+  });
 });
 
 describe('paths the service sends', () => {

@@ -536,7 +536,7 @@ withDb('the agent uses the computer through the broker', () => {
 });
 
 withDb("the person's own browser", () => {
-  test('sign-in work goes to their browser, waits for it, and needs approval to click', async () => {
+  test('sign-in work goes to their browser, waits for it, and a click names what it clicks', async () => {
     const s = need();
     const { config } = await s.computer({ grant: { browser: true } });
     const [row] =
@@ -562,20 +562,55 @@ withDb("the person's own browser", () => {
     expect(proposal.status).toBe('admitted');
 
     const opened: unknown[] = [];
+    const sentToBrowser: { tool: string; arguments: Record<string, unknown> }[] = [];
+    // What the page shows now; the stand-in extension checks it as the real one does.
+    let buttonNow = 'Delete account';
+    const tab = { tab_id: 41, url: 'https://example.com/account', title: 'Your account' };
+    const answerFor = (tool: string, args: Record<string, unknown>) => {
+      if (tool === 'browser_open') return { ok: true, result: tab };
+      if (tool === 'browser_read')
+        return {
+          ok: true,
+          result: {
+            ...tab,
+            url: 'https://example.com/account?session=secret-token',
+            text: 'Your account',
+            truncated: false,
+            elements: [
+              { ref: 'e1', role: 'link', name: 'Home', tag: 'a', target: 'https://example.com/' },
+              { ref: 'e3', role: 'button', name: buttonNow, tag: 'button' },
+            ],
+          },
+        };
+      const expected = args.expect as { url: string; element: { name: string } } | undefined;
+      if (expected?.url !== 'https://example.com/account' || expected.element.name !== buttonNow)
+        return {
+          ok: false,
+          error: {
+            code: 'page_changed',
+            message: `That element is now button "${buttonNow}", not button "${expected?.element.name}" as approved. Nothing was done; read the page again.`,
+          },
+        };
+      return { ok: true, result: tab };
+    };
     const bridge: BrowserBridge = new BrowserBridge({
       config: { ...config, capabilities: { ...config.capabilities, browser: true } },
+      resolve: async () => ['93.184.215.14'],
       send: (message) => {
-        const value = message as { type: string; id?: string; arguments?: unknown };
+        const value = message as {
+          type: string;
+          id?: string;
+          tool?: string;
+          arguments?: Record<string, unknown>;
+        };
         if (value.type !== 'request') return;
-        opened.push(value.arguments);
+        if (value.tool === 'browser_open') opened.push(value.arguments);
+        sentToBrowser.push({ tool: String(value.tool), arguments: value.arguments ?? {} });
         queueMicrotask(() =>
           bridge.receive({
             type: 'answer',
             id: value.id,
-            answer: {
-              ok: true,
-              result: { tab_id: 41, url: 'https://example.com/account', title: 'Your account' },
-            },
+            answer: answerFor(String(value.tool), value.arguments ?? {}),
           }),
         );
       },
@@ -596,18 +631,93 @@ withDb("the person's own browser", () => {
       expect(opened).toEqual([{ url: 'https://example.com/account' }]);
 
       // Parking released that attempt; the next step comes from a later one.
-      const later = await s.job(['device.browser_click']);
-      const click = await s.broker.propose(later, {
-        kind: 'device.browser_click',
+      const later = await s.job(['device.browser_read', 'device.browser_click']);
+      const click = (ref: string, extra: Record<string, unknown> = {}) =>
+        s.broker.propose(later, {
+          kind: 'device.browser_click',
+          connection_id: connectionId,
+          payload: { tab_id: 41, ref, ...extra },
+        });
+      // Nothing is clicked on a ref the person could not be shown.
+      expect(await rejectionOf(click('e3'))).toMatchObject({ code: 'payload_invalid' });
+
+      const read = await s.broker.propose(later, {
+        kind: 'device.browser_read',
         connection_id: connectionId,
-        payload: { tab_id: 41, ref: 'e3' },
+        payload: { tab_id: 41 },
       });
-      expect(click.status).toBe('needs_approval');
+      expect(read.status).toBe('succeeded');
+      expect(await rejectionOf(click('e9'))).toMatchObject({ code: 'payload_invalid' });
+
+      // Whatever the model claims the element is, the card shows what the read saw.
+      const asked = await click('e3', {
+        expect: { url: 'https://example.com/account', element: { role: 'button', name: 'Save' } },
+      });
+      expect(asked.status).toBe('needs_approval');
+      const [stored] = await s.sql`select * from action where id = ${asked.action_id}`;
+      const card = projectPermission({
+        id: 'apr_click',
+        version: 'v1',
+        action: {
+          id: asked.action_id,
+          jobId: later.job_id,
+          attemptId: later.attempt_id,
+          kind: 'device.browser_click',
+          effectClass: 'write_external',
+          connectionId,
+          canonicalPayload: stored?.canonical_payload,
+          receipt: null,
+          status: 'needs_approval',
+          createdAt: new Date(),
+          resolvedAt: null,
+        },
+        connection: { id: connectionId, label: 'Test laptop', provider: 'device' },
+        reasons: ['This change needs your permission before it happens.'],
+        canAlways: false,
+        requestedAt: new Date(),
+      });
+      // The address leaves out the query, which held a session token.
+      expect(card.preview?.facts).toEqual([
+        { label: 'Page', value: 'https://example.com/account' },
+        { label: 'Title', value: 'Your account' },
+        { label: 'Element', value: 'button "Delete account"' },
+      ]);
+
+      // Approved; then the page changes before the click goes.
+      await s.broker.decide(asked.action_id, {
+        decision: 'approved',
+        payload_hash: asked.payload_hash,
+      });
+      await s.broker.admit(later, asked.action_id, asked.payload_hash);
+      buttonNow = 'Save';
+      const refused = await s.broker.dispatch(asked.action_id);
+      expect(refused.status).toBe('failed');
+      expect(JSON.stringify(refused.reconciliation)).toContain('Nothing was done');
+      const sentClick = sentToBrowser.find((entry) => entry.tool === 'browser_click');
+      expect(sentClick?.arguments.expect).toEqual({
+        url: 'https://example.com/account',
+        title: 'Your account',
+        element: { role: 'button', name: 'Delete account', tag: 'button' },
+      });
     } finally {
       bridge.stop();
       await running;
     }
   }, 60_000);
+
+  test('a page on their network opens in their browser only once approved', async () => {
+    const s = need();
+    const { config } = await s.computer({ grant: { browser: true } });
+    const [row] =
+      await s.sql`select connection_id from paired_device where id = ${config.device_id}`;
+    const claims = await s.job(['device.browser_open']);
+    const proposal = await s.broker.propose(claims, {
+      kind: 'device.browser_open',
+      connection_id: String(row?.connection_id),
+      payload: { url: 'http://192.168.1.1/admin' },
+    });
+    expect(proposal.status).toBe('needs_approval');
+  }, 30_000);
 
   test("the cloud browser is kept for public pages once the person's browser is there", () => {
     expect(routedDescription('browser.open', 'Open a page.', true)).toBe(

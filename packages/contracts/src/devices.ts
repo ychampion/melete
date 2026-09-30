@@ -240,6 +240,11 @@ export const DEVICE_ERROR_CODES = [
   'unknown_tab',
   /** Password fields and similar are never typed into or read. */
   'protected_field',
+  /**
+   * The tab is no longer on the page, or the ref no longer names the element,
+   * that the person approved; nothing was done.
+   */
+  'page_changed',
 ] as const;
 export const deviceResult = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(true), result: z.record(z.string(), z.unknown()) }),

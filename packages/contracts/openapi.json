@@ -18051,7 +18051,8 @@
                               "invalid_request",
                               "failed",
                               "unknown_tab",
-                              "protected_field"
+                              "protected_field",
+                              "page_changed"
                             ]
                           },
                           "message": {

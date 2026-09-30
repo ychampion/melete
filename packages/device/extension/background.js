@@ -11,7 +11,7 @@
  * It has no permission to read cookies and never sends them anywhere; pages
  * stay signed in because they are the person's own browser.
  */
-import { clickRef, readPage, showBar, typeRef } from './page.js';
+import { act, readPage, showBar } from './page.js';
 
 const HOST = 'com.melete.device';
 const LOAD_TIMEOUT_MS = 30_000;
@@ -162,14 +162,15 @@ async function carryOut(request) {
       return answer(id, { ...(await describe(tabId)), ...page });
     }
     if (tool === 'browser_click' || tool === 'browser_type') {
-      const outcome =
-        tool === 'browser_click'
-          ? await inPage(tabId, clickRef, [String(args.ref)])
-          : await inPage(tabId, typeRef, [
-              String(args.ref),
-              String(args.text ?? ''),
-              args.submit === true,
-            ]);
+      // The page checks, in the same step as acting, that the tab is on the
+      // page and the ref names the element the person approved.
+      const outcome = await inPage(tabId, act, [
+        tool,
+        String(args.ref),
+        args.expect ?? null,
+        String(args.text ?? ''),
+        args.submit === true,
+      ]);
       if (!outcome?.ok)
         return refuse(id, outcome?.code ?? 'failed', outcome?.message ?? 'It did not work.');
       // A click or Enter may start a navigation; let it land before reporting where the tab is.

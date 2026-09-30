@@ -9,8 +9,9 @@
  * extension, and posts the extension's answer back.
  *
  * The bridge adds its own checks before anything reaches the browser: the
- * browser capability must be on in this computer's settings, and only the
- * browser tools pass. The extension checks the rest (which tabs are Melete's,
+ * browser capability must be on in this computer's settings, only the
+ * browser tools pass, and a page on this computer or its local network opens
+ * only when the person approved that address. The extension checks the rest (which tabs are Melete's,
  * which fields are protected) where the page is.
  *
  * The extension never reads cookies and has no permission to; sign-in stays
@@ -19,6 +20,7 @@
 import { appendFile, chmod, mkdir, writeFile } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
 import { join, resolve } from 'node:path';
+import { checkServiceAddress, onLocalNetwork, type Resolve } from './address.ts';
 import { ApiError, VERSION } from './agent.ts';
 import { configDir, type DeviceConfig, logPath } from './config.ts';
 
@@ -85,6 +87,8 @@ export type BridgeOptions = {
   configDir?: string;
   pollTimeoutMs?: number;
   print?: (line: string) => void;
+  /** Replaced in tests; the real one asks this computer's resolver. */
+  resolve?: Resolve;
 };
 
 export class BrowserBridge {
@@ -165,6 +169,19 @@ export class BrowserBridge {
         ok: false,
         error: { code: 'invalid_request', message: `Unknown request: ${request.tool}` },
       };
+    else if (
+      request.tool === 'browser_open' &&
+      request.arguments.local_approved !== true &&
+      (await this.localPage(request.arguments.url))
+    )
+      answer = {
+        ok: false,
+        error: {
+          code: 'invalid_request',
+          message:
+            'That address is on this computer or its local network, so it opens only once the person approves it.',
+        },
+      };
     else {
       await this.log(
         `→ ${request.tool}${typeof request.arguments.url === 'string' ? ` ${request.arguments.url}` : ''}`,
@@ -187,6 +204,15 @@ export class BrowserBridge {
     }).catch((error) => this.log(`Could not send the answer: ${(error as Error).message}`));
   }
 
+  /** Judged here, where the browser will resolve the name, not where Melete runs. */
+  private async localPage(url: unknown): Promise<boolean> {
+    try {
+      return await onLocalNetwork(new URL(String(url)), this.options.resolve);
+    } catch {
+      return false;
+    }
+  }
+
   stop() {
     if (this.stopped) return;
     this.stopped = true;
@@ -195,6 +221,7 @@ export class BrowserBridge {
 
   /** Poll until stopped. Resolves `revoked` when Melete no longer accepts this computer. */
   async run(): Promise<'stopped' | 'revoked' | 'off'> {
+    checkServiceAddress(this.options.config.api);
     if (!this.options.config.capabilities.browser) {
       this.options.send({ type: 'status', state: 'off', device: this.options.config.name });
       await this.log(

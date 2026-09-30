@@ -85,7 +85,7 @@ function fakeMelete(requests: unknown[][]) {
 }
 
 const config = (browser: boolean): DeviceConfig => ({
-  api: 'http://melete.test/api',
+  api: 'https://melete.test/api',
   device_id: 'dev_1',
   token: `mdt_${'a'.repeat(43)}`,
   name: 'Laptop',
@@ -111,6 +111,7 @@ describe('the browser bridge', () => {
       config: config(true),
       configDir: dir,
       fetch: melete.fetcher,
+      resolve: async () => ['93.184.215.14'],
       send: (message) => {
         const value = message as { type: string; id?: string };
         toExtension.push(value);
@@ -188,5 +189,75 @@ describe('the browser bridge', () => {
       ok: false,
       error: { code: 'invalid_request' },
     });
+  });
+
+  test('a page on this computer or its network reaches the browser only once approved', async () => {
+    const request = (id: string, url: string, approved = false) => ({
+      id,
+      tool: 'browser_open',
+      arguments: { url, ...(approved ? { local_approved: true } : {}) },
+      deadline: Date.now() + 10_000,
+    });
+    const melete = fakeMelete([
+      [
+        request('act_3', 'http://192.168.1.1/'),
+        request('act_4', 'https://rebind.example/'),
+        request('act_5', 'http://192.168.1.1/', true),
+      ],
+    ]);
+    const toExtension: { type: string; id?: string }[] = [];
+    const bridge: BrowserBridge = new BrowserBridge({
+      config: config(true),
+      configDir: await mkdtemp(join(tmpdir(), 'melete-bridge-')),
+      fetch: melete.fetcher,
+      resolve: async (host) => (host === 'rebind.example' ? ['10.0.0.7'] : []),
+      send: (message) => {
+        const value = message as { type: string; id?: string };
+        toExtension.push(value);
+        if (value.type === 'request')
+          queueMicrotask(() =>
+            bridge.receive({
+              type: 'answer',
+              id: value.id,
+              answer: {
+                ok: true,
+                result: { tab_id: 8, url: 'http://192.168.1.1/', title: 'Router' },
+              },
+            }),
+          );
+      },
+    });
+    const running = bridge.run();
+    for (
+      let tries = 0;
+      tries < 100 && melete.sent.filter((s) => s.url.includes('/result')).length < 3;
+      tries++
+    )
+      await Bun.sleep(20);
+    bridge.stop();
+    await running;
+    expect(toExtension.filter((m) => m.type === 'request').map((m) => m.id)).toEqual(['act_5']);
+    for (const id of ['act_3', 'act_4'])
+      expect(melete.sent.find((s) => s.url.includes(`/${id}/result`))?.body).toMatchObject({
+        ok: false,
+        error: { code: 'invalid_request' },
+      });
+  });
+
+  test('refuses to reach Melete on another computer over plain http', async () => {
+    const melete = fakeMelete([]);
+    const bridge = new BrowserBridge({
+      config: { ...config(true), api: 'http://melete.example/api' },
+      configDir: await mkdtemp(join(tmpdir(), 'melete-bridge-')),
+      fetch: melete.fetcher,
+      send: () => {},
+    });
+    expect(
+      await bridge.run().then(
+        () => 'ran',
+        () => 'refused',
+      ),
+    ).toBe('refused');
+    expect(melete.sent).toEqual([]);
   });
 });
