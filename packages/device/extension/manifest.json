@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Melete",
+  "version": "0.1.0",
+  "description": "Lets your Melete agent use this browser, signed in as you, while you switch it on. Every click and entry waits for your approval in Melete.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwGo5HajzlfpcM1G5hsFUos2j2R0lRBYKujzPdfwX8zaRSYEEUZMifI9a+QgDxbApPmqnm0v5GkxCa8DIXf7oZHc67Cbt0v854mW+AWlvB9MTGplq9ekLKNFxfhbHwrTLx4aStRmxPe+etck3UGFk+amDI/wcwpQZzVeyKulfXarZPBhUGU6W8RgmpW7hkq073/SgWA3nMRKzzvPUU1UwJvrbeOb6SEOBOFwM9uMMwqv/QfETZOXx1geRceoxSrwoxgeUkwz2Il885G6CQ4S6zKrw1dlHhjVTkqB4TIByw9h3oPySJDjyih9H6vjdV2hxPPcQ4SKkHdRqBvG1i54UqQIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": ["nativeMessaging", "tabs", "tabGroups", "scripting", "storage"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "Melete", "default_popup": "popup.html" }
+}

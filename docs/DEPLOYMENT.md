@@ -868,7 +868,9 @@ fixed rule and never calls the model.
 ## Sandboxes
 
 Sandboxes: connect E2B, Modal or Daytona in Settings → Connections → Sandbox.
-The provider's key is entered there and sealed with `MELETE_MASTER_KEY`.
+The provider's key is entered there and sealed with `MELETE_MASTER_KEY`. Or give
+every agent a computer of its own on this host's Docker engine, with no account
+and no key: see [sandbox-docker.md](sandbox-docker.md).
 `configure.ts` writes `MELETE_SANDBOX_PROJECT`, the label that marks this
 installation's sandboxes at the provider; keep it. The other `MELETE_SANDBOX_*`
 settings and `MELETE_E2B_PLAN` are optional, with their defaults listed in

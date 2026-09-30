@@ -73,6 +73,10 @@ export type ApprovalSettingsView = Success<Ok<paths['/approval-settings'], 'get'
 export type ApprovalSettings = Body<paths['/approval-settings'], 'put'>;
 /** What auto-review decided about one action, on its card or receipt. */
 export type ActionReview = NonNullable<Permission['review']>;
+/** A computer the person connected, with what Settings and the computer itself allow. */
+export type Device = Ok<paths['/devices'], 'get'>['devices'][number];
+export type DeviceCapabilities = Device['capabilities'];
+export type DevicePairing = Ok<paths['/devices/pairings'], 'post'>;
 export type PushSettings = Ok<paths['/push/settings'], 'get'>['settings'];
 export type PushSettingsUpdate = Body<paths['/push/settings'], 'patch'>;
 export type PushDevice = Ok<paths['/push/subscriptions'], 'get'>['subscriptions'][number];

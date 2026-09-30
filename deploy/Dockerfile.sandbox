@@ -1,0 +1,48 @@
+# The computer an agent works in: one container per agent, started by the
+# service's docker sandbox provider on the host's own engine. A shell with the
+# usual tools, Python, git, and a desktop the size of the live view with a
+# browser on it. It holds no Melete configuration, credential or client.
+#
+# The base is the runtime image's own, by digest, so an engine that already
+# runs attempts has it and pulls only what the desktop adds.
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8
+
+COPY deploy/sandbox/requirements.txt /tmp/requirements.txt
+
+# Screenshots and the live view read the display through Pillow's XCB support,
+# which the last line checks the wheel has.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash ca-certificates coreutils curl file findutils git jq less procps unzip xz-utils \
+        xvfb openbox xdotool chromium fonts-dejavu-core fonts-liberation \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
+    && pip install --no-cache-dir --no-deps --only-binary=:all: --require-hashes -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt \
+    && groupadd --gid 10004 agent \
+    && useradd --uid 10004 --gid 10004 --home-dir /home/agent --create-home --shell /bin/bash agent \
+    && mkdir -p /work \
+    && chown 10004:10004 /work \
+    # The display server writes its compiled keymap here; the root is read-only at run time.
+    && rm -rf /var/lib/xkb \
+    && ln -s /tmp /var/lib/xkb \
+    && python3 -c "from PIL import features; import sys; sys.exit(0 if features.check('xcb') else 1)"
+
+COPY deploy/sandbox/melete-desktop deploy/sandbox/melete-sandbox-init /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/melete-desktop /usr/local/bin/melete-sandbox-init
+
+# The root filesystem is read-only at run time. pip falls back to installing
+# for the user, into the home volume, which keeps them across restarts.
+ENV HOME=/home/agent \
+    USER=agent \
+    DISPLAY=:0 \
+    PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1
+
+USER 10004:10004
+WORKDIR /work
+
+CMD ["/usr/local/bin/melete-sandbox-init"]

@@ -58,6 +58,8 @@ import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { connection } from './db/schema.ts';
+import { mountDevices } from './devices/routes.ts';
+import { DeviceService } from './devices/service.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { mountExperience } from './experience/routes.ts';
@@ -128,6 +130,7 @@ import {
   ProcessRuntimeSupervisor,
   type RuntimeSupervisor,
 } from './runtime/supervisor.ts';
+import { mountSandboxComputers, SandboxComputerService } from './sandbox/computer.ts';
 import { sandboxKeyCheck } from './sandbox/connection.ts';
 import {
   type SandboxWiring,
@@ -178,6 +181,8 @@ export type AppDeps = {
   knowledge?: KnowledgeDeps;
   memory?: MemoryRouteOptions;
   browserSessions?: BrowserSessionService;
+  /** The desktops in docker sandboxes, to watch and take over. */
+  sandboxComputers?: SandboxComputerService;
   removals?: SpaceRemovalService;
   runtimeAdapter?: string;
   runner?: AttemptRunner;
@@ -239,6 +244,15 @@ export function createApp(deps: AppDeps) {
   if (deps.removals && deps.db && deps.sql)
     mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
   if (connections) mountConnections(app, connections);
+  if (connections)
+    mountDevices(
+      app,
+      new DeviceService({
+        ...connections,
+        policy: deps.policy ?? (deps.jobs ? new PolicyService(deps.jobs) : undefined),
+        ...(deps.jobs ? { jobs: deps.jobs } : {}),
+      }),
+    );
   const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
   // One reader of the model connected in the app, for its routes and the companies scan.
   const modelSettings =
@@ -356,6 +370,7 @@ export function createApp(deps: AppDeps) {
   if (deps.browserSessions) mountBrowserSessions(app, deps.browserSessions);
   if (deps.browserSessions) mountBrowserLive(app, deps.browserSessions);
   if (deps.browserSessions) mountBrowserSites(app, deps.browserSessions.sites);
+  if (deps.sandboxComputers) mountSandboxComputers(app, deps.sandboxComputers);
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
@@ -482,6 +497,7 @@ export async function bootstrap(
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
+  let sandboxComputers: SandboxComputerService | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
@@ -590,6 +606,11 @@ export async function bootstrap(
           withKey: sandboxTeardown.withKey,
         });
         removeSandboxes = sandboxRemovalTeardown(sandboxSessions, sandboxTeardown.providerFor);
+        // Only docker sandboxes have a desktop; the service lists none for the others.
+        sandboxComputers = new SandboxComputerService(
+          handle.sql,
+          () => connectors.sandboxProviders,
+        );
       }
       // Boot reconciliation, before any attempt can open a session of its own.
       if (sandboxes) {
@@ -822,6 +843,10 @@ export async function bootstrap(
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
         };
+      if (sandboxComputers)
+        sandboxComputers.onPark = (jobId, attemptIds) => {
+          for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
+        };
       learning = await startLearning(
         jobs,
         env,
@@ -965,6 +990,7 @@ export async function bootstrap(
         : undefined,
     memory: deploymentMemory?.routes ?? memory,
     browserSessions: browser?.sessions,
+    sandboxComputers,
     removals,
     episodes,
     proposer: learning?.proposer,

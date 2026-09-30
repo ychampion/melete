@@ -56,6 +56,13 @@ export interface Connector {
    * never waits less than its own timeout, whatever this says.
    */
   dispatchBudgetMs?(action: Pick<Action, 'kind' | 'canonical_payload'>): number;
+  /**
+   * True when this particular action needs the person's approval although its
+   * tool alone does not, because of what the payload names: opening an
+   * address on the person's own network, for one. It can only add a question,
+   * never remove one.
+   */
+  asksFirst?(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean;
   health(): Promise<ConnectorHealth>;
   /**
    * The shape the destination wants now. Answered after a `schema_drift` fault

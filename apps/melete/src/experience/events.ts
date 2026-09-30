@@ -41,6 +41,7 @@ import {
 } from './projectors.ts';
 import {
   actionCall,
+  deviceWaitCall,
   memoryCall,
   modelCall,
   retryCall,
@@ -100,6 +101,15 @@ async function toolCalls(
   }
   if (source.type === 'notice' && payload.phase === 'repair_parked') {
     const row = await effect(payload.action_id);
+    if (row?.connection.provider === 'device')
+      return [
+        deviceWaitCall({
+          action: row.action,
+          connection: row.connection,
+          key: `${row.action.id}:${source.seq}`,
+          at: source.createdAt,
+        }),
+      ];
     return row
       ? [
           retryCall(
