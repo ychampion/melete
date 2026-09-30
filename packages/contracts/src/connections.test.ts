@@ -277,6 +277,7 @@ function filled(descriptor: ConnectionKindDescriptor): Record<string, unknown> {
     if (field.input === 'url') return 'https://service.example.test/path/';
     if (field.path.endsWith('egress')) return ['registry.example.test'];
     if (field.path === 'phone.number') return '+14155550100';
+    if (field.path === 'phone.whatsapp.phone_number_id') return '106540352242922';
     if (field.path === 'credentials.twilio_account_sid') return `AC${'0'.repeat(32)}`;
     if (field.path === 'phone.allowed_callers') return ['+14155550199'];
     if (field.input === 'string_list') return ['mcp_notes.search'];
@@ -296,6 +297,45 @@ function filled(descriptor: ConnectionKindDescriptor): Record<string, unknown> {
   if (scopes.length) body.scopes = scopes;
   return body;
 }
+
+describe('a phone line’s grants', () => {
+  const request = (phone: Record<string, unknown>, scopes: string[] = []) =>
+    createConnectionRequest.parse({
+      provider: 'phone',
+      label: 'Line',
+      scopes,
+      credentials: {
+        api_key: 'k',
+        twilio_account_sid: `AC${'1'.repeat(32)}`,
+        twilio_auth_token: 't',
+      },
+      phone: { telephony: 'twilio', number: '+14155550100', on_behalf_of: 'Zara', ...phone },
+    });
+  const scopes = (phone: Record<string, unknown>, asked: string[] = []) => {
+    const made = connectionInstallation(request(phone, asked));
+    return made.ok && made.value.kind === 'phone' ? made.value.scopes : made;
+  };
+
+  test('WhatsApp is offered only with its number and the template each start needs', () => {
+    expect(scopes({})).toEqual(['phone.call']);
+    expect(scopes({ whatsapp: { phone_number_id: '1065403522' } })).toEqual(['phone.call']);
+    expect(
+      scopes({ whatsapp: { phone_number_id: '1065403522', message_template: 'hello' } }),
+    ).toEqual(['phone.call', 'whatsapp.message']);
+    expect(
+      scopes({
+        whatsapp: {
+          phone_number_id: '1065403522',
+          message_template: 'hello',
+          call_template: 'may_call',
+        },
+      }),
+    ).toEqual(['phone.call', 'whatsapp.message', 'whatsapp.call']);
+    // A grant the line cannot use is not kept, and a line with none usable is refused.
+    expect(scopes({}, ['phone.call', 'whatsapp.call'])).toEqual(['phone.call']);
+    expect(scopes({}, ['whatsapp.call'])).toMatchObject({ ok: false });
+  });
+});
 
 describe('connection kind descriptors', () => {
   test('cover every credentialed kind and parse as the served response', () => {

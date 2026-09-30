@@ -30,6 +30,8 @@ export const phoneCallView = z
     connection_id: prefixedId(ID_PREFIXES.connection),
     job_id: prefixedId(ID_PREFIXES.job).nullable(),
     direction: z.enum(PHONE_CALL_DIRECTIONS),
+    /** A phone call, or a WhatsApp chat or call on the line's WhatsApp number. */
+    channel: z.enum(['phone', 'whatsapp']),
     party: z.enum(PHONE_CALL_PARTIES),
     remote_number: z.string(),
     /** Why an outbound call was placed, as approved. Empty for an inbound call. */

@@ -245,6 +245,41 @@ export const phoneConnectionConfig = z
     /** The hours Melete may call, in the callee's local time. */
     calling_hours_start: clockTime.default('09:00'),
     calling_hours_end: clockTime.default('20:00'),
+    /**
+     * A WhatsApp Business number the person connected in ElevenLabs, answered
+     * by the same agent. Messages and calls to anyone else start from a
+     * template Meta approved, named here.
+     */
+    whatsapp: z
+      .object({
+        /** ElevenLabs' id for the WhatsApp number, shown beside it under Agents, WhatsApp. */
+        phone_number_id: z
+          .string()
+          .regex(/^[0-9]{5,32}$/, 'The WhatsApp phone number id is digits')
+          .optional(),
+        /** The approved template an outbound message starts with. Without it, no message is offered. */
+        message_template: z
+          .string()
+          .regex(
+            /^[a-z0-9_]{1,512}$/,
+            'A template name is lower-case letters, digits and underscores',
+          )
+          .optional(),
+        /** The approved call-permission template an outbound call asks with. Without it, no call is offered. */
+        call_template: z
+          .string()
+          .regex(
+            /^[a-z0-9_]{1,512}$/,
+            'A template name is lower-case letters, digits and underscores',
+          )
+          .optional(),
+        template_language: z
+          .string()
+          .regex(/^[a-z]{2,3}(?:_[A-Z]{2})?$/, 'A language code such as en or en_US')
+          .default('en'),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .refine((value) => value.telephony !== 'sip_trunk' || value.sip_address !== undefined, {
@@ -278,7 +313,7 @@ export const CONNECTION_KIND_SCOPES = {
   caldav: ['calendar.list', 'calendar.create', 'calendar.update', 'calendar.delete'],
   ics: ['calendar.list'],
   sandbox: ['terminal.run'],
-  phone: ['phone.call'],
+  phone: ['phone.call', 'whatsapp.message', 'whatsapp.call'],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
 export const createConnectionRequest = z.object({
@@ -357,6 +392,15 @@ const KIND_PROVIDER = {
 } as const;
 const EXACTLY_ONE = 'Supply exactly one of mail, caldav, ics, mcp, mcp_stdio, sandbox or phone.';
 
+/** The grants a phone line can use: WhatsApp only with a number and the template to start from. */
+export function phoneScopes(config: PhoneConnectionConfig): string[] {
+  return [
+    'phone.call',
+    ...(config.whatsapp?.message_template ? ['whatsapp.message'] : []),
+    ...(config.whatsapp?.call_template ? ['whatsapp.call'] : []),
+  ];
+}
+
 /** Decide which kind a parsed request installs, or say in plain words why it installs none. */
 export function connectionInstallation(
   request: CreateConnectionRequest,
@@ -413,10 +457,24 @@ export function connectionInstallation(
       return err('A SIP trunk needs its username and password.');
     // Credentials for the other kind of line are dropped, never sealed unused.
     const kept: PhoneCredentials = given;
-    const { sip_address, sip_transport, ...line } = request.phone;
-    const config: PhoneConnectionConfig =
-      line.telephony === 'sip_trunk' ? { ...line, sip_address, sip_transport } : line;
-    return ok({ kind, provider: 'phone', config, credentials: kept, scopes });
+    const { sip_address, sip_transport, whatsapp, ...line } = request.phone;
+    // A form sends the WhatsApp block's defaults even when WhatsApp is left out.
+    if (
+      whatsapp &&
+      !whatsapp.phone_number_id &&
+      (whatsapp.message_template || whatsapp.call_template)
+    )
+      return err('WhatsApp needs the phone number id ElevenLabs shows for your WhatsApp number.');
+    const config: PhoneConnectionConfig = {
+      ...line,
+      ...(line.telephony === 'sip_trunk' ? { sip_address, sip_transport } : {}),
+      ...(whatsapp?.phone_number_id ? { whatsapp } : {}),
+    };
+    // A WhatsApp grant needs the template it starts with; a grant the line cannot use is not kept.
+    const offeredScopes = phoneScopes(config);
+    const granted = scopes.filter((scope) => offeredScopes.includes(scope));
+    if (!granted.length) return err('A phone line needs at least one grant it can use.');
+    return ok({ kind, provider: 'phone', config, credentials: kept, scopes: granted });
   }
   if (kind === 'sandbox') {
     if (!request.sandbox) return err('Supply the sandbox configuration in sandbox.');
@@ -683,7 +741,7 @@ export const connectionCatalogEntry = z
     title: z.string(),
     description: z.string(),
     /** What a connection made from this entry can do. */
-    covers: z.array(z.enum(['mail', 'calendar', 'tools', 'execution', 'calls'])),
+    covers: z.array(z.enum(['mail', 'calendar', 'tools', 'execution', 'calls', 'messages'])),
     connect: z.discriminatedUnion('method', [
       z.object({
         method: z.literal('sign_in'),
@@ -1142,9 +1200,9 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
   {
     id: 'phone',
     kind: 'phone',
-    title: 'Phone line (ElevenLabs)',
+    title: 'Phone line and WhatsApp (ElevenLabs)',
     description:
-      'Give Melete a phone number through ElevenLabs Agents, with a Twilio number or a SIP trunk. You can call Melete from your own numbers, and Melete places a call only after you approve who it calls and why.',
+      'Give Melete a phone number through ElevenLabs Agents, with a Twilio number or a SIP trunk, and optionally your WhatsApp Business number. You can call or message Melete from your own numbers, and Melete calls or messages anyone else only after you approve who and why.',
     fixed: [{ path: 'provider', value: 'phone' }],
     fields: [
       text('phone.on_behalf_of', 'Your name', {
@@ -1219,11 +1277,43 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         default: '20:00',
         help: 'In the local time of the person being called.',
       }),
+      text('phone.whatsapp.phone_number_id', 'WhatsApp phone number id', {
+        required: false,
+        placeholder: '106540352242922',
+        help: 'Only with WhatsApp. Connect your WhatsApp Business number in ElevenLabs under Agents, WhatsApp, then copy its phone number id here. The same agent answers it.',
+      }),
+      text('phone.whatsapp.message_template', 'WhatsApp message template', {
+        required: false,
+        placeholder: 'melete_hello',
+        help: 'A template Meta approved, which should say an AI assistant is writing for you. Without it, Melete does not start WhatsApp chats.',
+      }),
+      text('phone.whatsapp.call_template', 'WhatsApp call permission template', {
+        required: false,
+        help: 'The approved template that asks permission to call. Without it, Melete does not place WhatsApp calls.',
+      }),
+      text('phone.whatsapp.template_language', 'Template language', {
+        required: false,
+        default: 'en',
+      }),
     ],
     scopes: [
       {
         scope: 'phone.call',
         label: 'Place a call',
+        effect_class: 'write_external',
+        asks_first: true,
+        default: true,
+      },
+      {
+        scope: 'whatsapp.message',
+        label: 'Start a WhatsApp chat',
+        effect_class: 'write_external',
+        asks_first: true,
+        default: true,
+      },
+      {
+        scope: 'whatsapp.call',
+        label: 'Place a WhatsApp call',
         effect_class: 'write_external',
         asks_first: true,
         default: true,
