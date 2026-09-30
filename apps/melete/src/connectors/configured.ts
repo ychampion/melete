@@ -4,6 +4,9 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
+import { createPhoneConnector, takeDown } from '../phone/connector.ts';
+import type { Fetch } from '../phone/elevenlabs.ts';
+import { readLine, storedPhoneConnection } from '../phone/line.ts';
 import {
   createSandboxProvider,
   modalEnvironmentRefusal,
@@ -194,7 +197,14 @@ export type ConnectorOptions = {
   google?: { client: AccountClient; endpoints?: GoogleEndpoints };
   /** The operator's Microsoft client, as for Google; `tenant` is `common` unless named. */
   microsoft?: { client: AccountClient; tenant?: string; endpoints?: MicrosoftEndpoints };
+  /**
+   * What a phone line needs besides its own row: the address ElevenLabs reaches
+   * this service at, and the ElevenLabs API base. Only a test replaces `fetch`.
+   */
+  phone?: PhoneRuntimeOptions;
 };
+
+export type PhoneRuntimeOptions = { publicUrl?: string; apiBase?: string; fetch?: Fetch };
 
 /**
  * What the service brings to a sandbox connection: the session table, the
@@ -383,6 +393,24 @@ export class ConnectorFactory {
           close: opened.close,
         }),
       );
+    }
+    if (row.provider === 'phone') {
+      const line = storedPhoneConnection.safeParse(row.configuration);
+      if (!line.success || !row.secretRef) return undefined;
+      return createPhoneConnector({
+        line: {
+          id: row.id,
+          spaceId: row.spaceId,
+          label: '',
+          status: 'active',
+          secretRef: row.secretRef,
+          stored: line.data,
+        },
+        sql: options.sql,
+        secrets: this.secrets,
+        ...(options.phone?.apiBase ? { apiBase: options.phone.apiBase } : {}),
+        ...(options.phone?.fetch ? { fetch: options.phone.fetch } : {}),
+      });
     }
     if (row.provider === 'test' && options.enableTestConnector)
       return createTestConnector(options.sql);
@@ -575,6 +603,7 @@ export function connectorFactoryFor(
   if (!factory) {
     factory = new ConnectorFactory(fallback());
     factories.set(registry, factory);
+    releasePhoneLines(registry, factory);
   }
   return factory;
 }
@@ -582,20 +611,37 @@ export function connectorFactoryFor(
 /** Bind a registry to a factory built elsewhere, as a protocol fixture does. */
 export function useConnectorFactory(registry: ConnectorRegistry, factory: ConnectorFactory): void {
   factories.set(registry, factory);
-  keepReleasing(registry, factory.options);
+  keepReleasing(registry, factory);
 }
 
 /** A stdio server's volumes outlive its connector; a gone connection's are removed all the same. */
-function keepReleasing(registry: ConnectorRegistry, options: ConnectorOptions): void {
-  const launcher = options.stdioLauncher;
+function keepReleasing(registry: ConnectorRegistry, factory: ConnectorFactory): void {
+  const launcher = factory.options.stdioLauncher;
   if (launcher) registry.addReleaser((connectionId) => launcher.destroy(connectionId));
+  releasePhoneLines(registry, factory);
+}
+
+/**
+ * A phone line's agent, number, webhook and secret live at ElevenLabs. When
+ * its connection goes they are removed, whether or not a connector was serving
+ * it: a line whose first test failed has none.
+ */
+function releasePhoneLines(registry: ConnectorRegistry, factory: ConnectorFactory): void {
+  registry.addReleaser(async (connectionId) => {
+    const line = await readLine(factory.options.sql, connectionId).catch(() => null);
+    if (!line) return;
+    await takeDown(line, factory.options.sql, factory.secrets, {
+      ...(factory.options.phone?.apiBase ? { apiBase: factory.options.phone.apiBase } : {}),
+      ...(factory.options.phone?.fetch ? { fetch: factory.options.phone.fetch } : {}),
+    });
+  });
 }
 
 export async function configuredConnectors(options: ConnectorOptions) {
   const registry = new ConnectorRegistry();
   const factory = new ConnectorFactory(options);
   factories.set(registry, factory);
-  keepReleasing(registry, options);
+  keepReleasing(registry, factory);
   // Publishing by email uses the mailbox the owner already configured. The
   // artifacts connector is therefore registered after the loop, so the order
   // connections happen to appear in does not decide whether it can mail.
@@ -673,6 +719,7 @@ export function connectorOptionsFromEnv(
     stdioLauncher: extra.stdioLauncher,
     stdioLifecycle: { idleMs: env.MELETE_MCP_IDLE_MS },
     cellIsolated: builtinEnvironment(env).cellIsolated,
+    phone: { publicUrl: env.MELETE_PUBLIC_URL, apiBase: env.MELETE_ELEVENLABS_API_URL },
     ...(env.MICROSOFT_OAUTH_CLIENT_ID && env.MICROSOFT_OAUTH_CLIENT_SECRET
       ? {
           microsoft: {

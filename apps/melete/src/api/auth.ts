@@ -20,6 +20,7 @@ import { owner, principal, space } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import { ExperienceSignIn } from '../experience/signin.ts';
 import { newId } from '../ids.ts';
+import { PHONE_BODY_BYTES, PHONE_PUBLIC_PATH } from '../phone/paths.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
 import { resolveSessionSpace, type SessionSpace } from '../principals/session-space.ts';
 import { ensureDefaultConnections } from './connections.ts';
@@ -39,6 +40,8 @@ const SESSION_BODY_BYTES = 8 * 1024 * 1024;
 const tooLarge = (c: Context) =>
   c.json({ error: { code: 'request_too_large', message: 'The request is too large.' } }, 413);
 const publicBody = bodyLimit({ maxSize: PUBLIC_BODY_BYTES, onError: tooLarge });
+/** ElevenLabs holds no session: a phone line's routes check the line's own key or signature. */
+const phoneBody = bodyLimit({ maxSize: PHONE_BODY_BYTES, onError: tooLarge });
 const sessionBody = bodyLimit({ maxSize: SESSION_BODY_BYTES, onError: tooLarge });
 /** Browsers that have not signed in to an account before share this many attempts on it. */
 const ACCOUNT_BURST = 10;
@@ -212,6 +215,7 @@ export function mountAuth(
     // A body is counted as it arrives, so one sent without a length, or with a
     // false one, is dropped at the limit rather than read and parsed whole.
     if (publicRoute) return publicBody(c, next);
+    if (c.req.method === 'POST' && PHONE_PUBLIC_PATH.test(c.req.path)) return phoneBody(c, next);
 
     const token = getCookie(c, SESSION_COOKIE);
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {

@@ -19,6 +19,7 @@ import {
   replyObligation,
 } from '../db/schema.ts';
 import type { JobService } from '../jobs/service.ts';
+import { PHONE_PUBLIC_PATH } from '../phone/paths.ts';
 import { requireJobAccess, spaceAuthority } from './authority.ts';
 import { PrincipalService } from './service.ts';
 
@@ -32,7 +33,11 @@ export function mountPrincipals(
   if (!db) return;
   const service = new PrincipalService(db, spacesRoot, jobs);
   app.use('*', async (c, next) => {
-    if (['/health', '/setup', '/login', '/oauth/client-metadata.json'].includes(c.req.path))
+    if (
+      ['/health', '/setup', '/login', '/oauth/client-metadata.json'].includes(c.req.path) ||
+      // A phone line's routes check the line's own key or signature, not a session.
+      (c.req.method === 'POST' && PHONE_PUBLIC_PATH.test(c.req.path))
+    )
       return next();
     const actor = c.get('owner').id;
     const path = c.req.path;
