@@ -19,6 +19,10 @@ You need [Bun](https://bun.sh) 1.3 or newer on the computer, and a copy of this 
    bun packages/device/src/cli.ts pair --url https://your-melete.example --code ABCD-EFGH
    ```
 
+   The address must start with `https://`. Plain `http://` works only for a Melete running on the
+   same computer (`localhost` or `127.0.0.1`), because the device token would otherwise cross the
+   network unencrypted.
+
    The companion asks for a name for the computer, the folders to share, and what to allow on
    this side. Then it stays connected and prints every request as it arrives. Press Ctrl+C to
    disconnect for now; run `bun packages/device/src/cli.ts` again to reconnect.
@@ -43,7 +47,7 @@ computer's choice always wins, and it is checked on the computer before anything
 |---|---|---|---|
 | Use files in shared folders | `device.list_files`, `device.read_file`, `device.write_file` | On | Writing a file asks you first; listing and reading do not |
 | Run commands | `device.run` | **Off** | Every command asks you first, showing the exact command |
-| Open web pages | `device.open_url` | On | No |
+| Open web pages | `device.open_url` | On | Only for a page on the computer itself or its local network (see below) |
 | Take screenshots | `device.screenshot` | Off | No |
 
 `device.status` is always available: it tells the agent whether the computer is online, what it
@@ -73,8 +77,9 @@ screenshot, which is kept with the task's files.
 - **Reach outside the folders you shared.** A file path is a shared folder's name followed by a
   path inside it, like `Projects/notes/todo.md`. Absolute paths, drive letters, `..`, backslashes
   and Windows device names are refused by Melete before anything is sent, and again by the
-  companion. The companion does not follow symbolic links or junctions inside a shared folder, and
-  it checks that whatever it opens really is inside the folder.
+  companion. The companion does not follow symbolic links or junctions inside a shared folder, does
+  not read or write a file that has a second name elsewhere (a hard link), and checks that whatever
+  it opens really is inside the folder.
 - **Accept connections.** Nothing on your computer listens. The companion keeps one outgoing
   connection to Melete and collects requests from it.
 - **Run a command without you seeing it.** Commands are off until you turn them on on both sides,
@@ -82,6 +87,9 @@ screenshot, which is kept with the task's files.
   shared folder, so treat approving one like typing it yourself: it is not confined to the folder.
 - **Open anything but a web page.** Only `http` and `https` addresses are opened, with the
   operating system's own opener and no shell in between.
+- **Open a page on your computer or your network without asking.** An address such as
+  `localhost`, `192.168.1.1`, `printer.local` or a name that resolves to one on your computer waits
+  for your approval of that exact address, and the card says it is on your network.
 - **Keep working after you disconnect it.** Revoking stops the token at once.
 
 ## What stays on your computer

@@ -35,7 +35,7 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
 import { type DeviceHub, sharedDeviceHub } from './hub.ts';
-import { DevicePathError, devicePath, openableUrl } from './paths.ts';
+import { DevicePathError, devicePath, namesLocalNetwork, openableUrl } from './paths.ts';
 
 const pathArgument = {
   type: 'string',
@@ -121,7 +121,8 @@ export const DEVICE_TOOL_SHAPES: Record<DeviceTool, ToolShape> = {
     verify: false,
   },
   open_url: {
-    description: "Open a web page in the default browser on the person's computer.",
+    description:
+      "Open a web page in the default browser on the person's computer. An address on that computer or its local network is opened only after the person approves it.",
     input_schema: object({ url: { type: 'string', minLength: 1, maxLength: 2048 } }, ['url']),
     effect_class: 'write_reversible',
     requires_approval: false,
@@ -322,6 +323,7 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
     tool: DeviceTool,
     payload: Record<string, unknown>,
     device: DeviceRow,
+    approved: boolean,
   ): Record<string, unknown> => {
     switch (tool) {
       case 'list_files':
@@ -370,7 +372,9 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         };
       }
       case 'open_url':
-        return { url: openableUrl(payload.url) };
+        // The companion opens a local address only when the person approved
+        // this action, which is what this mark tells it.
+        return { url: openableUrl(payload.url), ...(approved ? { local_approved: true } : {}) };
       default:
         return {};
     }
@@ -500,6 +504,13 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
       },
     },
 
+    asksFirst(action) {
+      return (
+        action.kind === deviceToolName('open_url') &&
+        namesLocalNetwork(action.canonical_payload.url)
+      );
+    },
+
     dispatchBudgetMs(action) {
       const tool = toolOf(action);
       return tool ? timeoutFor(tool, action.canonical_payload) + 5_000 : 30_000;
@@ -526,7 +537,12 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         return { outcome: 'succeeded', receipt: receiptFor(action, statusDetail(device)) };
       let sent: Record<string, unknown>;
       try {
-        sent = argumentsFor(tool, action.canonical_payload, device);
+        sent = argumentsFor(
+          tool,
+          action.canonical_payload,
+          device,
+          Boolean(action.authorization_ref),
+        );
       } catch (error) {
         if (error instanceof DevicePathError) return refused(error.message);
         throw error;
@@ -541,7 +557,9 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         return refused(
           outcome.reason === 'disconnected'
             ? `${device.name} was disconnected, so nothing was sent.`
-            : `${device.name} is not connected right now, so nothing was sent.`,
+            : outcome.reason === 'capability_off'
+              ? `${capability ? CAPABILITY_WORDS[capability] : 'This'} was turned off for ${device.name} before it collected this, so nothing was sent.`
+              : `${device.name} is not connected right now, so nothing was sent.`,
         );
       if (outcome.kind === 'no_answer')
         return {

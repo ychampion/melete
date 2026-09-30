@@ -7,7 +7,8 @@
  * mean different things to the broker:
  *
  * - `not_delivered`: the computer never collected the request (it is offline,
- *   or was disconnected). Nothing happened there, and saying so is exact.
+ *   was disconnected, or what the request needs was turned off while it
+ *   waited). Nothing happened there, and saying so is exact.
  * - `no_answer`: the computer collected it and no answer came back in time.
  *   It may have run, so the action is `unknown` and never sent again blindly.
  * - `reply`: the computer's own answer.
@@ -21,7 +22,10 @@ import { DEVICE_LIMITS, type DeviceRequest, type DeviceResult } from '@melete/co
 
 export type DeviceCallOutcome =
   | { kind: 'reply'; reply: DeviceResult }
-  | { kind: 'not_delivered'; reason: 'offline' | 'not_collected' | 'disconnected' }
+  | {
+      kind: 'not_delivered';
+      reason: 'offline' | 'not_collected' | 'disconnected' | 'capability_off';
+    }
   | { kind: 'no_answer' };
 
 type Pending = {
@@ -145,6 +149,22 @@ export class DeviceHub {
     if (!pending || pending.deviceId !== deviceId || !pending.delivered) return false;
     pending.settle({ kind: 'reply', reply });
     return true;
+  }
+
+  /**
+   * Something this computer allowed was turned off. Requests still waiting to
+   * be collected that `allowed` no longer covers are withdrawn and answered
+   * now, so nothing is handed over after the change. One already collected is
+   * the companion's to refuse, which it does by its own settings.
+   */
+  withdraw(deviceId: string, allowed: (request: DeviceRequest) => boolean): number {
+    let withdrawn = 0;
+    for (const pending of [...this.byId.values()])
+      if (pending.deviceId === deviceId && !pending.delivered && !allowed(pending.request)) {
+        pending.settle({ kind: 'not_delivered', reason: 'capability_off' });
+        withdrawn++;
+      }
+    return withdrawn;
   }
 
   /** The computer lost access: nothing more is handed to it, and what waited is answered now. */

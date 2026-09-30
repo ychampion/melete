@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { checkServiceAddress, onLocalNetwork } from './address.ts';
+import { discoverApi } from './agent.ts';
 import type { Capabilities, Folder } from './config.ts';
 import { folderName } from './config.ts';
 import { parsePath, Refusal, resolveInside } from './policy.ts';
@@ -82,6 +84,22 @@ describe('paths stay inside the shared folders', () => {
       ),
     ).toBe('outside_folders');
     expect(await readFile(join(outside, 'secret.txt'), 'utf8')).toBe('not for the agent');
+  });
+
+  test('a file with a second name outside the folder is neither read nor written', async () => {
+    const target = join(outside, 'linked.txt');
+    await writeFile(target, 'kept outside');
+    await link(target, join(shared, 'hard.txt'));
+    const context = { capabilities: ALL, folders };
+    expect(await refusal(runTool('read_file', { path: 'Shared/hard.txt' }, context))).toBe(
+      'outside_folders',
+    );
+    expect(
+      await refusal(
+        runTool('write_file', { path: 'Shared/hard.txt', content: 'OVERWRITTEN' }, context),
+      ),
+    ).toBe('outside_folders');
+    expect(await readFile(target, 'utf8')).toBe('kept outside');
   });
 
   test('a listing shows links as links and never follows them', async () => {
@@ -199,6 +217,7 @@ describe('web pages', () => {
       launch: async (command: string, args: string[]) => {
         launched.push([command, ...args]);
       },
+      resolve: async () => ['93.184.215.14'],
     };
     expect(await refusal(runTool('open_url', { url: 'file:///etc/passwd' }, context))).toBe(
       'invalid_request',
@@ -209,5 +228,80 @@ describe('web pages', () => {
     await runTool('open_url', { url: 'https://example.com/a?b=1&c=2' }, context);
     expect(launched).toHaveLength(1);
     expect(launched[0]?.at(-1)).toBe('https://example.com/a?b=1&c=2');
+  });
+});
+
+describe('pages on this computer or its network', () => {
+  const launched: string[] = [];
+  const answers: Record<string, string[]> = {
+    'example.com': ['93.184.215.14'],
+    'rebind.example': ['93.184.215.14', '192.168.1.1'],
+    'loop.example': ['::ffff:127.0.0.1'],
+  };
+  const context = {
+    capabilities: ALL,
+    folders,
+    launch: async (_command: string, args: string[]) => {
+      launched.push(String(args.at(-1)));
+    },
+    resolve: async (host: string) => answers[host] ?? [],
+  };
+
+  test.each([
+    'http://localhost:8080/admin',
+    'http://127.0.0.1/',
+    'http://[::1]:3000/',
+    'http://192.168.1.1/',
+    'http://169.254.169.254/latest/meta-data',
+    'http://printer.local/',
+    'http://router/',
+    'https://rebind.example/',
+    'https://loop.example/',
+  ])('%s is refused unless the person approved it', async (url) => {
+    launched.length = 0;
+    expect(await refusal(runTool('open_url', { url }, context))).toBe('invalid_request');
+    expect(launched).toEqual([]);
+    await runTool('open_url', { url, local_approved: true }, context);
+    expect(launched).toHaveLength(1);
+  });
+
+  test('a public page opens without a mark', async () => {
+    launched.length = 0;
+    await runTool('open_url', { url: 'https://example.com/' }, context);
+    expect(launched).toEqual(['https://example.com/']);
+    expect(await onLocalNetwork(new URL('https://example.com/'), context.resolve)).toBe(false);
+  });
+});
+
+describe('the address Melete is reached at', () => {
+  test.each([
+    'http://127.0.0.1:3100',
+    'http://localhost:3000',
+    'http://[::1]:3000',
+    'https://melete.example',
+    'https://192.168.1.10',
+  ])('%s is accepted', (address) => {
+    expect(() => checkServiceAddress(address)).not.toThrow();
+  });
+
+  test.each([
+    'http://melete.example',
+    'http://192.168.1.10:3000',
+    'http://10.0.0.2',
+    'ftp://melete.example',
+  ])('%s is refused before anything is sent', async (address) => {
+    expect(() => checkServiceAddress(address)).toThrow();
+    let asked = false;
+    const fetcher = async () => {
+      asked = true;
+      return new Response('{}');
+    };
+    expect(
+      await discoverApi(address, fetcher).then(
+        () => 'accepted',
+        () => 'refused',
+      ),
+    ).toBe('refused');
+    expect(asked).toBe(false);
   });
 });
