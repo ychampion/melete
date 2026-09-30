@@ -60,6 +60,7 @@ import { microsoftProvider } from '../connectors/microsoft.ts';
 import { isPublicEndpoint, publicOnlyFetch } from '../connectors/public-fetch.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { SignedInCredential } from '../connectors/signed-in.ts';
+import { TwilioClient, TwilioFailure } from '../connectors/twilio.ts';
 import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
 import { connection, space } from '../db/schema.ts';
@@ -74,6 +75,7 @@ import {
   sandboxCredentialValue,
 } from '../sandbox/connection.ts';
 import { SandboxRefusal } from '../sandbox/manifest.ts';
+import { SMS_INBOUND_NEEDS, smsWebhookUrl } from '../sms/inbox.ts';
 import { ServiceError } from './errors.ts';
 
 export type ConnectionDeps = { db: Database; sql: Sql; registry: ConnectorRegistry; env: Env };
@@ -273,6 +275,10 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         covers: [KIND_COVERS[kind.kind]],
         connect: { method: 'form', kind_id: kind.id },
         available: true,
+        // Texts can always be sent; receiving them needs an address Twilio can reach.
+        ...(kind.kind === 'sms' && !smsWebhookUrl(deps.env.MELETE_PUBLIC_URL, 'conn_x')
+          ? { limited_reason: SMS_INBOUND_NEEDS }
+          : {}),
       }),
     );
     return [...accounts, ...servers, ...forms];
@@ -412,7 +418,13 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           );
     }
     const id = newId('conn');
-    const stored = await storedShape(installation, id, spaceId, factory);
+    const stored = await storedShape(
+      installation,
+      id,
+      spaceId,
+      factory,
+      deps.env.MELETE_PUBLIC_URL,
+    );
 
     const generation = await serviceTransaction(deps.db, async (tx) => {
       await requireInstaller(tx, spaceId, actor, installation.kind, true);
@@ -1005,6 +1017,7 @@ const KIND_COVERS = {
   mcp: 'tools',
   mcp_stdio: 'tools',
   sandbox: 'execution',
+  sms: 'texts',
 } as const satisfies Record<
   ConnectionKindDescriptor['kind'],
   ConnectionCatalogEntry['covers'][number]
@@ -1065,6 +1078,15 @@ function accountSignInError(name: AccountProviderName, error: unknown): ServiceE
   return new ServiceError('sign_in_failed', 'The connection could not be completed.', 502);
 }
 
+/** What installing text messages says when Twilio did not answer as it should. */
+function twilioRefusal(error: unknown): string {
+  if (error instanceof TwilioFailure && error.code === 'credential_refused')
+    return 'Twilio refused the account SID or auth token. Copy both again from the Twilio Console.';
+  if (error instanceof TwilioFailure && error.code !== 'unavailable')
+    return 'Twilio refused the request for this number. Check that it can send and receive texts.';
+  return 'Twilio could not be reached. Try again shortly.';
+}
+
 const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 
 /** The small page the browser lands on after signing in. */
@@ -1099,6 +1121,7 @@ async function storedShape(
   id: string,
   spaceId: string,
   factory: ConnectorFactory,
+  publicUrl: string | undefined,
 ): Promise<{ scopes: string[]; secret: string | null; configuration: Record<string, unknown> }> {
   if (signedIn(installation))
     return {
@@ -1106,7 +1129,7 @@ async function storedShape(
       secret: JSON.stringify(installation.credential),
       configuration: { kind: installation.kind, account: installation.account },
     };
-  return requestedShape(installation, id, spaceId, factory);
+  return requestedShape(installation, id, spaceId, factory, publicUrl);
 }
 
 async function requestedShape(
@@ -1114,6 +1137,7 @@ async function requestedShape(
   id: string,
   spaceId: string,
   factory: ConnectorFactory,
+  publicUrl: string | undefined,
 ): Promise<{ scopes: string[]; secret: string | null; configuration: Record<string, unknown> }> {
   if (installation.kind === 'mcp') {
     const { url, ...policy } = installation.config;
@@ -1204,6 +1228,44 @@ async function requestedShape(
         ? JSON.stringify(Object.fromEntries(secret_env.map((entry) => [entry.name, entry.value])))
         : null,
       configuration: { server: config },
+    };
+  }
+  if (installation.kind === 'sms') {
+    const { credentials, config } = installation;
+    if (config.allowed_numbers.includes(credentials.from_number))
+      throw new ServiceError(
+        'invalid_request',
+        'Your phone numbers: the Twilio number itself cannot be one of them.',
+        400,
+      );
+    // The credential is proved, and the number found on its account, while it
+    // is still only in memory: a refused one never becomes a row or a secret.
+    const client = new TwilioClient(credentials, factory.options.twilio);
+    let numberSid: string | null;
+    try {
+      numberSid = await client.numberSid();
+    } catch (error) {
+      throw new ServiceError('invalid_request', twilioRefusal(error), 400);
+    }
+    if (!numberSid)
+      throw new ServiceError(
+        'invalid_request',
+        `This Twilio account has no number ${credentials.from_number}. Use one listed under Phone Numbers in the Twilio Console.`,
+        400,
+      );
+    // With a public address, the number's incoming texts are sent here, so
+    // nobody has to paste a webhook address into the Twilio Console.
+    const webhook = smsWebhookUrl(publicUrl, id);
+    if (webhook)
+      try {
+        await client.receiveAt(numberSid, webhook);
+      } catch (error) {
+        throw new ServiceError('invalid_request', twilioRefusal(error), 400);
+      }
+    return {
+      scopes: installation.scopes,
+      secret: JSON.stringify(credentials),
+      configuration: { kind: 'sms', sms: config },
     };
   }
   if (installation.kind === 'sandbox') {

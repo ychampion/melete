@@ -65,6 +65,7 @@ import {
   mcpSignInRequest,
   mcpSignInStart,
   mcpSignInStatus,
+  smsTextListResponse,
 } from './connections.ts';
 import { space, triggerSpec } from './entities.ts';
 import { eventPage, eventQuery } from './events.ts';
@@ -1720,6 +1721,64 @@ export function buildOpenApiDocument() {
             responses: {
               '200': jsonResponse('Connection and check', connectionCheckResponse),
               '403': problem('Space owner required'),
+            },
+          },
+        },
+
+        '/connections/{connectionId}/texts': {
+          get: {
+            tags: ['connections'],
+            summary: 'Read the texts that reached a Twilio number',
+            description:
+              'The latest hundred, newest first. A text from one of the numbers given as your own ' +
+              'went to your texting conversation; a text from any other number is only kept here, ' +
+              'to be read, and was never acted on.',
+            requestParams: idParam('connectionId', 'Connection id'),
+            responses: {
+              '200': jsonResponse('Texts', smsTextListResponse),
+              '403': problem('Space owner required'),
+              '404': problem('No such text-message connection'),
+            },
+          },
+        },
+
+        '/sms/twilio/{connectionId}': {
+          post: {
+            tags: ['connections'],
+            summary: 'Where Twilio delivers a text that reached the number',
+            description:
+              'Called by Twilio, not by a person, at `<MELETE_PUBLIC_URL>/api/sms/twilio/<connection>`. ' +
+              'No session is needed: the request is believed only when its `X-Twilio-Signature` is ' +
+              "Twilio's HMAC-SHA1 of that exact address and the posted parameters under the " +
+              "connection's auth token, and it names the connection's own account and number. A " +
+              'message Twilio delivers twice is handled once.',
+            requestParams: {
+              ...idParam('connectionId', 'Connection id'),
+              header: z.object({ 'X-Twilio-Signature': z.string() }),
+            },
+            requestBody: {
+              content: {
+                'application/x-www-form-urlencoded': {
+                  schema: z.object({
+                    MessageSid: z.string(),
+                    AccountSid: z.string(),
+                    From: z.string(),
+                    To: z.string(),
+                    Body: z.string(),
+                    NumMedia: z.string().optional(),
+                  }),
+                },
+              },
+            },
+            responses: {
+              '200': {
+                description: 'Received; the answer, if any, follows by text',
+                content: { 'text/xml': { schema: z.string() } },
+              },
+              '403': {
+                description: 'Not a signed text for an active connection',
+                content: { 'text/plain': { schema: z.string() } },
+              },
             },
           },
         },

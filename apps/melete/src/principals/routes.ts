@@ -19,6 +19,7 @@ import {
   replyObligation,
 } from '../db/schema.ts';
 import type { JobService } from '../jobs/service.ts';
+import { SMS_WEBHOOK_PATH } from '../sms/routes.ts';
 import { requireJobAccess, spaceAuthority } from './authority.ts';
 import { PrincipalService } from './service.ts';
 
@@ -34,6 +35,8 @@ export function mountPrincipals(
   app.use('*', async (c, next) => {
     if (['/health', '/setup', '/login', '/oauth/client-metadata.json'].includes(c.req.path))
       return next();
+    // Twilio's webhook has no session; the route itself believes only the signature.
+    if (c.req.method === 'POST' && SMS_WEBHOOK_PATH.test(c.req.path)) return next();
     const actor = c.get('owner').id;
     const path = c.req.path;
     const parts = path.split('/').filter(Boolean);

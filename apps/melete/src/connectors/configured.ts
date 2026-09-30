@@ -1,5 +1,9 @@
 import { readFile } from 'node:fs/promises';
-import { caldavConnectionConfig, mailConnectionConfig } from '@melete/contracts';
+import {
+  caldavConnectionConfig,
+  mailConnectionConfig,
+  smsConnectionConfig,
+} from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import type { Env } from '../env.ts';
@@ -44,8 +48,10 @@ import { ConnectorRegistry } from './registry.ts';
 import { createSandboxExecConnector } from './sandbox-exec.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
 import { type AccountClient, signedInAccess } from './signed-in.ts';
+import { SmsConnector } from './sms.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
 import { createCapabilityConnector } from './tts.ts';
+import type { TwilioOptions } from './twilio.ts';
 import type { Connector } from './types.ts';
 import { createWebConnector } from './web.ts';
 
@@ -194,6 +200,8 @@ export type ConnectorOptions = {
   google?: { client: AccountClient; endpoints?: GoogleEndpoints };
   /** The operator's Microsoft client, as for Google; `tenant` is `common` unless named. */
   microsoft?: { client: AccountClient; tenant?: string; endpoints?: MicrosoftEndpoints };
+  /** Replaces Twilio's address and transport. Only a test passes one. */
+  twilio?: TwilioOptions;
 };
 
 /**
@@ -235,6 +243,7 @@ const storedConfiguration = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('outlook_mail'), account: z.email() }),
   z.object({ kind: z.literal('outlook_calendar'), account: z.email() }),
   storedSandboxConnection,
+  z.object({ kind: z.literal('sms'), sms: smsConnectionConfig }),
 ]);
 
 /**
@@ -384,6 +393,18 @@ export class ConnectorFactory {
         }),
       );
     }
+    if (row.provider === 'twilio' && stored?.kind === 'sms' && row.secretRef)
+      return ownerOnly(
+        new SmsConnector(
+          {
+            id: row.id,
+            spaceId: row.spaceId,
+            secretRef: row.secretRef,
+            ...(options.twilio ? { twilio: options.twilio } : {}),
+          },
+          this.secrets,
+        ),
+      );
     if (row.provider === 'test' && options.enableTestConnector)
       return createTestConnector(options.sql);
     if (

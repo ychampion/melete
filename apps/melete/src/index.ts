@@ -124,6 +124,8 @@ import {
   sandboxRemovalTeardown,
   startSandboxesFromEnv,
 } from './sandbox/wiring.ts';
+import { startSmsReplies } from './sms/inbox.ts';
+import { mountSms } from './sms/routes.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
@@ -258,20 +260,34 @@ export function createApp(deps: AppDeps) {
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
-  if (deps.db)
-    mountExperience(app, {
-      db: deps.db,
-      jobs: deps.jobs,
-      submissions,
-      runner: deps.runner,
-      sql: deps.sql,
-      broker: deps.broker,
-      registry: deps.registry,
-      questions,
-      memoryJournal: deps.memory?.journal,
-      memoryProvision: deps.memory?.provision,
-      triggers: deps.triggers,
+  const experience = deps.db
+    ? mountExperience(app, {
+        db: deps.db,
+        jobs: deps.jobs,
+        submissions,
+        runner: deps.runner,
+        sql: deps.sql,
+        broker: deps.broker,
+        registry: deps.registry,
+        questions,
+        memoryJournal: deps.memory?.journal,
+        memoryProvision: deps.memory?.provision,
+        triggers: deps.triggers,
+      })
+    : undefined;
+  if (connections) {
+    const factory = connectorFactoryFor(connections.registry, () =>
+      connectorOptionsFromEnv(connections.sql, connections.env),
+    );
+    mountSms(app, {
+      db: connections.db,
+      sql: connections.sql,
+      secrets: factory.secrets,
+      publicUrl: deps.env.MELETE_PUBLIC_URL,
+      twilio: factory.options.twilio,
+      experience,
     });
+  }
   if (deps.db)
     mountCompanies(app, {
       ...companiesDeps({
@@ -424,6 +440,7 @@ export async function bootstrap(
   let registry: ConnectorRegistry | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
+  let smsReplies: ReturnType<typeof startSmsReplies> | undefined;
   let signIn: ProviderSignIn | undefined;
   let sandboxes: SandboxWiring | undefined;
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
@@ -442,6 +459,7 @@ export async function bootstrap(
           learning?.close(),
           events?.close(),
           companyReplies?.stop(),
+          smsReplies?.stop(),
           triggers?.stop(),
           runner?.stop(),
           operations?.stop(),
@@ -521,6 +539,12 @@ export async function bootstrap(
         connectorOptionsFromEnv(handle.sql, env),
       );
       sandboxes = startSandboxesFromEnv(handle.sql, env, connectors);
+      // Answers to texts go back from the service itself, once each turn a text began has ended.
+      smsReplies = startSmsReplies({
+        sql: handle.sql,
+        secrets: connectors.secrets,
+        twilio: connectors.options.twilio,
+      });
       // A sandbox connection's key is the only way into its account, so a
       // revocation destroys what the connection holds before the key goes.
       sandboxTeardown = connectors.sandboxTeardownProviders();
@@ -719,6 +743,7 @@ export async function bootstrap(
         runner.onFinished.push(async (_tx, _row, _outcome, attemptId) => {
           sandboxes?.afterAttempt(attemptId);
         });
+      if (smsReplies) runner.onFinished.push(async () => void smsReplies?.poke());
       if (browser)
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
