@@ -23,6 +23,7 @@ import { adapter } from '../experience/adapter.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
 import { lookOf } from '../experience/hooks.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
+import { OPEN_TEXT_LIMIT_BYTES } from '../experience/text-prefix.ts';
 import { type ToolEntry, toolOf } from '../experience/trace.ts';
 import type {
   ActionResolution,
@@ -407,7 +408,7 @@ function SavedFileAction({
   touch: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [text, setText] = useState<string | null>(null);
+  const [shown, setShown] = useState<{ text: string; truncated: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const href = adapter.artifactUrl(id);
   if (!view)
@@ -420,7 +421,7 @@ function SavedFileAction({
     setOpen(true);
     setError(null);
     const result = await adapter.artifactText(id);
-    if (result.data !== null) setText(result.data);
+    if (result.data !== null) setShown(result.data);
     else setError(result.error ?? result.unavailable ?? 'Couldn’t open this file.');
   };
   return (
@@ -451,10 +452,17 @@ function SavedFileAction({
           <p role="alert" className="permission-why">
             {error}
           </p>
-        ) : text === null ? (
+        ) : shown === null ? (
           <p className="permission-why">Opening…</p>
         ) : (
-          <pre className="permission-file-text">{text || 'This file is empty.'}</pre>
+          <>
+            <pre className="permission-file-text">{shown.text || 'This file is empty.'}</pre>
+            {shown.truncated ? (
+              <p className="permission-why">
+                This shows the first {OPEN_TEXT_LIMIT_BYTES / 1024} KB. Download to see all of it.
+              </p>
+            ) : null}
+          </>
         )}
       </Dialog>
     </>

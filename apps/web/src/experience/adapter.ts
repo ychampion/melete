@@ -11,6 +11,7 @@
 import { createMeleteClient, errorMessage, readSse, subscribeEvents } from '@melete/client';
 import { recordingFetch } from '../feedback/diagnostics.ts';
 import { markValueMoment } from './push.ts';
+import { readTextPrefix } from './text-prefix.ts';
 import type {
   AccountSignInStart,
   AccountSignInStatus,
@@ -238,8 +239,8 @@ export const adapter = {
     guard<{ receipt: Receipt }>(() => api.POST('/receipts/{id}/undo', path(id))),
   sendDraft: (id: string) => guard<SendOutcome>(() => api.POST('/drafts/{id}/send', path(id))),
 
-  /** A saved file read as text, for showing it in the app. */
-  artifactText: async (id: string): Promise<Result<string>> => {
+  /** A saved file read as text, for showing it in the app: its start, when it is very large. */
+  artifactText: async (id: string): Promise<Result<{ text: string; truncated: boolean }>> => {
     try {
       const response = await client.options.fetch(artifactUrl(id), {
         headers: client.options.headers,
@@ -251,7 +252,7 @@ export const adapter = {
           error: response.status === 404 ? 'This file is no longer where it was saved.' : OFFLINE,
           unavailable: null,
         };
-      return { data: await response.text(), error: null, unavailable: null };
+      return { data: await readTextPrefix(response), error: null, unavailable: null };
     } catch {
       return { data: null, error: OFFLINE, unavailable: null };
     }
