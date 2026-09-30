@@ -129,6 +129,12 @@ export class PrivacyRouter {
     return value;
   }
 
+  /** Whether the person marked this space, or this agent in it, private. */
+  async marksPrivate(spaceId: string, agentId: string | null): Promise<boolean> {
+    const settings = await this.settingsFor(spaceId);
+    return settings.privateSpace || (agentId !== null && settings.privateAgents.has(agentId));
+  }
+
   /** A settings change applies to the next request, not after the cache expires. */
   invalidate(spaceId: string) {
     this.settingsCache.delete(spaceId);

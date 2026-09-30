@@ -6,10 +6,16 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'node:crypto';
-import { agentResponse, type CapabilityClaims, type JsonObject } from '@melete/contracts';
+import {
+  agentResponse,
+  type CapabilityClaims,
+  type JsonObject,
+  jobConstraints,
+} from '@melete/contracts';
 import { BrokerFault } from '../../src/broker/errors.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
+import { ConnectorFactory, connectorOptionsFromEnv } from '../../src/connectors/configured.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import {
   createWebConnector,
@@ -284,6 +290,44 @@ withDb('public web reads', () => {
       );
       const invalid = await request('/web/settings', 'PUT', { enabled: 'yes' });
       expect(invalid.status).toBe(400);
+    },
+    SLOW,
+  );
+
+  test(
+    'the service’s own connector options carry the privacy check to the web connection',
+    async () => {
+      if (!handle) throw new Error('Postgres unavailable');
+      const asked: Array<{ spaceId: string; agentId: string | null }> = [];
+      const factory = new ConnectorFactory(
+        connectorOptionsFromEnv(handle.sql, loadEnv({ NODE_ENV: 'test' }), {
+          privateContext: async ({ spaceId: space, agentId }) => {
+            asked.push({ spaceId: space, agentId });
+            return true;
+          },
+        }),
+      );
+      const web = await factory.open({
+        id: webConnection,
+        spaceId,
+        provider: 'web',
+        secretRef: null,
+        configuration: { builtin: 'web' },
+      });
+      if (!web?.prepare) throw new Error('expected the web connector');
+      const claims = await running('chat');
+      const context = {
+        job_id: claims.job_id,
+        space_id: spaceId,
+        idempotency_key: recordId('act'),
+        constraints: jobConstraints.parse({}),
+      };
+      const error = await rejectionOf(
+        Promise.resolve(web.prepare({ url: 'https://example.com/' }, context, handle.sql)),
+      );
+      expect(error).toBeInstanceOf(BrokerFault);
+      expect((error as BrokerFault).message).toContain('private');
+      expect(asked).toEqual([{ spaceId, agentId: defaultAgent ?? null }]);
     },
     SLOW,
   );

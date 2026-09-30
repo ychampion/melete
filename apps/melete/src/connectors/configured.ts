@@ -667,6 +667,7 @@ type ConnectorExtras = {
   browserSessions?: BrowserSessionService;
   stdioLauncher?: StdioLauncher;
   stdioLifecycle?: StdioLifecycleOptions;
+  privateContext?: PrivateContext;
 };
 
 export function connectorOptionsFromEnv(
@@ -684,6 +685,7 @@ export function connectorOptionsFromEnv(
     browserSessions: extra.browserSessions,
     stdioLauncher: extra.stdioLauncher,
     stdioLifecycle: { idleMs: env.MELETE_MCP_IDLE_MS },
+    privateContext: extra.privateContext,
     cellIsolated: builtinEnvironment(env).cellIsolated,
     ...(env.MICROSOFT_OAUTH_CLIENT_ID && env.MICROSOFT_OAUTH_CLIENT_SECRET
       ? {
