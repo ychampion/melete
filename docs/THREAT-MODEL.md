@@ -368,6 +368,76 @@ Accounts share one service process, one database role and one master key;
 isolation between them is an application check, not an operating-system or
 database boundary.
 
+## Attacker 8: a caller, or anyone who finds a phone line's addresses
+
+A phone line adds three routes that ElevenLabs reaches without a session:
+
+- `/phone/{connection}/llm/v1` (also served with `/chat/completions` appended)
+  answers each turn of a call;
+- `/phone/{connection}/inbound` says who is calling;
+- `/phone/{connection}/events` takes the report at the end of a call.
+
+Connection ids appear in these addresses, and anyone can post to them. This
+attacker also includes the person at the other end of a call, and a caller who
+fakes the caller id of one of the person's own numbers.
+
+The first two routes accept only the line's own key. It is 32 random bytes made
+at installation and given to ElevenLabs once, as a workspace secret. The service
+keeps only its SHA-256 digest. A presented key, whether a bearer token or in
+`x-melete-key`, is hashed and its digest compared with `timingSafeEqual`. A
+missing key, a wrong key, another line's key and a revoked line all get the same
+401.
+
+The report route accepts a report only with a valid `ElevenLabs-Signature`: an
+HMAC over the raw bytes with the line's webhook secret, which is sealed with the
+ElevenLabs key. The signature must be no more than thirty minutes old and no
+more than five minutes in the future. A report sent again changes nothing.
+Bodies on all three routes are capped at 512 KiB.
+
+Tests: `the turn endpoint takes only this line's key` and `the end-of-call
+report needs the line's signature, and then lands in the job` in
+[phone.test.ts](../apps/melete/test/integration/phone.test.ts), and
+`keys.test.ts`.
+
+What the other party says on a call is hostile content, as in Attacker 1:
+
+- It arrives only as the conversation's `user` messages. Roles ElevenLabs would
+  not send for the caller are dropped.
+- The instructions are built from the call row alone.
+- On a call Melete placed, the memory query is the approved purpose and what may
+  be shared, so the caller cannot steer recall toward other details.
+- No call tool changes the call's context, and none acts on the world. Sending,
+  paying and booking become follow-ups the person approves after the call.
+
+The test `what the other party says cannot change the call's instructions or
+what memory is asked` checks that the instructions and the query are identical
+for an ordinary sentence and for an injection attempt.
+
+Placing a call is `phone.call`, an external effect bound to its approval:
+
+- Its number is a recipient field, so a number that came from content Melete
+  read is flagged on the approval card.
+- Each call is held to the callee's local calling hours and to a daily limit.
+- The opening line always says an AI assistant is calling.
+
+What remains:
+
+- Caller id is not authentication. A caller who fakes one of the person's own
+  numbers reaches Melete as the person. That caller hears whatever memory
+  recalls for the person, and what they say is recorded as the person's message
+  and read by memory. Nothing is sent, paid or changed during a call, and every
+  follow-up waits for the person's answer in Melete. List only numbers whose
+  carrier the person trusts, and leave the list empty to keep every caller out.
+- A model that is persuaded can still say more than it should. The rules are
+  instructions to the model; the structural limit is what the model is given. On
+  a call Melete placed, the memory it is given is chosen by the approved
+  purpose, not by the caller.
+- ElevenLabs, as the operator's processor, sees every call's audio and
+  transcript and the replies Melete writes.
+- Revoking a line removes it at ElevenLabs. If ElevenLabs cannot be reached at
+  that moment, the connection is still revoked and refuses every request, but
+  its agent may remain in the ElevenLabs workspace until it is deleted there.
+
 ## Credentials, host and storage
 
 Connector secrets have tested sealing and scope checks: `stores randomized
