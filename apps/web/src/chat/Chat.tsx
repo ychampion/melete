@@ -67,6 +67,7 @@ import {
   UnknownCard,
   UserBubble,
 } from './parts.tsx';
+import { pauseOrStop } from './pause.ts';
 import './chat.css';
 
 /** One-tap changes to a draft waiting on a decision; each is sent as the person's next message. */
@@ -94,17 +95,18 @@ async function reportFailure(pending: Promise<Outcome>, verb: string) {
 
 /** Pausing mid-step needs the engine's help; without it, stopping keeps the progress. */
 async function pauseTurn(id: string) {
-  const paused = await adapter.pause(id);
-  if (paused.data !== null) return;
-  const stopped = await adapter.stop(id);
-  if (stopped.data !== null)
+  const result = await pauseOrStop({
+    pause: () => adapter.pause(id),
+    stop: () => adapter.stop(id),
+  });
+  if (result.outcome === 'stopped')
     toast({
       kind: 'info',
       title: 'Stopped this turn',
-      sub: 'This model can’t pause mid-step, so it stopped. Your progress is saved.',
+      sub: 'This assistant can’t pause mid-step, so it stopped. Your progress is saved.',
     });
-  else
-    toast({ kind: 'err', title: 'Couldn’t pause', sub: paused.unavailable ?? paused.error ?? '' });
+  else if (result.outcome === 'failed')
+    toast({ kind: 'err', title: 'Couldn’t pause', sub: result.reason });
 }
 
 function AgentChip({
