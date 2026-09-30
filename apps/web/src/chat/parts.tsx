@@ -25,6 +25,7 @@ import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience
 import { type ToolEntry, toolOf } from '../experience/trace.ts';
 import type {
   ActionResolution,
+  ActionReview,
   Agent,
   BecauseLink,
   Draft,
@@ -652,6 +653,7 @@ export function ReceiptRow({
             · {timeOf(receipt.when)} · {receipt.where}
           </span>
         </span>
+        {receipt.review ? <ReviewNote review={receipt.review} /> : null}
         <BecauseLine because={receipt.because} />
       </span>
       {canUndo ? (
@@ -666,6 +668,24 @@ export function ReceiptRow({
         </Button>
       ) : null}
     </div>
+  );
+}
+
+/** A sentence as the tail of another one: "approved because it only reads." */
+const asClause = (text: string) =>
+  /^[A-Z][a-z]/.test(text) ? `${text[0]?.toLowerCase()}${text.slice(1)}` : text;
+
+/** What auto-review decided, on the receipt of what it let through or the card it sent on. */
+export function ReviewNote({ review }: { review: ActionReview }) {
+  const approved = review.outcome === 'auto_approved';
+  return (
+    <span className="review-note" data-outcome={review.outcome}>
+      <Icon name={approved ? 'check' : 'info'} size={12} stroke={2.5} />
+      <span>
+        <strong>{approved ? 'Auto-reviewed:' : 'Escalated:'}</strong>{' '}
+        {approved ? `approved because ${asClause(review.reason)}` : review.reason}
+      </span>
+    </span>
   );
 }
 
@@ -783,6 +803,7 @@ export function PermissionCard({
       </div>
       {pending ? (
         <div className="permission-body">
+          {permission.review ? <ReviewNote review={permission.review} /> : null}
           {fields.length ? (
             <div className="permission-fields">
               {fields.map((field) => (

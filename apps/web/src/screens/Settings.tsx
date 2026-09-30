@@ -18,6 +18,7 @@ import { models } from '../models/api.ts';
 import { ModelLine, ModelsTab } from '../models/ModelConnect.tsx';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { ApprovalsTab } from './Approvals.tsx';
 import { MemoryPanel } from './Beliefs.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 import { NotificationsTab } from './Notifications.tsx';
@@ -192,7 +193,8 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
     tab === 'rules' ||
     tab === 'notifications' ||
     tab === 'feedback' ||
-    tab === 'models'
+    tab === 'models' ||
+    tab === 'approvals'
       ? tab
       : 'memory';
   const list = connections.data?.connections ?? [];
@@ -245,6 +247,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
               label: 'Connections',
               count: list.filter((c) => c.status === 'connected').length,
             },
+            { value: 'approvals', label: 'Approvals' },
             { value: 'rules', label: 'Rules', count: rules.data?.rules.length ?? 0 },
             { value: 'feedback', label: 'Feedback' },
             { value: 'models', label: 'Models' },
@@ -252,6 +255,8 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
         />
         {current === 'memory' ? (
           <MemoryPanel />
+        ) : current === 'approvals' ? (
+          <ApprovalsTab />
         ) : current === 'notifications' ? (
           <NotificationsTab />
         ) : current === 'feedback' ? (

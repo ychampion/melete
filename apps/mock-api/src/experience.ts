@@ -98,6 +98,7 @@ const PROPOSAL_WORDS: Record<string, { what: string; where: string; reversible: 
     reversible: true,
   },
   'browser.reserve': { what: 'Hold a table through the browser', where: 'Resy', reversible: false },
+  'tasks.create': { what: 'Add a task', where: 'Tasks', reversible: true },
 };
 
 class MockExperienceError extends Error {
@@ -127,6 +128,8 @@ export class ExperienceMock {
   >();
   readonly sentReceipts = new Map<string, C.ExperienceReceipt>();
   readonly rules = new Map<string, C.StandingRule>();
+  /** Settings → Approvals, as the person last saved them. */
+  approvalSettings: C.ApprovalSettings = structuredClone(C.DEFAULT_APPROVAL_SETTINGS);
   readonly questions = new Map<string, Question>();
   readonly plans = new Map<string, Plan>();
   readonly tasks = new Map<string, ReturnType<typeof C.experienceTask.parse>>();
@@ -857,6 +860,9 @@ export class ExperienceMock {
           options: ['allow_once', 'always', 'deny'],
           version: newId('v'),
           preview: chat.lastCard,
+          ...(step.auto_review
+            ? { review: { ...step.auto_review, outcome: 'escalated', reviewed_at: this.now() } }
+            : {}),
           created_at: this.now(),
           because: this.beliefs.becauseFor(`${proposal.what} ${proposal.where}`),
         });
@@ -875,7 +881,8 @@ export class ExperienceMock {
           id: newId('receipt'),
           what: proposal.what
             .replace(/^Add an event to your calendar/, 'Added to your calendar')
-            .replace(/^Hold a table/, 'Held a table'),
+            .replace(/^Hold a table/, 'Held a table')
+            .replace(/^Add a task/, 'Added a task'),
           where: proposal.where,
           when: this.now(),
           because: this.beliefs.becauseFor(`${proposal.what} ${proposal.where}`),
@@ -886,6 +893,9 @@ export class ExperienceMock {
                   valid_until: new Date(Date.now() + 10 * 60_000).toISOString(),
                 },
               }
+            : {}),
+          ...(step.auto_review
+            ? { review: { ...step.auto_review, outcome: 'auto_approved', reviewed_at: this.now() } }
             : {}),
         });
         chat.receipts.push(receipt);
@@ -1546,6 +1556,11 @@ export class ExperienceMock {
         return this.decide(id, input);
       case 'GET /rules':
         return { rules: [...this.rules.values()] };
+      case 'GET /approval-settings':
+        return { settings: this.approvalSettings, reviewer_available: true };
+      case 'PUT /approval-settings':
+        this.approvalSettings = C.approvalSettings.parse(input);
+        return { settings: this.approvalSettings, reviewer_available: true };
       case 'DELETE /rules/{id}':
         required(this.rules, id);
         this.rules.delete(id);

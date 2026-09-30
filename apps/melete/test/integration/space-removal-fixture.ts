@@ -187,6 +187,11 @@ export async function seedSpace(
   await sql`insert into experience_undo (action_id, handle, valid_until)
     values (${actionId}, ${newId('undo')}, now() + interval '1 hour')`;
   await sql`insert into experience_draft_send (draft_action_id) values (${actionId})`;
+  await sql`insert into approval_review_policy (space_id, mode, classes)
+    values (${spaceId}, 'auto_review', '{"sandbox":true}'::jsonb)`;
+  await sql`insert into action_review (id, action_id, job_id, space_id, tier, decided_by, outcome, reason)
+    values (${newId('rvw')}, ${actionId}, ${jobId}, ${spaceId}, 'sandbox', 'policy', 'approved',
+      'Runs inside the agent workspace.')`;
   await sql`insert into question (id, source, space_id, key, text, because, if_ignored)
     values (${newId('qst')}, 'memory', ${spaceId}, 'home.address', 'Which address is current?',
       ${json(['two revisions disagree'])}::text::jsonb, 'The key stays disputed.')`;
