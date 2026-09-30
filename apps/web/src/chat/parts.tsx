@@ -832,10 +832,15 @@ export function PermissionCard({
       active.closest('.decide-bar') !== null;
     if (lost) cardRef.current?.focus({ preventScroll: true });
   }, [decided]);
-  const fields = permission.why.slice(1).map((line) => {
-    const [label = '', ...value] = line.split(': ');
-    return { label, value: value.join(': ') };
-  });
+  // "Label: value" lines are fields; any other reason ("For your request.") reads as a sentence.
+  const reasons = permission.why.slice(1);
+  const notes = reasons.filter((line) => !line.includes(': '));
+  const fields = reasons
+    .filter((line) => line.includes(': '))
+    .map((line) => {
+      const [label = '', ...value] = line.split(': ');
+      return { label, value: value.join(': ') };
+    });
   const draft = permission.draft;
   if (draft && !fields.some((field) => field.label.toLowerCase() === 'to'))
     fields.push({
@@ -875,6 +880,11 @@ export function PermissionCard({
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
           <span className="permission-what">{permission.what}</span>
           <span className="permission-why">{permission.why[0]}</span>
+          {notes.map((note) => (
+            <span key={note} className="permission-why">
+              {note}
+            </span>
+          ))}
         </div>
         {outcome ? (
           <Status tone={decided === 'allow_once' || decided === 'always' ? 'settled' : 'kind'}>

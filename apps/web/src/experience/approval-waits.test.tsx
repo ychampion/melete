@@ -127,3 +127,21 @@ test('the turn finishing on its own says nothing about the request', () => {
       ?.decided,
   ).toBeNull();
 });
+
+test('a long file shows its first lines with Show all, and says when the text was cut', () => {
+  const content = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join('\n');
+  const html = renderToStaticMarkup(
+    <PermissionCard
+      permission={{
+        ...PERMISSION,
+        file: { path: 'notes/long.md', bytes: 90_000, content, truncated: true },
+      }}
+      decided={null}
+      onDecide={() => {}}
+    />,
+  );
+  expect(html).toContain('line 12');
+  expect(html).not.toContain('line 13');
+  expect(html).toContain('Show all');
+  expect(html).toContain('aria-expanded="false"');
+});
