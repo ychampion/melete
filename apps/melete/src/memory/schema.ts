@@ -72,6 +72,11 @@ export const memorySources = pgTable(
     originTrust: text('origin_trust').notNull().default('inferred'),
     // The zone Tier 0 resolves relative dates against, captured at import time.
     timeZone: text('time_zone'),
+    // Why the conversation this came from was private when it was captured:
+    // its space or agent was marked private, or its topic was sensitive. What
+    // memory learns from it is recalled only into requests that stay on the
+    // person's own model.
+    privateOrigin: text('private_origin'),
   },
   (t) => [
     uniqueIndex('memory_source_identity').on(
@@ -87,6 +92,10 @@ export const memorySources = pgTable(
     check(
       'memory_source_trust',
       sql`${t.originTrust} in ('owner','verified_connector','external_content','inferred')`,
+    ),
+    check(
+      'memory_source_private_origin',
+      sql`${t.privateOrigin} is null or ${t.privateOrigin} in ('space','agent','health','therapy','finance')`,
     ),
   ],
 );
@@ -563,3 +572,83 @@ export const memoryModelCalls = pgTable(
   },
   (t) => [index('memory_model_calls_owner').on(t.ownerId, t.createdAt)],
 );
+
+/**
+ * "Don't learn this again." A proposal on a blocked subject is refused at
+ * commit with the reason recorded, whichever model or connector proposed it.
+ */
+export const memoryBlocks = pgTable(
+  'memory_blocks',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => memorySpaces.spaceId),
+    domainKey: text('domain_key').notNull(),
+    key: text('key'),
+    label: text('label').notNull(),
+    createdAt: created(),
+    removedAt: instant('removed_at'),
+  },
+  (t) => [
+    uniqueIndex('memory_block_subject')
+      .on(t.spaceId, t.domainKey)
+      .where(sql`${t.removedAt} is null`),
+  ],
+);
+/**
+ * A rewind: every belief learned or changed in a window put back as it was at
+ * the window's start, as one operation. `steps` records exactly what moved, so
+ * the rewind itself can be undone.
+ */
+export const memoryRewinds = pgTable(
+  'memory_rewinds',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => memorySpaces.spaceId),
+    label: text('label').notNull(),
+    target: jsonb('target').notNull(),
+    windowStart: instant('window_start').notNull(),
+    windowEnd: instant('window_end').notNull(),
+    steps: jsonb('steps').notNull(),
+    skipped: jsonb('skipped').notNull().default([]),
+    createdAt: created(),
+    undoneAt: instant('undone_at'),
+    undoSteps: jsonb('undo_steps'),
+  },
+  (t) => [index('memory_rewind_space').on(t.spaceId, t.createdAt)],
+);
+/** The weekly "here's what I learned" digest, one per space per local Sunday. */
+export const memoryDigests = pgTable(
+  'memory_digests',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => memorySpaces.spaceId),
+    weekOf: text('week_of').notNull(),
+    timeZone: text('time_zone').notNull(),
+    windowStart: instant('window_start').notNull(),
+    windowEnd: instant('window_end').notNull(),
+    items: jsonb('items').notNull(),
+    createdAt: created(),
+    seenAt: instant('seen_at'),
+  },
+  (t) => [uniqueIndex('memory_digest_week').on(t.spaceId, t.weekOf)],
+);
+/**
+ * What memory had handed the turn an action came from, written by a trigger in
+ * the same statement that proposes the action. It is the basis a receipt names
+ * when the agent did not declare which belief it used. Like every memory table
+ * it is removed with its space by name, not by cascade.
+ */
+export const memoryActionBasis = pgTable('memory_action_basis', {
+  actionId: text('action_id').primaryKey(),
+  spaceId: text('space_id').notNull(),
+  jobId: text('job_id').notNull(),
+  attemptId: text('attempt_id').notNull(),
+  items: jsonb('items').notNull(),
+  recordedAt: instant('recorded_at').notNull().defaultNow(),
+});

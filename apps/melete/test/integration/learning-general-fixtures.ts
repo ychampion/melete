@@ -11,6 +11,7 @@ import { ProcedureProposer } from '../../src/learning/proposer.ts';
 import { episode, procedureCandidate, procedureEvaluation } from '../../src/learning/schema.ts';
 import { newId } from '../../src/memory/db.ts';
 import { principalContext } from '../../src/principals/authority.ts';
+import { PostgresPrivacyStore, PrivacyRouter } from '../../src/privacy/index.ts';
 import { learningFixture, wake } from './learning-fixtures.ts';
 
 export const at = (source: 'intervention' | 'objective', text: string, quote: string) => {
@@ -27,6 +28,7 @@ export async function generalLearningFixture() {
   let output: unknown = null;
   const requests: unknown[] = [];
   const gateway = await openProposalGateway({
+    privacy: new PrivacyRouter({ store: new PostgresPrivacyStore(fixture.handle.sql) }),
     db: fixture.handle.db,
     provider: 'fake',
     model: 'scripted-proposer-v1',

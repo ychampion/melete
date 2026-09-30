@@ -1,4 +1,6 @@
 import {
+  type ActionReview,
+  type BecauseLink,
   DEVICE_LIMITS,
   type ExperienceDecision,
   type ExperienceDraft,
@@ -314,6 +316,8 @@ export function projectReceipt(
   row: ActionRow,
   connection: ConnectionRow,
   undo?: { handle: string; valid_until: string },
+  review?: ActionReview | null,
+  because?: BecauseLink[],
 ) {
   if (
     row.status !== 'succeeded' ||
@@ -327,6 +331,9 @@ export function projectReceipt(
     where: plainText(connection.label, appName(connection)),
     when: row.resolvedAt?.toISOString() ?? row.createdAt.toISOString(),
     ...(undo ? { undo } : {}),
+    // Only an approval auto-review gave is shown here; an escalation was the person's call.
+    ...(review?.outcome === 'auto_approved' ? { review } : {}),
+    ...(because?.length ? { because } : {}),
   });
 }
 
@@ -512,6 +519,10 @@ export function projectPermission(input: {
   canAlways: boolean;
   /** When permission was asked for. */
   requestedAt: Date;
+  /** Why auto-review sent this to the person, when it looked first. */
+  review?: ActionReview | null;
+  /** The beliefs the action rested on, when any were recorded. */
+  because?: BecauseLink[];
 }) {
   const payload = object(input.action.canonicalPayload);
   const isSend = input.action.kind.endsWith('.send');
@@ -580,7 +591,9 @@ export function projectPermission(input: {
         ? ['allow_once', 'always', 'deny']
         : ['allow_once', 'deny'],
     version: input.version,
+    ...(input.review?.outcome === 'escalated' ? { review: input.review } : {}),
     created_at: input.requestedAt.toISOString(),
+    ...(input.because?.length ? { because: input.because } : {}),
     preview: {
       id: input.id,
       title: what,

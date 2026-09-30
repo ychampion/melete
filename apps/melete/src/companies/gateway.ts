@@ -58,6 +58,8 @@ export type ExtractionGatewayOptions = {
   provider: string;
   model: string;
   providers: NonNullable<GatewayOptions['providers']>;
+  /** The service's privacy router; the space's settings apply to every message read. */
+  privacy: GatewayOptions['privacy'];
   /** Keys connected in the app, added to `providers` for each call. */
   currentProviders?: GatewayOptions['currentProviders'];
   fake?: GatewayOptions['fake'];
@@ -73,7 +75,8 @@ export type ExtractionGatewayOptions = {
 export async function openExtractionGateway(options: ExtractionGatewayOptions) {
   let spent = 0;
   const unanswered = new Set<string>();
-  const tokens = new Set<string>();
+  /** Each call's token, and the space whose mail it carries. */
+  const tokens = new Map<string, string>();
   const budget: GatewayBudget = {
     async reserve(request) {
       if (request.provider !== options.provider || request.model !== options.model)
@@ -95,14 +98,17 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
     currentProviders: options.currentProviders,
     fake: options.fake,
     fetch: options.fetch,
+    privacy: options.privacy,
     defaultProvider: options.provider,
     timeoutMs: EXTRACTION_LIMITS.timeout_ms,
     maxRequestBytes: 512 * 1024,
     maxResponseBytes: 256 * 1024,
     async authenticate(token) {
-      if (!tokens.has(token)) throw new GatewayError(401, 'extraction_principal_denied');
+      const spaceId = tokens.get(token);
+      if (!spaceId) throw new GatewayError(401, 'extraction_principal_denied');
       return {
         jobId: 'companies-scan',
+        privacy: { kind: 'service', purpose: 'companies', spaceId, sourceJobId: null },
         attemptId: `scan:${token.slice(0, 8)}`,
         epoch: 0,
         revision: 0,
@@ -122,7 +128,7 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
   const extractor: CompanyExtractor = {
     async extract(request: ExtractionRequest): Promise<ExtractedItem[]> {
       const token = randomUUID();
-      tokens.add(token);
+      tokens.set(token, request.spaceId);
       const input = extractionInput(request);
       // No tools, and the schema is the only shape the reply may take.
       const body =
