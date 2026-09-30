@@ -10,7 +10,8 @@ tools: []
 max_tokens: 400
 ---
 
-Write the plan before doing anything.
+Write the plan in your reply before doing anything. Save it as a file only
+when the person asks for one.
 
 1. State the finish line in one sentence. If you cannot, ask what done looks
    like and stop there.

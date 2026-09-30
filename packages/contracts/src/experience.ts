@@ -133,6 +133,8 @@ export const standingRule = z.strictObject({
   created_at: date,
 });
 export type StandingRule = z.infer<typeof standingRule>;
+/** How much of a proposed file a permission card carries. */
+export const PERMISSION_FILE_PREVIEW_CHARS = 20_000;
 export const permissionCard = z.strictObject({
   id,
   conversation_id: id,
@@ -142,6 +144,18 @@ export const permissionCard = z.strictObject({
   version: id,
   preview: resultCard.nullable(),
   draft: experienceDraft.optional(),
+  /**
+   * A file this request would save: where it goes and what it says, so it is
+   * never approved unseen. `truncated` marks content cut at the preview limit.
+   */
+  file: z
+    .strictObject({
+      path: text,
+      bytes: count,
+      content: z.string().max(PERMISSION_FILE_PREVIEW_CHARS),
+      truncated: z.boolean(),
+    })
+    .optional(),
   /** When permission was asked for; the queue is oldest first. */
   created_at: date,
 });

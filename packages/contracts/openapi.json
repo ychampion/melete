@@ -19905,6 +19905,31 @@
           "draft": {
             "$ref": "#/components/schemas/__schema188"
           },
+          "file": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "$ref": "#/components/schemas/__schema172"
+              },
+              "bytes": {
+                "$ref": "#/components/schemas/__schema176"
+              },
+              "content": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "bytes",
+              "content",
+              "truncated"
+            ],
+            "additionalProperties": false
+          },
           "created_at": {
             "$ref": "#/components/schemas/__schema175"
           }

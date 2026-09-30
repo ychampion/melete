@@ -213,7 +213,13 @@ export function createApp(deps: AppDeps) {
       const spaceId = c.get('experienceSpaceId');
       return spaceId ? { spaceId, principalId: c.get('owner')?.id } : null;
     });
-  if (deps.db) mountArtifacts(app, deps.db, deps.env.MELETE_SPACES_DIR, personalSpace);
+  if (deps.db)
+    mountArtifacts(
+      app,
+      deps.db,
+      { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
+      personalSpace,
+    );
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   // After mountPrincipals, so the owner-only guard it installs on every
   // non-GET under /spaces/:id runs before the handler that removes one.

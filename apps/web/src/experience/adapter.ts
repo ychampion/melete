@@ -83,6 +83,9 @@ export const client = createMeleteClient({ baseUrl: API_BASE_URL });
 
 const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
 
+const artifactUrl = (id: string): string =>
+  `${client.options.baseUrl}/artifacts/${encodeURIComponent(id)}/content`;
+
 /** Turn an openapi-fetch result into a Result, reading not_available as a reason. */
 function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Response }): Result<T> {
   if (outcome.data !== undefined) {
@@ -205,6 +208,27 @@ export const adapter = {
   undo: (id: string) =>
     guard<{ receipt: Receipt }>(() => api.POST('/receipts/{id}/undo', path(id))),
   sendDraft: (id: string) => guard<SendOutcome>(() => api.POST('/drafts/{id}/send', path(id))),
+
+  /** Where a saved file's bytes are served, for a download link. */
+  artifactUrl,
+  /** A saved file read as text, for showing it in the app. */
+  artifactText: async (id: string): Promise<Result<string>> => {
+    try {
+      const response = await client.options.fetch(artifactUrl(id), {
+        headers: client.options.headers,
+        credentials: client.options.credentials,
+      });
+      if (!response.ok)
+        return {
+          data: null,
+          error: response.status === 404 ? 'This file is no longer where it was saved.' : OFFLINE,
+          unavailable: null,
+        };
+      return { data: await response.text(), error: null, unavailable: null };
+    } catch {
+      return { data: null, error: OFFLINE, unavailable: null };
+    }
+  },
   questions: () => guard<{ questions: Question[] }>(() => api.GET('/quick-answers')),
   answer: (id: string, option_id: string) =>
     guard<{ status: 'ok' }>(() =>

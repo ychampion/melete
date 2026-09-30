@@ -19,6 +19,7 @@ import {
   Select,
   Status,
 } from '../design/primitives.tsx';
+import { adapter } from '../experience/adapter.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
 import { lookOf } from '../experience/hooks.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
@@ -382,6 +383,84 @@ function Paragraphs({ text }: { text: string }) {
   );
 }
 
+/* ---------- saved file ---------- */
+
+/**
+ * A file the agent saved: a text file opens here, in a dialog that reads it
+ * from the service; anything else downloads.
+ */
+function SavedFileAction({
+  id,
+  name,
+  label,
+  view,
+  primary,
+  size,
+  touch,
+}: {
+  id: string;
+  name: string;
+  label: string;
+  view: boolean;
+  primary: boolean;
+  size: 'sm' | 'xl';
+  touch: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const href = adapter.artifactUrl(id);
+  if (!view)
+    return (
+      <a className={`btn btn-${size} btn-${primary ? 'primary' : 'outline'}`} href={href} download>
+        {label}
+      </a>
+    );
+  const show = async () => {
+    setOpen(true);
+    setError(null);
+    const result = await adapter.artifactText(id);
+    if (result.data !== null) setText(result.data);
+    else setError(result.error ?? result.unavailable ?? 'Couldn’t open this file.');
+  };
+  return (
+    <>
+      <Button
+        size={size}
+        variant={primary ? undefined : 'outline'}
+        block={touch}
+        onClick={() => void show()}
+      >
+        {label}
+      </Button>
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        title={name}
+        width={720}
+        footer={
+          <>
+            <a className="btn btn-md btn-outline" href={href} download>
+              Download
+            </a>
+            <Button onClick={() => setOpen(false)}>Close</Button>
+          </>
+        }
+      >
+        {error ? (
+          <p role="alert" className="permission-why">
+            {error}
+          </p>
+        ) : text === null ? (
+          <p className="permission-why">Opening…</p>
+        ) : (
+          <pre className="permission-file-text">{text || 'This file is empty.'}</pre>
+        )}
+      </Dialog>
+    </>
+  );
+}
+
 /* ---------- result card ---------- */
 
 export function ResultCard({
@@ -413,6 +492,19 @@ export function ResultCard({
   const draftBody = draft?.body ?? card.facts.find((f) => f.label === 'Draft')?.value ?? null;
   const [broken, setBroken] = useState(false);
   const action = (a: NonNullable<ResultCardData['primary_action']>, primary: boolean) => {
+    if ((a.kind === 'open' || a.kind === 'download') && !a.url && a.handle.startsWith('art_'))
+      return (
+        <SavedFileAction
+          key={a.handle}
+          id={a.handle}
+          name={card.title}
+          label={a.label}
+          view={a.kind === 'open'}
+          primary={primary}
+          size={size}
+          touch={touch}
+        />
+      );
     if (a.kind === 'open' || a.kind === 'download') {
       return a.url ? (
         <a
@@ -640,6 +732,49 @@ export function ReceiptRow({
 
 const DAYS = [1, 7, 14, 30] as const;
 
+/** How much of a proposed file shows before "Show all". */
+const FILE_PREVIEW_LINES = 12;
+const FILE_PREVIEW_CHARS = 1200;
+
+/**
+ * The exact text a file write would save, so it is never approved unseen. It
+ * is shown as written, not rendered: what is reviewed is what lands on disk.
+ */
+export function FilePreview({ file }: { file: NonNullable<Permission['file']> }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const lines = file.content.split('\n');
+  const long = lines.length > FILE_PREVIEW_LINES || file.content.length > FILE_PREVIEW_CHARS;
+  const shown =
+    long && !open
+      ? `${lines.slice(0, FILE_PREVIEW_LINES).join('\n').slice(0, FILE_PREVIEW_CHARS).trimEnd()}\n…`
+      : file.content;
+  return (
+    <div className="permission-file">
+      <pre id={id} className="permission-file-text">
+        {file.content ? shown : 'This file is empty.'}
+      </pre>
+      {file.truncated && (open || !long) ? (
+        <span className="permission-caption">
+          Showing the first {file.content.length.toLocaleString()} characters of{' '}
+          {file.bytes.toLocaleString()} bytes.
+        </span>
+      ) : null}
+      {long ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-expanded={open}
+          aria-controls={id}
+          onClick={() => setOpen((value) => !value)}
+        >
+          {open ? 'Show less' : 'Show all'}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 /** What a decided permission card says it came to; null while it waits. */
 export function permissionOutcome(
   decided: PermissionOption | 'replaced' | 'closed' | null,
@@ -762,6 +897,7 @@ export function PermissionCard({
           {permission.preview && !draft ? (
             <ResultCard card={permission.preview} readOnly touch={touch} />
           ) : null}
+          {permission.file ? <FilePreview file={permission.file} /> : null}
           {draft ? (
             <div className="permission-draft">
               {draft.subject ? <div className="draft-subject">{draft.subject}</div> : null}

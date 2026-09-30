@@ -12302,6 +12302,12 @@ export interface components {
             conversation_id: components["schemas"]["__schema171"];
             created_at: components["schemas"]["__schema175"];
             draft?: components["schemas"]["__schema188"];
+            file?: {
+                bytes: components["schemas"]["__schema176"];
+                content: string;
+                path: components["schemas"]["__schema172"];
+                truncated: boolean;
+            };
             id: components["schemas"]["__schema171"];
             options: components["schemas"]["__schema187"][];
             preview: components["schemas"]["__schema182"] | null;

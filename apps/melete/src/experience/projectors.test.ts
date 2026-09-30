@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { PERMISSION_FILE_PREVIEW_CHARS } from '@melete/contracts';
 import { estimateTokens } from '@melete/skills';
 import { AGENT_TEMPLATES, agentIdentity } from './agents.ts';
 import {
@@ -7,6 +8,7 @@ import {
   BACKEND_VOCABULARY,
   plainText,
   projectActionGroup,
+  projectArtifact,
   projectCards,
   projectPermission,
   projectPermissionDecision,
@@ -224,4 +226,76 @@ test('answer text keeps prose that starts with a bracket and drops whole records
   expect(answerText('[the guide](https://example.com)')).toBe('[the guide](https://example.com)');
   expect(answerText('{"tool":"email.send","to":"a@b.c"}')).toBe('');
   expect(answerText(' [1, 2, 3] ')).toBe('');
+});
+
+test('a permission to save a file names the file and carries its exact text', () => {
+  const content = '# Email and admin\n\n| When | What |\n|---|---|\n| 4pm | Replies, café |\n';
+  const write: ActionRow = {
+    ...base,
+    kind: 'files.write',
+    effectClass: 'write_reversible',
+    connectionId: 'files-connection',
+    canonicalPayload: { path: 'plans/email-and-admin.md', content },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const files = { id: 'files-connection', label: 'Files', provider: 'files' };
+  const permission = (payload: Record<string, unknown>) =>
+    projectPermission({
+      id: 'apr_file',
+      version: 'v1',
+      action: { ...write, canonicalPayload: payload },
+      connection: files,
+      reasons: ['This change needs your permission before it happens.'],
+      canAlways: false,
+      requestedAt: new Date('2026-09-30T04:00:00.000Z'),
+    });
+  const shown = permission({ path: 'plans/email-and-admin.md', content });
+  // Present tense and the path, not "Saved a file".
+  expect(shown.what).toBe('Save plans/email-and-admin.md');
+  expect(shown.file).toEqual({
+    path: 'plans/email-and-admin.md',
+    bytes: Buffer.byteLength(content, 'utf8'),
+    content,
+    truncated: false,
+  });
+  expect(shown.preview?.facts).toEqual([
+    { label: 'File', value: 'plans/email-and-admin.md' },
+    { label: 'Size', value: `${Buffer.byteLength(content, 'utf8')} bytes` },
+  ]);
+  // Ordinary names that look like tool names are still shown as they are.
+  expect(permission({ path: 'test.txt', content: 'x' }).file?.path).toBe('test.txt');
+  // Control characters are taken out; line breaks and tabs stay.
+  expect(permission({ path: 'a.txt', content: 'one\u0007\ttwo\nthree' }).file?.content).toBe(
+    'one\ttwo\nthree',
+  );
+  // Past the preview limit the text is cut and says so.
+  const long = 'a'.repeat(PERMISSION_FILE_PREVIEW_CHARS + 10);
+  const cut = permission({ path: 'long.txt', content: long }).file;
+  expect(cut?.content.length).toBe(PERMISSION_FILE_PREVIEW_CHARS);
+  expect(cut?.truncated).toBe(true);
+  expect(cut?.bytes).toBe(long.length);
+  // Never half of a character at the cut.
+  const pairs = `${'a'.repeat(PERMISSION_FILE_PREVIEW_CHARS - 1)}\u{1F600}tail`;
+  expect(permission({ path: 'emoji.txt', content: pairs }).file?.content).toBe(
+    'a'.repeat(PERMISSION_FILE_PREVIEW_CHARS - 1),
+  );
+  // A write with no text to show carries no file.
+  expect(permission({ path: 'x.txt' }).file).toBeUndefined();
+});
+
+test('a saved file card opens text in the app and offers anything else as a download', () => {
+  const row = (path: string, mime: string) =>
+    ({ id: 'art_01ABC', path, mime, size: 12 }) as Parameters<typeof projectArtifact>[0];
+  expect(projectArtifact(row('plans/week.md', 'text/markdown')).primary_action).toEqual({
+    kind: 'open',
+    label: 'Open',
+    handle: 'art_01ABC',
+  });
+  expect(projectArtifact(row('data.json', 'application/json')).primary_action?.kind).toBe('open');
+  expect(projectArtifact(row('report.pdf', 'application/pdf')).primary_action).toEqual({
+    kind: 'download',
+    label: 'Download',
+    handle: 'art_01ABC',
+  });
 });

@@ -29,7 +29,7 @@ export type TurnBlock =
   /**
    * `decided` is the option chosen, here or as the stream's decision reports
    * it; `replaced` means a later message made the request stale; `closed`
-   * means the turn moved on after a decision this client has not seen.
+   * means its action moved on past approval without a decision item saying which way.
    */
   | {
       type: 'permission';
@@ -219,18 +219,18 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
   // The stream says which way a decision went, so the card shows that outcome,
   // after a reload too, rather than only that the turn moved on.
   if (item.type === 'decision') return applyDecision(base, item.decision);
-  // While a permission or question waits, the service emits nothing for that
-  // turn except the status that says so (or a pause). Any other event means the
-  // person decided somewhere else; when no decision item says which way, the
-  // block closes without claiming how it went. Tool entries are background
-  // work (memory, the model) that can land while the person decides; the one
-  // that settles a permission is the entry that pointed at it moving on.
+  // A permission stays open until the service says it was settled: a decision
+  // item, wherever the person decided, or the action entry that pointed at it
+  // finishing. Nothing else closes it. The model keeps writing its answer after
+  // a tool call comes back "needs approval", memory and model entries land
+  // while the person decides, and the waiting action's own entry can be read
+  // again as under way, so none of these says anything about the request.
   if (item.type === 'tool') {
     const tool = item.tool;
     const { [tool.id]: pending, ...others } = base.approvals;
     if (tool.status === 'needs_approval' && tool.detail?.type === 'permission')
       return applyItem({ ...base, approvals: { ...others, [tool.id]: tool.detail.id } }, event);
-    if (pending === undefined) return applyItem(base, event);
+    if (pending === undefined || tool.status === 'running') return applyItem(base, event);
     return applyItem(
       patchTurn({ ...base, approvals: others }, event.turn_id, (turn) => ({
         ...turn,
@@ -243,6 +243,9 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
       event,
     );
   }
+  // A question can be settled without an item of its own (a correction made
+  // elsewhere answers it), so while it waits, anything but the status that
+  // says so, a pause or a step means it was answered somewhere else.
   const stillWaiting =
     (item.type === 'status' && ['needs_you', 'paused', 'queued', 'idle'].includes(item.status)) ||
     (item.type === 'action' && item.tool !== undefined);
@@ -251,11 +254,9 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
     : patchTurn(base, event.turn_id, (turn) => ({
         ...turn,
         blocks: turn.blocks.map((block) =>
-          block.type === 'permission' && block.decided === null
-            ? { ...block, decided: 'closed' }
-            : block.type === 'question' && block.answered === null
-              ? { ...block, answered: 'closed' }
-              : block,
+          block.type === 'question' && block.answered === null
+            ? { ...block, answered: 'closed' }
+            : block,
         ),
       }));
   return applyItem(waited, event);
