@@ -629,6 +629,39 @@ export const browserResponse = z.strictObject({ session: browserSession });
 export const browserControl = z.strictObject({
   control: z.enum(['take_control', 'resume', 'stop']),
 });
+/** How many recent commands a conversation's computer view carries. */
+export const COMPUTER_TERMINAL_LIMIT = 8;
+/** One command the agent ran in its sandbox, with what it printed, scrubbed and clipped. */
+export const computerCommand = z.strictObject({
+  id,
+  command: z.string().max(2000),
+  /** The last lines it printed; empty while it runs or when the output was not text. */
+  output: z.string().max(4000),
+  status: z.enum(['running', 'done', 'failed', 'unknown']),
+  exit_code: z.number().int().nullable(),
+  started_at: date,
+});
+export type ComputerCommand = z.infer<typeof computerCommand>;
+/** The page the agent's browser was last seen on, and who holds the browser now. */
+export const computerBrowser = z.strictObject({
+  session_id: id,
+  control: z.enum(['agent', 'you']),
+  /** Scheme, host and path only. */
+  url: z.string().max(2048).nullable(),
+  title: z.string().max(200).nullable(),
+  /** A picture of the page as the agent last saw it; none while a handed-back page is shown. */
+  screenshot: z.strictObject({ artifact_id: id }).nullable(),
+  seen_at: date.nullable(),
+});
+export type ComputerBrowser = z.infer<typeof computerBrowser>;
+/** What a conversation's agent is doing on its computer: its browser and its terminal. */
+export const agentComputer = z.strictObject({
+  browser: computerBrowser.nullable(),
+  terminal: z.array(computerCommand).max(COMPUTER_TERMINAL_LIMIT),
+  /** Which parts this service can run at all, so an empty view can say what to connect. */
+  available: z.strictObject({ browser: z.boolean(), terminal: z.boolean() }),
+});
+export type AgentComputer = z.infer<typeof agentComputer>;
 export const nowPlaying = z.strictObject({
   title: text,
   artist: text,
@@ -680,6 +713,7 @@ export const experienceOperations = {
     response: z.strictObject({ receipts: z.array(experienceReceipt) }),
   },
   'POST /receipts/{id}/undo': { response: z.strictObject({ receipt: experienceReceipt }) },
+  'GET /conversations/{id}/computer': { response: agentComputer },
   'GET /conversations/{id}/drafts': {
     response: z.strictObject({ drafts: z.array(experienceDraft) }),
   },
