@@ -68,6 +68,8 @@ export type PushSettings = Ok<paths['/push/settings'], 'get'>['settings'];
 export type PushSettingsUpdate = Body<paths['/push/settings'], 'patch'>;
 export type PushDevice = Ok<paths['/push/subscriptions'], 'get'>['subscriptions'][number];
 export type PushSubscriptionInput = Body<paths['/push/subscriptions'], 'post'>;
+/** Another assistant the person let use Melete over MCP. */
+export type ConnectedAssistant = Ok<paths['/mcp/clients'], 'get'>['clients'][number];
 /** What Melete learned from the person's corrections, and skills it wrote for itself. */
 export type LearnedList = Ok<paths['/learned'], 'get'>;
 export type LearnedItem = LearnedList['items'][number];

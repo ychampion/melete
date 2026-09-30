@@ -118,7 +118,8 @@ function MemoryRow({
             <span style={{ fontSize: 14, color: 'var(--text)' }}>{item.value}</span>
           )}
           <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {SOURCE_LABEL[item.source]} · {dateOf(item.created)}
+            {item.saved_by ? `Saved by ${item.saved_by}` : SOURCE_LABEL[item.source]} ·{' '}
+            {dateOf(item.created)}
             {item.last_used ? ` · used ${dateOf(item.last_used)}` : ''}
           </span>
           {whyOpen && why ? (
@@ -239,6 +240,77 @@ export function ConnectionCard({
       {tail}
       {actions}
     </div>
+  );
+}
+
+/**
+ * Other assistants the person let use Melete, each with a way to disconnect it.
+ * An installation that does not offer the MCP endpoint answers with an error,
+ * and then there is nothing here to list or disconnect.
+ */
+function ConnectedAssistants() {
+  const assistants = useLoad(() => adapter.assistants(), []);
+  const [ending, setEnding] = useState<string | null>(null);
+  if (!assistants.data) return null;
+  const clients = assistants.data.clients;
+  return (
+    <section className="col" style={{ gap: 8, marginTop: 12 }} aria-labelledby="assistants-head">
+      <h2
+        id="assistants-head"
+        style={{ fontSize: 15, fontWeight: 600, color: 'var(--heading)', margin: 0 }}
+      >
+        Connected assistants
+      </h2>
+      <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560, margin: 0 }}>
+        Other assistants you let use Melete as you. Disconnecting one ends its access at once.
+      </p>
+      {clients.length === 0 ? (
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>No assistant is connected.</span>
+      ) : (
+        <div className="card-12" style={{ overflow: 'hidden' }}>
+          <div style={{ height: 1 }} />
+          {clients.map((client) => (
+            <div key={client.client_id} className="list-row" style={{ minHeight: 60 }}>
+              <Icon name="connectors" size={18} />
+              <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
+                <span
+                  className="clamp1"
+                  style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
+                >
+                  {client.name}
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                  Connected since {dateOf(client.since)}
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                loading={ending === client.client_id}
+                disabled={ending !== null}
+                aria-label={`Disconnect ${client.name}`}
+                onClick={() => {
+                  setEnding(client.client_id);
+                  void adapter.disconnectAssistant(client.client_id).then((r) => {
+                    setEnding(null);
+                    if (r.data === null) {
+                      toast({ kind: 'err', title: r.error ?? 'Couldn’t disconnect' });
+                      return;
+                    }
+                    assistants.set({
+                      clients: clients.filter((c) => c.client_id !== client.client_id),
+                    });
+                    toast({ kind: 'ok', title: `Disconnected ${client.name}` });
+                  });
+                }}
+              >
+                Disconnect
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -408,6 +480,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>Nothing is connected yet.</span>
             ) : null}
             <AddConnection onInstalled={connections.reload} />
+            <ConnectedAssistants />
           </div>
         ) : (
           <div className="col" style={{ gap: 12 }}>

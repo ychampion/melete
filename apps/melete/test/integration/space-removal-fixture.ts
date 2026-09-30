@@ -91,6 +91,19 @@ export async function seedSpace(
   await sql`insert into magic_link
     (token_hash, owner_id, space_id, connection_id, connection_generation, expires_at)
     values (${hash(newId('tok'))}, ${ownerId}, ${spaceId}, ${connectionId}, 0, now() + interval '1 hour')`;
+  // A member's assistant, connected over MCP from this space, and a code it has not yet used.
+  const assistantId = newId('mcpc');
+  await sql`insert into mcp_client (id, name, redirect_uris)
+    values (${assistantId}, 'Assistant', ${json(['https://assistant.example/callback'])}::text::jsonb)`;
+  await sql`insert into mcp_authorization (code_hash, client_id, principal_id, space_id,
+      membership_generation, redirect_uri, code_challenge, resource, scope, expires_at)
+    values (${hash(newId('code'))}, ${assistantId}, ${memberId}, ${spaceId}, 0,
+      'https://assistant.example/callback', 'challenge', 'https://melete.example/api/mcp', 'melete',
+      now() + interval '10 minutes')`;
+  await sql`insert into mcp_token (token_hash, kind, family, client_id, principal_id, space_id,
+      membership_generation, resource, scope, expires_at)
+    values (${hash(newId('tok'))}, 'access', 'family', ${assistantId}, ${memberId}, ${spaceId}, 0,
+      'https://melete.example/api/mcp', 'melete', now() + interval '1 hour')`;
 
   const agentId = newId('agent');
   await sql`insert into agent

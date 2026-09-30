@@ -195,6 +195,7 @@ each command.
 - [Deployment](docs/DEPLOYMENT.md): hosting, providers, Tailscale, backups and removal
 - [Upgrading](docs/UPGRADING.md): moving an installation to a later release
 - [Connectors](docs/CONNECTORS.md) and [mail and calendars](docs/mail-calendar.md)
+- [Melete in other assistants](docs/MCP-SERVER.md): adding Melete to ChatGPT, Claude or Hermes as a connector
 - [Browser worker](docs/browser-worker.md): the browser Melete drives, and taking over from it
 - [Memory](docs/MEMORY.md) and [learning](docs/LEARNING.md)
 - [Architecture](docs/ARCHITECTURE.md) and [threat model](docs/THREAT-MODEL.md)

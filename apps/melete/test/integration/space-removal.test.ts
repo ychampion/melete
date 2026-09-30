@@ -309,6 +309,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   // Access ends first: the session loses its selection, the link is deleted.
   session: 'sessions',
   magic_link: 'sessions',
+  mcp_authorization: 'sessions',
+  mcp_token: 'sessions',
   // Jobs and everything below them, the rows that outlive a job, and what the
   // space holds apart from its jobs.
   job: 'operational',
