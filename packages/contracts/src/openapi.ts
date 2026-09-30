@@ -117,6 +117,13 @@ import {
   recallResult,
   sourceEvidenceResponse,
 } from './memory.ts';
+import {
+  phoneCallResponse,
+  phoneEventRequest,
+  phoneInboundRequest,
+  phoneInboundResponse,
+  phoneTurnRequest,
+} from './phone.ts';
 import { installPluginRequest, installPluginResponse, pluginListResponse } from './plugins.ts';
 import {
   createPrincipalRequest,
@@ -193,6 +200,42 @@ const jsonResponse = <T extends z.ZodType>(description: string, schema: T) => ({
 });
 
 const problem = (description: string) => jsonResponse(description, errorResponse);
+
+/** A phone line's turn endpoint, at the address ElevenLabs is given and with the path it adds. */
+const phoneTurnPaths = () =>
+  Object.fromEntries(
+    ['/phone/{connectionId}/llm/v1/chat/completions', '/phone/{connectionId}/llm/v1'].map(
+      (path) => [
+        path,
+        {
+          post: {
+            tags: ['phone'],
+            summary: 'Answer one turn of a call on a phone line',
+            description:
+              "ElevenLabs' agent for the line calls this for every turn, as a custom language model: an " +
+              'OpenAI chat-completions request, answered as a stream of `chat.completion.chunk` events ' +
+              'ending in `[DONE]` (or one `chat.completion` when `stream` is false). It needs no ' +
+              "session: it carries the line's own key as a bearer token or in `x-melete-key`, compared " +
+              "in constant time with the digest the line keeps; another line's key is refused. The turn " +
+              "is answered by the gateway model with the call's context, memory recall for the person " +
+              'and the call tools; nothing that acts on the world happens during a call. The address ' +
+              'ElevenLabs is given ends in `/llm/v1`; both it and the path with `/chat/completions` ' +
+              'added are served.',
+            requestParams: idParam('connectionId', 'The phone line'),
+            requestBody: json(phoneTurnRequest),
+            responses: {
+              '200': {
+                description: 'The reply, streamed',
+                content: { 'text/event-stream': { schema: z.string() } },
+              },
+              '400': problem('Not a chat completions request'),
+              '401': problem("Not this line's key, or not an active phone line"),
+            },
+          },
+        },
+      ],
+    ),
+  );
 
 /** The four routes of signing in with one account provider. */
 const accountSignInPaths = (
@@ -364,6 +407,7 @@ export function buildOpenApiDocument() {
         { name: 'artifacts' },
         { name: 'approvals' },
         { name: 'connections' },
+        { name: 'phone' },
         { name: 'model-providers' },
         { name: 'knowledge' },
         { name: 'skills' },
@@ -1671,6 +1715,62 @@ export function buildOpenApiDocument() {
                 }),
               ),
               '404': problem('No https:// public address is configured'),
+            },
+          },
+        },
+
+        ...phoneTurnPaths(),
+
+        '/phone/{connectionId}/inbound': {
+          post: {
+            tags: ['phone'],
+            summary: 'The start of an inbound call to a phone line',
+            description:
+              'ElevenLabs calls this before the first word of an inbound call. It needs no session: it ' +
+              "carries the line's own key, which only ElevenLabs holds. A caller whose number is one of " +
+              "the person's own reaches Melete as the person; anybody else hears one polite sentence, " +
+              'and the person gets a note. The answer sets the opening line and the call id every turn ' +
+              'carries back.',
+            requestParams: idParam('connectionId', 'The phone line'),
+            requestBody: json(phoneInboundRequest),
+            responses: {
+              '200': jsonResponse('How the call starts', phoneInboundResponse),
+              '401': problem("Not this line's key, or not an active phone line"),
+            },
+          },
+        },
+
+        '/phone/{connectionId}/events': {
+          post: {
+            tags: ['phone'],
+            summary: 'The report at the end of a call on a phone line',
+            description:
+              'ElevenLabs posts the transcript when a call ends, or a failure when a call never ' +
+              'connected. It needs no session: the `ElevenLabs-Signature` header must be an ' +
+              "HMAC-SHA256 of `<t>.<body>` with the line's webhook secret, no older than thirty " +
+              'minutes. The transcript, outcome and length are kept, the call appears in the ' +
+              'conversation it belongs to, and what it asked for is put to the person as a question.',
+            requestParams: idParam('connectionId', 'The phone line'),
+            requestBody: json(phoneEventRequest),
+            responses: {
+              '200': jsonResponse('Received', z.object({ received: z.literal(true) })),
+              '400': problem('The report could not be read'),
+              '401': problem('Not signed by this line'),
+            },
+          },
+        },
+
+        '/phone-calls/{callId}': {
+          get: {
+            tags: ['phone'],
+            summary: 'Read one phone call',
+            description:
+              'Who was called or called, why, the transcript, what came of it and how long it ' +
+              "lasted. Only the owner of the line's space can read it.",
+            requestParams: idParam('callId', 'Call id'),
+            responses: {
+              '200': jsonResponse('The call', phoneCallResponse),
+              '404': problem('No such call for this person'),
             },
           },
         },
