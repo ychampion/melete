@@ -20,6 +20,7 @@ import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
+import { mcpActorOf } from '../mcp-server/actor.ts';
 import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
@@ -154,9 +155,18 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'GET /quick-answers': (spaceId) => questions.list(spaceId),
     'POST /quick-answers/{id}': (spaceId, c, input) =>
       questions.answer(spaceId, c.req.param('id') ?? '', String(input.option_id)),
-    'POST /memory/items': (spaceId, c, input) =>
-      memory?.create(spaceId, c.get('owner').id, input) ??
-      unavailable('Your saved details are not connected yet.'),
+    'POST /memory/items': (spaceId, c, input) => {
+      // Another assistant saving through the MCP endpoint is recorded as that assistant.
+      const assistant = mcpActorOf(c.env);
+      return (
+        memory?.create(
+          spaceId,
+          c.get('owner').id,
+          input,
+          assistant ? { assistantClientId: assistant.clientId } : undefined,
+        ) ?? unavailable('Your saved details are not connected yet.')
+      );
+    },
     'GET /memory/items': (spaceId, c) =>
       memory?.list(spaceId, c.get('owner').id, c.req.query('after') ?? null) ??
       unavailable('Your saved details are not connected yet.'),

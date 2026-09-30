@@ -368,6 +368,67 @@ Accounts share one service process, one database role and one master key;
 isolation between them is an application check, not an operating-system or
 database boundary.
 
+## Attacker 8: an assistant connected over MCP
+
+A person can connect another assistant to Melete as an MCP connector (see
+[MCP-SERVER](MCP-SERVER.md)). That assistant, the model behind it, or anyone
+who obtains its token may be hostile. The aims are to send mail the person
+never approved, to reach another account's work or memory, to reach routes
+beyond the six tools, and to keep access the person meant to end.
+
+The token is issued only after the signed-in person allows the request on
+Melete's consent page. The page is answered only by the form it served to that
+session for that exact client, return address, state, PKCE challenge and
+resource: the form carries an HMAC over them and the session, and cannot be
+framed. The page names the space the grant will act in and the return host,
+marks a self-registered client's name as unverified, and shows a metadata
+document client's host. An unknown client or return address gets an error page
+and no redirect, and so does a request error for a return address nobody here
+has allowed yet (other than this computer or the metadata document's own host).
+Codes are single-use, expire after ten minutes, and need the PKCE verifier; a
+code presented twice ends the tokens it bought. Access tokens last an hour and
+are bound to the `/api/mcp` resource; refresh tokens rotate, a used one
+presented again ends the whole connection, and no token outlives 90 days from
+the consent. Only SHA-256 digests of codes and tokens are stored. A client ID
+metadata document is fetched only from a public address, pinned, without
+redirects and within 64 KB, and is recorded only when a person allows it. The
+authorization endpoint is rate-limited per address, and registrations nobody
+allowed are dropped after a day and capped.
+
+Each tool is answered by calling the owner API's own route in-process, as the
+token's person, in the space they consented from. Every request re-checks that
+space and the membership generation it was granted under; when either no longer
+holds, the request is refused with 401 and the connection ends, with no
+fallback to another space. Revoking a member deletes the assistant tokens and
+codes they hold in that space. The person rides on the
+request environment under a symbol only the MCP module holds; a request from the
+network gets its environment from the listener, so no header, cookie or body
+can claim to be an assistant's person. Route authority is therefore the same as
+the person's own session: another account's jobs, items and memory read as
+absent. Tool arguments are validated before any route is called, and an id is a
+single path segment. `safe_send` proposes an owner command through the broker;
+its key marks it as the assistant's, so no standing rule or chase scope admits
+it and its card offers no standing permission. The person approves the exact
+bytes in Melete, and the broker sends them once. At most five such messages
+wait at once, and an assistant whose message was denied waits ten minutes
+before proposing another; each connection may make 60 tool calls a minute.
+`remember` records the detail as the assistant's external evidence, on a
+stream named for its client, so the claim's origin trust is `inferred`: a send
+that uses the value carries an origin warning, and no standing grant covers it.
+[mcp-server.test.ts](../apps/melete/test/integration/mcp-server.test.ts) holds
+each OAuth refusal on its own, and
+[conformance scenario 11](../conformance/scenarios/11-mcp-server.test.ts) drives
+the whole flow with the reference MCP client, including a standing rule for the
+recipient that the assistant's message does not use, and a second account's
+token.
+
+What remains: a token acts as its person until it expires, is revoked, or the
+assistant is disconnected, and an assistant may read everything its person may
+read through the six tools. Registration is open to anyone who can reach the
+installation and is rate-limited per address; a registration alone grants
+nothing. Consent keys are per process, so a restart between showing the consent
+page and answering it asks the person to start again.
+
 ## Credentials, host and storage
 
 Connector secrets have tested sealing and scope checks: `stores randomized

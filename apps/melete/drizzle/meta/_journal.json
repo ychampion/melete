@@ -377,6 +377,27 @@
       "idx": 53,
       "version": "7",
       "when": 1789232400033,
+      "tag": "0053_push_presence",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1789232400034,
+      "tag": "0054_awaited_replies",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1789232400035,
+      "tag": "0055_mcp_server",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1789232400036,
       "tag": "0060_paired_devices",
       "breakpoints": true
     }

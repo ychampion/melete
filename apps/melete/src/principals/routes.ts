@@ -19,6 +19,7 @@ import {
   replyObligation,
 } from '../db/schema.ts';
 import type { JobService } from '../jobs/service.ts';
+import { mcpPublicPath } from '../mcp-server/actor.ts';
 import { requireJobAccess, spaceAuthority } from './authority.ts';
 import { PrincipalService } from './service.ts';
 
@@ -32,7 +33,11 @@ export function mountPrincipals(
   if (!db) return;
   const service = new PrincipalService(db, spacesRoot, jobs);
   app.use('*', async (c, next) => {
-    if (['/health', '/setup', '/login', '/oauth/client-metadata.json'].includes(c.req.path))
+    if (
+      ['/health', '/setup', '/login', '/oauth/client-metadata.json'].includes(c.req.path) ||
+      // An assistant's OAuth and MCP requests carry no session; their routes check for themselves.
+      (!c.get('owner') && mcpPublicPath(c.req.method, c.req.path))
+    )
       return next();
     // A paired computer's companion has no session; each of its routes checks its token.
     if (c.req.path.startsWith('/device/')) return next();

@@ -6,9 +6,12 @@ import './design/base.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.tsx';
+import { registerServiceWorker } from './experience/push.ts';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('index.html is missing #root');
+
+registerServiceWorker();
 
 createRoot(root).render(
   <StrictMode>

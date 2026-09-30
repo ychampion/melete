@@ -27,7 +27,12 @@ import { lockSpace, type MemoryScope, type MemorySql, type MemoryTx } from './db
 export type SourceOrigin = {
   source_type: SourceEvent['source_type'];
   author: 'owner' | 'external';
+  /** Where it was recorded; another assistant's writes sit on a stream named for it. */
+  stream?: string;
 };
+
+/** The stream prefix for details another assistant saved through Melete's MCP endpoint. */
+export const ASSISTANT_STREAM = 'mcp:';
 
 /** How it arrived, never what it says. Source content cannot raise its own class. */
 export function originTrustOf({ source_type, author }: SourceOrigin): OriginTrust {
@@ -75,7 +80,9 @@ export function describeOrigin(source: SourceOrigin & { event_at: string }): str
     case 'document':
       return `a web page fetched on ${day}`;
     case 'assistant':
-      return `Melete's own working notes from ${day}`;
+      return source.stream?.startsWith(ASSISTANT_STREAM)
+        ? `something an assistant you connected saved on ${day}`
+        : `Melete's own working notes from ${day}`;
   }
 }
 
@@ -131,7 +138,8 @@ async function loadHandles(
     const parsed = parseMemoryHandle(handle);
     if (!parsed) continue;
     if (parsed.kind === 'source') {
-      const [row] = await tx`select source_type, author, event_at, origin_trust from memory_sources
+      const [row] =
+        await tx`select source_type, author, event_at, origin_trust, stream from memory_sources
         where id = ${parsed.source_id} and space_id = ${scope.spaceId} and source_version = ${parsed.source_version} and state = 'active'
         and (${scope.role === 'owner'} or audience in ('space', 'public'))`;
       if (!row) continue;
@@ -144,6 +152,7 @@ async function loadHandles(
         origin: {
           source_type: row.source_type as SourceEvent['source_type'],
           author: row.author as 'owner' | 'external',
+          stream: row.stream as string,
           event_at: new Date(row.event_at as Date).toISOString(),
         },
         value_type: 'text',
@@ -158,7 +167,7 @@ async function loadHandles(
         and (${scope.role === 'owner'} or c.audience in ('space','public'))`;
     if (!row) continue;
     // The description names the weakest source, because that is the one that decided the class.
-    const sources = await tx`select s.source_type, s.author, s.event_at, s.origin_trust
+    const sources = await tx`select s.source_type, s.author, s.event_at, s.origin_trust, s.stream
       from memory_references ref join memory_sources s on s.id = ref.source_id
       where ref.claim_id = ${parsed.claim_id} and ref.revision = ${parsed.revision} and s.state = 'active'`;
     const weakest = sources.find((s) => s.origin_trust === row.origin_trust) ?? sources[0] ?? null;
@@ -170,6 +179,7 @@ async function loadHandles(
         ? {
             source_type: weakest.source_type as SourceEvent['source_type'],
             author: weakest.author as 'owner' | 'external',
+            stream: weakest.stream as string,
             event_at: new Date(weakest.event_at as Date).toISOString(),
           }
         : { source_type: 'assistant', author: 'external', event_at: new Date(0).toISOString() },

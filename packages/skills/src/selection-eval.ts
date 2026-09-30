@@ -109,6 +109,7 @@ export const SELECTION_REQUESTS: readonly EvalRequest[] = [
   { text: 'My broadband price is going up in April', expect: ['price-rise'] },
   { text: 'Get quotes for car insurance', expect: ['get-quotes'] },
   { text: 'My client has not paid invoice 42', expect: ['unpaid-invoice'] },
+  { text: "I'm waiting on a reply from the builder", expect: ['chase-reply'] },
   // speech
   { text: 'Make a podcast about the history of tea', expect: ['make-a-podcast'] },
   // nothing to select

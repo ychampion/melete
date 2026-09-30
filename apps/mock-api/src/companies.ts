@@ -28,6 +28,54 @@ const SCAN_MESSAGES = 2481;
 
 type Scan = { id: string; started_at: number };
 
+/** A message the person sent that nobody has answered, as `GET /waiting-on` lists it. */
+type AwaitedReply = {
+  id: string;
+  to: string;
+  to_name: string;
+  subject: string;
+  quote: string;
+  days_ago: number;
+  status: 'found' | 'handling' | 'waiting' | 'settled' | 'dropped';
+  job_id: string | null;
+};
+
+/** The replies the demonstration person is waiting on. Invented, under `.example`. */
+const awaitedReplies = (): AwaitedReply[] => [
+  {
+    id: newId('awr'),
+    to: 'rowan@ellisbuilders.example',
+    to_name: 'Rowan Ellis',
+    subject: 'Kitchen extension quote',
+    quote: 'Could you send the quote and a week you could start?',
+    days_ago: 9,
+    status: 'found',
+    job_id: null,
+  },
+  {
+    id: newId('awr'),
+    to: 'priya@shahdesign.example',
+    to_name: 'Priya Shah',
+    subject: 'Logo files',
+    quote: 'Can you send the final logo files this week?',
+    days_ago: 4,
+    status: 'found',
+    job_id: null,
+  },
+  {
+    id: newId('awr'),
+    to: 'lettings@northgatehomes.example',
+    to_name: 'Northgate Homes',
+    subject: 'Moving out on 30 September',
+    quote: 'Please confirm the date of the check-out inspection.',
+    days_ago: 6,
+    status: 'found',
+    job_id: null,
+  },
+];
+
+const OPEN = new Set(['found', 'handling', 'waiting']);
+
 const fail = (code: string, message: string) => ({ error: { code, message } });
 
 /** The plain words a person would use for the job this item becomes. */
@@ -200,6 +248,118 @@ export function mountCompaniesMock(
     row.job_id = conversation.id;
     row.status = 'handling';
     return c.json({ job_id: conversation.id }, 201);
+  });
+
+  const replies = awaitedReplies();
+
+  // What the person is waiting on, built the way the service builds it: the
+  // map's owed figure, its open owed items, the open replies, and a top three
+  // that takes turns between money and replies among those nothing chases yet.
+  app.get('/waiting-on', (c) => {
+    const state = progress();
+    const scanStatus = found ? 'done' : state ? state.status : 'none';
+    const owed = found
+      ? fixture.items
+          .filter((row) => row.direction === 'owed_to_you' && OPEN.has(row.status))
+          .map((row) => ({
+            kind: 'owed' as const,
+            id: row.id,
+            who: companyOf(row)?.name ?? 'A company',
+            what: row.summary,
+            amount_minor: row.amount_minor,
+            currency: row.currency,
+            due_at: row.due_at,
+            sent_at: null,
+            status: row.status,
+            job_id: row.job_id,
+          }))
+          .sort((a, b) => (b.amount_minor ?? -1) - (a.amount_minor ?? -1))
+      : [];
+    const waiting = found
+      ? replies
+          .filter((reply) => OPEN.has(reply.status))
+          .map((reply) => ({
+            kind: 'reply' as const,
+            id: reply.id,
+            who: reply.to_name,
+            what: reply.quote,
+            amount_minor: null,
+            currency: null,
+            due_at: null,
+            sent_at: new Date(Date.now() - reply.days_ago * 86_400_000).toISOString(),
+            status: reply.status,
+            job_id: reply.job_id,
+          }))
+          .sort((a, b) => a.sent_at.localeCompare(b.sent_at))
+      : [];
+    const open = <T extends { status: string; job_id: string | null }>(entry: T) =>
+      entry.status === 'found' && entry.job_id === null;
+    const money = owed.filter(open);
+    const words = waiting.filter(open);
+    const top: ((typeof owed)[number] | (typeof waiting)[number])[] = [];
+    for (let index = 0; top.length < 3 && (money[index] || words[index]); index++)
+      for (const entry of [money[index], words[index]])
+        if (entry && top.length < 3) top.push(entry);
+    return c.json({
+      currency: fixture.currency,
+      owed_minor: found ? totalsOf(fixture).owed_to_you_minor : 0,
+      owed,
+      replies: waiting,
+      top,
+      scan: {
+        space_id: deps.spaceId,
+        connected: true,
+        status: scanStatus,
+        finished_at: found ? new Date().toISOString() : null,
+        stale: false,
+      },
+    });
+  });
+
+  app.post('/waiting-on/replies/:id/chase', (c) => {
+    const reply = replies.find((entry) => entry.id === c.req.param('id'));
+    if (!reply || !found) return c.json(fail('not_found', 'Not found.'), 404);
+    // Idempotent, like Handle it: a reply already being chased hands its chase back.
+    if (reply.job_id) return c.json({ job_id: reply.job_id }, 200);
+    if (reply.status === 'settled' || reply.status === 'dropped')
+      return c.json(fail('already_terminal', 'This one is already finished.'), 409);
+    const agent = [...experience.agents.values()][0];
+    if (!agent) return c.json(fail('no_agent', 'Make an assistant first.'), 409);
+    const conversation = experience.start(
+      reply.to_name,
+      agent.id,
+      `I'm waiting on a reply from ${reply.to_name} about "${reply.subject}". Chase it.`,
+      undefined,
+      'reply-chase',
+    );
+    reply.job_id = conversation.id;
+    reply.status = 'handling';
+    return c.json({ job_id: conversation.id }, 201);
+  });
+
+  // Dismissed: it leaves the list. The demonstration has no chase to stop.
+  app.post('/waiting-on/replies/:id/drop', (c) => {
+    const reply = replies.find((entry) => entry.id === c.req.param('id'));
+    if (!reply || !found) return c.json(fail('not_found', 'Not found.'), 404);
+    reply.status = 'dropped';
+    return c.json({
+      id: reply.id,
+      space_id: deps.spaceId,
+      principal_id: principalId,
+      message_id: `<${reply.id}@mock.example>`,
+      to: reply.to,
+      to_name: reply.to_name,
+      subject: reply.subject,
+      sent_at: new Date(Date.now() - reply.days_ago * 86_400_000).toISOString(),
+      evidence: {
+        message_id: `<${reply.id}@mock.example>`,
+        quote: reply.quote,
+        start: 0,
+        end: reply.quote.length,
+      },
+      status: reply.status,
+      job_id: reply.job_id,
+    });
   });
 
   app.post('/ledger/:id/stop', (c) => {

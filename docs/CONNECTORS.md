@@ -9,6 +9,10 @@ support. `ConnectorRegistry` validates manifests and refuses duplicate entries
 The tests use temporary files, fake destinations and local protocol servers, so
 they establish each connector's own behaviour against those fixtures.
 
+Connectors are how Melete reaches other services. The other direction, other
+assistants using Melete as their connector over MCP, is described in
+[MCP-SERVER](MCP-SERVER.md).
+
 ## Contract and policy
 
 Implement `Connector` from
@@ -120,6 +124,35 @@ secret, and which grants may be chosen. The web application draws its Settings
 form from that response alone. Each entry has an `id`, and a kind can appear
 more than once: an entry for a provider whose servers are known carries them in
 `fixed`, so the person gives only an email address and an app password.
+
+The same response carries `catalog`: everything a person can connect here, in
+the order a connector screen shows it. Account sign-ins come first (Google, and
+Microsoft), then remote MCP servers known to sign in with OAuth (Notion, Linear,
+Atlassian, Sentry and Stripe), then one entry for each form in `kinds`. Each
+entry says what it covers (`mail`, `calendar`, `tools` or `execution`) and how it
+connects:
+
+- `sign_in` names the provider, the route to `POST` to start
+  (`/google-sign-ins`, `/microsoft-sign-ins`), the `issuer` the person signs in
+  at, and every scope the sign-in asks for, each with a plain-words `label`;
+- `mcp_sign_in` gives the server's address and a suggested `mcp.id` for
+  `POST /mcp-sign-ins`, whose `mcp` block still names the tools to grant;
+- `form` names the entry in `kinds` whose form connects it.
+
+Starting a sign-in answers with the same two things before the browser leaves:
+`issuer` and `scopes`. For an account sign-in they are the fixed values above.
+For an MCP server they are discovered: the authorization server its protected
+resource metadata names, and the scopes that will be requested. Show them to
+the person before opening `authorize_url`; the web app's Add a connection step
+does.
+
+`available` is false when this installation cannot offer an entry yet.
+`unavailable_reason` then says so in plain words for anyone signed in, and
+`setup_hint`, sent only to the installation's owner, says what to set: a
+provider's OAuth client, or a `MELETE_PUBLIC_URL` to return the browser to. An
+entry may carry a `warning` to show before connecting: Stripe's says its tools
+can move money, and that those tools should be granted as `spend`, so each one
+waits for approval.
 
 | Entry | Kind | What the person types |
 | --- | --- | --- |

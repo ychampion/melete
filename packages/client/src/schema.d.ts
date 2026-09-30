@@ -4,6 +4,137 @@
  */
 
 export interface paths {
+    "/.well-known/oauth-authorization-server": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * OAuth authorization server metadata (RFC 8414)
+         * @description Public, at the root of the web origin. No session is needed.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The metadata */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uri */
+                            authorization_endpoint: string;
+                            authorization_response_iss_parameter_supported: boolean;
+                            client_id_metadata_document_supported: boolean;
+                            code_challenge_methods_supported: string[];
+                            grant_types_supported: string[];
+                            /** Format: uri */
+                            issuer: string;
+                            /** Format: uri */
+                            registration_endpoint: string;
+                            response_modes_supported: string[];
+                            response_types_supported: string[];
+                            /** Format: uri */
+                            revocation_endpoint: string;
+                            revocation_endpoint_auth_methods_supported: string[];
+                            scopes_supported: string[];
+                            /** Format: uri */
+                            token_endpoint: string;
+                            token_endpoint_auth_methods_supported: string[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/.well-known/oauth-protected-resource": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Protected resource metadata for the MCP endpoint (RFC 9728) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The metadata */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema368"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/.well-known/oauth-protected-resource/api/mcp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Protected resource metadata at the path-specific address the endpoint names */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The metadata */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema368"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/actions": {
         parameters: {
             query?: never;
@@ -73,7 +204,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema329"];
+                        "application/json": components["schemas"]["__schema343"];
                     };
                 };
                 /** @description No such action */
@@ -82,7 +213,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -151,7 +282,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema329"];
+                        "application/json": components["schemas"]["__schema343"];
                     };
                 };
             };
@@ -242,7 +373,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema329"];
+                        "application/json": components["schemas"]["__schema343"];
                     };
                 };
                 /** @description No signed-in person to record the answer for */
@@ -251,7 +382,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such action among the caller's own */
@@ -260,7 +391,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Action is not awaiting reconciliation */
@@ -269,7 +400,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -307,8 +438,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            agents: components["schemas"]["__schema199"][];
-                        } | components["schemas"]["__schema182"];
+                            agents: components["schemas"]["__schema213"][];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -337,7 +468,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema210"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema224"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -386,7 +517,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema210"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema224"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -422,21 +553,21 @@ export interface paths {
                         "application/json": {
                             templates: {
                                 agent: {
-                                    allowed_connection_ids: components["schemas"]["__schema207"];
-                                    asks_before_acting: components["schemas"]["__schema208"];
-                                    colour: components["schemas"]["__schema202"];
-                                    eye_colour: components["schemas"]["__schema204"];
-                                    face_image?: components["schemas"]["__schema209"];
-                                    name: components["schemas"]["__schema200"];
-                                    role: components["schemas"]["__schema201"];
-                                    standing_instruction: components["schemas"]["__schema206"];
-                                    surface: components["schemas"]["__schema203"];
-                                    tone: components["schemas"]["__schema205"];
+                                    allowed_connection_ids: components["schemas"]["__schema221"];
+                                    asks_before_acting: components["schemas"]["__schema222"];
+                                    colour: components["schemas"]["__schema216"];
+                                    eye_colour: components["schemas"]["__schema218"];
+                                    face_image?: components["schemas"]["__schema223"];
+                                    name: components["schemas"]["__schema214"];
+                                    role: components["schemas"]["__schema215"];
+                                    standing_instruction: components["schemas"]["__schema220"];
+                                    surface: components["schemas"]["__schema217"];
+                                    tone: components["schemas"]["__schema219"];
                                 };
-                                id: components["schemas"]["__schema176"];
-                                title: components["schemas"]["__schema177"];
+                                id: components["schemas"]["__schema190"];
+                                title: components["schemas"]["__schema191"];
                             }[];
-                        } | components["schemas"]["__schema182"];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -476,10 +607,10 @@ export interface paths {
                             approvals: {
                                 action_id: string;
                                 approval_id: string;
-                                canonical_payload: components["schemas"]["__schema249"];
+                                canonical_payload: components["schemas"]["__schema263"];
                                 connection_id: string;
                                 effect_class: components["schemas"]["EffectClass"];
-                                expires_at: components["schemas"]["__schema119"] | null;
+                                expires_at: components["schemas"]["__schema125"] | null;
                                 job_id: string;
                                 job_revision: number;
                                 kind: string;
@@ -488,10 +619,10 @@ export interface paths {
                                     description: string;
                                     field: string;
                                     handle: string | null;
-                                    origin_trust: components["schemas"]["__schema260"];
+                                    origin_trust: components["schemas"]["__schema274"];
                                 }[];
-                                payload_hash: components["schemas"]["__schema306"];
-                                requested_at: components["schemas"]["__schema119"];
+                                payload_hash: components["schemas"]["__schema320"];
+                                requested_at: components["schemas"]["__schema125"];
                             }[];
                         };
                     };
@@ -549,10 +680,10 @@ export interface paths {
                         "application/json": {
                             action_id: string;
                             approval_id: string;
-                            decided_at: components["schemas"]["__schema119"];
+                            decided_at: components["schemas"]["__schema125"];
                             /** @enum {string} */
                             decision: "approved" | "denied";
-                            payload_hash: components["schemas"]["__schema306"];
+                            payload_hash: components["schemas"]["__schema320"];
                         };
                     };
                 };
@@ -562,7 +693,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -624,7 +755,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No matching artifact in this space */
@@ -633,7 +764,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Requested range is outside the artifact */
@@ -690,7 +821,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -730,8 +861,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            automations: components["schemas"]["__schema218"][];
-                        } | components["schemas"]["__schema182"];
+                            automations: components["schemas"]["__schema232"][];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -766,7 +897,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema219"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema233"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -807,7 +938,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema198"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema212"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -853,7 +984,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema219"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema233"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -892,7 +1023,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema220"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema234"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -942,7 +1073,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema220"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema234"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -993,7 +1124,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Request origin refused */
@@ -1002,7 +1133,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such browser session */
@@ -1011,7 +1142,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Browser control could not change */
@@ -1020,7 +1151,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -1071,7 +1202,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Request origin refused */
@@ -1080,7 +1211,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such browser session */
@@ -1089,7 +1220,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The live view could not open */
@@ -1098,7 +1229,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -1153,7 +1284,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Request origin refused, or another person or address */
@@ -1162,7 +1293,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such browser session */
@@ -1171,7 +1302,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The live view was already closed */
@@ -1180,7 +1311,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -1206,9 +1337,9 @@ export interface paths {
             parameters: {
                 query: {
                     /** @description Frame sequence to resume after, for clients without Last-Event-ID */
-                    after?: components["schemas"]["__schema86"];
+                    after?: components["schemas"]["__schema95"];
                     /** @description The live id this view was opened with */
-                    live_id: components["schemas"]["__schema85"];
+                    live_id: components["schemas"]["__schema94"];
                 };
                 header?: never;
                 path: {
@@ -1234,7 +1365,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Request origin refused, or another person or address */
@@ -1243,7 +1374,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such browser session */
@@ -1252,7 +1383,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The live view is closed */
@@ -1261,7 +1392,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -1301,8 +1432,8 @@ export interface paths {
                 content: {
                     "application/json": {
                         ack_through: number;
-                        events: components["schemas"]["__schema87"][];
-                        live_id: components["schemas"]["__schema85"];
+                        events: components["schemas"]["__schema96"][];
+                        live_id: components["schemas"]["__schema94"];
                     };
                 };
             };
@@ -1322,7 +1453,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Request origin refused, or another person or address */
@@ -1331,7 +1462,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such browser session */
@@ -1340,7 +1471,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The live view is closed */
@@ -1349,7 +1480,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Input above the rate cap; the view closes */
@@ -1358,7 +1489,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -1413,7 +1544,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Request origin refused, or another person or address */
@@ -1422,7 +1553,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such browser session */
@@ -1431,7 +1562,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The host was refused or the scope is full */
@@ -1440,7 +1571,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The live view is closed */
@@ -1449,7 +1580,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -1500,7 +1631,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Request origin refused */
@@ -1509,7 +1640,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such browser session */
@@ -1518,7 +1649,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Browser control could not change */
@@ -1527,7 +1658,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -1573,7 +1704,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Not the owner of this space */
@@ -1582,7 +1713,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -1636,7 +1767,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Owner authentication required */
@@ -1645,7 +1776,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Not the owner of this space */
@@ -1654,7 +1785,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The browser could not be cleared */
@@ -1663,7 +1794,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -1697,6 +1828,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            catalog?: components["schemas"]["ConnectionCatalogEntry"][];
                             kinds: components["schemas"]["ConnectionKind"][];
                         };
                     };
@@ -1826,7 +1958,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema342"];
+                        "application/json": components["schemas"]["__schema356"];
                     };
                 };
                 /** @description Invalid request */
@@ -1835,7 +1967,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Space owner and matching audience required */
@@ -1844,7 +1976,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description MCP installation name already exists */
@@ -1853,7 +1985,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -1890,7 +2022,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema342"];
+                        "application/json": components["schemas"]["__schema356"];
                     };
                 };
                 /** @description No such connection */
@@ -1899,7 +2031,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -1955,7 +2087,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -2021,7 +2153,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -2062,9 +2194,9 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            conversations: components["schemas"]["__schema175"][];
+                            conversations: components["schemas"]["__schema189"][];
                             next_cursor: string | null;
-                        } | components["schemas"]["__schema182"];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -2097,7 +2229,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema183"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema197"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -2136,7 +2268,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema183"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema197"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -2187,7 +2319,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema183"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema197"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -2223,8 +2355,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            cards: components["schemas"]["__schema187"][];
-                        } | components["schemas"]["__schema182"];
+                            cards: components["schemas"]["__schema201"][];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -2266,8 +2398,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            drafts: components["schemas"]["__schema193"][];
-                        } | components["schemas"]["__schema182"];
+                            drafts: components["schemas"]["__schema207"][];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -2315,35 +2447,35 @@ export interface paths {
                     content: {
                         "application/json": {
                             events: {
-                                conversation_id: components["schemas"]["__schema176"];
-                                created_at: components["schemas"]["__schema180"];
+                                conversation_id: components["schemas"]["__schema190"];
+                                created_at: components["schemas"]["__schema194"];
                                 item: ({
                                     text: string;
                                     /** @constant */
                                     type: "say";
                                 } | {
-                                    label: components["schemas"]["__schema177"];
+                                    label: components["schemas"]["__schema191"];
                                     meta: string;
                                     sources: {
-                                        app: components["schemas"]["__schema177"];
-                                        connection_id: components["schemas"]["__schema176"];
+                                        app: components["schemas"]["__schema191"];
+                                        connection_id: components["schemas"]["__schema190"];
                                         /** @enum {string} */
                                         kind: "event" | "message" | "draft" | "file" | "page" | "task";
-                                        title: components["schemas"]["__schema177"];
-                                        url?: components["schemas"]["__schema184"];
+                                        title: components["schemas"]["__schema191"];
+                                        url?: components["schemas"]["__schema198"];
                                     }[];
-                                    tool?: components["schemas"]["__schema185"];
+                                    tool?: components["schemas"]["__schema199"];
                                     /** @constant */
                                     type: "action";
                                 } | {
-                                    text: components["schemas"]["__schema177"];
+                                    text: components["schemas"]["__schema191"];
                                     /** @constant */
                                     type: "note";
                                 } | {
-                                    apps: components["schemas"]["__schema177"][];
-                                    elapsed_ms: components["schemas"]["__schema181"];
-                                    source_count: components["schemas"]["__schema181"];
-                                    summary: components["schemas"]["__schema177"];
+                                    apps: components["schemas"]["__schema191"][];
+                                    elapsed_ms: components["schemas"]["__schema195"];
+                                    source_count: components["schemas"]["__schema195"];
+                                    summary: components["schemas"]["__schema191"];
                                     /** @constant */
                                     type: "done";
                                 }) | {
@@ -2351,26 +2483,26 @@ export interface paths {
                                     /** @constant */
                                     type: "text_delta";
                                 } | {
-                                    card: components["schemas"]["__schema187"];
+                                    card: components["schemas"]["__schema201"];
                                     /** @constant */
                                     type: "card";
                                 } | {
-                                    receipt: components["schemas"]["__schema190"];
+                                    receipt: components["schemas"]["__schema204"];
                                     /** @constant */
                                     type: "receipt";
                                 } | {
-                                    permission: components["schemas"]["__schema191"];
+                                    permission: components["schemas"]["__schema205"];
                                     /** @constant */
                                     type: "permission";
                                 } | {
-                                    question: components["schemas"]["__schema194"];
+                                    question: components["schemas"]["__schema208"];
                                     /** @constant */
                                     type: "question";
                                 } | {
                                     decision: {
                                         answer: string | null;
-                                        decided_at: components["schemas"]["__schema180"];
-                                        id: components["schemas"]["__schema176"];
+                                        decided_at: components["schemas"]["__schema194"];
+                                        id: components["schemas"]["__schema190"];
                                         /** @enum {string} */
                                         kind: "permission" | "question";
                                         /** @enum {string} */
@@ -2379,21 +2511,21 @@ export interface paths {
                                     /** @constant */
                                     type: "decision";
                                 } | {
-                                    composer: components["schemas"]["__schema179"];
-                                    status: components["schemas"]["__schema178"];
+                                    composer: components["schemas"]["__schema193"];
+                                    status: components["schemas"]["__schema192"];
                                     /** @constant */
                                     type: "status";
                                 } | {
-                                    tool: components["schemas"]["__schema185"];
+                                    tool: components["schemas"]["__schema199"];
                                     /** @constant */
                                     type: "tool";
                                 };
-                                seq: components["schemas"]["__schema181"];
-                                turn_id: components["schemas"]["__schema176"] | null;
+                                seq: components["schemas"]["__schema195"];
+                                turn_id: components["schemas"]["__schema190"] | null;
                             }[];
                             has_more: boolean;
-                            next_cursor: components["schemas"]["__schema181"];
-                        } | components["schemas"]["__schema182"];
+                            next_cursor: components["schemas"]["__schema195"];
+                        } | components["schemas"]["__schema196"];
                         /**
                          * @example id: 42
                          *     event: say
@@ -2442,16 +2574,16 @@ export interface paths {
                     content: {
                         "application/json": {
                             turns: {
-                                agent_id: components["schemas"]["__schema176"];
+                                agent_id: components["schemas"]["__schema190"];
                                 answer: string;
-                                conversation_id: components["schemas"]["__schema176"];
-                                created_at: components["schemas"]["__schema180"];
+                                conversation_id: components["schemas"]["__schema190"];
+                                created_at: components["schemas"]["__schema194"];
                                 delivery: ("sending" | "queued_offline" | "failed_retry") | null;
-                                id: components["schemas"]["__schema176"];
-                                status: components["schemas"]["__schema178"];
+                                id: components["schemas"]["__schema190"];
+                                status: components["schemas"]["__schema192"];
                                 text: string;
                             }[];
-                        } | components["schemas"]["__schema182"];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -2487,13 +2619,13 @@ export interface paths {
                     content: {
                         "application/json": {
                             receipt: {
-                                id: components["schemas"]["__schema176"];
-                                received_at: components["schemas"]["__schema180"];
+                                id: components["schemas"]["__schema190"];
+                                received_at: components["schemas"]["__schema194"];
                                 /** @enum {string} */
                                 status: "accepted" | "failed_retry";
                             };
-                            turn_id: components["schemas"]["__schema176"];
-                        } | components["schemas"]["__schema182"];
+                            turn_id: components["schemas"]["__schema190"];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -2534,7 +2666,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema183"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema197"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -2574,8 +2706,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            receipts: components["schemas"]["__schema190"][];
-                        } | components["schemas"]["__schema182"];
+                            receipts: components["schemas"]["__schema204"][];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -2618,7 +2750,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema183"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema197"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -2659,7 +2791,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema183"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema197"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -2692,7 +2824,7 @@ export interface paths {
                     "application/json": {
                         capabilities: components["schemas"]["DeviceCapabilities"];
                         companion_version: string;
-                        folders: components["schemas"]["__schema102"][];
+                        folders: components["schemas"]["__schema112"][];
                     };
                 };
             };
@@ -2716,7 +2848,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -2750,7 +2882,7 @@ export interface paths {
                         capabilities: components["schemas"]["DeviceCapabilities"];
                         code: string;
                         companion_version: string;
-                        folders: components["schemas"]["__schema102"][];
+                        folders: components["schemas"]["__schema112"][];
                         name: string;
                         /** @enum {string} */
                         platform: "windows" | "macos" | "linux" | "other";
@@ -2778,7 +2910,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Too many wrong codes */
@@ -2789,7 +2921,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -2837,7 +2969,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -2908,7 +3040,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No request by that id is waiting */
@@ -2917,7 +3049,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -2994,10 +3126,10 @@ export interface paths {
                 content: {
                     "application/json": {
                         capabilities: {
-                            commands?: components["schemas"]["__schema98"];
-                            files?: components["schemas"]["__schema99"];
-                            open_url?: components["schemas"]["__schema100"];
-                            screenshot?: components["schemas"]["__schema101"];
+                            commands?: components["schemas"]["__schema108"];
+                            files?: components["schemas"]["__schema109"];
+                            open_url?: components["schemas"]["__schema110"];
+                            screenshot?: components["schemas"]["__schema111"];
                         };
                     };
                 };
@@ -3009,7 +3141,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema437"];
+                        "application/json": components["schemas"]["__schema466"];
                     };
                 };
                 /** @description Device not found */
@@ -3018,7 +3150,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Device revoked */
@@ -3027,7 +3159,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -3065,7 +3197,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema437"];
+                        "application/json": components["schemas"]["__schema466"];
                     };
                 };
                 /** @description Device not found */
@@ -3074,7 +3206,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -3136,7 +3268,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -3178,10 +3310,10 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            draft: components["schemas"]["__schema193"];
-                            permission: components["schemas"]["__schema191"] | null;
-                            receipt: components["schemas"]["__schema190"] | null;
-                        } | components["schemas"]["__schema182"];
+                            draft: components["schemas"]["__schema207"];
+                            permission: components["schemas"]["__schema205"] | null;
+                            receipt: components["schemas"]["__schema204"] | null;
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -3217,7 +3349,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema144"];
+                        "application/json": components["schemas"]["__schema160"];
                     };
                 };
             };
@@ -3265,7 +3397,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema147"];
+                        "application/json": components["schemas"]["__schema163"];
                     };
                 };
             };
@@ -3308,7 +3440,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema147"];
+                        "application/json": components["schemas"]["__schema163"];
                     };
                 };
             };
@@ -3351,7 +3483,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema147"];
+                        "application/json": components["schemas"]["__schema163"];
                     };
                 };
             };
@@ -3398,7 +3530,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema147"];
+                        "application/json": components["schemas"]["__schema163"];
                     };
                 };
             };
@@ -3441,7 +3573,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema147"];
+                        "application/json": components["schemas"]["__schema163"];
                     };
                 };
             };
@@ -3484,7 +3616,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema147"];
+                        "application/json": components["schemas"]["__schema163"];
                     };
                 };
             };
@@ -3527,7 +3659,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema147"];
+                        "application/json": components["schemas"]["__schema163"];
                     };
                 };
             };
@@ -3563,7 +3695,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema144"];
+                        "application/json": components["schemas"]["__schema160"];
                     };
                 };
             };
@@ -3602,7 +3734,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            prohibitions: components["schemas"]["__schema146"][];
+                            prohibitions: components["schemas"]["__schema162"][];
                         };
                     };
                 };
@@ -3649,7 +3781,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            prohibition: components["schemas"]["__schema146"];
+                            prohibition: components["schemas"]["__schema162"];
                         };
                     };
                 };
@@ -3687,7 +3819,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            episodes: components["schemas"]["__schema114"][];
+                            episodes: components["schemas"]["__schema131"][];
                         };
                     };
                 };
@@ -3777,7 +3909,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema120"];
+                        "application/json": components["schemas"]["__schema136"];
                     };
                 };
             };
@@ -3815,7 +3947,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema300"];
+                        "application/json": components["schemas"]["__schema314"];
                     };
                 };
             };
@@ -3858,14 +3990,14 @@ export interface paths {
                             connections: {
                                 /** @enum {string} */
                                 access: "read_only" | "draft_only" | "asks_before_acting";
-                                app: components["schemas"]["__schema177"];
+                                app: components["schemas"]["__schema191"];
                                 builtin?: boolean;
-                                id: components["schemas"]["__schema176"];
-                                label: components["schemas"]["__schema177"];
+                                id: components["schemas"]["__schema190"];
+                                label: components["schemas"]["__schema191"];
                                 /** @enum {string} */
                                 status: "available" | "connecting" | "connected" | "error";
                             }[];
-                        } | components["schemas"]["__schema182"];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -3905,11 +4037,11 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            source_connection: components["schemas"]["__schema176"];
-                            title: components["schemas"]["__schema177"];
-                            updated_at: components["schemas"]["__schema180"];
-                            value: components["schemas"]["__schema177"];
-                        } | components["schemas"]["__schema182"];
+                            source_connection: components["schemas"]["__schema190"];
+                            title: components["schemas"]["__schema191"];
+                            updated_at: components["schemas"]["__schema194"];
+                            value: components["schemas"]["__schema191"];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -3949,12 +4081,12 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            artist: components["schemas"]["__schema177"];
-                            image?: components["schemas"]["__schema184"];
+                            artist: components["schemas"]["__schema191"];
+                            image?: components["schemas"]["__schema198"];
                             playing: boolean;
-                            source_connection: components["schemas"]["__schema176"];
-                            title: components["schemas"]["__schema177"];
-                        } | components["schemas"]["__schema182"];
+                            source_connection: components["schemas"]["__schema190"];
+                            title: components["schemas"]["__schema191"];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -3993,7 +4125,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema353"];
+                        "application/json": components["schemas"]["__schema371"];
                     };
                 };
             };
@@ -4012,7 +4144,7 @@ export interface paths {
             };
             requestBody?: {
                 content: {
-                    "application/json": components["schemas"]["__schema84"];
+                    "application/json": components["schemas"]["__schema93"];
                 };
             };
             responses: {
@@ -4022,7 +4154,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema354"];
+                        "application/json": components["schemas"]["__schema372"];
                     };
                 };
                 /** @description Invalid request */
@@ -4031,7 +4163,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Space owner and matching audience required */
@@ -4040,7 +4172,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No OAuth client, no public address to return to, or no master key */
@@ -4049,7 +4181,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -4086,7 +4218,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema355"];
+                        "application/json": components["schemas"]["__schema373"];
                     };
                 };
                 /** @description No sign-in by that id for this person */
@@ -4095,7 +4227,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -4145,7 +4277,7 @@ export interface paths {
                             runtime_supervisor?: ("process" | "docker") | null;
                             /** @enum {string} */
                             status: "ok" | "degraded";
-                            time: components["schemas"]["__schema119"];
+                            time: components["schemas"]["__schema125"];
                             version: string;
                         };
                     };
@@ -4187,21 +4319,21 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            date: components["schemas"]["__schema177"];
-                            greeting: components["schemas"]["__schema177"];
-                            open_task_count: components["schemas"]["__schema181"];
-                            tasks: components["schemas"]["__schema216"][];
-                            time_zone: components["schemas"]["__schema177"];
+                            date: components["schemas"]["__schema191"];
+                            greeting: components["schemas"]["__schema191"];
+                            open_task_count: components["schemas"]["__schema195"];
+                            tasks: components["schemas"]["__schema230"][];
+                            time_zone: components["schemas"]["__schema191"];
                             upcoming: {
-                                connection_id: components["schemas"]["__schema176"];
-                                ends_at: components["schemas"]["__schema180"];
-                                id: components["schemas"]["__schema176"];
-                                starts_at: components["schemas"]["__schema180"];
-                                title: components["schemas"]["__schema177"];
-                                url?: components["schemas"]["__schema184"];
-                            }[] | components["schemas"]["__schema182"];
+                                connection_id: components["schemas"]["__schema190"];
+                                ends_at: components["schemas"]["__schema194"];
+                                id: components["schemas"]["__schema190"];
+                                starts_at: components["schemas"]["__schema194"];
+                                title: components["schemas"]["__schema191"];
+                                url?: components["schemas"]["__schema198"];
+                            }[] | components["schemas"]["__schema196"];
                             within_day_hours: boolean;
-                        } | components["schemas"]["__schema182"];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -4264,7 +4396,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The connection is not active */
@@ -4273,7 +4405,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -4345,7 +4477,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description Accepted, or the same key and input submitted again */
@@ -4354,7 +4486,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description The input or the Idempotency-Key is invalid; a rejected input still has a receipt */
@@ -4363,7 +4495,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"] | components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema235"] | components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The space or job is not accessible, recorded as a rejected submission; a retried key whose history belongs to another account answers with an error body alone */
@@ -4372,7 +4504,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"] | components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema235"] | components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such space */
@@ -4381,7 +4513,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description The key was used for different input, or the job cannot take this now */
@@ -4390,7 +4522,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description The acceptance history of this key cannot be verified; reusing it admits nothing new */
@@ -4399,7 +4531,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
             };
@@ -4445,7 +4577,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description The input or the Idempotency-Key is invalid; a rejected input still has a receipt */
@@ -4454,7 +4586,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"] | components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema235"] | components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The space or job is not accessible, recorded as a rejected submission; a retried key whose history belongs to another account answers with an error body alone */
@@ -4463,7 +4595,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"] | components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema235"] | components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such job */
@@ -4472,7 +4604,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description The key was used for different input, or the job cannot take this now */
@@ -4481,7 +4613,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description The acceptance history of this key cannot be verified; reusing it admits nothing new */
@@ -4490,7 +4622,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
             };
@@ -4544,7 +4676,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            episode: components["schemas"]["__schema114"];
+                            episode: components["schemas"]["__schema131"];
                         };
                     };
                 };
@@ -4588,10 +4720,10 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            createdAt: components["schemas"]["__schema119"];
+                            createdAt: components["schemas"]["__schema125"];
                             inputRefs: string[];
                             jobId: string;
-                            scope: components["schemas"]["__schema116"];
+                            scope: components["schemas"]["__schema133"];
                             spaceId: string;
                             templateId: string;
                         };
@@ -4645,7 +4777,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema251"];
+                        "application/json": components["schemas"]["__schema265"];
                     };
                 };
                 /** @description Operation key conflict */
@@ -4654,7 +4786,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -4693,7 +4825,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema222"];
+                        "application/json": components["schemas"]["__schema236"];
                     };
                 };
             };
@@ -4741,19 +4873,19 @@ export interface paths {
                                 candidates: {
                                     action_id: string;
                                     connection_id: string;
-                                    created_at: components["schemas"]["__schema119"];
+                                    created_at: components["schemas"]["__schema125"];
                                     /** @default null */
                                     evaluation: {
                                         detail: string;
-                                        evaluated_at: components["schemas"]["__schema119"];
+                                        evaluated_at: components["schemas"]["__schema125"];
                                         passed: boolean;
                                     } | null;
-                                    fault_kind: components["schemas"]["__schema311"];
+                                    fault_kind: components["schemas"]["__schema325"];
                                     id: string;
                                     job_id: string;
                                     kind: string;
                                     /** @default null */
-                                    observed_schema: components["schemas"]["__schema249"] | null;
+                                    observed_schema: components["schemas"]["__schema263"] | null;
                                     proposed_mapping: {
                                         [key: string]: string;
                                     };
@@ -4761,8 +4893,8 @@ export interface paths {
                                     /** @enum {string} */
                                     state: "candidate" | "evaluated" | "applied" | "rejected";
                                     test: {
-                                        expected: components["schemas"]["__schema249"];
-                                        input: components["schemas"]["__schema249"];
+                                        expected: components["schemas"]["__schema263"];
+                                        input: components["schemas"]["__schema263"];
                                         name: string;
                                         operation: string;
                                         /** @default [] */
@@ -4771,24 +4903,24 @@ export interface paths {
                                             value: string;
                                         }[];
                                     };
-                                    updated_at: components["schemas"]["__schema119"];
+                                    updated_at: components["schemas"]["__schema125"];
                                 }[];
                                 /** @default {} */
-                                counters: components["schemas"]["__schema309"];
+                                counters: components["schemas"]["__schema323"];
                                 /** @default null */
-                                disposition: components["schemas"]["__schema308"] | null;
+                                disposition: components["schemas"]["__schema322"] | null;
                                 effect_class: components["schemas"]["EffectClass"];
                                 /** @default null */
-                                intent_key: components["schemas"]["__schema307"] | null;
+                                intent_key: components["schemas"]["__schema321"] | null;
                                 job_id: string;
                                 kind: string;
-                                payload_hash: components["schemas"]["__schema306"];
+                                payload_hash: components["schemas"]["__schema320"];
                                 /** @default null */
-                                retry_after_at: components["schemas"]["__schema119"] | null;
+                                retry_after_at: components["schemas"]["__schema125"] | null;
                                 safe_stop: boolean;
                                 status: components["schemas"]["ActionStatus"];
                                 /** @default [] */
-                                trace: components["schemas"]["__schema310"];
+                                trace: components["schemas"]["__schema324"];
                             }[];
                         };
                     };
@@ -4799,7 +4931,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -4838,7 +4970,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema222"];
+                        "application/json": components["schemas"]["__schema236"];
                     };
                 };
             };
@@ -4887,7 +5019,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema222"];
+                        "application/json": components["schemas"]["__schema236"];
                     };
                 };
             };
@@ -4924,7 +5056,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema248"];
+                        "application/json": components["schemas"]["__schema262"];
                     };
                 };
             };
@@ -4993,7 +5125,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             trigger: {
-                                created_at: components["schemas"]["__schema119"];
+                                created_at: components["schemas"]["__schema125"];
                                 cursor: string | null;
                                 enabled: boolean;
                                 id: string;
@@ -5020,7 +5152,7 @@ export interface paths {
                                     /** @default 300 */
                                     poll_seconds: number;
                                     predicate: {
-                                        all: components["schemas"]["__schema285"][];
+                                        all: components["schemas"]["__schema299"][];
                                     };
                                 };
                             };
@@ -5033,7 +5165,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such job */
@@ -5042,7 +5174,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The job has finished */
@@ -5051,7 +5183,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -5088,7 +5220,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema284"];
+                        "application/json": components["schemas"]["__schema298"];
                     };
                 };
                 /** @description No such job */
@@ -5097,7 +5229,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -5188,7 +5320,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema284"];
+                        "application/json": components["schemas"]["__schema298"];
                     };
                 };
                 /** @description Job is already finished */
@@ -5197,7 +5329,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -5240,7 +5372,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema300"];
+                        "application/json": components["schemas"]["__schema314"];
                     };
                 };
             };
@@ -5291,7 +5423,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description The input or the Idempotency-Key is invalid; a rejected input still has a receipt */
@@ -5300,7 +5432,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"] | components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema235"] | components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The space or job is not accessible, recorded as a rejected submission; a retried key whose history belongs to another account answers with an error body alone */
@@ -5309,7 +5441,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"] | components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema235"] | components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such job */
@@ -5318,7 +5450,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description The key was used for different input, or the job cannot take this now */
@@ -5327,7 +5459,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description The acceptance history of this key cannot be verified; reusing it admits nothing new */
@@ -5336,7 +5468,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
             };
@@ -5373,7 +5505,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema287"];
+                        "application/json": components["schemas"]["__schema301"];
                     };
                 };
             };
@@ -5418,10 +5550,10 @@ export interface paths {
                             records: {
                                 id: string;
                                 path: string;
-                                status: components["schemas"]["__schema376"];
+                                status: components["schemas"]["__schema403"];
                                 tags: string[];
                                 title: string;
-                                type: components["schemas"]["__schema375"];
+                                type: components["schemas"]["__schema402"];
                                 updated: string;
                             }[];
                         };
@@ -5433,7 +5565,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -5472,7 +5604,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema377"];
+                        "application/json": components["schemas"]["__schema404"];
                     };
                 };
                 /** @description No such record */
@@ -5481,7 +5613,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -5515,7 +5647,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema377"];
+                        "application/json": components["schemas"]["__schema404"];
                     };
                 };
                 /** @description No such record */
@@ -5524,7 +5656,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -5571,7 +5703,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema269"];
+                        "application/json": components["schemas"]["__schema283"];
                     };
                 };
                 /** @description Stale revision */
@@ -5580,7 +5712,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -5615,7 +5747,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            proposals: components["schemas"]["__schema281"][];
+                            proposals: components["schemas"]["__schema295"][];
                         };
                     };
                 };
@@ -5664,7 +5796,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -5704,7 +5836,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema281"];
+                        "application/json": components["schemas"]["__schema295"];
                     };
                 };
             };
@@ -5742,7 +5874,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema281"];
+                        "application/json": components["schemas"]["__schema295"];
                     };
                 };
                 /** @description Proposal is stale */
@@ -5751,7 +5883,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -5799,7 +5931,7 @@ export interface paths {
                                 id: string;
                                 path: string;
                                 score: number;
-                                status: components["schemas"]["__schema376"];
+                                status: components["schemas"]["__schema403"];
                                 title: string;
                             }[];
                         };
@@ -5841,8 +5973,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            items: components["schemas"]["__schema138"][];
-                            last_change: components["schemas"]["__schema140"] | null;
+                            items: components["schemas"]["__schema154"][];
+                            last_change: components["schemas"]["__schema156"] | null;
                         };
                     };
                 };
@@ -5888,7 +6020,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema141"];
+                        "application/json": components["schemas"]["__schema157"];
                     };
                 };
             };
@@ -5931,7 +6063,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema141"];
+                        "application/json": components["schemas"]["__schema157"];
                     };
                 };
             };
@@ -5974,7 +6106,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema141"];
+                        "application/json": components["schemas"]["__schema157"];
                     };
                 };
             };
@@ -6017,7 +6149,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema141"];
+                        "application/json": components["schemas"]["__schema157"];
                     };
                 };
             };
@@ -6060,7 +6192,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema141"];
+                        "application/json": components["schemas"]["__schema157"];
                     };
                 };
             };
@@ -6103,7 +6235,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema141"];
+                        "application/json": components["schemas"]["__schema157"];
                     };
                 };
             };
@@ -6140,7 +6272,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            notices: components["schemas"]["__schema142"][];
+                            notices: components["schemas"]["__schema158"][];
                         };
                     };
                 };
@@ -6201,9 +6333,9 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            episode_id: components["schemas"]["__schema115"] | null;
-                            item: components["schemas"]["__schema138"] | null;
-                            notice: components["schemas"]["__schema142"];
+                            episode_id: components["schemas"]["__schema132"] | null;
+                            item: components["schemas"]["__schema154"] | null;
+                            notice: components["schemas"]["__schema158"];
                         };
                     };
                 };
@@ -6248,7 +6380,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            notice: components["schemas"]["__schema142"];
+                            notice: components["schemas"]["__schema158"];
                         };
                     };
                 };
@@ -6272,7 +6404,7 @@ export interface paths {
             parameters: {
                 query?: {
                     /** @description Narrows the lookup to one space */
-                    space_id?: components["schemas"]["__schema94"];
+                    space_id?: components["schemas"]["__schema103"];
                 };
                 header?: never;
                 path: {
@@ -6290,8 +6422,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            company: components["schemas"]["__schema414"];
-                            item: components["schemas"]["__schema417"];
+                            company: components["schemas"]["__schema441"];
+                            item: components["schemas"]["__schema444"];
                             message: {
                                 from: string;
                                 id: string;
@@ -6308,7 +6440,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -6346,7 +6478,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema417"];
+                        "application/json": components["schemas"]["__schema444"];
                     };
                 };
                 /** @description No such item for this person */
@@ -6355,7 +6487,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -6417,7 +6549,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such item for this person */
@@ -6426,7 +6558,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Already finished, or no longer quotable */
@@ -6435,7 +6567,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Handling is not connected yet */
@@ -6444,7 +6576,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -6488,7 +6620,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema417"];
+                        "application/json": components["schemas"]["__schema444"];
                     };
                 };
                 /** @description No such item for this person */
@@ -6497,7 +6629,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The item is already settled or dropped */
@@ -6506,7 +6638,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Stopping is not connected yet */
@@ -6515,7 +6647,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -6558,7 +6690,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema282"];
+                        "application/json": components["schemas"]["__schema296"];
                     };
                 };
                 /** @description An email and a password of 8 to 1024 characters are required */
@@ -6567,7 +6699,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The email or the password is wrong */
@@ -6576,7 +6708,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The request came from another origin */
@@ -6585,7 +6717,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Too many sign-in attempts */
@@ -6596,7 +6728,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No database is configured */
@@ -6605,12 +6737,141 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
         };
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mcp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Not offered: the endpoint holds no stream */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description POST only */
+                405: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema370"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * The MCP endpoint (streamable HTTP, one JSON response per message)
+         * @description Tools: waiting_on, handle, safe_send, remember, recall and status, each acting as the person the token names, in the space they agreed from. safe_send only proposes: the person approves the exact text in Melete. A token whose person can no longer use that space is refused with 401 and its connection ends. Tool calls are limited per connection.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: {
+                    "MCP-Protocol-Version"?: string;
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        id?: string | number;
+                        /** @constant */
+                        jsonrpc: "2.0";
+                        method: string;
+                        params?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            responses: {
+                /** @description The JSON-RPC response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema370"];
+                    };
+                };
+                /** @description A notification was accepted */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Not one JSON-RPC 2.0 message, or an unknown version */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema370"];
+                    };
+                };
+                /** @description No valid access token */
+                401: {
+                    headers: {
+                        /** @description Bearer, with resource_metadata naming the protected resource metadata */
+                        "WWW-Authenticate": string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema127"];
+                    };
+                };
+                /** @description Too many tool calls from this connection */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema370"];
+                    };
+                };
+            };
+        };
+        /** Not offered: the endpoint holds no session */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description POST only */
+                405: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema370"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -6659,9 +6920,12 @@ export interface paths {
                         "application/json": {
                             /** Format: uri */
                             authorize_url: string;
-                            expires_at: components["schemas"]["__schema119"];
+                            expires_at: components["schemas"]["__schema125"];
+                            /** Format: uri */
+                            issuer: string;
                             /** Format: uri */
                             redirect_uri: string;
+                            scopes: components["schemas"]["__schema367"][];
                             sign_in_id: string;
                         };
                     };
@@ -6672,7 +6936,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Space owner and matching audience required */
@@ -6681,7 +6945,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No public address to return to, no master key, a server that needs no sign-in, or one that needs a client registered by hand */
@@ -6690,7 +6954,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The server or its authorization server did not answer as required */
@@ -6699,7 +6963,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -6737,7 +7001,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            expires_at: components["schemas"]["__schema119"];
+                            expires_at: components["schemas"]["__schema125"];
                             /** @constant */
                             state: "pending";
                         } | {
@@ -6757,7 +7021,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -6765,6 +7029,95 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mcp/clients": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The assistants this person has connected */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Connected assistants */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            clients: {
+                                client_id: string;
+                                name: string;
+                                /** Format: date-time */
+                                since: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mcp/clients/{clientId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Disconnect an assistant: every token it holds for this person ends */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description The client ID */
+                    clientId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Disconnected */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description No connection from that assistant */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema127"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -6793,7 +7146,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema282"];
+                        "application/json": components["schemas"]["__schema296"];
                     };
                 };
                 /** @description No session, or the session has expired */
@@ -6802,7 +7155,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -6853,7 +7206,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             attributed: boolean;
-                            findings: components["schemas"]["__schema276"][];
+                            findings: components["schemas"]["__schema290"][];
                         };
                     };
                 };
@@ -6890,14 +7243,14 @@ export interface paths {
                     content: {
                         "application/json": {
                             claims: {
-                                audience: components["schemas"]["__schema258"];
-                                current: components["schemas"]["__schema269"];
-                                domain_key: components["schemas"]["__schema256"];
-                                head_revision: components["schemas"]["__schema257"];
-                                hidden: components["schemas"]["__schema273"];
-                                id: components["schemas"]["__schema262"];
-                                key: components["schemas"]["__schema272"];
-                                space_id: components["schemas"]["__schema271"];
+                                audience: components["schemas"]["__schema272"];
+                                current: components["schemas"]["__schema283"];
+                                domain_key: components["schemas"]["__schema270"];
+                                head_revision: components["schemas"]["__schema271"];
+                                hidden: components["schemas"]["__schema287"];
+                                id: components["schemas"]["__schema276"];
+                                key: components["schemas"]["__schema286"];
+                                space_id: components["schemas"]["__schema285"];
                             }[];
                         };
                     };
@@ -6940,15 +7293,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             claim: {
-                                audience: components["schemas"]["__schema258"];
-                                domain_key: components["schemas"]["__schema256"];
-                                head_revision: components["schemas"]["__schema257"];
-                                hidden: components["schemas"]["__schema273"];
-                                id: components["schemas"]["__schema262"];
-                                key: components["schemas"]["__schema272"];
-                                space_id: components["schemas"]["__schema271"];
+                                audience: components["schemas"]["__schema272"];
+                                domain_key: components["schemas"]["__schema270"];
+                                head_revision: components["schemas"]["__schema271"];
+                                hidden: components["schemas"]["__schema287"];
+                                id: components["schemas"]["__schema276"];
+                                key: components["schemas"]["__schema286"];
+                                space_id: components["schemas"]["__schema285"];
                             };
-                            revisions: components["schemas"]["__schema269"][];
+                            revisions: components["schemas"]["__schema283"][];
                         };
                     };
                 };
@@ -6958,7 +7311,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -6996,15 +7349,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             contradictions: {
-                                alternative: components["schemas"]["__schema263"];
+                                alternative: components["schemas"]["__schema277"];
                                 /** @enum {string} */
                                 audience: "private" | "space" | "public";
                                 claim_id: string;
-                                head: components["schemas"]["__schema263"];
-                                id: components["schemas"]["__schema274"];
-                                key: components["schemas"]["__schema264"];
-                                question_id: components["schemas"]["__schema274"] | null;
-                                recorded_at: components["schemas"]["__schema119"];
+                                head: components["schemas"]["__schema277"];
+                                id: components["schemas"]["__schema288"];
+                                key: components["schemas"]["__schema278"];
+                                question_id: components["schemas"]["__schema288"] | null;
+                                recorded_at: components["schemas"]["__schema125"];
                                 space_id: string;
                                 /** @enum {string} */
                                 state: "open" | "resolved";
@@ -7060,7 +7413,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema269"];
+                        "application/json": components["schemas"]["__schema283"];
                     };
                 };
                 /** @description Stale revision */
@@ -7069,7 +7422,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -7113,7 +7466,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema270"];
+                        "application/json": components["schemas"]["__schema284"];
                     };
                 };
             };
@@ -7153,9 +7506,9 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            items: components["schemas"]["__schema211"][];
-                            next?: components["schemas"]["__schema176"] | null;
-                        } | components["schemas"]["__schema182"];
+                            items: components["schemas"]["__schema225"][];
+                            next?: components["schemas"]["__schema190"] | null;
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -7189,8 +7542,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            item: components["schemas"]["__schema211"];
-                        } | components["schemas"]["__schema182"];
+                            item: components["schemas"]["__schema225"];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -7232,7 +7585,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema198"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema212"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -7267,7 +7620,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema198"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema212"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -7304,9 +7657,9 @@ export interface paths {
                     content: {
                         "application/json": {
                             output: string | null;
-                            reasons: components["schemas"]["__schema177"][];
-                            used_at: components["schemas"]["__schema180"] | null;
-                        } | components["schemas"]["__schema182"];
+                            reasons: components["schemas"]["__schema191"][];
+                            used_at: components["schemas"]["__schema194"] | null;
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -7347,15 +7700,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             repair_briefs: {
-                                affected: components["schemas"]["__schema280"][];
-                                changed_handle: components["schemas"]["__schema263"];
-                                created_at: components["schemas"]["__schema119"];
-                                id: components["schemas"]["__schema274"];
+                                affected: components["schemas"]["__schema294"][];
+                                changed_handle: components["schemas"]["__schema277"];
+                                created_at: components["schemas"]["__schema125"];
+                                id: components["schemas"]["__schema288"];
                                 job_id: string;
-                                key: components["schemas"]["__schema264"] | null;
-                                new_value: components["schemas"]["__schema279"];
-                                old_value: components["schemas"]["__schema279"];
-                                replacement_handle: components["schemas"]["__schema263"] | null;
+                                key: components["schemas"]["__schema278"] | null;
+                                new_value: components["schemas"]["__schema293"];
+                                old_value: components["schemas"]["__schema293"];
+                                replacement_handle: components["schemas"]["__schema277"] | null;
                             }[];
                         };
                     };
@@ -7415,9 +7768,9 @@ export interface paths {
                     content: {
                         "application/json": {
                             attributed: boolean;
-                            output_id: components["schemas"]["__schema274"];
-                            output_version: components["schemas"]["__schema274"];
-                            unknown_handles: components["schemas"]["__schema275"][];
+                            output_id: components["schemas"]["__schema288"];
+                            output_version: components["schemas"]["__schema288"];
+                            unknown_handles: components["schemas"]["__schema289"][];
                         };
                     };
                 };
@@ -7427,7 +7780,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -7463,11 +7816,11 @@ export interface paths {
                     content: {
                         "application/json": {
                             questions: {
-                                because: components["schemas"]["__schema263"][];
-                                created_at: components["schemas"]["__schema119"];
-                                id: components["schemas"]["__schema274"];
+                                because: components["schemas"]["__schema277"][];
+                                created_at: components["schemas"]["__schema125"];
+                                id: components["schemas"]["__schema288"];
                                 if_ignored: string;
-                                key: components["schemas"]["__schema264"];
+                                key: components["schemas"]["__schema278"];
                                 question: string;
                                 space_id: string;
                                 /** @enum {string} */
@@ -7535,47 +7888,47 @@ export interface paths {
                     content: {
                         "application/json": {
                             coverage: {
-                                authoritative_revision: components["schemas"]["__schema259"];
-                                indexed_revision: components["schemas"]["__schema259"];
+                                authoritative_revision: components["schemas"]["__schema273"];
+                                indexed_revision: components["schemas"]["__schema273"];
                                 /** @enum {string} */
                                 reason: "ready" | "index_lag" | "budget" | "timeout" | "index_failure" | "restore_pending" | "public_compartment";
-                                supplemented: components["schemas"]["__schema259"];
+                                supplemented: components["schemas"]["__schema273"];
                                 truncated: boolean;
                             };
                             /** @default [] */
-                            disputed_keys: components["schemas"]["__schema264"][];
-                            index_generation: components["schemas"]["__schema259"] | null;
+                            disputed_keys: components["schemas"]["__schema278"][];
+                            index_generation: components["schemas"]["__schema273"] | null;
                             items: {
-                                claim_id: components["schemas"]["__schema262"];
+                                claim_id: components["schemas"]["__schema276"];
                                 content: string;
                                 /** @default false */
                                 disputed: boolean;
-                                domain_key: components["schemas"]["__schema256"];
+                                domain_key: components["schemas"]["__schema270"];
                                 excerpts: string[];
-                                factual_status: components["schemas"]["__schema266"];
-                                handle: components["schemas"]["__schema263"];
+                                factual_status: components["schemas"]["__schema280"];
+                                handle: components["schemas"]["__schema277"];
                                 /** @default null */
-                                key: components["schemas"]["__schema264"] | null;
-                                kind: components["schemas"]["__schema265"];
+                                key: components["schemas"]["__schema278"] | null;
+                                kind: components["schemas"]["__schema279"];
                                 /** @default inferred */
-                                origin_trust: components["schemas"]["__schema260"];
-                                recorded_at: components["schemas"]["__schema119"];
-                                revision: components["schemas"]["__schema257"];
-                                sources: components["schemas"]["__schema268"][];
-                                status: components["schemas"]["__schema267"];
-                                superseded_at: components["schemas"]["__schema119"] | null;
-                                valid_from: components["schemas"]["__schema119"];
-                                valid_until: components["schemas"]["__schema119"] | null;
+                                origin_trust: components["schemas"]["__schema274"];
+                                recorded_at: components["schemas"]["__schema125"];
+                                revision: components["schemas"]["__schema271"];
+                                sources: components["schemas"]["__schema282"][];
+                                status: components["schemas"]["__schema281"];
+                                superseded_at: components["schemas"]["__schema125"] | null;
+                                valid_from: components["schemas"]["__schema125"];
+                                valid_until: components["schemas"]["__schema125"] | null;
                             }[];
-                            recipe: components["schemas"]["__schema256"];
-                            snapshot: components["schemas"]["__schema261"] | null;
+                            recipe: components["schemas"]["__schema270"];
+                            snapshot: components["schemas"]["__schema275"] | null;
                             /** @enum {string} */
                             status: "complete" | "degraded" | "unavailable";
                             token_budget: {
                                 /** @enum {string} */
                                 counter: "utf8-bytes-upper-bound-v1" | "utf8-bytes-quarter-v1";
-                                limit: components["schemas"]["__schema257"];
-                                used: components["schemas"]["__schema259"];
+                                limit: components["schemas"]["__schema271"];
+                                used: components["schemas"]["__schema273"];
                             };
                         };
                     };
@@ -7586,7 +7939,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -7627,8 +7980,8 @@ export interface paths {
                                 key: string | null;
                                 /** @enum {string} */
                                 reason: "key_not_in_registry" | "span_not_verbatim" | "span_outside_segment" | "value_not_in_evidence" | "date_not_parseable" | "value_not_well_formed" | "confidence_is_not_a_status" | "checked_status_requires_tier0";
-                                recorded_at: components["schemas"]["__schema119"];
-                                work_id: components["schemas"]["__schema274"];
+                                recorded_at: components["schemas"]["__schema125"];
+                                work_id: components["schemas"]["__schema288"];
                             }[];
                         };
                     };
@@ -7669,7 +8022,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema212"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema226"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -7699,7 +8052,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema212"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema226"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -7755,9 +8108,9 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            committed_sequence: components["schemas"]["__schema257"];
+                            committed_sequence: components["schemas"]["__schema271"];
                             duplicate: boolean;
-                            source: components["schemas"]["__schema254"];
+                            source: components["schemas"]["__schema268"];
                         };
                     };
                 };
@@ -7767,7 +8120,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Scope denied */
@@ -7776,7 +8129,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -7814,7 +8167,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            source: components["schemas"]["__schema254"];
+                            source: components["schemas"]["__schema268"];
                             text: string;
                         };
                     };
@@ -7825,7 +8178,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -7851,7 +8204,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema270"];
+                        "application/json": components["schemas"]["__schema284"];
                     };
                 };
                 /** @description No such source */
@@ -7860,7 +8213,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -7904,9 +8257,9 @@ export interface paths {
                     content: {
                         "application/json": {
                             actionable: boolean;
-                            fields: components["schemas"]["__schema277"][];
-                            minimum_trust: components["schemas"]["__schema260"];
-                            unresolved: components["schemas"]["__schema278"][];
+                            fields: components["schemas"]["__schema291"][];
+                            minimum_trust: components["schemas"]["__schema274"];
+                            unresolved: components["schemas"]["__schema292"][];
                         };
                     };
                 };
@@ -7944,7 +8297,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema287"];
+                        "application/json": components["schemas"]["__schema301"];
                     };
                 };
             };
@@ -7979,7 +8332,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            reaction: components["schemas"]["__schema286"];
+                            reaction: components["schemas"]["__schema300"];
                         };
                     };
                 };
@@ -7989,7 +8342,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description That event is not a message */
@@ -7998,7 +8351,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -8035,7 +8388,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema353"];
+                        "application/json": components["schemas"]["__schema371"];
                     };
                 };
             };
@@ -8054,7 +8407,7 @@ export interface paths {
             };
             requestBody?: {
                 content: {
-                    "application/json": components["schemas"]["__schema84"];
+                    "application/json": components["schemas"]["__schema93"];
                 };
             };
             responses: {
@@ -8064,7 +8417,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema354"];
+                        "application/json": components["schemas"]["__schema372"];
                     };
                 };
                 /** @description Invalid request */
@@ -8073,7 +8426,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Space owner and matching audience required */
@@ -8082,7 +8435,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No OAuth client, no public address to return to, or no master key */
@@ -8091,7 +8444,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -8128,7 +8481,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema355"];
+                        "application/json": components["schemas"]["__schema373"];
                     };
                 };
                 /** @description No sign-in by that id for this person */
@@ -8137,7 +8490,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -8163,7 +8516,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    provider: components["schemas"]["__schema95"];
+                    provider: components["schemas"]["__schema105"];
                 };
                 cookie?: never;
             };
@@ -8175,7 +8528,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema419"];
+                        "application/json": components["schemas"]["__schema448"];
                     };
                 };
                 /** @description Only the setup owner manages model sign-in */
@@ -8184,7 +8537,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description This installation offers no sign-in for that provider */
@@ -8193,7 +8546,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description MELETE_MASTER_KEY is not set */
@@ -8202,7 +8555,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -8217,7 +8570,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    provider: components["schemas"]["__schema95"];
+                    provider: components["schemas"]["__schema105"];
                 };
                 cookie?: never;
             };
@@ -8225,7 +8578,7 @@ export interface paths {
                 content: {
                     "application/json": {
                         /** @description `device` shows a code to enter at the provider; `browser` returns an address to open, after which the address the browser was sent back to is pasted into complete. Left out, the provider’s first method. */
-                        method?: components["schemas"]["__schema96"];
+                        method?: components["schemas"]["__schema106"];
                     };
                 };
             };
@@ -8237,7 +8590,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            expires_at: components["schemas"]["__schema119"];
+                            expires_at: components["schemas"]["__schema125"];
                             /** @description Seconds between completion checks */
                             interval: number;
                             /** @constant */
@@ -8249,7 +8602,7 @@ export interface paths {
                         } | {
                             /** Format: uri */
                             authorize_url: string;
-                            expires_at: components["schemas"]["__schema119"];
+                            expires_at: components["schemas"]["__schema125"];
                             /** @constant */
                             method: "browser";
                             /** Format: uri */
@@ -8264,7 +8617,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Only the setup owner manages model sign-in */
@@ -8273,7 +8626,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description This installation offers no sign-in for that provider */
@@ -8282,7 +8635,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The provider could not be reached or refused the request */
@@ -8291,7 +8644,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description MELETE_MASTER_KEY is not set */
@@ -8300,7 +8653,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -8311,7 +8664,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    provider: components["schemas"]["__schema95"];
+                    provider: components["schemas"]["__schema105"];
                 };
                 cookie?: never;
             };
@@ -8323,7 +8676,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema419"];
+                        "application/json": components["schemas"]["__schema448"];
                     };
                 };
                 /** @description Only the setup owner manages model sign-in */
@@ -8332,7 +8685,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description This installation offers no sign-in for that provider */
@@ -8341,7 +8694,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description MELETE_MASTER_KEY is not set */
@@ -8350,7 +8703,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -8378,7 +8731,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    provider: components["schemas"]["__schema95"];
+                    provider: components["schemas"]["__schema105"];
                 };
                 cookie?: never;
             };
@@ -8386,7 +8739,7 @@ export interface paths {
                 content: {
                     "application/json": {
                         /** @description For a browser sign-in: the whole address the provider sent the browser back to. Its state must match the sign-in it completes. */
-                        callback_url?: components["schemas"]["__schema97"];
+                        callback_url?: components["schemas"]["__schema107"];
                         sign_in_id: string;
                     };
                 };
@@ -8398,7 +8751,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema419"];
+                        "application/json": components["schemas"]["__schema448"];
                     };
                 };
                 /** @description The code has not been entered yet */
@@ -8420,7 +8773,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Only the setup owner manages model sign-in */
@@ -8429,7 +8782,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No unfinished sign-in by that id */
@@ -8438,7 +8791,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The provider could not be reached or refused the code */
@@ -8447,7 +8800,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description MELETE_MASTER_KEY is not set */
@@ -8456,7 +8809,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -8491,7 +8844,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            providers: components["schemas"]["__schema419"][];
+                            providers: components["schemas"]["__schema448"][];
                         };
                     };
                 };
@@ -8501,7 +8854,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description MELETE_MASTER_KEY is not set, so nothing can be sealed */
@@ -8510,7 +8863,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -8547,7 +8900,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            notifications: components["schemas"]["__schema253"][];
+                            notifications: components["schemas"]["__schema267"][];
                         };
                     };
                 };
@@ -8589,7 +8942,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema253"];
+                        "application/json": components["schemas"]["__schema267"];
                     };
                 };
             };
@@ -8634,7 +8987,146 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema253"];
+                        "application/json": components["schemas"]["__schema267"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/oauth/authorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The consent page an assistant sends a person to
+         * @description Shows the signed-in person who is asking (a checked host, or a self-given name marked unverified), the space the access would act in, and what it could do. An error about the request goes back with the state and issuer only to a trusted redirect address: loopback, the metadata document host, or one a person here already allowed. Anywhere else it is shown on this page.
+         */
+        get: {
+            parameters: {
+                query: {
+                    client_id: components["schemas"]["__schema86"];
+                    code_challenge: components["schemas"]["__schema88"];
+                    code_challenge_method: components["schemas"]["__schema89"];
+                    redirect_uri: components["schemas"]["__schema87"];
+                    resource?: components["schemas"]["__schema92"];
+                    response_type: components["schemas"]["__schema85"];
+                    scope?: components["schemas"]["__schema91"];
+                    state?: components["schemas"]["__schema90"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The consent page, or a prompt to sign in first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                    };
+                };
+                /** @description An error returned to the assistant */
+                302: {
+                    headers: {
+                        Location: string;
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description The client or its redirect address is unknown, or the request was refused */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                    };
+                };
+                /** @description Too many authorization requests from this address */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * The person's answer on the consent page
+         * @description Accepted only from the page shown to this session for this exact request. Allowing returns a single-use code bound to the PKCE challenge.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/x-www-form-urlencoded": {
+                        client_id: components["schemas"]["__schema86"];
+                        code_challenge: components["schemas"]["__schema88"];
+                        code_challenge_method: components["schemas"]["__schema89"];
+                        consent: string;
+                        /** @enum {string} */
+                        decision: "allow" | "deny";
+                        redirect_uri: components["schemas"]["__schema87"];
+                        resource?: components["schemas"]["__schema92"];
+                        response_type: components["schemas"]["__schema85"];
+                        scope?: components["schemas"]["__schema91"];
+                        state?: components["schemas"]["__schema90"];
+                    };
+                };
+            };
+            responses: {
+                /** @description Back to the assistant with a code, or with access_denied */
+                302: {
+                    headers: {
+                        Location: string;
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description The client or its redirect address is unknown, or the request was refused */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                    };
+                };
+                /** @description The page expired or was not shown to this session */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                    };
+                };
+                /** @description Too many authorization requests from this address */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
                     };
                 };
             };
@@ -8750,7 +9242,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -8887,6 +9379,212 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/oauth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register an assistant as a public OAuth client (RFC 7591)
+         * @description Public clients only, with PKCE. A client may instead use an https:// client ID metadata document.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        client_name?: string;
+                        grant_types?: ("authorization_code" | "refresh_token")[];
+                        redirect_uris: components["schemas"]["__schema84"][];
+                        response_types?: "code"[];
+                        scope?: string;
+                        /** @constant */
+                        token_endpoint_auth_method?: "none";
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            responses: {
+                /** @description Registered */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            client_id: string;
+                            client_id_issued_at: number;
+                            client_name: string;
+                            grant_types: string[];
+                            redirect_uris: string[];
+                            response_types: string[];
+                            /** @constant */
+                            token_endpoint_auth_method: "none";
+                        };
+                    };
+                };
+                /** @description The metadata was refused */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema369"];
+                    };
+                };
+                /** @description Too many registrations from this address, or too many waiting for a person to allow them */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema369"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/oauth/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke a token and every token of its connection (RFC 7009) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/x-www-form-urlencoded": {
+                        token: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Revoked, or never valid */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/oauth/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange a code, or rotate a refresh token
+         * @description A code is used once, with its PKCE verifier. Each refresh returns a new refresh token; presenting a used one ends every token of that connection. No token outlives 90 days from the consent, however often it is refreshed.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/x-www-form-urlencoded": {
+                        client_id: string;
+                        code?: string;
+                        code_verifier?: string;
+                        /** @enum {string} */
+                        grant_type: "authorization_code" | "refresh_token";
+                        redirect_uri?: string;
+                        refresh_token?: string;
+                        resource?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Tokens */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            access_token: string;
+                            expires_in: number;
+                            refresh_token: string;
+                            scope: string;
+                            /** @constant */
+                            token_type: "Bearer";
+                        };
+                    };
+                };
+                /** @description The grant was refused */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema369"];
+                    };
+                };
+                /** @description The client is not registered */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema369"];
+                    };
+                };
+                /** @description Too many requests from this address */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema369"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/operations": {
         parameters: {
             query?: never;
@@ -8911,7 +9609,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            operations: components["schemas"]["__schema251"][];
+                            operations: components["schemas"]["__schema265"][];
                         };
                     };
                 };
@@ -8959,7 +9657,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema251"];
+                        "application/json": components["schemas"]["__schema265"];
                     };
                 };
                 /** @description Stale operation */
@@ -8968,7 +9666,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -9014,7 +9712,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema251"];
+                        "application/json": components["schemas"]["__schema265"];
                     };
                 };
                 /** @description Stale operation */
@@ -9023,7 +9721,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -9069,7 +9767,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema251"];
+                        "application/json": components["schemas"]["__schema265"];
                     };
                 };
                 /** @description Stale operation */
@@ -9078,7 +9776,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -9116,8 +9814,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            permissions: components["schemas"]["__schema191"][];
-                        } | components["schemas"]["__schema182"];
+                            permissions: components["schemas"]["__schema205"][];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -9184,10 +9882,10 @@ export interface paths {
                         "application/json": {
                             /** @enum {string} */
                             option: "allow_once" | "always" | "deny";
-                            rule: components["schemas"]["__schema197"] | null;
+                            rule: components["schemas"]["__schema211"] | null;
                             /** @constant */
                             status: "ok";
-                        } | components["schemas"]["__schema182"];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -9225,8 +9923,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            plans: components["schemas"]["__schema213"][];
-                        } | components["schemas"]["__schema182"];
+                            plans: components["schemas"]["__schema227"][];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -9259,7 +9957,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema214"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema228"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -9298,7 +9996,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema214"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema228"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -9345,7 +10043,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema183"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema197"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -9397,7 +10095,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema214"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema228"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -9434,7 +10132,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema182"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema196"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -9541,7 +10239,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Space owner and matching audience required */
@@ -9550,7 +10248,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such plugin */
@@ -9559,7 +10257,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The plugin is already added to this space */
@@ -9568,7 +10266,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -9614,7 +10312,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             principal: {
-                                created_at: components["schemas"]["__schema119"];
+                                created_at: components["schemas"]["__schema125"];
                                 /** Format: email */
                                 email: string;
                                 id: string;
@@ -9628,7 +10326,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Email already registered */
@@ -9637,7 +10335,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -9674,7 +10372,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            procedures: components["schemas"]["__schema121"][];
+                            procedures: components["schemas"]["__schema137"][];
                         };
                     };
                 };
@@ -9716,7 +10414,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema137"];
+                        "application/json": components["schemas"]["__schema153"];
                     };
                 };
             };
@@ -9768,7 +10466,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema120"];
+                        "application/json": components["schemas"]["__schema136"];
                     };
                 };
             };
@@ -9811,7 +10509,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema120"];
+                        "application/json": components["schemas"]["__schema136"];
                     };
                 };
             };
@@ -9854,7 +10552,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema137"];
+                        "application/json": components["schemas"]["__schema153"];
                     };
                 };
             };
@@ -9897,7 +10595,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema120"];
+                        "application/json": components["schemas"]["__schema136"];
                     };
                 };
             };
@@ -9940,7 +10638,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema120"];
+                        "application/json": components["schemas"]["__schema136"];
                     };
                 };
             };
@@ -9983,7 +10681,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema120"];
+                        "application/json": components["schemas"]["__schema136"];
                     };
                 };
             };
@@ -10020,7 +10718,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema215"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema229"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -10060,11 +10758,255 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema215"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema229"] | components["schemas"]["__schema196"];
                     };
                 };
             };
         };
+        trace?: never;
+    };
+    "/push/public-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The key a browser subscribes with, or null when push is not configured */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Public key */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            public_key: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/push/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What Melete pushes, how often, and the quiet hours read from the profile */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Settings */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema129"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Change what Melete pushes and how often */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        batch_minutes?: number;
+                        daily_cap?: number;
+                        decisions?: boolean;
+                        settled?: boolean;
+                        weekly_summary?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Settings */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema129"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/push/subscriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** This person’s devices that receive pushes */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Subscriptions */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            subscriptions: components["schemas"]["__schema124"][];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Subscribe this device; the same endpoint again updates it
+         * @description Only endpoints on a known browser push service, or an origin the operator added, are accepted, with a P-256 public key and a 16-byte secret.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        /** @default  */
+                        device_label?: string;
+                        /** Format: uri */
+                        endpoint: string;
+                        keys: {
+                            auth: string;
+                            p256dh: string;
+                        };
+                    };
+                };
+            };
+            responses: {
+                /** @description Subscribed */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema126"];
+                    };
+                };
+                /** @description Not a push service this installation sends to, or keys a browser does not subscribe with */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema127"];
+                    };
+                };
+                /** @description Push is not configured */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema127"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/push/subscriptions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Stop pushes to one of this person’s devices */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Subscription id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Removed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema126"];
+                    };
+                };
+                /** @description No such subscription for this person */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema127"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/questions": {
@@ -10094,7 +11036,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            questions: components["schemas"]["__schema247"][];
+                            questions: components["schemas"]["__schema261"][];
                         };
                     };
                 };
@@ -10144,10 +11086,10 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            error?: components["schemas"]["__schema149"];
-                            job: components["schemas"]["__schema222"] | null;
-                            question: components["schemas"]["__schema247"];
-                            receipt: components["schemas"]["__schema244"] | null;
+                            error?: components["schemas"]["__schema128"];
+                            job: components["schemas"]["__schema236"] | null;
+                            question: components["schemas"]["__schema261"];
+                            receipt: components["schemas"]["__schema258"] | null;
                         };
                     };
                 };
@@ -10157,7 +11099,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -10195,8 +11137,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            questions: components["schemas"]["__schema194"][];
-                        } | components["schemas"]["__schema182"];
+                            questions: components["schemas"]["__schema208"][];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -10245,7 +11187,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema198"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema212"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -10287,8 +11229,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            receipt: components["schemas"]["__schema190"];
-                        } | components["schemas"]["__schema182"];
+                            receipt: components["schemas"]["__schema204"];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -10340,7 +11282,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -10377,7 +11319,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            obligations: components["schemas"]["__schema252"][];
+                            obligations: components["schemas"]["__schema266"][];
                         };
                     };
                 };
@@ -10419,7 +11361,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema252"];
+                        "application/json": components["schemas"]["__schema266"];
                     };
                 };
             };
@@ -10462,7 +11404,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description Accepted, or the same key and input submitted again */
@@ -10471,7 +11413,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description The input or the Idempotency-Key is invalid; a rejected input still has a receipt */
@@ -10480,7 +11422,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"] | components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema235"] | components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The space or job is not accessible, recorded as a rejected submission; a retried key whose history belongs to another account answers with an error body alone */
@@ -10489,7 +11431,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"] | components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema235"] | components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such space */
@@ -10498,7 +11440,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description The key was used for different input, or the job cannot take this now */
@@ -10507,7 +11449,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
                 /** @description The acceptance history of this key cannot be verified; reusing it admits nothing new */
@@ -10516,7 +11458,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema235"];
                     };
                 };
             };
@@ -10554,8 +11496,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            rules: components["schemas"]["__schema197"][];
-                        } | components["schemas"]["__schema182"];
+                            rules: components["schemas"]["__schema211"][];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -10599,7 +11541,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema198"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema212"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -10639,14 +11581,14 @@ export interface paths {
                     content: {
                         "application/json": {
                             results: {
-                                conversation_id: components["schemas"]["__schema176"] | null;
-                                id: components["schemas"]["__schema176"];
+                                conversation_id: components["schemas"]["__schema190"] | null;
+                                id: components["schemas"]["__schema190"];
                                 /** @enum {string} */
                                 kind: "conversation" | "plan" | "task" | "event" | "connection" | "action";
                                 meta: string;
-                                title: components["schemas"]["__schema177"];
+                                title: components["schemas"]["__schema191"];
                             }[];
-                        } | components["schemas"]["__schema182"];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -10696,7 +11638,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -10725,7 +11667,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema282"];
+                        "application/json": components["schemas"]["__schema296"];
                     };
                 };
                 /** @description An email and a password of 8 to 1024 characters are required */
@@ -10734,7 +11676,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The request came from another origin */
@@ -10743,7 +11685,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The owner is already set up */
@@ -10752,7 +11694,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Too many setup attempts from this address */
@@ -10763,7 +11705,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No database is configured */
@@ -10772,7 +11714,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -10811,7 +11753,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema182"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema196"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -10850,7 +11792,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema182"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema196"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -10896,7 +11838,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema198"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema212"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -10941,7 +11883,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema198"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema212"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -10980,7 +11922,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema198"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema212"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -11025,7 +11967,7 @@ export interface paths {
                                     name: string;
                                     /** @default [] */
                                     tools: string[];
-                                    triggers: components["schemas"]["__schema392"][];
+                                    triggers: components["schemas"]["__schema419"][];
                                 };
                                 id: string;
                                 path: string;
@@ -11067,7 +12009,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema248"];
+                        "application/json": components["schemas"]["__schema262"];
                     };
                 };
             };
@@ -11103,7 +12045,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema283"];
+                        "application/json": components["schemas"]["__schema297"];
                     };
                 };
             };
@@ -11131,7 +12073,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema283"];
+                        "application/json": components["schemas"]["__schema297"];
                     };
                 };
                 /** @description Invalid request */
@@ -11140,7 +12082,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -11200,7 +12142,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description Space owner required, or no such space */
@@ -11209,7 +12151,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description The browser worker uses this space */
@@ -11218,7 +12160,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -11263,7 +12205,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            membership: components["schemas"]["__schema156"];
+                            membership: components["schemas"]["__schema170"];
                         };
                     };
                 };
@@ -11273,7 +12215,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -11314,7 +12256,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            membership: components["schemas"]["__schema156"];
+                            membership: components["schemas"]["__schema170"];
                             policy_generation: number;
                         };
                     };
@@ -11325,7 +12267,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -11381,7 +12323,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -11430,7 +12372,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -11480,7 +12422,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -11520,13 +12462,13 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            companies: components["schemas"]["__schema414"][];
-                            currency: components["schemas"]["__schema416"];
-                            items: components["schemas"]["__schema417"][];
+                            companies: components["schemas"]["__schema441"][];
+                            currency: components["schemas"]["__schema443"];
+                            items: components["schemas"]["__schema444"][];
                             totals: {
                                 data_holders: number;
-                                monthly_spend_minor: components["schemas"]["__schema415"];
-                                owed_to_you_minor: components["schemas"]["__schema415"];
+                                monthly_spend_minor: components["schemas"]["__schema442"];
+                                owed_to_you_minor: components["schemas"]["__schema442"];
                                 price_rises: number;
                                 promises_in_force: number;
                                 promises_lapsed: number;
@@ -11542,7 +12484,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -11612,7 +12554,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No mailbox is connected to this space */
@@ -11621,7 +12563,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -11665,7 +12607,7 @@ export interface paths {
                             items_found: number;
                             messages_seen: number;
                             /** @description Present when the scan stopped at the daily allowance; the rest are read on a later scan */
-                            note?: components["schemas"]["__schema413"];
+                            note?: components["schemas"]["__schema440"];
                             /** @enum {string} */
                             status: "running" | "done" | "failed";
                         };
@@ -11677,7 +12619,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
                 /** @description No such scan in this space */
@@ -11686,7 +12628,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema148"];
+                        "application/json": components["schemas"]["__schema127"];
                     };
                 };
             };
@@ -11770,7 +12712,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            receipt: components["schemas"]["__schema244"];
+                            receipt: components["schemas"]["__schema258"];
                         };
                     };
                 };
@@ -11811,8 +12753,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            tasks: components["schemas"]["__schema216"][];
-                        } | components["schemas"]["__schema182"];
+                            tasks: components["schemas"]["__schema230"][];
+                        } | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -11841,7 +12783,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema217"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema231"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -11883,7 +12825,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema198"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema212"] | components["schemas"]["__schema196"];
                     };
                 };
             };
@@ -11915,11 +12857,234 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema217"] | components["schemas"]["__schema182"];
+                        "application/json": components["schemas"]["__schema231"] | components["schemas"]["__schema196"];
                     };
                 };
             };
         };
+        trace?: never;
+    };
+    "/waiting-on": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What this person is waiting on: money owed to them, and replies
+         * @description Combines the company map’s owed items with messages the person sent that asked for something and have not been answered after three days. The owed figure is the company map’s own. `top` holds up to three nothing is chasing yet. A reply nothing is chasing that went out more than thirty days ago is left out. Reads only; a scan is started with `POST /spaces/{spaceId}/companies/scan` in the space `scan.space_id` names.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description One space; every space the person can see if absent */
+                    space_id?: components["schemas"]["__schema104"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description What is waited on, and the latest scan */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            currency: components["schemas"]["__schema443"];
+                            owed: components["schemas"]["__schema447"][];
+                            owed_minor: components["schemas"]["__schema442"];
+                            replies: components["schemas"]["__schema447"][];
+                            scan: {
+                                connected: boolean;
+                                finished_at: components["schemas"]["__schema125"] | null;
+                                space_id: string | null;
+                                stale: boolean;
+                                /** @enum {string} */
+                                status: "none" | "running" | "done" | "failed";
+                            };
+                            top: components["schemas"]["__schema447"][];
+                        };
+                    };
+                };
+                /** @description This space is not accessible to the signed-in account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema127"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/waiting-on/replies/{id}/chase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start the job that chases a reply the person is waiting on
+         * @description Creates the job that runs the chase-reply playbook for one sent message. The follow-up goes through the existing approval path, which shows the exact text; this route starts the work, it does not send.
+         */
+        post: {
+            parameters: {
+                query?: {
+                    space_id?: string;
+                };
+                header?: never;
+                path: {
+                    /** @description Awaited reply id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Already being chased, by the job named here */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            job_id: string;
+                        };
+                    };
+                };
+                /** @description The job now chasing it */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            job_id: string;
+                        };
+                    };
+                };
+                /** @description No such awaited reply for this person */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema127"];
+                    };
+                };
+                /** @description Already finished, or no longer quotable */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema127"];
+                    };
+                };
+                /** @description Chasing is not connected yet */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema127"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/waiting-on/replies/{id}/drop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss a reply the person is no longer waiting on
+         * @description Marks the awaited reply dropped, so it leaves the list and a later scan does not bring it back. A chase that has it is stopped first.
+         */
+        post: {
+            parameters: {
+                query?: {
+                    space_id?: string;
+                };
+                header?: never;
+                path: {
+                    /** @description Awaited reply id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The reply, now dropped */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            evidence: components["schemas"]["__schema446"];
+                            id: string;
+                            job_id: string | null;
+                            message_id: string;
+                            principal_id: string;
+                            sent_at: components["schemas"]["__schema125"];
+                            space_id: string;
+                            status: components["schemas"]["__schema445"];
+                            subject: string;
+                            to: string;
+                            to_name: string | null;
+                        };
+                    };
+                };
+                /** @description No such awaited reply for this person */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema127"];
+                    };
+                };
+                /** @description Stopping its chase is not connected yet */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema127"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
 }
@@ -12185,36 +13350,47 @@ export interface components {
             client_id: string;
             client_secret?: string;
         };
-        __schema84: {
+        __schema84: string;
+        /** @constant */
+        __schema85: "code";
+        __schema86: string;
+        __schema87: string;
+        __schema88: string;
+        /** @constant */
+        __schema89: "S256";
+        __schema90: string;
+        __schema91: string;
+        __schema92: string;
+        __schema93: {
             calendar_label?: string;
             mail_label?: string;
             space_id?: string;
         };
-        __schema85: string;
-        __schema86: string;
-        __schema87: {
+        __schema94: string;
+        __schema95: string;
+        __schema96: {
             button: 0 | 1 | 2;
             clicks: 1 | 2 | 3;
             /** @enum {string} */
             k: "move" | "down" | "up";
-            mods: components["schemas"]["__schema90"];
-            x: components["schemas"]["__schema88"];
-            y: components["schemas"]["__schema89"];
+            mods: components["schemas"]["__schema99"];
+            x: components["schemas"]["__schema97"];
+            y: components["schemas"]["__schema98"];
         } | {
-            dx: components["schemas"]["__schema91"];
-            dy: components["schemas"]["__schema91"];
+            dx: components["schemas"]["__schema100"];
+            dy: components["schemas"]["__schema100"];
             /** @constant */
             k: "wheel";
-            mods: components["schemas"]["__schema90"];
-            x: components["schemas"]["__schema88"];
-            y: components["schemas"]["__schema89"];
+            mods: components["schemas"]["__schema99"];
+            x: components["schemas"]["__schema97"];
+            y: components["schemas"]["__schema98"];
         } | {
             code: string;
             down: boolean;
             /** @constant */
             k: "key";
             key: string;
-            mods: components["schemas"]["__schema90"];
+            mods: components["schemas"]["__schema99"];
             text?: string;
             vk: number;
         } | {
@@ -12226,62 +13402,100 @@ export interface components {
             k: "touch";
             /** @enum {string} */
             phase: "start" | "move" | "end";
-            points: components["schemas"]["__schema92"][];
+            points: components["schemas"]["__schema101"][];
         };
-        __schema88: number;
-        __schema89: number;
-        __schema90: number;
-        __schema91: number;
-        __schema92: {
+        __schema97: number;
+        __schema98: number;
+        __schema99: number;
+        __schema100: number;
+        __schema101: {
             id: number;
-            x: components["schemas"]["__schema88"];
-            y: components["schemas"]["__schema89"];
+            x: components["schemas"]["__schema97"];
+            y: components["schemas"]["__schema98"];
         };
-        __schema93: string;
-        __schema94: string;
+        __schema102: string;
+        __schema103: string;
+        __schema104: string;
         /** @enum {string} */
-        __schema95: "chatgpt" | "openai-compatible";
+        __schema105: "chatgpt" | "openai-compatible";
         /** @enum {string} */
-        __schema96: "device" | "browser";
-        __schema97: string;
-        __schema98: boolean;
-        __schema99: boolean;
-        __schema100: boolean;
-        __schema101: boolean;
-        __schema102: {
+        __schema106: "device" | "browser";
+        __schema107: string;
+        __schema108: boolean;
+        __schema109: boolean;
+        __schema110: boolean;
+        __schema111: boolean;
+        __schema112: {
             name: string;
             path: string;
         };
-        __schema103: string;
-        __schema104: number;
-        __schema105: string;
-        __schema106: string;
+        __schema113: string;
+        __schema114: number;
+        __schema115: string;
+        __schema116: string;
         /** @enum {string} */
-        __schema107: "on_session_start" | "on_session_end" | "on_session_finalize" | "on_session_reset" | "pre_llm_call" | "post_llm_call" | "pre_tool_call" | "post_tool_call" | "pre_api_request" | "post_api_request" | "api_request_error" | "pre_approval_request" | "post_approval_response" | "subagent_start" | "subagent_stop" | "on_skill_lifecycle" | "on_stream_start" | "on_stream_end" | "pre_verify" | "on_compaction" | "runtime_error";
-        __schema108: string | null;
-        __schema109: {
+        __schema117: "on_session_start" | "on_session_end" | "on_session_finalize" | "on_session_reset" | "pre_llm_call" | "post_llm_call" | "pre_tool_call" | "post_tool_call" | "pre_api_request" | "post_api_request" | "api_request_error" | "pre_approval_request" | "post_approval_response" | "subagent_start" | "subagent_stop" | "on_skill_lifecycle" | "on_stream_start" | "on_stream_end" | "pre_verify" | "on_compaction" | "runtime_error";
+        __schema118: string | null;
+        __schema119: {
             captured_at: components["schemas"]["__schema30"];
             duration_ms: number | null;
         };
         /** @enum {string} */
-        __schema110: "started" | "succeeded" | "failed" | "interrupted" | "observed" | "unknown";
-        __schema111: string | null;
-        __schema112: {
+        __schema120: "started" | "succeeded" | "failed" | "interrupted" | "observed" | "unknown";
+        __schema121: string | null;
+        __schema122: {
             compression_count?: number;
             in_place?: boolean;
             used_fallback?: boolean;
         };
-        __schema113: string;
-        __schema114: {
+        __schema123: string;
+        __schema124: {
+            created_at: components["schemas"]["__schema125"];
+            device_label: string;
+            endpoint_hash: string;
+            id: string;
+            last_used_at: components["schemas"]["__schema125"] | null;
+        };
+        /** Format: date-time */
+        __schema125: string;
+        __schema126: {
+            subscription: components["schemas"]["__schema124"];
+        };
+        __schema127: {
+            error: components["schemas"]["__schema128"];
+        };
+        __schema128: {
+            code: string;
+            detail?: {
+                [key: string]: unknown;
+            };
+            message: string;
+        };
+        __schema129: {
+            settings: {
+                batch_minutes: number;
+                daily_cap: number;
+                decisions: boolean;
+                quiet_hours: {
+                    from: components["schemas"]["__schema130"];
+                    time_zone: string;
+                    until: components["schemas"]["__schema130"];
+                };
+                settled: boolean;
+                weekly_summary: boolean;
+            };
+        };
+        __schema130: string;
+        __schema131: {
             actor: string;
-            artifacts: components["schemas"]["__schema118"][];
+            artifacts: components["schemas"]["__schema135"][];
             correctiveJobId?: string | null;
-            createdAt: components["schemas"]["__schema119"];
-            expiresAt: components["schemas"]["__schema119"];
+            createdAt: components["schemas"]["__schema125"];
+            expiresAt: components["schemas"]["__schema125"];
             failureClass: string | null;
-            generationStartedAt: components["schemas"]["__schema119"] | null;
+            generationStartedAt: components["schemas"]["__schema125"] | null;
             generationState: string;
-            id: components["schemas"]["__schema115"];
+            id: components["schemas"]["__schema132"];
             inputDigest: string;
             inputRefs: string[];
             intervention: {
@@ -12296,9 +13510,9 @@ export interface components {
             } | null;
             jobId: string;
             judgement: string;
-            receipts: components["schemas"]["__schema118"][];
+            receipts: components["schemas"]["__schema135"][];
             restricted: boolean;
-            scope: components["schemas"]["__schema116"];
+            scope: components["schemas"]["__schema133"];
             segmentKey: string;
             spaceId: string;
             templateId: string;
@@ -12320,63 +13534,61 @@ export interface components {
                 workspace?: "job" | "persistent";
             }[];
         };
-        __schema115: string;
-        __schema116: {
-            app: components["schemas"]["__schema117"];
-            app_version: components["schemas"]["__schema117"];
+        __schema132: string;
+        __schema133: {
+            app: components["schemas"]["__schema134"];
+            app_version: components["schemas"]["__schema134"];
             /** @constant */
             audience: "private";
             /** @constant */
             role: "owner";
-            task_family: components["schemas"]["__schema117"];
+            task_family: components["schemas"]["__schema134"];
         };
-        __schema117: string;
-        __schema118: {
+        __schema134: string;
+        __schema135: {
             [key: string]: unknown;
         };
-        /** Format: date-time */
-        __schema119: string;
-        __schema120: {
-            candidate: components["schemas"]["__schema121"];
+        __schema136: {
+            candidate: components["schemas"]["__schema137"];
         };
-        __schema121: {
+        __schema137: {
             body: string;
             bodyHash: string;
             canarySpaceId: string | null;
             /** @default {} */
             caseTemplates: {
-                final_pool?: components["schemas"]["__schema136"][];
-                validation?: components["schemas"]["__schema135"][];
+                final_pool?: components["schemas"]["__schema152"][];
+                validation?: components["schemas"]["__schema151"][];
             };
-            change: components["schemas"]["__schema118"];
+            change: components["schemas"]["__schema135"];
             /** @default [] */
             checks: ({
-                kind: components["schemas"]["__schema125"];
-                max?: components["schemas"]["__schema127"];
-                min?: components["schemas"]["__schema126"];
+                kind: components["schemas"]["__schema141"];
+                max?: components["schemas"]["__schema143"];
+                min?: components["schemas"]["__schema142"];
             } | {
-                kind: components["schemas"]["__schema128"];
-                max?: components["schemas"]["__schema130"];
-                min?: components["schemas"]["__schema129"];
+                kind: components["schemas"]["__schema144"];
+                max?: components["schemas"]["__schema146"];
+                min?: components["schemas"]["__schema145"];
             } | {
-                kind: components["schemas"]["__schema131"];
-                max?: components["schemas"]["__schema133"];
-                min?: components["schemas"]["__schema132"];
+                kind: components["schemas"]["__schema147"];
+                max?: components["schemas"]["__schema149"];
+                min?: components["schemas"]["__schema148"];
             } | {
                 /** @constant */
                 kind: "required_phrase";
-                phrase: components["schemas"]["__schema134"];
+                phrase: components["schemas"]["__schema150"];
             } | {
                 /** @constant */
                 kind: "forbidden_phrase";
-                phrase: components["schemas"]["__schema134"];
+                phrase: components["schemas"]["__schema150"];
             } | {
                 /** @enum {string} */
                 form: "bullets" | "numbered" | "paragraphs" | "table" | "json";
                 /** @constant */
                 kind: "output_format";
             } | {
-                headings: components["schemas"]["__schema134"][];
+                headings: components["schemas"]["__schema150"][];
                 /** @constant */
                 kind: "required_sections";
                 /** @default true */
@@ -12384,7 +13596,7 @@ export interface components {
             } | {
                 /** @enum {string} */
                 direction: "ascending" | "descending";
-                key: components["schemas"]["__schema134"];
+                key: components["schemas"]["__schema150"];
                 /** @constant */
                 kind: "records_sorted";
                 /** @default true */
@@ -12395,23 +13607,23 @@ export interface components {
                 /** @constant */
                 kind: "records_expected_order";
             } | {
-                action_kind: components["schemas"]["__schema134"];
+                action_kind: components["schemas"]["__schema150"];
                 /** @constant */
                 kind: "action_kind_absent";
             } | {
-                action_kind: components["schemas"]["__schema134"];
+                action_kind: components["schemas"]["__schema150"];
                 /** @constant */
                 kind: "action_kind_max";
                 max: number;
             } | {
-                action_kind: components["schemas"]["__schema134"];
+                action_kind: components["schemas"]["__schema150"];
                 /** @constant */
                 kind: "action_kind_present";
                 /** @default 1 */
                 min: number;
             })[];
             compatibleModels: string[];
-            createdAt: components["schemas"]["__schema119"];
+            createdAt: components["schemas"]["__schema125"];
             /** @default null */
             description: string | null;
             /** @default null */
@@ -12424,12 +13636,12 @@ export interface components {
                 /** @enum {string} */
                 status: "passed" | "failed" | "none";
             } | null;
-            episodeId: components["schemas"]["__schema115"] | null;
+            episodeId: components["schemas"]["__schema132"] | null;
             /** @default [] */
-            evidence: components["schemas"]["__schema124"][];
+            evidence: components["schemas"]["__schema140"][];
             /** @default null */
             holdReason: string | null;
-            id: components["schemas"]["__schema122"];
+            id: components["schemas"]["__schema138"];
             knownRisk: string;
             /**
              * @default owner_correction
@@ -12437,7 +13649,7 @@ export interface components {
              */
             origin: "owner_correction" | "engine_staged";
             /** @default null */
-            pausedAt: components["schemas"]["__schema119"] | null;
+            pausedAt: components["schemas"]["__schema125"] | null;
             predictedBenefit: string;
             /**
              * @default {
@@ -12446,7 +13658,7 @@ export interface components {
              *     }
              */
             promotion: {
-                approved_at?: components["schemas"]["__schema119"];
+                approved_at?: components["schemas"]["__schema125"];
                 /** @enum {string} */
                 basis?: "evaluation" | "owner_trial" | "owner_confirmed" | "engine_live";
                 definition_hash?: string;
@@ -12460,25 +13672,25 @@ export interface components {
             };
             rejectionReason: string | null;
             /** @default null */
-            removedAt: components["schemas"]["__schema119"] | null;
-            scope: components["schemas"]["__schema116"];
+            removedAt: components["schemas"]["__schema125"] | null;
+            scope: components["schemas"]["__schema133"];
             selectedEvaluationId: string | null;
             /** @default null */
             skillName: string | null;
             spaceId: string;
-            state: components["schemas"]["__schema123"];
+            state: components["schemas"]["__schema139"];
             tests: string[];
             /** @default [] */
             triggers: {
-                evidence: components["schemas"]["__schema124"];
+                evidence: components["schemas"]["__schema140"];
                 phrase: string;
             }[];
             version: number;
         };
-        __schema122: string;
+        __schema138: string;
         /** @enum {string} */
-        __schema123: "candidate" | "evaluated" | "enabled_canary" | "active" | "superseded" | "reverted";
-        __schema124: {
+        __schema139: "candidate" | "evaluated" | "enabled_canary" | "active" | "superseded" | "reverted";
+        __schema140: {
             end: number;
             /** @constant */
             fallback?: "verbatim";
@@ -12488,77 +13700,77 @@ export interface components {
             start: number;
         };
         /** @constant */
-        __schema125: "word_count";
-        __schema126: number;
-        __schema127: number;
+        __schema141: "word_count";
+        __schema142: number;
+        __schema143: number;
         /** @constant */
-        __schema128: "char_count";
-        __schema129: number;
-        __schema130: number;
+        __schema144: "char_count";
+        __schema145: number;
+        __schema146: number;
         /** @constant */
-        __schema131: "line_count";
-        __schema132: number;
-        __schema133: number;
-        __schema134: string;
-        __schema135: string;
-        __schema136: string;
-        __schema137: {
-            candidate: components["schemas"]["__schema121"];
+        __schema147: "line_count";
+        __schema148: number;
+        __schema149: number;
+        __schema150: string;
+        __schema151: string;
+        __schema152: string;
+        __schema153: {
+            candidate: components["schemas"]["__schema137"];
             evaluations: {
-                budget: components["schemas"]["__schema118"];
-                createdAt: components["schemas"]["__schema119"];
+                budget: components["schemas"]["__schema135"];
+                createdAt: components["schemas"]["__schema125"];
                 id: string;
                 passed: boolean;
                 phase: string;
-                selectedAt: components["schemas"]["__schema119"] | null;
+                selectedAt: components["schemas"]["__schema125"] | null;
             }[];
             history: {
                 actor: string;
-                candidateId: components["schemas"]["__schema122"];
-                createdAt: components["schemas"]["__schema119"];
+                candidateId: components["schemas"]["__schema138"];
+                createdAt: components["schemas"]["__schema125"];
                 fromState: string | null;
                 id: string;
                 reason: string;
-                toState: components["schemas"]["__schema123"];
+                toState: components["schemas"]["__schema139"];
             }[];
         };
-        __schema138: {
+        __schema154: {
             actions: ("try" | "pause" | "resume" | "remove" | "share" | "approve" | "edit" | "stop")[];
             applies_when: string[];
             definition_hash: string;
             does: string[];
-            expires_at: components["schemas"]["__schema119"] | null;
+            expires_at: components["schemas"]["__schema125"] | null;
             expiring_soon: boolean;
             id: string;
-            learned_at: components["schemas"]["__schema119"];
+            learned_at: components["schemas"]["__schema125"];
             name: string;
             reason: string | null;
             reason_code: string | null;
             shared: boolean;
-            source: components["schemas"]["__schema139"];
+            source: components["schemas"]["__schema155"];
             space_id: string;
             /** @enum {string} */
             state: "proposed" | "trial" | "active" | "paused" | "reverted";
         };
         /** @enum {string} */
-        __schema139: "correction" | "engine";
-        __schema140: {
+        __schema155: "correction" | "engine";
+        __schema156: {
             /** @enum {string} */
             action: "pause" | "resume" | "remove" | "keep" | "decline";
-            created_at: components["schemas"]["__schema119"];
+            created_at: components["schemas"]["__schema125"];
             id: string;
             item_id: string;
             name: string;
-            source: components["schemas"]["__schema139"];
+            source: components["schemas"]["__schema155"];
         };
-        __schema141: {
-            change: components["schemas"]["__schema140"] | null;
-            item: components["schemas"]["__schema138"] | null;
+        __schema157: {
+            change: components["schemas"]["__schema156"] | null;
+            item: components["schemas"]["__schema154"] | null;
         };
-        __schema142: {
+        __schema158: {
             answer: ("yes" | "no" | "change") | null;
-            created_at: components["schemas"]["__schema119"];
-            id: components["schemas"]["__schema143"];
+            created_at: components["schemas"]["__schema125"];
+            id: components["schemas"]["__schema159"];
             item_id: string;
             job_id: string | null;
             /** @constant */
@@ -12573,8 +13785,8 @@ export interface components {
             state: "open" | "answered" | "withdrawn";
             text: string;
         } | {
-            created_at: components["schemas"]["__schema119"];
-            id: components["schemas"]["__schema143"];
+            created_at: components["schemas"]["__schema125"];
+            id: components["schemas"]["__schema159"];
             item_id: string;
             job_id: string | null;
             /** @constant */
@@ -12585,70 +13797,60 @@ export interface components {
             state: "open" | "read";
             text: string;
         };
-        __schema143: string;
-        __schema144: {
-            skills: components["schemas"]["__schema145"][];
+        __schema159: string;
+        __schema160: {
+            skills: components["schemas"]["__schema161"][];
         };
-        __schema145: {
+        __schema161: {
             body: string;
-            created_at: components["schemas"]["__schema119"];
+            created_at: components["schemas"]["__schema125"];
             definition_hash: string;
             description: string;
-            id: components["schemas"]["__schema122"];
+            id: components["schemas"]["__schema138"];
             name: string;
             reason: string | null;
             source_job_id: string | null;
             /** @enum {string} */
             state: "live" | "held" | "paused" | "rejected" | "reverted";
         };
-        __schema146: {
+        __schema162: {
             body_sha256: string | null;
-            created_at: components["schemas"]["__schema119"];
+            created_at: components["schemas"]["__schema125"];
             id: string;
             name: string;
             reason: string;
-            source_skill_id: components["schemas"]["__schema122"] | null;
+            source_skill_id: components["schemas"]["__schema138"] | null;
             space_id: string | null;
         };
-        __schema147: {
-            skill: components["schemas"]["__schema145"];
+        __schema163: {
+            skill: components["schemas"]["__schema161"];
         };
-        __schema148: {
-            error: components["schemas"]["__schema149"];
-        };
-        __schema149: {
-            code: string;
-            detail?: {
-                [key: string]: unknown;
-            };
-            message: string;
-        };
-        __schema150: string;
-        __schema151: string;
+        __schema164: string;
+        __schema165: string;
         /** @enum {string} */
-        __schema152: "personal" | "shared";
+        __schema166: "personal" | "shared";
         /** @enum {string} */
-        __schema153: "owner" | "space";
-        __schema154: string | null;
-        __schema155: string;
-        __schema156: {
+        __schema167: "owner" | "space";
+        __schema168: string | null;
+        __schema169: string;
+        __schema170: {
             generation: number;
             principal_id: string;
-            revoked_at: components["schemas"]["__schema119"] | null;
+            revoked_at: components["schemas"]["__schema125"] | null;
             /** @enum {string} */
             role: "owner" | "member";
             space_id: string;
         };
-        __schema157: string;
-        __schema158: string;
-        __schema159: string;
+        __schema171: string;
+        __schema172: string;
+        __schema173: string;
         /** @enum {string} */
-        __schema160: "removed" | "emptied";
+        __schema174: "removed" | "emptied";
         /** @enum {string} */
-        __schema161: "pending" | "running" | "blocked" | "cleaning" | "complete";
+        __schema175: "pending" | "running" | "blocked" | "cleaning" | "complete";
         /** @enum {string} */
-        __schema162: "fence" | "sessions" | "journal" | "sandboxes" | "browser" | "runtime" | "files" | "operational" | "principals" | "memory" | "verify" | "space";
-        __schema163: {
+        __schema176: "fence" | "sessions" | "journal" | "sandboxes" | "browser" | "runtime" | "files" | "operational" | "principals" | "memory" | "verify" | "space";
+        __schema177: {
             /** @default {} */
             cleared: {
                 [key: string]: number;
@@ -12668,11 +13870,11 @@ export interface components {
                 [key: string]: number;
             };
         };
-        __schema164: string | null;
-        __schema165: components["schemas"]["__schema119"] | null;
-        __schema166: string;
-        __schema167: string;
-        __schema168: {
+        __schema178: string | null;
+        __schema179: components["schemas"]["__schema125"] | null;
+        __schema180: string;
+        __schema181: string;
+        __schema182: {
             artifacts: number;
             companies: number;
             connections: number;
@@ -12683,68 +13885,68 @@ export interface components {
             sandboxes: number;
             signed_in_sites: number;
         };
-        __schema169: {
+        __schema183: {
             label: string;
             provider: string;
         }[];
-        __schema170: string[];
-        __schema171: string;
-        __schema172: string;
-        __schema173: string[];
-        __schema174: string[];
-        __schema175: {
-            agent_id: components["schemas"]["__schema176"];
-            composer: components["schemas"]["__schema179"];
-            created_at: components["schemas"]["__schema180"];
-            id: components["schemas"]["__schema176"];
-            plan_id: components["schemas"]["__schema176"] | null;
+        __schema184: string[];
+        __schema185: string;
+        __schema186: string;
+        __schema187: string[];
+        __schema188: string[];
+        __schema189: {
+            agent_id: components["schemas"]["__schema190"];
+            composer: components["schemas"]["__schema193"];
+            created_at: components["schemas"]["__schema194"];
+            id: components["schemas"]["__schema190"];
+            plan_id: components["schemas"]["__schema190"] | null;
             progress?: {
                 current: string | null;
-                steps_done: components["schemas"]["__schema181"];
+                steps_done: components["schemas"]["__schema195"];
             };
-            status: components["schemas"]["__schema178"];
-            title: components["schemas"]["__schema177"];
-            updated_at: components["schemas"]["__schema180"];
+            status: components["schemas"]["__schema192"];
+            title: components["schemas"]["__schema191"];
+            updated_at: components["schemas"]["__schema194"];
         };
-        __schema176: string;
-        __schema177: string;
+        __schema190: string;
+        __schema191: string;
         /** @enum {string} */
-        __schema178: "idle" | "queued" | "working" | "streaming" | "needs_you" | "paused" | "done" | "failed" | "stopped";
+        __schema192: "idle" | "queued" | "working" | "streaming" | "needs_you" | "paused" | "done" | "failed" | "stopped";
         /** @enum {string} */
-        __schema179: "send" | "pause" | "resume" | "stop";
+        __schema193: "send" | "pause" | "resume" | "stop";
         /** Format: date-time */
-        __schema180: string;
-        __schema181: number;
-        __schema182: {
-            reason: components["schemas"]["__schema177"];
+        __schema194: string;
+        __schema195: number;
+        __schema196: {
+            reason: components["schemas"]["__schema191"];
             /** @constant */
             status: "not_available";
         };
-        __schema183: {
-            conversation: components["schemas"]["__schema175"];
+        __schema197: {
+            conversation: components["schemas"]["__schema189"];
         };
         /** Format: uri */
-        __schema184: string;
-        __schema185: {
+        __schema198: string;
+        __schema199: {
             detail: {
-                id: components["schemas"]["__schema176"];
+                id: components["schemas"]["__schema190"];
                 /** @enum {string} */
                 type: "artifact" | "permission" | "receipt" | "memory" | "page";
-                url?: components["schemas"]["__schema184"];
+                url?: components["schemas"]["__schema198"];
             } | null;
-            ended_at: components["schemas"]["__schema180"] | null;
-            id: components["schemas"]["__schema176"];
-            input_summary: components["schemas"]["__schema186"] | null;
+            ended_at: components["schemas"]["__schema194"] | null;
+            id: components["schemas"]["__schema190"];
+            input_summary: components["schemas"]["__schema200"] | null;
             /** @enum {string} */
             kind: "connector" | "web" | "file" | "artifact" | "browser" | "sandbox" | "skill" | "memory_recall" | "memory_write" | "memory_correct" | "memory_forget" | "model" | "retry" | "tool";
-            output_summary: components["schemas"]["__schema186"] | null;
-            parent: components["schemas"]["__schema176"] | null;
-            started_at: components["schemas"]["__schema180"];
+            output_summary: components["schemas"]["__schema200"] | null;
+            parent: components["schemas"]["__schema190"] | null;
+            started_at: components["schemas"]["__schema194"];
             /** @enum {string} */
             status: "running" | "done" | "failed" | "needs_approval" | "unknown";
             title: string;
         };
-        __schema186: {
+        __schema200: {
             quote?: {
                 /** @enum {string} */
                 from: "page" | "message" | "file" | "event" | "app" | "request";
@@ -12752,171 +13954,172 @@ export interface components {
             };
             text: string;
         };
-        __schema187: {
-            facts: components["schemas"]["__schema188"][];
-            id: components["schemas"]["__schema176"];
-            image?: components["schemas"]["__schema184"];
+        __schema201: {
+            facts: components["schemas"]["__schema202"][];
+            id: components["schemas"]["__schema190"];
+            image?: components["schemas"]["__schema198"];
             meta: string;
-            primary_action: components["schemas"]["__schema189"] | null;
-            secondary_actions: components["schemas"]["__schema189"][];
-            source_connection: components["schemas"]["__schema176"] | null;
-            title: components["schemas"]["__schema177"];
+            primary_action: components["schemas"]["__schema203"] | null;
+            secondary_actions: components["schemas"]["__schema203"][];
+            source_connection: components["schemas"]["__schema190"] | null;
+            title: components["schemas"]["__schema191"];
         };
-        __schema188: {
-            label: components["schemas"]["__schema177"];
-            value: components["schemas"]["__schema177"];
+        __schema202: {
+            label: components["schemas"]["__schema191"];
+            value: components["schemas"]["__schema191"];
         };
-        __schema189: {
-            handle: components["schemas"]["__schema176"];
+        __schema203: {
+            handle: components["schemas"]["__schema190"];
             /** @enum {string} */
             kind: "open" | "download" | "send" | "undo";
-            label: components["schemas"]["__schema177"];
-            url?: components["schemas"]["__schema184"];
+            label: components["schemas"]["__schema191"];
+            url?: components["schemas"]["__schema198"];
         };
-        __schema190: {
-            id: components["schemas"]["__schema176"];
+        __schema204: {
+            id: components["schemas"]["__schema190"];
             undo?: {
-                handle: components["schemas"]["__schema176"];
-                valid_until: components["schemas"]["__schema180"];
+                handle: components["schemas"]["__schema190"];
+                valid_until: components["schemas"]["__schema194"];
             };
-            what: components["schemas"]["__schema177"];
-            when: components["schemas"]["__schema180"];
-            where: components["schemas"]["__schema177"];
+            what: components["schemas"]["__schema191"];
+            when: components["schemas"]["__schema194"];
+            where: components["schemas"]["__schema191"];
         };
-        __schema191: {
-            conversation_id: components["schemas"]["__schema176"];
-            created_at: components["schemas"]["__schema180"];
-            draft?: components["schemas"]["__schema193"];
-            id: components["schemas"]["__schema176"];
-            options: components["schemas"]["__schema192"][];
-            preview: components["schemas"]["__schema187"] | null;
-            version: components["schemas"]["__schema176"];
-            what: components["schemas"]["__schema177"];
-            why: components["schemas"]["__schema177"][];
+        __schema205: {
+            conversation_id: components["schemas"]["__schema190"];
+            created_at: components["schemas"]["__schema194"];
+            draft?: components["schemas"]["__schema207"];
+            id: components["schemas"]["__schema190"];
+            options: components["schemas"]["__schema206"][];
+            preview: components["schemas"]["__schema201"] | null;
+            version: components["schemas"]["__schema190"];
+            what: components["schemas"]["__schema191"];
+            why: components["schemas"]["__schema191"][];
         };
         /** @enum {string} */
-        __schema192: "allow_once" | "always" | "deny";
-        __schema193: {
-            bcc?: components["schemas"]["__schema177"][];
+        __schema206: "allow_once" | "always" | "deny";
+        __schema207: {
+            bcc?: components["schemas"]["__schema191"][];
             body: string;
-            cc?: components["schemas"]["__schema177"][];
+            cc?: components["schemas"]["__schema191"][];
             /** @enum {string} */
             channel: "email" | "message";
-            connection_id: components["schemas"]["__schema176"];
-            id: components["schemas"]["__schema176"];
-            recipient: components["schemas"]["__schema177"];
+            connection_id: components["schemas"]["__schema190"];
+            id: components["schemas"]["__schema190"];
+            recipient: components["schemas"]["__schema191"];
             /** @enum {string} */
             status: "draft" | "awaiting_permission" | "denied" | "sent" | "discarded";
             subject?: string;
         };
-        __schema194: {
-            conversation_id: components["schemas"]["__schema176"] | null;
-            created_at: components["schemas"]["__schema180"];
-            id: components["schemas"]["__schema176"];
-            if_ignored: components["schemas"]["__schema177"];
-            options: components["schemas"]["__schema195"];
-            text: components["schemas"]["__schema177"];
-            why: components["schemas"]["__schema177"][];
+        __schema208: {
+            conversation_id: components["schemas"]["__schema190"] | null;
+            created_at: components["schemas"]["__schema194"];
+            id: components["schemas"]["__schema190"];
+            if_ignored: components["schemas"]["__schema191"];
+            options: components["schemas"]["__schema209"];
+            text: components["schemas"]["__schema191"];
+            why: components["schemas"]["__schema191"][];
         };
-        __schema195: components["schemas"]["__schema196"][];
-        __schema196: {
-            id: components["schemas"]["__schema176"];
-            label: components["schemas"]["__schema177"];
+        __schema209: components["schemas"]["__schema210"][];
+        __schema210: {
+            id: components["schemas"]["__schema190"];
+            label: components["schemas"]["__schema191"];
         };
-        __schema197: {
+        __schema211: {
             bounds: {
                 count_cap: number;
-                expires_at: components["schemas"]["__schema180"];
+                expires_at: components["schemas"]["__schema194"];
                 reconsent_after_days: number;
             };
-            connection_id: components["schemas"]["__schema176"];
-            created_at: components["schemas"]["__schema180"];
-            id: components["schemas"]["__schema176"];
+            connection_id: components["schemas"]["__schema190"];
+            created_at: components["schemas"]["__schema194"];
+            id: components["schemas"]["__schema190"];
             /** @enum {string} */
             kind: "send_message" | "create_event" | "change_event" | "delete_event" | "save_file" | "restore_file" | "discard_draft";
-            recipient_class: components["schemas"]["__schema177"];
-            text: components["schemas"]["__schema177"];
-            used: components["schemas"]["__schema181"];
+            recipient_class: components["schemas"]["__schema191"];
+            text: components["schemas"]["__schema191"];
+            used: components["schemas"]["__schema195"];
         };
-        __schema198: {
+        __schema212: {
             /** @constant */
             status: "ok";
         };
-        __schema199: {
-            allowed_connection_ids: components["schemas"]["__schema207"];
-            asks_before_acting: components["schemas"]["__schema208"];
-            colour: components["schemas"]["__schema202"];
-            eye_colour: components["schemas"]["__schema204"];
-            face_image?: components["schemas"]["__schema209"];
-            id: components["schemas"]["__schema176"];
-            name: components["schemas"]["__schema200"];
-            role: components["schemas"]["__schema201"];
-            space_id: components["schemas"]["__schema176"];
-            standing_instruction: components["schemas"]["__schema206"];
-            surface: components["schemas"]["__schema203"];
-            tone: components["schemas"]["__schema205"];
+        __schema213: {
+            allowed_connection_ids: components["schemas"]["__schema221"];
+            asks_before_acting: components["schemas"]["__schema222"];
+            colour: components["schemas"]["__schema216"];
+            eye_colour: components["schemas"]["__schema218"];
+            face_image?: components["schemas"]["__schema223"];
+            id: components["schemas"]["__schema190"];
+            name: components["schemas"]["__schema214"];
+            role: components["schemas"]["__schema215"];
+            space_id: components["schemas"]["__schema190"];
+            standing_instruction: components["schemas"]["__schema220"];
+            surface: components["schemas"]["__schema217"];
+            tone: components["schemas"]["__schema219"];
             usage: {
-                conversations: components["schemas"]["__schema181"];
-                last_used: components["schemas"]["__schema180"] | null;
+                conversations: components["schemas"]["__schema195"];
+                last_used: components["schemas"]["__schema194"] | null;
             };
         };
-        __schema200: string;
-        __schema201: string;
-        __schema202: string;
+        __schema214: string;
+        __schema215: string;
+        __schema216: string;
         /** @enum {string} */
-        __schema203: "rounded" | "blob" | "diamond" | "octagon" | "gear";
-        __schema204: string;
-        __schema205: string;
-        __schema206: string;
-        __schema207: components["schemas"]["__schema176"][] | null;
-        __schema208: boolean;
-        __schema209: components["schemas"]["__schema184"];
-        __schema210: {
-            agent: components["schemas"]["__schema199"];
+        __schema217: "rounded" | "blob" | "diamond" | "octagon" | "gear";
+        __schema218: string;
+        __schema219: string;
+        __schema220: string;
+        __schema221: components["schemas"]["__schema190"][] | null;
+        __schema222: boolean;
+        __schema223: components["schemas"]["__schema198"];
+        __schema224: {
+            agent: components["schemas"]["__schema213"];
         };
-        __schema211: {
-            created: components["schemas"]["__schema180"];
+        __schema225: {
+            created: components["schemas"]["__schema194"];
             editable: boolean;
-            id: components["schemas"]["__schema176"];
-            key: components["schemas"]["__schema177"];
-            last_used: components["schemas"]["__schema180"] | null;
+            id: components["schemas"]["__schema190"];
+            key: components["schemas"]["__schema191"];
+            last_used: components["schemas"]["__schema194"] | null;
+            saved_by?: string;
             /** @enum {string} */
             source: "onboarding" | "conversation" | "inferred";
             value: string;
-            version: components["schemas"]["__schema176"];
+            version: components["schemas"]["__schema190"];
         };
-        __schema212: {
+        __schema226: {
             capture: boolean;
         };
-        __schema213: {
-            category: components["schemas"]["__schema177"];
-            conversation_ids: components["schemas"]["__schema176"][];
-            file_ids: components["schemas"]["__schema176"][];
-            id: components["schemas"]["__schema176"];
+        __schema227: {
+            category: components["schemas"]["__schema191"];
+            conversation_ids: components["schemas"]["__schema190"][];
+            file_ids: components["schemas"]["__schema190"][];
+            id: components["schemas"]["__schema190"];
             milestones: {
                 assignee: {
                     /** @constant */
                     kind: "person";
                 } | {
-                    agent_id: components["schemas"]["__schema176"];
+                    agent_id: components["schemas"]["__schema190"];
                     /** @constant */
                     kind: "agent";
                 };
                 done: boolean;
-                id: components["schemas"]["__schema176"];
-                schedule_at?: components["schemas"]["__schema180"];
-                status: components["schemas"]["__schema178"];
-                title: components["schemas"]["__schema177"];
+                id: components["schemas"]["__schema190"];
+                schedule_at?: components["schemas"]["__schema194"];
+                status: components["schemas"]["__schema192"];
+                title: components["schemas"]["__schema191"];
             }[];
-            next_step: components["schemas"]["__schema177"] | null;
+            next_step: components["schemas"]["__schema191"] | null;
             progress_percent: number;
-            title: components["schemas"]["__schema177"];
-            updated_at: components["schemas"]["__schema180"];
+            title: components["schemas"]["__schema191"];
+            updated_at: components["schemas"]["__schema194"];
         };
-        __schema214: {
-            plan: components["schemas"]["__schema213"];
+        __schema228: {
+            plan: components["schemas"]["__schema227"];
         };
-        __schema215: {
+        __schema229: {
             profile: {
                 day_hours: {
                     end: string;
@@ -12927,93 +14130,93 @@ export interface components {
                 time_zone: string;
             };
         };
-        __schema216: {
-            created_at: components["schemas"]["__schema180"];
+        __schema230: {
+            created_at: components["schemas"]["__schema194"];
             /** @default false */
             done: boolean;
-            due_at: components["schemas"]["__schema180"] | null;
-            id: components["schemas"]["__schema176"];
-            title: components["schemas"]["__schema177"];
-            updated_at: components["schemas"]["__schema180"];
+            due_at: components["schemas"]["__schema194"] | null;
+            id: components["schemas"]["__schema190"];
+            title: components["schemas"]["__schema191"];
+            updated_at: components["schemas"]["__schema194"];
         };
-        __schema217: {
-            task: components["schemas"]["__schema216"];
+        __schema231: {
+            task: components["schemas"]["__schema230"];
         };
-        __schema218: {
+        __schema232: {
             enabled: boolean;
-            id: components["schemas"]["__schema176"];
+            id: components["schemas"]["__schema190"];
             runs: {
-                finished_at: components["schemas"]["__schema180"] | null;
-                id: components["schemas"]["__schema176"];
-                started_at: components["schemas"]["__schema180"];
-                status: components["schemas"]["__schema178"];
+                finished_at: components["schemas"]["__schema194"] | null;
+                id: components["schemas"]["__schema190"];
+                started_at: components["schemas"]["__schema194"];
+                status: components["schemas"]["__schema192"];
             }[];
-            schedule: components["schemas"]["__schema177"];
-            title: components["schemas"]["__schema177"];
+            schedule: components["schemas"]["__schema191"];
+            title: components["schemas"]["__schema191"];
         };
-        __schema219: {
-            automation: components["schemas"]["__schema218"];
+        __schema233: {
+            automation: components["schemas"]["__schema232"];
         };
-        __schema220: {
+        __schema234: {
             session: {
-                id: components["schemas"]["__schema176"];
-                preview_frame: components["schemas"]["__schema184"] | null;
+                id: components["schemas"]["__schema190"];
+                preview_frame: components["schemas"]["__schema198"] | null;
                 /** @enum {string} */
                 status: "working" | "needs_you" | "done" | "stopped";
-                task_label: components["schemas"]["__schema177"];
-                url: components["schemas"]["__schema184"];
+                task_label: components["schemas"]["__schema191"];
+                url: components["schemas"]["__schema198"];
             };
         };
-        __schema221: {
-            error?: components["schemas"]["__schema149"];
-            job: components["schemas"]["__schema222"] | null;
-            receipt: components["schemas"]["__schema244"];
+        __schema235: {
+            error?: components["schemas"]["__schema128"];
+            job: components["schemas"]["__schema236"] | null;
+            receipt: components["schemas"]["__schema258"];
         };
-        __schema222: {
+        __schema236: {
             /** @enum {string} */
             attention_status: "normal" | "frequency_reduced" | "needs_attention";
-            budget: components["schemas"]["__schema233"];
+            budget: components["schemas"]["__schema247"];
             cadence_multiplier: number;
-            constraints: components["schemas"]["__schema228"];
-            created_at: components["schemas"]["__schema119"];
-            created_by: components["schemas"]["__schema234"];
+            constraints: components["schemas"]["__schema242"];
+            created_at: components["schemas"]["__schema125"];
+            created_by: components["schemas"]["__schema248"];
             /** @default [] */
             deferred_questions: {
-                because: components["schemas"]["__schema238"];
-                blocks_external_effect: components["schemas"]["__schema241"];
-                created_at: components["schemas"]["__schema119"];
-                deadline_at: components["schemas"]["__schema242"];
-                if_ignored: components["schemas"]["__schema240"];
-                options?: components["schemas"]["__schema243"];
-                text: components["schemas"]["__schema237"];
+                because: components["schemas"]["__schema252"];
+                blocks_external_effect: components["schemas"]["__schema255"];
+                created_at: components["schemas"]["__schema125"];
+                deadline_at: components["schemas"]["__schema256"];
+                if_ignored: components["schemas"]["__schema254"];
+                options?: components["schemas"]["__schema257"];
+                text: components["schemas"]["__schema251"];
             }[];
-            id: components["schemas"]["__schema223"];
+            id: components["schemas"]["__schema237"];
             /** @enum {string} */
             importance: "routine" | "important";
-            lease_epoch: components["schemas"]["__schema230"];
-            next_wake_at: components["schemas"]["__schema231"];
-            objective: components["schemas"]["__schema227"];
-            principal_id?: components["schemas"]["__schema225"];
-            revision: components["schemas"]["__schema229"];
+            lease_epoch: components["schemas"]["__schema244"];
+            next_wake_at: components["schemas"]["__schema245"];
+            objective: components["schemas"]["__schema241"];
+            principal_id?: components["schemas"]["__schema239"];
+            revision: components["schemas"]["__schema243"];
             /** @enum {string} */
             scheduling_class: "interactive" | "background" | "quiet";
-            space_id: components["schemas"]["__schema224"];
+            space_id: components["schemas"]["__schema238"];
             state: components["schemas"]["JobState"];
-            state_version: components["schemas"]["__schema235"];
-            substrate_disposition: components["schemas"]["__schema236"];
-            title: components["schemas"]["__schema226"];
+            state_version: components["schemas"]["__schema249"];
+            substrate_disposition: components["schemas"]["__schema250"];
+            title: components["schemas"]["__schema240"];
             unread_results: number;
             unread_threshold: number;
-            updated_at: components["schemas"]["__schema119"];
+            updated_at: components["schemas"]["__schema125"];
             visible_status: components["schemas"]["JobState"] | ("frequency_reduced" | "needs_attention");
-            wait: components["schemas"]["__schema232"];
+            wait: components["schemas"]["__schema246"];
         };
-        __schema223: string;
-        __schema224: string;
-        __schema225: string | null;
-        __schema226: string;
-        __schema227: string;
-        __schema228: {
+        __schema237: string;
+        __schema238: string;
+        __schema239: string | null;
+        __schema240: string;
+        __schema241: string;
+        __schema242: {
             /** @default [] */
             allowed_domains: string[];
             /**
@@ -13040,10 +14243,10 @@ export interface components {
             /** @default false */
             public_compartment: boolean;
         };
-        __schema229: number;
-        __schema230: number;
-        __schema231: components["schemas"]["__schema119"] | null;
-        __schema232: {
+        __schema243: number;
+        __schema244: number;
+        __schema245: components["schemas"]["__schema125"] | null;
+        __schema246: {
             /** @constant */
             kind: "none";
         } | {
@@ -13057,14 +14260,14 @@ export interface components {
         } | {
             /** @constant */
             kind: "timer";
-            wake_at: components["schemas"]["__schema119"];
+            wake_at: components["schemas"]["__schema125"];
         } | {
-            deadline_at: components["schemas"]["__schema119"] | null;
+            deadline_at: components["schemas"]["__schema125"] | null;
             /** @constant */
             kind: "event";
             trigger_id: string;
         };
-        __schema233: {
+        __schema247: {
             max_actions: number;
             max_attempts: number;
             max_input_tokens?: number;
@@ -13074,88 +14277,88 @@ export interface components {
             max_wall_ms: number;
         };
         /** @enum {string} */
-        __schema234: "owner" | "trigger" | "system";
-        __schema235: number;
+        __schema248: "owner" | "trigger" | "system";
+        __schema249: number;
         /** @enum {string} */
-        __schema236: "remote_recoverable" | "timer_or_event" | "local_process_interrupted" | "external_uncertain";
-        __schema237: string;
-        __schema238: components["schemas"]["__schema239"][];
-        __schema239: string;
-        __schema240: string;
+        __schema250: "remote_recoverable" | "timer_or_event" | "local_process_interrupted" | "external_uncertain";
+        __schema251: string;
+        __schema252: components["schemas"]["__schema253"][];
+        __schema253: string;
+        __schema254: string;
         /** @default false */
-        __schema241: boolean;
+        __schema255: boolean;
         /** @default null */
-        __schema242: components["schemas"]["__schema119"] | null;
-        __schema243: components["schemas"]["__schema195"];
-        __schema244: {
+        __schema256: components["schemas"]["__schema125"] | null;
+        __schema257: components["schemas"]["__schema209"];
+        __schema258: {
             event_cursor: number | null;
-            input_digest: components["schemas"]["__schema246"] | null;
+            input_digest: components["schemas"]["__schema260"] | null;
             job_id: string | null;
             job_revision: number | null;
             /** @enum {string} */
             state: "accepted" | "rejected" | "unknown_durability";
-            submission_id: components["schemas"]["__schema245"];
+            submission_id: components["schemas"]["__schema259"];
         };
-        __schema245: string;
-        __schema246: string;
-        __schema247: {
+        __schema259: string;
+        __schema260: string;
+        __schema261: {
             answer: string | null;
-            answered_at: components["schemas"]["__schema119"] | null;
+            answered_at: components["schemas"]["__schema125"] | null;
             attempt_id: string | null;
-            because: components["schemas"]["__schema238"];
-            blocks_external_effect: components["schemas"]["__schema241"];
-            created_at: components["schemas"]["__schema119"];
-            deadline_at: components["schemas"]["__schema242"];
+            because: components["schemas"]["__schema252"];
+            blocks_external_effect: components["schemas"]["__schema255"];
+            created_at: components["schemas"]["__schema125"];
+            deadline_at: components["schemas"]["__schema256"];
             id: string;
-            if_ignored: components["schemas"]["__schema240"];
+            if_ignored: components["schemas"]["__schema254"];
             job_id: string | null;
             job_title: string | null;
             key: string | null;
-            options?: components["schemas"]["__schema243"];
+            options?: components["schemas"]["__schema257"];
             /** @enum {string} */
             source: "job" | "memory";
             space_id: string | null;
             /** @enum {string} */
             state: "open" | "answered" | "withdrawn";
-            text: components["schemas"]["__schema237"];
+            text: components["schemas"]["__schema251"];
         };
-        __schema248: {
+        __schema262: {
             actions: {
-                dispatched_at: components["schemas"]["__schema119"] | null;
+                dispatched_at: components["schemas"]["__schema125"] | null;
                 id: string;
                 job_id: string;
-                receipt: components["schemas"]["__schema249"] | null;
+                receipt: components["schemas"]["__schema263"] | null;
                 status: string;
             }[];
             cursor: number;
             epoch: number | null;
-            jobs: components["schemas"]["__schema222"][];
+            jobs: components["schemas"]["__schema236"][];
         };
-        __schema249: {
-            [key: string]: components["schemas"]["__schema250"];
+        __schema263: {
+            [key: string]: components["schemas"]["__schema264"];
         };
-        __schema250: (string | number | boolean | null) | components["schemas"]["__schema250"][] | {
-            [key: string]: components["schemas"]["__schema250"];
+        __schema264: (string | number | boolean | null) | components["schemas"]["__schema264"][] | {
+            [key: string]: components["schemas"]["__schema264"];
         };
-        __schema251: {
-            due_at: components["schemas"]["__schema119"];
+        __schema265: {
+            due_at: components["schemas"]["__schema125"];
             id: string;
             job_id: string;
             /** @enum {string} */
             kind: "timer" | "remote_task" | "local_process";
-            operation_key: components["schemas"]["__schema245"];
+            operation_key: components["schemas"]["__schema259"];
             remote_ref: string | null;
-            result: components["schemas"]["__schema249"] | null;
+            result: components["schemas"]["__schema263"] | null;
             /** @enum {string} */
             state: "registered" | "ready" | "claimed" | "settled" | "interrupted" | "unknown";
-            substrate_disposition: components["schemas"]["__schema236"];
+            substrate_disposition: components["schemas"]["__schema250"];
             version: number;
         };
-        __schema252: {
-            acknowledged_at: components["schemas"]["__schema119"] | null;
+        __schema266: {
+            acknowledged_at: components["schemas"]["__schema125"] | null;
             coalesce_key: string;
-            created_at: components["schemas"]["__schema119"];
-            fulfilled_at: components["schemas"]["__schema119"] | null;
+            created_at: components["schemas"]["__schema125"];
+            fulfilled_at: components["schemas"]["__schema125"] | null;
             id: string;
             job_id: string | null;
             /** @enum {string} */
@@ -13163,11 +14366,11 @@ export interface components {
             message: string | null;
             /** @enum {string} */
             state: "owed" | "acknowledged" | "fulfilled" | "needs_retransmission";
-            submission_id: components["schemas"]["__schema245"];
+            submission_id: components["schemas"]["__schema259"];
         };
-        __schema253: {
-            attempted_at: components["schemas"]["__schema119"] | null;
-            because: components["schemas"]["__schema239"][];
+        __schema267: {
+            attempted_at: components["schemas"]["__schema125"] | null;
+            because: components["schemas"]["__schema253"][];
             coalesce_key: string;
             content: {
                 attempt_id: string;
@@ -13176,173 +14379,173 @@ export interface components {
                 kind: "answer" | "question" | "status";
                 text: string;
             } | null;
-            content_hash: components["schemas"]["__schema246"];
-            created_at: components["schemas"]["__schema119"];
-            delivered_at: components["schemas"]["__schema119"] | null;
+            content_hash: components["schemas"]["__schema260"];
+            created_at: components["schemas"]["__schema125"];
+            delivered_at: components["schemas"]["__schema125"] | null;
             delivery_attempt: number;
             delivery_key: string;
             id: string;
-            if_ignored: components["schemas"]["__schema240"];
+            if_ignored: components["schemas"]["__schema254"];
             obligation_ids: string[];
             /** @enum {string} */
             state: "pending" | "attempted" | "delivered" | "superseded";
         };
-        __schema254: {
-            audience: components["schemas"]["__schema258"];
+        __schema268: {
+            audience: components["schemas"]["__schema272"];
             /**
              * @default owner
              * @enum {string}
              */
             author: "owner" | "external";
             content_ref: string | null;
-            eligibility_generation: components["schemas"]["__schema259"];
-            event_at: components["schemas"]["__schema119"];
-            ingested_at: components["schemas"]["__schema119"];
-            origin_trust: components["schemas"]["__schema260"];
+            eligibility_generation: components["schemas"]["__schema273"];
+            event_at: components["schemas"]["__schema125"];
+            ingested_at: components["schemas"]["__schema125"];
+            origin_trust: components["schemas"]["__schema274"];
             owner_id: string;
-            publisher: components["schemas"]["__schema256"];
-            source_id: components["schemas"]["__schema255"];
-            source_identity: components["schemas"]["__schema256"];
+            publisher: components["schemas"]["__schema270"];
+            source_id: components["schemas"]["__schema269"];
+            source_identity: components["schemas"]["__schema270"];
             /** @enum {string} */
             source_type: "message" | "document" | "observation" | "receipt" | "assistant" | "owner_edit";
-            source_version: components["schemas"]["__schema256"];
+            source_version: components["schemas"]["__schema270"];
             space_id: string;
             /** @enum {string} */
             state: "active" | "suppressed" | "deleted" | "revoked";
-            stream: components["schemas"]["__schema256"];
-            stream_sequence: components["schemas"]["__schema257"];
+            stream: components["schemas"]["__schema270"];
+            stream_sequence: components["schemas"]["__schema271"];
         };
-        __schema255: string;
-        __schema256: string;
-        __schema257: number;
+        __schema269: string;
+        __schema270: string;
+        __schema271: number;
         /** @enum {string} */
-        __schema258: "private" | "space" | "public";
-        __schema259: number;
+        __schema272: "private" | "space" | "public";
+        __schema273: number;
         /** @enum {string} */
-        __schema260: "owner" | "verified_connector" | "external_content" | "inferred" | "unknown";
-        __schema261: {
-            access_generation: components["schemas"]["__schema259"];
-            data_revision: components["schemas"]["__schema259"];
-            eligibility_generation: components["schemas"]["__schema259"];
-            policy_generation: components["schemas"]["__schema259"];
+        __schema274: "owner" | "verified_connector" | "external_content" | "inferred" | "unknown";
+        __schema275: {
+            access_generation: components["schemas"]["__schema273"];
+            data_revision: components["schemas"]["__schema273"];
+            eligibility_generation: components["schemas"]["__schema273"];
+            policy_generation: components["schemas"]["__schema273"];
             restore_ready: boolean;
             space_id: string;
         };
-        __schema262: string;
-        __schema263: string;
-        __schema264: string;
+        __schema276: string;
+        __schema277: string;
+        __schema278: string;
         /** @enum {string} */
-        __schema265: "user_statement" | "document_assertion" | "checked_fact" | "inferred" | "preference" | "exception" | "historical";
+        __schema279: "user_statement" | "document_assertion" | "checked_fact" | "inferred" | "preference" | "exception" | "historical";
         /** @enum {string} */
-        __schema266: "attributed" | "checked" | "tentative" | "disputed";
+        __schema280: "attributed" | "checked" | "tentative" | "disputed";
         /** @enum {string} */
-        __schema267: "active" | "superseded" | "historical" | "retracted" | "disputed";
-        __schema268: {
-            end: components["schemas"]["__schema257"];
-            source_id: components["schemas"]["__schema255"];
-            source_version: components["schemas"]["__schema256"];
-            start: components["schemas"]["__schema259"];
+        __schema281: "active" | "superseded" | "historical" | "retracted" | "disputed";
+        __schema282: {
+            end: components["schemas"]["__schema271"];
+            source_id: components["schemas"]["__schema269"];
+            source_version: components["schemas"]["__schema270"];
+            start: components["schemas"]["__schema273"];
         };
-        __schema269: {
-            claim_id: components["schemas"]["__schema262"];
+        __schema283: {
+            claim_id: components["schemas"]["__schema276"];
             content: string | null;
-            data_revision: components["schemas"]["__schema257"];
-            factual_status: components["schemas"]["__schema266"];
-            kind: components["schemas"]["__schema265"];
+            data_revision: components["schemas"]["__schema271"];
+            factual_status: components["schemas"]["__schema280"];
+            kind: components["schemas"]["__schema279"];
             /** @default inferred */
-            origin_trust: components["schemas"]["__schema260"];
+            origin_trust: components["schemas"]["__schema274"];
             protected: boolean;
-            recorded_at: components["schemas"]["__schema119"];
-            revision: components["schemas"]["__schema257"];
-            sources: components["schemas"]["__schema268"][];
-            status: components["schemas"]["__schema267"];
-            superseded_at: components["schemas"]["__schema119"] | null;
-            valid_from: components["schemas"]["__schema119"];
-            valid_until: components["schemas"]["__schema119"] | null;
+            recorded_at: components["schemas"]["__schema125"];
+            revision: components["schemas"]["__schema271"];
+            sources: components["schemas"]["__schema282"][];
+            status: components["schemas"]["__schema281"];
+            superseded_at: components["schemas"]["__schema125"] | null;
+            valid_from: components["schemas"]["__schema125"];
+            valid_until: components["schemas"]["__schema125"] | null;
         };
-        __schema270: {
+        __schema284: {
             /** @enum {string} */
             cleanup: "pending" | "complete";
-            generation: components["schemas"]["__schema261"];
+            generation: components["schemas"]["__schema275"];
         };
-        __schema271: string;
+        __schema285: string;
         /** @default null */
-        __schema272: components["schemas"]["__schema264"] | null;
-        __schema273: boolean;
-        __schema274: string;
-        __schema275: string;
-        __schema276: {
+        __schema286: components["schemas"]["__schema278"] | null;
+        __schema287: boolean;
+        __schema288: string;
+        __schema289: string;
+        __schema290: {
             field: string;
-            handle: components["schemas"]["__schema263"];
-            key: components["schemas"]["__schema264"] | null;
+            handle: components["schemas"]["__schema277"];
+            key: components["schemas"]["__schema278"] | null;
             /** @enum {string} */
             kind: "recipient" | "date" | "amount" | "identifier";
             value: string;
         };
-        __schema277: {
+        __schema291: {
             description: string;
             field: string;
-            handle: (components["schemas"]["__schema263"] | string) | null;
-            origin_trust: components["schemas"]["__schema260"];
+            handle: (components["schemas"]["__schema277"] | string) | null;
+            origin_trust: components["schemas"]["__schema274"];
             value: string;
         };
-        __schema278: string;
-        __schema279: string;
-        __schema280: {
+        __schema292: string;
+        __schema293: string;
+        __schema294: {
             /** @enum {string} */
             kind: "artifact" | "plan_step" | "action";
             location: string | null;
-            output_id: components["schemas"]["__schema274"];
-            output_version: components["schemas"]["__schema274"];
+            output_id: components["schemas"]["__schema288"];
+            output_version: components["schemas"]["__schema288"];
         };
-        __schema281: {
+        __schema295: {
             diff: string;
-            id: components["schemas"]["__schema256"];
+            id: components["schemas"]["__schema270"];
             path: string;
             /** @enum {string} */
             status: "pending" | "applied" | "discarded";
         };
-        __schema282: {
+        __schema296: {
             owner: {
-                created_at: components["schemas"]["__schema119"];
+                created_at: components["schemas"]["__schema125"];
                 /** Format: email */
                 email: string;
                 id: string;
             };
         };
-        __schema283: {
+        __schema297: {
             spaces: components["schemas"]["Space"][];
         };
-        __schema284: {
+        __schema298: {
             job: components["schemas"]["Job"];
         };
-        __schema285: {
+        __schema299: {
             field: string;
             /** @enum {string} */
             op: "eq" | "contains" | "matches" | "lt" | "gt" | "changed";
             /** @default null */
             value: string | number | boolean | null;
         };
-        __schema286: {
+        __schema300: {
             /** @enum {string} */
             by: "person" | "assistant";
-            created_at: components["schemas"]["__schema119"];
+            created_at: components["schemas"]["__schema125"];
             emoji: string;
             job_id: string | null;
             message_id: string;
             seq: number;
         };
-        __schema287: {
-            reactions: components["schemas"]["__schema286"][];
+        __schema301: {
+            reactions: components["schemas"]["__schema300"][];
         };
-        __schema288: string;
-        __schema289: string;
-        __schema290: number;
-        __schema291: string;
-        __schema292: string;
-        __schema293: string;
-        __schema294: string | null;
-        __schema295: {
+        __schema302: string;
+        __schema303: string;
+        __schema304: number;
+        __schema305: string;
+        __schema306: string;
+        __schema307: string;
+        __schema308: string | null;
+        __schema309: {
             /** @default 0 */
             cached_input_tokens: number;
             /** @default 0 */
@@ -13354,30 +14557,30 @@ export interface components {
             /** @default 0 */
             usd_est: number;
         };
-        __schema296: components["schemas"]["__schema119"] | null;
-        __schema297: ("completed" | "waiting_for_input" | "waiting_for_approval" | "waiting_for_event_or_time" | "failed" | "budget_exhausted" | "fenced" | "unknown_check") | null;
-        __schema298: components["schemas"]["__schema249"] | null;
-        __schema299: string | null;
-        __schema300: {
+        __schema310: components["schemas"]["__schema125"] | null;
+        __schema311: ("completed" | "waiting_for_input" | "waiting_for_approval" | "waiting_for_event_or_time" | "failed" | "budget_exhausted" | "fenced" | "unknown_check") | null;
+        __schema312: components["schemas"]["__schema263"] | null;
+        __schema313: string | null;
+        __schema314: {
             events: components["schemas"]["Event"][];
             has_more: boolean;
             next_cursor: number;
         };
-        __schema301: number;
-        __schema302: string | null;
-        __schema303: string | null;
+        __schema315: number;
+        __schema316: string | null;
+        __schema317: string | null;
         /** @enum {string} */
-        __schema304: "job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice" | "reaction" | "gap" | "hook_event" | "hook_error";
-        __schema305: string;
-        __schema306: string;
-        __schema307: string;
+        __schema318: "job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice" | "reaction" | "gap" | "hook_event" | "hook_error";
+        __schema319: string;
+        __schema320: string;
+        __schema321: string;
         /** @enum {string} */
-        __schema308: "completed" | "parked_until_retry" | "needs_reconciliation" | "needs_reconnect" | "needs_input" | "repair_exhausted";
-        __schema309: {
+        __schema322: "completed" | "parked_until_retry" | "needs_reconciliation" | "needs_reconnect" | "needs_input" | "repair_exhausted";
+        __schema323: {
             [key: string]: number;
         };
-        __schema310: {
-            at: components["schemas"]["__schema119"];
+        __schema324: {
+            at: components["schemas"]["__schema125"];
             attempt: number;
             /** @default null */
             candidate_id: string | null;
@@ -13387,70 +14590,70 @@ export interface components {
             delay_ms: number | null;
             detail: string;
             /** @default null */
-            fault_kind: components["schemas"]["__schema311"] | null;
-            payload_hash: components["schemas"]["__schema306"];
+            fault_kind: components["schemas"]["__schema325"] | null;
+            payload_hash: components["schemas"]["__schema320"];
             /** @default null */
-            retry_after: components["schemas"]["__schema119"] | null;
+            retry_after: components["schemas"]["__schema125"] | null;
             /** @default null */
             route: string | null;
         }[];
         /** @enum {string} */
-        __schema311: "transient_before_dispatch" | "rate_limited" | "expired_credential" | "revoked_credential" | "schema_drift" | "unsupported_route" | "uncertain_outcome" | "bad_output" | "unclassified";
-        __schema312: string;
-        __schema313: string;
-        __schema314: string;
-        __schema315: string;
-        __schema316: string;
+        __schema325: "transient_before_dispatch" | "rate_limited" | "expired_credential" | "revoked_credential" | "schema_drift" | "unsupported_route" | "uncertain_outcome" | "bad_output" | "unclassified";
+        __schema326: string;
+        __schema327: string;
+        __schema328: string;
+        __schema329: string;
+        __schema330: string;
         /** @default null */
-        __schema317: components["schemas"]["__schema307"] | null;
-        __schema318: string | null;
-        __schema319: string | null;
-        __schema320: string;
-        __schema321: components["schemas"]["__schema119"] | null;
-        __schema322: components["schemas"]["__schema249"] | null;
-        __schema323: components["schemas"]["__schema119"] | null;
-        __schema324: components["schemas"]["__schema249"] | null;
+        __schema331: components["schemas"]["__schema321"] | null;
+        __schema332: string | null;
+        __schema333: string | null;
+        __schema334: string;
+        __schema335: components["schemas"]["__schema125"] | null;
+        __schema336: components["schemas"]["__schema263"] | null;
+        __schema337: components["schemas"]["__schema125"] | null;
+        __schema338: components["schemas"]["__schema263"] | null;
         /** @default [] */
-        __schema325: components["schemas"]["__schema310"];
+        __schema339: components["schemas"]["__schema324"];
         /** @default {} */
-        __schema326: components["schemas"]["__schema309"];
+        __schema340: components["schemas"]["__schema323"];
         /** @default null */
-        __schema327: components["schemas"]["__schema308"] | null;
+        __schema341: components["schemas"]["__schema322"] | null;
         /** @default null */
-        __schema328: components["schemas"]["__schema119"] | null;
-        __schema329: {
+        __schema342: components["schemas"]["__schema125"] | null;
+        __schema343: {
             action: components["schemas"]["Action"];
         };
-        __schema330: string;
-        __schema331: string;
+        __schema344: string;
+        __schema345: string;
         /** @enum {string} */
-        __schema332: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "device";
-        __schema333: string;
-        __schema334: string[];
+        __schema346: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "device";
+        __schema347: string;
+        __schema348: string[];
         /** @enum {string} */
-        __schema335: "active" | "disabled" | "error" | "revoked";
+        __schema349: "active" | "disabled" | "error" | "revoked";
         /** @enum {string} */
-        __schema336: "unknown" | "ok" | "degraded" | "failing";
+        __schema350: "unknown" | "ok" | "degraded" | "failing";
         /** @enum {string} */
-        __schema337: "available" | "connecting" | "connected" | "error";
-        __schema338: number;
-        __schema339: boolean;
-        __schema340: string[];
-        __schema341: components["schemas"]["__schema119"] | null;
-        __schema342: {
+        __schema351: "available" | "connecting" | "connected" | "error";
+        __schema352: number;
+        __schema353: boolean;
+        __schema354: string[];
+        __schema355: components["schemas"]["__schema125"] | null;
+        __schema356: {
             check?: components["schemas"]["ConnectionCheck"];
             connection: components["schemas"]["Connection"];
         };
         /** @enum {string} */
-        __schema343: "ok" | "degraded" | "failing";
+        __schema357: "ok" | "degraded" | "failing";
         /** @enum {string} */
-        __schema344: "ok" | "degraded" | "unavailable" | "credential_refused" | "sign_in_required" | "not_running" | "revoked";
-        __schema345: string;
-        __schema346: string;
-        __schema347: string;
-        __schema348: string;
-        __schema349: string;
-        __schema350: {
+        __schema358: "ok" | "degraded" | "unavailable" | "credential_refused" | "sign_in_required" | "not_running" | "revoked";
+        __schema359: string;
+        __schema360: string;
+        __schema361: string;
+        __schema362: string;
+        __schema363: string;
+        __schema364: {
             help?: string;
             label: string;
             list: boolean;
@@ -13459,26 +14662,55 @@ export interface components {
             required: boolean;
             secret: boolean;
         }[];
-        __schema351: {
+        __schema365: {
             asks_first: boolean;
             effect_class: components["schemas"]["EffectClass"];
             label: string;
         }[];
-        __schema352: string | null;
-        __schema353: {
+        __schema366: string | null;
+        __schema367: {
+            label?: string;
+            scope: string;
+        };
+        __schema368: {
+            authorization_servers: string[];
+            bearer_methods_supported: string[];
+            /** Format: uri */
+            resource: string;
+            resource_name: string;
+            scopes_supported: string[];
+        };
+        __schema369: {
+            error: string;
+            error_description?: string;
+        };
+        __schema370: {
+            error?: {
+                code: number;
+                message: string;
+            };
+            id: string | number | null;
+            /** @constant */
+            jsonrpc: "2.0";
+            result?: unknown;
+        };
+        __schema371: {
             available: boolean;
             redirect_uri: string | null;
         };
-        __schema354: {
+        __schema372: {
             /** Format: uri */
             authorize_url: string;
-            expires_at: components["schemas"]["__schema119"];
+            expires_at: components["schemas"]["__schema125"];
+            /** Format: uri */
+            issuer: string;
             /** Format: uri */
             redirect_uri: string;
+            scopes: components["schemas"]["__schema367"][];
             sign_in_id: string;
         };
-        __schema355: {
-            expires_at: components["schemas"]["__schema119"];
+        __schema373: {
+            expires_at: components["schemas"]["__schema125"];
             /** @constant */
             state: "pending";
         } | {
@@ -13490,69 +14722,98 @@ export interface components {
             /** @constant */
             state: "failed";
         };
-        __schema356: string;
+        __schema374: string;
         /** @enum {string} */
-        __schema357: "mail" | "caldav" | "ics" | "mcp" | "mcp_stdio" | "sandbox";
-        __schema358: string;
-        __schema359: string;
-        __schema360: {
+        __schema375: "mail" | "caldav" | "ics" | "mcp" | "mcp_stdio" | "sandbox";
+        __schema376: string;
+        __schema377: string;
+        __schema378: {
             path: string;
-            value: components["schemas"]["__schema361"];
+            value: components["schemas"]["__schema379"];
         }[];
-        __schema361: string | number | boolean;
-        __schema362: components["schemas"]["ConnectionFormField"][];
-        __schema363: string;
-        __schema364: string;
-        __schema365: string;
-        __schema366: boolean;
-        __schema367: boolean;
-        __schema368: string;
-        __schema369: components["schemas"]["__schema361"];
-        __schema370: {
+        __schema379: string | number | boolean;
+        __schema380: components["schemas"]["ConnectionFormField"][];
+        __schema381: string;
+        __schema382: string;
+        __schema383: string;
+        __schema384: boolean;
+        __schema385: boolean;
+        __schema386: string;
+        __schema387: components["schemas"]["__schema379"];
+        __schema388: {
             label: string;
             value: string;
         }[];
-        __schema371: components["schemas"]["__schema372"] | "list";
+        __schema389: components["schemas"]["__schema390"] | "list";
         /** @enum {string} */
-        __schema372: "text" | "email" | "url" | "number" | "password" | "checkbox" | "select" | "string_list";
-        __schema373: {
-            default?: components["schemas"]["__schema369"];
-            help?: components["schemas"]["__schema365"];
-            input: components["schemas"]["__schema372"];
-            label: components["schemas"]["__schema364"];
-            options?: components["schemas"]["__schema370"];
-            path: components["schemas"]["__schema363"];
-            placeholder?: components["schemas"]["__schema368"];
-            required: components["schemas"]["__schema366"];
-            secret: components["schemas"]["__schema367"];
+        __schema390: "text" | "email" | "url" | "number" | "password" | "checkbox" | "select" | "string_list";
+        __schema391: {
+            default?: components["schemas"]["__schema387"];
+            help?: components["schemas"]["__schema383"];
+            input: components["schemas"]["__schema390"];
+            label: components["schemas"]["__schema382"];
+            options?: components["schemas"]["__schema388"];
+            path: components["schemas"]["__schema381"];
+            placeholder?: components["schemas"]["__schema386"];
+            required: components["schemas"]["__schema384"];
+            secret: components["schemas"]["__schema385"];
         }[];
-        __schema374: {
+        __schema392: {
             asks_first: boolean;
             default: boolean;
             effect_class: components["schemas"]["EffectClass"];
             label: string;
             scope: string;
         }[];
+        __schema393: string;
+        __schema394: string;
+        __schema395: string;
+        __schema396: ("mail" | "calendar" | "tools" | "execution")[];
+        __schema397: {
+            /** Format: uri */
+            issuer: string;
+            /** @constant */
+            method: "sign_in";
+            /** @enum {string} */
+            provider: "google" | "microsoft";
+            scopes: components["schemas"]["__schema367"][];
+            start: string;
+        } | {
+            /** @constant */
+            method: "mcp_sign_in";
+            start: string;
+            suggested_id: string;
+            /** Format: uri */
+            url: string;
+        } | {
+            kind_id: string;
+            /** @constant */
+            method: "form";
+        };
+        __schema398: boolean;
+        __schema399: string;
+        __schema400: string;
+        __schema401: string;
         /** @enum {string} */
-        __schema375: "fact" | "preference" | "decision" | "procedure" | "reference" | "event";
+        __schema402: "fact" | "preference" | "decision" | "procedure" | "reference" | "event";
         /** @enum {string} */
-        __schema376: "active" | "superseded" | "retracted" | "disputed";
-        __schema377: {
+        __schema403: "active" | "superseded" | "retracted" | "disputed";
+        __schema404: {
             body: string;
             frontmatter: components["schemas"]["KnowledgeFrontmatterOutput"];
             id: string;
             path: string;
         };
-        __schema378: string;
-        __schema379: string;
-        __schema380: string;
+        __schema405: string;
+        __schema406: string;
+        __schema407: string;
         /** @enum {string} */
-        __schema381: "private" | "space" | "public";
+        __schema408: "private" | "space" | "public";
         /** @enum {string} */
-        __schema382: "high" | "medium" | "low";
+        __schema409: "high" | "medium" | "low";
         /** @enum {string} */
-        __schema383: "user" | "agent" | "document" | "tool";
-        __schema384: {
+        __schema410: "user" | "agent" | "document" | "tool";
+        __schema411: {
             /** @enum {string} */
             kind: "statement" | "file" | "url" | "tool_output";
             /** @default  */
@@ -13562,78 +14823,78 @@ export interface components {
             sha256: string | null;
         };
         /** Format: date */
-        __schema385: string;
+        __schema412: string;
         /** @default null */
-        __schema386: components["schemas"]["__schema385"] | null;
+        __schema413: components["schemas"]["__schema412"] | null;
         /** @default [] */
-        __schema387: components["schemas"]["__schema378"][];
+        __schema414: components["schemas"]["__schema405"][];
         /** @default null */
-        __schema388: components["schemas"]["__schema378"] | null;
+        __schema415: components["schemas"]["__schema405"] | null;
         /** @default [] */
-        __schema389: string[];
+        __schema416: string[];
         /** @default [] */
-        __schema390: components["schemas"]["__schema378"][];
+        __schema417: components["schemas"]["__schema405"][];
         /** @constant */
-        __schema391: 1;
-        __schema392: string;
-        __schema393: string;
-        __schema394: number;
+        __schema418: 1;
+        __schema419: string;
+        __schema420: string;
+        __schema421: number;
         /** @enum {string} */
-        __schema395: "automation" | "human";
+        __schema422: "automation" | "human";
         /** @constant */
-        __schema396: true;
-        __schema397: components["schemas"]["BrowserSite"][];
-        __schema398: string;
-        __schema399: string;
-        __schema400: string;
-        __schema401: string;
+        __schema423: true;
+        __schema424: components["schemas"]["BrowserSite"][];
+        __schema425: string;
+        __schema426: string;
+        __schema427: string;
+        __schema428: string;
         /** @constant */
-        __schema402: true;
-        __schema403: string;
-        __schema404: number;
-        __schema405: {
+        __schema429: true;
+        __schema430: string;
+        __schema431: number;
+        __schema432: {
             /** @constant */
             height: 768;
             /** @constant */
             width: 1024;
         };
-        __schema406: components["schemas"]["__schema407"][];
-        __schema407: string;
-        __schema408: string;
-        __schema409: number;
-        __schema410: components["schemas"]["__schema411"][];
-        __schema411: string;
+        __schema433: components["schemas"]["__schema434"][];
+        __schema434: string;
+        __schema435: string;
+        __schema436: number;
+        __schema437: components["schemas"]["__schema438"][];
+        __schema438: string;
         /** @constant */
-        __schema412: true;
-        __schema413: string;
-        __schema414: {
+        __schema439: true;
+        __schema440: string;
+        __schema441: {
             /** @default null */
-            currency: components["schemas"]["__schema416"] | null;
+            currency: components["schemas"]["__schema443"] | null;
             domain: string;
-            first_seen_at: components["schemas"]["__schema119"];
+            first_seen_at: components["schemas"]["__schema125"];
             id: string;
-            last_seen_at: components["schemas"]["__schema119"];
+            last_seen_at: components["schemas"]["__schema125"];
             message_count: number;
             /** @default null */
-            monthly_spend_minor: components["schemas"]["__schema415"] | null;
+            monthly_spend_minor: components["schemas"]["__schema442"] | null;
             name: string;
             space_id: string;
         };
-        __schema415: number;
-        __schema416: string;
-        __schema417: {
+        __schema442: number;
+        __schema443: string;
+        __schema444: {
             /** @default null */
-            amount_minor: components["schemas"]["__schema415"] | null;
+            amount_minor: components["schemas"]["__schema442"] | null;
             company_id: string;
-            confidence: components["schemas"]["__schema382"];
+            confidence: components["schemas"]["__schema409"];
             /** @default null */
-            currency: components["schemas"]["__schema416"] | null;
+            currency: components["schemas"]["__schema443"] | null;
             /** @enum {string} */
             direction: "owed_to_you" | "you_pay" | "you_owe" | "info";
             /** @default null */
-            due_at: components["schemas"]["__schema119"] | null;
+            due_at: components["schemas"]["__schema125"] | null;
             due_date_only?: boolean;
-            evidence: components["schemas"]["__schema418"][];
+            evidence: components["schemas"]["__schema446"][];
             id: string;
             /** @default null */
             job_id: string | null;
@@ -13641,265 +14902,290 @@ export interface components {
             kind: "refund_owed" | "wrong_charge" | "subscription" | "price_rise" | "renewal" | "trial_ending" | "invoice_unpaid" | "compensation" | "warranty" | "deposit" | "data_held" | "promise";
             principal_id: string;
             space_id: string;
-            /** @enum {string} */
-            status: "found" | "handling" | "waiting" | "settled" | "dropped";
+            status: components["schemas"]["__schema445"];
             /** @default null */
             suggested_playbook: string | null;
             summary: string;
         };
-        __schema418: {
+        /** @enum {string} */
+        __schema445: "found" | "handling" | "waiting" | "settled" | "dropped";
+        __schema446: {
             end: number;
             message_id: string;
             quote: string;
             start: number;
         };
-        __schema419: {
+        __schema447: {
+            amount_minor: components["schemas"]["__schema442"] | null;
+            currency: components["schemas"]["__schema443"] | null;
+            due_at: components["schemas"]["__schema125"] | null;
+            id: string;
+            job_id: string | null;
+            /** @enum {string} */
+            kind: "owed" | "reply";
+            sent_at: components["schemas"]["__schema125"] | null;
+            status: components["schemas"]["__schema445"];
+            what: string;
+            who: string;
+        };
+        __schema448: {
             /** @description The signed-in account, when the provider names one */
-            account: components["schemas"]["__schema420"] | null;
+            account: components["schemas"]["__schema449"] | null;
             /** @description When the current access token expires. The gateway refreshes before then. */
-            expires_at: components["schemas"]["__schema119"] | null;
+            expires_at: components["schemas"]["__schema125"] | null;
             /** @description The provider as the person knows it, for a "Sign in with" button */
             label: string;
             /** @description What happened and what to do, in plain words, whenever the person has something to do; null when signed in or signed out. */
-            message: components["schemas"]["__schema422"] | null;
+            message: components["schemas"]["__schema451"] | null;
             methods: ("device" | "browser")[];
             /** @enum {string} */
             provider: "chatgpt" | "openai-compatible";
             /** @description Why a new sign-in is needed */
-            reason: components["schemas"]["__schema421"] | null;
+            reason: components["schemas"]["__schema450"] | null;
             /**
              * @description `sign_in_required` means the provider refused a refresh; model calls to it are refused with `provider_sign_in_required` until the owner signs in again.
              * @enum {string}
              */
             state: "signed_out" | "pending" | "signed_in" | "sign_in_required";
         };
-        __schema420: string;
+        __schema449: string;
         /** @enum {string} */
-        __schema421: "refresh_expired" | "refresh_reused" | "refresh_revoked" | "refresh_refused" | "access_expired";
-        __schema422: string;
-        __schema423: string;
-        __schema424: string;
-        __schema425: string;
+        __schema450: "refresh_expired" | "refresh_reused" | "refresh_revoked" | "refresh_refused" | "access_expired";
+        __schema451: string;
+        __schema452: string;
+        __schema453: string;
+        __schema454: string;
         /** @enum {string} */
-        __schema426: "windows" | "macos" | "linux" | "other";
-        __schema427: boolean;
-        __schema428: boolean;
-        __schema429: boolean;
-        __schema430: boolean;
-        __schema431: {
+        __schema455: "windows" | "macos" | "linux" | "other";
+        __schema456: boolean;
+        __schema457: boolean;
+        __schema458: boolean;
+        __schema459: boolean;
+        __schema460: {
             name: string;
             path: string;
         }[];
         /** @enum {string} */
-        __schema432: "online" | "offline" | "revoked";
-        __schema433: string | null;
-        __schema434: components["schemas"]["__schema119"] | null;
-        __schema435: components["schemas"]["__schema119"] | null;
-        __schema436: string;
-        __schema437: {
+        __schema461: "online" | "offline" | "revoked";
+        __schema462: string | null;
+        __schema463: components["schemas"]["__schema125"] | null;
+        __schema464: components["schemas"]["__schema125"] | null;
+        __schema465: string;
+        __schema466: {
             device: components["schemas"]["Device"];
         };
-        __schema438: string;
+        __schema467: string;
         /** @enum {string} */
-        __schema439: "status" | "list_files" | "read_file" | "write_file" | "run" | "open_url" | "screenshot";
-        __schema440: {
+        __schema468: "status" | "list_files" | "read_file" | "write_file" | "run" | "open_url" | "screenshot";
+        __schema469: {
             [key: string]: unknown;
         };
-        __schema441: number;
-        __schema442: string;
-        __schema443: number;
-        __schema444: string;
-        __schema445: string;
+        __schema470: number;
+        __schema471: string;
+        __schema472: number;
+        __schema473: string;
+        __schema474: string;
         /** @enum {string} */
-        __schema446: "on_session_start" | "on_session_end" | "on_session_finalize" | "on_session_reset" | "pre_llm_call" | "post_llm_call" | "pre_tool_call" | "post_tool_call" | "pre_api_request" | "post_api_request" | "api_request_error" | "pre_approval_request" | "post_approval_response" | "subagent_start" | "subagent_stop" | "on_skill_lifecycle" | "on_stream_start" | "on_stream_end" | "pre_verify" | "on_compaction" | "runtime_error";
-        __schema447: string | null;
-        __schema448: {
-            captured_at: components["schemas"]["__schema119"];
+        __schema475: "on_session_start" | "on_session_end" | "on_session_finalize" | "on_session_reset" | "pre_llm_call" | "post_llm_call" | "pre_tool_call" | "post_tool_call" | "pre_api_request" | "post_api_request" | "api_request_error" | "pre_approval_request" | "post_approval_response" | "subagent_start" | "subagent_stop" | "on_skill_lifecycle" | "on_stream_start" | "on_stream_end" | "pre_verify" | "on_compaction" | "runtime_error";
+        __schema476: string | null;
+        __schema477: {
+            captured_at: components["schemas"]["__schema125"];
             duration_ms: number | null;
         };
         /** @enum {string} */
-        __schema449: "started" | "succeeded" | "failed" | "interrupted" | "observed" | "unknown";
-        __schema450: string | null;
-        __schema451: {
+        __schema478: "started" | "succeeded" | "failed" | "interrupted" | "observed" | "unknown";
+        __schema479: string | null;
+        __schema480: {
             compression_count?: number;
             in_place?: boolean;
             used_fallback?: boolean;
         };
-        __schema452: string;
+        __schema481: string;
         Action: {
-            attempt_id: components["schemas"]["__schema314"];
-            authorization_ref: components["schemas"]["__schema318"];
-            budget_reservation: components["schemas"]["__schema319"];
-            canonical_payload: components["schemas"]["__schema249"];
-            connection_id: components["schemas"]["__schema315"];
-            created_at: components["schemas"]["__schema119"];
-            dispatched_at: components["schemas"]["__schema321"];
+            attempt_id: components["schemas"]["__schema328"];
+            authorization_ref: components["schemas"]["__schema332"];
+            budget_reservation: components["schemas"]["__schema333"];
+            canonical_payload: components["schemas"]["__schema263"];
+            connection_id: components["schemas"]["__schema329"];
+            created_at: components["schemas"]["__schema125"];
+            dispatched_at: components["schemas"]["__schema335"];
             effect_class: components["schemas"]["EffectClass"];
-            id: components["schemas"]["__schema312"];
-            idempotency_key: components["schemas"]["__schema320"];
-            intent_key: components["schemas"]["__schema317"];
-            job_id: components["schemas"]["__schema313"];
-            kind: components["schemas"]["__schema316"];
-            payload_hash: components["schemas"]["__schema306"];
-            receipt: components["schemas"]["__schema322"];
-            reconciliation: components["schemas"]["__schema324"];
-            repair_counters: components["schemas"]["__schema326"];
-            repair_disposition: components["schemas"]["__schema327"];
-            repair_trace: components["schemas"]["__schema325"];
-            resolved_at: components["schemas"]["__schema323"];
-            retry_after_at: components["schemas"]["__schema328"];
+            id: components["schemas"]["__schema326"];
+            idempotency_key: components["schemas"]["__schema334"];
+            intent_key: components["schemas"]["__schema331"];
+            job_id: components["schemas"]["__schema327"];
+            kind: components["schemas"]["__schema330"];
+            payload_hash: components["schemas"]["__schema320"];
+            receipt: components["schemas"]["__schema336"];
+            reconciliation: components["schemas"]["__schema338"];
+            repair_counters: components["schemas"]["__schema340"];
+            repair_disposition: components["schemas"]["__schema341"];
+            repair_trace: components["schemas"]["__schema339"];
+            resolved_at: components["schemas"]["__schema337"];
+            retry_after_at: components["schemas"]["__schema342"];
             status: components["schemas"]["ActionStatus"];
         };
         /** @enum {string} */
         ActionStatus: "proposed" | "needs_approval" | "approved" | "denied" | "admitted" | "dispatched" | "succeeded" | "failed" | "unknown" | "unresolved";
         Attempt: {
-            context_snapshot_ref: components["schemas"]["__schema299"];
-            ended_at: components["schemas"]["__schema296"];
-            epoch: components["schemas"]["__schema290"];
-            id: components["schemas"]["__schema288"];
-            job_id: components["schemas"]["__schema289"];
-            model: components["schemas"]["__schema293"];
-            model_actual: components["schemas"]["__schema294"];
-            outcome: components["schemas"]["__schema297"];
-            outcome_detail: components["schemas"]["__schema298"];
-            provider: components["schemas"]["__schema292"];
-            runtime_version: components["schemas"]["__schema291"];
-            started_at: components["schemas"]["__schema119"];
-            usage: components["schemas"]["__schema295"];
+            context_snapshot_ref: components["schemas"]["__schema313"];
+            ended_at: components["schemas"]["__schema310"];
+            epoch: components["schemas"]["__schema304"];
+            id: components["schemas"]["__schema302"];
+            job_id: components["schemas"]["__schema303"];
+            model: components["schemas"]["__schema307"];
+            model_actual: components["schemas"]["__schema308"];
+            outcome: components["schemas"]["__schema311"];
+            outcome_detail: components["schemas"]["__schema312"];
+            provider: components["schemas"]["__schema306"];
+            runtime_version: components["schemas"]["__schema305"];
+            started_at: components["schemas"]["__schema125"];
+            usage: components["schemas"]["__schema309"];
         };
         BrowserControlResponse: {
-            control: components["schemas"]["__schema395"];
-            control_epoch: components["schemas"]["__schema394"];
-            fresh_observation_required: components["schemas"]["__schema396"];
-            session_id: components["schemas"]["__schema393"];
+            control: components["schemas"]["__schema422"];
+            control_epoch: components["schemas"]["__schema421"];
+            fresh_observation_required: components["schemas"]["__schema423"];
+            session_id: components["schemas"]["__schema420"];
         };
         BrowserSite: {
-            domain: components["schemas"]["__schema398"];
-            label: components["schemas"]["__schema399"];
-            last_used: components["schemas"]["__schema400"];
+            domain: components["schemas"]["__schema425"];
+            label: components["schemas"]["__schema426"];
+            last_used: components["schemas"]["__schema427"];
         };
         BrowserSiteForgotten: {
-            domain: components["schemas"]["__schema401"];
-            forgotten: components["schemas"]["__schema402"];
+            domain: components["schemas"]["__schema428"];
+            forgotten: components["schemas"]["__schema429"];
         };
         BrowserSiteList: {
-            sites: components["schemas"]["__schema397"];
+            sites: components["schemas"]["__schema424"];
         };
         Connection: {
-            builtin?: components["schemas"]["__schema339"];
-            created_at: components["schemas"]["__schema119"];
-            generation?: components["schemas"]["__schema338"];
-            health: components["schemas"]["__schema336"];
-            id: components["schemas"]["__schema330"];
-            label: components["schemas"]["__schema333"];
-            last_checked_at: components["schemas"]["__schema341"];
-            needs_scope?: components["schemas"]["__schema340"];
-            provider: components["schemas"]["__schema332"];
-            scopes: components["schemas"]["__schema334"];
-            setup_state?: components["schemas"]["__schema337"];
-            space_id: components["schemas"]["__schema331"];
-            status: components["schemas"]["__schema335"];
+            builtin?: components["schemas"]["__schema353"];
+            created_at: components["schemas"]["__schema125"];
+            generation?: components["schemas"]["__schema352"];
+            health: components["schemas"]["__schema350"];
+            id: components["schemas"]["__schema344"];
+            label: components["schemas"]["__schema347"];
+            last_checked_at: components["schemas"]["__schema355"];
+            needs_scope?: components["schemas"]["__schema354"];
+            provider: components["schemas"]["__schema346"];
+            scopes: components["schemas"]["__schema348"];
+            setup_state?: components["schemas"]["__schema351"];
+            space_id: components["schemas"]["__schema345"];
+            status: components["schemas"]["__schema349"];
+        };
+        ConnectionCatalogEntry: {
+            available: components["schemas"]["__schema398"];
+            connect: components["schemas"]["__schema397"];
+            covers: components["schemas"]["__schema396"];
+            description: components["schemas"]["__schema395"];
+            id: components["schemas"]["__schema393"];
+            setup_hint?: components["schemas"]["__schema400"];
+            title: components["schemas"]["__schema394"];
+            unavailable_reason?: components["schemas"]["__schema399"];
+            warning?: components["schemas"]["__schema401"];
         };
         ConnectionCheck: {
-            checked_at: components["schemas"]["__schema119"];
-            code: components["schemas"]["__schema344"];
-            detail: components["schemas"]["__schema345"];
-            status: components["schemas"]["__schema343"];
+            checked_at: components["schemas"]["__schema125"];
+            code: components["schemas"]["__schema358"];
+            detail: components["schemas"]["__schema359"];
+            status: components["schemas"]["__schema357"];
         };
         ConnectionFormField: {
-            default?: components["schemas"]["__schema369"];
-            help?: components["schemas"]["__schema365"];
-            input: components["schemas"]["__schema371"];
-            item_fields?: components["schemas"]["__schema373"];
-            label: components["schemas"]["__schema364"];
-            options?: components["schemas"]["__schema370"];
-            path: components["schemas"]["__schema363"];
-            placeholder?: components["schemas"]["__schema368"];
-            required: components["schemas"]["__schema366"];
-            secret: components["schemas"]["__schema367"];
+            default?: components["schemas"]["__schema387"];
+            help?: components["schemas"]["__schema383"];
+            input: components["schemas"]["__schema389"];
+            item_fields?: components["schemas"]["__schema391"];
+            label: components["schemas"]["__schema382"];
+            options?: components["schemas"]["__schema388"];
+            path: components["schemas"]["__schema381"];
+            placeholder?: components["schemas"]["__schema386"];
+            required: components["schemas"]["__schema384"];
+            secret: components["schemas"]["__schema385"];
         };
         ConnectionKind: {
-            description: components["schemas"]["__schema359"];
-            fields: components["schemas"]["__schema362"];
-            fixed: components["schemas"]["__schema360"];
-            id: components["schemas"]["__schema356"];
-            kind: components["schemas"]["__schema357"];
-            scopes: components["schemas"]["__schema374"];
-            title: components["schemas"]["__schema358"];
+            description: components["schemas"]["__schema377"];
+            fields: components["schemas"]["__schema380"];
+            fixed: components["schemas"]["__schema378"];
+            id: components["schemas"]["__schema374"];
+            kind: components["schemas"]["__schema375"];
+            scopes: components["schemas"]["__schema392"];
+            title: components["schemas"]["__schema376"];
         };
         Device: {
             capabilities: components["schemas"]["DeviceCapabilitiesOutput"];
-            companion_version: components["schemas"]["__schema433"];
-            connection_id: components["schemas"]["__schema424"];
-            folders: components["schemas"]["__schema431"];
-            id: components["schemas"]["__schema423"];
-            last_seen_at: components["schemas"]["__schema434"];
+            companion_version: components["schemas"]["__schema462"];
+            connection_id: components["schemas"]["__schema453"];
+            folders: components["schemas"]["__schema460"];
+            id: components["schemas"]["__schema452"];
+            last_seen_at: components["schemas"]["__schema463"];
             local_capabilities: components["schemas"]["DeviceCapabilitiesOutput"];
-            name: components["schemas"]["__schema425"];
-            paired_at: components["schemas"]["__schema119"];
-            platform: components["schemas"]["__schema426"];
-            revoked_at: components["schemas"]["__schema435"];
-            status: components["schemas"]["__schema432"];
+            name: components["schemas"]["__schema454"];
+            paired_at: components["schemas"]["__schema125"];
+            platform: components["schemas"]["__schema455"];
+            revoked_at: components["schemas"]["__schema464"];
+            status: components["schemas"]["__schema461"];
         };
         DeviceCapabilities: {
-            commands: components["schemas"]["__schema98"];
-            files: components["schemas"]["__schema99"];
-            open_url: components["schemas"]["__schema100"];
-            screenshot: components["schemas"]["__schema101"];
+            commands: components["schemas"]["__schema108"];
+            files: components["schemas"]["__schema109"];
+            open_url: components["schemas"]["__schema110"];
+            screenshot: components["schemas"]["__schema111"];
         };
         DeviceCapabilitiesOutput: {
-            commands: components["schemas"]["__schema427"];
-            files: components["schemas"]["__schema428"];
-            open_url: components["schemas"]["__schema429"];
-            screenshot: components["schemas"]["__schema430"];
+            commands: components["schemas"]["__schema456"];
+            files: components["schemas"]["__schema457"];
+            open_url: components["schemas"]["__schema458"];
+            screenshot: components["schemas"]["__schema459"];
         };
         DevicePairing: {
-            code: components["schemas"]["__schema436"];
-            expires_at: components["schemas"]["__schema119"];
+            code: components["schemas"]["__schema465"];
+            expires_at: components["schemas"]["__schema125"];
         };
         DeviceRequest: {
-            arguments: components["schemas"]["__schema440"];
-            deadline: components["schemas"]["__schema441"];
-            id: components["schemas"]["__schema438"];
-            tool: components["schemas"]["__schema439"];
+            arguments: components["schemas"]["__schema469"];
+            deadline: components["schemas"]["__schema470"];
+            id: components["schemas"]["__schema467"];
+            tool: components["schemas"]["__schema468"];
         };
         /** @enum {string} */
         EffectClass: "read" | "write_reversible" | "write_external" | "spend";
         Event: {
-            attempt_id: components["schemas"]["__schema303"];
-            created_at: components["schemas"]["__schema119"];
-            dedup_key: components["schemas"]["__schema305"];
-            job_id: components["schemas"]["__schema302"];
-            payload: components["schemas"]["__schema249"];
-            seq: components["schemas"]["__schema301"];
-            type: components["schemas"]["__schema304"];
+            attempt_id: components["schemas"]["__schema317"];
+            created_at: components["schemas"]["__schema125"];
+            dedup_key: components["schemas"]["__schema319"];
+            job_id: components["schemas"]["__schema316"];
+            payload: components["schemas"]["__schema263"];
+            seq: components["schemas"]["__schema315"];
+            type: components["schemas"]["__schema318"];
         };
         HookObservation: {
-            capture_id: components["schemas"]["__schema445"];
-            detail?: components["schemas"]["__schema451"];
-            name: components["schemas"]["__schema446"];
-            outcome: components["schemas"]["__schema449"];
-            redacted_args_digest: components["schemas"]["__schema450"];
-            timing: components["schemas"]["__schema448"];
-            tool_name: components["schemas"]["__schema447"];
+            capture_id: components["schemas"]["__schema474"];
+            detail?: components["schemas"]["__schema480"];
+            name: components["schemas"]["__schema475"];
+            outcome: components["schemas"]["__schema478"];
+            redacted_args_digest: components["schemas"]["__schema479"];
+            timing: components["schemas"]["__schema477"];
+            tool_name: components["schemas"]["__schema476"];
         };
         Job: {
-            budget: components["schemas"]["__schema233"];
-            constraints: components["schemas"]["__schema228"];
-            created_at: components["schemas"]["__schema119"];
-            created_by: components["schemas"]["__schema234"];
-            id: components["schemas"]["__schema223"];
-            lease_epoch: components["schemas"]["__schema230"];
-            next_wake_at: components["schemas"]["__schema231"];
-            objective: components["schemas"]["__schema227"];
-            principal_id?: components["schemas"]["__schema225"];
-            revision: components["schemas"]["__schema229"];
-            space_id: components["schemas"]["__schema224"];
+            budget: components["schemas"]["__schema247"];
+            constraints: components["schemas"]["__schema242"];
+            created_at: components["schemas"]["__schema125"];
+            created_by: components["schemas"]["__schema248"];
+            id: components["schemas"]["__schema237"];
+            lease_epoch: components["schemas"]["__schema244"];
+            next_wake_at: components["schemas"]["__schema245"];
+            objective: components["schemas"]["__schema241"];
+            principal_id?: components["schemas"]["__schema239"];
+            revision: components["schemas"]["__schema243"];
+            space_id: components["schemas"]["__schema238"];
             state: components["schemas"]["JobState"];
-            state_version: components["schemas"]["__schema235"];
-            title: components["schemas"]["__schema226"];
-            updated_at: components["schemas"]["__schema119"];
-            wait: components["schemas"]["__schema232"];
+            state_version: components["schemas"]["__schema249"];
+            title: components["schemas"]["__schema240"];
+            updated_at: components["schemas"]["__schema125"];
+            wait: components["schemas"]["__schema246"];
         };
         /** @enum {string} */
         JobState: "queued" | "running" | "waiting_for_input" | "waiting_for_approval" | "waiting_for_event_or_time" | "needs_reconciliation" | "completed" | "failed" | "cancelled";
@@ -13925,138 +15211,138 @@ export interface components {
             valid_until?: components["schemas"]["__schema52"];
         };
         KnowledgeFrontmatterOutput: {
-            asserted_by: components["schemas"]["__schema383"];
-            audience: components["schemas"]["__schema381"];
-            confidence: components["schemas"]["__schema382"];
-            created: components["schemas"]["__schema385"];
-            id: components["schemas"]["__schema378"];
-            links: components["schemas"]["__schema390"];
-            observed_at: components["schemas"]["__schema385"];
-            schema_version: components["schemas"]["__schema391"];
-            source: components["schemas"]["__schema384"];
-            space: components["schemas"]["__schema380"];
-            status: components["schemas"]["__schema376"];
-            superseded_by: components["schemas"]["__schema388"];
-            supersedes: components["schemas"]["__schema387"];
-            tags: components["schemas"]["__schema389"];
-            title: components["schemas"]["__schema379"];
-            type: components["schemas"]["__schema375"];
-            updated: components["schemas"]["__schema385"];
-            valid_from: components["schemas"]["__schema385"];
-            valid_until: components["schemas"]["__schema386"];
+            asserted_by: components["schemas"]["__schema410"];
+            audience: components["schemas"]["__schema408"];
+            confidence: components["schemas"]["__schema409"];
+            created: components["schemas"]["__schema412"];
+            id: components["schemas"]["__schema405"];
+            links: components["schemas"]["__schema417"];
+            observed_at: components["schemas"]["__schema412"];
+            schema_version: components["schemas"]["__schema418"];
+            source: components["schemas"]["__schema411"];
+            space: components["schemas"]["__schema407"];
+            status: components["schemas"]["__schema403"];
+            superseded_by: components["schemas"]["__schema415"];
+            supersedes: components["schemas"]["__schema414"];
+            tags: components["schemas"]["__schema416"];
+            title: components["schemas"]["__schema406"];
+            type: components["schemas"]["__schema402"];
+            updated: components["schemas"]["__schema412"];
+            valid_from: components["schemas"]["__schema412"];
+            valid_until: components["schemas"]["__schema413"];
         };
         LiveClose: {
-            live_id: components["schemas"]["__schema85"];
+            live_id: components["schemas"]["__schema94"];
         };
         LiveClosed: {
-            closed: components["schemas"]["__schema412"];
+            closed: components["schemas"]["__schema439"];
         };
         LiveInputResponse: {
-            accepted: components["schemas"]["__schema409"];
+            accepted: components["schemas"]["__schema436"];
         };
         LiveOpen: {
-            control_epoch: components["schemas"]["__schema404"];
-            expires_at: components["schemas"]["__schema408"];
-            live_id: components["schemas"]["__schema403"];
-            site_scope: components["schemas"]["__schema406"];
-            viewport: components["schemas"]["__schema405"];
+            control_epoch: components["schemas"]["__schema431"];
+            expires_at: components["schemas"]["__schema435"];
+            live_id: components["schemas"]["__schema430"];
+            site_scope: components["schemas"]["__schema433"];
+            viewport: components["schemas"]["__schema432"];
         };
         LiveScope: {
-            host: components["schemas"]["__schema93"];
-            live_id: components["schemas"]["__schema85"];
+            host: components["schemas"]["__schema102"];
+            live_id: components["schemas"]["__schema94"];
         };
         LiveScopeResponse: {
-            site_scope: components["schemas"]["__schema410"];
+            site_scope: components["schemas"]["__schema437"];
         };
         Plugin: {
-            description: components["schemas"]["__schema348"];
-            fields: components["schemas"]["__schema350"];
-            id: components["schemas"]["__schema346"];
-            installed: components["schemas"]["__schema352"];
-            title: components["schemas"]["__schema347"];
-            tools: components["schemas"]["__schema351"];
-            version: components["schemas"]["__schema349"];
+            description: components["schemas"]["__schema362"];
+            fields: components["schemas"]["__schema364"];
+            id: components["schemas"]["__schema360"];
+            installed: components["schemas"]["__schema366"];
+            title: components["schemas"]["__schema361"];
+            tools: components["schemas"]["__schema365"];
+            version: components["schemas"]["__schema363"];
         };
         RuntimeEvent: {
-            at: components["schemas"]["__schema119"];
-            attempt_id: components["schemas"]["__schema442"];
-            capture_id: components["schemas"]["__schema445"];
-            dedup_key: components["schemas"]["__schema444"];
-            detail?: components["schemas"]["__schema451"];
-            local_seq: components["schemas"]["__schema443"];
-            name: components["schemas"]["__schema446"];
-            outcome: components["schemas"]["__schema449"];
-            redacted_args_digest: components["schemas"]["__schema450"];
-            timing: components["schemas"]["__schema448"];
-            tool_name: components["schemas"]["__schema447"];
+            at: components["schemas"]["__schema125"];
+            attempt_id: components["schemas"]["__schema471"];
+            capture_id: components["schemas"]["__schema474"];
+            dedup_key: components["schemas"]["__schema473"];
+            detail?: components["schemas"]["__schema480"];
+            local_seq: components["schemas"]["__schema472"];
+            name: components["schemas"]["__schema475"];
+            outcome: components["schemas"]["__schema478"];
+            redacted_args_digest: components["schemas"]["__schema479"];
+            timing: components["schemas"]["__schema477"];
+            tool_name: components["schemas"]["__schema476"];
             /** @constant */
             type: "hook_event";
         } | {
-            at: components["schemas"]["__schema119"];
-            attempt_id: components["schemas"]["__schema442"];
-            capture_id: components["schemas"]["__schema445"];
-            dedup_key: components["schemas"]["__schema444"];
-            detail?: components["schemas"]["__schema451"];
+            at: components["schemas"]["__schema125"];
+            attempt_id: components["schemas"]["__schema471"];
+            capture_id: components["schemas"]["__schema474"];
+            dedup_key: components["schemas"]["__schema473"];
+            detail?: components["schemas"]["__schema480"];
             /** @enum {string} */
             error_code: "observer_failed" | "delivery_failed" | "capture_gap";
-            local_seq: components["schemas"]["__schema443"];
-            name: components["schemas"]["__schema446"];
-            outcome: components["schemas"]["__schema449"];
-            redacted_args_digest: components["schemas"]["__schema450"];
-            timing: components["schemas"]["__schema448"];
-            tool_name: components["schemas"]["__schema447"];
+            local_seq: components["schemas"]["__schema472"];
+            name: components["schemas"]["__schema475"];
+            outcome: components["schemas"]["__schema478"];
+            redacted_args_digest: components["schemas"]["__schema479"];
+            timing: components["schemas"]["__schema477"];
+            tool_name: components["schemas"]["__schema476"];
             /** @constant */
             type: "hook_error";
         } | {
-            at: components["schemas"]["__schema119"];
-            attempt_id: components["schemas"]["__schema442"];
-            dedup_key: components["schemas"]["__schema444"];
-            local_seq: components["schemas"]["__schema443"];
+            at: components["schemas"]["__schema125"];
+            attempt_id: components["schemas"]["__schema471"];
+            dedup_key: components["schemas"]["__schema473"];
+            local_seq: components["schemas"]["__schema472"];
             turn: number;
             /** @constant */
             type: "turn_started";
         } | {
-            at: components["schemas"]["__schema119"];
-            attempt_id: components["schemas"]["__schema442"];
-            dedup_key: components["schemas"]["__schema444"];
-            local_seq: components["schemas"]["__schema443"];
+            at: components["schemas"]["__schema125"];
+            attempt_id: components["schemas"]["__schema471"];
+            dedup_key: components["schemas"]["__schema473"];
+            local_seq: components["schemas"]["__schema472"];
             text: string;
             /** @constant */
             type: "text_delta";
         } | {
-            arguments: components["schemas"]["__schema249"];
-            at: components["schemas"]["__schema119"];
-            attempt_id: components["schemas"]["__schema442"];
+            arguments: components["schemas"]["__schema263"];
+            at: components["schemas"]["__schema125"];
+            attempt_id: components["schemas"]["__schema471"];
             call_id: string;
-            dedup_key: components["schemas"]["__schema444"];
-            local_seq: components["schemas"]["__schema443"];
+            dedup_key: components["schemas"]["__schema473"];
+            local_seq: components["schemas"]["__schema472"];
             tool: string;
             /** @constant */
             type: "tool_call_proposed";
         } | {
-            at: components["schemas"]["__schema119"];
-            attempt_id: components["schemas"]["__schema442"];
+            at: components["schemas"]["__schema125"];
+            attempt_id: components["schemas"]["__schema471"];
             call_id: string;
-            dedup_key: components["schemas"]["__schema444"];
-            local_seq: components["schemas"]["__schema443"];
+            dedup_key: components["schemas"]["__schema473"];
+            local_seq: components["schemas"]["__schema472"];
             ok: boolean;
-            result: components["schemas"]["__schema249"];
+            result: components["schemas"]["__schema263"];
             /** @constant */
             type: "tool_result";
         } | {
             action_id: string;
-            at: components["schemas"]["__schema119"];
-            attempt_id: components["schemas"]["__schema442"];
-            dedup_key: components["schemas"]["__schema444"];
+            at: components["schemas"]["__schema125"];
+            attempt_id: components["schemas"]["__schema471"];
+            dedup_key: components["schemas"]["__schema473"];
             kind: string;
-            local_seq: components["schemas"]["__schema443"];
+            local_seq: components["schemas"]["__schema472"];
             /** @constant */
             type: "action_requested";
         } | {
-            at: components["schemas"]["__schema119"];
-            attempt_id: components["schemas"]["__schema442"];
-            dedup_key: components["schemas"]["__schema444"];
-            local_seq: components["schemas"]["__schema443"];
+            at: components["schemas"]["__schema125"];
+            attempt_id: components["schemas"]["__schema471"];
+            dedup_key: components["schemas"]["__schema473"];
+            local_seq: components["schemas"]["__schema472"];
             outcome: {
                 evidence: ({
                     artifact_id: string;
@@ -14080,13 +15366,13 @@ export interface components {
                 kind: "waiting_for_input";
                 question: string;
             } | {
-                action_ids: components["schemas"]["__schema452"][];
+                action_ids: components["schemas"]["__schema481"][];
                 /** @constant */
                 kind: "waiting_for_approval";
             } | {
                 /** @constant */
                 kind: "waiting_for_event_or_time";
-                wait: components["schemas"]["__schema232"];
+                wait: components["schemas"]["__schema246"];
             } | {
                 /** @constant */
                 kind: "failed";
@@ -14107,52 +15393,52 @@ export interface components {
             };
             /** @constant */
             type: "attempt_outcome";
-            usage?: components["schemas"]["__schema295"];
+            usage?: components["schemas"]["__schema309"];
         } | {
             after_seq: number;
-            at: components["schemas"]["__schema119"];
-            attempt_id: components["schemas"]["__schema442"];
-            dedup_key: components["schemas"]["__schema444"];
-            local_seq: components["schemas"]["__schema443"];
+            at: components["schemas"]["__schema125"];
+            attempt_id: components["schemas"]["__schema471"];
+            dedup_key: components["schemas"]["__schema473"];
+            local_seq: components["schemas"]["__schema472"];
             reason: string;
             /** @constant */
             type: "gap";
         };
         Space: {
-            audience: components["schemas"]["__schema153"];
-            created_at: components["schemas"]["__schema119"];
-            git_path: components["schemas"]["__schema155"];
-            id: components["schemas"]["__schema150"];
-            kind: components["schemas"]["__schema152"];
-            name: components["schemas"]["__schema151"];
-            owner_principal_id?: components["schemas"]["__schema154"];
+            audience: components["schemas"]["__schema167"];
+            created_at: components["schemas"]["__schema125"];
+            git_path: components["schemas"]["__schema169"];
+            id: components["schemas"]["__schema164"];
+            kind: components["schemas"]["__schema166"];
+            name: components["schemas"]["__schema165"];
+            owner_principal_id?: components["schemas"]["__schema168"];
         };
         SpaceRemoval: {
-            blocked_reason: components["schemas"]["__schema164"];
-            counts: components["schemas"]["__schema163"];
-            finished_at: components["schemas"]["__schema165"];
-            id: components["schemas"]["__schema157"];
-            kind: components["schemas"]["__schema160"];
-            phase: components["schemas"]["__schema162"];
-            space_id: components["schemas"]["__schema158"];
-            space_name: components["schemas"]["__schema159"];
-            started_at: components["schemas"]["__schema119"];
-            state: components["schemas"]["__schema161"];
+            blocked_reason: components["schemas"]["__schema178"];
+            counts: components["schemas"]["__schema177"];
+            finished_at: components["schemas"]["__schema179"];
+            id: components["schemas"]["__schema171"];
+            kind: components["schemas"]["__schema174"];
+            phase: components["schemas"]["__schema176"];
+            space_id: components["schemas"]["__schema172"];
+            space_name: components["schemas"]["__schema173"];
+            started_at: components["schemas"]["__schema125"];
+            state: components["schemas"]["__schema175"];
         };
         SpaceRemovalPreview: {
-            confirmation: components["schemas"]["__schema171"];
-            counts: components["schemas"]["__schema168"];
-            kind: components["schemas"]["__schema160"];
-            name: components["schemas"]["__schema167"];
-            providers: components["schemas"]["__schema169"];
-            space_id: components["schemas"]["__schema166"];
-            stays: components["schemas"]["__schema170"];
+            confirmation: components["schemas"]["__schema185"];
+            counts: components["schemas"]["__schema182"];
+            kind: components["schemas"]["__schema174"];
+            name: components["schemas"]["__schema181"];
+            providers: components["schemas"]["__schema183"];
+            space_id: components["schemas"]["__schema180"];
+            stays: components["schemas"]["__schema184"];
         };
         SpaceRemovalReport: {
-            cleared: components["schemas"]["__schema173"];
-            headline: components["schemas"]["__schema172"];
+            cleared: components["schemas"]["__schema187"];
+            headline: components["schemas"]["__schema186"];
             removal: components["schemas"]["SpaceRemoval"];
-            still_yours: components["schemas"]["__schema174"];
+            still_yours: components["schemas"]["__schema188"];
         };
     };
     responses: never;

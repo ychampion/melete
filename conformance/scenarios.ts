@@ -1,5 +1,5 @@
 /**
- * The conformance suite. Ten scenarios that prove the properties this release
+ * The conformance suite. Eleven scenarios that prove the properties this release
  * claims, run against a compose stack with the `test` connector and a scripted
  * model, so the suite is deterministic and costs nothing.
  *
@@ -174,6 +174,24 @@ export const SCENARIOS: readonly Scenario[] = [
       'a server that exits on its own leaves no container behind, and removal takes its volume',
       'an npm package is fetched once through the registry grant and then runs with no network',
       'the server can write its own volume but not the package it runs from',
+    ],
+  },
+  {
+    id: 11,
+    slug: 'mcp-server',
+    title: 'Another assistant uses Melete over MCP as one person, and cannot send without them',
+    text:
+      'Two people each connect an assistant with the reference MCP client through the web proxy: ' +
+      'discovery from the 401, registration, PKCE and consent. Each calls every tool, one asks to ' +
+      'send an email, the other tries the first one’s work, and a refresh and a disconnect follow.',
+    assertions: [
+      'the client library completes discovery, registration, PKCE, consent and the code exchange on its own',
+      'tools/list offers waiting_on, handle, safe_send, remember, recall and status',
+      "each tool reads and acts on the token's own person: their items, their chase, their memory",
+      "another person's token finds none of it, and a forged token gets a 401 naming the resource metadata",
+      'safe_send leaves the message awaiting approval, even with a standing rule for that recipient',
+      'only the person approving the exact text in Melete sends it, once, through the broker',
+      'a refresh rotates the token, and disconnecting ends that assistant alone',
     ],
   },
 ];
