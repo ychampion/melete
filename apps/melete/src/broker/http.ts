@@ -46,6 +46,34 @@ export interface BrokerOperations {
   say?(claims: CapabilityClaims, text: string, ref: string): Promise<void>;
 }
 
+/** Credentials and identifiers a log line never carries, whatever an error message quoted. */
+function redactLogText(text: string): string {
+  return text
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/eyJ[\w-]{6,}\.[\w-]{4,}(?:\.[\w-]+)?/g, '[redacted]')
+    .replace(/[A-Za-z0-9_+/=-]{40,}/g, '[redacted]')
+    .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[email]');
+}
+
+/**
+ * One line for an unexpected broker failure: the route, the error's name, code
+ * and message, and where it was thrown. Never the request body or headers.
+ */
+export function brokerFailureLine(method: string, path: string, error: unknown): string {
+  const failure = error instanceof Error ? error : new Error(String(error));
+  const code = (failure as { code?: unknown }).code;
+  const frames = (failure.stack ?? '')
+    .split('\n')
+    .slice(1, 6)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' < ');
+  const text = `broker ${method} ${path} failed: ${failure.name}${
+    typeof code === 'string' ? ` ${code}` : ''
+  }: ${failure.message.slice(0, 300)}${frames ? ` | ${frames}` : ''}`;
+  return `${redactLogText(text.replace(/\s*\n\s*/g, ' '))}\n`;
+}
+
 export function createBrokerApp(options: {
   broker: BrokerOperations;
   capabilityKey: string;
@@ -71,6 +99,8 @@ export function createBrokerApp(options: {
     if (error instanceof ZodError || error instanceof SyntaxError) {
       return c.json({ error: { code: 'payload_invalid', message: 'Invalid request body' } }, 400);
     }
+    // The caller learns only that it failed; the operator learns why.
+    process.stderr.write(brokerFailureLine(c.req.method, c.req.path, error));
     return c.json({ error: { code: 'internal_error', message: 'Broker request failed' } }, 500);
   });
   app.use('*', async (c, next) => {

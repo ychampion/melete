@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, spyOn, test } from 'bun:test';
 import type { CapabilityClaims, ToolSpec } from '@melete/contracts';
 import { signCapability, verifyCapability } from './capability.ts';
 import { BrokerFault } from './errors.ts';
@@ -136,4 +136,50 @@ test('unlisted paths and methods rejected including HEAD', async () => {
   ]) {
     expect((await app.request(path as string, { method, headers: auth() })).status).toBe(404);
   }
+});
+
+test('an unexpected failure is logged with its cause, and the caller still learns nothing more', async () => {
+  const token = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvd25lciJ9.c2lnbmF0dXJlc2lnbmF0dXJl';
+  const failing = createBrokerApp({
+    broker: {
+      ...broker,
+      discovery: {
+        async find() {
+          throw new TypeError(
+            `Cannot read properties of undefined (reading 'agent_id') for someone@example.com with Bearer ${token}`,
+          );
+        },
+      } as unknown as NonNullable<BrokerOperations['discovery']>,
+    },
+    capabilityKey: key,
+    approvalKey,
+  });
+  const written: string[] = [];
+  const spy = spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+    written.push(String(chunk));
+    return true;
+  });
+  let response: Response;
+  try {
+    response = await failing.request('/tools/search', {
+      method: 'POST',
+      headers: auth(),
+      body: JSON.stringify({ query: 'current time' }),
+    });
+  } finally {
+    spy.mockRestore();
+  }
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({
+    error: { code: 'internal_error', message: 'Broker request failed' },
+  });
+  const line = written.join('');
+  expect(line).toContain('broker POST /tools/search failed: TypeError');
+  expect(line).toContain("reading 'agent_id'");
+  // Where it was thrown, so the cause can be found from the log alone.
+  expect(line).toContain('http.test.ts');
+  // Never the credential, never an address, never the request body.
+  expect(line).not.toContain(token);
+  expect(line).not.toContain('someone@example.com');
+  expect(line).not.toContain('current time');
 });
