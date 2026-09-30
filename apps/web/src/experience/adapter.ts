@@ -144,6 +144,7 @@ export const adapter = {
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link/consume', { body: { token } })),
   signInGoogle: () => guard<{ status: 'ok' }>(() => api.POST('/signin/google')),
   signInApple: () => guard<{ status: 'ok' }>(() => api.POST('/signin/apple')),
+  signInChatGPT: () => guard<{ status: 'ok' }>(() => api.POST('/signin/chatgpt')),
   /** Ends the session; the next request needs a new sign-in. */
   signOut: () => guard<{ status: 'ok' }>(() => api.POST('/signout')),
 

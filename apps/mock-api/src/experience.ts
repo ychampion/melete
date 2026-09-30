@@ -1577,6 +1577,8 @@ export class ExperienceMock {
       case 'POST /signin/magic-link/consume':
         this.signedOut = false;
         return { status: 'ok' };
+      case 'POST /signin/chatgpt':
+        return C.unavailable('This installation hasn’t set up ChatGPT sign-in yet.');
       case 'PATCH /memory/items/{id}': {
         const item = required(this.memories, id);
         if (input.version !== item.version)
