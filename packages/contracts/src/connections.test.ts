@@ -275,6 +275,7 @@ function filled(descriptor: ConnectionKindDescriptor): Record<string, unknown> {
     if (field.input === 'checkbox') return true;
     if (field.input === 'email') return 'owner@example.test';
     if (field.input === 'url') return 'https://service.example.test/path/';
+    if (field.placeholder?.startsWith('whsec_')) return 'whsec_dGVzdA==';
     if (field.path.endsWith('egress')) return ['registry.example.test'];
     if (field.input === 'string_list') return ['mcp_notes.search'];
     if (field.path.endsWith('source')) return '@example/notes-server';
@@ -303,12 +304,13 @@ describe('connection kind descriptors', () => {
       'mail',
       'mcp',
       'mcp_stdio',
+      'meetings',
       'sandbox',
     ]);
     const ids = parsed.kinds.map((kind) => kind.id);
     expect(new Set(ids).size).toBe(ids.length);
     // Every kind keeps an entry for a server no provider entry names.
-    for (const kind of ['caldav', 'ics', 'mail', 'mcp', 'mcp_stdio', 'sandbox'])
+    for (const kind of ['caldav', 'ics', 'mail', 'mcp', 'mcp_stdio', 'sandbox', 'meetings'])
       expect(ids).toContain(kind);
     for (const kind of parsed.kinds) {
       const secrets = kind.fields.flatMap((field) => [

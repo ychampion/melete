@@ -13,7 +13,15 @@ import { err, ID_PREFIXES, ok, prefixedId, type Result, timestamp } from './comm
 import { connectionProvider, connectionView } from './entities.ts';
 import { MCP_STDIO_RUNNERS, mcpConnectionConfig, mcpStdioConnectionConfig } from './mcp.ts';
 
-export const CONNECTION_KINDS = ['mail', 'caldav', 'ics', 'mcp', 'mcp_stdio', 'sandbox'] as const;
+export const CONNECTION_KINDS = [
+  'mail',
+  'caldav',
+  'ics',
+  'mcp',
+  'mcp_stdio',
+  'sandbox',
+  'meetings',
+] as const;
 export const connectionKind = z.enum(CONNECTION_KINDS);
 export type ConnectionKind = z.infer<typeof connectionKind>;
 
@@ -201,12 +209,43 @@ export function sandboxCredentialRefusal(adapter: SandboxAdapter, key: string): 
     : null;
 }
 
+/** Where a Recall.ai workspace lives; each region has its own API address and keys. */
+export const RECALL_REGIONS = ['us-east-1', 'us-west-2', 'eu-central-1', 'ap-northeast-1'] as const;
+export const recallRegion = z.enum(RECALL_REGIONS);
+export type RecallRegion = z.infer<typeof recallRegion>;
+
+/**
+ * A notetaker that joins Zoom, Google Meet and Microsoft Teams calls through
+ * Recall.ai. Only the region is configuration; every key is sealed.
+ */
+export const meetingsConnectionConfig = z.object({ region: recallRegion }).strict();
+export type MeetingsConnectionConfig = z.infer<typeof meetingsConnectionConfig>;
+
+/**
+ * The Recall.ai API key, and optionally an ElevenLabs key (transcription with
+ * speaker labels from the recording) and the Recall webhook verification
+ * secret (the service is told when a meeting ends instead of asking).
+ */
+export const meetingsCredentials = z
+  .object({
+    api_key: z.string().min(1).max(512),
+    elevenlabs_api_key: z.string().min(1).max(512).optional(),
+    webhook_secret: z
+      .string()
+      .regex(/^whsec_[A-Za-z0-9+/=]+$/, 'A Recall verification secret starts with whsec_.')
+      .max(512)
+      .optional(),
+  })
+  .strict();
+export type MeetingsCredentials = z.infer<typeof meetingsCredentials>;
+
 /** The grants each kind may receive. MCP grants are declared in its own operator policy. */
 export const CONNECTION_KIND_SCOPES = {
   mail: ['email.search', 'email.read', 'email.draft', 'email.discard', 'email.send'],
   caldav: ['calendar.list', 'calendar.create', 'calendar.update', 'calendar.delete'],
   ics: ['calendar.list'],
   sandbox: ['terminal.run'],
+  meetings: ['meeting.join'],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
 export const createConnectionRequest = z.object({
@@ -227,6 +266,7 @@ export const createConnectionRequest = z.object({
   mcp_stdio: mcpStdioConnectionConfig.optional(),
   ics: icsConnectionConfig.optional(),
   sandbox: sandboxConnectionConfig.optional(),
+  meetings: meetingsConnectionConfig.optional(),
 });
 export type CreateConnectionRequest = z.infer<typeof createConnectionRequest>;
 
@@ -264,6 +304,13 @@ export type ConnectionInstallation =
       config: SandboxConnectionConfig;
       credentials: SandboxCredentials;
       scopes: string[];
+    }
+  | {
+      kind: 'meetings';
+      provider: 'meetings';
+      config: MeetingsConnectionConfig;
+      credentials: MeetingsCredentials;
+      scopes: string[];
     };
 
 const KIND_PROVIDER = {
@@ -273,8 +320,9 @@ const KIND_PROVIDER = {
   mcp: 'mcp',
   mcp_stdio: 'mcp',
   sandbox: 'sandbox',
+  meetings: 'meetings',
 } as const;
-const EXACTLY_ONE = 'Supply exactly one of mail, caldav, ics, mcp, mcp_stdio or sandbox.';
+const EXACTLY_ONE = 'Supply exactly one of mail, caldav, ics, mcp, mcp_stdio, sandbox or meetings.';
 
 /** Decide which kind a parsed request installs, or say in plain words why it installs none. */
 export function connectionInstallation(
@@ -317,6 +365,21 @@ export function connectionInstallation(
     const malformed = sandboxCredentialRefusal(config.adapter, credentials.data.api_key);
     if (malformed) return err(malformed);
     return ok({ kind, provider: 'sandbox', config, credentials: credentials.data, scopes });
+  }
+  if (kind === 'meetings') {
+    if (!request.meetings) return err('Supply the Recall.ai region in meetings.');
+    const credentials = meetingsCredentials.safeParse(request.credentials);
+    if (!credentials.success)
+      return err(
+        'A meetings connection needs credentials.api_key, and may add credentials.elevenlabs_api_key and credentials.webhook_secret.',
+      );
+    return ok({
+      kind,
+      provider: 'meetings',
+      config: request.meetings,
+      credentials: credentials.data,
+      scopes,
+    });
   }
   if (kind === 'ics') {
     if (!request.ics || request.credentials)
@@ -568,7 +631,7 @@ export const connectionCatalogEntry = z
     title: z.string(),
     description: z.string(),
     /** What a connection made from this entry can do. */
-    covers: z.array(z.enum(['mail', 'calendar', 'tools', 'execution'])),
+    covers: z.array(z.enum(['mail', 'calendar', 'tools', 'execution', 'meetings'])),
     connect: z.discriminatedUnion('method', [
       z.object({
         method: z.literal('sign_in'),
@@ -1020,6 +1083,54 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         label: 'Run a command in the sandbox',
         effect_class: 'write_reversible',
         asks_first: false,
+        default: true,
+      },
+    ],
+  },
+  {
+    id: 'meetings',
+    kind: 'meetings',
+    title: 'Meeting notes (Recall.ai)',
+    description:
+      'Send a notetaker into a Zoom, Google Meet or Microsoft Teams call after you approve it, and get the transcript, a summary, decisions and follow-ups back in the conversation.',
+    fixed: [{ path: 'provider', value: 'meetings' }],
+    fields: [
+      text('meetings.region', 'Recall.ai region', {
+        input: 'select',
+        options: [
+          { value: 'us-west-2', label: 'US West (us-west-2)' },
+          { value: 'us-east-1', label: 'US East (us-east-1)' },
+          { value: 'eu-central-1', label: 'EU Central (eu-central-1)' },
+          { value: 'ap-northeast-1', label: 'Japan (ap-northeast-1)' },
+        ],
+        default: 'us-west-2',
+        help: 'The region your Recall.ai workspace and key were created in.',
+      }),
+      text('credentials.api_key', 'Recall.ai API key', {
+        input: 'password',
+        secret: true,
+        help: 'Create one in the Recall.ai dashboard under Developers, then API Keys.',
+      }),
+      text('credentials.elevenlabs_api_key', 'ElevenLabs API key', {
+        input: 'password',
+        secret: true,
+        required: false,
+        help: 'Optional. With it, the recording is transcribed by ElevenLabs Scribe with speaker labels; without it, Recall.ai transcribes the call.',
+      }),
+      text('credentials.webhook_secret', 'Recall.ai webhook secret', {
+        input: 'password',
+        secret: true,
+        required: false,
+        placeholder: 'whsec_…',
+        help: 'Optional, and only when this service has a public address. Point a Recall.ai webhook at /webhooks/meetings/<connection id> and paste its verification secret; otherwise the service checks on each meeting every minute.',
+      }),
+    ],
+    scopes: [
+      {
+        scope: 'meeting.join',
+        label: 'Send a notetaker into a meeting',
+        effect_class: 'write_external',
+        asks_first: true,
         default: true,
       },
     ],

@@ -273,6 +273,12 @@ export const toolTraceNotice = z.strictObject({
   call: toolCall,
 });
 export type ToolTraceNotice = z.infer<typeof toolTraceNotice>;
+/**
+ * A message the service posted into a conversation on its own, such as the
+ * notes a meeting notetaker brought back. The conversation shows it as its own
+ * message, and the next turn reads `text` as something already said.
+ */
+export const MEETING_NOTES_NOTICE = 'meeting_notes';
 
 /**
  * How far a running conversation has got: finished steps and the one under

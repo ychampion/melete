@@ -72,6 +72,8 @@ export const CONNECTION_PROVIDERS = [
   'mcp',
   /** A remote sandbox the broker owns: commands run there, credentials stay here. */
   'sandbox',
+  /** A meeting notetaker: joins a call when approved and brings back its notes. */
+  'meetings',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;
