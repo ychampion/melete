@@ -106,6 +106,8 @@ export type BrowserCommand = z.infer<typeof browserCommand>;
 export type BrowserObservation = {
   id: string;
   url: string;
+  /** The document's title; empty while a page is handed back, like everything else it shows. */
+  title: string;
   tree: string;
   /** Empty for the first observation after a person hands back control. */
   screenshot: string;
@@ -378,6 +380,8 @@ export class BrowserController {
     const snapshot = await page.locator('body').ariaSnapshot();
     if (snapshot.length > 128_000) throw new BrowserFault('observation_too_large');
     const tree = handedBack ? withoutValues(snapshot) : snapshot;
+    // A handed-back page's title is something it shows, so it is withheld with the rest.
+    const title = handedBack ? '' : (await page.title().catch(() => '')).slice(0, 300);
     const screenshot = handedBack
       ? ''
       : (
@@ -403,6 +407,7 @@ export class BrowserController {
       observation: {
         id: `obs_${randomUUID()}`,
         url: handedBack ? handbackUrl(page.url()) : page.url(),
+        title,
         schema: handedBack
           ? schema.map((control) => ({ ...control, label: handbackLabel(control.label) }))
           : schema,

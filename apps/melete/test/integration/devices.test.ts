@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { type CapabilityClaims, DEVICE_LIMITS, type RuntimeAdapter } from '@melete/contracts';
 import { BrowserBridge } from '../../../../packages/device/src/browser.ts';
 import {
+  type AgentOptions,
   ApiError,
   type Capabilities,
   DeviceAgent,
@@ -117,7 +118,11 @@ async function harness() {
 
   /** A computer with one shared folder, paired through the companion's own code path. */
   const computer = async (
-    options: { grant?: Partial<Capabilities>; local?: Capabilities } = {},
+    options: {
+      grant?: Partial<Capabilities>;
+      local?: Capabilities;
+      tools?: AgentOptions['tools'];
+    } = {},
   ) => {
     const home = await mkdtemp(join(root, 'computer-'));
     const shared = join(home, 'Shared');
@@ -136,7 +141,11 @@ async function harness() {
       { configDir },
     );
     const log: string[] = [];
-    const agent = new DeviceAgent(config, { configDir, print: (line) => log.push(line) });
+    const agent = new DeviceAgent(config, {
+      configDir,
+      print: (line) => log.push(line),
+      ...(options.tools ? { tools: options.tools } : {}),
+    });
     return { config, configDir, shared, agent, log };
   };
 
@@ -725,5 +734,94 @@ withDb('what waited for the computer, when the person stops or time runs out', (
       requestedAt: new Date(),
     });
     expect(card.preview?.facts).toContainEqual({ label: 'Then', value: 'Press Enter to submit' });
+  }, 60_000);
+
+  test('a page on the computer or its network waits for approval; a public one does not', async () => {
+    const s = need();
+    const opened: string[] = [];
+    const { config, agent, log } = await s.computer({
+      tools: {
+        launch: async (_command, args) => {
+          opened.push(String(args.at(-1)));
+        },
+        resolve: async (host) =>
+          host === 'rebind.example'
+            ? ['192.168.1.1']
+            : host === 'example.com'
+              ? ['93.184.215.14']
+              : [],
+      },
+    });
+    const connectionId = await connectionOf(config.device_id);
+    const claims = await s.job(['device.status', 'device.open_url']);
+    await connected(agent, async () => {
+      const local = await s.broker.propose(claims, {
+        kind: 'device.open_url',
+        connection_id: connectionId,
+        payload: { url: 'http://127.0.0.1:8080/admin' },
+      });
+      expect(local.status).toBe('needs_approval');
+      const open = await s.broker.propose(claims, {
+        kind: 'device.open_url',
+        connection_id: connectionId,
+        payload: { url: 'https://example.com/' },
+      });
+      expect(open.status).toBe('succeeded');
+      expect(opened).toEqual(['https://example.com/']);
+
+      // A public-looking name that resolves to the local network on the computer.
+      const rebound = await s.broker.propose(claims, {
+        kind: 'device.open_url',
+        connection_id: connectionId,
+        payload: { url: 'https://rebind.example/' },
+      });
+      expect(rebound.status).toBe('failed');
+      expect(opened).toEqual(['https://example.com/']);
+
+      await s.broker.decide(local.action_id, {
+        decision: 'approved',
+        payload_hash: local.payload_hash,
+      });
+      await s.broker.admit(claims, local.action_id, local.payload_hash);
+      expect((await s.broker.dispatch(local.action_id)).status).toBe('succeeded');
+      expect(opened).toEqual(['https://example.com/', 'http://127.0.0.1:8080/admin']);
+    });
+    expect(log.some((line) => line.includes('local network'))).toBe(true);
+  }, 60_000);
+
+  test('turning a capability off withdraws what waits to be collected', async () => {
+    const s = need();
+    const { config, agent, log } = await s.computer();
+    const connectionId = await connectionOf(config.device_id);
+    const claims = await s.job(['device.status', 'device.list_files']);
+    // Online, but between polls: the request waits in the queue.
+    sharedDeviceHub.touch(config.device_id);
+    const waiting = s.broker.propose(claims, {
+      kind: 'device.list_files',
+      connection_id: connectionId,
+      payload: { path: 'Shared' },
+    });
+    // Handed to the hub: the action is on its way to the computer.
+    for (let tries = 0; tries < 100; tries++) {
+      const [row] = await s.sql`select status from action where job_id = ${claims.job_id}`;
+      if (row?.status === 'dispatched') break;
+      await Bun.sleep(50);
+    }
+    const changed = await s.app.request(
+      `/devices/${config.device_id}`,
+      s.as(s.cookie, 'PATCH', { capabilities: { files: false } }),
+    );
+    expect(changed.status).toBe(200);
+    const proposal = await waiting;
+    expect(proposal.status).toBe('failed');
+    // Read as stored: the attempt may no longer look at a tool that was turned off.
+    const [action] =
+      await s.sql`select reconciliation from action where id = ${proposal.action_id}`;
+    expect(JSON.stringify(action?.reconciliation)).toContain('turned off');
+    // The computer connects afterwards and is handed nothing.
+    await connected(agent, async () => {
+      await Bun.sleep(300);
+    });
+    expect(log.some((line) => line.includes('→ list_files'))).toBe(false);
   }, 60_000);
 });

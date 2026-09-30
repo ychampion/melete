@@ -485,6 +485,7 @@ export class BrokerService implements BrokerOperations {
     const access = await agentAccess(tx, job.id);
     const requiresApproval =
       needsApproval(tool) ||
+      this.options.connectors.get(action.connection_id)?.asksFirst?.(action) === true ||
       Boolean(
         access.agentId &&
           access.asksBeforeActing &&

@@ -23,6 +23,7 @@ import { MeleteAvatar } from '../design/mark.tsx';
 import { Button, Checkbox, Input, Status } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { decisionKey, pressOf, useInFlight } from '../experience/decide.ts';
+import { agentForFirstMessage } from '../experience/first-agent.ts';
 import {
   agentById,
   faceOf,
@@ -33,6 +34,7 @@ import {
   useLoad,
   useNow,
 } from '../experience/hooks.ts';
+import { shortTitle } from '../experience/title.ts';
 import { progressOf } from '../experience/trace.ts';
 import type {
   Agent,
@@ -46,6 +48,7 @@ import type {
 import { isWaiting, waitingOn } from '../experience/waiting.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
+import { blankAgent } from './Agents.tsx';
 import { PushOffer } from './Notifications.tsx';
 import './home.css';
 import { WaitingOnSection } from './WaitingOnSection.tsx';
@@ -277,7 +280,9 @@ function DecisionCard({
   const to = field('To') ?? permission?.draft?.recipient;
   /** What will run or change on a connected computer, exactly as it will be sent. */
   const onComputer = (permission?.preview?.facts ?? []).filter((fact) =>
-    ['Command', 'Runs in', 'File', 'Page', 'Tab', 'Element', 'Text', 'Then'].includes(fact.label),
+    ['Command', 'Runs in', 'File', 'Page', 'Network', 'Tab', 'Element', 'Text', 'Then'].includes(
+      fact.label,
+    ),
   );
   const amount = linked ? amountWords(linked.item) : null;
   const state = linked ? statusOf(linked.item, now) : null;
@@ -327,7 +332,14 @@ function DecisionCard({
           {onComputer.map((fact) => (
             <span key={fact.label} className="decision-meta">
               {fact.label}:{' '}
-              <code style={{ fontSize: 12, color: 'var(--text)', overflowWrap: 'anywhere' }}>
+              <code
+                style={{
+                  fontSize: 12,
+                  color: 'var(--text)',
+                  overflowWrap: 'anywhere',
+                  whiteSpace: 'pre-wrap',
+                }}
+              >
                 {fact.value}
               </code>
             </span>
@@ -827,7 +839,7 @@ function DayColumn({ now }: { now: number }) {
 /* ---------- the screen ---------- */
 
 export function HomeScreen() {
-  const { agents, refreshConversations } = useApp();
+  const { agents, refreshAgents, refreshConversations } = useApp();
   const home = useLoad(() => adapter.home(), []);
   const decisions = useDecisions();
   const [map, setMap] = useState<CompanyMap | null>(null);
@@ -851,14 +863,22 @@ export function HomeScreen() {
 
   const start = async (body: string) => {
     const clean = body.trim();
-    const agent = agents[0];
-    if (!clean || busy || !agent) return;
+    if (!clean || busy) return;
     setBusy(true);
-    const title =
-      clean
-        .replace(/[.!?].*$/, '')
-        .trim()
-        .slice(0, 60) || 'New chat';
+    // Skipping setup leaves no agent yet: make the default one so the first
+    // message still goes somewhere.
+    const agent = await agentForFirstMessage(
+      agents[0]?.id,
+      { ...blankAgent(), name: 'Nova', role: 'Concierge' },
+      adapter,
+    );
+    if ('error' in agent) {
+      setBusy(false);
+      toast({ kind: 'err', title: 'Couldn’t set up your agent', sub: agent.error });
+      return;
+    }
+    if (agent.created) refreshAgents();
+    const title = shortTitle(clean, 60) || 'New chat';
     const created = await adapter.createConversation({ title, agent_id: agent.id });
     if (created.data === null) {
       setBusy(false);

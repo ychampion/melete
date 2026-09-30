@@ -1,7 +1,9 @@
 /**
  * What the companion does for each request, after the checks in policy.ts.
  * Every tool has a time limit and a size limit, and none of them follows a
- * link out of a shared folder.
+ * link out of a shared folder: not a symbolic link or junction, and not a file
+ * with a second name elsewhere (a hard link), which is read or written as
+ * neither.
  */
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -9,6 +11,7 @@ import { constants } from 'node:fs';
 import { lstat, open, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { homedir, platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { onLocalNetwork, type Resolve } from './address.ts';
 import type { Capabilities, Folder } from './config.ts';
 import { checkCapability, checkUrl, parsePath, Refusal, resolveInside } from './policy.ts';
 
@@ -28,17 +31,33 @@ export type ToolContext = {
   /** Replaced in tests; the real one starts the operating system's own program. */
   launch?: (command: string, args: string[]) => Promise<void>;
   captureScreen?: () => Promise<Buffer>;
+  /** Replaced in tests; the real one asks this computer's resolver. */
+  resolve?: Resolve;
 };
 
 const digest = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 /** O_NOFOLLOW where the platform has it, so the last component cannot be swapped for a link. */
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
+/**
+ * A file with more than one name may be the same file as one outside the
+ * shared folder, so it is neither read nor written. NTFS and POSIX both count
+ * the names in `nlink`.
+ */
+function refuseHardLink(info: { nlink: number }) {
+  if (info.nlink > 1)
+    throw new Refusal(
+      'outside_folders',
+      'That file has another name elsewhere on this computer (a hard link), so it is not used.',
+    );
+}
+
 async function readCapped(target: string): Promise<Buffer> {
   const file = await open(target, constants.O_RDONLY | NOFOLLOW);
   try {
     const info = await file.stat();
     if (!info.isFile()) throw new Refusal('invalid_request', 'That is not a file.');
+    refuseHardLink(info);
     if (info.size > LIMITS.max_file_bytes)
       throw new Refusal('too_large', 'That file is larger than 1 MB.');
     const content = await file.readFile();
@@ -283,8 +302,10 @@ export async function runTool(
         throw error;
       });
       try {
-        if (!(await file.stat()).isFile())
-          throw new Refusal('invalid_request', 'That is not a regular file.');
+        const info = await file.stat();
+        if (!info.isFile()) throw new Refusal('invalid_request', 'That is not a regular file.');
+        // Checked on the open file, before anything in it changes.
+        refuseHardLink(info);
         await file.truncate(0);
         await file.writeFile(bytes);
         await file.sync();
@@ -312,6 +333,14 @@ export async function runTool(
     }
     case 'open_url': {
       const url = checkUrl(args.url);
+      // The service marks an address the person approved. Anything else on
+      // this computer or its network, by name or by what it resolves to here,
+      // is refused rather than opened with the person's browser and cookies.
+      if (args.local_approved !== true && (await onLocalNetwork(new URL(url), context.resolve)))
+        throw new Refusal(
+          'invalid_request',
+          'That address is on this computer or its local network, so it opens only once the person approves it.',
+        );
       const [command, commandArgs] = openCommand(url);
       await (context.launch ?? launchDefault)(command, commandArgs);
       return { opened: true };

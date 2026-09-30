@@ -8,6 +8,7 @@
  */
 import { appendFile } from 'node:fs/promises';
 import { hostname, platform } from 'node:os';
+import { checkServiceAddress } from './address.ts';
 import {
   type Capabilities,
   configChangedAt,
@@ -73,11 +74,13 @@ async function call<T>(
 
 /**
  * The API base behind the address the person typed. The web app serves the
- * API under `/api`; a bare API answers `/health` itself.
+ * API under `/api`; a bare API answers `/health` itself. Plain http is
+ * accepted only for Melete on this same computer.
  */
 export async function discoverApi(address: string, fetcher: Fetch = fetch): Promise<string> {
   const base = address.trim().replace(/\/+$/, '');
   if (!/^https?:\/\//i.test(base)) throw new Error('The address starts with http:// or https://');
+  checkServiceAddress(base);
   for (const candidate of [`${base}/api`, base]) {
     try {
       const response = await fetcher(`${candidate}/health`);
@@ -147,8 +150,8 @@ export type AgentOptions = {
   fetch?: Fetch;
   /** Replaces the printed log, e.g. in tests. */
   print?: (line: string) => void;
-  /** Passed to the tools; tests replace the programs that open pages and capture the screen. */
-  tools?: Pick<ToolContext, 'launch' | 'captureScreen'>;
+  /** Passed to the tools; tests replace the programs that open pages, capture the screen and resolve names. */
+  tools?: Pick<ToolContext, 'launch' | 'captureScreen' | 'resolve'>;
   pollTimeoutMs?: number;
 };
 
@@ -261,6 +264,8 @@ export class DeviceAgent {
    * longer accepts this computer's token.
    */
   async run(): Promise<'stopped' | 'revoked'> {
+    // A configuration edited by hand is held to the same rule as pairing.
+    checkServiceAddress(this.config.api);
     let backoff = 1_000;
     let greeted = false;
     await this.log(

@@ -12,6 +12,7 @@ import {
   type TrailStep,
 } from '@melete/contracts';
 import type { action, artifact, connection } from '../db/schema.ts';
+import { namesLocalNetwork } from '../devices/paths.ts';
 
 export type ActionRow = Pick<
   typeof action.$inferSelect,
@@ -51,11 +52,27 @@ export function plainText(value: unknown, fallback: string, limit = 4000): strin
     .trim()
     .slice(0, limit);
 }
+/** A whole JSON object or array: an internal record, not something the agent said. */
+function isRecord(value: string): boolean {
+  const text = value.trim();
+  if (!/^[[{]/.test(text)) return false;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === 'object' && parsed !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Answer text, whole or one streamed piece of it. A piece that merely starts
+ * with a bracket ("[your name]", a Markdown link) is prose and is kept.
+ */
 export function answerText(value: unknown): string {
   if (
     typeof value !== 'string' ||
     BACKEND_VOCABULARY.test(value) ||
-    /^[\s]*[[{]/.test(value) ||
+    isRecord(value) ||
     /\b(?:Bearer\s+|sk-[A-Za-z0-9]{12})/.test(value)
   )
     return '';
@@ -168,15 +185,37 @@ const DEVICE_ASKS: Record<string, string> = {
 };
 
 /**
+ * Characters that change how text around them reads without showing
+ * themselves: direction overrides and isolates, zero-width characters, other
+ * format characters, and controls apart from newline and tab. On a permission
+ * card each is written out as its code point, so what is approved reads the
+ * way it will run.
+ */
+const INVISIBLE = /[\p{Cf}\p{Cc}\u2028\u2029\u115F\u1160\u3164\uFFA0]/gu;
+export function showInvisible(text: string): string {
+  return text.replace(INVISIBLE, (char) =>
+    char === '\n' || char === '\t'
+      ? char
+      : `<U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}>`,
+  );
+}
+
+/**
  * The exact command, folder, file or page a permission is for, as it will be
  * sent. A command is never longer than this limit (the connector refuses a
- * longer one), so it is always shown whole.
+ * longer one), so it is always shown whole, with anything invisible in it
+ * written out.
  */
 function deviceFacts(kind: string, payload: Record<string, unknown>) {
   if (!kind.startsWith('device.')) return [];
   const fact = (label: string, value: unknown, limit: number = DEVICE_LIMITS.max_command_chars) =>
     typeof value === 'string' && value.length
-      ? [{ label, value: value.length > limit ? `${value.slice(0, limit)}…` : value }]
+      ? [
+          {
+            label,
+            value: showInvisible(value.length > limit ? `${value.slice(0, limit)}…` : value),
+          },
+        ]
       : [];
   return [
     ...fact('Command', payload.command),
@@ -190,6 +229,9 @@ function deviceFacts(kind: string, payload: Record<string, unknown>) {
     ...fact('Element', payload.ref),
     ...fact('Text', payload.text, DEVICE_LIMITS.max_typed_chars),
     ...(payload.submit === true ? [{ label: 'Then', value: 'Press Enter to submit' }] : []),
+    ...(namesLocalNetwork(payload.url)
+      ? [{ label: 'Network', value: 'This page is on your computer or your local network' }]
+      : []),
   ];
 }
 

@@ -18,6 +18,7 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import {
   DEVICE_LIMITS,
+  DEVICE_TOOL_CAPABILITY,
   DEVICE_TOOLS,
   type DeviceCapabilities,
   type DeviceChannel,
@@ -40,7 +41,7 @@ import { newId } from '../ids.ts';
 import type { PolicyService } from '../jobs/policy.ts';
 import type { JobService } from '../jobs/service.ts';
 import { spaceAuthority } from '../principals/authority.ts';
-import { deviceScopes } from './connector.ts';
+import { deviceScopes, effectiveCapabilities } from './connector.ts';
 import { type DeviceHub, sharedDeviceHub } from './hub.ts';
 import { devicePairing, pairedDevice } from './schema.ts';
 
@@ -137,6 +138,19 @@ export class DeviceService {
           if (woken) await service.enqueue(tx, woken, 'timer');
         });
     return due.length;
+  }
+
+  /** Withdraw what waits for the computer that it no longer allows, once both sides are known. */
+  private withdrawRefused(
+    deviceId: string,
+    granted: DeviceCapabilities,
+    local: DeviceCapabilities,
+  ) {
+    const allowed = effectiveCapabilities(granted, local);
+    this.hub.withdraw(deviceId, (request) => {
+      const needed = DEVICE_TOOL_CAPABILITY[request.tool];
+      return needed === null || allowed[needed];
+    });
   }
 
   view(row: DeviceRow, connectionStatus: string): DeviceView {
@@ -343,6 +357,7 @@ export class DeviceService {
         );
     });
     this.hub.touch(device.id);
+    this.withdrawRefused(device.id, device.capabilities, input.capabilities);
     return { device_id: device.id, name: device.name, capabilities: device.capabilities };
   }
 
@@ -368,6 +383,7 @@ export class DeviceService {
         .set({ scopes: deviceScopes(capabilities, row.localCapabilities) })
         .where(eq(connection.id, row.connectionId));
     });
+    this.withdrawRefused(id, capabilities, row.localCapabilities);
     return this.view({ ...row, capabilities }, status);
   }
 

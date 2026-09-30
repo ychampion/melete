@@ -9,7 +9,9 @@
  * chosen folders never reaches the computer. The companion checks again on the
  * computer, where it can also see symbolic links; see packages/device.
  */
+import { isIP } from 'node:net';
 import type { DeviceFolder } from '@melete/contracts';
+import { isPublicAddress } from '../connectors/web.ts';
 
 export type DevicePath = { folder: DeviceFolder; segments: string[] };
 
@@ -60,4 +62,33 @@ export function openableUrl(value: unknown): string {
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password)
     throw new DevicePathError('Only http and https addresses without a password are opened.');
   return parsed.toString();
+}
+
+const LOCAL_SUFFIXES = ['.localhost', '.local', '.lan', '.home', '.internal', '.home.arpa'];
+
+/**
+ * True when an address names the person's own computer or its local network
+ * by itself: `localhost`, a private or loopback address, a local-only suffix,
+ * or a single-label name only a local resolver answers. Opening one needs the
+ * person's approval of that exact address. A public-looking name that resolves
+ * to a local address is caught by the companion, which resolves it where it
+ * will be opened.
+ */
+export function namesLocalNetwork(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  let host: string;
+  try {
+    host = new URL(value).hostname
+      .replace(/^\[|\]$/g, '')
+      .replace(/\.$/, '')
+      .toLowerCase();
+  } catch {
+    return false;
+  }
+  if (isIP(host)) return !isPublicAddress(host);
+  return (
+    host === 'localhost' ||
+    !host.includes('.') ||
+    LOCAL_SUFFIXES.some((suffix) => host.endsWith(suffix))
+  );
 }
