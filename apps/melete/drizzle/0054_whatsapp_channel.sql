@@ -1,0 +1,2 @@
+ALTER TABLE "phone_call" ADD COLUMN "channel" text DEFAULT 'phone' NOT NULL;--> statement-breakpoint
+ALTER TABLE "phone_call" ADD CONSTRAINT "phone_call_channel_check" CHECK ("phone_call"."channel" in ('phone', 'whatsapp'));

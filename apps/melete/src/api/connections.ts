@@ -274,7 +274,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         id: kind.id,
         title: kind.title,
         description: kind.description,
-        covers: [KIND_COVERS[kind.kind]],
+        covers: kind.kind === 'phone' ? ['calls', 'messages'] : [KIND_COVERS[kind.kind]],
         connect: { method: 'form', kind_id: kind.id },
         available: !reason,
         ...(reason ? { unavailable_reason: reason } : {}),

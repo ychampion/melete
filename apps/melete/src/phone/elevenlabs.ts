@@ -259,6 +259,81 @@ export class ElevenLabsClient {
     };
   }
 
+  /**
+   * Give a WhatsApp number the person connected in ElevenLabs to an agent, or
+   * take it back with null. The number itself stays connected.
+   */
+  async assignWhatsApp(phoneNumberId: string, agentId: string | null): Promise<void> {
+    await this.request(
+      'whatsapp',
+      'PATCH',
+      `/v1/convai/whatsapp-accounts/${encodeURIComponent(phoneNumberId)}`,
+      agentId === null
+        ? { assigned_agent_id: null }
+        : { assigned_agent_id: agentId, enable_messaging: true },
+      agentId === null ? [404] : [],
+    );
+  }
+
+  /** Start a WhatsApp chat with an approved template; the agent answers the replies. */
+  async whatsappMessage(input: {
+    phoneNumberId: string;
+    userId: string;
+    template: string;
+    language: string;
+    values: string[];
+    agentId: string;
+    initiation: Record<string, unknown>;
+  }) {
+    const sent = await this.parsed(
+      z.looseObject({ conversation_id: z.string().nullable().optional() }),
+      'whatsapp',
+      'POST',
+      '/v1/convai/whatsapp/outbound-message',
+      {
+        whatsapp_phone_number_id: input.phoneNumberId,
+        whatsapp_user_id: input.userId,
+        template_name: input.template,
+        template_language_code: input.language,
+        template_params: input.values.length
+          ? [{ type: 'body', parameters: input.values.map((text) => ({ type: 'text', text })) }]
+          : [],
+        agent_id: input.agentId,
+        conversation_initiation_client_data: input.initiation,
+      },
+    );
+    return { success: Boolean(sent.conversation_id), conversationId: sent.conversation_id ?? null };
+  }
+
+  /**
+   * Place a WhatsApp call. A person who has not yet allowed calls is first sent
+   * the call-permission template, and the call follows once they allow it.
+   */
+  async whatsappCall(input: {
+    phoneNumberId: string;
+    userId: string;
+    template: string;
+    language: string;
+    agentId: string;
+    initiation: Record<string, unknown>;
+  }) {
+    const placed = await this.parsed(
+      callPlaced,
+      'whatsapp',
+      'POST',
+      '/v1/convai/whatsapp/outbound-call',
+      {
+        whatsapp_phone_number_id: input.phoneNumberId,
+        whatsapp_user_id: input.userId,
+        whatsapp_call_permission_request_template_name: input.template,
+        whatsapp_call_permission_request_template_language_code: input.language,
+        agent_id: input.agentId,
+        conversation_initiation_client_data: input.initiation,
+      },
+    );
+    return { success: placed.success, conversationId: placed.conversation_id ?? null };
+  }
+
   async getConversation(id: string): Promise<ConversationRecord> {
     return this.parsed(
       conversationRecord,

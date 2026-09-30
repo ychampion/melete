@@ -46,6 +46,8 @@ export const phoneCall = pgTable(
     attemptId: text('attempt_id'),
     actionId: text('action_id').references(() => action.id, { onDelete: 'cascade' }),
     direction: text('direction').$type<'outbound' | 'inbound'>().notNull(),
+    /** A phone call, or a WhatsApp conversation (a chat or a call) on the line's WhatsApp number. */
+    channel: text('channel').$type<'phone' | 'whatsapp'>().notNull().default('phone'),
     party: text('party').$type<'person' | 'other' | 'unknown'>().notNull(),
     remoteNumber: text('remote_number').notNull(),
     context: jsonb('context').$type<CallContext>().notNull().default({}),
@@ -69,6 +71,7 @@ export const phoneCall = pgTable(
       .where(sql`${t.conversationId} is not null`),
     index('phone_call_count_idx').on(t.connectionId, t.direction, t.createdAt),
     check('phone_call_direction_check', sql`${t.direction} in ('outbound', 'inbound')`),
+    check('phone_call_channel_check', sql`${t.channel} in ('phone', 'whatsapp')`),
     check('phone_call_party_check', sql`${t.party} in ('person', 'other', 'unknown')`),
     check(
       'phone_call_status_check',

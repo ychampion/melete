@@ -42,49 +42,107 @@ export const phoneCallPayload = z
   .strict();
 export type PhoneCallPayload = z.infer<typeof phoneCallPayload>;
 
-export const phoneManifest: ConnectorManifest = {
-  name: 'phone',
-  version: '0.1.0',
-  provider: 'phone',
-  description: 'Place a phone call for the person, after they approve who is called and why.',
-  credentials: [
-    {
-      key: 'elevenlabs',
-      description: 'ElevenLabs API key and telephony credentials, sealed in the service.',
-      secret: true,
-    },
-  ],
-  health: true,
-  tools: [
-    {
-      name: 'phone.call',
-      description:
-        'Call a phone number for the person. The approval covers the number, the purpose, what may be shared and what must not be agreed to. On the call Melete says it is an AI assistant, shares only what is allowed, agrees to nothing, and reports back afterwards.',
-      input_schema: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['phone_number', 'purpose', 'may_share', 'must_not_agree_to'],
-        properties: {
-          phone_number: { type: 'string', pattern: '^\\+[1-9][0-9]{6,14}$' },
-          purpose: { type: 'string', minLength: 1, maxLength: 500 },
-          may_share: { type: 'string', maxLength: 1000 },
-          must_not_agree_to: { type: 'string', maxLength: 1000 },
-          callee_name: { type: 'string', maxLength: 80 },
-          callee_time_zone: {
-            type: 'string',
-            maxLength: 64,
-            description:
-              'The callee’s time zone, such as Europe/London, when the number alone does not say.',
-          },
-        },
-      },
-      effect_class: 'write_external',
-      required_scopes: ['phone.call'],
-      verify: true,
-      requires_approval: true,
-    },
-  ],
+/** A WhatsApp chat starts from the approved template, filled in with these values in order. */
+export const whatsappMessagePayload = phoneCallPayload.extend({
+  template_values: z.array(z.string().trim().min(1).max(200)).max(10).optional(),
+});
+
+const contactProperties = {
+  phone_number: { type: 'string', pattern: '^\\+[1-9][0-9]{6,14}$' },
+  purpose: { type: 'string', minLength: 1, maxLength: 500 },
+  may_share: { type: 'string', maxLength: 1000 },
+  must_not_agree_to: { type: 'string', maxLength: 1000 },
+  callee_name: { type: 'string', maxLength: 80 },
+  callee_time_zone: {
+    type: 'string',
+    maxLength: 64,
+    description:
+      'The time zone of the person being contacted, such as Europe/London, when the number alone does not say.',
+  },
 };
+const contactRequired = ['phone_number', 'purpose', 'may_share', 'must_not_agree_to'];
+const APPROVAL =
+  'The approval covers the number, the purpose, what may be shared and what must not be agreed to.';
+
+/** The tools a line offers: a phone call always, WhatsApp with its number and templates. */
+export function phoneManifest(config: Line['stored']['phone']): ConnectorManifest {
+  const whatsapp = config.whatsapp;
+  return {
+    name: 'phone',
+    version: '0.1.0',
+    provider: 'phone',
+    description:
+      'Place a phone call, or start a WhatsApp chat or call, for the person, after they approve who is contacted and why.',
+    credentials: [
+      {
+        key: 'elevenlabs',
+        description: 'ElevenLabs API key and telephony credentials, sealed in the service.',
+        secret: true,
+      },
+    ],
+    health: true,
+    tools: [
+      {
+        name: 'phone.call',
+        description: `Call a phone number for the person. ${APPROVAL} On the call Melete says it is an AI assistant, shares only what is allowed, agrees to nothing, and reports back afterwards.`,
+        input_schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: contactRequired,
+          properties: contactProperties,
+        },
+        effect_class: 'write_external',
+        required_scopes: ['phone.call'],
+        verify: true,
+        requires_approval: true,
+      },
+      ...(whatsapp?.message_template
+        ? [
+            {
+              name: 'whatsapp.message',
+              description: `Start a WhatsApp chat with someone for the person, from the approved template, and carry it on as their assistant. ${APPROVAL} Replies are answered within those limits, and the outcome is reported afterwards.`,
+              input_schema: {
+                type: 'object',
+                additionalProperties: false,
+                required: contactRequired,
+                properties: {
+                  ...contactProperties,
+                  template_values: {
+                    type: 'array',
+                    maxItems: 10,
+                    items: { type: 'string', minLength: 1, maxLength: 200 },
+                    description: `The values the template "${whatsapp.message_template}" is filled in with, in order.`,
+                  },
+                },
+              },
+              effect_class: 'write_external' as const,
+              required_scopes: ['whatsapp.message'],
+              verify: true,
+              requires_approval: true,
+            },
+          ]
+        : []),
+      ...(whatsapp?.call_template
+        ? [
+            {
+              name: 'whatsapp.call',
+              description: `Call someone on WhatsApp for the person. Someone who has not allowed calls from this number is first asked with the approved template. ${APPROVAL}`,
+              input_schema: {
+                type: 'object',
+                additionalProperties: false,
+                required: contactRequired,
+                properties: contactProperties,
+              },
+              effect_class: 'write_external' as const,
+              required_scopes: ['whatsapp.call'],
+              verify: true,
+              requires_approval: true,
+            },
+          ]
+        : []),
+    ],
+  };
+}
 
 /** Lines taken down already in this process, so a revocation does it once. */
 const takenDown = new Set<string>();
@@ -136,14 +194,33 @@ export function createPhoneConnector(options: PhoneConnectorOptions): Connector 
     retryable: false,
   });
 
+  const manifest = phoneManifest(config);
   return {
-    manifest: phoneManifest,
+    manifest,
     catalog: { audience: 'owner' },
 
     async execute(action): Promise<DispatchResult> {
-      const parsed = phoneCallPayload.safeParse(action.canonical_payload);
-      if (!parsed.success) return failed('The call request is not one this line can place.');
+      const kind = action.kind as 'phone.call' | 'whatsapp.message' | 'whatsapp.call';
+      const whatsapp = config.whatsapp;
+      const template =
+        kind === 'whatsapp.message'
+          ? whatsapp?.message_template
+          : kind === 'whatsapp.call'
+            ? whatsapp?.call_template
+            : undefined;
+      if (
+        !manifest.tools.some((tool) => tool.name === kind) ||
+        (kind !== 'phone.call' && !template)
+      )
+        return failed('This line does not offer that.');
+      const parsed = whatsappMessagePayload.safeParse(action.canonical_payload);
+      if (!parsed.success || (kind !== 'whatsapp.message' && parsed.data.template_values))
+        return failed('The request is not one this line can carry out.');
       const payload = parsed.data;
+      const channel = kind === 'phone.call' ? 'phone' : 'whatsapp';
+      const done = kind === 'whatsapp.message' ? 'send the message' : 'place the call';
+      const undone =
+        kind === 'whatsapp.message' ? 'the message was not sent' : 'the call was not placed';
       // One action places one call, however often it is dispatched.
       const [existing] = await sql<
         CallRow[]
@@ -174,10 +251,10 @@ export function createPhoneConnector(options: PhoneConnectorOptions): Connector 
             and not (status = 'failed' and conversation_id is null)`;
         if (Number(used?.calls ?? 0) >= config.daily_call_limit) return false;
         await tx`insert into phone_call
-            (id, connection_id, space_id, job_id, attempt_id, action_id, direction, party,
+            (id, connection_id, space_id, job_id, attempt_id, action_id, direction, channel, party,
              remote_number, context, status)
           values (${callId}, ${line.id}, ${line.spaceId}, ${action.job_id}, ${action.attempt_id},
-            ${action.id}, 'outbound', 'other', ${payload.phone_number},
+            ${action.id}, 'outbound', ${channel}, 'other', ${payload.phone_number},
             ${JSON.stringify({
               purpose: payload.purpose,
               may_share: payload.may_share,
@@ -188,47 +265,67 @@ export function createPhoneConnector(options: PhoneConnectorOptions): Connector 
       });
       if (!admitted)
         return failed(
-          `This line has placed its ${config.daily_call_limit} calls for today. Try again tomorrow, or raise the limit on the connection.`,
+          `This line has reached ${config.daily_call_limit} calls and chats for today. Try again tomorrow, or raise the limit on the connection.`,
         );
       const notPlaced = async (reason: string) => {
         await sql`update phone_call set status = 'failed', failure = ${reason}, ended_at = now()
           where id = ${callId}`;
         return failed(reason);
       };
-      let placed: Awaited<ReturnType<ElevenLabsClient['outboundCall']>>;
+      // The opening is fixed; a chat opens with its approved template instead.
+      const opening = {
+        conversation_config_override: {
+          agent: { first_message: outboundOpening(config.on_behalf_of, payload.callee_name) },
+        },
+      };
+      const carried = { custom_llm_extra_body: { call_id: callId } };
+      const userId = payload.phone_number.slice(1);
+      let placed: { success: boolean; conversationId: string | null };
       try {
         placed = await withClient((api) =>
-          api.outboundCall(config.telephony, {
-            agentId: ids.agent_id,
-            phoneNumberId: ids.phone_number_id,
-            to: payload.phone_number,
-            initiation: {
-              conversation_config_override: {
-                agent: { first_message: outboundOpening(config.on_behalf_of, payload.callee_name) },
-              },
-              custom_llm_extra_body: { call_id: callId },
-            },
-          }),
+          kind === 'phone.call'
+            ? api.outboundCall(config.telephony, {
+                agentId: ids.agent_id,
+                phoneNumberId: ids.phone_number_id,
+                to: payload.phone_number,
+                initiation: { ...opening, ...carried },
+              })
+            : kind === 'whatsapp.message'
+              ? api.whatsappMessage({
+                  phoneNumberId: whatsapp?.phone_number_id ?? '',
+                  userId,
+                  template: template ?? '',
+                  language: whatsapp?.template_language ?? 'en',
+                  values: payload.template_values ?? [],
+                  agentId: ids.agent_id,
+                  initiation: carried,
+                })
+              : api.whatsappCall({
+                  phoneNumberId: whatsapp?.phone_number_id ?? '',
+                  userId,
+                  template: template ?? '',
+                  language: whatsapp?.template_language ?? 'en',
+                  agentId: ids.agent_id,
+                  initiation: { ...opening, ...carried },
+                }),
         );
       } catch (error) {
         // A refusal said nothing was placed. Silence, or a server failure, might have placed it.
         if (error instanceof ElevenLabsError && error.status !== null && error.status < 500)
           return notPlaced(
             error.status === 401
-              ? 'ElevenLabs refused the line’s API key, so the call was not placed. Reconnect the phone line.'
-              : 'ElevenLabs did not place the call.',
+              ? `ElevenLabs refused the line’s API key, so ${undone}. Reconnect the phone line.`
+              : `ElevenLabs did not ${done}.`,
           );
         if (!(error instanceof ElevenLabsError))
-          return notPlaced(
-            'The phone line could not use its credentials, so the call was not placed.',
-          );
+          return notPlaced(`The phone line could not use its credentials, so ${undone}.`);
         return {
           outcome: 'unknown',
-          reason: 'ElevenLabs did not say whether the call was placed.',
+          reason: `ElevenLabs did not say whether it could ${done}.`,
         };
       }
       if (!placed.success || !placed.conversationId)
-        return notPlaced('ElevenLabs did not place the call.');
+        return notPlaced(`ElevenLabs did not ${done}.`);
       await sql`update phone_call set conversation_id = ${placed.conversationId},
           status = case when status = 'dialing' then 'in_progress' else status end
         where id = ${callId}`;

@@ -10,6 +10,7 @@ const outbound: CallRow = {
   attempt_id: null,
   action_id: null,
   direction: 'outbound',
+  channel: 'phone',
   party: 'other',
   remote_number: '+442071234567',
   context: {
@@ -105,6 +106,24 @@ describe('what the other party says cannot widen the call', () => {
       answer: { question: 'Is Tuesday at 3 fine?', answer: 'Yes, Tuesday works' },
     });
     expect(turn.system).toContain('Zara answered: "Yes, Tuesday works"');
+  });
+});
+
+describe('a WhatsApp conversation', () => {
+  test('is written to be read or heard, under the same approved context', () => {
+    const lines = spokenLines([{ role: 'user', content: 'Hi, who is this?' }]);
+    const phone = buildTurn({ name: 'Zara', call: outbound, lines, memory: [], answer: null });
+    const chat = buildTurn({
+      name: 'Zara',
+      call: { ...outbound, channel: 'whatsapp' },
+      lines,
+      memory: [],
+      answer: null,
+    });
+    expect(chat.system).toContain('on WhatsApp');
+    expect(phone.system).not.toContain('WhatsApp');
+    expect(chat.system).toContain('What you may share: Her name and that she is a patient');
+    expect(chat.tools).toEqual(phone.tools);
   });
 });
 

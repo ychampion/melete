@@ -19,6 +19,7 @@ export const storedPhoneConnection = z.object({
     phone_number_id: z.string().min(1),
     secret_id: z.string().min(1),
     webhook_id: z.string().min(1),
+    whatsapp_phone_number_id: z.string().min(1).optional(),
   }),
   line_key_digest: z.string().regex(/^[0-9a-f]{64}$/),
   /**
