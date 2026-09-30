@@ -90,3 +90,73 @@ test('nothing is under way once the turn stops running, even if its last entry n
   );
   expect(transcript.turns[0]?.live).toBeNull();
 });
+
+const reasoning = (text: string) => event({ type: 'reasoning', text });
+const finished = (elapsed_ms = 3000) =>
+  event({ type: 'done', summary: 'Hey!', elapsed_ms, apps: [], source_count: 0 });
+const count = (html: string, text: string) => html.split(text).length - 1;
+
+test('reasoning pieces become one step in the trail, never part of the answer', () => {
+  let transcript = fromTurns([TURN], 'pause', 'working');
+  for (const item of [reasoning('The person said hey. '), reasoning('Greet them back.')])
+    transcript = applyEvent(transcript, item);
+  const turn = transcript.turns[0];
+  if (!turn) throw new Error('no turn');
+  expect(turn.trail).toEqual([
+    { type: 'reasoning', text: 'The person said hey. Greet them back.' },
+  ]);
+  expect(turn.streamed).toBe('');
+  // While the agent works and has said nothing yet, the reasoning is in view.
+  const html = renderToStaticMarkup(<Trail turn={turn} now={Date.parse(AT)} />);
+  expect(html).toContain('aria-expanded="true"');
+  expect(html).toContain('The person said hey. Greet them back.');
+  expect(html).toContain('Working');
+});
+
+test('once the answer is being drawn, the trail closes to its live header', () => {
+  let transcript = fromTurns([TURN], 'pause', 'working');
+  transcript = applyEvent(transcript, reasoning('Greet them back.'));
+  transcript = applyEvent(transcript, event({ type: 'text_delta', text: 'Hey' }));
+  const turn = transcript.turns[0];
+  if (!turn) throw new Error('no turn');
+  const html = renderToStaticMarkup(<Trail turn={turn} now={Date.parse(AT)} answering />);
+  expect(html).toContain('aria-expanded="false"');
+  expect(html).toContain('Working');
+  expect(html).not.toContain('Greet them back.');
+});
+
+test('a finished turn says once how long it worked, closed, and opens onto its steps', () => {
+  let transcript = fromTurns([TURN], 'send', 'working');
+  for (const item of [
+    reasoning('Greet them back.'),
+    finished(),
+    event({ type: 'status', status: 'done', composer: 'send' }),
+  ])
+    transcript = applyEvent(transcript, item);
+  const turn = transcript.turns[0];
+  if (!turn) throw new Error('no turn');
+  const html = renderToStaticMarkup(<Trail turn={turn} now={Date.parse(AT)} answering />);
+  expect(html).toContain('aria-expanded="false"');
+  expect(html).toContain('aria-controls=');
+  expect(count(html, 'Worked for 3s')).toBe(1);
+  expect(html).not.toContain('Greet them back.');
+});
+
+test('a finished turn with no steps has a header and nothing to open', () => {
+  let transcript = fromTurns([TURN], 'send', 'working');
+  for (const item of [finished(), event({ type: 'status', status: 'done', composer: 'send' })])
+    transcript = applyEvent(transcript, item);
+  const turn = transcript.turns[0];
+  if (!turn) throw new Error('no turn');
+  const html = renderToStaticMarkup(<Trail turn={turn} now={Date.parse(AT)} answering />);
+  expect(count(html, 'Worked for 3s')).toBe(1);
+  expect(html).not.toContain('<button');
+});
+
+test('a running turn shows its live header before any step arrives', () => {
+  const transcript = fromTurns([TURN], 'pause', 'working');
+  const turn = transcript.turns[0];
+  if (!turn) throw new Error('no turn');
+  const html = renderToStaticMarkup(<Trail turn={turn} now={Date.parse(AT) + 4000} />);
+  expect(html).toContain('Working · 4s');
+});

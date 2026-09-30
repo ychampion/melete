@@ -276,6 +276,17 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         trail: [...turn.trail, item],
         streaming: item.type === 'done' ? false : turn.streaming,
       }));
+    case 'reasoning':
+      return patchTurn(base, event.turn_id, (turn) => {
+        const last = turn.trail.at(-1);
+        return {
+          ...turn,
+          trail:
+            last?.type === 'reasoning'
+              ? [...turn.trail.slice(0, -1), { type: 'reasoning', text: last.text + item.text }]
+              : [...turn.trail, item],
+        };
+      });
     case 'text_delta':
       return patchTurn(base, event.turn_id, (turn) => ({
         ...turn,

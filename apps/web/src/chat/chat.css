@@ -221,6 +221,31 @@
 .trail-head:hover {
   background: var(--hover);
 }
+/* A header with nothing beneath it to open. */
+.trail-head[data-static="true"] {
+  padding-left: 6px;
+}
+.trail-head[data-static="true"]:hover {
+  background: none;
+}
+/* The model's reasoning, as it wrote it: quieter than anything it said to the person. */
+.trail-reasoning {
+  margin: 2px 0 8px 26px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* While it is still being written, the newest lines stay in view. */
+.trail-reasoning[data-live="true"] {
+  max-height: 152px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column-reverse;
+}
 .trail-steps {
   display: flex;
   flex-direction: column;

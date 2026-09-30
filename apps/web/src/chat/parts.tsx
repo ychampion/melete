@@ -221,21 +221,38 @@ function ToolLines({ tool }: { tool: ToolEntry }) {
 
 const RUNNING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
 
-export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
+/**
+ * What the agent did for a turn, drawn above its answer. The header is live
+ * while the turn runs and says how long it took once it ends; the steps and
+ * the model's reasoning open beneath it. They are open while the agent works
+ * and nothing has been said yet, and closed once the answer arrives or the
+ * turn ends, unless the person opened or closed them, or the job kept going
+ * after it first settled (a chase: the send, then the reply and the
+ * follow-up), which stays open so what it did after the send is in view.
+ */
+export function Trail({
+  turn,
+  now,
+  answering = false,
+}: {
+  turn: TranscriptTurn;
+  now: number;
+  /** Whether the answer is being drawn beneath. */
+  answering?: boolean;
+}) {
   const running = RUNNING.includes(turn.status);
   const dones = turn.trail.filter(
     (s): s is Extract<TrailStep, { type: 'done' }> => s.type === 'done',
   );
-  // A job that keeps going after it first settles (a chase: the send, then the
-  // reply and the follow-up) is read from its last resting line, and stays open
-  // so what it did after the send is in view.
   const doneStep = running ? undefined : dones.at(-1);
   const continued =
     turn.trail.findIndex((s) => s.type === 'done') < turn.trail.length - 1 && dones.length > 0;
   const [open, setOpen] = useState<boolean | null>(null);
+  const stepsId = useId();
   const steps = turn.trail.filter((s) => s.type !== 'done');
-  if (turn.trail.length === 0) return null;
-  const expanded = open ?? (!doneStep || continued);
+  if (turn.trail.length === 0 && !running) return null;
+  const expandable = steps.length > 0;
+  const expanded = expandable && (open ?? (running ? !answering : continued));
   const elapsed = doneStep
     ? Math.max(1, Math.round(doneStep.elapsed_ms / 1000))
     : Math.max(0, Math.round((now - new Date(turn.turn.created_at).getTime()) / 1000));
@@ -257,36 +274,62 @@ export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
         <span className="pulse" style={{ animationDelay: '.4s' }} />
       </span>
       <span>{turn.status === 'paused' ? `Paused · ${elapsed}s` : `Working · ${elapsed}s`}</span>
+      {!expanded && turn.live ? (
+        <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
+          · {turn.live.title}
+        </span>
+      ) : null}
     </>
-  ) : turn.status === 'stopped' ? (
-    <span>Stopped after {elapsed}s</span>
-  ) : turn.status === 'needs_you' ? (
-    <span>Waiting for you · {elapsed}s</span>
-  ) : turn.status === 'failed' ? (
-    <span>Stopped without finishing</span>
   ) : (
-    <span>Worked for {elapsed}s</span>
+    <>
+      {turn.status === 'stopped' ? (
+        <span>Stopped after {elapsed}s</span>
+      ) : turn.status === 'needs_you' ? (
+        <span>Waiting for you · {elapsed}s</span>
+      ) : turn.status === 'failed' ? (
+        <span>Stopped without finishing</span>
+      ) : (
+        <span>Worked for {elapsed}s</span>
+      )}
+      {rest ? (
+        <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
+          · {rest}
+        </span>
+      ) : null}
+    </>
   );
   return (
-    <div className="col" style={{ gap: 4 }}>
-      <button
-        type="button"
-        className="trail-head"
-        aria-expanded={expanded}
-        onClick={() => setOpen(!expanded)}
-      >
-        <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={14} />
-        {head}
-        {!expanded && rest ? (
-          <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
-            · {rest}
-          </span>
-        ) : null}
-      </button>
+    <div className="col trail" style={{ gap: 4 }}>
+      {expandable ? (
+        <button
+          type="button"
+          className="trail-head"
+          aria-expanded={expanded}
+          aria-controls={stepsId}
+          onClick={() => setOpen(!expanded)}
+        >
+          <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={14} />
+          {head}
+        </button>
+      ) : (
+        <div className="trail-head" data-static="true">
+          {head}
+        </div>
+      )}
       {expanded ? (
-        <div className="trail-steps">
+        <div className="trail-steps" id={stepsId}>
           {steps.map((step, index) => {
             const key = `${step.type}-${index}`;
+            if (step.type === 'reasoning')
+              return (
+                <div
+                  key={key}
+                  className="trail-reasoning"
+                  data-live={running && index === steps.length - 1 ? 'true' : undefined}
+                >
+                  {step.text.trim()}
+                </div>
+              );
             if (step.type === 'say')
               return (
                 <div key={key} className="trail-say">
@@ -342,7 +385,7 @@ export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
               </div>
             );
           })}
-          {running && steps.length > 0 ? (
+          {running ? (
             <div className="trail-row">
               <span className="trail-icon">
                 <span style={{ color: 'var(--primary)', display: 'flex' }}>
@@ -351,18 +394,6 @@ export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
               </span>
               <span style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>
                 {turn.status === 'paused' ? 'Paused' : (turn.live?.title ?? 'Still working')}
-              </span>
-            </div>
-          ) : null}
-          {doneStep ? (
-            <div className="trail-row">
-              <span className="trail-icon">
-                <span style={{ color: 'var(--success)', display: 'flex' }}>
-                  <Icon name="circleCheck" size={16} />
-                </span>
-              </span>
-              <span style={{ flex: 1, fontSize: 13, fontWeight: 500, color: 'var(--heading)' }}>
-                Worked for {elapsed}s{rest ? ` · ${rest}` : ''}
               </span>
             </div>
           ) : null}

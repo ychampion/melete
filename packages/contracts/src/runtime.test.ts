@@ -106,9 +106,9 @@ describe('runtime events', () => {
     expect(parsed.dedup_key).toBe(`${id(ID_PREFIXES.attempt)}:3`);
   });
 
-  test('only text deltas are transient', () => {
+  test('only text and reasoning deltas are transient', () => {
     for (const type of RUNTIME_EVENT_TYPES) {
-      expect(isDurableRuntimeEvent(type)).toBe(type !== 'text_delta');
+      expect(isDurableRuntimeEvent(type)).toBe(type !== 'text_delta' && type !== 'reasoning_delta');
     }
   });
 });

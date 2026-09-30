@@ -2,7 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type AttemptBundle, EMPTY_SINCE_LAST, type RuntimeEvent } from '@melete/contracts';
-import { brokerParkedActions, type FetchLike, HermesRuntimeAdapter } from './adapter.ts';
+import {
+  brokerParkedActions,
+  coalesceDeltas,
+  type FetchLike,
+  HermesRuntimeAdapter,
+} from './adapter.ts';
 
 const SUFFIX = '01J8ZP3QWABCDEFGHJKMNPQRST';
 const ATTEMPT = `att_${SUFFIX}`;
@@ -569,6 +574,72 @@ describe('nothing becomes a completion that was not one', () => {
       new AbortController().signal,
     );
     expect((outcome as { reason: string }).reason).toContain('answered 404');
+  });
+});
+
+describe('streamed text and reasoning', () => {
+  const frame = (event: object) => `data: ${JSON.stringify(event)}\n\n`;
+  /** Records each event only after a pause, as a database write would. */
+  class SlowCollector extends Collector {
+    override async emit(event: RuntimeEvent) {
+      await Bun.sleep(15);
+      await super.emit(event);
+    }
+  }
+  const texts = (events: RuntimeEvent[], type: 'text_delta' | 'reasoning_delta') =>
+    events.flatMap((event) => (event.type === type ? [event.text] : []));
+
+  test('reasoning reaches the sink as reasoning, never as answer text', async () => {
+    const sse =
+      frame({ event: 'reasoning.delta', delta: 'The person said hey. ' }) +
+      frame({ event: 'reasoning.delta', delta: 'A short greeting back.' }) +
+      frame({ event: 'message.delta', delta: 'Hey!' }) +
+      frame({ event: 'run.completed', output: 'Hey!' });
+    const { fetch } = harness({ sse });
+    const sink = new Collector();
+    const outcome = await adapterWith(fetch).start(bundle, sink, new AbortController().signal);
+    expect(outcome).toEqual({ kind: 'completed', summary: 'Hey!', evidence: [] });
+    expect(texts(sink.events, 'reasoning_delta').join('')).toBe(
+      'The person said hey. A short greeting back.',
+    );
+    expect(texts(sink.events, 'text_delta')).toEqual(['Hey!']);
+  });
+
+  test('frames that arrive while one is being recorded are recorded together, in order', async () => {
+    const words = Array.from({ length: 40 }, (_, index) => `w${index} `);
+    const sse =
+      words.map((word) => frame({ event: 'message.delta', delta: word })).join('') +
+      frame({ event: 'tool.started', tool: 'search', preview: 'looking' }) +
+      frame({ event: 'tool.completed', tool: 'search', duration: 0.1, error: false }) +
+      words.map((word) => frame({ event: 'message.delta', delta: word.toUpperCase() })).join('') +
+      frame({ event: 'run.completed', output: 'done' });
+    const { fetch } = harness({ sse: sse });
+    const sink = new SlowCollector();
+    await adapterWith(fetch).start(bundle, sink, new AbortController().signal);
+    const pieces = texts(sink.events, 'text_delta');
+    expect(pieces.join('')).toBe(words.join('') + words.join('').toUpperCase());
+    // Fewer writes than frames, and nothing moved across the tool call.
+    expect(pieces.length).toBeLessThan(words.length * 2);
+    const types = sink.events.map((event) => event.type);
+    const call = types.indexOf('tool_call_proposed');
+    expect(texts(sink.events.slice(0, call), 'text_delta').join('')).toBe(words.join(''));
+  });
+
+  test('only neighbouring frames of the same kind are merged', () => {
+    const merged = coalesceDeltas([
+      { event: 'reasoning.delta', delta: 'a' },
+      { event: 'reasoning.delta', delta: 'b' },
+      { event: 'message.delta', delta: 'c' },
+      { event: 'message.delta', delta: 'd' },
+      { event: 'tool.started', tool: 'x' },
+      { event: 'message.delta', delta: 'e' },
+    ]);
+    expect(merged).toEqual([
+      { event: 'reasoning.delta', delta: 'ab' },
+      { event: 'message.delta', delta: 'cd' },
+      { event: 'tool.started', tool: 'x' },
+      { event: 'message.delta', delta: 'e' },
+    ]);
   });
 });
 

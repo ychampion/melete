@@ -403,6 +403,8 @@ export const experienceEvent = z.strictObject({
   item: z.union([
     trailStep,
     z.strictObject({ type: z.literal('text_delta'), text: z.string() }),
+    /** The model's reasoning as it writes it, for the trail; never part of the answer. */
+    z.strictObject({ type: z.literal('reasoning'), text: z.string() }),
     z.strictObject({ type: z.literal('card'), card: resultCard }),
     z.strictObject({ type: z.literal('receipt'), receipt: experienceReceipt }),
     z.strictObject({ type: z.literal('permission'), permission: permissionCard }),

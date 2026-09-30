@@ -720,7 +720,10 @@ export class ExperienceMock {
         kind !== 'connector' && kind !== 'web' && !step.sources.length,
       );
     }
-    if (step.step === 'say') {
+    if (step.step === 'reason') {
+      const text = answerText(this.fill(step.text));
+      if (text) this.event(chat, { type: 'reasoning', text });
+    } else if (step.step === 'say') {
       this.flush(chat);
       this.event(chat, {
         type: 'say',

@@ -201,6 +201,15 @@ const variables = z.object({
    */
   MELETE_RUNTIME_ADAPTER: z.enum(['hermes', 'stub', 'external', 'docker']).default('hermes'),
   MELETE_RUNTIME_SUPERVISOR: z.enum(['process', 'docker']).default('process'),
+  /**
+   * The process supervisor keeps one engine loaded ahead of the next attempt, so
+   * a reply does not wait for the engine to start. It holds an idle engine's
+   * memory while nothing runs.
+   */
+  MELETE_ENGINE_PREWARM: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   MELETE_HERMES_ROOT: z.string().default(join(root, '.hermes-src')),
   MELETE_HERMES_PYTHON: z
     .string()
