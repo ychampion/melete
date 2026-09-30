@@ -2,6 +2,7 @@ import type { PgBoss } from 'pg-boss';
 import { CHAT_PUBLISHER, traceChatExtraction } from './capture.ts';
 import { type CommitResult, commitExtraction } from './commit.ts';
 import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from './db.ts';
+import { runDigests } from './digest.ts';
 import { type ExtractionGateway, proposeExtraction } from './extract.ts';
 import { cleanupMemory, type DerivedCleanup } from './forget.ts';
 import type { MarkdownViews } from './markdown.ts';
@@ -12,6 +13,7 @@ import {
   checkLease,
   claimWork,
   deferWork,
+  EXTRACTION_LIMITS,
   finishWork,
   MEMORY_EXTRACT_QUEUE,
   repairQueue,
@@ -48,7 +50,11 @@ export async function workerScope(sql: MemorySql, workId: string): Promise<Memor
 export async function runExtractionWork(options: MemoryServiceOptions, workId: string) {
   const scope = await workerScope(options.sql, workId);
   if (!scope) return;
-  const batch = await claimWork(options.sql, scope, { workId });
+  // The lease outlasts the longest call, so a slow answer is not a lost lease.
+  const batch = await claimWork(options.sql, scope, {
+    workId,
+    leaseMs: EXTRACTION_LIMITS.timeout_ms + 30_000,
+  });
   if (!batch) return;
   // A chat message's conversation hears what memory kept from it. The entry is
   // a courtesy: failing to write it never undoes or retries the extraction.
@@ -85,17 +91,31 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
     const proposals = await proposeExtraction(options.sql, scope, batch, options.gateway);
     await traced(await commitExtraction(options.sql, scope, batch, { proposals }));
   } catch (error) {
-    const code = error instanceof MemoryError ? error.code : 'extraction_failed';
+    // An unexpected error is still named by its kind, so a log line says what failed.
+    const code =
+      error instanceof MemoryError
+        ? error.code
+        : `extraction_failed:${error instanceof Error ? error.name : 'unknown'}`;
     // The provider did not answer, or today's reads are spent: the message stays
     // unread and is tried again later, with a growing gap.
-    if (['extraction_provider_unavailable', 'memory_daily_budget'].includes(code)) {
+    if (
+      [
+        'extraction_provider_unavailable',
+        'extraction_provider_timeout',
+        'memory_daily_budget',
+      ].includes(code)
+    ) {
       if ((await deferWork(options.sql, scope, batch, code)) === 'given_up')
         options.onError?.(`${code}:given_up`);
     }
     // Out of answered calls for this one message, or a call that can never
     // succeed (too large, or refused by the provider): asking again would not help.
+    // An answer with nothing readable in it gets one more try, not the whole budget.
     else if (
-      ['extraction_budget', 'extraction_call_refused', 'extraction_provider_refused'].includes(code)
+      ['extraction_budget', 'extraction_call_refused', 'extraction_provider_refused'].includes(
+        code,
+      ) ||
+      (code === 'extraction_unreadable' && batch.work.fence >= 2)
     ) {
       await options.sql.begin(async (tx) => {
         await lockSpace(tx, scope);
@@ -157,12 +177,25 @@ export async function startMemoryService(options: MemoryServiceOptions) {
       });
   }, 2000);
   timer.unref();
+  // The weekly digest: checked every ten minutes, written once a space's Sunday
+  // morning has come in its own time zone and outside its quiet hours.
+  let digesting: Promise<void> | undefined;
+  const digest = () => {
+    digesting ??= runDigests(options.sql, onError).finally(() => {
+      digesting = undefined;
+    });
+  };
+  const digestTimer = setInterval(digest, 10 * 60_000);
+  digestTimer.unref();
+  digest();
   return {
     async stop() {
       clearInterval(timer);
+      clearInterval(digestTimer);
       stopRecovery();
       // Git projection and cleanup must settle before the caller closes SQL.
       await running;
+      await digesting;
       // The worker runs with or without a gateway; Tier 0 needs none.
       await options.boss.offWork(MEMORY_EXTRACT_QUEUE);
     },

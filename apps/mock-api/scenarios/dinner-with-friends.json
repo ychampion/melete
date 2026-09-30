@@ -176,7 +176,12 @@
       "step": "await_approval",
       "delay_ms": 200,
       "ref": "event",
-      "on_denied": "skipped"
+      "on_denied": "skipped",
+      "auto_review": {
+        "by": "reviewer",
+        "risk": "medium",
+        "reason": "You didn’t give a time, so 7:30 PM is a guess worth checking."
+      }
     },
     {
       "step": "dispatch",

@@ -24,6 +24,31 @@
       "result": {}
     },
     {
+      "step": "propose",
+      "delay_ms": 500,
+      "ref": "reminder",
+      "kind": "tasks.create",
+      "connection": "test-destination",
+      "effect_class": "write_reversible",
+      "payload": {
+        "title": "Book a passport photo",
+        "due": "Friday"
+      }
+    },
+    {
+      "step": "dispatch",
+      "delay_ms": 400,
+      "ref": "reminder",
+      "outcome": "succeeded",
+      "external_ref": "task:passport_photo",
+      "detail": {},
+      "auto_review": {
+        "by": "reviewer",
+        "risk": "low",
+        "reason": "It is a private reminder on your own list, and one tap removes it."
+      }
+    },
+    {
       "step": "text",
       "delay_ms": 500,
       "text": "Bring your current passport, one new photo, the DS-11 form filled in but unsigned, and a card for the fee. Renewing in person takes about six weeks, so the Oct 3 task on your list is the right deadline."

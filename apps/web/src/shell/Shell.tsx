@@ -107,6 +107,12 @@ const NAV: { icon: IconName; label: string; path: string; match: (path: string) 
   { icon: 'plans', label: 'Plans', path: '/plans', match: (p) => p.startsWith('/plans') },
   { icon: 'smile', label: 'Agents', path: '/agents', match: (p) => p.startsWith('/agents') },
   {
+    icon: 'bookmark',
+    label: 'Memory',
+    path: '/settings/memory',
+    match: (p) => p.startsWith('/settings/memory'),
+  },
+  {
     icon: 'automations',
     label: 'Automations',
     path: '/automations',
