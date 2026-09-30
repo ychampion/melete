@@ -16,6 +16,8 @@ import {
   connectorFault,
   type EffectClass,
   type JsonObject,
+  REDACTED,
+  redactText,
 } from '@melete/contracts';
 
 export class ConnectorFaultError extends Error {
@@ -108,12 +110,37 @@ export function describeFailure(error: unknown): string {
   if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError'))
     return 'timed out';
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-  const line = (message.split(/\r?\n/, 1)[0] ?? '')
-    .replace(/(?<=^|[\s'"(=])(?:[A-Za-z]:)?[\\/][^\s'"]*/g, '<path>')
-    .replace(/(https?:\/\/[^\s'"?#]+)[?#][^\s'"]*/g, '$1')
+  const first = (message.split(/\r?\n/, 1)[0] ?? '').slice(0, 1000);
+  const line = redactSecrets(
+    first
+      .replace(/\bfile:\/\/[^\s'"]*/gi, '<path>')
+      .replace(/(?<=^|[\s'"(=])(?:[A-Za-z]:)?[\\/][^\s'"]*/g, '<path>')
+      .replace(/(?<=\w:)\/(?!\/)[^\s'"]*/g, '<path>')
+      .replace(/(https?:\/\/[^\s'"?#]+)[?#][^\s'"]*/g, '$1'),
+  )
     .trim()
     .slice(0, 200);
   return line || 'the read failed';
+}
+
+/** Keys that announce themselves by prefix, whatever their length. */
+const PREFIXED_KEY =
+  /\b(?:(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|glpat-[A-Za-z0-9_-]{8,}|(?:AKIA|ASIA)[A-Z0-9]{12,}|AIza[A-Za-z0-9_-]{16,})/g;
+
+/**
+ * Credentials an error message may quote, taken out wherever the message goes
+ * next: the user and password in an address, authorization schemes, tokens,
+ * `name=value` secrets, prefixed keys of any length, and a run of letters and
+ * digits long enough to be a key.
+ */
+export function redactSecrets(text: string, max = 4000): string {
+  const cleared = text
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@'"]+@/gi, `$1${REDACTED}@`)
+    .replace(PREFIXED_KEY, REDACTED)
+    .replace(/[A-Za-z0-9_-]{20,}/g, (run) =>
+      /\d/.test(run) && /[A-Za-z]/.test(run) ? REDACTED : run,
+    );
+  return redactText(cleared, max);
 }
 
 /**

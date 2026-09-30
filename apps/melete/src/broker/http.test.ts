@@ -200,3 +200,17 @@ test('the failure line keeps a long install path and package versions readable',
   expect(line.endsWith('\n')).toBe(true);
   expect(line.trimEnd()).not.toContain('\n');
 });
+
+test('the failure line drops short keys, basic credentials and refresh tokens with slashes', () => {
+  const cases: Array<[message: string, secret: string]> = [
+    ['invalid api key sk-proj-ABCDEF1234567890XYZ', 'ABCDEF1234567890XYZ'],
+    ['upstream said: Authorization: Basic dXNlcjpwYXNz', 'dXNlcjpwYXNz'],
+    ['bad grant: refresh_token=1//0gAbC/dEf-GhI_jk', '0gAbC'],
+    ['fetch failed for https://alice:hunter2@api.example.com/v1', 'hunter2'],
+  ];
+  for (const [message, secret] of cases) {
+    const line = brokerFailureLine('POST', '/actions', new Error(message));
+    expect(line).not.toContain(secret);
+    expect(line).toContain('broker POST /actions failed');
+  }
+});

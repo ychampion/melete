@@ -14,6 +14,7 @@ import {
 } from '@melete/contracts';
 import { Hono } from 'hono';
 import { ZodError, z } from 'zod';
+import { redactSecrets } from '../connectors/faults.ts';
 import { AuthenticationError, matchesServiceKey, verifyCapability } from './capability.ts';
 import type { ToolCatalog } from './catalog.ts';
 import type { ComposeService } from './compose.ts';
@@ -48,8 +49,7 @@ export interface BrokerOperations {
 
 /** Credentials and identifiers a log line never carries, whatever an error message quoted. */
 function redactLogText(text: string): string {
-  return text
-    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+  return redactSecrets(text.replace(/Bearer\s+\S+/gi, 'Bearer [redacted]'))
     .replace(/eyJ[\w-]{6,}\.[\w-]{4,}(?:\.[\w-]+)?/g, '[redacted]')
     .replace(/[A-Za-z0-9_+=-]{40,}/g, '[redacted]')
     .replace(/[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b/g, '[email]');
