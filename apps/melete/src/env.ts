@@ -254,23 +254,29 @@ const variables = z.object({
     .string()
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/)
     .default('melete_work'),
-  MELETE_RUNTIME_START_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  MELETE_RUNTIME_START_TIMEOUT_MS: unsetWhenBlank(
+    z.coerce.number().int().positive().default(120_000),
+  ),
   /** Stdio MCP servers run in containers beside the attempts; these are the runners' images. */
-  MELETE_MCP_NODE_IMAGE: z
-    .string()
-    .min(1)
-    .default(
-      'node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85',
-    ),
-  MELETE_MCP_PYTHON_IMAGE: z
-    .string()
-    .min(1)
-    .default(
-      'ghcr.io/astral-sh/uv:0.12.17-python3.12-alpine@sha256:4c7eb663267624fa1f5b0316b3a51b427578bcb1d93459e1b6dfb5e9875beb0f',
-    ),
+  MELETE_MCP_NODE_IMAGE: unsetWhenBlank(
+    z
+      .string()
+      .min(1)
+      .default(
+        'node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85',
+      ),
+  ),
+  MELETE_MCP_PYTHON_IMAGE: unsetWhenBlank(
+    z
+      .string()
+      .min(1)
+      .default(
+        'ghcr.io/astral-sh/uv:0.12.17-python3.12-alpine@sha256:4c7eb663267624fa1f5b0316b3a51b427578bcb1d93459e1b6dfb5e9875beb0f',
+      ),
+  ),
   /** The port a server with named destinations uses as its proxy, inside the service container. */
-  MELETE_MCP_EGRESS_PORT: z.coerce.number().int().min(1).max(65535).default(8789),
-  MELETE_MCP_IDLE_MS: z.coerce.number().int().positive().default(600_000),
+  MELETE_MCP_EGRESS_PORT: unsetWhenBlank(z.coerce.number().int().min(1).max(65535).default(8789)),
+  MELETE_MCP_IDLE_MS: unsetWhenBlank(z.coerce.number().int().positive().default(600_000)),
   /** Browser credentials and endpoint are service-owned; neither is sent to the runtime cell. */
   MELETE_BROWSER_URL: z.url().optional(),
   MELETE_BROWSER_SPACE: z
@@ -323,7 +329,7 @@ const variables = z.object({
    * engine names none by default, so this is the usual ceiling on one reply.
    */
   MELETE_DEFAULT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
-  MELETE_SPEECH_MODEL: z.string().optional(),
+  MELETE_SPEECH_MODEL: unsetWhenBlank(z.string().optional()),
   /**
    * Automatic memory reads what a person says in chat with this model, through
    * the model gateway. Unset, it uses the default provider and model; `off`
@@ -426,6 +432,41 @@ const variables = z.object({
       .default('false')
       .transform((v) => v === 'true'),
   ),
+  /**
+   * The sandbox every space gets without anyone installing one. `docker` runs
+   * one container per agent on this service's own Docker engine, reached through
+   * MELETE_DOCKER_SOCKET; it needs MELETE_SANDBOX_PROJECT. Left unset, a space
+   * has a sandbox only when a person installs a connection for one.
+   */
+  MELETE_SANDBOX_PROVIDER: unsetWhenBlank(z.enum(['docker']).optional()),
+  /** The image a docker sandbox starts from; it must already be on the engine. */
+  MELETE_SANDBOX_DOCKER_IMAGE: unsetWhenBlank(
+    z.string().min(1).max(200).default('melete-sandbox:local'),
+  ),
+  MELETE_SANDBOX_DOCKER_CPUS: unsetWhenBlank(z.coerce.number().positive().max(64).default(1)),
+  MELETE_SANDBOX_DOCKER_MEMORY_MB: unsetWhenBlank(
+    z.coerce.number().int().min(512).max(262_144).default(2048),
+  ),
+  MELETE_SANDBOX_DOCKER_PIDS: unsetWhenBlank(
+    z.coerce.number().int().min(64).max(65_536).default(512),
+  ),
+  /** What the agent's two volumes may hold together, and the largest one file may grow. */
+  MELETE_SANDBOX_DOCKER_DISK_MB: unsetWhenBlank(
+    z.coerce.number().int().min(256).max(1_048_576).default(4096),
+  ),
+  /**
+   * What the default sandbox may reach: `open` is public HTTPS sites through the
+   * service's egress guard, `deny_all` is nothing at all.
+   */
+  MELETE_SANDBOX_DOCKER_EGRESS: unsetWhenBlank(z.enum(['open', 'deny_all']).default('open')),
+  /** A container nothing has used for this long is stopped; it starts again when it is used. */
+  MELETE_SANDBOX_DOCKER_IDLE_SECONDS: unsetWhenBlank(
+    z.coerce.number().int().min(60).max(86_400).default(900),
+  ),
+  /** The port the egress guard listens on inside the service's container. */
+  MELETE_SANDBOX_EGRESS_PORT: unsetWhenBlank(
+    z.coerce.number().int().min(1024).max(65_535).default(8791),
+  ),
 });
 
 /**
@@ -455,6 +496,12 @@ export const envSchema = variables.transform((value, context) => {
           : 'MICROSOFT_OAUTH_CLIENT_ID',
       ],
       message: 'set both MICROSOFT_OAUTH_CLIENT_ID and MICROSOFT_OAUTH_CLIENT_SECRET, or neither',
+    });
+  if (value.MELETE_SANDBOX_PROVIDER && !value.MELETE_SANDBOX_PROJECT)
+    context.addIssue({
+      code: 'custom',
+      path: ['MELETE_SANDBOX_PROJECT'],
+      message: `MELETE_SANDBOX_PROVIDER=${value.MELETE_SANDBOX_PROVIDER} needs MELETE_SANDBOX_PROJECT, the label that says which sandboxes are this installation's`,
     });
   if (Boolean(value.GOOGLE_OAUTH_CLIENT_ID) !== Boolean(value.GOOGLE_OAUTH_CLIENT_SECRET))
     context.addIssue({

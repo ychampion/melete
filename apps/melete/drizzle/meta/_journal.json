@@ -433,6 +433,13 @@
       "idx": 61,
       "version": "7",
       "when": 1789232400041,
+      "tag": "0061_paired_devices",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1789232400042,
       "tag": "0062_account_recovery",
       "breakpoints": true
     }

@@ -244,6 +244,7 @@ describe('the check catches the mistakes that would matter', () => {
       'postgres',
       'runtime',
       'runtime-image',
+      'sandbox-image',
       'web',
     ]);
     for (const [, service] of services)

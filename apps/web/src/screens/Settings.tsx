@@ -1,7 +1,8 @@
 /**
  * Settings: the only place the technology shows. Memory is what Melete
  * believes about the person, grouped, sourced and correctable, with its
- * timeline and the lessons and skills it learned; then connections with their state and what each may do, and standing rules
+ * timeline and the lessons and skills it learned; then connections with their
+ * state and what each may do, the person's own computers, and standing rules
  * with their limits and revoke.
  */
 import { type ReactNode, useState } from 'react';
@@ -23,6 +24,7 @@ import { AccountSettings } from './AccountSettings.tsx';
 import { ApprovalsTab } from './Approvals.tsx';
 import { MemoryPanel } from './Beliefs.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
+import { DevicesTab } from './Devices.tsx';
 import { NotificationsTab } from './Notifications.tsx';
 import { PrivacyTab } from './Privacy.tsx';
 
@@ -252,6 +254,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
   const model = useLoad(() => models.settings(), []);
   const current =
     tab === 'connections' ||
+    tab === 'devices' ||
     tab === 'rules' ||
     tab === 'notifications' ||
     tab === 'feedback' ||
@@ -261,6 +264,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
     tab === 'account'
       ? tab
       : 'memory';
+  const [deviceCount, setDeviceCount] = useState<number | undefined>(undefined);
   const list = connections.data?.connections ?? [];
   const byId = new Map(list.map((c) => [c.id, c]));
 
@@ -313,6 +317,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                 ? undefined
                 : list.filter((c) => c.status === 'connected').length,
             },
+            { value: 'devices', label: 'Devices', count: deviceCount },
             { value: 'approvals', label: 'Approvals' },
             {
               value: 'rules',
@@ -332,6 +337,8 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           <ApprovalsTab />
         ) : current === 'notifications' ? (
           <NotificationsTab />
+        ) : current === 'devices' ? (
+          <DevicesTab onCount={setDeviceCount} />
         ) : current === 'feedback' ? (
           <FeedbackTab selected={detail} />
         ) : current === 'models' ? (

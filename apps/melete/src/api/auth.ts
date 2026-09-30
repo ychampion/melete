@@ -277,6 +277,10 @@ export function mountAuth(
     // A body is counted as it arrives, so one sent without a length, or with a
     // false one, is dropped at the limit rather than read and parsed whole.
     if (publicRoute) return publicBody(c, next);
+    // A paired computer's companion holds no session. Every `/device/` route
+    // checks the computer's own token and sets its own body limit; see
+    // devices/routes.ts.
+    if (c.req.path.startsWith('/device/')) return next();
 
     const token = getCookie(c, SESSION_COOKIE);
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {

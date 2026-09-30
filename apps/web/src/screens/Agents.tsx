@@ -3,7 +3,7 @@
  * templates, and an editor with Look, Behaviour and Access, all on the
  * contract's agent record. The nine face states derive from turn status.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { logoFor } from '../chat/parts.tsx';
 import {
   AgentFace,
@@ -32,6 +32,7 @@ import { lookOf, useApp, useLoad } from '../experience/hooks.ts';
 import type { Agent, AgentInput, AgentTemplate, Connection } from '../experience/types.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
+import { draftKey, followSaved } from './agent-draft.ts';
 
 const ROLES = [
   'Concierge',
@@ -223,7 +224,14 @@ function AgentEditor({
   const [tab, setTab] = useState<'look' | 'behaviour' | 'access'>('look');
   const [state, setState] = useState<(typeof FACE_STATES)[number][0]>('idle');
   const [busy, setBusy] = useState(false);
-  useEffect(() => setDraft(initial), [initial]);
+  // A background refresh hands a new copy of the same agent; only a real change
+  // to the saved agent moves the draft, and never over a field being edited.
+  const saved = useRef(initial);
+  useEffect(() => {
+    const previous = saved.current;
+    saved.current = initial;
+    if (previous !== initial) setDraft((current) => followSaved(current, previous, initial));
+  }, [initial]);
   const look = lookOf(draft);
 
   const save = () => {
@@ -610,11 +618,18 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
 
   const current =
     selected === 'new' ? null : (agents.find((agent) => agent.id === selected) ?? null);
-  const initial: AgentInput | null =
-    selected === 'new' ? { ...blankAgent(), ...(picked ?? {}) } : current ? inputOf(current) : null;
+  const key = draftKey(
+    selected,
+    selected === 'new' ? { ...blankAgent(), ...(picked ?? {}) } : current ? inputOf(current) : null,
+  );
+  const initial = useMemo(
+    () => (key === null ? null : (JSON.parse(key) as [string, AgentInput])[1]),
+    [key],
+  );
 
   const panel = initial ? (
     <AgentEditor
+      key={current?.id ?? 'new'}
       agentId={current?.id ?? null}
       initial={initial}
       connections={connections.data?.connections.filter((c) => c.status === 'connected') ?? []}
