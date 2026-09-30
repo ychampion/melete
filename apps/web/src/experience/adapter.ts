@@ -52,6 +52,9 @@ import type {
   Task,
   TaskInput,
   Turn,
+  VoiceSession,
+  VoiceStatus,
+  VoiceTranscription,
 } from './types.ts';
 import { isNotAvailable } from './types.ts';
 
@@ -376,7 +379,62 @@ export const adapter = {
     ),
   search: (q: string) =>
     guard<{ results: SearchResult[] }>(() => api.GET('/search', { params: { query: { q } } })),
+
+  /* ---------- voice: push-to-talk and voice mode ---------- */
+  /** Which voice features the installation has. The mic and voice mode appear only when true. */
+  voice: () => guard<VoiceStatus>(() => api.GET('/voice')),
+  /** A recorded clip in, the words out. Nothing is sent to the conversation. */
+  transcribe: (clip: Blob, durationMs: number) =>
+    binary(
+      `/voice/transcriptions?duration_ms=${Math.max(1, Math.round(durationMs))}`,
+      { method: 'POST', headers: { 'Content-Type': clip.type || 'audio/webm' }, body: clip },
+      async (response) => (await response.json()) as VoiceTranscription,
+    ),
+  /** A realtime transcription address with a single-use token, for voice mode. */
+  voiceSession: (id: string) =>
+    guard<VoiceSession>(() => api.POST('/conversations/{id}/voice/session', path(id))),
+  /** Part of a reply, read aloud. The audio arrives whole and is played from memory. */
+  speak: (id: string, text: string, signal?: AbortSignal) =>
+    binary(
+      `/conversations/${encodeURIComponent(id)}/voice/speech`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+        ...(signal ? { signal } : {}),
+      },
+      (response) => response.blob(),
+    ),
 };
+
+/**
+ * A request whose body or answer is not JSON: a recording going up, or speech
+ * coming down. It settles to a Result like every other call.
+ */
+async function binary<T>(
+  route: string,
+  init: RequestInit,
+  read: (response: Response) => Promise<T>,
+): Promise<Result<T>> {
+  try {
+    const response = await client.options.fetch(`${client.options.baseUrl}${route}`, {
+      ...init,
+      headers: { ...client.options.headers, ...(init.headers as Record<string, string>) },
+      credentials: client.options.credentials,
+    });
+    if (!response.ok)
+      return {
+        data: null,
+        error: errorMessage(await response.json().catch(() => null), OFFLINE),
+        unavailable: null,
+        unauthorized: response.status === 401,
+      };
+    return { data: await read(response), error: null, unavailable: null };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    return { data: null, error: OFFLINE, unavailable: null };
+  }
+}
 
 export type Adapter = typeof adapter;
 

@@ -157,3 +157,9 @@ export type LedgerDetail = Ok<paths['/ledger/{id}'], 'get'>;
 export type LedgerMessage = NonNullable<LedgerDetail['message']>;
 export type ScanStarted = Ok<paths['/spaces/{spaceId}/companies/scan'], 'post'>;
 export type ScanProgress = Ok<paths['/spaces/{spaceId}/companies/scan/{scanId}'], 'get'>;
+
+/* ---------- voice ---------- */
+
+export type VoiceStatus = Ok<paths['/voice'], 'get'>;
+export type VoiceTranscription = Ok<paths['/voice/transcriptions'], 'post'>;
+export type VoiceSession = Ok<paths['/conversations/{id}/voice/session'], 'post'>;
