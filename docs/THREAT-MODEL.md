@@ -368,6 +368,47 @@ Accounts share one service process, one database role and one master key;
 isolation between them is an application check, not an operating-system or
 database boundary.
 
+## Attacker 8: anyone who can reach the text-message webhook
+
+A connected Twilio number sends its incoming texts to
+`<MELETE_PUBLIC_URL>/api/sms/twilio/<connection>`, a route that takes no
+session because Twilio has none. Anyone on the internet can post to it. The aims
+are to put words in the owner's mouth, to have Melete act on a stranger's text,
+or to make it text someone.
+
+Nothing in a request is believed before its `X-Twilio-Signature` checks out:
+Twilio's HMAC-SHA1 over the exact public address and every posted parameter,
+keyed with the connection's own sealed auth token, compared in constant time.
+The request must also name the connection's account SID and number. A forged
+or altered request, or one signed for another connection, is refused with the
+same 403 whichever check failed, and nothing is stored. The body is limited to
+16 KB like every other public route. Twilio's retry of a message is recognised
+by its `MessageSid` and handled once.
+
+A signed text is Twilio's word for what a phone sent. Only a text whose `From`
+is one of the numbers the owner gave as their own becomes a message in their
+conversation. Every other text is kept for the owner to read and never reaches
+a turn, so a stranger's text is data, never instructions, and nothing is texted
+back to a stranger. A reply goes only to the owner's number that asked. Sending
+to anyone else is `sms.send`, which waits for the owner's approval of the exact
+number and text in the app; nothing can be approved by text.
+
+The tests are `a text whose signature does not match is refused and kept
+nowhere`, `a text from an unknown number is kept for the person to read, never
+as instructions` and `the approval binds the number and the exact text; a
+changed one needs its own` in
+[sms.test.ts](../apps/melete/test/integration/sms.test.ts), and `a valid
+signature passes and anything changed is refused` in `twilio.test.ts`.
+
+What remains: the owner's numbers are trusted as far as the phone network
+reports them. Someone who can make a text arrive at Twilio from the owner's
+number, by spoofing it or by holding the owner's phone or SIM, can talk to
+Melete as the owner, though every external effect still waits for approval in
+the app. The auth token is both Twilio's credential and the webhook key, so
+whoever holds it can forge texts as well as send them; rotating it in Twilio
+means reconnecting. Anyone can make texts arrive from other numbers; they are
+kept, up to 1,600 characters each, and cost Twilio's inbound price.
+
 ## Credentials, host and storage
 
 Connector secrets have tested sealing and scope checks: `stores randomized

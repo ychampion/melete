@@ -124,7 +124,7 @@ The same response carries `catalog`: everything a person can connect here, in
 the order a connector screen shows it. Account sign-ins come first (Google, and
 Microsoft), then remote MCP servers known to sign in with OAuth (Notion, Linear,
 Atlassian, Sentry and Stripe), then one entry for each form in `kinds`. Each
-entry says what it covers (`mail`, `calendar`, `tools` or `execution`) and how it
+entry says what it covers (`mail`, `calendar`, `tools`, `execution` or `texts`) and how it
 connects:
 
 - `sign_in` names the provider and the route to `POST` to start
@@ -136,12 +136,16 @@ connects:
 `available` is false when this installation cannot offer an entry yet, and
 `unavailable_reason` then says what the operator has to set: a provider's OAuth
 client, or a `MELETE_PUBLIC_URL` to return the browser to.
+An entry that is available but offers less than it could here carries
+`limited_reason` instead: text messages without a public address can be sent
+but not received.
 
 | Entry | Kind | What the person types |
 | --- | --- | --- |
 | Gmail, iCloud Mail, Fastmail, Yahoo Mail | `mail` | email address, app password |
 | iCloud Calendar, Fastmail Calendar | `caldav` | email address, app password |
 | Google Calendar (read only) | `ics` | the calendar's secret address in iCal format |
+| Text messages (Twilio) | `sms` | account SID, auth token, Twilio number, your phone numbers |
 | Other mail, other calendar, calendar feed, MCP server | each kind | every field the kind takes |
 
 Each provider entry's password field says where that provider issues app
@@ -154,6 +158,7 @@ passwords. `POST /connections` takes exactly one configuration block:
 | Calendar feed (ICS address) | `caldav` | `ics`: one HTTPS or `webcal` address | the address itself | `calendar.list` |
 | MCP over HTTP | `mcp` | `mcp`: see [Installed MCP servers](#installed-mcp-servers) | optional token fields | declared in the block |
 | MCP from a package or image | `mcp` | `mcp_stdio`: see [the advanced path](#the-advanced-path) | `mcp_stdio.secret_env` | declared in the block |
+| Text messages | `twilio` | `sms`: `allowed_numbers`, the person's own phones in E.164; see [Text messages](#text-messages) | `credentials.account_sid`, `credentials.auth_token`, `credentials.from_number` | `sms.send` |
 
 `scopes` may narrow the grants of the first three kinds; left empty it means all
 of them, and a scope outside the kind is refused. `space_id` may be left out, in
@@ -339,6 +344,63 @@ ETags`); lost acknowledgements remain uncertain until verified
 (`a dropped acknowledgement remains unknown until exact UID and content
 verification`). These names establish the client's behaviour against a local
 CalDAV server.
+
+### Text messages
+
+The `sms` kind (provider `twilio`) connects one Twilio number through
+[Programmable Messaging](https://www.twilio.com/docs/messaging/api/message-resource).
+The form asks for the account SID, the auth token, the Twilio number, and the
+person's own phone numbers. The first three are sealed together and never
+returned; the row keeps only the person's numbers. Installing proves the
+credential by finding the number on the account (`IncomingPhoneNumbers`), so a
+wrong token or a number the account does not have is refused before anything
+is stored.
+
+**Texting Melete.** With an `https://` `MELETE_PUBLIC_URL`, installing also
+sets the number's incoming-message address (`SmsUrl`, `POST`) to
+`<MELETE_PUBLIC_URL>/api/sms/twilio/<connection>`, replacing any address the
+number had; nobody pastes a webhook into the Twilio Console. That route needs
+no session. A request is believed only when its `X-Twilio-Signature` is
+Twilio's HMAC-SHA1 of that exact address and the posted parameters under the
+connection's auth token ([Twilio's algorithm](https://www.twilio.com/docs/usage/security)),
+and it names the connection's own account SID and number. A text from one of
+the person's numbers becomes a message in a conversation titled "Texts", taken
+through the same submission path as a message typed in the app, with the
+assistant the person last talked to. Once that turn finishes, its answer goes
+back by text to the number that asked: at most three texts, each within ten
+segments (1,530 GSM characters, or 670 when the text needs Unicode), cut at a
+paragraph, line, sentence or word, and the last says when the rest is only in
+the app. A turn that needs a decision says so by text and waits for the person
+in the app: nothing is approved by text. A message Twilio delivers twice
+(`MessageSid`) is handled once, and each turn is answered once.
+
+A text from any other number is kept for the person to read, at
+`GET /connections/{id}/texts`, and goes nowhere else: it never becomes a turn
+and nothing is texted back.
+
+Without an `https://` public address, incoming texts are off and texts can
+still be sent. The catalog entry stays `available` and carries
+`limited_reason`, which says to set `MELETE_PUBLIC_URL`.
+
+**Texting someone else.** `sms.send` takes one E.164 number (`to`) and one text
+of up to 1,600 characters (`body`). It is `write_external` and always asks
+first: the approval binds the canonical payload's hash, so a changed number or
+a changed text is a new action that needs its own approval. The broker
+dispatches it once, with the action id as its idempotency key; Twilio's
+Messages API documents no idempotency key of its own, so a send whose answer
+is lost is `unknown` and is never repeated. `verify` then lists messages from
+the number to that recipient and accepts only one with the exact text, created
+after the dispatch.
+
+Tests: `matches Twilio's documented example` and `a valid signature passes and
+anything changed is refused` in `twilio.test.ts`; the send, refusal, verify and
+splitting cases in `sms.test.ts`; and, through the API against a stub Twilio,
+[sms.test.ts](../apps/melete/test/integration/sms.test.ts): `a text from an
+unknown number is kept for the person to read, never as instructions`, `the
+answer goes back by text once, split to fit, to the number that asked`, `the
+approval binds the number and the exact text; a changed one needs its own` and
+`an approved text is dispatched once, with the action as its idempotency key`.
+No test calls Twilio.
 
 ### Knowledge and memory
 
