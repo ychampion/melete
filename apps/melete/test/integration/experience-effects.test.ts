@@ -577,27 +577,6 @@ databaseTest(
 );
 
 databaseTest(
-  'identical requests deduplicate within a turn and remain distinct across turns',
-  async () => {
-    const s = await setup();
-    const request = {
-      connection_id: s.connectionId,
-      kind: 'email.draft',
-      payload: { to: 'alex@example.test', subject: 'Dinner', body: 'At seven?' },
-      client_ref: 'stable-plugin-reference',
-    };
-    await s.sql`update job set current_turn_id = 'first-turn' where id = ${s.claims.job_id}`;
-    const first = await s.broker.propose(s.claims, request);
-    expect((await s.broker.propose(s.claims, request)).action_id).toBe(first.action_id);
-    await s.sql`update job set current_turn_id = 'second-turn' where id = ${s.claims.job_id}`;
-    const second = await s.broker.propose(s.claims, request);
-    expect(second.action_id).not.toBe(first.action_id);
-    expect((await s.broker.propose(s.claims, request)).action_id).toBe(second.action_id);
-    expect(s.calls).toHaveLength(2);
-  },
-);
-
-databaseTest(
   'stop withdraws a waiting permission; a later allow says so and a new request still works',
   async () => {
     if (!fixture) throw new Error('Postgres unavailable');
@@ -675,5 +654,26 @@ databaseTest(
     await s.broker.admit(claims, again.action_id, again.payload_hash);
     await s.broker.dispatch(again.action_id);
     expect(s.calls.map((call) => call.kind)).toEqual(['calendar.create']);
+  },
+);
+
+databaseTest(
+  'identical requests deduplicate within a turn and remain distinct across turns',
+  async () => {
+    const s = await setup();
+    const request = {
+      connection_id: s.connectionId,
+      kind: 'email.draft',
+      payload: { to: 'alex@example.test', subject: 'Dinner', body: 'At seven?' },
+      client_ref: 'stable-plugin-reference',
+    };
+    await s.sql`update job set current_turn_id = 'first-turn' where id = ${s.claims.job_id}`;
+    const first = await s.broker.propose(s.claims, request);
+    expect((await s.broker.propose(s.claims, request)).action_id).toBe(first.action_id);
+    await s.sql`update job set current_turn_id = 'second-turn' where id = ${s.claims.job_id}`;
+    const second = await s.broker.propose(s.claims, request);
+    expect(second.action_id).not.toBe(first.action_id);
+    expect((await s.broker.propose(s.claims, request)).action_id).toBe(second.action_id);
+    expect(s.calls).toHaveLength(2);
   },
 );
