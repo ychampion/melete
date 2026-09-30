@@ -94,7 +94,7 @@ function PasswordForm() {
           toast({
             kind: 'ok',
             title: 'Password changed',
-            sub: 'Other devices were signed out. This one stays signed in.',
+            sub: 'Other devices and connected apps were signed out. This one stays signed in.',
           });
         });
       }}

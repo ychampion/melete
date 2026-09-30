@@ -46,7 +46,7 @@ function ChooseNew({ token }: { token: string }) {
           Your password is changed
         </span>
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-          Every device was signed out. Sign in with the new password.
+          Every device and connected app was signed out. Sign in with the new password.
         </span>
         <Button icon="chevronRight" onClick={() => navigate('/welcome')}>
           Sign in

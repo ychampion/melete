@@ -57,7 +57,9 @@ export class ExperienceSignIn {
   /**
    * Mails a one-time password reset link to the owner from their own mailbox.
    * Without one, the answer says so; an unrelated address gets the same
-   * accepted answer as the owner's, and no mail.
+   * accepted answer as the owner's, and no mail. The link is made and mailed
+   * after the answer, so how long the answer takes says nothing about whose
+   * address was asked for.
    */
   async requestPasswordReset(email: string) {
     const mailbox = await this.ownMailbox();
@@ -65,8 +67,17 @@ export class ExperienceSignIn {
       return unavailable(
         'This Melete cannot send you email yet. Ask the person who runs it to print you a reset link.',
       );
+    if (String(mailbox.owner.email).toLowerCase() === email.toLowerCase())
+      void this.mailPasswordReset(mailbox).catch((error) =>
+        console.error('password reset mail', String(error)),
+      );
+    return { status: 'ok' as const };
+  }
+
+  private async mailPasswordReset(
+    mailbox: Extract<Awaited<ReturnType<ExperienceSignIn['ownMailbox']>>, { ok: true }>,
+  ) {
     const { owner, space, connector } = mailbox;
-    if (String(owner.email).toLowerCase() !== email.toLowerCase()) return { status: 'ok' as const };
     const issued = await this.sql.begin(async (tx) => {
       await tx`select id from owner where id = ${owner.id} for update`;
       const [count] = await tx`select count(*)::int as n, max(created_at) as latest
@@ -79,20 +90,20 @@ export class ExperienceSignIn {
         return null;
       return issuePasswordReset(tx, String(owner.id), 'email');
     });
-    if (issued) {
-      try {
-        await connector.sendPasswordResetLink(
-          String(space.id),
-          String(owner.email),
-          resetUrl(mailbox.url, issued.token),
-          RESET_MINUTES.email,
-        );
-      } catch {
-        await this.sql`update password_reset set used_at = now()
-          where principal_id = ${owner.id} and used_at is null`;
-      }
+    if (!issued) return;
+    try {
+      await connector.sendPasswordResetLink(
+        String(space.id),
+        String(owner.email),
+        resetUrl(mailbox.url, issued.token),
+        RESET_MINUTES.email,
+      );
+    } catch (error) {
+      // Only the link that did not go out stops working.
+      await this.sql`update password_reset set used_at = now()
+        where token_hash = ${hash(issued.token)} and used_at is null`;
+      throw error;
     }
-    return { status: 'ok' as const };
   }
 
   async request(email: string) {

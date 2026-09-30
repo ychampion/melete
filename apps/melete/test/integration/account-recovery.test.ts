@@ -1,7 +1,11 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { describeReset, operatorReset } from '../../src/account/reset-password.ts';
+import { EmailConnector } from '../../src/connectors/email.ts';
+import type { MailTransport, OutgoingMail } from '../../src/connectors/mail-transport.ts';
+import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
+import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
@@ -23,6 +27,65 @@ function app() {
     checkDatabase: async () => 'ok',
   });
 }
+
+/**
+ * An app whose owner has their own mailbox connected, so reset links go out by
+ * email. `send` stands in for the mail server.
+ */
+async function withMailbox(send: (message: OutgoingMail) => Promise<void>) {
+  const [space] = await database().sql`select s.id from space s
+    join principal p on p.id = s.owner_principal_id where p.email = ${email} limit 1`;
+  if (!space) throw new Error('no personal space');
+  const connectionId = newId('conn');
+  await database().sql`insert into connection (id, space_id, provider, label, scopes)
+    values (${connectionId}, ${space.id}, 'imap', 'Mail', '["email.send"]'::jsonb)`;
+  const transport: MailTransport = {
+    search: async () => [],
+    read: async () => null,
+    send: async (message) => {
+      await send(message);
+      return { messageId: message.messageId, sentCopy: true };
+    },
+    findSent: async () => false,
+    health: async () => {},
+  };
+  const connector = new EmailConnector(
+    {
+      id: connectionId,
+      spaceId: String(space.id),
+      secretRef: 'fixture',
+      username: email,
+      from: email,
+      imap: { host: 'mail.example.test', port: 993, secure: true },
+      smtp: { host: 'mail.example.test', port: 465, secure: true },
+    },
+    { withSecret: async (_id, _space, use) => use('fixture-password') },
+    () => transport,
+  );
+  return createApp({
+    env: loadEnv({ NODE_ENV: 'test', MELETE_PUBLIC_URL: 'https://melete.test' }),
+    db: database().db,
+    sql: database().sql,
+    registry: new ConnectorRegistry().register(connectionId, connector),
+    checkDatabase: async () => 'ok',
+  });
+}
+
+const tokenIn = (message: OutgoingMail | undefined) => {
+  const url = message?.body.match(/https:\/\/\S+/)?.[0];
+  const query = url ? new URL(url).hash.split('?')[1] : undefined;
+  const token = query ? new URLSearchParams(query).get('token') : null;
+  if (!token) throw new Error('No reset link in the mail');
+  return token;
+};
+
+const until = async (check: () => boolean | Promise<boolean>) => {
+  for (let tries = 0; tries < 100; tries++) {
+    if (await check()) return;
+    await Bun.sleep(20);
+  }
+  throw new Error('Timed out waiting');
+};
 
 const json = (body: object, cookie?: string): RequestInit => ({
   method: 'POST',
@@ -170,18 +233,28 @@ describeWithDb('changing and resetting a password', () => {
     expect(signIns.filter((status) => status === 200)).toHaveLength(1);
   });
 
-  test('a reset also ends what connected apps were granted', async () => {
-    await signedIn();
+  async function connectApp() {
     const [owner] = await database().sql`select p.id, s.id as space_id from principal p
       join space s on s.owner_principal_id = p.id where p.email = ${email} limit 1`;
     if (!owner) throw new Error('no owner');
     await database().sql`insert into mcp_client (id, name, redirect_uris)
-      values ('mcp_client_test', 'Test app', ${JSON.stringify(['https://app.example.test/cb'])}::jsonb)`;
+      values ('mcp_client_test', 'Test app', ${JSON.stringify(['https://app.example.test/cb'])}::jsonb)
+      on conflict (id) do nothing`;
     for (const kind of ['access', 'refresh'])
       await database().sql`insert into mcp_token (token_hash, kind, family, client_id, principal_id,
         space_id, resource, scope, expires_at)
         values (${`hash-${kind}`}, ${kind}, 'family-1', 'mcp_client_test', ${owner.id},
         ${owner.space_id}, 'https://melete.test/mcp', 'melete', now() + interval '1 day')`;
+  }
+  const liveAppTokens = async () =>
+    Number(
+      (await database().sql`select count(*)::int as n from mcp_token where revoked_at is null`)[0]
+        ?.n,
+    );
+
+  test('a reset also ends what connected apps were granted', async () => {
+    await signedIn();
+    await connectApp();
     const issued = await operatorReset(database().sql, email, undefined);
     if (!issued.ok) throw new Error('reset was not issued');
     const used = await app().request(
@@ -189,9 +262,80 @@ describeWithDb('changing and resetting a password', () => {
       json({ token: issued.code, new_password: 'reset-password-6' }),
     );
     expect(used.status).toBe(200);
-    const live = await database()
-      .sql`select count(*)::int as n from mcp_token where revoked_at is null`;
-    expect(Number(live[0]?.n)).toBe(0);
+    expect(await liveAppTokens()).toBe(0);
+  });
+
+  test('changing the password also ends what connected apps were granted', async () => {
+    const { api, here } = await signedIn();
+    await connectApp();
+    expect(await liveAppTokens()).toBe(2);
+    const changed = await api.request(
+      '/account/password',
+      json({ current_password: password, new_password: 'second-password-2' }, here),
+    );
+    expect(changed.status).toBe(200);
+    expect(await liveAppTokens()).toBe(0);
+  });
+
+  test('asking for an email link answers before the mail goes out', async () => {
+    await signedIn();
+    const sent: OutgoingMail[] = [];
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const api = await withMailbox(async (message) => {
+      await gate;
+      sent.push(message);
+    });
+    // The owner's address and a stranger's are answered the same way, without
+    // waiting on the mail server.
+    for (const address of [email, 'stranger@example.test']) {
+      const answer = await Promise.race([
+        api.request('/password-reset', json({ email: address })),
+        Bun.sleep(3_000).then(() => 'waited on the mail server' as const),
+      ]);
+      if (typeof answer === 'string') throw new Error(answer);
+      expect(await answer.json()).toEqual({ status: 'ok' });
+    }
+    expect(sent).toHaveLength(0);
+    release();
+    await until(() => sent.length === 1);
+    expect(sent[0]?.to).toEqual([email]);
+    const used = await api.request(
+      '/password-reset/consume',
+      json({ token: tokenIn(sent[0]), new_password: 'mailed-password-8' }),
+    );
+    expect(used.status).toBe(200);
+  });
+
+  test('an email link request does not end a printed link, even when the mail fails', async () => {
+    await signedIn();
+    const printed = await operatorReset(database().sql, email, undefined);
+    if (!printed.ok) throw new Error('reset was not issued');
+    let attempts = 0;
+    const api = await withMailbox(async () => {
+      attempts++;
+      throw new Error('mail server is down');
+    });
+    const asked = await api.request('/password-reset', json({ email }));
+    expect(await asked.json()).toEqual({ status: 'ok' });
+    await until(() => attempts > 0);
+    // The failed mail's own link stops working; the printed one still does.
+    await until(
+      async () =>
+        Number(
+          (
+            await database().sql`select count(*)::int as n from password_reset
+              where via = 'email' and used_at is null`
+          )[0]?.n,
+        ) === 0,
+    );
+    const used = await api.request(
+      '/password-reset/consume',
+      json({ token: printed.code, new_password: 'printed-password-9' }),
+    );
+    expect(used.status).toBe(200);
   });
 
   test('an expired link is refused and guessing links is throttled', async () => {

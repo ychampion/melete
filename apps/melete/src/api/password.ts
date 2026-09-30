@@ -21,8 +21,10 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 const hashPassword = (password: string) => Bun.password.hash(password, { algorithm: 'argon2id' });
 
 /**
- * Makes a one-time reset token for an account. Any earlier token that was not
- * used stops working, so only the newest link can set a password.
+ * Makes a one-time reset token for an account. An earlier unused token of the
+ * same kind stops working, so only the newest link of each kind can set a
+ * password. The kinds stay apart so that anyone asking for an email link cannot
+ * end a link the operator printed on the host.
  */
 export async function issuePasswordReset(
   tx: Sql | TransactionSql,
@@ -32,7 +34,7 @@ export async function issuePasswordReset(
   const token = randomBytes(32).toString('base64url');
   const expiresAt = new Date(Date.now() + RESET_MINUTES[via] * 60_000);
   await tx`update password_reset set used_at = now()
-    where principal_id = ${principalId} and used_at is null`;
+    where principal_id = ${principalId} and via = ${via} and used_at is null`;
   await tx`insert into password_reset (token_hash, principal_id, via, expires_at)
     values (${digest(token)}, ${principalId}, ${via}, ${expiresAt.toISOString()})`;
   return { token, expiresAt };
@@ -47,7 +49,9 @@ export function resetUrl(publicUrl: string, token: string): string {
 
 /**
  * Sets an account's password and signs out its sessions, apart from the one
- * named in `keep`. Sign-in links still waiting for the account stop working.
+ * named in `keep`. Sign-in links still waiting for the account stop working,
+ * and so does what connected apps were granted: a new password is how someone
+ * shuts out whoever else had the account.
  */
 async function setPassword(
   tx: TransactionSql,
@@ -62,6 +66,8 @@ async function setPassword(
   await tx`delete from session where coalesce(principal_id, owner_id) = ${principalId}
     and token_hash is distinct from ${keep}`;
   await tx`update magic_link set used_at = now() where owner_id = ${principalId} and used_at is null`;
+  await tx`update mcp_token set revoked_at = now()
+    where principal_id = ${principalId} and revoked_at is null`;
 }
 
 /** Operator command and routes share this: an account by its sign-in address. */
@@ -151,10 +157,7 @@ export function mountPassword(
       if (!reset) return false;
       await tx`update password_reset set used_at = now() where token_hash = ${digest(input.token)}`;
       await setPassword(tx, String(reset.principal_id), input.new_password, null);
-      // A reset is how someone gets back in after losing the account, so what
-      // connected apps were granted ends with the sessions.
-      await tx`update mcp_token set revoked_at = now()
-        where principal_id = ${reset.principal_id} and revoked_at is null`;
+      // Once a password is set, no other reset link for the account is left open.
       await tx`update password_reset set used_at = now()
         where principal_id = ${reset.principal_id} and used_at is null`;
       return true;

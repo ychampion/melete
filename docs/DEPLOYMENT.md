@@ -615,9 +615,9 @@ have accounts.
 ## Forgotten passwords
 
 A signed-in person changes their password under Settings › Account. It asks for
-the current password, and every other session of that account is signed out.
-Wrong current passwords are limited per account with the same backoff as
-sign-in.
+the current password. Every other session of that account is signed out, and
+connected apps lose their access and have to be connected again. Wrong current
+passwords are limited per account with the same backoff as sign-in.
 
 Someone who has forgotten theirs chooses "Forgot your password?" on the sign-in
 page. When the owner's own mailbox is connected, the page can mail a reset link
@@ -632,9 +632,10 @@ bun run reset-password you@example.com
 
 The link uses `MELETE_PUBLIC_URL`; without it the command prints a code to paste
 on the reset page instead. A link or code works once, expires after 60 minutes,
-and printing a new one cancels the old. Choosing a new password signs the account
-out everywhere. Only a digest of each token is stored, and attempts to use one
-are limited per client address.
+and printing a new one cancels the old printed one; asking for a mailed link
+leaves a printed one working. Choosing a new password signs the account out
+everywhere, connected apps included. Only a digest of each token is stored, and
+attempts to use one are limited per client address.
 
 ## Providers
 

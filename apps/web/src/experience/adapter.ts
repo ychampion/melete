@@ -183,7 +183,7 @@ export const adapter = {
   signInChatGPT: () => guard<{ status: 'ok' }>(() => api.POST('/signin/chatgpt')),
   /** Ends the session; the next request needs a new sign-in. */
   signOut: () => guard<{ status: 'ok' }>(() => api.POST('/signout')),
-  /** Sets a new password; every other session is signed out. */
+  /** Sets a new password; every other session and connected app is signed out. */
   changePassword: (current_password: string, new_password: string) =>
     guard<{ status: 'ok' }>(() =>
       api.POST('/account/password', { body: { current_password, new_password } }),
