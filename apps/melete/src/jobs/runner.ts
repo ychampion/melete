@@ -52,6 +52,7 @@ import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
 import { FairScheduler } from './fair-scheduler.ts';
 import { requireCurrentAttempt } from './fence.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
+import { LIMIT_REACHED_NOTE } from './limits.ts';
 import { persistQuestions, resolveQuestions } from './questions.ts';
 import {
   ATTEMPT_QUEUES,
@@ -739,11 +740,18 @@ export class AttemptRunner {
         .update(experienceTurn)
         .set({
           status: turnStatus,
-          ...('summary' in outcome
-            ? { answer: outcome.summary }
-            : outcome.kind === 'waiting_for_input' && outcome.draft
-              ? { answer: outcome.draft }
-              : {}),
+          // A conversation turn that hit a limit keeps what it already said and
+          // ends with a plain sentence, not the name of the limit.
+          ...(row.kind === 'chat' && outcome.kind === 'budget_exhausted'
+            ? {
+                answer: sql`case when ${experienceTurn.answer} = '' then ${LIMIT_REACHED_NOTE}
+                  else ${experienceTurn.answer} || ${`\n\n${LIMIT_REACHED_NOTE}`} end`,
+              }
+            : 'summary' in outcome
+              ? { answer: outcome.summary }
+              : outcome.kind === 'waiting_for_input' && outcome.draft
+                ? { answer: outcome.draft }
+                : {}),
           finishedAt: new Date(),
         })
         .where(eq(experienceTurn.id, row.currentTurnId));
