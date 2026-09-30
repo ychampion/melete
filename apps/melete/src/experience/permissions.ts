@@ -8,6 +8,7 @@ import {
 } from '../broker/auto-review.ts';
 import { loadAction } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
+import { actionBecause } from '../memory/basis.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import { actionProjectionRow, type ExperienceEffects } from './effects.ts';
 import { explainHandles } from './evidence.ts';
@@ -86,6 +87,7 @@ export class ExperiencePermissions {
         !isAssistantCommand(row.experience_command_key),
       requestedAt: new Date(row.requested_at),
       review: await actionReviewView(this.sql, action.id),
+      because: await actionBecause(this.sql, spaceId, action.id),
     });
   }
 

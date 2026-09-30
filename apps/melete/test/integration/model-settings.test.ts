@@ -484,6 +484,13 @@ describeWithDb('the model, connected in the app', () => {
             usage: { prompt_tokens: 40, completion_tokens: 5, total_tokens: 45 },
           });
     };
+    // The reviewed action's job exists, so the privacy router can read its space.
+    await database()
+      .sql`insert into space (id, name, git_path) values ('sp_model_settings', 'Personal', 'test/sp_model_settings')
+        on conflict do nothing`;
+    await database()
+      .sql`insert into job (id, space_id, title, objective) values ('job_model_settings', 'sp_model_settings', 'Tasks', 'Rename a task')
+        on conflict do nothing`;
     const review = await configuredReviewGateway(
       api.env,
       new PrivacyRouter({ store: new PostgresPrivacyStore(database().sql) }),

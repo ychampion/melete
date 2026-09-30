@@ -233,6 +233,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
 export function failureCode(status: number, body: string, provider: number | null | undefined) {
   if (body.includes('memory_daily_budget')) return 'memory_daily_budget';
   if (/privacy_confirmation_required|privacy_scope_/.test(body)) return 'extraction_kept_private';
+  if (status === 504 && body.includes('request_aborted')) return 'extraction_gateway_timeout';
   if (status === 413 || /memory_call_too_large|input_context_exceeded/.test(body))
     return 'extraction_call_refused';
   if (typeof provider === 'number' && provider >= 400 && provider < 500 && provider !== 429)

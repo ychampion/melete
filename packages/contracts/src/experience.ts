@@ -1,5 +1,21 @@
 /** Outcome vocabulary for personal interfaces. Never pass an internal record through here. */
 import { z } from 'zod';
+import {
+  becauseLink,
+  beliefBlockList,
+  beliefExport,
+  beliefExportQuery,
+  beliefHistory,
+  beliefImport,
+  beliefImportResult,
+  beliefList,
+  memoryDigestResponse,
+  memoryRewindResponse,
+  memoryTimeline,
+  memoryTimelineQuery,
+  rewindPreview,
+  rewindTarget,
+} from './beliefs.ts';
 import { memoryKey } from './memory.ts';
 import { privacyOperations } from './privacy.ts';
 import { messageId } from './reactions.ts';
@@ -91,6 +107,8 @@ export const experienceReceipt = z.strictObject({
   undo: z.strictObject({ handle: id, valid_until: date }).optional(),
   /** Present when nobody was asked because auto-review approved it. */
   review: actionReview.optional(),
+  /** The beliefs or rule the action rested on, recorded when it was proposed. */
+  because: z.array(becauseLink).max(20).optional(),
 });
 export type ExperienceReceipt = z.infer<typeof experienceReceipt>;
 export const experienceDraft = z.strictObject({
@@ -163,6 +181,8 @@ export const permissionCard = z.strictObject({
   review: actionReview.optional(),
   /** When permission was asked for; the queue is oldest first. */
   created_at: date,
+  /** The beliefs the action rested on, recorded when it was proposed. */
+  because: z.array(becauseLink).max(20).optional(),
 });
 export type PermissionCard = z.infer<typeof permissionCard>;
 
@@ -799,6 +819,19 @@ export const experienceOperations = {
   'GET /memory/items/{id}/why': { response: memoryExplanation },
   'GET /memory/settings': { response: memorySettings },
   'PUT /memory/settings': { request: memorySettings, response: memorySettings },
+  'GET /memory/beliefs': { response: beliefList },
+  'GET /memory/beliefs/{id}/history': { response: beliefHistory },
+  'POST /memory/beliefs/{id}/block': { response: experienceOk },
+  'GET /memory/blocks': { response: beliefBlockList },
+  'DELETE /memory/blocks/{id}': { response: experienceOk },
+  'GET /memory/timeline': { query: memoryTimelineQuery, response: memoryTimeline },
+  'POST /memory/rewind/preview': { request: rewindTarget, response: rewindPreview },
+  'POST /memory/rewind': { request: rewindTarget, response: memoryRewindResponse },
+  'POST /memory/rewinds/{id}/undo': { response: memoryRewindResponse },
+  'GET /memory/digest': { response: memoryDigestResponse },
+  'POST /memory/digest/{id}/seen': { response: experienceOk },
+  'GET /memory/export': { query: beliefExportQuery, response: beliefExport },
+  'POST /memory/import': { request: beliefImport, response: beliefImportResult },
   'GET /plans': { response: planList },
   'POST /plans': { request: planCreate, response: planResponse },
   'GET /plans/{id}': { response: planResponse },

@@ -28,7 +28,8 @@ export const EXTRACTION_LIMITS = {
   usd: 0.04,
   call_usd: 0.01,
   output_tokens: 4000,
-  timeout_ms: 15000,
+  /** Reasoning models take several seconds for a short message, more while a chat turn runs. */
+  timeout_ms: 60_000,
 } as const;
 export const MEMORY_EXTRACT_QUEUE = 'melete.memory.extract';
 export type ExtractionBatch = {

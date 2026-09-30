@@ -27,6 +27,7 @@ import type {
   ActionResolution,
   ActionReview,
   Agent,
+  BecauseLink,
   Draft,
   LedgerAction,
   Permission,
@@ -40,6 +41,7 @@ import type {
   TrailStep,
   TurnStatus,
 } from '../experience/types.ts';
+import { href } from '../router.ts';
 
 export const timeOf = (iso: string) =>
   new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -572,6 +574,36 @@ export function ResultCard({
   );
 }
 
+/* ---------- why an action was taken ---------- */
+
+/**
+ * "Because: …" under a receipt or a permission card, linking each belief to its
+ * place in Memory. When the agent did not say which belief it used, the links
+ * are what memory handed that turn, and the line says so.
+ */
+export function BecauseLine({ because }: { because?: BecauseLink[] }) {
+  if (!because?.length) return null;
+  const recalled = because.some((link) => link.basis === 'recalled');
+  return (
+    <span className="because">
+      <span>Because:</span>
+      {because.map((link) => (
+        <a
+          key={`${link.kind}:${link.id}`}
+          href={href(
+            link.kind === 'belief' ? `/settings/memory?belief=${link.id}` : '/settings/rules',
+          )}
+        >
+          {link.label}
+        </a>
+      ))}
+      {recalled ? (
+        <span>(what I remembered for this; the agent didn’t say which it used)</span>
+      ) : null}
+    </span>
+  );
+}
+
 /* ---------- receipt ---------- */
 
 export function ReceiptRow({
@@ -608,20 +640,21 @@ export function ReceiptRow({
       >
         <Icon name={reversed || reversal ? 'refresh' : 'check'} size={12} stroke={3} />
       </span>
-      <span
-        className="grow"
-        style={{
-          fontSize: 13,
-          color: 'var(--text)',
-          minWidth: 0,
-          textDecoration: reversed ? 'line-through' : undefined,
-        }}
-      >
-        {receipt.what}{' '}
-        <span style={{ color: 'var(--muted)' }}>
-          · {timeOf(receipt.when)} · {receipt.where}
+      <span className="grow col" style={{ gap: 2, minWidth: 0 }}>
+        <span
+          style={{
+            fontSize: 13,
+            color: 'var(--text)',
+            textDecoration: reversed ? 'line-through' : undefined,
+          }}
+        >
+          {receipt.what}{' '}
+          <span style={{ color: 'var(--muted)' }}>
+            · {timeOf(receipt.when)} · {receipt.where}
+          </span>
         </span>
         {receipt.review ? <ReviewNote review={receipt.review} /> : null}
+        <BecauseLine because={receipt.because} />
       </span>
       {canUndo ? (
         <Button
@@ -760,6 +793,7 @@ export function PermissionCard({
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
           <span className="permission-what">{permission.what}</span>
           <span className="permission-why">{permission.why[0]}</span>
+          <BecauseLine because={permission.because} />
         </div>
         {outcome ? (
           <Status tone={decided === 'allow_once' || decided === 'always' ? 'settled' : 'kind'}>
