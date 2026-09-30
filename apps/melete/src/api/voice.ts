@@ -1,0 +1,309 @@
+/**
+ * Talking to Melete: push-to-talk and voice mode.
+ *
+ * Every route here needs a signed-in person and works in the space their
+ * session resolved, as the conversation routes do. The two that belong to a
+ * conversation find it the way those routes do, in the session space and owned
+ * by the caller, so another person's conversation is simply not there.
+ *
+ * Audio passes through and is never written anywhere: a push-to-talk clip is
+ * held in memory for one provider call, and speech is streamed straight from
+ * the provider to the browser. What is kept is how much each person used, so a
+ * daily allowance can hold. A refusal says which limit, in plain words; a
+ * provider failure never repeats what the provider said.
+ */
+import { randomUUID } from 'node:crypto';
+import {
+  VOICE_LIMITS,
+  voiceSession,
+  voiceSpeechRequest,
+  voiceStatus,
+  voiceTranscription,
+  voiceTranscriptionQuery,
+} from '@melete/contracts';
+import { and, eq } from 'drizzle-orm';
+import type { Context, Hono } from 'hono';
+import type { Sql } from 'postgres';
+import {
+  type LiveVoice,
+  REALTIME_SAMPLE_RATE,
+  VoiceProviderError,
+} from '../connectors/elevenlabs.ts';
+import type { TranscriptionAdapter } from '../connectors/transcribe.ts';
+import { wavDurationMs } from '../connectors/wav.ts';
+import type { Database } from '../db/client.ts';
+import { job } from '../db/schema.ts';
+import type { Env } from '../env.ts';
+import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
+import { ownJob } from '../principals/authority.ts';
+import { ServiceError } from './errors.ts';
+
+export type VoiceUsageKind = 'transcribe' | 'speech' | 'session';
+
+/** A person's daily voice allowance: taken before a provider call, given back if it failed. */
+export interface VoiceAllowance {
+  /** The reservation, or null when `amount` would take the last day past `limit`. */
+  take(
+    principalId: string,
+    kind: VoiceUsageKind,
+    amount: number,
+    limit: number,
+  ): Promise<string | null>;
+  giveBack(reservation: string): Promise<void>;
+}
+
+/**
+ * The allowance in Postgres. One person's use is counted under one lock, so two
+ * requests cannot both take the last of the day, and rows older than the window
+ * are cleared as new ones are written.
+ */
+export class PostgresVoiceAllowance implements VoiceAllowance {
+  constructor(private readonly sql: Sql) {}
+
+  take(principalId: string, kind: VoiceUsageKind, amount: number, limit: number) {
+    return this.sql.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtext(${`voice:${principalId}:${kind}`}))`;
+      await tx`delete from voice_usage where principal_id = ${principalId}
+        and created_at < clock_timestamp() - interval '2 days'`;
+      const [used] = await tx`select coalesce(sum(amount), 0)::int as amount from voice_usage
+        where principal_id = ${principalId} and kind = ${kind}
+          and created_at > clock_timestamp() - interval '1 day'`;
+      if (Number(used?.amount ?? 0) + amount > limit) return null;
+      const id = randomUUID();
+      await tx`insert into voice_usage (id, principal_id, kind, amount)
+        values (${id}, ${principalId}, ${kind}, ${amount})`;
+      return id;
+    });
+  }
+
+  async giveBack(reservation: string) {
+    await this.sql`delete from voice_usage where id = ${reservation}`;
+  }
+}
+
+export type VoiceProviders = {
+  transcription: TranscriptionAdapter | null;
+  live: LiveVoice | null;
+};
+
+export type VoiceLimits = { seconds: number; characters: number; sessions: number };
+
+export function voiceProvidersFromEnv(env: Env): VoiceProviders {
+  const configured = capabilitiesFromEnv({
+    ELEVENLABS_API_KEY: env.ELEVENLABS_API_KEY,
+    ELEVENLABS_VOICE_ID: env.ELEVENLABS_VOICE_ID,
+    ELEVENLABS_SECOND_VOICE_ID: env.ELEVENLABS_SECOND_VOICE_ID,
+    ELEVENLABS_SPEECH_MODEL: env.ELEVENLABS_SPEECH_MODEL,
+    ELEVENLABS_STREAMING_MODEL: env.ELEVENLABS_STREAMING_MODEL,
+    ELEVENLABS_TRANSCRIPTION_MODEL: env.ELEVENLABS_TRANSCRIPTION_MODEL,
+    OPENAI_API_KEY: env.OPENAI_API_KEY,
+    OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
+    MELETE_ENABLE_FAKE_PROVIDER: String(env.MELETE_ENABLE_FAKE_PROVIDER),
+  });
+  return { transcription: configured.transcription, live: configured.live };
+}
+
+export const voiceLimitsFromEnv = (env: Env): VoiceLimits => ({
+  seconds: env.MELETE_VOICE_DAILY_SECONDS,
+  characters: env.MELETE_VOICE_DAILY_CHARACTERS,
+  sessions: env.MELETE_VOICE_DAILY_SESSIONS,
+});
+
+/** The recording types push-to-talk reads, and the file name the provider is given. */
+const CLIP_NAMES: Record<string, string> = {
+  'audio/webm': 'clip.webm',
+  'audio/ogg': 'clip.ogg',
+  'audio/mp4': 'clip.m4a',
+  'audio/mpeg': 'clip.mp3',
+  'audio/wav': 'clip.wav',
+  'audio/x-wav': 'clip.wav',
+  'audio/wave': 'clip.wav',
+};
+
+/** A recorder's own count of its length can run a little past where it was stopped. */
+const DURATION_GRACE_MS = 1000;
+
+const unavailable = () =>
+  new ServiceError('voice_unavailable', 'Voice is not set up on this installation.', 404);
+
+const DAILY: Record<VoiceUsageKind, string> = {
+  transcribe: 'You have used today’s allowance for voice messages. It frees up over the next day.',
+  speech: 'You have used today’s allowance for replies read aloud. It frees up over the next day.',
+  session: 'You have used today’s allowance of voice conversations. It frees up over the next day.',
+};
+
+const providerFailed = (what: string) =>
+  new ServiceError(
+    'voice_provider_failed',
+    `The speech service could not ${what} just now. Try again in a moment.`,
+    502,
+  );
+
+export function mountVoice(
+  app: Hono,
+  deps: {
+    db: Database;
+    allowance: VoiceAllowance | undefined;
+    providers: VoiceProviders;
+    limits: VoiceLimits;
+  },
+): void {
+  const { db, allowance, providers, limits } = deps;
+  const pushToTalk = Boolean(providers.transcription && allowance);
+  const voiceMode = Boolean(providers.live && allowance);
+
+  /** The session space and the person, as the conversation routes read them. */
+  const caller = (c: Context) => {
+    const spaceId = c.get('experienceSpaceId');
+    const principalId = c.get('owner')?.id;
+    if (!spaceId || !principalId)
+      throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
+    return { spaceId, principalId };
+  };
+
+  /** The caller's own conversation in the session space, or not found. */
+  const conversation = async (c: Context) => {
+    const { spaceId, principalId } = caller(c);
+    const [row] = await db
+      .select({ id: job.id })
+      .from(job)
+      .where(
+        and(
+          eq(job.id, c.req.param('id') ?? ''),
+          eq(job.spaceId, spaceId),
+          eq(job.kind, 'chat'),
+          ownJob(job.principalId, principalId),
+        ),
+      );
+    if (!row) throw new ServiceError('not_found', 'That item is not here.', 404);
+    return { principalId };
+  };
+
+  /** Take from the allowance, run the provider call, and give it back if the provider refused. */
+  async function metered<T>(
+    principalId: string,
+    kind: VoiceUsageKind,
+    amount: number,
+    limit: number,
+    what: string,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    if (!allowance) throw unavailable();
+    const reservation = await allowance.take(principalId, kind, amount, limit);
+    if (!reservation) throw new ServiceError('voice_daily_limit', DAILY[kind], 429);
+    try {
+      return await call();
+    } catch (error) {
+      // An answered refusal did no work, so it costs nothing. A call that never
+      // came back may have been served, and stays counted.
+      if (error instanceof VoiceProviderError && error.status !== null)
+        await allowance.giveBack(reservation).catch(() => undefined);
+      if (error instanceof VoiceProviderError) throw providerFailed(what);
+      throw error;
+    }
+  }
+
+  app.get('/voice', (c) => {
+    caller(c);
+    return c.json(
+      voiceStatus.parse({
+        push_to_talk: pushToTalk,
+        voice_mode: voiceMode,
+        max_recording_seconds: VOICE_LIMITS.recording_seconds,
+        max_recording_bytes: VOICE_LIMITS.recording_bytes,
+      }),
+    );
+  });
+
+  app.post('/voice/transcriptions', async (c) => {
+    const { principalId } = caller(c);
+    const adapter = providers.transcription;
+    if (!adapter || !allowance) throw unavailable();
+    const tooLarge = () =>
+      new ServiceError(
+        'recording_too_large',
+        `Voice messages can be up to ${VOICE_LIMITS.recording_bytes / (1024 * 1024)} MB. This recording is larger.`,
+        413,
+      );
+    const tooLong = () =>
+      new ServiceError(
+        'recording_too_long',
+        `Voice messages can be up to ${VOICE_LIMITS.recording_seconds / 60} minutes. This recording is longer.`,
+        413,
+      );
+    const declared = Number(c.req.header('content-length') ?? 0);
+    if (declared > VOICE_LIMITS.recording_bytes) throw tooLarge();
+    const query = voiceTranscriptionQuery.safeParse(c.req.query());
+    if (!query.success)
+      throw new ServiceError('invalid_request', 'Say how long the recording is.', 400);
+    const type = (c.req.header('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
+    const filename = CLIP_NAMES[type];
+    if (!filename)
+      throw new ServiceError(
+        'recording_unreadable',
+        'That recording is not in a format Melete can read.',
+        400,
+      );
+    const limitMs = VOICE_LIMITS.recording_seconds * 1000;
+    if (query.data.duration_ms > limitMs + DURATION_GRACE_MS) throw tooLong();
+    const audio = new Uint8Array(await c.req.arrayBuffer());
+    if (audio.length > VOICE_LIMITS.recording_bytes) throw tooLarge();
+    if (audio.length === 0)
+      throw new ServiceError('recording_unreadable', 'That recording is empty.', 400);
+    // A WAV states its own length, which is believed over the recorder's count.
+    const measured = Math.max(query.data.duration_ms, wavDurationMs(audio) ?? 0);
+    if (measured > limitMs + DURATION_GRACE_MS) throw tooLong();
+    const seconds = Math.max(1, Math.ceil(measured / 1000));
+    const transcript = await metered(
+      principalId,
+      'transcribe',
+      seconds,
+      limits.seconds,
+      'transcribe that',
+      () => adapter.transcribe({ audio, filename, mime: type, diarize: false }, c.req.raw.signal),
+    );
+    return c.json(
+      voiceTranscription.parse({
+        text: transcript.text.slice(0, 20_000),
+        language: transcript.language?.slice(0, 16) ?? null,
+      }),
+    );
+  });
+
+  app.post('/conversations/:id/voice/session', async (c) => {
+    const { principalId } = await conversation(c);
+    const live = providers.live;
+    if (!live || !allowance) throw unavailable();
+    const opened = await metered(
+      principalId,
+      'session',
+      1,
+      limits.sessions,
+      'start listening',
+      () => live.session(),
+    );
+    return c.json(voiceSession.parse({ ...opened, sample_rate: REALTIME_SAMPLE_RATE }), 201);
+  });
+
+  app.post('/conversations/:id/voice/speech', async (c) => {
+    const { principalId } = await conversation(c);
+    const live = providers.live;
+    if (!live || !allowance) throw unavailable();
+    const { text } = voiceSpeechRequest.parse(await c.req.json());
+    const spoken = await metered(
+      principalId,
+      'speech',
+      text.length,
+      limits.characters,
+      'read that aloud',
+      () => live.speak(text, c.req.raw.signal),
+    );
+    return new Response(spoken.body, {
+      headers: {
+        'content-type': spoken.mime,
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      },
+    });
+  });
+}

@@ -41,4 +41,5 @@ export * from './runtime.ts';
 export * from './skills.ts';
 export * from './spaces.ts';
 export * from './style.ts';
+export * from './voice.ts';
 export * from './watch.ts';

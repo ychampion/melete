@@ -34,6 +34,13 @@ import { mountReactions, type SpaceResolver } from './api/reactions.ts';
 import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
+import {
+  mountVoice,
+  PostgresVoiceAllowance,
+  type VoiceProviders,
+  voiceLimitsFromEnv,
+  voiceProvidersFromEnv,
+} from './api/voice.ts';
 import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
@@ -177,6 +184,8 @@ export type AppDeps = {
   companies?: Partial<CompaniesDeps>;
   /** The owner's model-provider sign-ins. Left out, built from `sql` and the master key. */
   providerSignIn?: ProviderSignIn;
+  /** The voice providers. Left out, whatever the environment configures. */
+  voice?: VoiceProviders;
 };
 
 export function createApp(deps: AppDeps) {
@@ -224,6 +233,13 @@ export function createApp(deps: AppDeps) {
     mountProviderSignIn(app, {
       db: deps.db,
       signIn: deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined),
+    });
+  if (deps.db)
+    mountVoice(app, {
+      db: deps.db,
+      allowance: deps.sql ? new PostgresVoiceAllowance(deps.sql) : undefined,
+      providers: deps.voice ?? voiceProvidersFromEnv(deps.env),
+      limits: voiceLimitsFromEnv(deps.env),
     });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);

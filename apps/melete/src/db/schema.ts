@@ -857,6 +857,28 @@ export const experienceDraftSend = pgTable('experience_draft_send', {
   discardedAt: timestamp('discarded_at', { withTimezone: true }),
 });
 
+/**
+ * What each person has used of their daily voice allowance: seconds
+ * transcribed, characters read aloud, voice sessions opened. Keyed by person
+ * and nothing else, because the allowance follows the person across spaces.
+ * No audio or text is kept here, only the amount.
+ */
+export const voiceUsage = pgTable(
+  'voice_usage',
+  {
+    id: text('id').primaryKey(),
+    principalId: text('principal_id').notNull(),
+    kind: text('kind').notNull(),
+    amount: integer('amount').notNull(),
+    createdAt: created(),
+  },
+  (t) => [
+    index('voice_usage_principal').on(t.principalId, t.kind, t.createdAt),
+    check('voice_usage_kind', sql`${t.kind} in ('transcribe', 'speech', 'session')`),
+    check('voice_usage_amount', sql`${t.amount} > 0`),
+  ],
+);
+
 export const schema = {
   owner,
   principal,

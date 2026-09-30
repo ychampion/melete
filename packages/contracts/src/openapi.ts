@@ -182,6 +182,13 @@ import {
   spaceRemovalPreview,
   spaceRemovalReport,
 } from './spaces.ts';
+import {
+  voiceSession,
+  voiceSpeechRequest,
+  voiceStatus,
+  voiceTranscription,
+  voiceTranscriptionQuery,
+} from './voice.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
   content: { 'application/json': { schema } },
@@ -371,6 +378,7 @@ export function buildOpenApiDocument() {
         { name: 'browser' },
         { name: 'learning' },
         { name: 'companies' },
+        { name: 'voice' },
       ],
       paths: {
         '/episodes': {
@@ -2234,6 +2242,83 @@ export function buildOpenApiDocument() {
               '404': problem('No unfinished sign-in by that id'),
               '502': problem('The provider could not be reached or refused the code'),
               '503': problem('MELETE_MASTER_KEY is not set'),
+            },
+          },
+        },
+
+        '/voice': {
+          get: {
+            tags: ['voice'],
+            summary: 'Which voice features this installation has',
+            description:
+              'Both are false until the operator sets a speech provider key. Push-to-talk needs a ' +
+              'provider that transcribes; voice mode needs ElevenLabs.',
+            responses: { '200': jsonResponse('Voice features and their limits', voiceStatus) },
+          },
+        },
+        '/voice/transcriptions': {
+          post: {
+            tags: ['voice'],
+            summary: 'Transcribe a push-to-talk clip',
+            description:
+              'The body is the recording itself. The words come back for the person to review; ' +
+              'nothing is sent, and the audio is not kept. A clip over two minutes or 5 MB is ' +
+              'refused, and so is one past the person’s daily allowance.',
+            requestParams: { query: voiceTranscriptionQuery },
+            requestBody: {
+              required: true,
+              content: {
+                'audio/webm': { schema: z.string().meta({ format: 'binary' }) },
+                'audio/ogg': { schema: z.string().meta({ format: 'binary' }) },
+                'audio/mp4': { schema: z.string().meta({ format: 'binary' }) },
+                'audio/wav': { schema: z.string().meta({ format: 'binary' }) },
+              },
+            },
+            responses: {
+              '200': jsonResponse('What was heard', voiceTranscription),
+              '400': problem('Not a recording this service reads'),
+              '404': problem('Voice is not set up on this installation'),
+              '413': problem('The recording is longer or larger than the limit'),
+              '429': problem('The daily allowance for transcription is used up'),
+              '502': problem('The speech provider could not transcribe it'),
+            },
+          },
+        },
+        '/conversations/{id}/voice/session': {
+          post: {
+            tags: ['voice'],
+            summary: 'Open a realtime transcription session for voice mode',
+            description:
+              'Answers with an address carrying a single-use token; the provider key never ' +
+              'reaches the browser. Each finished utterance is sent as an ordinary message to ' +
+              'this conversation.',
+            requestParams: idParam('id', 'Conversation id'),
+            responses: {
+              '201': jsonResponse('Open `url` as a WebSocket', voiceSession),
+              '404': problem('No such conversation, or voice mode is not set up'),
+              '429': problem('The daily allowance of voice sessions is used up'),
+              '502': problem('The speech provider could not open a session'),
+            },
+          },
+        },
+        '/conversations/{id}/voice/speech': {
+          post: {
+            tags: ['voice'],
+            summary: 'Read part of a reply aloud',
+            description:
+              'Streams speech for the text as it is made. Nothing is kept. Each request counts ' +
+              'its characters against the person’s daily allowance.',
+            requestParams: idParam('id', 'Conversation id'),
+            requestBody: json(voiceSpeechRequest),
+            responses: {
+              '200': {
+                description: 'Speech, streamed',
+                content: { 'audio/mpeg': { schema: z.string().meta({ format: 'binary' }) } },
+              },
+              '400': problem('Invalid request'),
+              '404': problem('No such conversation, or voice mode is not set up'),
+              '429': problem('The daily allowance for reading aloud is used up'),
+              '502': problem('The speech provider could not speak it'),
             },
           },
         },
