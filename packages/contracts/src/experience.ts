@@ -481,7 +481,7 @@ export const memoryItemList = z.strictObject({
 export const memorySettings = z.strictObject({ capture: z.boolean() });
 /**
  * Whether conversations in this space read public web pages: GET and HEAD
- * only, public addresses only, never signed in. On unless the owner turns it
+ * only, public addresses only, never signed in. On unless it is turned
  * off; a private space or agent stays offline whatever this says.
  */
 export const webReadSettings = z.strictObject({ enabled: z.boolean() });
