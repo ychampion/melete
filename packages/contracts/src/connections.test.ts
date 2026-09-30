@@ -276,6 +276,9 @@ function filled(descriptor: ConnectionKindDescriptor): Record<string, unknown> {
     if (field.input === 'email') return 'owner@example.test';
     if (field.input === 'url') return 'https://service.example.test/path/';
     if (field.path.endsWith('egress')) return ['registry.example.test'];
+    if (field.path === 'phone.number') return '+14155550100';
+    if (field.path === 'credentials.twilio_account_sid') return `AC${'0'.repeat(32)}`;
+    if (field.path === 'phone.allowed_callers') return ['+14155550199'];
     if (field.input === 'string_list') return ['mcp_notes.search'];
     if (field.path.endsWith('source')) return '@example/notes-server';
     if (field.path === 'name') return 'NOTES_TOKEN';
@@ -303,6 +306,7 @@ describe('connection kind descriptors', () => {
       'mail',
       'mcp',
       'mcp_stdio',
+      'phone',
       'sandbox',
     ]);
     const ids = parsed.kinds.map((kind) => kind.id);

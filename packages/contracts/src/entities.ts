@@ -72,6 +72,8 @@ export const CONNECTION_PROVIDERS = [
   'mcp',
   /** A remote sandbox the broker owns: commands run there, credentials stay here. */
   'sandbox',
+  /** A phone line through ElevenLabs Agents: calls in from the person, approved calls out. */
+  'phone',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;
