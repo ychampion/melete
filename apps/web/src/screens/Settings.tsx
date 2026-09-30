@@ -1,8 +1,9 @@
 /**
- * Settings: the only place the technology shows. Saved details in plain
- * language with edit, forget and why; what Melete learned, with its state and
- * what can be done with it; connections with their state and what
- * each may do; standing rules with their limits and revoke.
+ * Settings: the only place the technology shows. Memory holds the saved
+ * details in plain language with edit, forget and why, and the lessons and
+ * skills Melete learned, with their state and what can be done with them;
+ * then connections with their state and what each may do, and standing rules
+ * with their limits and revoke.
  */
 import { type ReactNode, useState } from 'react';
 import { logoFor } from '../chat/parts.tsx';
@@ -13,10 +14,12 @@ import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import { givenName } from '../experience/profile.ts';
 import type { Connection, MemoryItem, Rule } from '../experience/types.ts';
+import { FeedbackTab } from '../feedback/FeedbackTab.tsx';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 import { LearnedTab } from './Learned.tsx';
+import { NotificationsTab } from './Notifications.tsx';
 
 const SOURCE_LABEL: Record<MemoryItem['source'], string> = {
   onboarding: 'You told Melete during setup',
@@ -117,7 +120,8 @@ function MemoryRow({
             <span style={{ fontSize: 14, color: 'var(--text)' }}>{item.value}</span>
           )}
           <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {SOURCE_LABEL[item.source]} · {dateOf(item.created)}
+            {item.saved_by ? `Saved by ${item.saved_by}` : SOURCE_LABEL[item.source]} ·{' '}
+            {dateOf(item.created)}
             {item.last_used ? ` · used ${dateOf(item.last_used)}` : ''}
           </span>
           {whyOpen && why ? (
@@ -241,6 +245,77 @@ export function ConnectionCard({
   );
 }
 
+/**
+ * Other assistants the person let use Melete, each with a way to disconnect it.
+ * An installation that does not offer the MCP endpoint answers with an error,
+ * and then there is nothing here to list or disconnect.
+ */
+function ConnectedAssistants() {
+  const assistants = useLoad(() => adapter.assistants(), []);
+  const [ending, setEnding] = useState<string | null>(null);
+  if (!assistants.data) return null;
+  const clients = assistants.data.clients;
+  return (
+    <section className="col" style={{ gap: 8, marginTop: 12 }} aria-labelledby="assistants-head">
+      <h2
+        id="assistants-head"
+        style={{ fontSize: 15, fontWeight: 600, color: 'var(--heading)', margin: 0 }}
+      >
+        Connected assistants
+      </h2>
+      <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560, margin: 0 }}>
+        Other assistants you let use Melete as you. Disconnecting one ends its access at once.
+      </p>
+      {clients.length === 0 ? (
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>No assistant is connected.</span>
+      ) : (
+        <div className="card-12" style={{ overflow: 'hidden' }}>
+          <div style={{ height: 1 }} />
+          {clients.map((client) => (
+            <div key={client.client_id} className="list-row" style={{ minHeight: 60 }}>
+              <Icon name="connectors" size={18} />
+              <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
+                <span
+                  className="clamp1"
+                  style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
+                >
+                  {client.name}
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                  Connected since {dateOf(client.since)}
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                loading={ending === client.client_id}
+                disabled={ending !== null}
+                aria-label={`Disconnect ${client.name}`}
+                onClick={() => {
+                  setEnding(client.client_id);
+                  void adapter.disconnectAssistant(client.client_id).then((r) => {
+                    setEnding(null);
+                    if (r.data === null) {
+                      toast({ kind: 'err', title: r.error ?? 'Couldn’t disconnect' });
+                      return;
+                    }
+                    assistants.set({
+                      clients: clients.filter((c) => c.client_id !== client.client_id),
+                    });
+                    toast({ kind: 'ok', title: `Disconnected ${client.name}` });
+                  });
+                }}
+              >
+                Disconnect
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 const ruleWhen = (rule: Rule) => {
   const expires = new Date(rule.bounds.expires_at).toLocaleDateString('en-US', {
     month: 'short',
@@ -249,14 +324,16 @@ const ruleWhen = (rule: Rule) => {
   return `${rule.used} of ${rule.bounds.count_cap} used · until ${expires} · asks again after ${rule.bounds.reconsent_after_days} day${rule.bounds.reconsent_after_days === 1 ? '' : 's'}`;
 };
 
-export function SettingsScreen({ tab }: { tab: string }) {
+export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: string | null }) {
   const { profile, signOut } = useApp();
   const [leaving, setLeaving] = useState(false);
   const memory = useLoad(() => adapter.memory(), []);
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
-  const current = tab === 'connections' || tab === 'rules' || tab === 'learned' ? tab : 'memory';
-  const [learnedCount, setLearnedCount] = useState<number | undefined>(undefined);
+  const current =
+    tab === 'connections' || tab === 'rules' || tab === 'notifications' || tab === 'feedback'
+      ? tab
+      : 'memory';
   const items = memory.data?.items ?? [];
   const list = connections.data?.connections ?? [];
   const byId = new Map(list.map((c) => [c.id, c]));
@@ -301,77 +378,91 @@ export function SettingsScreen({ tab }: { tab: string }) {
           onChange={(next) => navigate(`/settings/${next}`)}
           tabs={[
             { value: 'memory', label: 'Memory', count: items.length },
-            { value: 'learned', label: 'What I’ve learned', count: learnedCount },
+            { value: 'notifications', label: 'Notifications' },
             {
               value: 'connections',
               label: 'Connections',
               count: list.filter((c) => c.status === 'connected').length,
             },
             { value: 'rules', label: 'Rules', count: rules.data?.rules.length ?? 0 },
+            { value: 'feedback', label: 'Feedback' },
           ]}
         />
         {current === 'memory' ? (
-          <div className="col" style={{ gap: 12 }}>
-            <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-              Agents use these quietly. Anything here can be changed or forgotten, and Melete can
-              say why it used one.
-            </p>
-            {memory.error ? (
-              <p style={{ color: 'var(--danger)', fontSize: 13 }}>{memory.error}</p>
-            ) : null}
-            <div className="card-12" style={{ overflow: 'hidden' }}>
-              <div style={{ height: 1 }} />
-              {items.map((item) => (
-                <MemoryRow
-                  key={item.id}
-                  item={item}
-                  onChange={(next) =>
-                    memory.set({ items: items.map((i) => (i.id === next.id ? next : i)) })
-                  }
-                  onDelete={() =>
-                    void adapter.deleteMemory(item.id).then((r) => {
-                      if (r.data === null) {
-                        toast({
-                          kind: 'err',
-                          title: r.error ?? r.unavailable ?? 'Couldn’t forget that',
-                        });
-                        return;
-                      }
-                      memory.set({ items: items.filter((i) => i.id !== item.id) });
-                      toast({ kind: 'ok', title: `Forgot “${item.key}”` });
-                    })
-                  }
-                />
-              ))}
-              {memory.data && items.length === 0 ? (
-                <div
-                  className="col"
-                  style={{
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '32px 24px',
-                    textAlign: 'center',
-                  }}
-                >
-                  <span
+          <div className="col" style={{ gap: 28 }}>
+            <section className="col" style={{ gap: 12 }} aria-labelledby="memory-details">
+              <h2 id="memory-details" className="settings-subhead">
+                Details
+              </h2>
+              <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
+                Agents use these quietly. Anything here can be changed or forgotten, and Melete can
+                say why it used one.
+              </p>
+              {memory.error ? (
+                <p style={{ color: 'var(--danger)', fontSize: 13 }}>{memory.error}</p>
+              ) : null}
+              <div className="card-12" style={{ overflow: 'hidden' }}>
+                <div style={{ height: 1 }} />
+                {items.map((item) => (
+                  <MemoryRow
+                    key={item.id}
+                    item={item}
+                    onChange={(next) =>
+                      memory.set({ items: items.map((i) => (i.id === next.id ? next : i)) })
+                    }
+                    onDelete={() =>
+                      void adapter.deleteMemory(item.id).then((r) => {
+                        if (r.data === null) {
+                          toast({
+                            kind: 'err',
+                            title: r.error ?? r.unavailable ?? 'Couldn’t forget that',
+                          });
+                          return;
+                        }
+                        memory.set({ items: items.filter((i) => i.id !== item.id) });
+                        toast({ kind: 'ok', title: `Forgot “${item.key}”` });
+                      })
+                    }
+                  />
+                ))}
+                {memory.data && items.length === 0 ? (
+                  <div
+                    className="col"
                     style={{
-                      fontFamily: 'var(--font-head)',
-                      fontSize: 16,
-                      fontWeight: 600,
-                      color: 'var(--heading)',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '32px 24px',
+                      textAlign: 'center',
                     }}
                   >
-                    Nothing remembered yet
-                  </span>
-                  <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-                    Melete adds to this list as you talk, and tells you when it does.
-                  </span>
-                </div>
-              ) : null}
-            </div>
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-head)',
+                        fontSize: 16,
+                        fontWeight: 600,
+                        color: 'var(--heading)',
+                      }}
+                    >
+                      Nothing remembered yet
+                    </span>
+                    <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+                      Melete adds to this list as you talk, and tells you when it does.
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            </section>
+            <section className="col" style={{ gap: 12 }} aria-labelledby="memory-lessons">
+              <h2 id="memory-lessons" className="settings-subhead">
+                Lessons and skills
+              </h2>
+              <LearnedTab />
+            </section>
           </div>
-        ) : current === 'learned' ? (
-          <LearnedTab onCount={setLearnedCount} />
+        ) : current === 'notifications' ? (
+          <NotificationsTab />
+        ) : current === 'feedback' ? (
+          <FeedbackTab selected={detail} />
         ) : current === 'connections' ? (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
@@ -401,6 +492,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>Nothing is connected yet.</span>
             ) : null}
             <AddConnection onInstalled={connections.reload} />
+            <ConnectedAssistants />
           </div>
         ) : (
           <div className="col" style={{ gap: 12 }}>

@@ -24,6 +24,21 @@
       "result": {}
     },
     {
+      "step": "tool",
+      "delay_ms": 900,
+      "name": "terminal.run",
+      "title": "Found a time that suits everyone",
+      "active_title": "Finding a time that suits everyone",
+      "meta": "7:30 PM works for all three",
+      "arguments": {
+        "command": "python3 overlap.py calendars/*.ics --after 19:00 --guests 3"
+      },
+      "result": {
+        "output": "Reading 3 calendars\n  you      free from 18:30\n  Priya    free from 19:15\n  Marco    free from 19:00\nFirst time all three are free: 19:30\n",
+        "exit_code": 0
+      }
+    },
+    {
       "step": "say",
       "delay_ms": 600,
       "text": "Opening Resy in the sandboxed browser. I’ll stop before anything is paid or reserved."

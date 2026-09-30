@@ -12,6 +12,7 @@ import {
   projectCards,
 } from '../../melete/src/experience/projectors.ts';
 import type { AppDeps } from './app.ts';
+import { ComputerMock } from './computer.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { newId } from './store.ts';
 
@@ -46,6 +47,8 @@ type Chat = {
    * ledger item settled when the script completes.
    */
   follow?: { from: string; settle?: () => void };
+  /** A command under way on the agent's computer, finished with its tool entry. */
+  openCommand?: () => void;
 };
 type Proposal = {
   ref: string;
@@ -145,7 +148,11 @@ export class ExperienceMock {
   });
   /** The address messages leave from, when a mailbox that can send is connected. */
   sendingAddress: string | null = null;
+  readonly computer: ComputerMock;
   constructor(readonly deps: AppDeps & { experienceSpeed?: number }) {
+    this.computer = new ComputerMock(deps.store, deps.spaceId, deps.computer ?? true, () =>
+      this.now(),
+    );
     for (const template of AGENT_TEMPLATES.templates) {
       const agent = C.experienceAgent.parse({
         ...template.agent,
@@ -613,6 +620,8 @@ export class ExperienceMock {
   }
   /** Finish the entry under way: its done copy, its trail step, and one more step done. */
   settleTool(chat: Chat) {
+    chat.openCommand?.();
+    chat.openCommand = undefined;
     const open = chat.openTool;
     if (!open) return;
     chat.openTool = undefined;
@@ -670,6 +679,8 @@ export class ExperienceMock {
       return;
     }
     if (step.step === 'tool') {
+      const command = this.computer.command(chat.view.id, step, 'running');
+      if (command) chat.openCommand = () => this.computer.finish(chat.view.id, command, step);
       const kind: C.ToolKind = step.name.startsWith('skills.')
         ? 'skill'
         : step.name.startsWith('browser')
@@ -798,7 +809,8 @@ export class ExperienceMock {
       this.state(chat, 'needs_you');
       return;
     } else if (step.step === 'browser') {
-      // The contract has no way to announce a browser session yet; nothing is drawn.
+      // The page is shown on the conversation's computer, not in the transcript.
+      this.computer.browser(chat.view.id, step);
     } else if (step.step === 'propose' && !this.isDraftKind(step.kind, step.payload)) {
       this.flush(chat);
       const words = PROPOSAL_WORDS[step.kind] ?? {
@@ -1492,6 +1504,8 @@ export class ExperienceMock {
         return { cards: required(this.chats, id).cards };
       case 'GET /conversations/{id}/receipts':
         return { receipts: required(this.chats, id).receipts };
+      case 'GET /conversations/{id}/computer':
+        return this.computer.view(required(this.chats, id).view.id);
       case 'GET /conversations/{id}/drafts':
         return { drafts: required(this.chats, id).drafts };
       case 'POST /conversations/{id}/pause':
@@ -1580,6 +1594,8 @@ export class ExperienceMock {
       case 'POST /signin/magic-link/consume':
         this.signedOut = false;
         return { status: 'ok' };
+      case 'POST /signin/chatgpt':
+        return C.unavailable('This installation hasn’t set up ChatGPT sign-in yet.');
       case 'PATCH /memory/items/{id}': {
         const item = required(this.memories, id);
         if (input.version !== item.version)

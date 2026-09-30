@@ -23,6 +23,7 @@ import { MeleteAvatar } from '../design/mark.tsx';
 import { Button, Checkbox, Input, Status } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { decisionKey, pressOf, useInFlight } from '../experience/decide.ts';
+import { agentForFirstMessage } from '../experience/first-agent.ts';
 import {
   agentById,
   faceOf,
@@ -48,7 +49,9 @@ import { isWaiting, waitingOn } from '../experience/waiting.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { blankAgent } from './Agents.tsx';
+import { PushOffer } from './Notifications.tsx';
 import './home.css';
+import { WaitingOnSection } from './WaitingOnSection.tsx';
 
 const PROMPTS: { label: string; icon: IconName; text: string }[] = [
   {
@@ -839,23 +842,19 @@ export function HomeScreen() {
     setBusy(true);
     // Skipping setup leaves no agent yet: make the default one so the first
     // message still goes somewhere.
-    let agentId = agents[0]?.id;
-    if (!agentId) {
-      const made = await adapter.createAgent({ ...blankAgent(), name: 'Nova', role: 'Concierge' });
-      if (made.data === null) {
-        setBusy(false);
-        toast({
-          kind: 'err',
-          title: 'Couldn’t set up your agent',
-          sub: made.error ?? made.unavailable ?? '',
-        });
-        return;
-      }
-      agentId = made.data.agent.id;
-      refreshAgents();
+    const agent = await agentForFirstMessage(
+      agents[0]?.id,
+      { ...blankAgent(), name: 'Nova', role: 'Concierge' },
+      adapter,
+    );
+    if ('error' in agent) {
+      setBusy(false);
+      toast({ kind: 'err', title: 'Couldn’t set up your agent', sub: agent.error });
+      return;
     }
+    if (agent.created) refreshAgents();
     const title = shortTitle(clean, 60) || 'New chat';
-    const created = await adapter.createConversation({ title, agent_id: agentId });
+    const created = await adapter.createConversation({ title, agent_id: agent.id });
     if (created.data === null) {
       setBusy(false);
       toast({
@@ -948,7 +947,9 @@ export function HomeScreen() {
               ))}
             </div>
           </div>
+          <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
+          <WaitingOnSection now={now} />
           <InMotion now={now} />
         </div>
         <DayColumn now={now} />

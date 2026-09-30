@@ -3,12 +3,13 @@
  * actions, with typed results from the contract's search. Arrow keys move,
  * Enter opens, Tab cycles the type filter.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { Kbd } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import type { SearchResult } from '../experience/types.ts';
 import { navigate } from '../router.ts';
+import { secondaryOf, withoutBuiltins } from './palette.ts';
 
 const TABS = [
   ['all', 'All'],
@@ -29,13 +30,13 @@ const ICONS: Record<SearchResult['kind'], IconName> = {
   action: 'compose',
 };
 
-const KIND_LABEL: Record<SearchResult['kind'], string> = {
-  conversation: 'Chat',
-  plan: 'Plan',
-  task: 'Task',
-  event: 'Event',
-  connection: 'Connection',
-  action: 'Action',
+const GROUP_LABEL: Record<SearchResult['kind'], string> = {
+  conversation: 'Chats',
+  plan: 'Plans',
+  task: 'Tasks',
+  event: 'Events',
+  connection: 'Connections',
+  action: 'Actions',
 };
 
 /** Where a result opens. Actions open the conversation they happened in. */
@@ -54,10 +55,13 @@ export function hrefOf(hit: SearchResult): string {
   }
 }
 
+const optionId = (n: number) => `palette-option-${n}`;
+
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<(typeof TABS)[number][0]>('all');
-  const [hits, setHits] = useState<SearchResult[]>([]);
+  const [hits, setHits] = useState<SearchResult[] | null>(null);
+  const [builtins, setBuiltins] = useState<ReadonlySet<string>>(new Set());
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -73,20 +77,39 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   useEffect(() => {
     if (!open) return;
     let live = true;
+    void adapter.connections().then((result) => {
+      if (live && result.data)
+        setBuiltins(new Set(result.data.connections.filter((c) => c.builtin).map((c) => c.id)));
+    });
+    return () => {
+      live = false;
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
     // The contract wants a non-empty query; an empty box lists everything.
     void adapter.search(query.trim() || ' ').then((result) => {
-      if (live && result.data) setHits(result.data.results);
+      if (live) setHits(result.data ? result.data.results : []);
     });
     return () => {
       live = false;
     };
   }, [open, query]);
 
-  const visible = hits.filter((hit) => tab === 'all' || hit.kind === tab);
+  const found = useMemo(() => withoutBuiltins(hits ?? [], builtins), [hits, builtins]);
+  const visible = found.filter((hit) => tab === 'all' || hit.kind === tab);
   const grouped = new Map<SearchResult['kind'], SearchResult[]>();
   for (const hit of visible) grouped.set(hit.kind, [...(grouped.get(hit.kind) ?? []), hit]);
   const flat = [...grouped.values()].flat();
-  const current = flat[Math.min(index, Math.max(0, flat.length - 1))];
+  const at = Math.min(index, Math.max(0, flat.length - 1));
+  const current = flat[at];
+
+  useEffect(() => {
+    if (!open) return;
+    document.getElementById(optionId(at))?.scrollIntoView({ block: 'nearest' });
+  }, [open, at]);
 
   const openHit = (hit: SearchResult | undefined) => {
     if (!hit) return;
@@ -95,6 +118,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   };
 
   if (!open) return null;
+  const tabLabel = TABS.find(([key]) => key === tab)?.[1] ?? 'All';
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the scrim closes the palette on an outside click; Escape does the same for the keyboard
     <div
@@ -105,14 +129,18 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     >
       <div className="palette" role="dialog" aria-modal="true" aria-label="Search your workspace">
         <div className="palette-input">
-          <span style={{ color: 'var(--muted)', display: 'flex' }}>
-            <Icon name="search" size={18} />
+          <span className="palette-glyph">
+            <Icon name="search" size={16} />
           </span>
           <input
             ref={inputRef}
             value={query}
             placeholder="Search chats, plans, tasks, events…"
             aria-label="Search your workspace"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="palette-list"
+            aria-activedescendant={current ? optionId(at) : undefined}
             onChange={(event) => {
               setQuery(event.target.value);
               setIndex(0);
@@ -130,8 +158,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                 openHit(current);
               } else if (event.key === 'Tab') {
                 event.preventDefault();
-                const at = TABS.findIndex(([key]) => key === tab);
-                const next = TABS[(at + (event.shiftKey ? TABS.length - 1 : 1)) % TABS.length];
+                const from = TABS.findIndex(([key]) => key === tab);
+                const next = TABS[(from + (event.shiftKey ? TABS.length - 1 : 1)) % TABS.length];
                 if (next) setTab(next[0]);
                 setIndex(0);
               }
@@ -139,7 +167,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           />
           <Kbd>Esc</Kbd>
         </div>
-        <div className="palette-tabs" role="tablist">
+        <div className="palette-tabs" role="tablist" aria-label="Result type">
           {TABS.map(([key, label]) => (
             <button
               key={key}
@@ -150,62 +178,106 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
               onClick={() => {
                 setTab(key);
                 setIndex(0);
+                inputRef.current?.focus();
               }}
             >
               {label}
             </button>
           ))}
         </div>
-        <div className="palette-list">
-          {flat.length === 0 ? (
-            <p style={{ padding: '12px 10px 8px', fontSize: 13, color: 'var(--muted)' }}>
-              Nothing matches “{query}”.
-            </p>
+        <div className="palette-list" id="palette-list" role="listbox" aria-label={tabLabel}>
+          {hits !== null && flat.length === 0 ? (
+            <div className="palette-empty">
+              <span className="palette-empty-title">
+                {query.trim()
+                  ? `No ${tab === 'all' ? 'results' : tabLabel.toLowerCase()} match “${query.trim()}”`
+                  : tab === 'all'
+                    ? 'Nothing to search yet'
+                    : `No ${tabLabel.toLowerCase()} yet`}
+              </span>
+              <span className="palette-empty-sub">
+                {tab !== 'all' && found.length > 0
+                  ? 'Press Tab to look under another type, or search everything.'
+                  : query.trim()
+                    ? 'Try a shorter or different word.'
+                    : 'Chats, plans and tasks show up here as you make them.'}
+              </span>
+              {tab !== 'all' && found.length > 0 ? (
+                <button
+                  type="button"
+                  className="palette-empty-action"
+                  onClick={() => {
+                    setTab('all');
+                    setIndex(0);
+                    inputRef.current?.focus();
+                  }}
+                >
+                  Search everything
+                </button>
+              ) : null}
+            </div>
           ) : null}
           {[...grouped.entries()].map(([kind, list]) => (
-            <div key={kind} className="col" style={{ gap: 2 }}>
-              <div className="overline" style={{ padding: '8px 10px 4px' }}>
-                {KIND_LABEL[kind]}s
-              </div>
-              {list.map((hit) => (
-                <a
-                  key={`${hit.kind}-${hit.id}`}
-                  className="palette-item"
-                  href={`#${hrefOf(hit)}`}
-                  data-on={current === hit ? 'true' : undefined}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    openHit(hit);
-                  }}
-                  onMouseEnter={() => setIndex(flat.indexOf(hit))}
-                >
-                  <span style={{ color: 'var(--muted)', display: 'flex' }}>
-                    <Icon name={ICONS[hit.kind]} size={16} />
-                  </span>
-                  <span style={{ fontSize: 14, color: 'var(--heading)', whiteSpace: 'nowrap' }}>
-                    {hit.title}
-                  </span>
-                  <span className="clamp1 grow" style={{ fontSize: 13, color: 'var(--muted)' }}>
-                    {hit.meta}
-                  </span>
-                  <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-                    {KIND_LABEL[hit.kind]}
-                  </span>
-                </a>
-              ))}
+            <div key={kind} className="palette-group">
+              {tab === 'all' ? (
+                <div className="palette-heading" aria-hidden="true">
+                  {GROUP_LABEL[kind]}
+                </div>
+              ) : null}
+              {list.map((hit) => {
+                const n = flat.indexOf(hit);
+                const sub = secondaryOf(hit);
+                return (
+                  <a
+                    key={`${hit.kind}-${hit.id}`}
+                    id={optionId(n)}
+                    className="palette-item"
+                    role="option"
+                    aria-selected={current === hit}
+                    tabIndex={-1}
+                    href={`#${hrefOf(hit)}`}
+                    data-on={current === hit ? 'true' : undefined}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      openHit(hit);
+                    }}
+                    onMouseMove={() => {
+                      if (n !== at) setIndex(n);
+                    }}
+                  >
+                    <span className="palette-glyph">
+                      <Icon name={ICONS[hit.kind]} size={16} />
+                    </span>
+                    <span className="palette-text">
+                      <span className="palette-title">{hit.title}</span>
+                      {sub ? <span className="palette-sub">{sub}</span> : null}
+                    </span>
+                    {current === hit ? (
+                      <span className="palette-go" aria-hidden="true">
+                        <Icon name="chevronRight" size={14} />
+                      </span>
+                    ) : null}
+                  </a>
+                );
+              })}
             </div>
           ))}
         </div>
-        <div className="palette-foot">
-          <span className="row" style={{ gap: 4 }}>
-            <Kbd>↑</Kbd>
-            <Kbd>↓</Kbd> move
+        <div className="palette-foot" aria-hidden="true">
+          <span className="palette-hint">
+            <span className="palette-keys">
+              <Kbd>↑</Kbd>
+              <Kbd>↓</Kbd>
+            </span>
+            Move
           </span>
-          <span className="row" style={{ gap: 4 }}>
-            <Kbd>↵</Kbd> open
+          <span className="palette-hint">
+            <Kbd>↵</Kbd>
+            Open
           </span>
-          <span className="row" style={{ gap: 4 }}>
-            <Kbd>⇥</Kbd> next tab
+          <span className="palette-hint">
+            <Kbd>Tab</Kbd>
+            Next type
           </span>
         </div>
       </div>

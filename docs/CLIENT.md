@@ -102,6 +102,25 @@ The closed states are checked by `types the job state as the closed set the
 state machine uses`; transition behaviour is tested in
 `packages/contracts/src/job-state.test.ts`.
 
+## Phone presence
+
+A client that can receive Web Push subscribes with the key from
+`GET /push/public-key` (null when the installation has no VAPID keys) and sends
+the browser's `PushSubscription.toJSON()` with a device name to
+`POST /push/subscriptions`. Only endpoints on a browser push service, or an
+origin the operator added, are accepted. `GET /push/subscriptions` lists the
+person's devices without their endpoints or keys, and
+`DELETE /push/subscriptions/{id}` removes one of their own; another person's id
+is not found.
+
+`GET` and `PATCH /push/settings` hold what is pushed (`decisions`, `settled`,
+`weekly_summary`), the `daily_cap` and the `batch_minutes` that fold events
+arriving together into one push. `quiet_hours` is read from the profile's day
+hours and changes with them. A push's payload is `{ title, body, because, url,
+tag }`: show `because` with the body, and open `url` when it is tapped. The web
+app asks about pushes only after a decision is made or a chase settles, never on
+a first visit. Evidence is `apps/melete/test/integration/push.test.ts`.
+
 ## Reproduce the examples without a deployed service
 
 From the repository root after installing dependencies:

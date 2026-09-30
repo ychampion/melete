@@ -56,6 +56,7 @@ import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { CasePanel, useCase } from './CasePanel.tsx';
 import { Composer } from './Composer.tsx';
+import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
 import {
   ActionBar,
   PermissionCard,
@@ -67,6 +68,7 @@ import {
   UnknownCard,
   UserBubble,
 } from './parts.tsx';
+import { pauseOrStop } from './pause.ts';
 import './chat.css';
 
 /** One-tap changes to a draft waiting on a decision; each is sent as the person's next message. */
@@ -94,17 +96,18 @@ async function reportFailure(pending: Promise<Outcome>, verb: string) {
 
 /** Pausing mid-step needs the engine's help; without it, stopping keeps the progress. */
 async function pauseTurn(id: string) {
-  const paused = await adapter.pause(id);
-  if (paused.data !== null) return;
-  const stopped = await adapter.stop(id);
-  if (stopped.data !== null)
+  const result = await pauseOrStop({
+    pause: () => adapter.pause(id),
+    stop: () => adapter.stop(id),
+  });
+  if (result.outcome === 'stopped')
     toast({
       kind: 'info',
       title: 'Stopped this turn',
-      sub: 'This model can’t pause mid-step, so it stopped. Your progress is saved.',
+      sub: 'This assistant can’t pause mid-step, so it stopped. Your progress is saved.',
     });
-  else
-    toast({ kind: 'err', title: 'Couldn’t pause', sub: paused.unavailable ?? paused.error ?? '' });
+  else if (result.outcome === 'failed')
+    toast({ kind: 'err', title: 'Couldn’t pause', sub: result.reason });
 }
 
 function AgentChip({
@@ -430,6 +433,8 @@ export function ChatScreen({ id }: { id: string | null }) {
   const wide = useMedia('(min-width: 1180px)');
   // The case panel follows the width until the person opens or closes it.
   const [caseChoice, setCaseChoice] = useState<boolean | null>(null);
+  /** The agent's computer is opened by the person and stays as they left it. */
+  const [computerOpen, setComputerOpen] = useState(false);
 
   const last = latestTurn(transcript);
   const composerState = transcript.composer;
@@ -700,6 +705,25 @@ export function ChatScreen({ id }: { id: string | null }) {
   const caseOpen = Boolean(found) && !touch && (caseChoice ?? wide);
   const agent = agentById(agents, agentId);
   const lastId = last?.id ?? null;
+  // A new tool entry on the stream is when the computer most likely changed.
+  const toolPulse = `${transcript.status}:${transcript.turns.reduce(
+    (count, turn) => count + turn.trail.length,
+    0,
+  )}`;
+  const computer = useComputer(conversationId, computerOpen && Boolean(conversationId), toolPulse);
+  const showComputer = computerOpen && Boolean(conversationId);
+  const computerLabel = `${showComputer ? 'Hide' : 'Show'} ${agent?.name ?? 'Melete'}’s computer`;
+  const computerToggle = (size?: number) =>
+    conversationId ? (
+      <IconButton
+        name="monitor"
+        label={computerLabel}
+        on={showComputer}
+        aria-expanded={showComputer}
+        {...(size ? { size, iconSize: 20 } : {})}
+        onClick={() => setComputerOpen(!showComputer)}
+      />
+    ) : null;
 
   return (
     <Shell
@@ -717,9 +741,18 @@ export function ChatScreen({ id }: { id: string | null }) {
           </>
         ) : undefined
       }
-      rail={!found}
+      rail={!found && !showComputer}
+      phoneActions={computerToggle(44)}
       panel={
-        found && caseOpen ? (
+        showComputer ? (
+          <ComputerPanel
+            agent={agent}
+            computer={computer.computer}
+            error={computer.error}
+            onClose={() => setComputerOpen(false)}
+            onChanged={() => void computer.refresh()}
+          />
+        ) : found && caseOpen ? (
           <CasePanel
             found={found}
             transcript={transcript}
@@ -739,6 +772,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             <h1 className="clamp1">{title}</h1>
             <AgentChip agentId={agentId} onChange={setConversationAgent} />
             <div className="grow" />
+            {computerToggle()}
             {found ? (
               <IconButton
                 name="panelRight"

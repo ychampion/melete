@@ -105,7 +105,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
-pathlib.Path(os.environ['MELETE_RUNTIME_ADDRESS_FILE']).write_text(json.dumps({'port': server.server_port}))
+address = pathlib.Path(os.environ['MELETE_RUNTIME_ADDRESS_FILE'])
+address.with_suffix('.tmp').write_text(json.dumps({'port': server.server_port}))
+os.replace(address.with_suffix('.tmp'), address)
 server.serve_forever()
 `,
       );
@@ -195,7 +197,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
-pathlib.Path(os.environ['MELETE_RUNTIME_ADDRESS_FILE']).write_text(json.dumps({'port': server.server_port}))
+address = pathlib.Path(os.environ['MELETE_RUNTIME_ADDRESS_FILE'])
+address.with_suffix('.tmp').write_text(json.dumps({'port': server.server_port}))
+os.replace(address.with_suffix('.tmp'), address)
 server.serve_forever()
 `,
       );
@@ -391,7 +395,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
-pathlib.Path(os.environ['MELETE_RUNTIME_ADDRESS_FILE']).write_text(json.dumps({'port': server.server_port}))
+address = pathlib.Path(os.environ['MELETE_RUNTIME_ADDRESS_FILE'])
+address.with_suffix('.tmp').write_text(json.dumps({'port': server.server_port}))
+os.replace(address.with_suffix('.tmp'), address)
 server.serve_forever()
 `,
       );
