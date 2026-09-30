@@ -1,0 +1,152 @@
+/**
+ * A read that fails is a failed read. Listing a folder a new space has not made
+ * yet, reading a file that is not there or a lookup that errors must come back
+ * to the model with a reason, and must never leave an effect "unknown" or ask
+ * anyone to reconcile something that changed nothing. (A write that fails
+ * the same untyped way still rests unknown; `repair.test.ts` holds that.)
+ */
+import { afterAll, expect, test } from 'bun:test';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import type { ConnectorManifest } from '@melete/contracts';
+import { BrokerService } from '../../src/broker/service.ts';
+import { createFilesConnector } from '../../src/connectors/files.ts';
+import { ConnectorRegistry } from '../../src/connectors/registry.ts';
+import type { Connector } from '../../src/connectors/types.ts';
+import { seedJob } from '../helpers/broker.ts';
+import { testDatabase } from '../helpers/database.ts';
+
+const fixture = await testDatabase();
+const databaseTest = fixture ? test : test.skip;
+const SLOW = 30_000;
+const roots: string[] = [];
+
+afterAll(async () => {
+  for (const root of roots) await rm(root, { recursive: true, force: true });
+  await fixture?.close();
+}, 15_000);
+
+/** A lookup that fails every call with an error nobody typed. */
+function failingLookup(message: string): Connector {
+  const manifest: ConnectorManifest = {
+    name: 'test',
+    version: '0.1.0',
+    provider: 'test',
+    description: 'A destination that fails without saying how.',
+    credentials: [],
+    health: true,
+    tools: [
+      {
+        name: 'test.lookup',
+        description: 'Fails every time.',
+        input_schema: { type: 'object', additionalProperties: true },
+        effect_class: 'read',
+        required_scopes: [],
+        verify: false,
+        requires_approval: false,
+      },
+    ],
+  };
+  return {
+    manifest,
+    async execute() {
+      throw new Error(message);
+    },
+    async verify() {
+      return { decision: 'unsupported', reason: 'nothing to verify' };
+    },
+    async health() {
+      return { status: 'ok', detail: 'fixture', checked_at: new Date().toISOString() };
+    },
+  };
+}
+
+async function setup(
+  scopes: string[],
+  provider: string,
+  connector: (roots: { workRoot: string; spacesRoot: string }) => Connector,
+) {
+  if (!fixture) throw new Error('Postgres fixture unavailable');
+  const { sql } = fixture;
+  const seed = await seedJob(sql, { scopes, provider });
+  const root = await mkdtemp(path.join(tmpdir(), 'melete-reads-'));
+  roots.push(root);
+  // A fresh install: the roots exist, and nothing inside them for this space or job.
+  const workRoot = path.join(root, 'work');
+  const spacesRoot = path.join(root, 'spaces');
+  await mkdir(workRoot);
+  await mkdir(spacesRoot);
+  const registry = new ConnectorRegistry().register(
+    seed.connectionId,
+    connector({ workRoot, spacesRoot }),
+  );
+  return { ...seed, sql, broker: new BrokerService({ sql, connectors: registry }) };
+}
+
+async function standing(sql: NonNullable<typeof fixture>['sql'], jobId: string) {
+  const [job] = await sql`select state from job where id = ${jobId}`;
+  const [questions] =
+    await sql`select count(*)::int as count from question where job_id = ${jobId} and state = 'open'`;
+  return { state: job?.state, questions: questions?.count };
+}
+
+databaseTest(
+  'listing and reading what a new space has not made yet is an answer, not an unknown',
+  async () => {
+    const ctx = await setup(['files.list', 'files.read'], 'files', (roots) =>
+      createFilesConnector(roots),
+    );
+    const empty = await ctx.broker.propose(ctx.claims, {
+      kind: 'files.list',
+      connection_id: ctx.connectionId,
+      payload: { area: 'artifacts', path: '.' },
+    });
+    expect(empty.status).toBe('succeeded');
+    for (const payload of [{ path: 'memory' }, { path: 'sources' }]) {
+      const missing = await ctx.broker.propose(ctx.claims, {
+        kind: 'files.list',
+        connection_id: ctx.connectionId,
+        payload,
+      });
+      expect(missing.status).toBe('failed');
+      expect(missing.message).toContain(`there is no folder "${payload.path}" in work`);
+    }
+    const unread = await ctx.broker.propose(ctx.claims, {
+      kind: 'files.read',
+      connection_id: ctx.connectionId,
+      payload: { path: 'plans/dentist.md' },
+    });
+    expect(unread.status).toBe('failed');
+    expect(unread.message).toContain('there is no file "plans/dentist.md" in work');
+    // The job carries on, and nobody is asked about a lookup.
+    expect(await standing(ctx.sql, ctx.claims.job_id)).toEqual({ state: 'running', questions: 0 });
+    const actions = await ctx.sql`select status from action where job_id = ${ctx.claims.job_id}`;
+    expect(actions.map((row) => row.status).sort()).toEqual([
+      'failed',
+      'failed',
+      'failed',
+      'succeeded',
+    ]);
+  },
+  SLOW,
+);
+
+databaseTest(
+  'an untyped failure of a lookup fails with its reason and leaves the job running',
+  async () => {
+    const ctx = await setup(['test.lookup'], 'test', () =>
+      failingLookup('upstream answered HTTP 503 for /var/lib/melete/cache/prices.json'),
+    );
+    const result = await ctx.broker.propose(ctx.claims, {
+      kind: 'test.lookup',
+      connection_id: ctx.connectionId,
+      payload: { q: 'bitcoin price' },
+    });
+    expect(result.status).toBe('failed');
+    expect(result.message).toContain('upstream answered HTTP 503 for <path>');
+    expect(result.message).not.toContain('/var/lib');
+    expect(await standing(ctx.sql, ctx.claims.job_id)).toEqual({ state: 'running', questions: 0 });
+  },
+  SLOW,
+);

@@ -35,7 +35,7 @@ import {
   repairTraceEntry,
   type VerifyResult,
 } from '@melete/contracts';
-import type { ConnectorDescription } from '../connectors/faults.ts';
+import { type ConnectorDescription, readFault } from '../connectors/faults.ts';
 import { collectOriginFields } from './trust.ts';
 
 // --------------------------------------------------------------------------
@@ -584,6 +584,12 @@ export type RepairOptions = {
   trustGated?: boolean;
   /** The tool being repaired. A mapping is never allowed to change it. */
   operation: string;
+  /**
+   * True for a `read`. A read that could not be done is a failed read with its
+   * reason for the model to act on: never an uncertain effect, and never a
+   * question for a person unless a person has to reconnect something.
+   */
+  readOnly?: boolean;
   classify(error: unknown): ConnectorFault;
 };
 
@@ -735,10 +741,18 @@ export async function runRepair(
       // A connector that answered rather than threw has already decided. The
       // policy does not second-guess a plain failed or a plain unknown, which
       // is exactly what the broker did before typed faults existed.
-      if (outcome.outcome === 'unknown') return finish('needs_reconciliation', outcome, null);
+      if (outcome.outcome === 'unknown')
+        return options.readOnly
+          ? finish(
+              'repair_exhausted',
+              { outcome: 'failed', reason: outcome.reason, retryable: true },
+              null,
+            )
+          : finish('needs_reconciliation', outcome, null);
       return finish('repair_exhausted', outcome, null);
     }
 
+    if (options.readOnly) fault = readFault(fault);
     count(fault.kind);
 
     // One fault, as many decisions as it takes to know what to do about it.
@@ -851,6 +865,15 @@ export async function runRepair(
             'needs_reconciliation',
             { outcome: 'unknown', reason: fault.detail },
             UNCERTAIN_QUESTION,
+          );
+        }
+        // A read that could not be done is the model's to work around, with the
+        // reason in hand. Nobody is asked about a lookup that changed nothing.
+        if (options.readOnly && choice.disposition === 'repair_exhausted') {
+          return finish(
+            'repair_exhausted',
+            { outcome: 'failed', reason: fault.detail, retryable: false },
+            null,
           );
         }
         return finish(

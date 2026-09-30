@@ -14,6 +14,7 @@ import {
   type ConnectorFault,
   type ConnectorFaultKind,
   connectorFault,
+  type EffectClass,
   type JsonObject,
 } from '@melete/contracts';
 
@@ -58,13 +59,71 @@ export function asConnectorFault(error: unknown): ConnectorFault | null {
  */
 export const UNCLASSIFIED_DETAIL = 'The destination did not return a confirmed acknowledgement';
 
-export function unclassifiedFault(_error: unknown): ConnectorFault {
+/**
+ * A read changes nothing, so "it may have landed" is never true of one. An
+ * untyped throw from a read is a failed read with its reason, which the model
+ * can act on; only an effect that changes something can be left uncertain.
+ */
+export function unclassifiedFault(error: unknown, effectClass?: EffectClass): ConnectorFault {
+  if (effectClass === 'read')
+    return connectorFault.parse({
+      kind: 'unclassified',
+      detail: describeFailure(error),
+      may_have_committed: false,
+      retry_after: null,
+    });
   return connectorFault.parse({
     kind: 'unclassified',
     detail: UNCLASSIFIED_DETAIL,
     may_have_committed: true,
     retry_after: null,
   });
+}
+
+/**
+ * The fault a read reports, whoever classified it. Nothing a read does can
+ * have committed, and an uncertain outcome of a read is just a read to repeat.
+ */
+export function readFault(fault: ConnectorFault): ConnectorFault {
+  if (fault.kind === 'uncertain_outcome')
+    return { ...fault, kind: 'transient_before_dispatch', may_have_committed: false };
+  return fault.may_have_committed ? { ...fault, may_have_committed: false } : fault;
+}
+
+const SYSTEM_FAILURES: Record<string, string> = {
+  ENOENT: 'not found',
+  ENOTDIR: 'not a folder',
+  EISDIR: 'a folder, not a file',
+  EACCES: 'permission denied',
+  EPERM: 'permission denied',
+  ETIMEDOUT: 'timed out',
+  ECONNREFUSED: 'the destination refused the connection',
+  ECONNRESET: 'the connection was reset',
+  ENOTFOUND: 'the address could not be found',
+  EAI_AGAIN: 'the address could not be looked up',
+};
+
+/**
+ * One short line saying why a read failed, safe to show the model and to keep
+ * on the record: system errors by their code, anything else by the first line
+ * of its message with host paths and address query strings taken out.
+ */
+export function describeFailure(error: unknown): string {
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? String((error as { code: unknown }).code)
+      : '';
+  const known = SYSTEM_FAILURES[code];
+  if (known) return known;
+  if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError'))
+    return 'timed out';
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const line = (message.split(/\r?\n/, 1)[0] ?? '')
+    .replace(/(?<=^|[\s'"(=])(?:[A-Za-z]:)?[\\/][^\s'"]*/g, '<path>')
+    .replace(/(https?:\/\/[^\s'"?#]+)[?#][^\s'"]*/g, '$1')
+    .trim()
+    .slice(0, 200);
+  return line || 'the read failed';
 }
 
 /**
