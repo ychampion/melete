@@ -138,6 +138,14 @@ import {
   recallResult,
   sourceEvidenceResponse,
 } from './memory.ts';
+import {
+  keyedModelProvider,
+  modelSettingsResponse,
+  saveModelKeyRequest,
+  setDefaultModelRequest,
+  testModelConnectionRequest,
+  testModelConnectionResponse,
+} from './model-settings.ts';
 import { installPluginRequest, installPluginResponse, pluginListResponse } from './plugins.ts';
 import {
   createPrincipalRequest,
@@ -2553,6 +2561,87 @@ export function buildOpenApiDocument() {
               '400': problem('Invalid request'),
               '403': problem('Only the person who runs the installation changes a status'),
               '404': problem('No such report'),
+            },
+          },
+        },
+
+        '/model-settings': {
+          get: {
+            tags: ['model-providers'],
+            summary: 'Which model new attempts use, and how each provider is connected',
+            description:
+              'Any signed-in account may read it; `can_edit` says whether this one may change it. ' +
+              'No key is ever returned, only whether one is set and its last four characters. A key ' +
+              'the server environment names wins over one entered here and is shown as `operator`.',
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '401': problem('Not signed in'),
+            },
+          },
+        },
+
+        '/model-settings/test': {
+          post: {
+            tags: ['model-providers'],
+            summary: 'Try a provider key with one small call, and list the provider’s models',
+            description:
+              'Asks the provider for its model list with the given key, or with the key already set. ' +
+              'A refusal answers 200 with `ok: false` and a plain sentence; nothing is saved.',
+            requestBody: json(testModelConnectionRequest),
+            responses: {
+              '200': jsonResponse('What the provider answered', testModelConnectionResponse),
+              '400': problem('Invalid request'),
+              '403': problem('Only the setup owner changes the model'),
+            },
+          },
+        },
+
+        '/model-settings/keys/{provider}': {
+          put: {
+            tags: ['model-providers'],
+            summary: 'Store a provider key, sealed with the master key',
+            requestParams: { path: z.object({ provider: keyedModelProvider }) },
+            requestBody: json(saveModelKeyRequest),
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '400': problem('Invalid key or endpoint address'),
+              '403': problem('Only the setup owner changes the model'),
+              '409': problem('The server environment already sets this provider’s key'),
+              '503': problem('MELETE_MASTER_KEY is not set, so the key cannot be sealed'),
+            },
+          },
+          delete: {
+            tags: ['model-providers'],
+            summary: 'Remove a key entered in the app',
+            requestParams: { path: z.object({ provider: keyedModelProvider }) },
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '403': problem('Only the setup owner changes the model'),
+            },
+          },
+        },
+
+        '/model-settings/default': {
+          put: {
+            tags: ['model-providers'],
+            summary: 'Choose the model new attempts use',
+            description:
+              'Takes effect for the next attempt, without a restart. The provider must already have ' +
+              'a key or a sign-in.',
+            requestBody: json(setDefaultModelRequest),
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '400': problem('Invalid request'),
+              '403': problem('Only the setup owner changes the model'),
+              '409': problem('The provider has no key or sign-in yet'),
+            },
+          },
+          delete: {
+            tags: ['model-providers'],
+            summary: 'Go back to the server’s default model',
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '403': problem('Only the setup owner changes the model'),
             },
           },
         },

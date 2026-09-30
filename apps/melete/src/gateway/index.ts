@@ -36,6 +36,12 @@ export interface GatewayOptions {
   authenticate(token: string): Promise<GatewayPrincipal>;
   budget: GatewayBudget;
   providers?: GatewayProvider[];
+  /**
+   * The providers as they stand for one request, given the configured ones.
+   * Keys and endpoints the owner connects in the app are added here, so a
+   * change applies to the next model call without a restart.
+   */
+  currentProviders?: (configured: GatewayProvider[]) => Promise<GatewayProvider[]>;
   defaultProvider?: string;
   /** Test injection or a service-owned transport; never selected by a request. */
   fetch?: (request: Request) => Promise<Response>;
@@ -171,7 +177,7 @@ export function createModelGateway(options: GatewayOptions): Server {
       }
       const { provider, protocol, upstream } = resolveRoute(
         target,
-        providers,
+        options.currentProviders ? await options.currentProviders(providers) : providers,
         options.defaultProvider ?? 'fireworks',
       );
       const surrogate =

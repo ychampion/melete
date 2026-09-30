@@ -20,6 +20,7 @@ import {
 import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
 import type { GatewayOptions } from '../gateway/index.ts';
+import { ModelSettingsService } from '../gateway/model-settings.ts';
 import { startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
@@ -48,6 +49,8 @@ export async function startEffectBoundary(
     registry?: ConnectorRegistry;
     /** The owner's provider sign-ins, shared with the API that manages them. */
     signIn?: ProviderSignIn;
+    /** The model connected in the app; left out, read from this database. */
+    modelSettings?: ModelSettingsService;
   } = {},
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -58,11 +61,11 @@ export async function startEffectBoundary(
   const binding = parseBrokerBind(env.MELETE_BROKER_BIND);
   if (!binding) throw new Error('MELETE_BROKER_BIND must be hostname:port');
   const { hostname, port } = binding;
-  const providers = configuredProviders(
-    env,
-    undefined,
-    dependencies.signIn ?? providerSignIn(handle.sql, env),
-  );
+  const signIn = dependencies.signIn ?? providerSignIn(handle.sql, env);
+  const providers = configuredProviders(env, undefined, signIn);
+  // Keys and endpoints the owner connects in the app join per model call.
+  const modelSettings =
+    dependencies.modelSettings ?? new ModelSettingsService({ db: handle.db, env, signIn });
   const connections =
     dependencies.connections ?? (await readConnectionConfig(env.MELETE_CONNECTIONS_FILE));
   const browser = dependencies.browserSessions
@@ -106,6 +109,7 @@ export async function startEffectBoundary(
       deferApprovalWaitToRunner: true,
       boss: queue.boss,
       providers,
+      currentProviders: (configured) => modelSettings.providers(configured),
       defaultProvider: env.MELETE_DEFAULT_PROVIDER,
       defaultMaxTokens: env.MELETE_DEFAULT_MAX_OUTPUT_TOKENS,
       fake: env.MELETE_ENABLE_FAKE_PROVIDER ? dependencies.fakeProvider : undefined,
