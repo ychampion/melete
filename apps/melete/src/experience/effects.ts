@@ -453,10 +453,16 @@ export class ExperienceEffects {
         return unavailable(
           `The person turned down a message from this assistant in the last ${ASSISTANT_SEND_COOLDOWN_MINUTES} minutes. Nothing was sent; do not ask again yet.`,
         );
-      const [open] = await tx`select count(*)::int as n from job j join action a on a.job_id = j.id
+      // A message another request has started but not yet proposed holds its
+      // place too: the broker proposes after this lock is released, so counting
+      // proposed actions alone would let simultaneous requests pass the limit.
+      const [open] = await tx`select count(*)::int as n from job j
         where j.principal_id = ${input.principalId} and j.kind = 'command'
         and starts_with(j.experience_command_key, ${personPrefix})
-        and a.status in ('proposed', 'needs_approval')`;
+        and (exists (select 1 from action a where a.job_id = j.id
+            and a.status in ('proposed', 'needs_approval'))
+          or (j.state = 'running' and j.created_at > now() - interval '5 minutes'
+            and not exists (select 1 from action a where a.job_id = j.id)))`;
       if (Number(open?.n ?? 0) >= ASSISTANT_SENDS_WAITING)
         return unavailable(
           `${ASSISTANT_SENDS_WAITING} messages from assistants already wait for the person's approval in Melete. Nothing was sent; wait until they decide.`,
