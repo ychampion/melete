@@ -65,6 +65,7 @@ import {
   AUTO_REVIEW_DEFAULTS,
   type AutoReviewOptions,
   actionReviewView,
+  CHANGES_EXISTING_EVENT,
   deciding,
   escalationReason,
   loadApprovalSettings,
@@ -94,7 +95,7 @@ import {
 } from './records.ts';
 import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } from './repair.ts';
 import { RESUME_ACTION_TOOL } from './resume.ts';
-import { type ReviewInput, reviewWithin } from './reviewer.ts';
+import { type ReviewInput, type ReviewVerdict, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
 import {
   collectOriginFields,
@@ -224,6 +225,10 @@ const ownerAnswered = (action: Action) =>
   ['succeeded', 'failed'].includes(action.status) &&
   (action.reconciliation as Record<string, unknown> | null)?.decided_by === 'owner';
 
+/** Job states after which none of the job's actions can run. */
+const ENDED_JOB_STATES = new Set(['cancelled', 'failed', 'completed']);
+/** The longest classification waits for a calendar to say who an event's guests are. */
+const EXISTING_GUESTS_TIMEOUT_MS = 5_000;
 /** The longest a connector may ask one dispatch to take. */
 const MAX_DISPATCH_BUDGET_MS = 10 * 60_000;
 /** The limits a caller set, so an unset one keeps its default. */
@@ -607,11 +612,18 @@ export class BrokerService implements BrokerOperations {
           fields: deciding(action.canonical_payload, action.kind),
         },
       );
+      // A change to an existing event is the person's own only if the event has
+      // no guests now. Asked only when the answer could let it be reviewed.
+      const existingGuests =
+        CHANGES_EXISTING_EVENT.has(tool.name) && settings.classes.calendar && !agentAsks
+          ? await this.existingGuests(job, action)
+          : null;
       const tier = reviewTier({
         tool,
         provider,
         payload: action.canonical_payload,
         doubts: [...doubts, ...warnings],
+        existingGuests,
       });
       const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
       auto = {
@@ -638,6 +650,25 @@ export class BrokerService implements BrokerOperations {
       authorized_by: authorizedBy,
       auto,
     };
+  }
+
+  /**
+   * How many guests the event this action changes has now, or null when the
+   * connector cannot say. It is read at every classification, so guests added
+   * after a review still send the change to the person at admission.
+   */
+  private async existingGuests(job: LockedJob, action: Action): Promise<number | null> {
+    const connector = this.options.connectors.get(action.connection_id);
+    if (!connector?.existingGuests) return null;
+    try {
+      const count = await connector.existingGuests(action, {
+        ...this.context(job, action),
+        signal: AbortSignal.timeout(EXISTING_GUESTS_TIMEOUT_MS),
+      });
+      return Number.isInteger(count) && count >= 0 ? count : null;
+    } catch {
+      return null;
+    }
   }
 
   private approvalRow(row: Record<string, unknown>) {
@@ -835,11 +866,12 @@ export class BrokerService implements BrokerOperations {
   private async settleReview(claims: CapabilityClaims, pending: PendingReview): Promise<Action> {
     const options = this.options.autoReview;
     const started = Date.now();
-    const verdict = options?.reviewer
+    const verdict: ReviewVerdict = options?.reviewer
       ? await reviewWithin(
           options.reviewer,
           pending.input,
           options.timeoutMs ?? AUTO_REVIEW_DEFAULTS.timeoutMs,
+          { spaceId: pending.space_id, jobId: pending.job_id },
         )
       : ({ verdict: 'none', failure: 'unavailable', reason: 'No reviewer is set up.' } as const);
     const latency = Date.now() - started;
@@ -859,7 +891,11 @@ export class BrokerService implements BrokerOperations {
           : ''
         : classified.auto?.outcome === 'review'
           ? escalationReason(verdict)
-          : 'Your approval settings changed while this was being reviewed.';
+          : // What changed is the action's own standing (a guest added, a value
+            // no longer vouched for), or else the person's settings.
+            classified.auto?.tier.tier === 'person'
+            ? classified.auto.tier.reason
+            : 'Your approval settings changed while this was being reviewed.';
       const stored = await loadBinding(tx, action);
       const approvalId = recordId('apr');
       await tx`insert into approval
@@ -881,7 +917,7 @@ export class BrokerService implements BrokerOperations {
         outcome: approved ? 'approved' : 'escalated',
         risk: verdict.verdict === 'none' ? null : verdict.risk,
         reason,
-        model: options?.reviewer?.model ?? null,
+        model: verdict.model ?? options?.reviewer?.model ?? null,
         latency_ms: latency,
       });
       if (approved) await this.setStatus(tx, action, 'approved');
@@ -896,13 +932,17 @@ export class BrokerService implements BrokerOperations {
   /**
    * A review a crash interrupted: the action is still `proposed`, nobody was
    * asked, and the review's own time is long past. It goes to the person.
-   * Called by the recovery sweep.
+   * Called by the recovery sweep. A job that has ended since (cancelled,
+   * failed or completed) is left alone: nothing of it can run any more, so a
+   * card for it would only ask a question whose answer changes nothing.
    */
   async escalateStaleReviews(olderThanMs = 60_000): Promise<number> {
     const stale = await this.sql`select a.id from action a
+      join job j on j.id = a.job_id
       join event e on e.job_id = a.job_id and e.type = 'notice'
         and e.payload->>'kind' = 'auto_review_started' and e.payload->>'action_id' = a.id
       where a.status = 'proposed'
+        and j.state not in ('cancelled', 'failed', 'completed')
         and not exists (select 1 from approval p where p.action_id = a.id)
         and not exists (select 1 from action_review r where r.action_id = a.id)
         and e.created_at < clock_timestamp() - make_interval(secs => ${olderThanMs / 1000})
@@ -914,7 +954,7 @@ export class BrokerService implements BrokerOperations {
         const job = await lockJob(tx, original.job_id);
         const action = await loadAction(tx, original.id, true);
         const [asked] = await tx`select id from approval where action_id = ${action.id}`;
-        if (action.status !== 'proposed' || asked) return 0;
+        if (action.status !== 'proposed' || asked || ENDED_JOB_STATES.has(job.state)) return 0;
         const reason = 'The review did not finish, so this one is yours to decide.';
         const stored = await loadBinding(tx, action);
         const approvalId = recordId('apr');

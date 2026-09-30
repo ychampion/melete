@@ -36,22 +36,47 @@ export type ReviewInput = {
   origins: Array<{ field: string; value: string; trust: string; note: string }>;
 };
 
-export type ReviewVerdict =
+export type ReviewVerdict = (
   | { verdict: 'approve' | 'escalate'; risk: ReviewRisk; reason: string }
   /** No usable verdict. `failure` says which kind, for the reason the person reads. */
-  | { verdict: 'none'; failure: 'timeout' | 'unavailable' | 'unreadable'; reason: string };
+  | { verdict: 'none'; failure: 'timeout' | 'unavailable' | 'unreadable'; reason: string }
+) & {
+  /** The model this review went to, when it differs from the reviewer's usual one. */
+  model?: string;
+};
+
+/**
+ * Whose action a review is about: the space it belongs to and the job that
+ * proposed it. The review gateway puts both on the call's principal, so the
+ * call is attributed to that space like any other model call the service makes.
+ */
+export type ReviewScope = { spaceId: string; jobId: string };
 
 export interface Reviewer {
-  /** The model that reviews, recorded beside each decision it makes. */
+  /** The model that reviews, recorded beside each decision it makes unless the verdict names one. */
   readonly model: string;
-  review(input: ReviewInput, signal: AbortSignal): Promise<ReviewVerdict>;
+  review(input: ReviewInput, signal: AbortSignal, scope: ReviewScope): Promise<ReviewVerdict>;
+}
+
+/** What one chat round trip answered, and which model answered it. */
+export type ReviewReply = { text: string; model?: string };
+
+/** A chat round trip that failed after choosing its model, so the record can still name it. */
+export class ReviewCallFailed extends Error {
+  constructor(
+    readonly model: string,
+    options?: { cause?: unknown },
+  ) {
+    super('The review call failed.', options);
+  }
 }
 
 /** One chat round trip. The review gateway supplies it; tests supply a stand-in. */
 export type ReviewChat = (
   messages: Array<{ role: 'system' | 'user'; content: string }>,
   signal: AbortSignal,
-) => Promise<string>;
+  scope: ReviewScope,
+) => Promise<string | ReviewReply>;
 
 const LIMITS = { string: 2_000, payload: 12_000, recent: 6, message: 600, origins: 40 };
 
@@ -159,25 +184,30 @@ export function createModelReviewer(options: {
   const nonce = options.nonce ?? (() => randomBytes(12).toString('hex'));
   return {
     model: options.model,
-    async review(input, signal) {
+    async review(input, signal, scope) {
       const id = nonce();
-      let text: string;
+      let reply: string | ReviewReply;
       try {
-        text = await options.chat(reviewPrompt(input, id), signal);
-      } catch {
+        reply = await options.chat(reviewPrompt(input, id), signal, scope);
+      } catch (error) {
+        const tried = error instanceof ReviewCallFailed ? { model: error.model } : {};
         if (signal.aborted)
           return {
             verdict: 'none',
             failure: 'timeout',
             reason: 'The reviewer did not answer in time.',
+            ...tried,
           };
         return {
           verdict: 'none',
           failure: 'unavailable',
           reason: 'The reviewer could not be reached.',
+          ...tried,
         };
       }
-      return parseVerdict(text, id);
+      if (typeof reply === 'string') return parseVerdict(reply, id);
+      const verdict = parseVerdict(reply.text, id);
+      return reply.model ? { ...verdict, model: reply.model } : verdict;
     },
   };
 }
@@ -190,6 +220,7 @@ export async function reviewWithin(
   reviewer: Reviewer,
   input: ReviewInput,
   timeoutMs: number,
+  scope: ReviewScope,
 ): Promise<ReviewVerdict> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -206,7 +237,7 @@ export async function reviewWithin(
   });
   try {
     return await Promise.race([
-      reviewer.review(input, controller.signal).catch(
+      reviewer.review(input, controller.signal, scope).catch(
         (): ReviewVerdict => ({
           verdict: 'none',
           failure: 'unavailable',

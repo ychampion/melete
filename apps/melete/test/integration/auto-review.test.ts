@@ -11,6 +11,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import {
   type ApprovalSettings,
+  type CapabilityClaims,
   type ConnectorManifest,
   DEFAULT_APPROVAL_SETTINGS,
   type JsonObject,
@@ -62,6 +63,7 @@ const TOOLS: ToolSpec[] = [
   ['tasks.rename', 'write_reversible', false],
   ['tasks.delete', 'write_reversible', true],
   ['calendar.create', 'write_external', false],
+  ['calendar.update', 'write_external', false],
   ['email.send', 'write_external', true],
   ['payments.pay', 'spend', true],
   ['vault.store', 'write_reversible', true],
@@ -114,6 +116,8 @@ async function setup(
     agentAsks?: boolean;
     trust?: TrustTable;
     autoReview?: Partial<NonNullable<BrokerOptions['autoReview']>>;
+    /** How many guests the connector's calendar says an updated event has; left out, it cannot say. */
+    guests?: () => number | Promise<number>;
   } = {},
 ) {
   if (!fixture) throw new Error('Postgres fixture unavailable');
@@ -136,8 +140,10 @@ async function setup(
       classes: { ...DEFAULT_APPROVAL_SETTINGS.classes, ...options.settings.classes },
     });
   const dispatched: string[] = [];
+  const guests = options.guests;
   const connector: Connector = {
     manifest,
+    ...(guests ? { existingGuests: async () => guests() } : {}),
     async execute(action) {
       dispatched.push(action.kind);
       return {
@@ -177,6 +183,27 @@ async function setup(
 }
 
 const ownRecipient: TrustTable = { 'sam@example.com': { origin_trust: 'owner' } };
+
+/** Another running job, with its own attempt, in the space `claims` works in. */
+async function sameSpaceJob(sql: NonNullable<typeof fixture>['sql'], claims: CapabilityClaims) {
+  const jobId = recordId('job');
+  const attemptId = recordId('att');
+  await sql`insert into job (id, space_id, title, objective, state, lease_epoch, budget, constraints)
+    select ${jobId}, space_id, title, objective, state, lease_epoch, budget, constraints
+    from job where id = ${claims.job_id}`;
+  await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+    values (${attemptId}, ${jobId}, 1, 'fake', 'fake', 'scripted')`;
+  return { ...claims, job_id: jobId, attempt_id: attemptId };
+}
+
+/** Wait until `ready` holds, polling the database; fail the test if it never does. */
+async function until(ready: () => Promise<boolean>, what: string) {
+  for (let tries = 0; tries < 400; tries++) {
+    if (await ready()) return;
+    await Bun.sleep(25);
+  }
+  throw new Error(`Timed out waiting for ${what}`);
+}
 
 describe('auto-review tiers', () => {
   databaseTest(
@@ -481,6 +508,57 @@ describe('limits', () => {
     expect(third.message).toContain('limit for this hour');
   });
 
+  databaseTest(
+    'parallel proposals in one space never start more reviews than the hourly limit',
+    async () => {
+      let open: () => void = () => {};
+      const gate = new Promise<void>((resolve) => (open = resolve));
+      const { reviewer, seen } = scripted(async () => {
+        await gate;
+        return approve();
+      });
+      const s = await setup({
+        reviewer,
+        settings: { classes: { app_changes: true } },
+        autoReview: { hourlyLimit: 2, timeoutMs: 20_000 },
+      });
+      const jobs = [s.claims];
+      for (let more = 0; more < 4; more++) jobs.push(await sameSpaceJob(s.sql, s.claims));
+      const proposing = jobs.map((claims, index) =>
+        s.broker.propose(claims, {
+          connection_id: s.connectionId,
+          kind: 'tasks.create',
+          payload: { title: `parallel ${index}` },
+        }),
+      );
+      // Every proposal has either started its review or asked the person, and
+      // no review has finished: each review waits on the gate.
+      await until(async () => {
+        const [row] = await s.sql`select count(*)::int as settled from action a
+          join job j on j.id = a.job_id
+          where j.space_id = ${s.claims.space_id}
+            and (a.status = 'needs_approval' or exists (select 1 from event e
+              where e.job_id = a.job_id and e.payload->>'kind' = 'auto_review_started'
+                and e.payload->>'action_id' = a.id))`;
+        return Number(row?.settled) === jobs.length;
+      }, 'every proposal to start a review or ask');
+      open();
+      const results = await Promise.all(proposing);
+      expect(seen).toHaveLength(2);
+      expect(results.filter((result) => result.status === 'succeeded')).toHaveLength(2);
+      const asked = results.filter((result) => result.status === 'needs_approval');
+      expect(asked).toHaveLength(3);
+      for (const result of asked)
+        expect((await s.reviews(result.action_id))[0]).toMatchObject({
+          decided_by: 'policy',
+          outcome: 'escalated',
+          reason:
+            'Auto-review has reached its limit for this hour, so this one is yours to decide.',
+        });
+    },
+    30_000,
+  );
+
   databaseTest('three escalations in a row stop reviews for that job', async () => {
     const { reviewer, seen } = scripted(escalate);
     const s = await setup({ reviewer, settings: { classes: { app_changes: true } } });
@@ -557,6 +635,131 @@ describe('audit and recovery', () => {
       });
     },
   );
+});
+
+describe('a review cut short by the task ending', () => {
+  for (const state of ['cancelled', 'failed', 'completed'] as const)
+    databaseTest(`raises no card once the task is ${state}`, async () => {
+      let release: (verdict: ReviewVerdict) => void = () => {};
+      const { reviewer } = scripted(
+        () => new Promise<ReviewVerdict>((resolve) => (release = resolve)),
+      );
+      const s = await setup({
+        reviewer,
+        settings: { classes: { app_changes: true } },
+        autoReview: { timeoutMs: 20_000 },
+      });
+      const proposing = s.propose('tasks.create', { title: `Ended: ${state}` });
+      let actionId = '';
+      await until(async () => {
+        const [row] = await s.sql`select a.id from action a join event e on e.job_id = a.job_id
+          and e.payload->>'kind' = 'auto_review_started' and e.payload->>'action_id' = a.id
+          where a.job_id = ${s.claims.job_id}`;
+        actionId = row ? String(row.id) : '';
+        return Boolean(actionId);
+      }, 'the review to start');
+      await s.sql`update job set state = ${state}, lease_epoch = lease_epoch + 1
+        where id = ${s.claims.job_id}`;
+      expect(await s.broker.escalateStaleReviews(0)).toBe(0);
+      release(approve());
+      // The attempt that proposed it is no longer current, so its answer is refused.
+      await rejectionOf(proposing);
+      expect(await s.broker.escalateStaleReviews(0)).toBe(0);
+      expect(await s.sql`select id from approval where action_id = ${actionId}`).toHaveLength(0);
+      const cards = await s.sql`select seq from event where job_id = ${s.claims.job_id}
+        and type = 'approval_requested'`;
+      expect(cards).toHaveLength(0);
+      const [action] = await s.sql`select status from action where id = ${actionId}`;
+      expect(action?.status).toBe('proposed');
+      expect(s.dispatched).toEqual([]);
+    });
+});
+
+describe('changes to an existing calendar event', () => {
+  const update = {
+    uid: 'act_existing',
+    etag: '"1"',
+    summary: 'Focus',
+    start: '2026-10-01T09:00:00Z',
+    end: '2026-10-01T10:00:00Z',
+  };
+  /** The event's UID as a calendar listing supplies it. */
+  const listedEvent: TrustTable = { act_existing: { origin_trust: 'verified_connector' } };
+
+  databaseTest('an update to a meeting with guests goes to the person, unreviewed', async () => {
+    const { reviewer, seen } = scripted(approve);
+    let checked = 0;
+    const s = await setup({
+      reviewer,
+      settings: { classes: { calendar: true } },
+      trust: listedEvent,
+      guests: () => {
+        checked += 1;
+        return 2;
+      },
+    });
+    const proposal = await s.propose('calendar.update', update);
+    expect(proposal.status).toBe('needs_approval');
+    expect(checked).toBeGreaterThan(0);
+    expect(seen).toHaveLength(0);
+    expect(s.dispatched).toEqual([]);
+  });
+
+  databaseTest(
+    'an update to an event without guests is reviewed; one nobody can describe is not',
+    async () => {
+      const { reviewer, seen } = scripted(approve);
+      const alone = await setup({
+        reviewer,
+        settings: { classes: { calendar: true } },
+        trust: listedEvent,
+        guests: () => 0,
+      });
+      expect((await alone.propose('calendar.update', update)).status).toBe('succeeded');
+      expect(seen).toHaveLength(1);
+      expect(alone.dispatched).toEqual(['calendar.update']);
+
+      const unreadable = await setup({
+        reviewer,
+        settings: { classes: { calendar: true } },
+        trust: listedEvent,
+        guests: () => {
+          throw new Error('calendar unavailable');
+        },
+      });
+      expect((await unreadable.propose('calendar.update', update)).status).toBe('needs_approval');
+      // A connector that cannot read an event's guests at all.
+      const unknown = await setup({
+        reviewer,
+        settings: { classes: { calendar: true } },
+        trust: listedEvent,
+      });
+      expect((await unknown.propose('calendar.update', update)).status).toBe('needs_approval');
+      expect(seen).toHaveLength(1);
+    },
+  );
+
+  databaseTest('guests added while the review runs send the update to the person', async () => {
+    let guests = 0;
+    const { reviewer } = scripted(() => {
+      guests = 1;
+      return approve();
+    });
+    const s = await setup({
+      reviewer,
+      settings: { classes: { calendar: true } },
+      trust: listedEvent,
+      guests: () => guests,
+    });
+    const proposal = await s.propose('calendar.update', update);
+    expect(proposal.status).toBe('needs_approval');
+    expect(s.dispatched).toEqual([]);
+    expect((await s.reviews(proposal.action_id))[0]).toMatchObject({
+      decided_by: 'reviewer',
+      outcome: 'escalated',
+      reason: 'It changes a meeting that has guests, and they would be told.',
+    });
+  });
 });
 
 describe('approval settings', () => {

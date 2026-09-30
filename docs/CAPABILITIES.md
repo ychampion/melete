@@ -147,16 +147,20 @@ works this out again at admission and does not trust what the proposal decided.
   goes ahead only when the person switched that class on (`app_changes` or
   `calendar`, both off by default) and the reviewer approves at low risk. The
   reviewer's approval is stored as an ordinary approval, bound to the payload
-  hash, job revision and expiry. An agent set to ask before acting keeps asking
-  for calendar changes.
+  hash, job revision and expiry. A change to an event that already exists is
+  reviewable only when its calendar says the event has no guests now; when it
+  has guests, or the calendar cannot say, the change asks. This is checked again
+  before the change runs. An agent set to ask before acting keeps asking for
+  calendar changes.
 - **Person.** Anything that spends, sends, submits or publishes, deletes or
   removes, or carries a password, key, code or card detail. Also any recipient,
   destination or amount whose origin is not the person or a verified connection.
   These always ask. The reviewer is never called, and admission withdraws a
   reviewer's approval for an action that now falls here.
 
-The reviewer is a separate call to the installation's model, made through the
-service's own gateway. Its system prompt is fixed. The action, the person's
+The reviewer is a separate call to the installation's model (the one chosen in
+Settings → Models, unless the operator names one for reviews), made through the
+service's own gateway. Each call names the space whose action it carries. Its system prompt is fixed. The action, the person's
 instruction, recent messages and the origin of each deciding value travel in
 one JSON document that the prompt declares untrusted. The answer must be exactly
 one JSON object with a verdict, a risk, a reason and a nonce drawn after the

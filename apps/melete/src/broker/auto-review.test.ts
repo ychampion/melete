@@ -49,6 +49,35 @@ describe('reviewTier', () => {
     ).toMatchObject({ tier: 'reviewable', actionClass: 'calendar' });
   });
 
+  test('an update counts as the person’s own only when the calendar says the event has no guests', () => {
+    const update = tool('calendar.update', 'write_external');
+    const payload = { uid: 'act_1', etag: '"1"', summary: 'Focus', start: 'x', end: 'y' };
+    const decide = (existingGuests?: number | null) =>
+      reviewTier({ tool: update, provider: 'caldav', payload, doubts: [], existingGuests });
+    expect(decide(0)).toMatchObject({ tier: 'reviewable', actionClass: 'calendar' });
+    expect(decide(2)).toEqual({
+      tier: 'person',
+      actionClass: null,
+      reason: 'It changes a meeting that has guests, and they would be told.',
+    });
+    for (const unknown of [undefined, null])
+      expect(decide(unknown)).toEqual({
+        tier: 'person',
+        actionClass: null,
+        reason: 'Melete could not check whether this event has guests.',
+      });
+    // A new event has no existing guests to ask about.
+    expect(
+      reviewTier({
+        tool: tool('calendar.create', 'write_external'),
+        provider: 'caldav',
+        payload: { summary: 'Focus' },
+        doubts: [],
+        existingGuests: null,
+      }),
+    ).toMatchObject({ tier: 'reviewable' });
+  });
+
   test.each([
     ['spending', tool('payments.pay', 'spend'), {}],
     ['sending mail', tool('email.send', 'write_external'), { to: 'a@example.com' }],

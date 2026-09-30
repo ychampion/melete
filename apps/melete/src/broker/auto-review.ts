@@ -60,6 +60,13 @@ const SANDBOX_BROWSER = new Set(['browser.fill', 'browser.click', 'browser.selec
 const DRAFT_KINDS = new Set(['email.draft', 'email.discard']);
 /** External writes that land on the person's own calendar and carry no guest. */
 const OWN_CALENDAR = new Set(['calendar.create', 'calendar.update']);
+/**
+ * Writes that change an event which already exists. The event may have guests
+ * the payload never names (a person can add them in the calendar itself), and
+ * changing it notifies them, so it only counts as the person's own when the
+ * calendar says it has none.
+ */
+export const CHANGES_EXISTING_EVENT = new Set(['calendar.update']);
 
 const DESTRUCTIVE =
   /(?:^|[._-])(?:delete|remove|destroy|drop|purge|erase|trash|wipe|revoke|unshare|uninstall)(?:$|[._-])/i;
@@ -93,12 +100,16 @@ function carriesCredentials(kind: string, payload: JsonObject): boolean {
 /**
  * Which tier an action is in. `doubts` are the recipient, destination and
  * amount values whose origin is not the person or a verified app.
+ * `existingGuests` is how many guests the event a change rewrites has now, as
+ * the calendar reported it; left out or null, nobody could say, and a change
+ * to an existing event then stays with the person.
  */
 export function reviewTier(input: {
   tool: Pick<ConnectorTool, 'name' | 'effect_class' | 'requires_approval' | 'execution'>;
   provider: string;
   payload: JsonObject;
   doubts: readonly OriginWarning[];
+  existingGuests?: number | null;
 }): TierDecision {
   const { tool, provider, payload, doubts } = input;
   const person = (reason: string): TierDecision => ({ tier: 'person', actionClass: null, reason });
@@ -135,12 +146,19 @@ export function reviewTier(input: {
     tool.effect_class === 'write_external' &&
     OWN_CALENDAR.has(tool.name) &&
     !keys(payload).some((key) => GUEST_FIELDS.test(key))
-  )
+  ) {
+    if (CHANGES_EXISTING_EVENT.has(tool.name) && input.existingGuests !== 0)
+      return person(
+        typeof input.existingGuests === 'number'
+          ? 'It changes a meeting that has guests, and they would be told.'
+          : 'Melete could not check whether this event has guests.',
+      );
     return {
       tier: 'reviewable',
       actionClass: 'calendar',
       reason: 'It changes an event on your own calendar, with no guests.',
     };
+  }
   return person('It sends or publishes outside Melete and cannot be taken back.');
 }
 
@@ -193,11 +211,25 @@ export async function reviewLimit(
   input: { space_id: string; job_id: string },
   options: Required<Omit<AutoReviewOptions, 'reviewer'>>,
 ): Promise<string | null> {
-  // One space's count is taken under one lock, so two proposals cannot both take the last review.
+  // One space's count is taken under one lock, held until the proposal's
+  // transaction commits. A review's own record is only written once the
+  // reviewer answers, after that lock is gone, so the count also takes every
+  // review already started and not yet recorded: the `auto_review_started`
+  // notice is written under this lock, in the same transaction. Two proposals
+  // therefore cannot both take the last review, however many run at once.
   await tx`select pg_advisory_xact_lock(hashtext(${`action-review:${input.space_id}`}))`;
-  const [used] = await tx`select count(*)::int as reviews from action_review
-    where space_id = ${input.space_id} and decided_by = 'reviewer'
-      and created_at > clock_timestamp() - interval '1 hour'`;
+  const [used] = await tx`select
+      (select count(*) from action_review
+        where space_id = ${input.space_id} and decided_by = 'reviewer'
+          and created_at > clock_timestamp() - interval '1 hour')
+      + (select count(*) from action a join job j on j.id = a.job_id
+        where j.space_id = ${input.space_id} and a.status = 'proposed'
+          and not exists (select 1 from action_review r where r.action_id = a.id)
+          and exists (select 1 from event e
+            where e.job_id = a.job_id and e.type = 'notice'
+              and e.payload->>'kind' = 'auto_review_started' and e.payload->>'action_id' = a.id
+              and e.created_at > clock_timestamp() - interval '1 hour'))
+      as reviews`;
   if (Number(used?.reviews ?? 0) >= options.hourlyLimit)
     return 'Auto-review has reached its limit for this hour, so this one is yours to decide.';
   if (options.breakerRun > 0) {

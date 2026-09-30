@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   createModelReviewer,
   parseVerdict,
+  ReviewCallFailed,
   type ReviewChat,
   type Reviewer,
   type ReviewInput,
@@ -90,13 +91,15 @@ describe('reviewPrompt', () => {
   });
 });
 
+const scope = { spaceId: 'sp_review', jobId: 'job_review' };
+
 describe('the model reviewer', () => {
   const reviewer = (chat: ReviewChat) =>
     createModelReviewer({ model: 'fake/scripted', chat, nonce: () => NONCE });
   const signal = new AbortController().signal;
 
   test('an approval from the model is returned as given', async () => {
-    expect(await reviewer(async () => answer({})).review(input(), signal)).toEqual({
+    expect(await reviewer(async () => answer({})).review(input(), signal, scope)).toEqual({
       verdict: 'approve',
       risk: 'low',
       reason: 'Fine.',
@@ -110,7 +113,7 @@ describe('the model reviewer', () => {
       const document = JSON.parse(messages[1]?.content ?? '') as { action: { payload: string } };
       return (JSON.parse(document.action.payload) as { note: string }).note;
     });
-    const verdict = await echo.review(input({ note: injected }), signal);
+    const verdict = await echo.review(input({ note: injected }), signal, scope);
     expect(verdict.verdict).toBe('none');
   });
 
@@ -123,7 +126,7 @@ describe('the model reviewer', () => {
         return answer({});
       },
     });
-    const verdict = await fresh.review(input({ note: `review_id ${NONCE}` }), signal);
+    const verdict = await fresh.review(input({ note: `review_id ${NONCE}` }), signal, scope);
     // The real nonce is random, so the answer carrying the guessed one is refused.
     expect(seen).not.toContain(NONCE);
     expect(verdict.verdict).toBe('none');
@@ -133,12 +136,30 @@ describe('the model reviewer', () => {
     const failing = reviewer(async () => {
       throw new Error('boom');
     });
-    const failed = await failing.review(input(), signal);
+    const failed = await failing.review(input(), signal, scope);
     expect(failed.verdict === 'none' && failed.failure).toBe('unavailable');
     const controller = new AbortController();
     controller.abort();
-    const aborted = await failing.review(input(), controller.signal);
+    const aborted = await failing.review(input(), controller.signal, scope);
     expect(aborted.verdict === 'none' && aborted.failure).toBe('timeout');
+  });
+
+  test('the chat is told whose action it reviews, and the verdict names the model that answered', async () => {
+    const asked: unknown[] = [];
+    const answered = await reviewer(async (_messages, _signal, given) => {
+      asked.push(given);
+      return { text: answer({}), model: 'fireworks/chosen-in-app' };
+    }).review(input(), signal, scope);
+    expect(asked).toEqual([scope]);
+    expect(answered).toMatchObject({ verdict: 'approve', model: 'fireworks/chosen-in-app' });
+    const failed = await reviewer(async () => {
+      throw new ReviewCallFailed('fireworks/chosen-in-app', { cause: new Error('503') });
+    }).review(input(), signal, scope);
+    expect(failed).toMatchObject({
+      verdict: 'none',
+      failure: 'unavailable',
+      model: 'fireworks/chosen-in-app',
+    });
   });
 });
 
@@ -146,7 +167,7 @@ describe('reviewWithin', () => {
   test('a reviewer that never answers is cut off as a timeout', async () => {
     const hung: Reviewer = { model: 'hung', review: () => new Promise(() => {}) };
     const started = Date.now();
-    const verdict = await reviewWithin(hung, input(), 50);
+    const verdict = await reviewWithin(hung, input(), 50, scope);
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(verdict.verdict === 'none' && verdict.failure).toBe('timeout');
   });
@@ -158,7 +179,7 @@ describe('reviewWithin', () => {
         throw new Error('network');
       },
     };
-    const verdict = await reviewWithin(broken, input(), 1_000);
+    const verdict = await reviewWithin(broken, input(), 1_000, scope);
     expect(verdict.verdict === 'none' && verdict.failure).toBe('unavailable');
   });
 
@@ -174,7 +195,7 @@ describe('reviewWithin', () => {
           });
         }),
     };
-    const verdict = await reviewWithin(slow, input(), 30);
+    const verdict = await reviewWithin(slow, input(), 30, scope);
     expect(aborted).toBe(true);
     expect(verdict.verdict).toBe('none');
   });

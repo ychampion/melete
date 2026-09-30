@@ -85,6 +85,7 @@ export async function startEffectBoundary(
       env,
       dependencies.signIn ?? providerSignIn(handle.sql, env),
       env.MELETE_ENABLE_FAKE_PROVIDER ? dependencies.fakeProvider : undefined,
+      { settings: modelSettings },
     );
     const certificates = new Map<string, Pick<SecureContextOptions, 'key' | 'cert'>>();
     if (env.MELETE_GATEWAY_TLS_DIR) {

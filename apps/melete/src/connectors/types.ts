@@ -33,6 +33,13 @@ export interface Connector {
   /** Recheck bound resources under the admission/dispatch transaction. */
   validateBinding?(action: Action, ctx: ConnectorContext, tx: Query): Promise<void>;
   /**
+   * How many guests the existing item this action changes has now, read from
+   * the destination: the attendees of the event a `calendar.update` rewrites.
+   * Throws when it cannot be read. Auto-review asks it before treating such a
+   * change as one that reaches nobody but the person.
+   */
+  existingGuests?(action: Action, ctx: ConnectorContext): Promise<number>;
+  /**
    * Present when this connector is a generative capability rather than a reach
    * into something that already exists. It carries the cost and the mime type
    * the call produces, both from trusted configuration.
