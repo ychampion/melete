@@ -1,6 +1,11 @@
 import { hashOriginWarnings, permissionDecision, unavailable } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
+import {
+  actionReviewView,
+  loadApprovalSettings,
+  saveApprovalSettings,
+} from '../broker/auto-review.ts';
 import { loadAction } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import { ownJobClause } from '../principals/authority.ts';
@@ -80,7 +85,20 @@ export class ExperiencePermissions {
         Boolean(ruleKinds[action.kind]) &&
         !isAssistantCommand(row.experience_command_key),
       requestedAt: new Date(row.requested_at),
+      review: await actionReviewView(this.sql, action.id),
     });
+  }
+
+  async approvalSettings(spaceId: string) {
+    return {
+      settings: await loadApprovalSettings(this.sql, spaceId),
+      reviewer_available: this.broker.reviewerAvailable,
+    };
+  }
+
+  async saveApprovalSettings(spaceId: string, input: unknown) {
+    await saveApprovalSettings(this.sql, spaceId, input);
+    return this.approvalSettings(spaceId);
   }
 
   async list(spaceId: string) {

@@ -11,7 +11,14 @@ import type { AddressInfo } from 'node:net';
 import { z } from 'zod';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
+import type { ProviderSignIn } from '../gateway/credentials.ts';
 import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import {
+  type ModelSettingsService,
+  type ServiceModel,
+  type ServiceModelSource,
+  serviceModelSource,
+} from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
 import { type GatewayBudget, GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
 import { MemoryError, type MemorySql } from './db.ts';
@@ -40,6 +47,11 @@ export type MemoryGatewayOptions = {
   provider: string;
   model: string;
   providers: NonNullable<GatewayOptions['providers']>;
+  /**
+   * The model and keys each call uses, read per call. Left out, every call
+   * uses `provider`, `model` and `providers` as given.
+   */
+  source?: ServiceModelSource;
   dailyCalls: number;
   fake?: GatewayOptions['fake'];
   fetch?: GatewayOptions['fetch'];
@@ -50,15 +62,16 @@ export type MemoryGatewayOptions = {
 };
 
 export async function openMemoryGateway(options: MemoryGatewayOptions) {
-  const tokens = new Map<string, ExtractionCall>();
-  const principals = new WeakMap<GatewayPrincipal, ExtractionCall & { token: string }>();
+  type Call = ExtractionCall & ServiceModel;
+  const tokens = new Map<string, Call>();
+  const principals = new WeakMap<GatewayPrincipal, Call & { token: string }>();
   const reservations = new Map<string, string>();
   /** What the provider answered for each call, read back when the call fails. */
   const upstream = new Map<string, number | null>();
   const budget: GatewayBudget = {
     async reserve(request) {
       const call = principals.get(request.principal);
-      if (!call || request.provider !== options.provider || request.model !== options.model)
+      if (!call || request.provider !== call.provider || request.model !== call.model)
         throw new GatewayError(403, 'memory_principal_denied');
       if (
         request.estimatedTokens > INPUT_TOKENS + EXTRACTION_LIMITS.output_tokens ||
@@ -79,7 +92,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
           throw new GatewayError(429, 'memory_daily_budget');
         const id = randomUUID();
         await tx`insert into memory_model_calls (id, owner_id, space_id, work_id, provider, model, reserved_tokens)
-          values (${id}, ${call.ownerId}, ${call.spaceId}, ${call.workId}, ${options.provider}, ${options.model}, ${request.estimatedTokens})`;
+          values (${id}, ${call.ownerId}, ${call.spaceId}, ${call.workId}, ${call.provider}, ${call.model}, ${request.estimatedTokens})`;
         reservations.set(id, call.token);
         return { id };
       });
@@ -95,6 +108,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
   const server = createModelGateway({
     budget,
     providers: options.providers,
+    ...(options.source ? { currentProviders: options.source.providers } : {}),
     fake: options.fake,
     fetch: options.fetch,
     privacy: options.privacy,
@@ -120,7 +134,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
         revision: 0,
         maxRequests: 1,
         maxTokens: INPUT_TOKENS + EXTRACTION_LIMITS.output_tokens,
-        allowedModels: [{ provider: options.provider, model: options.model }],
+        allowedModels: [{ provider: call.provider, model: call.model }],
       };
       principals.set(principal, { ...call, token });
       return principal;
@@ -131,27 +145,31 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
     server.listen(0, '127.0.0.1', resolve);
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const protocol = protocolForApiMode(modelApiMode(options.provider, options.model));
 
   const gateway: ExtractionGateway = {
     async chat({ messages, max_tokens, signal }, call) {
       if (!call) throw new MemoryError('extraction_call_unattributed');
+      // The model is read for each call, so one connected in the app applies at once.
+      const target = options.source
+        ? await options.source.current()
+        : { provider: options.provider, model: options.model };
+      const protocol = protocolForApiMode(modelApiMode(target.provider, target.model));
       const token = randomUUID();
-      tokens.set(token, call);
+      tokens.set(token, { ...call, ...target });
       const system = messages.find((message) => message.role === 'system')?.content ?? '';
       const body =
         protocol === 'responses'
-          ? { model: options.model, input: messages, max_output_tokens: max_tokens }
+          ? { model: target.model, input: messages, max_output_tokens: max_tokens }
           : protocol === 'messages'
             ? {
-                model: options.model,
+                model: target.model,
                 system,
                 messages: messages.filter((message) => message.role !== 'system'),
                 max_tokens,
               }
-            : { model: options.model, messages, max_tokens };
+            : { model: target.model, messages, max_tokens };
       try {
-        const response = await fetch(`${base}/providers/${options.provider}/v1/${protocol}`, {
+        const response = await fetch(`${base}/providers/${target.provider}/v1/${protocol}`, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
@@ -225,22 +243,35 @@ export function failureCode(status: number, body: string, provider: number | nul
 /**
  * The memory gateway this deployment runs, or none when the operator turned
  * model extraction off. Structured observations are read without a model either way.
+ *
+ * MELETE_MEMORY_PROVIDER and MELETE_MEMORY_MODEL, when set, name the model
+ * outright. Otherwise memory reads with the model new chats use, the one chosen
+ * in the app included, and with the keys connected there.
  */
 export async function configuredMemoryGateway(
   sql: MemorySql,
   env: Env,
   fake: GatewayOptions['fake'] | undefined,
   privacy: GatewayOptions['privacy'],
+  connected: {
+    settings?: ModelSettingsService;
+    signIn?: ProviderSignIn;
+    /** The upstream transport; tests pass a stand-in provider. */
+    fetch?: GatewayOptions['fetch'];
+  } = {},
 ) {
   const setting = env.MELETE_MEMORY_MODEL?.trim();
   if (setting === 'off') return null;
+  const pinned = { provider: env.MELETE_MEMORY_PROVIDER?.trim(), model: setting };
   return openMemoryGateway({
     sql,
-    provider: env.MELETE_MEMORY_PROVIDER?.trim() || env.MELETE_DEFAULT_PROVIDER,
-    model: setting || env.MELETE_DEFAULT_MODEL,
-    providers: configuredProviders(env, () => {}),
+    provider: pinned.provider || env.MELETE_DEFAULT_PROVIDER,
+    model: pinned.model || env.MELETE_DEFAULT_MODEL,
+    providers: configuredProviders(env, () => {}, connected.signIn),
+    source: serviceModelSource({ env, settings: connected.settings, pinned }),
     dailyCalls: env.MELETE_MEMORY_DAILY_CALLS,
     fake,
     privacy,
+    ...(connected.fetch ? { fetch: connected.fetch } : {}),
   });
 }

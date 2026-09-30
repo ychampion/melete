@@ -26,6 +26,7 @@ export function createInternalServer(options: {
   approvalKey: string;
   boss?: PgBoss;
   providers?: GatewayProvider[];
+  currentProviders?: GatewayOptions['currentProviders'];
   defaultProvider?: string;
   defaultMaxTokens?: GatewayOptions['defaultMaxTokens'];
   dispatchTimeoutMs?: number;
@@ -38,6 +39,7 @@ export function createInternalServer(options: {
   resolveScopedGrant?: BrokerOptions['resolveScopedGrant'];
   recordStandingScope?: BrokerOptions['recordStandingScope'];
   chaseFollowUp?: BrokerOptions['chaseFollowUp'];
+  autoReview?: BrokerOptions['autoReview'];
   /** A broker the service already built, shared with its own routes. */
   broker?: BrokerService;
   gatewayFetch?: GatewayOptions['fetch'];
@@ -78,6 +80,7 @@ export function createInternalServer(options: {
       resolveScopedGrant: options.resolveScopedGrant,
       recordStandingScope: options.recordStandingScope,
       chaseFollowUp: options.chaseFollowUp,
+      autoReview: options.autoReview,
     });
   const app = createBrokerApp({
     broker,
@@ -115,6 +118,7 @@ export function createInternalServer(options: {
     authenticate: (token) => budget.authenticate(token),
     budget,
     providers: options.providers,
+    currentProviders: options.currentProviders,
     defaultProvider: options.defaultProvider,
     defaultMaxTokens: options.defaultMaxTokens,
     fake: options.fake,

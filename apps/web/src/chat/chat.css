@@ -522,6 +522,33 @@
   line-height: 18px;
   color: var(--muted);
 }
+/* What auto-review decided: on a receipt it let through, or a card it sent to the person. */
+.review-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.review-note svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.review-note strong {
+  font-weight: 600;
+  color: var(--text);
+}
+.receipt .review-note {
+  margin-top: 2px;
+}
+.permission-body > .review-note {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+}
 .permission-body {
   display: flex;
   flex-direction: column;

@@ -72,6 +72,7 @@ import { mountCompaniesMock } from './companies.ts';
 import { mountExperienceMock } from './experience.ts';
 import { mountFeedbackMock } from './feedback.ts';
 import { mountLearnedMock } from './learned.ts';
+import { mountModelsMock } from './models.ts';
 import { mountPrivacyMock } from './privacy.ts';
 import { mountPushMock } from './push.ts';
 import type { Runner } from './runner.ts';
@@ -138,6 +139,7 @@ export function createMockApp(deps: AppDeps) {
   // its own routes rather than going through the contract's operation table.
   mountCompaniesMock(app, deps, experience);
   mountLearnedMock(app, deps);
+  mountModelsMock(app);
   mountPushMock(app, () => experience.profile);
 
   /**

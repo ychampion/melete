@@ -60,6 +60,8 @@ export type ExtractionGatewayOptions = {
   providers: NonNullable<GatewayOptions['providers']>;
   /** The service's privacy router; the space's settings apply to every message read. */
   privacy: GatewayOptions['privacy'];
+  /** Keys connected in the app, added to `providers` for each call. */
+  currentProviders?: GatewayOptions['currentProviders'];
   fake?: GatewayOptions['fake'];
   fetch?: GatewayOptions['fetch'];
   /** Calls this gateway will admit in total, across the whole scan. */
@@ -93,6 +95,7 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
   const server = createModelGateway({
     budget,
     providers: options.providers,
+    currentProviders: options.currentProviders,
     fake: options.fake,
     fetch: options.fetch,
     privacy: options.privacy,

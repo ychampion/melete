@@ -15,8 +15,11 @@ import { useApp, useLoad } from '../experience/hooks.ts';
 import { givenName } from '../experience/profile.ts';
 import type { Connection, MemoryItem, Rule } from '../experience/types.ts';
 import { FeedbackTab } from '../feedback/FeedbackTab.tsx';
+import { models } from '../models/api.ts';
+import { ModelLine, ModelsTab } from '../models/ModelConnect.tsx';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { ApprovalsTab } from './Approvals.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 import { LearnedTab } from './Learned.tsx';
 import { NotificationsTab } from './Notifications.tsx';
@@ -331,11 +334,14 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
   const memory = useLoad(() => adapter.memory(), []);
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
+  const model = useLoad(() => models.settings(), []);
   const current =
     tab === 'connections' ||
     tab === 'rules' ||
     tab === 'notifications' ||
     tab === 'feedback' ||
+    tab === 'models' ||
+    tab === 'approvals' ||
     tab === 'privacy'
       ? tab
       : 'memory';
@@ -363,6 +369,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>
               Signing out ends this session on every open tab; nothing saved here is lost.
             </span>
+            {model.data ? <ModelLine settings={model.data} /> : null}
           </div>
           <Button
             variant="outline"
@@ -389,8 +396,10 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
               label: 'Connections',
               count: list.filter((c) => c.status === 'connected').length,
             },
+            { value: 'approvals', label: 'Approvals' },
             { value: 'rules', label: 'Rules', count: rules.data?.rules.length ?? 0 },
             { value: 'feedback', label: 'Feedback' },
+            { value: 'models', label: 'Models' },
             { value: 'privacy', label: 'Privacy' },
           ]}
         />
@@ -466,10 +475,14 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
               <LearnedTab />
             </section>
           </div>
+        ) : current === 'approvals' ? (
+          <ApprovalsTab />
         ) : current === 'notifications' ? (
           <NotificationsTab />
         ) : current === 'feedback' ? (
           <FeedbackTab selected={detail} />
+        ) : current === 'models' ? (
+          <ModelsTab loaded={model} />
         ) : current === 'connections' ? (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>

@@ -4,6 +4,7 @@ import { and, eq, gt } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Database } from '../db/client.ts';
 import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import type { ServiceModel, ServiceModelSource } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
 import { type GatewayBudget, GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
 import type { ProposalSource } from './admit.ts';
@@ -90,17 +91,31 @@ export async function openProposalGateway(options: {
   provider: string;
   model: string;
   providers: NonNullable<GatewayOptions['providers']>;
+  /**
+   * The model and keys each proposal uses, read per proposal. Left out, every
+   * call uses `provider`, `model` and `providers` as given.
+   */
+  source?: ServiceModelSource;
   fake?: GatewayOptions['fake'];
   fetch?: GatewayOptions['fetch'];
   /** The service's privacy router. */
   privacy: GatewayOptions['privacy'];
 }) {
-  const tokens = new Map<string, Admission>();
-  const principals = new WeakMap<GatewayPrincipal, Admission>();
+  type Call = Admission & ServiceModel;
+  const tokens = new Map<string, Call>();
+  const principals = new WeakMap<GatewayPrincipal, Call>();
+  const current = async (): Promise<ServiceModel> =>
+    options.source
+      ? options.source.current()
+      : { provider: options.provider, model: options.model };
   const budget: GatewayBudget = {
     async reserve(request) {
       const admission = principals.get(request.principal);
-      if (!admission || request.provider !== options.provider || request.model !== options.model)
+      if (
+        !admission ||
+        request.provider !== admission.provider ||
+        request.model !== admission.model
+      )
         throw new GatewayError(403, 'proposal_principal_denied');
       if (
         request.estimatedTokens > PROPOSAL_LIMITS.total_tokens ||
@@ -127,8 +142,8 @@ export async function openProposalGateway(options: {
           .values({
             id: randomUUID(),
             episodeId: source.id,
-            provider: options.provider,
-            model: options.model,
+            provider: admission.provider,
+            model: admission.model,
             reservedTokens: request.estimatedTokens,
             maxOutputTokens: request.maxOutputTokens,
             truncation: admission.truncation ?? null,
@@ -149,6 +164,7 @@ export async function openProposalGateway(options: {
   const server = createModelGateway({
     budget,
     providers: options.providers,
+    ...(options.source ? { currentProviders: options.source.providers } : {}),
     fake: options.fake,
     fetch: options.fetch,
     privacy: options.privacy,
@@ -174,7 +190,7 @@ export async function openProposalGateway(options: {
         revision: 0,
         maxRequests: 1,
         maxTokens: PROPOSAL_LIMITS.total_tokens,
-        allowedModels: [{ provider: options.provider, model: options.model }],
+        allowedModels: [{ provider: admission.provider, model: admission.model }],
       };
       principals.set(principal, admission);
       return principal;
@@ -185,18 +201,20 @@ export async function openProposalGateway(options: {
     server.listen(0, '127.0.0.1', resolve);
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const protocol = protocolForApiMode(modelApiMode(options.provider, options.model));
+  const protocolOf = (target: ServiceModel) =>
+    protocolForApiMode(modelApiMode(target.provider, target.model));
 
-  const bodyFor = (system: string, input: string, maxTokens: number) => {
+  const bodyFor = (target: ServiceModel, system: string, input: string, maxTokens: number) => {
     const messages = [
       { role: 'system', content: system },
       { role: 'user', content: input },
     ];
+    const protocol = protocolOf(target);
     return protocol === 'responses'
-      ? { model: options.model, input: messages, max_output_tokens: maxTokens }
+      ? { model: target.model, input: messages, max_output_tokens: maxTokens }
       : protocol === 'messages'
-        ? { model: options.model, system, messages: [messages[1]], max_tokens: maxTokens }
-        : { model: options.model, messages, max_tokens: maxTokens };
+        ? { model: target.model, system, messages: [messages[1]], max_tokens: maxTokens }
+        : { model: target.model, messages, max_tokens: maxTokens };
   };
   const fits = (body: unknown, maxTokens: number) =>
     Buffer.byteLength(JSON.stringify(body), 'utf8') +
@@ -205,11 +223,12 @@ export async function openProposalGateway(options: {
       maxTokens <=
     PROPOSAL_LIMITS.total_tokens;
 
-  async function send(admission: Admission, body: unknown) {
+  async function send(admission: Admission, target: ServiceModel, body: unknown) {
     const token = randomUUID();
-    tokens.set(token, admission);
+    tokens.set(token, { ...admission, ...target });
+    const protocol = protocolOf(target);
     try {
-      const response = await fetch(`${base}/providers/${options.provider}/v1/${protocol}`, {
+      const response = await fetch(`${base}/providers/${target.provider}/v1/${protocol}`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -274,7 +293,12 @@ export async function openProposalGateway(options: {
     async propose(admission: Admission, signal: string) {
       // Only this finite signal and audited vocabulary cross into inference. No episode prose is read here.
       const input = JSON.stringify({ signal, vocabulary: Object.keys(STEP_BODIES) });
-      return send(admission, bodyFor(PROPOSAL_INSTRUCTIONS, input, RECORDS_OUTPUT_TOKENS));
+      const target = await current();
+      return send(
+        admission,
+        target,
+        bodyFor(target, PROPOSAL_INSTRUCTIONS, input, RECORDS_OUTPUT_TOKENS),
+      );
     },
 
     /**
@@ -285,11 +309,13 @@ export async function openProposalGateway(options: {
      */
     async proposeGeneral(admission: Admission, request: GeneralProposalRequest) {
       const maxTokens = PROPOSAL_LIMITS.output_tokens;
+      const target = await current();
       const whole = Object.fromEntries(request.sources.map((source) => [source.id, source.text]));
       const intervention = whole.intervention ?? '';
       const objective = whole.objective ?? '';
       const shaped = (interventionLength: number, objectiveLength: number) =>
         bodyFor(
+          target,
           GENERAL_PROPOSAL_INSTRUCTIONS,
           JSON.stringify({
             ...request,
@@ -343,7 +369,9 @@ export async function openProposalGateway(options: {
       }
       const raw = await send(
         { ...admission, truncation: Object.keys(truncation).length ? truncation : null },
+        target,
         bodyFor(
+          target,
           GENERAL_PROPOSAL_INSTRUCTIONS,
           JSON.stringify({ ...request, sources: sent }),
           maxTokens,
