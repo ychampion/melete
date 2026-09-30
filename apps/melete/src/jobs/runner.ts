@@ -26,13 +26,14 @@ import {
   type WaitSpec,
   waitSpec,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
   action,
   attempt,
+  budgetLedger,
   connection,
   event,
   experienceTurn,
@@ -775,6 +776,54 @@ export class AttemptRunner {
         .from(experienceTurn)
         .where(eq(experienceTurn.id, row.currentTurnId));
       if (!turn || ['done', 'stopped', 'failed'].includes(turn.status)) return;
+      // An action parked until its destination is back (a computer that was off,
+      // a rate limit) would otherwise go later by itself. Stopping ends it here,
+      // recorded as the broker records a dispatch it refuses.
+      const parked = await tx
+        .select()
+        .from(action)
+        .where(
+          and(
+            eq(action.jobId, row.id),
+            eq(action.status, 'admitted'),
+            isNotNull(action.retryAfterAt),
+          ),
+        )
+        .for('update');
+      for (const effect of parked) {
+        const reason = 'the conversation was stopped';
+        await tx
+          .update(action)
+          .set({
+            status: 'failed',
+            resolvedAt: new Date(),
+            reconciliation: { reason, retryable: false },
+          })
+          .where(eq(action.id, effect.id));
+        await tx
+          .update(budgetLedger)
+          .set({ settled: 0 })
+          .where(and(eq(budgetLedger.actionId, effect.id), isNull(budgetLedger.settled)));
+        await appendEvent(tx, {
+          jobId: row.id,
+          attemptId: effect.attemptId,
+          type: 'action_status_changed',
+          payload: { action_id: effect.id, from: 'admitted', to: 'failed' },
+          dedupKey: `${effect.id}:stopped:status`,
+        });
+        await appendEvent(tx, {
+          jobId: row.id,
+          attemptId: effect.attemptId,
+          type: 'notice',
+          payload: {
+            action_id: effect.id,
+            phase: 'dispatch_rejected',
+            outcome: 'fenced',
+            reason,
+          },
+          dedupKey: `${effect.id}:stopped`,
+        });
+      }
       await tx
         .update(job)
         .set({

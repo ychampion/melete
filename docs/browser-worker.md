@@ -113,7 +113,10 @@ The service's API and broker authentication remain necessary boundaries.
 The service health-checks the endpoint before leasing it and releases its session
 on shutdown. Compose owns the isolated process lifetime. Chromium remains warm
 until its idle deadline, five minutes by default; a new session invalidates the
-previous epoch. `MELETE_BROWSER_IDLE_MS` adjusts the development child timeout.
+previous epoch. `MELETE_BROWSER_IDLE_MS` adjusts the development child timeout,
+and `MELETE_BROWSER_HUMAN_IDLE_MS` (fifteen minutes by default) how long a
+person's takeover keeps Chromium open after their last input. The worker reads
+both from its own environment; the Compose overlay leaves them at their defaults.
 Private-context sessions can reuse the signed-in profile, while the public-web
 compartment uses a separate disposable context without those cookies.
 

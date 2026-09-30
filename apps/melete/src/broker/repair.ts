@@ -52,6 +52,11 @@ export type RepairLimits = {
   maxExecutions: number;
   /** How long to park when a destination rate-limits without saying how long. */
   defaultRetryAfterSeconds: number;
+  /**
+   * How long an action for a disconnected computer waits before it is looked
+   * at again. The computer reconnecting wakes it sooner; this is the fallback.
+   */
+  offlineRecheckSeconds: number;
 };
 
 export const DEFAULT_REPAIR_LIMITS: RepairLimits = {
@@ -60,6 +65,7 @@ export const DEFAULT_REPAIR_LIMITS: RepairLimits = {
   maxBackoffMs: 5_000,
   maxExecutions: 8,
   defaultRetryAfterSeconds: 60,
+  offlineRecheckSeconds: 6 * 60 * 60,
 };
 
 /** What the policy knows about this action's repair history so far. */
@@ -84,7 +90,12 @@ export type RepairState = {
 
 export type RepairChoice =
   | { act: 'retry'; decision: RepairDecision; delay_ms: number; detail: string }
-  | { act: 'park'; decision: 'park_until_retry_after'; retry_after_ms: number; detail: string }
+  | {
+      act: 'park';
+      decision: 'park_until_retry_after' | 'park_until_reconnect';
+      retry_after_ms: number;
+      detail: string;
+    }
   | { act: 'refresh'; decision: 'refresh_credential_once'; detail: string }
   | { act: 'rediscover'; decision: 'rediscover_schema'; detail: string }
   | { act: 'reroute'; decision: 'change_route'; detail: string }
@@ -178,6 +189,19 @@ export function decideRepair(
         decision: 'park_until_retry_after',
         retry_after_ms: seconds * 1000,
         detail: `the destination asked for ${seconds}s, so the worker was released rather than held`,
+      };
+    }
+
+    case 'destination_offline': {
+      // Nothing left, so nothing is at risk. The worker is released and the
+      // action waits; the destination's own reconnection brings it back early,
+      // and this long clock is only the fallback check.
+      const seconds = fault.retry_after ?? limits.offlineRecheckSeconds;
+      return {
+        act: 'park',
+        decision: 'park_until_reconnect',
+        retry_after_ms: seconds * 1000,
+        detail: 'the computer this needs is not connected, so it waits for it to come back',
       };
     }
 

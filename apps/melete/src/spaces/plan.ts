@@ -108,6 +108,9 @@ export async function sweepOperational(
     // held rather than on these rows, so the rows can go now; their command
     // records go with them.
     await tx`delete from sandbox_session where space_id = ${spaceId}`;
+    // A paired computer names its connection too, and a pairing code its space.
+    await tx`delete from paired_device where space_id = ${spaceId}`;
+    await tx`delete from device_pairing where space_id = ${spaceId}`;
     // A memory question belongs to a space rather than to a job.
     await tx`delete from question where space_id = ${spaceId}`;
     for (const table of SPACE_KEYED_OPERATIONAL)

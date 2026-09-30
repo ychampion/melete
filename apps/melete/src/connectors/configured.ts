@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { caldavConnectionConfig, mailConnectionConfig } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { createDeviceConnector } from '../devices/connector.ts';
+import type { DeviceHub } from '../devices/hub.ts';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import {
@@ -47,7 +49,7 @@ import { type AccountClient, signedInAccess } from './signed-in.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
 import { createCapabilityConnector } from './tts.ts';
 import type { Connector } from './types.ts';
-import { createWebConnector } from './web.ts';
+import { createWebConnector, databasePublicReads, type PrivateContext } from './web.ts';
 
 const endpoint = z
   .object({
@@ -179,6 +181,11 @@ export type ConnectorOptions = {
   browserSessions?: BrowserSessionService;
   /** True when attempts run in a container; a default exec connection is inert without it. */
   cellIsolated?: boolean;
+  /**
+   * Whether a space or agent is private. A private one reads no public web
+   * pages beyond what a job was explicitly given. Without it, none is.
+   */
+  privateContext?: PrivateContext;
   /** Plaintext mail and CalDAV to a loopback protocol fixture. Never set from a request. */
   insecureLocalFixtures?: boolean;
   /** Starts stdio MCP servers in isolation; without one, a stdio installation offers nothing. */
@@ -186,6 +193,8 @@ export type ConnectorOptions = {
   stdioLifecycle?: StdioLifecycleOptions;
   /** Everything a sandbox connection needs besides its own row. */
   sandbox?: SandboxRuntimeOptions;
+  /** Where work for paired computers waits. Left out, the process's shared hub. */
+  devices?: DeviceHub;
   /**
    * The operator's Google OAuth client. Without it, Google sign-in is not
    * offered and a Google connection offers nothing. Only a test replaces the
@@ -338,7 +347,14 @@ export class ConnectorFactory {
         spaceId: row.spaceId,
       });
     }
-    if (row.provider === 'web') return createWebConnector();
+    if (row.provider === 'web')
+      return createWebConnector({
+        publicReads: databasePublicReads({
+          sql: options.sql,
+          connectionId: row.id,
+          privateContext: options.privateContext,
+        }),
+      });
     if (row.provider === 'sandbox' && stored?.kind === 'sandbox') {
       const sandbox = options.sandbox;
       if (!sandbox || !row.secretRef) return undefined;
@@ -381,6 +397,24 @@ export class ConnectorFactory {
           maxConcurrent: sandbox.maxConcurrent,
           maxPerConnection: sandbox.maxPerConnection,
           close: opened.close,
+        }),
+      );
+    }
+    if (row.provider === 'device') {
+      // The computer's own row says whether it still stands; a revoked one offers nothing.
+      const deviceId = row.configuration?.device_id;
+      if (typeof deviceId !== 'string') return undefined;
+      const [device] = await options.sql`select id, name from paired_device
+        where id = ${deviceId} and connection_id = ${row.id} and revoked_at is null`;
+      if (!device) return undefined;
+      return ownerOnly(
+        createDeviceConnector({
+          deviceId,
+          connectionId: row.id,
+          name: String(device.name),
+          sql: options.sql,
+          workRoot: options.workRoot,
+          ...(options.devices ? { hub: options.devices } : {}),
         }),
       );
     }
@@ -655,6 +689,7 @@ type ConnectorExtras = {
   browserSessions?: BrowserSessionService;
   stdioLauncher?: StdioLauncher;
   stdioLifecycle?: StdioLifecycleOptions;
+  privateContext?: PrivateContext;
 };
 
 export function connectorOptionsFromEnv(
@@ -672,6 +707,7 @@ export function connectorOptionsFromEnv(
     browserSessions: extra.browserSessions,
     stdioLauncher: extra.stdioLauncher,
     stdioLifecycle: { idleMs: env.MELETE_MCP_IDLE_MS },
+    privateContext: extra.privateContext,
     cellIsolated: builtinEnvironment(env).cellIsolated,
     ...(env.MICROSOFT_OAUTH_CLIENT_ID && env.MICROSOFT_OAUTH_CLIENT_SECRET
       ? {
