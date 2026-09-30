@@ -1,4 +1,5 @@
 import {
+  type BecauseLink,
   type ConversationProgress,
   conversationProgress,
   type ExperienceEvent,
@@ -10,9 +11,11 @@ import {
   toolCall,
 } from '@melete/contracts';
 import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm';
+import { reviewView } from '../broker/auto-review.ts';
 import type { Database } from '../db/client.ts';
 import {
   action,
+  actionReview,
   approval,
   artifact,
   attempt,
@@ -219,6 +222,8 @@ export class ExperienceEvents {
         spaceId: string,
         id: string,
       ) => Promise<Extract<ExperienceEvent['item'], { type: 'question' }>['question'] | undefined>;
+      /** What an action rested on, named on its receipt. */
+      because?: (spaceId: string, actionId: string) => Promise<BecauseLink[]>;
     },
     /** Commit notifications, so a live stream reads new events when they land rather than on its next poll. */
     readonly changes?: EventChanges,
@@ -430,7 +435,25 @@ export class ExperienceEvents {
                 ),
               );
             if (effect) {
-              const receipt = projectReceipt(effect.action, effect.connection);
+              const [review] = await tx
+                .select()
+                .from(actionReview)
+                .where(eq(actionReview.actionId, effect.action.id));
+              const receipt = projectReceipt(
+                effect.action,
+                effect.connection,
+                undefined,
+                review
+                  ? reviewView({
+                      decided_by: review.decidedBy,
+                      outcome: review.outcome,
+                      risk: review.risk,
+                      reason: review.reason,
+                      created_at: review.createdAt,
+                    })
+                  : null,
+                await this.projections?.because?.(spaceId, effect.action.id),
+              );
               if (receipt) await emit(source, { type: 'receipt', receipt });
               // A card is projected once, when its draft is freshly prepared; its
               // later status reaches the person through the conversation's drafts.

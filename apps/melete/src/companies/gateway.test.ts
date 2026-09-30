@@ -15,6 +15,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import type { GatewayProvider } from '../gateway/types.ts';
+import { defaultPrivacyRouter, MemoryPrivacyStore, PrivacyRouter } from '../privacy/index.ts';
 import { EXTRACTION_INSTRUCTIONS, extractionInput, parseExtractionReply } from './extract.ts';
 import { DEFAULT_EXTRACTION_MODEL, openExtractionGateway } from './gateway.ts';
 
@@ -24,6 +25,7 @@ const QUOTE = 'A refund of GBP 429.99 will reach your account within 10 working 
 const START = TEXT.indexOf(QUOTE);
 
 const request = {
+  spaceId: 'sp_01J0000000000000000000000A',
   messageId: '<1@harrowgatehardware.example>',
   companyName: 'Harrowgate Hardware',
   domain: 'harrowgatehardware.example',
@@ -94,6 +96,7 @@ async function withGateway<T>(
   work: (gateway: Awaited<ReturnType<typeof openExtractionGateway>>) => Promise<T>,
 ): Promise<T> {
   const gateway = await openExtractionGateway({
+    privacy: defaultPrivacyRouter(),
     provider: 'openai',
     model: DEFAULT_EXTRACTION_MODEL,
     providers: [provider],
@@ -267,6 +270,7 @@ describe('the budget', () => {
   test('stops the scan spending more calls than it was given', async () => {
     const seen: Seen[] = [];
     const gateway = await openExtractionGateway({
+      privacy: defaultPrivacyRouter(),
       provider: 'openai',
       model: DEFAULT_EXTRACTION_MODEL,
       providers: [provider],
@@ -287,6 +291,7 @@ describe('the budget', () => {
 
   test('a closed gateway answers nothing more', async () => {
     const gateway = await openExtractionGateway({
+      privacy: defaultPrivacyRouter(),
       provider: 'openai',
       model: DEFAULT_EXTRACTION_MODEL,
       providers: [provider],
@@ -295,5 +300,31 @@ describe('the budget', () => {
     });
     await gateway.close();
     expect(await gateway.extractor.extract(request)).toEqual([]);
+  });
+});
+
+describe('the space whose mail it is', () => {
+  test("a scan applies that space's privacy: a private space's mail is not sent to a cloud model", async () => {
+    const store = new MemoryPrivacyStore();
+    await store.saveSettings(request.spaceId, { private_space: true }, null);
+    const seen: Seen[] = [];
+    const gateway = await openExtractionGateway({
+      privacy: new PrivacyRouter({ store }),
+      provider: 'openai',
+      model: DEFAULT_EXTRACTION_MODEL,
+      providers: [provider],
+      fetch: responder(oneItem, seen),
+      maxCalls: 4,
+    });
+    try {
+      expect(await gateway.extractor.extract(request)).toEqual([]);
+      expect(seen).toHaveLength(0);
+      // Another space's mail, with default settings, is read as before, redacted.
+      const other = { ...request, spaceId: 'sp_01J0000000000000000000000B' };
+      expect(await gateway.extractor.extract(other)).toHaveLength(1);
+      expect(seen).toHaveLength(1);
+    } finally {
+      await gateway.close();
+    }
   });
 });

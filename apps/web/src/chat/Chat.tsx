@@ -57,6 +57,7 @@ import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { CasePanel, useCase } from './CasePanel.tsx';
 import { Composer } from './Composer.tsx';
 import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
+import { Protected } from './Protected.tsx';
 import {
   ActionBar,
   PermissionCard,
@@ -329,6 +330,9 @@ function TurnView({
           <div className="turn-body">
             {rendered}
             {unconfirmed}
+            {finished ? (
+              <Protected conversationId={turn.turn.conversation_id} turnId={turn.turn.id} />
+            ) : null}
             {finished && text.trim() ? (
               <ActionBar
                 turn={turn}

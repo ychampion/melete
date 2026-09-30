@@ -49,6 +49,7 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'melete-runtime-context-'));
   const queue = await startQueue(handle.url);
   const memory = await startDeploymentMemory({
+    privacyOrigin: async () => null,
     sql: handle.sql,
     boss: queue.boss,
     restrictionsDir: join(root, 'restrictions'),

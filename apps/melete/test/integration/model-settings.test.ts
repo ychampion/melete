@@ -1,5 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { randomBytes } from 'node:crypto';
+import { configuredReviewGateway } from '../../src/broker/review-gateway.ts';
+import type { ReviewInput } from '../../src/broker/reviewer.ts';
 import { FIXTURE_REFERENCE, fixtureMessages } from '../../src/companies/fixtures.ts';
 import { fixtureMailbox } from '../../src/companies/mailbox.ts';
 import { MemoryCompanyStore } from '../../src/companies/repository.ts';
@@ -13,6 +15,7 @@ import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { configuredMemoryGateway } from '../../src/memory/gateway.ts';
+import { PostgresPrivacyStore, PrivacyRouter } from '../../src/privacy/index.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
@@ -360,12 +363,24 @@ describeWithDb('the model, connected in the app', () => {
             usage: { prompt_tokens: 40, completion_tokens: 5, total_tokens: 45 },
           });
     };
-    const memory = await configuredMemoryGateway(database().sql, api.env, undefined, {
-      settings: api.settings,
-      fetch: provider,
-    });
+    const memory = await configuredMemoryGateway(
+      database().sql,
+      api.env,
+      undefined,
+      new PrivacyRouter({ store: new PostgresPrivacyStore(database().sql) }),
+      {
+        settings: api.settings,
+        fetch: provider,
+      },
+    );
     if (!memory) throw new Error('memory extraction is off');
-    const companies = configuredExtractor(api.env, undefined, api.settings, provider);
+    const companies = configuredExtractor(
+      api.env,
+      new PrivacyRouter({ store: new PostgresPrivacyStore(database().sql) }),
+      undefined,
+      api.settings,
+      provider,
+    );
     const read = (workId: string) =>
       memory.gateway.chat(
         {
@@ -376,7 +391,7 @@ describeWithDb('the model, connected in the app', () => {
           max_tokens: 100,
           signal: AbortSignal.timeout(10_000),
         },
-        { ownerId: 'own_model_settings', spaceId: 'sp_model_settings', workId },
+        { ownerId: 'own_model_settings', spaceId: 'sp_model_settings', workId, sourceJobId: null },
       );
     const scan = (spaceId: string) =>
       runScan({
@@ -422,6 +437,116 @@ describeWithDb('the model, connected in the app', () => {
         });
     } finally {
       await memory.close();
+    }
+    expect(answered.join('\n')).not.toContain(FIREWORKS_KEY);
+  }, 30_000);
+
+  test('the action reviewer uses the key and model connected in the app', async () => {
+    // No provider key in the environment: the app is the only place one is set.
+    const api = app();
+    const cookie = await owner(api);
+    const reached: { host: string; authorization: string | null; model: unknown }[] = [];
+    const provider = async (request: Request) => {
+      const body = (await request.json()) as {
+        model?: unknown;
+        messages?: { role: string; content: string }[];
+        input?: { role: string; content: string }[];
+      };
+      reached.push({
+        host: new URL(request.url).host,
+        authorization: request.headers.get('authorization'),
+        model: body.model,
+      });
+      const system = (body.messages ?? body.input ?? []).find((m) => m.role === 'system');
+      const nonce = /The review_id must be exactly (\w+)\./.exec(system?.content ?? '')?.[1];
+      const text = JSON.stringify({
+        review_id: nonce,
+        verdict: 'approve',
+        risk: 'low',
+        reason: 'It renames the task as asked.',
+      });
+      return request.url.endsWith('/responses')
+        ? Response.json({
+            id: 'resp_1',
+            object: 'response',
+            status: 'completed',
+            model: body.model,
+            output: [
+              { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
+            ],
+            usage: { input_tokens: 40, output_tokens: 5, total_tokens: 45 },
+          })
+        : Response.json({
+            id: 'chat_1',
+            object: 'chat.completion',
+            model: body.model,
+            choices: [{ index: 0, message: { role: 'assistant', content: text } }],
+            usage: { prompt_tokens: 40, completion_tokens: 5, total_tokens: 45 },
+          });
+    };
+    // The reviewed action's job exists, so the privacy router can read its space.
+    await database()
+      .sql`insert into space (id, name, git_path) values ('sp_model_settings', 'Personal', 'test/sp_model_settings')
+        on conflict do nothing`;
+    await database()
+      .sql`insert into job (id, space_id, title, objective) values ('job_model_settings', 'sp_model_settings', 'Tasks', 'Rename a task')
+        on conflict do nothing`;
+    const review = await configuredReviewGateway(
+      api.env,
+      new PrivacyRouter({ store: new PostgresPrivacyStore(database().sql) }),
+      undefined,
+      undefined,
+      {
+        settings: api.settings,
+        fetch: provider,
+      },
+    );
+    if (!review) throw new Error('auto-review is off');
+    const input: ReviewInput = {
+      action: {
+        tool: 'tasks.rename',
+        description: 'Rename a task',
+        effect: 'write_reversible',
+        app: 'Tasks',
+        payload: { title: 'Groceries' },
+      },
+      instruction: 'Rename my task to Groceries',
+      recent: [],
+      origins: [],
+    };
+    const ask = () =>
+      review.reviewer.review(input, AbortSignal.timeout(10_000), {
+        spaceId: 'sp_model_settings',
+        jobId: 'job_model_settings',
+      });
+    try {
+      // Before a key is connected nothing reaches a provider, and the action
+      // would go to the person.
+      expect(await ask()).toMatchObject({ verdict: 'none', failure: 'unavailable' });
+      expect(reached).toHaveLength(0);
+
+      const model = 'accounts/fireworks/models/fixture-chosen';
+      await api.call('/model-settings/keys/fireworks', cookie, put({ api_key: FIREWORKS_KEY }));
+      const chosen = await api.call(
+        '/model-settings/default',
+        cookie,
+        put({ provider: 'fireworks', model }),
+      );
+      expect(chosen.status).toBe(200);
+
+      // Without a restart, the next review goes to that model, with that key,
+      // and the decision names the model that made it.
+      expect(await ask()).toEqual({
+        verdict: 'approve',
+        risk: 'low',
+        reason: 'It renames the task as asked.',
+        model: `fireworks/${model}`,
+      });
+      expect(reached).toEqual([
+        { host: 'api.fireworks.ai', authorization: `Bearer ${FIREWORKS_KEY}`, model },
+      ]);
+    } finally {
+      await review.close();
     }
     expect(answered.join('\n')).not.toContain(FIREWORKS_KEY);
   }, 30_000);

@@ -253,6 +253,31 @@ describe('calendar connector', () => {
     expect(fake.records.size).toBe(1);
   });
 
+  test('an update reads the attendees stored with the event', async () => {
+    const fake = caldavDouble();
+    const connector = new CalendarConnector(fake.config, secret);
+    await connector.execute(mailAction('calendar.create', payload), mailContext());
+    const update = mailAction(
+      'calendar.update',
+      { ...payload, summary: 'A longer walk', uid: 'act_test', etag: '"version-1"' },
+      'act_update',
+    );
+    expect(await connector.existingGuests(update, mailContext('act_update'))).toBe(0);
+    const record = fake.records.get('/calendar/act_test.ics');
+    if (!record) throw new Error('event not stored');
+    record.body = record.body.replace(
+      'END:VEVENT',
+      'ATTENDEE;CN=Alex:mailto:alex@example.com\r\nATTENDEE:mailto:sam@example.com\r\nEND:VEVENT',
+    );
+    expect(await connector.existingGuests(update, mailContext('act_update'))).toBe(2);
+    const missing = mailAction(
+      'calendar.update',
+      { ...payload, uid: 'act_missing', etag: '"version-1"' },
+      'act_update2',
+    );
+    await expect(connector.existingGuests(missing, mailContext('act_update2'))).rejects.toThrow();
+  });
+
   test('cross-space, path traversal and unexpected fields are rejected before a request', async () => {
     const fake = caldavDouble();
     const connector = new CalendarConnector(fake.config, secret);

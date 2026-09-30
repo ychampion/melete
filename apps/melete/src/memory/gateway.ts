@@ -57,6 +57,8 @@ export type MemoryGatewayOptions = {
   fetch?: GatewayOptions['fetch'];
   /** How long one call may take; the extraction limit unless a test shortens it. */
   timeoutMs?: number;
+  /** The service's privacy router; what the person wrote is redacted before it is read. */
+  privacy: GatewayOptions['privacy'];
 };
 
 export async function openMemoryGateway(options: MemoryGatewayOptions) {
@@ -109,6 +111,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
     ...(options.source ? { currentProviders: options.source.providers } : {}),
     fake: options.fake,
     fetch: options.fetch,
+    privacy: options.privacy,
     defaultProvider: options.provider,
     timeoutMs: options.timeoutMs ?? EXTRACTION_LIMITS.timeout_ms,
     maxRequestBytes: 256 * 1024,
@@ -119,6 +122,14 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
       const principal: GatewayPrincipal = {
         jobId: `memory:${call.spaceId}`,
         attemptId: `memory:${call.workId}`,
+        // The message's own conversation decides where it may be read: a
+        // private or sensitive one stays on the local model, or is not read.
+        privacy: {
+          kind: 'service',
+          purpose: 'memory',
+          spaceId: call.spaceId,
+          sourceJobId: call.sourceJobId,
+        },
         epoch: 0,
         revision: 0,
         maxRequests: 1,
@@ -214,10 +225,15 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
  *   cannot succeed (the call is too large for the gateway or the model, or the
  *   provider rejected the request itself, a wrong model name for one); stop;
  * - `extraction_gateway_failure`: the provider is failing, limiting or out of
- *   reach, or the call timed out; wait and try again.
+ *   reach, or the call timed out; wait and try again;
+ * - `extraction_kept_private`: the message came from a private conversation
+ *   and there is no local model to read it on (or the person said to keep it
+ *   private); it is not read, now or later.
  */
 export function failureCode(status: number, body: string, provider: number | null | undefined) {
   if (body.includes('memory_daily_budget')) return 'memory_daily_budget';
+  if (/privacy_confirmation_required|privacy_scope_/.test(body)) return 'extraction_kept_private';
+  if (status === 504 && body.includes('request_aborted')) return 'extraction_gateway_timeout';
   if (status === 413 || /memory_call_too_large|input_context_exceeded/.test(body))
     return 'extraction_call_refused';
   if (typeof provider === 'number' && provider >= 400 && provider < 500 && provider !== 429)
@@ -236,7 +252,8 @@ export function failureCode(status: number, body: string, provider: number | nul
 export async function configuredMemoryGateway(
   sql: MemorySql,
   env: Env,
-  fake?: GatewayOptions['fake'],
+  fake: GatewayOptions['fake'] | undefined,
+  privacy: GatewayOptions['privacy'],
   connected: {
     settings?: ModelSettingsService;
     signIn?: ProviderSignIn;
@@ -255,6 +272,7 @@ export async function configuredMemoryGateway(
     source: serviceModelSource({ env, settings: connected.settings, pinned }),
     dailyCalls: env.MELETE_MEMORY_DAILY_CALLS,
     fake,
+    privacy,
     ...(connected.fetch ? { fetch: connected.fetch } : {}),
   });
 }

@@ -1,0 +1,93 @@
+{
+  "model": "cloud-model",
+  "stream": true,
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are Melete, a personal assistant that acts only with the person’s approval.\n\n## What you know about the person\n- Name: ⟦NAME_1⟧\n- Home: ⟦ADDRESS_1⟧\n- Phone: ⟦PHONE_1⟧\n- Email: ⟦EMAIL_1⟧\n- Sister: ⟦NAME_2⟧ (⟦EMAIL_2⟧)\n- Pays household bills from the joint checking account ⟦ACCOUNT_1⟧."
+    },
+    {
+      "role": "user",
+      "content": "Please pay this month’s electricity bill from my checking account ⟦ACCOUNT_2⟧ (routing ⟦ROUTING_1⟧) and email the receipt to my sister."
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+            "name": "mail.search",
+            "arguments": "{\"query\":\"from:⟦EMAIL_3⟧ newer_than:30d\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "{\"messages\":[{\"from\":\"⟦EMAIL_3⟧\",\"subject\":\"Your September bill from City Power\",\"body\":\"Dear ⟦NAME_1⟧,\\nAccount number: ⟦ACCOUNT_3⟧\\nService address: ⟦ADDRESS_1⟧\\nAmount due: $142.17 by 2026-10-15.\\nPay online or call ⟦PHONE_2⟧.\\nCard on file ending in ⟦ACCOUNT_4⟧.\"}]}"
+    },
+    {
+      "role": "assistant",
+      "content": "I found your September electricity bill from City Power: $142.17, due 2026-10-15. I will pay it from checking account ⟦ACCOUNT_2⟧ and send the receipt to ⟦NAME_2⟧ at ⟦EMAIL_2⟧. Shall I go ahead?"
+    },
+    {
+      "role": "user",
+      "content": "Yes. If they need to verify, my SSN is ⟦SSN_1⟧ and my date of birth is ⟦DOB_1⟧. If the bank transfer fails use my card ⟦CARD_1⟧ exp 09/28, CVV ⟦CARD_2⟧. My online banking password is ⟦CREDENTIAL_1⟧."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "payments.send",
+        "description": "Send a payment from a connected bank account owned by ⟦EMAIL_1⟧.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "from_account": {
+              "type": "string",
+              "description": "The account to pay from"
+            },
+            "payee": {
+              "type": "string"
+            },
+            "amount": {
+              "type": "string",
+              "description": "Amount in dollars, for example 142.17"
+            }
+          },
+          "required": ["from_account", "payee", "amount"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "email.send",
+        "description": "Send an email from the person’s mailbox.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "string"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            }
+          },
+          "required": ["to", "subject", "body"]
+        }
+      }
+    }
+  ],
+  "max_tokens": 1024,
+  "stream_options": {
+    "include_usage": true
+  }
+}

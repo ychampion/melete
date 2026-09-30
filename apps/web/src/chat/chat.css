@@ -547,6 +547,33 @@
   line-height: 18px;
   color: var(--muted);
 }
+/* What auto-review decided: on a receipt it let through, or a card it sent to the person. */
+.review-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.review-note svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.review-note strong {
+  font-weight: 600;
+  color: var(--text);
+}
+.receipt .review-note {
+  margin-top: 2px;
+}
+.permission-body > .review-note {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+}
 .permission-body {
   display: flex;
   flex-direction: column;
@@ -1245,6 +1272,24 @@
   .case-close {
     display: inline-flex;
   }
+}
+
+/* Why an action was taken, under its receipt or its permission card. */
+.because {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.because a {
+  color: var(--primary);
+  text-decoration: none;
+}
+.because a:hover,
+.because a:focus-visible {
+  text-decoration: underline;
 }
 .answer-code {
   font-family: var(--font-mono, ui-monospace, monospace);
