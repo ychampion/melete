@@ -30,6 +30,7 @@ import {
   useMedia,
   useNow,
 } from '../experience/hooks.ts';
+import { inlineSpans } from '../experience/inline.ts';
 import {
   answerOf,
   latestTurn,
@@ -41,6 +42,7 @@ import {
   type TranscriptTurn,
   turnIndexForReaction,
 } from '../experience/reduce.ts';
+import { shortTitle } from '../experience/title.ts';
 import type {
   ActionResolution,
   LedgerAction,
@@ -65,6 +67,7 @@ import {
   UnknownCard,
   UserBubble,
 } from './parts.tsx';
+import { pauseOrStop } from './pause.ts';
 import './chat.css';
 
 /** One-tap changes to a draft waiting on a decision; each is sent as the person's next message. */
@@ -74,12 +77,36 @@ const WORKING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
 const FINISHED: TurnStatus[] = ['done', 'stopped', 'failed'];
 
 function titleFor(text: string): string {
-  const lower = text.toLowerCase();
-  if (lower.includes('dinner')) return 'Dinner with friends';
-  if (lower.includes('kyoto') || lower.includes('japan')) return 'Kyoto in October';
-  if (lower.includes('passport')) return 'Passport renewal';
-  const clean = text.replace(/[.!?].*$/, '').trim();
-  return clean.length > 42 ? `${clean.slice(0, 40)}…` : clean || 'New chat';
+  return shortTitle(text) || 'New chat';
+}
+
+type Outcome = { data: unknown; error: string | null; unavailable: string | null };
+
+/** A control that did not take says why, instead of doing nothing. */
+async function reportFailure(pending: Promise<Outcome>, verb: string) {
+  const result = await pending;
+  if (result.data === null)
+    toast({
+      kind: 'err',
+      title: `Couldn’t ${verb}`,
+      sub: result.unavailable ?? result.error ?? '',
+    });
+}
+
+/** Pausing mid-step needs the engine's help; without it, stopping keeps the progress. */
+async function pauseTurn(id: string) {
+  const result = await pauseOrStop({
+    pause: () => adapter.pause(id),
+    stop: () => adapter.stop(id),
+  });
+  if (result.outcome === 'stopped')
+    toast({
+      kind: 'info',
+      title: 'Stopped this turn',
+      sub: 'This assistant can’t pause mid-step, so it stopped. Your progress is saved.',
+    });
+  else if (result.outcome === 'failed')
+    toast({ kind: 'err', title: 'Couldn’t pause', sub: result.reason });
 }
 
 function AgentChip({
@@ -285,10 +312,7 @@ function TurnView({
         <div className="turn-text">
           <TurnAvatar agent={agent} status={turn.status} />
           {showText ? (
-            <p>
-              {text}
-              {turn.streaming ? <span className="caret pulse" aria-hidden="true" /> : null}
-            </p>
+            <Answer text={text} streaming={turn.streaming} />
           ) : (
             <div className="col grow" style={{ paddingTop: 2 }}>
               <Trail turn={turn} now={now} />
@@ -322,6 +346,60 @@ function TurnView({
         ) : null}
       </div>
     </>
+  );
+}
+
+/** A line with its bold, italic and code spans drawn; everything else stays plain text. */
+function Line({ line }: { line: string }) {
+  return (
+    <>
+      {inlineSpans(line).map((span, index) => {
+        // The spans are a cut of one line, in order, so their place is their key.
+        const key = `${index}:${span.kind}`;
+        if (span.kind === 'strong') return <strong key={key}>{span.text}</strong>;
+        if (span.kind === 'em') return <em key={key}>{span.text}</em>;
+        if (span.kind === 'code')
+          return (
+            <code key={key} className="answer-code">
+              {span.text}
+            </code>
+          );
+        return <span key={key}>{span.text}</span>;
+      })}
+    </>
+  );
+}
+
+/** The answer as paragraphs: a blank line is a gap, a single break stays a break. */
+function Answer({ text, streaming }: { text: string; streaming: boolean }) {
+  const paragraphs = text.split(/\n\s*\n/).filter((part) => part.trim().length > 0);
+  if (paragraphs.length === 0) paragraphs.push('');
+  return (
+    <div className="answer">
+      {paragraphs.map((paragraph, index) =>
+        /^\s*(?:-{3,}|\*{3,})\s*$/.test(paragraph) ? (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are a cut of one string, in order
+          <hr key={index} className="answer-rule" />
+        ) : (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are a cut of one string, in order
+          <p key={index}>
+            {paragraph
+              .trim()
+              .split('\n')
+              .map((line, at) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: lines of one paragraph, in order
+                <span key={at}>
+                  {at > 0 ? <br /> : null}
+                  <Line line={line} />
+                </span>
+              ))}
+            {streaming && index === paragraphs.length - 1 ? (
+              <span className="caret pulse" aria-hidden="true" />
+            ) : null}
+          </p>
+        ),
+      )}
+    </div>
   );
 }
 
@@ -829,9 +907,13 @@ export function ChatScreen({ id }: { id: string | null }) {
                 state={conversationId ? composerState : 'send'}
                 working={working}
                 autoFocus={!touch}
-                onPause={() => conversationId && void adapter.pause(conversationId)}
-                onResume={() => conversationId && void adapter.resume(conversationId)}
-                onStop={() => conversationId && void adapter.stop(conversationId)}
+                onPause={() => conversationId && void pauseTurn(conversationId)}
+                onResume={() =>
+                  conversationId && void reportFailure(adapter.resume(conversationId), 'resume')
+                }
+                onStop={() =>
+                  conversationId && void reportFailure(adapter.stop(conversationId), 'stop')
+                }
               />
             </div>
           </div>
