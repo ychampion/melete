@@ -1,0 +1,46 @@
+{
+  "id": "reply-chase",
+  "title": "Chase a reply you are waiting on",
+  "summary": "The job checks for an answer first, drafts one short reminder in the same thread, stops for the one approval, sends it, and waits for the reply.",
+  "match": ["waiting on a reply from"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-replies-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "tool",
+      "delay_ms": 300,
+      "name": "email.search",
+      "arguments": { "query": "their reply" },
+      "result": { "matches": 0 },
+      "title": "Checked for their reply",
+      "active_title": "Checking for their reply",
+      "meta": "Nothing back since you wrote",
+      "sources": [{ "app": "gmail", "label": "Your message" }]
+    },
+    {
+      "step": "propose",
+      "delay_ms": 400,
+      "ref": "reminder",
+      "kind": "email.send",
+      "connection": "outbox",
+      "effect_class": "write_external",
+      "payload": {
+        "to": ["Rowan Ellis <rowan@ellisbuilders.example>"],
+        "subject": "Re: Kitchen extension quote",
+        "body": "Hi Rowan,\n\nJust following up on my message about the kitchen extension. Could you send the quote and a week you could start? We would like to book someone by the end of the month.\n\nThanks,\nJamie"
+      }
+    },
+    {
+      "step": "say",
+      "delay_ms": 500,
+      "text": "Sent from your address, in the same thread. I will watch for Rowan's answer."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Reminder sent to Rowan in the same thread. I will tell you when the answer arrives."
+    }
+  ]
+}

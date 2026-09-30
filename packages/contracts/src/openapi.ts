@@ -70,6 +70,13 @@ import { space, triggerSpec } from './entities.ts';
 import { eventPage, eventQuery } from './events.ts';
 import { executionSettlement, executionStartResponse } from './execution-admission.ts';
 import { experiencePaths } from './experience-openapi.ts';
+import {
+  createFeedbackRequest,
+  feedbackListQuery,
+  feedbackListResponse,
+  feedbackResponse,
+  updateFeedbackRequest,
+} from './feedback.ts';
 import { hookObservation } from './hooks.ts';
 import {
   engineSkillApprovalRequest,
@@ -101,6 +108,20 @@ import {
   procedureResponse,
   procedureTrialRequest,
 } from './learning.ts';
+import {
+  mcpConnectedClientList,
+  mcpRpcMessage,
+  mcpRpcResponse,
+  oauthAuthorizeQuery,
+  oauthClientRegistered,
+  oauthClientRegistration,
+  oauthConsentForm,
+  oauthErrorResponse,
+  oauthProtectedResource,
+  oauthServerMetadata,
+  oauthTokenRequest,
+  oauthTokenResponse,
+} from './mcp-server.ts';
 import {
   claimHistoryResponse,
   claimListResponse,
@@ -154,6 +175,14 @@ import {
   startSignInRequest,
   startSignInResponse,
 } from './provider-signin.ts';
+import {
+  pushPublicKeyResponse,
+  pushSettingsResponse,
+  pushSettingsUpdate,
+  pushSubscriptionList,
+  pushSubscriptionRequest,
+  pushSubscriptionResponse,
+} from './push.ts';
 import { personReactionRequest, reactionListResponse, reactionResponse } from './reactions.ts';
 import { jobRepairsResponse } from './repair.ts';
 import {
@@ -190,6 +219,7 @@ import {
   spaceRemovalPreview,
   spaceRemovalReport,
 } from './spaces.ts';
+import { awaitedReply, waitingOn } from './waiting.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
   content: { 'application/json': { schema } },
@@ -283,6 +313,187 @@ const idParam = (name: string, description: string) => ({
   path: z.object({ [name]: z.string().meta({ description }) }),
 });
 
+const html = (description: string) => ({
+  description,
+  content: { 'text/html': { schema: z.string() } },
+});
+const oauthProblem = (description: string) => jsonResponse(description, oauthErrorResponse);
+const redirect = (description: string) => ({
+  description,
+  headers: z.object({ Location: z.string() }),
+});
+
+/**
+ * Melete as an MCP server for other assistants, and Melete as the OAuth
+ * authorization server they connect through. Served when the service has a
+ * public address. The discovery documents sit at the root of the public origin.
+ */
+const assistantPaths = {
+  '/.well-known/oauth-authorization-server': {
+    get: {
+      tags: ['assistants'],
+      summary: 'OAuth authorization server metadata (RFC 8414)',
+      description: 'Public, at the root of the web origin. No session is needed.',
+      responses: { '200': jsonResponse('The metadata', oauthServerMetadata) },
+    },
+  },
+  '/.well-known/oauth-protected-resource': {
+    get: {
+      tags: ['assistants'],
+      summary: 'Protected resource metadata for the MCP endpoint (RFC 9728)',
+      responses: { '200': jsonResponse('The metadata', oauthProtectedResource) },
+    },
+  },
+  '/.well-known/oauth-protected-resource/api/mcp': {
+    get: {
+      tags: ['assistants'],
+      summary: 'Protected resource metadata at the path-specific address the endpoint names',
+      responses: { '200': jsonResponse('The metadata', oauthProtectedResource) },
+    },
+  },
+  '/oauth/register': {
+    post: {
+      tags: ['assistants'],
+      summary: 'Register an assistant as a public OAuth client (RFC 7591)',
+      description:
+        'Public clients only, with PKCE. A client may instead use an https:// client ID metadata document.',
+      requestBody: json(oauthClientRegistration),
+      responses: {
+        '201': jsonResponse('Registered', oauthClientRegistered),
+        '400': oauthProblem('The metadata was refused'),
+        '429': oauthProblem(
+          'Too many registrations from this address, or too many waiting for a person to allow them',
+        ),
+      },
+    },
+  },
+  '/oauth/authorize': {
+    get: {
+      tags: ['assistants'],
+      summary: 'The consent page an assistant sends a person to',
+      description:
+        'Shows the signed-in person who is asking (a checked host, or a self-given name marked ' +
+        'unverified), the space the access would act in, and what it could do. An error about ' +
+        'the request goes back with the state and issuer only to a trusted redirect address: ' +
+        'loopback, the metadata document host, or one a person here already allowed. Anywhere ' +
+        'else it is shown on this page.',
+      requestParams: { query: oauthAuthorizeQuery },
+      responses: {
+        '200': html('The consent page, or a prompt to sign in first'),
+        '302': redirect('An error returned to the assistant'),
+        '400': html('The client or its redirect address is unknown, or the request was refused'),
+        '429': html('Too many authorization requests from this address'),
+      },
+    },
+    post: {
+      tags: ['assistants'],
+      summary: "The person's answer on the consent page",
+      description:
+        'Accepted only from the page shown to this session for this exact request. Allowing ' +
+        'returns a single-use code bound to the PKCE challenge.',
+      security: [{ session: [] }],
+      requestBody: {
+        content: { 'application/x-www-form-urlencoded': { schema: oauthConsentForm } },
+      },
+      responses: {
+        '302': redirect('Back to the assistant with a code, or with access_denied'),
+        '400': html('The client or its redirect address is unknown, or the request was refused'),
+        '403': html('The page expired or was not shown to this session'),
+        '429': html('Too many authorization requests from this address'),
+      },
+    },
+  },
+  '/oauth/token': {
+    post: {
+      tags: ['assistants'],
+      summary: 'Exchange a code, or rotate a refresh token',
+      description:
+        'A code is used once, with its PKCE verifier. Each refresh returns a new refresh token; ' +
+        'presenting a used one ends every token of that connection. No token outlives 90 days ' +
+        'from the consent, however often it is refreshed.',
+      requestBody: {
+        content: { 'application/x-www-form-urlencoded': { schema: oauthTokenRequest } },
+      },
+      responses: {
+        '200': jsonResponse('Tokens', oauthTokenResponse),
+        '400': oauthProblem('The grant was refused'),
+        '401': oauthProblem('The client is not registered'),
+        '429': oauthProblem('Too many requests from this address'),
+      },
+    },
+  },
+  '/oauth/revoke': {
+    post: {
+      tags: ['assistants'],
+      summary: 'Revoke a token and every token of its connection (RFC 7009)',
+      requestBody: {
+        content: {
+          'application/x-www-form-urlencoded': { schema: z.object({ token: z.string() }) },
+        },
+      },
+      responses: { '200': { description: 'Revoked, or never valid' } },
+    },
+  },
+  '/mcp': {
+    post: {
+      tags: ['assistants'],
+      summary: 'The MCP endpoint (streamable HTTP, one JSON response per message)',
+      description:
+        'Tools: waiting_on, handle, safe_send, remember, recall and status, each acting as the ' +
+        'person the token names, in the space they agreed from. safe_send only proposes: the ' +
+        'person approves the exact text in Melete. A token whose person can no longer use that ' +
+        'space is refused with 401 and its connection ends. Tool calls are limited per connection.',
+      security: [{ assistant: [] }],
+      requestParams: {
+        header: z.object({ 'MCP-Protocol-Version': z.string().optional() }),
+      },
+      requestBody: json(mcpRpcMessage),
+      responses: {
+        '200': jsonResponse('The JSON-RPC response', mcpRpcResponse),
+        '202': { description: 'A notification was accepted' },
+        '400': jsonResponse('Not one JSON-RPC 2.0 message, or an unknown version', mcpRpcResponse),
+        '429': jsonResponse('Too many tool calls from this connection', mcpRpcResponse),
+        '401': {
+          ...problem('No valid access token'),
+          headers: z.object({
+            'WWW-Authenticate': z.string().meta({
+              description: 'Bearer, with resource_metadata naming the protected resource metadata',
+            }),
+          }),
+        },
+      },
+    },
+    get: {
+      tags: ['assistants'],
+      summary: 'Not offered: the endpoint holds no stream',
+      responses: { '405': jsonResponse('POST only', mcpRpcResponse) },
+    },
+    delete: {
+      tags: ['assistants'],
+      summary: 'Not offered: the endpoint holds no session',
+      responses: { '405': jsonResponse('POST only', mcpRpcResponse) },
+    },
+  },
+  '/mcp/clients': {
+    get: {
+      tags: ['assistants'],
+      summary: 'The assistants this person has connected',
+      responses: { '200': jsonResponse('Connected assistants', mcpConnectedClientList) },
+    },
+  },
+  '/mcp/clients/{clientId}': {
+    delete: {
+      tags: ['assistants'],
+      summary: 'Disconnect an assistant: every token it holds for this person ends',
+      requestParams: idParam('clientId', 'The client ID'),
+      responses: {
+        '204': { description: 'Disconnected' },
+        '404': problem('No connection from that assistant'),
+      },
+    },
+  },
+};
+
 /** A refusal that says when to try again. */
 const rateLimited = (description: string) => ({
   ...problem(description),
@@ -357,7 +568,14 @@ export function buildOpenApiDocument() {
       },
       servers: [{ url: 'http://localhost:8787', description: 'Default self-hosted address' }],
       components: {
-        securitySchemes: { session: { type: 'apiKey', in: 'cookie', name: 'melete_session' } },
+        securitySchemes: {
+          session: { type: 'apiKey', in: 'cookie', name: 'melete_session' },
+          assistant: {
+            type: 'http',
+            scheme: 'bearer',
+            description: 'An access token from the OAuth flow, for the MCP endpoint only.',
+          },
+        },
         schemas: { RuntimeEvent: runtimeEvent, HookObservation: hookObservation },
       },
       tags: [
@@ -379,8 +597,63 @@ export function buildOpenApiDocument() {
         { name: 'browser' },
         { name: 'learning' },
         { name: 'companies' },
+        { name: 'push' },
+        { name: 'assistants' },
+        { name: 'feedback' },
       ],
       paths: {
+        '/push/public-key': {
+          get: {
+            tags: ['push'],
+            summary: 'The key a browser subscribes with, or null when push is not configured',
+            responses: { '200': jsonResponse('Public key', pushPublicKeyResponse) },
+          },
+        },
+        '/push/subscriptions': {
+          get: {
+            tags: ['push'],
+            summary: 'This person’s devices that receive pushes',
+            responses: { '200': jsonResponse('Subscriptions', pushSubscriptionList) },
+          },
+          post: {
+            tags: ['push'],
+            summary: 'Subscribe this device; the same endpoint again updates it',
+            description:
+              'Only endpoints on a known browser push service, or an origin the operator added, are accepted, with a P-256 public key and a 16-byte secret.',
+            requestBody: json(pushSubscriptionRequest),
+            responses: {
+              '201': jsonResponse('Subscribed', pushSubscriptionResponse),
+              '400': problem(
+                'Not a push service this installation sends to, or keys a browser does not subscribe with',
+              ),
+              '503': problem('Push is not configured'),
+            },
+          },
+        },
+        '/push/subscriptions/{id}': {
+          delete: {
+            tags: ['push'],
+            summary: 'Stop pushes to one of this person’s devices',
+            requestParams: idParam('id', 'Subscription id'),
+            responses: {
+              '200': jsonResponse('Removed', pushSubscriptionResponse),
+              '404': problem('No such subscription for this person'),
+            },
+          },
+        },
+        '/push/settings': {
+          get: {
+            tags: ['push'],
+            summary: 'What Melete pushes, how often, and the quiet hours read from the profile',
+            responses: { '200': jsonResponse('Settings', pushSettingsResponse) },
+          },
+          patch: {
+            tags: ['push'],
+            summary: 'Change what Melete pushes and how often',
+            requestBody: json(pushSettingsUpdate),
+            responses: { '200': jsonResponse('Settings', pushSettingsResponse) },
+          },
+        },
         '/episodes': {
           get: {
             tags: ['learning'],
@@ -1683,6 +1956,8 @@ export function buildOpenApiDocument() {
           },
         },
 
+        ...assistantPaths,
+
         ...accountSignInPaths('google', {
           title: 'Google',
           what: 'Gmail and Google Calendar',
@@ -2147,6 +2422,74 @@ export function buildOpenApiDocument() {
           },
         },
 
+        '/waiting-on': {
+          get: {
+            tags: ['companies'],
+            summary: 'What this person is waiting on: money owed to them, and replies',
+            description:
+              'Combines the company map’s owed items with messages the person sent that ' +
+              'asked for something and have not been answered after three days. The owed ' +
+              'figure is the company map’s own. `top` holds up to three nothing is chasing ' +
+              'yet. A reply nothing is chasing that went out more than thirty days ago is ' +
+              'left out. Reads only; a scan is started with ' +
+              '`POST /spaces/{spaceId}/companies/scan` in the space `scan.space_id` names.',
+            requestParams: {
+              query: z.object({
+                space_id: z
+                  .string()
+                  .optional()
+                  .meta({ description: 'One space; every space the person can see if absent' }),
+              }),
+            },
+            responses: {
+              '200': jsonResponse('What is waited on, and the latest scan', waitingOn),
+              '403': problem('This space is not accessible to the signed-in account'),
+            },
+          },
+        },
+        '/waiting-on/replies/{id}/chase': {
+          post: {
+            tags: ['companies'],
+            summary: 'Start the job that chases a reply the person is waiting on',
+            description:
+              'Creates the job that runs the chase-reply playbook for one sent message. The ' +
+              'follow-up goes through the existing approval path, which shows the exact text; ' +
+              'this route starts the work, it does not send.',
+            requestParams: {
+              ...idParam('id', 'Awaited reply id'),
+              query: z.object({ space_id: z.string().optional() }),
+            },
+            responses: {
+              '200': jsonResponse(
+                'Already being chased, by the job named here',
+                z.object({ job_id: z.string() }),
+              ),
+              '201': jsonResponse('The job now chasing it', z.object({ job_id: z.string() })),
+              '404': problem('No such awaited reply for this person'),
+              '409': problem('Already finished, or no longer quotable'),
+              '503': problem('Chasing is not connected yet'),
+            },
+          },
+        },
+        '/waiting-on/replies/{id}/drop': {
+          post: {
+            tags: ['companies'],
+            summary: 'Dismiss a reply the person is no longer waiting on',
+            description:
+              'Marks the awaited reply dropped, so it leaves the list and a later scan does ' +
+              'not bring it back. A chase that has it is stopped first.',
+            requestParams: {
+              ...idParam('id', 'Awaited reply id'),
+              query: z.object({ space_id: z.string().optional() }),
+            },
+            responses: {
+              '200': jsonResponse('The reply, now dropped', awaitedReply),
+              '404': problem('No such awaited reply for this person'),
+              '503': problem('Stopping its chase is not connected yet'),
+            },
+          },
+        },
+
         '/ledger/{id}/stop': {
           post: {
             tags: ['companies'],
@@ -2163,6 +2506,61 @@ export function buildOpenApiDocument() {
               '404': problem('No such item for this person'),
               '409': problem('The item is already settled or dropped'),
               '503': problem('Stopping is not connected yet'),
+            },
+          },
+        },
+
+        '/feedback': {
+          post: {
+            tags: ['feedback'],
+            summary: 'Report a problem with the app',
+            description:
+              'Stores what the person wrote and what the page said about itself, and answers with a ' +
+              'short id such as `FB-7K3Q` to quote when asking for a fix. Console lines, request ' +
+              'addresses and the route are redacted again before they are stored. Each person may ' +
+              'send a few reports in a short time; more are refused until the window passes.',
+            requestBody: json(createFeedbackRequest),
+            responses: {
+              '201': jsonResponse('Stored', feedbackResponse),
+              '400': problem('Invalid request'),
+              '401': problem('A session is required'),
+              '429': rateLimited('Too many reports from this person in a short time'),
+            },
+          },
+          get: {
+            tags: ['feedback'],
+            summary: 'List problem reports, newest first',
+            description:
+              'The person who runs the installation sees every report and `can_manage` is true. ' +
+              'Anyone else sees only the reports they sent.',
+            requestParams: { query: feedbackListQuery },
+            responses: {
+              '200': jsonResponse('Reports', feedbackListResponse),
+              '401': problem('A session is required'),
+            },
+          },
+        },
+
+        '/feedback/{id}': {
+          get: {
+            tags: ['feedback'],
+            summary: 'Read one problem report with its page details',
+            requestParams: idParam('id', 'Report id, such as FB-7K3Q'),
+            responses: {
+              '200': jsonResponse('Report', feedbackResponse),
+              '404': problem('No such report, or not one this person sent'),
+            },
+          },
+          patch: {
+            tags: ['feedback'],
+            summary: 'Change a report’s status, with an optional note',
+            requestParams: idParam('id', 'Report id, such as FB-7K3Q'),
+            requestBody: json(updateFeedbackRequest),
+            responses: {
+              '200': jsonResponse('Updated', feedbackResponse),
+              '400': problem('Invalid request'),
+              '403': problem('Only the person who runs the installation changes a status'),
+              '404': problem('No such report'),
             },
           },
         },

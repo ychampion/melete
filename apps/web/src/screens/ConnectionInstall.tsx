@@ -4,7 +4,7 @@
  * takes, and this draws exactly that. A new kind on the service is a new form
  * here without a change to this file.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { Badge, Button, Checkbox, Field, Input, Select } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
@@ -17,7 +17,12 @@ import {
   requestBody,
 } from '../experience/connection-form.ts';
 import { useLoad } from '../experience/hooks.ts';
-import type { ConnectionItemField, ConnectionKind } from '../experience/types.ts';
+import type {
+  AccountSignInStart,
+  CatalogEntry,
+  ConnectionItemField,
+  ConnectionKind,
+} from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 import { APP_PASSWORD } from './app-passwords.ts';
 
@@ -286,11 +291,127 @@ export function KindForm({
   );
 }
 
+export type SignInEntry = CatalogEntry & { connect: { method: 'sign_in' } };
+const isSignIn = (entry: CatalogEntry): entry is SignInEntry => entry.connect.method === 'sign_in';
+
+/**
+ * Signing in to an account. Before the browser leaves for the provider, the
+ * person sees where they will sign in and everything Melete asks for there.
+ */
+export function AccountSignIn({
+  entry,
+  onDone,
+  onInstalled,
+}: {
+  entry: SignInEntry;
+  onDone: () => void;
+  onInstalled: () => void;
+}) {
+  const provider = entry.connect.provider;
+  const [started, setStarted] = useState<AccountSignInStart | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [opened, setOpened] = useState(false);
+  const [loading, setLoading] = useState(entry.available);
+
+  useEffect(() => {
+    if (!entry.available) return;
+    let live = true;
+    void adapter.startAccountSignIn(provider).then((r) => {
+      if (!live) return;
+      setLoading(false);
+      if (r.data) setStarted(r.data);
+      else setError(r.error ?? r.unavailable ?? 'Couldn’t start signing in');
+    });
+    return () => {
+      live = false;
+    };
+  }, [entry.available, provider]);
+
+  // Once the provider's page is open, wait for the sign-in to finish there.
+  useEffect(() => {
+    if (!opened || !started) return;
+    const until = new Date(started.expires_at).getTime();
+    const timer = window.setInterval(() => {
+      if (Date.now() > until) {
+        window.clearInterval(timer);
+        setError('The sign-in expired. Start again.');
+        return;
+      }
+      void adapter.accountSignInStatus(provider, started.sign_in_id).then((r) => {
+        if (!r.data || r.data.state === 'pending') return;
+        window.clearInterval(timer);
+        if (r.data.state === 'connected') {
+          toast({ kind: 'ok', title: `${entry.title} connected` });
+          onInstalled();
+          onDone();
+        } else setError(r.data.error);
+      });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [opened, started, provider, entry.title, onInstalled, onDone]);
+
+  const issuer = new URL(started?.issuer ?? entry.connect.issuer).host;
+  const scopes = started?.scopes ?? entry.connect.scopes;
+  return (
+    <div className="col card-12" style={{ gap: 10, padding: 16, maxWidth: 560 }}>
+      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
+        Sign in with {entry.title}
+      </span>
+      <span style={{ fontSize: 13, color: 'var(--text)' }}>
+        You sign in at <strong>{issuer}</strong>. Melete asks {entry.title} for:
+      </span>
+      <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--text)' }}>
+        {scopes.map((item) => (
+          <li key={item.scope}>{item.label ?? item.scope}</li>
+        ))}
+      </ul>
+      {!entry.available ? (
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+          {entry.unavailable_reason}
+          {entry.setup_hint ? ` ${entry.setup_hint}` : ''}
+        </span>
+      ) : null}
+      {error ? (
+        <span role="alert" style={{ fontSize: 13, color: 'var(--danger)' }}>
+          {error}
+        </span>
+      ) : null}
+      {opened && !error ? (
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+          Finish signing in on the {entry.title} page. This updates when you are done.
+        </span>
+      ) : null}
+      <div className="row" style={{ gap: 8 }}>
+        {entry.available ? (
+          <Button
+            icon="arrowUpRight"
+            loading={loading}
+            disabled={!started || opened}
+            onClick={() => {
+              if (!started) return;
+              window.open(started.authorize_url, '_blank', 'noopener,noreferrer');
+              setOpened(true);
+            }}
+          >
+            Continue to {entry.title}
+          </Button>
+        ) : null}
+        <Button variant="ghost" onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
   const kinds = useLoad(() => adapter.connectionKinds(), []);
   const [chosen, setChosen] = useState<string | null>(null);
+  const [signingIn, setSigningIn] = useState<string | null>(null);
   const list = kinds.data?.kinds ?? [];
   const kind = list.find((item) => item.id === chosen);
+  const accounts = (kinds.data?.catalog ?? []).filter(isSignIn);
+  const account = accounts.find((item) => item.id === signingIn);
   // An instance that does not serve kinds cannot install anything, so nothing is drawn.
   if (kinds.unavailable || (!kinds.loading && !kinds.error && list.length === 0)) return null;
 
@@ -300,7 +421,14 @@ export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
         Add a connection
       </span>
       {kinds.error ? <p style={{ color: 'var(--danger)', fontSize: 13 }}>{kinds.error}</p> : null}
-      {kind ? (
+      {account ? (
+        <AccountSignIn
+          key={account.id}
+          entry={account}
+          onDone={() => setSigningIn(null)}
+          onInstalled={onInstalled}
+        />
+      ) : kind ? (
         <KindForm
           key={kind.id}
           kind={kind}
@@ -311,6 +439,17 @@ export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
         />
       ) : (
         <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          {accounts.map((item) => (
+            <Button
+              key={item.id}
+              variant="outline"
+              icon="plus"
+              title={item.available ? item.description : item.unavailable_reason}
+              onClick={() => setSigningIn(item.id)}
+            >
+              Sign in with {item.title}
+            </Button>
+          ))}
           {list.map((item) => (
             <Button
               key={item.id}

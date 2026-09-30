@@ -61,6 +61,8 @@ import { connection } from './db/schema.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { mountExperience } from './experience/routes.ts';
+import type { FeedbackLimiter } from './feedback/rate-limit.ts';
+import { mountFeedback } from './feedback/routes.ts';
 import { providerSignIn } from './gateway/configured.ts';
 import type { ProviderSignIn } from './gateway/credentials.ts';
 import type { GatewayOptions } from './gateway/index.ts';
@@ -94,6 +96,7 @@ import type { ProcedureProposer } from './learning/proposer.ts';
 import { expireEpisodes } from './learning/retention.ts';
 import { mountLearning } from './learning/routes.ts';
 import { startLearning } from './learning/start.ts';
+import { mountMcpServer } from './mcp-server/routes.ts';
 import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { withMemoryRuntime } from './memory/context.ts';
@@ -109,6 +112,8 @@ import {
   spaceAuthority,
 } from './principals/authority.ts';
 import { mountPrincipals } from './principals/routes.ts';
+import { mountPush } from './push/routes.ts';
+import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
 import { assertDockerEngine } from './runtime/docker-engine.ts';
@@ -175,12 +180,16 @@ export type AppDeps = {
   broker?: BrokerService;
   registry?: ConnectorRegistry;
   sql?: Sql;
+  /** Phone presence. Left out, built from the database and the VAPID keys in the environment. */
+  push?: PushService;
   /** Overrides for the company map: a test's store, extractor or handler. */
   companies?: Partial<CompaniesDeps>;
   /** The owner's model-provider sign-ins. Left out, built from `sql` and the master key. */
   providerSignIn?: ProviderSignIn;
   /** The model connected in the app. Left out, built from `db` and the sign-ins. */
   modelSettings?: ModelSettingsService;
+  /** How many problem reports one person may send in a short time; a test supplies its clock. */
+  feedbackLimiter?: FeedbackLimiter;
 };
 
 export function createApp(deps: AppDeps) {
@@ -224,15 +233,14 @@ export function createApp(deps: AppDeps) {
   if (deps.removals && deps.db && deps.sql)
     mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
   if (connections) mountConnections(app, connections);
-  if (deps.db) {
-    const signIn =
-      deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
+  const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
+  // One reader of the model connected in the app, for its routes and the companies scan.
+  const modelSettings =
+    deps.modelSettings ??
+    (deps.db ? new ModelSettingsService({ db: deps.db, env: deps.env, signIn }) : undefined);
+  if (deps.db && modelSettings) {
     mountProviderSignIn(app, { db: deps.db, signIn });
-    mountModelSettings(app, {
-      db: deps.db,
-      settings:
-        deps.modelSettings ?? new ModelSettingsService({ db: deps.db, env: deps.env, signIn }),
-    });
+    mountModelSettings(app, { db: deps.db, settings: modelSettings });
   }
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
@@ -267,6 +275,7 @@ export function createApp(deps: AppDeps) {
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
+  if (deps.db) mountPush(app, deps.push ?? new PushService(deps.db, pushConfig(deps.env)));
   if (deps.db)
     mountExperience(app, {
       db: deps.db,
@@ -280,6 +289,7 @@ export function createApp(deps: AppDeps) {
       memoryJournal: deps.memory?.journal,
       memoryProvision: deps.memory?.provision,
       triggers: deps.triggers,
+      browser: Boolean(deps.browserSessions),
     });
   if (deps.db)
     mountCompanies(app, {
@@ -290,9 +300,19 @@ export function createApp(deps: AppDeps) {
         env: deps.env,
         jobs: deps.jobs,
         triggers: deps.triggers,
+        modelSettings,
       }),
       ...deps.companies,
     });
+  if (deps.db && deps.sql)
+    mountMcpServer(app, {
+      db: deps.db,
+      sql: deps.sql,
+      env: deps.env,
+      broker: deps.broker,
+      registry: deps.registry,
+    });
+  if (deps.db) mountFeedback(app, { db: deps.db, version: VERSION, limiter: deps.feedbackLimiter });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory)
     app.route(
@@ -433,6 +453,7 @@ export async function bootstrap(
   let registry: ConnectorRegistry | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
+  let pushDispatcher: PushDispatcher | undefined;
   let signIn: ProviderSignIn | undefined;
   let modelSettings: ModelSettingsService | undefined;
   let sandboxes: SandboxWiring | undefined;
@@ -452,6 +473,7 @@ export async function bootstrap(
           learning?.close(),
           events?.close(),
           companyReplies?.stop(),
+          pushDispatcher?.stop(),
           triggers?.stop(),
           runner?.stop(),
           operations?.stop(),
@@ -573,7 +595,10 @@ export async function bootstrap(
     // Automatic memory: what a person says in chat is read by the memory model
     // through the gateway, within a per-person daily budget.
     if (handle && queue && options.workers !== false)
-      memoryGateway = await configuredMemoryGateway(handle.sql, env, options.fakeProvider);
+      memoryGateway = await configuredMemoryGateway(handle.sql, env, options.fakeProvider, {
+        settings: modelSettings,
+        signIn,
+      });
     if (handle && queue && env.MELETE_RUNTIME_ADAPTER === 'docker') {
       deploymentMemory = await startDeploymentMemory({
         sql: handle.sql,
@@ -746,6 +771,7 @@ export async function bootstrap(
         options.workers !== false,
         options.fakeProvider,
         signIn,
+        modelSettings,
       );
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
@@ -834,6 +860,14 @@ export async function bootstrap(
               }),
           });
           await companyReplies.start();
+        }
+        // Pushes to people's devices, when this installation has its VAPID keys.
+        if (handle) {
+          pushDispatcher = new PushDispatcher(
+            new PushService(handle.db, pushConfig(env)),
+            triggers.jobs.boss,
+          );
+          await pushDispatcher.start();
         }
       }
       if (options.workers === false) await replies?.recover();

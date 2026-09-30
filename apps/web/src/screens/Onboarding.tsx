@@ -1,5 +1,5 @@
 /**
- * Sign-in and the guided setup on the contract: a magic link (OAuth buttons
+ * Sign-in and the guided setup on the contract: a magic link (Google and Apple
  * only when the service says they work), the tour (only stages this instance
  * can do), plugging in apps, meeting the first agent, and saving four answers
  * as memory before opening a conversation that refers to one of them.
@@ -50,16 +50,25 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [google, setGoogle] = useState<boolean | null>(null);
   const [apple, setApple] = useState<boolean | null>(null);
+  // ChatGPT is always offered; its panel says when this installation has no client.
+  const [chatgpt, setChatgpt] = useState<{ ready: boolean; reason: string | null } | null>(null);
+  const [chatgptOpen, setChatgptOpen] = useState(false);
   const phone = useMedia('(max-width: 900px)');
 
   useEffect(() => {
     void adapter.setupStatus().then((r) => setCreating(r.data?.needed === true));
   }, []);
 
-  // The OAuth buttons are drawn only when the service says they work.
+  // Google and Apple are drawn only when the service says they work.
   useEffect(() => {
     void adapter.signInGoogle().then((r) => setGoogle(r.unavailable === null && r.error === null));
     void adapter.signInApple().then((r) => setApple(r.unavailable === null && r.error === null));
+    void adapter.signInChatGPT().then((r) =>
+      setChatgpt({
+        ready: r.unavailable === null && r.error === null,
+        reason: r.unavailable ?? r.error,
+      }),
+    );
   }, []);
 
   // A magic link lands here with its token in the fragment; consume it once.
@@ -131,9 +140,12 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
     } else setNotice(result.error ?? result.unavailable ?? 'Couldn’t sign in.');
   };
 
-  const kcard = (inner: ReactNode, width = 320, extra?: React.CSSProperties) => (
+  // The hero's cards sit in named slots; base.css places them and drops the
+  // ones the panel has no room for, so nothing overlaps at any size.
+  const kcard = (inner: ReactNode, slot: 1 | 2 | 3, width: number, delay: string) => (
     <div
-      className="col pop"
+      className="col pop signin-card"
+      data-slot={slot}
       style={{
         gap: 8,
         width,
@@ -143,8 +155,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
         border: '1px solid var(--studio-line)',
         boxShadow: '0 24px 60px #00000080',
         color: 'var(--studio-text)',
-        position: 'absolute',
-        ...extra,
+        animationDelay: delay,
       }}
     >
       {inner}
@@ -185,31 +196,22 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
     >
       {!phone ? (
         <div
+          className="signin-hero"
           style={{
             ...studio,
-            position: 'relative',
             width: '55%',
             flexShrink: 0,
             border: 0,
             overflow: 'hidden',
           }}
         >
-          <div className="row" style={{ gap: 10, position: 'absolute', left: 44, top: 32 }}>
+          <div className="row" style={{ gap: 10 }}>
             <MeleteMark width={46} />
             <span style={{ fontFamily: 'var(--font-head)', fontSize: 18, fontWeight: 700 }}>
               Melete
             </span>
           </div>
-          <div
-            className="col"
-            style={{
-              gap: 12,
-              position: 'absolute',
-              left: 44,
-              top: 104,
-              width: 'min(540px, calc(100% - 88px))',
-            }}
-          >
+          <div className="col" style={{ gap: 12, maxWidth: 540, marginTop: 40, flexShrink: 0 }}>
             <span
               style={{
                 fontFamily: 'var(--font-head)',
@@ -220,7 +222,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 textWrap: 'balance',
               }}
             >
-              The assistant that actually does it.
+              Your agent, with a computer of its own.
             </span>
             <span
               style={{
@@ -231,105 +233,104 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 textWrap: 'pretty',
               }}
             >
-              Dinner with friends or the pricing launch. Melete takes the task end to end and comes
-              back only for the moments that need you.
+              Melete runs on your machine with any model, keeps working while you’re away, follows
+              up for you, and comes back when something needs your approval.
             </span>
           </div>
-          <div
-            className="row"
-            style={{ position: 'absolute', left: 44, top: 318, gap: 22, alignItems: 'flex-end' }}
-          >
-            <AgentFace look={SAGE} size={64} glow />
-            <AgentFace look={NOVA} size={108} state="working" glow />
-            <AgentFace look={ATLAS} size={64} glow />
-          </div>
-          {kcard(
-            <>
-              <div className="col" style={{ alignItems: 'flex-end' }}>
-                <span
-                  style={{
-                    padding: '7px 12px',
-                    borderRadius: '14px 14px 4px 14px',
-                    background: '#2f5fd6',
-                    color: '#fff',
-                    fontSize: 13,
-                    lineHeight: '18px',
-                  }}
-                >
-                  Move my 3 PM to tomorrow and tell Sam.
-                </span>
-              </div>
-              <div className="row" style={{ gap: 8, fontSize: 12, color: 'var(--studio-muted)' }}>
-                <span style={{ color: '#4ade80', display: 'flex' }}>
-                  <Icon name="circleCheck" size={14} />
-                </span>
-                Moved to Tuesday 3:00 PM · message to Sam drafted, not sent
-              </div>
-              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                {kchip('gcal', 'Pricing sync · Tue 3:00 PM')}
-                {kchip('slack', 'Sam · draft')}
-              </div>
-            </>,
-            320,
-            { left: '52%', top: 290, animationDelay: '.4s' },
-          )}
-          {kcard(
-            <>
-              <div className="row" style={{ gap: 10 }}>
-                <span
-                  className="row"
-                  style={{
-                    justifyContent: 'center',
-                    width: 32,
-                    height: 32,
-                    borderRadius: 8,
-                    background: 'var(--studio-panel-2)',
-                    color: '#f5b342',
-                  }}
-                >
-                  <Icon name="star" size={16} />
-                </span>
-                <div className="col grow" style={{ minWidth: 0 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600 }}>
-                    Luna Trattoria · 7:30, table for 3
-                  </span>
-                  <span style={{ fontSize: 11, color: 'var(--studio-muted)' }}>
-                    On your calendar · a note to Alex ready for you to send
+          <div className="signin-art">
+            <div className="row signin-faces" style={{ gap: 22, alignItems: 'flex-end' }}>
+              <AgentFace look={SAGE} size={64} glow />
+              <AgentFace look={NOVA} size={108} state="working" glow />
+              <AgentFace look={ATLAS} size={64} glow />
+            </div>
+            {kcard(
+              <>
+                <div className="col" style={{ alignItems: 'flex-end' }}>
+                  <span
+                    style={{
+                      padding: '7px 12px',
+                      borderRadius: '14px 14px 4px 14px',
+                      background: '#2f5fd6',
+                      color: '#fff',
+                      fontSize: 13,
+                      lineHeight: '18px',
+                    }}
+                  >
+                    Move my 3 PM to tomorrow and tell Sam.
                   </span>
                 </div>
-              </div>
-              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                {kchip('gcal', 'Tonight 7:30 PM')}
-                {kchip('imessage', 'Alex · not sent')}
-                {kchip('gmaps', '12 min walk')}
-              </div>
-            </>,
-            320,
-            { left: '50%', top: 470, animationDelay: '.9s' },
-          )}
-          {kcard(
-            <>
-              <div className="row" style={{ gap: 8, fontSize: 12, color: 'var(--studio-muted)' }}>
-                <span className="spin" style={{ display: 'flex', color: '#8db6f7' }}>
-                  <Icon name="loader" size={12} stroke={2} />
+                <div className="row" style={{ gap: 8, fontSize: 12, color: 'var(--studio-muted)' }}>
+                  <span style={{ color: '#4ade80', display: 'flex' }}>
+                    <Icon name="circleCheck" size={14} />
+                  </span>
+                  Moved to Tuesday 3:00 PM · note to Sam ready to approve
+                </div>
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  {kchip('gcal', 'Pricing sync · Tue 3:00 PM')}
+                  {kchip('slack', 'Sam · to approve')}
+                </div>
+              </>,
+              1,
+              320,
+              '.4s',
+            )}
+            {kcard(
+              <>
+                <div className="row" style={{ gap: 10 }}>
+                  <span
+                    className="row"
+                    style={{
+                      justifyContent: 'center',
+                      width: 32,
+                      height: 32,
+                      borderRadius: 8,
+                      background: 'var(--studio-panel-2)',
+                      color: '#f5b342',
+                    }}
+                  >
+                    <Icon name="star" size={16} />
+                  </span>
+                  <div className="col grow" style={{ minWidth: 0 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>
+                      Luna Trattoria · 7:30, table for 3
+                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--studio-muted)' }}>
+                      Booked while you were out · a note to Alex to approve
+                    </span>
+                  </div>
+                </div>
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  {kchip('gcal', 'Tonight 7:30 PM')}
+                  {kchip('imessage', 'Alex · to approve')}
+                  {kchip('gmaps', '12 min walk')}
+                </div>
+              </>,
+              2,
+              320,
+              '.9s',
+            )}
+            {kcard(
+              <>
+                <div className="row" style={{ gap: 8, fontSize: 12, color: 'var(--studio-muted)' }}>
+                  <span className="spin" style={{ display: 'flex', color: '#8db6f7' }}>
+                    <Icon name="loader" size={12} stroke={2} />
+                  </span>
+                  Working · 6s
+                </div>
+                <span style={{ fontSize: 13, lineHeight: '18px' }}>
+                  Following up with legal on the pricing page review, as Sam asked.
                 </span>
-                Working · 6s
-              </div>
-              <span style={{ fontSize: 13, lineHeight: '18px' }}>
-                Reading the brief first so the timeline matches what Sam already agreed.
-              </span>
-              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                {kchip('notion', 'Pricing page launch · brief')}
-                {kchip('linear', 'PRC-114 · Legal review')}
-              </div>
-            </>,
-            300,
-            { left: 44, top: 586, animationDelay: '1.4s' },
-          )}
-          <div
-            className="col"
-            style={{ gap: 10, position: 'absolute', left: 44, right: 44, bottom: 36 }}
-          >
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  {kchip('notion', 'Pricing page launch · brief')}
+                  {kchip('linear', 'PRC-114 · Legal review')}
+                </div>
+              </>,
+              3,
+              300,
+              '1.4s',
+            )}
+          </div>
+          <div className="col signin-apps" style={{ gap: 10, flexShrink: 0 }}>
             <span
               style={{
                 fontSize: 11,
@@ -412,7 +413,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
             </div>
           ) : (
             <>
-              {!creating && (google || apple) ? (
+              {!creating ? (
                 <div className="col" style={{ gap: 10 }}>
                   {google ? (
                     <button
@@ -447,6 +448,81 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                       <Icon name="apple" size={18} />
                       <span>Continue with Apple</span>
                     </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="btn btn-xl btn-outline"
+                    style={{ width: '100%', gap: 10, fontSize: 14 }}
+                    aria-expanded={chatgptOpen}
+                    aria-controls="signin-chatgpt"
+                    onClick={() => setChatgptOpen((open) => !open)}
+                  >
+                    <Icon name="chat" size={18} />
+                    <span>Sign in with ChatGPT</span>
+                  </button>
+                  {chatgptOpen ? (
+                    <section
+                      id="signin-chatgpt"
+                      aria-label="Sign in with ChatGPT"
+                      className="col card"
+                      style={{ gap: 10, padding: 16 }}
+                    >
+                      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
+                        Sign in with your ChatGPT account
+                      </span>
+                      {chatgpt?.ready ? (
+                        <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
+                          OpenAI confirms who you are and shares your name, email address and
+                          profile picture with this installation. Your ChatGPT password stays with
+                          OpenAI.
+                        </span>
+                      ) : null}
+                      {chatgpt?.ready ? (
+                        <Button
+                          icon="arrowUpRight"
+                          block
+                          onClick={() =>
+                            void adapter
+                              .signInChatGPT()
+                              .then((r) =>
+                                r.data
+                                  ? refreshProfile()
+                                  : setNotice(r.error ?? r.unavailable ?? ''),
+                              )
+                          }
+                        >
+                          Continue to ChatGPT
+                        </Button>
+                      ) : (
+                        <div
+                          className="row"
+                          style={{
+                            gap: 8,
+                            alignItems: 'flex-start',
+                            padding: '10px 12px',
+                            borderRadius: 10,
+                            background: 'var(--sand)',
+                            color: 'var(--sand-ink)',
+                            fontSize: 13,
+                            lineHeight: '19px',
+                          }}
+                        >
+                          <span style={{ display: 'flex', paddingTop: 2 }}>
+                            <Icon name="info" size={14} />
+                          </span>
+                          <span>
+                            {chatgpt?.reason ??
+                              'This installation hasn’t set up ChatGPT sign-in yet.'}
+                          </span>
+                        </div>
+                      )}
+                      {chatgpt?.ready ? null : (
+                        <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
+                          When it’s set up, OpenAI shares your name and email with Melete. Your
+                          ChatGPT password stays with OpenAI.
+                        </span>
+                      )}
+                    </section>
                   ) : null}
                   <div className="row" style={{ gap: 12 }}>
                     <span className="grow hairline" />
@@ -523,7 +599,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
           <div className="col" style={{ gap: 10, alignItems: 'center', textAlign: 'center' }}>
             <span className="row" style={{ gap: 6, fontSize: 12, color: 'var(--muted)' }}>
               <Icon name="lock" size={13} />
-              Your data stays yours. Agents ask before they act.
+              Your data stays yours.
             </span>
           </div>
         </div>

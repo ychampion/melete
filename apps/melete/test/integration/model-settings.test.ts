@@ -1,5 +1,10 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { randomBytes } from 'node:crypto';
+import { FIXTURE_REFERENCE, fixtureMessages } from '../../src/companies/fixtures.ts';
+import { fixtureMailbox } from '../../src/companies/mailbox.ts';
+import { MemoryCompanyStore } from '../../src/companies/repository.ts';
+import { runScan } from '../../src/companies/scan.ts';
+import { configuredExtractor } from '../../src/companies/service.ts';
 import { loadEnv } from '../../src/env.ts';
 import { ModelSettingsService } from '../../src/gateway/model-settings.ts';
 import { providersFromEnv } from '../../src/gateway/providers.ts';
@@ -7,6 +12,7 @@ import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { configuredMemoryGateway } from '../../src/memory/gateway.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
@@ -18,6 +24,7 @@ const password = 'my-test-password';
 /** Fixture keys only; each is searched for in every answer and every table. */
 const ANTHROPIC_KEY = 'sk-ant-fixture-key-7a3f';
 const COMPATIBLE_KEY = 'compat-fixture-key-9b1c';
+const FIREWORKS_KEY = 'fw-fixture-key-2c4d';
 
 function database() {
   if (!handle) throw new Error('Postgres is unavailable');
@@ -46,6 +53,7 @@ function app(env: Record<string, string> = {}, fetch?: (request: Request) => Pro
     checkDatabase: async () => 'ok',
   });
   return {
+    env: loaded,
     settings: service,
     async call(path: string, cookie: string, init: RequestInit = {}) {
       const response = await built.request(path, {
@@ -165,7 +173,7 @@ describeWithDb('the model, connected in the app', () => {
     const moved = (await api.settings.providers(providersFromEnv({}))).find(
       (p) => p.name === 'openai',
     );
-    expect(moved?.signedIn?.current()).rejects.toThrow('Secret unavailable');
+    await expect(moved?.signedIn?.current()).rejects.toThrow('Secret unavailable');
 
     const stored = await everythingStored();
     for (const key of [ANTHROPIC_KEY, COMPATIBLE_KEY]) {
@@ -318,4 +326,167 @@ describeWithDb('the model, connected in the app', () => {
     expect(cleared.body.active).toMatchObject({ provider: 'fireworks', source: 'operator' });
     expect((await claim('Cleared')).bundle.provider).toBe('fireworks');
   }, 30_000);
+
+  test('memory reads and the companies scan use the key and model connected in the app', async () => {
+    // No provider key in the environment: the app is the only place one is set.
+    const api = app();
+    const cookie = await owner(api);
+    const reached: { host: string; authorization: string | null; model: unknown }[] = [];
+    const provider = async (request: Request) => {
+      const body = (await request.json()) as { model?: unknown };
+      reached.push({
+        host: new URL(request.url).host,
+        authorization: request.headers.get('authorization'),
+        model: body.model,
+      });
+      // One answer serves both readers: memory reads it as an empty reply, a scan as no items.
+      const text = JSON.stringify({ items: [] });
+      return request.url.endsWith('/responses')
+        ? Response.json({
+            id: 'resp_1',
+            object: 'response',
+            status: 'completed',
+            model: body.model,
+            output: [
+              { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
+            ],
+            usage: { input_tokens: 40, output_tokens: 5, total_tokens: 45 },
+          })
+        : Response.json({
+            id: 'chat_1',
+            object: 'chat.completion',
+            model: body.model,
+            choices: [{ index: 0, message: { role: 'assistant', content: text } }],
+            usage: { prompt_tokens: 40, completion_tokens: 5, total_tokens: 45 },
+          });
+    };
+    const memory = await configuredMemoryGateway(database().sql, api.env, undefined, {
+      settings: api.settings,
+      fetch: provider,
+    });
+    if (!memory) throw new Error('memory extraction is off');
+    const companies = configuredExtractor(api.env, undefined, api.settings, provider);
+    const read = (workId: string) =>
+      memory.gateway.chat(
+        {
+          messages: [
+            { role: 'system', content: 'Return JSON.' },
+            { role: 'user', content: '{}' },
+          ],
+          max_tokens: 100,
+          signal: AbortSignal.timeout(10_000),
+        },
+        { ownerId: 'own_model_settings', spaceId: 'sp_model_settings', workId },
+      );
+    const scan = (spaceId: string) =>
+      runScan({
+        store: new MemoryCompanyStore(),
+        mailbox: fixtureMailbox(fixtureMessages()),
+        extractor: companies,
+        owner: { spaceId, principalId: 'own_model_settings' },
+        now: new Date(FIXTURE_REFERENCE),
+      });
+    try {
+      // Before a key is connected nothing reaches a provider: memory is refused
+      // and the scan reads with the scripted extractor.
+      expect(await read('before').catch(() => 'refused')).toBe('refused');
+      expect((await scan('sp_before')).status).toBe('done');
+      expect(reached).toHaveLength(0);
+
+      const model = 'accounts/fireworks/models/fixture-chosen';
+      await api.call('/model-settings/keys/fireworks', cookie, put({ api_key: FIREWORKS_KEY }));
+      const chosen = await api.call(
+        '/model-settings/default',
+        cookie,
+        put({ provider: 'fireworks', model }),
+      );
+      expect(chosen.status).toBe(200);
+
+      // Without a restart, the next memory read and the next scan use it.
+      expect(await read('after')).toBe('{"items":[]}');
+      expect(reached).toEqual([
+        { host: 'api.fireworks.ai', authorization: `Bearer ${FIREWORKS_KEY}`, model },
+      ]);
+      const [ledger] = await database().sql`select provider, model from memory_model_calls
+        where work_id = 'after'`;
+      expect(ledger).toMatchObject({ provider: 'fireworks', model });
+
+      expect((await scan('sp_after')).status).toBe('done');
+      const scanned = reached.slice(1);
+      expect(scanned.length).toBeGreaterThan(0);
+      for (const call of scanned)
+        expect(call).toEqual({
+          host: 'api.fireworks.ai',
+          authorization: `Bearer ${FIREWORKS_KEY}`,
+          model,
+        });
+    } finally {
+      await memory.close();
+    }
+    expect(answered.join('\n')).not.toContain(FIREWORKS_KEY);
+  }, 30_000);
+
+  test('a compatible endpoint’s key only goes to the address it was saved for', async () => {
+    const api = app();
+    const cookie = await owner(api);
+    await api.call(
+      '/model-settings/keys/openai-compatible',
+      cookie,
+      put({ api_key: COMPATIBLE_KEY, base_url: 'http://models.internal:8000/v1' }),
+    );
+
+    // The operator later names a different endpoint, with no key of its own.
+    const elsewhere = 'https://elsewhere.example/v1';
+    const sent: Request[] = [];
+    const moved = app({ OPENAI_COMPAT_BASE_URL: elsewhere }, async (request) => {
+      sent.push(request);
+      return Response.json({ data: [] });
+    });
+    const endpoints = (
+      await moved.settings.providers(providersFromEnv({ OPENAI_COMPAT_BASE_URL: elsewhere }))
+    ).filter((p) => p.name === 'openai-compatible');
+    expect(endpoints).toHaveLength(1);
+    expect(endpoints[0]?.baseUrl).toBe(`${elsewhere}/`);
+    expect(endpoints[0]?.apiKey).toBeUndefined();
+    expect(endpoints[0]?.signedIn).toBeUndefined();
+    const view = await moved.call('/model-settings', cookie);
+    expect(view.body.providers.find((p: Json) => p.provider === 'openai-compatible')).toMatchObject(
+      {
+        key: { state: 'unset' },
+        base_url: `${elsewhere}/`,
+        base_url_source: 'operator',
+        connected: false,
+      },
+    );
+    const tried = await moved.call(
+      '/model-settings/test',
+      cookie,
+      post({ provider: 'openai-compatible' }),
+    );
+    expect(tried.body).toMatchObject({ ok: false, code: 'no_key' });
+    expect(sent).toHaveLength(0);
+
+    // A key saved while the operator names the address is bound to that address.
+    const second = 'compat-second-fixture-4e2a';
+    const saved = await moved.call(
+      '/model-settings/keys/openai-compatible',
+      cookie,
+      put({ api_key: second }),
+    );
+    expect(saved.status).toBe(200);
+    const [row] = await database()
+      .sql`select base_url from model_provider_key where provider = 'openai-compatible'`;
+    expect(row?.base_url).toBe(`${elsewhere}/`);
+    const bound = (
+      await moved.settings.providers(providersFromEnv({ OPENAI_COMPAT_BASE_URL: elsewhere }))
+    ).find((p) => p.name === 'openai-compatible');
+    expect((await bound?.signedIn?.current())?.token).toBe(second);
+
+    const third = 'https://third.example/v1';
+    const again = app({ OPENAI_COMPAT_BASE_URL: third });
+    const unbound = (
+      await again.settings.providers(providersFromEnv({ OPENAI_COMPAT_BASE_URL: third }))
+    ).find((p) => p.name === 'openai-compatible');
+    expect(unbound?.signedIn).toBeUndefined();
+  });
 });

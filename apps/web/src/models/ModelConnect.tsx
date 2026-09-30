@@ -10,6 +10,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { Badge, Button, Field, Input, Select } from '../design/primitives.tsx';
 import { type Loaded, useLoad } from '../experience/hooks.ts';
+import { modelDisplayName } from '../experience/model-name.ts';
 import { toast } from '../shell/Shell.tsx';
 import {
   type ConnectionTest,
@@ -59,10 +60,13 @@ export function ModelLine({ settings }: { settings: ModelSettings }) {
   return (
     <span className="models-line">
       <Icon name="sparkles" size={13} />
-      <span>
-        Model: <span className="models-id">{active.model}</span> ·{' '}
-        {providerLabel(settings, active.provider)}
-        {active.connected ? '' : ' (not connected)'}
+      <span className="col" style={{ gap: 1, minWidth: 0 }}>
+        <span>
+          Model: <span className="models-name">{modelDisplayName(active.model)}</span> ·{' '}
+          {providerLabel(settings, active.provider)}
+          {active.connected ? '' : ' (not connected)'}
+        </span>
+        <span className="models-id models-id-raw">{active.model}</span>
       </span>
     </span>
   );
@@ -82,7 +86,8 @@ export function ActiveModel({
     <div className="card-12 models-active">
       <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
         <span className="models-overline">Agents answer with</span>
-        <span className="models-active-name models-id">{active.model}</span>
+        <span className="models-active-name">{modelDisplayName(active.model)}</span>
+        <span className="models-id models-id-raw">{active.model}</span>
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>
           {providerLabel(settings, active.provider)} ·{' '}
           {active.source === 'app' ? 'chosen here' : 'the server’s default'}
@@ -112,7 +117,7 @@ export function ActiveModel({
             variant="ghost"
             loading={busy}
             disabled={busy}
-            title={`${server.model} · ${providerLabel(settings, server.provider)}`}
+            title={`${modelDisplayName(server.model)} (${server.model}) · ${providerLabel(settings, server.provider)}`}
             onClick={() => {
               setBusy(true);
               void models.restoreServerDefault().then((result) => {
@@ -344,7 +349,7 @@ function KeyPanel({
     onChanged(chosen.data);
     toast({
       kind: 'ok',
-      title: `Agents now answer with ${model.trim()}`,
+      title: `Agents now answer with ${modelDisplayName(model)}`,
       sub: 'From the next reply. Nothing needed a restart.',
     });
   };
@@ -579,7 +584,7 @@ function SignInPanel({
       onChanged(answer.data);
       toast({
         kind: 'ok',
-        title: `Agents now answer with ${model.trim()}`,
+        title: `Agents now answer with ${modelDisplayName(model)}`,
         sub: 'From the next reply. Nothing needed a restart.',
       });
     });

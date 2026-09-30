@@ -23,6 +23,7 @@ import { forgetMemory } from '../memory/forget.ts';
 import { invalidateDependencies, lockEventOrder, notifyInvalidated } from '../memory/invalidate.ts';
 import { writeRepairBriefs } from '../memory/outputs.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
+import { ASSISTANT_STREAM } from '../memory/trust.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import { explainHandles, memoryKeyLabel } from './evidence.ts';
 import { plainText } from './projectors.ts';
@@ -74,9 +75,14 @@ export class ExperienceMemory {
     return { items, next };
   }
   private async item(spaceId: string, head: ClaimHead) {
-    const [source] = await this
-      .sql`select bool_or(s.stream = 'onboarding') as onboarding from memory_references r
+    const [source] = await this.sql`select bool_or(s.stream = 'onboarding') as onboarding,
+        min(s.stream) filter (where starts_with(s.stream, ${ASSISTANT_STREAM})) as assistant
+        from memory_references r
         join memory_sources s on s.id = r.source_id where r.claim_id = ${head.id} and r.revision = ${head.head_revision}`;
+    const assistant =
+      typeof source?.assistant === 'string'
+        ? await this.assistantName(source.assistant.slice(ASSISTANT_STREAM.length))
+        : undefined;
     const [used] = await this.sql`select max(o.created_at) as last_used from memory_output_uses u
         join memory_outputs o on o.id = u.output_row_id where u.claim_id = ${head.id} and o.space_id = ${spaceId}`;
     return memoryItem.parse({
@@ -92,7 +98,13 @@ export class ExperienceMemory {
       last_used: used?.last_used ? new Date(String(used.last_used)).toISOString() : null,
       editable: true,
       version: version(head.id, head.head_revision),
+      ...(assistant ? { saved_by: assistant } : {}),
     });
+  }
+  /** The name an assistant registered under, for a detail it saved. */
+  private async assistantName(clientId: string) {
+    const [row] = await this.sql`select name from mcp_client where id = ${clientId}`;
+    return plainText(row?.name, 'An assistant', 120);
   }
   /**
    * A detail the person states outright, during setup or later. It takes the
@@ -101,8 +113,19 @@ export class ExperienceMemory {
    * cites it, so the claim carries owner trust and no extractor has to agree.
    * A key already answered gets a new revision rather than a second claim, so
    * one key keeps one current value; the same statement said twice is one item.
+   *
+   * A detail another assistant saved through Melete's MCP endpoint is not the
+   * person's own words, whatever it claims: it is recorded as that assistant's
+   * external evidence, on a stream named for its client, so the claim carries
+   * `inferred` trust. An approval card then warns about any value drawn from
+   * it, and no standing rule stands in for the person's look.
    */
-  async create(spaceId: string, ownerId: string, raw: unknown) {
+  async create(
+    spaceId: string,
+    ownerId: string,
+    raw: unknown,
+    savedBy?: { assistantClientId: string },
+  ) {
     const scope = await this.scope(spaceId, ownerId);
     if (!scope) return unavailable('Your saved details are not connected yet.');
     const input = memoryItemCreate.parse(raw);
@@ -113,6 +136,7 @@ export class ExperienceMemory {
         409,
       );
     const statement = input.statement ?? input.value;
+    const stream = savedBy ? `${ASSISTANT_STREAM}${savedBy.assistantClientId}` : 'onboarding';
     const at = new Date().toISOString();
     const identity = createHash('sha256')
       .update(JSON.stringify([input.key, statement, input.value]))
@@ -128,7 +152,7 @@ export class ExperienceMemory {
       // The same statement again is the same item, not a second revision.
       const [said] = await tx`select count(*)::int as n from memory_sources
         where space_id = ${scope.spaceId} and publisher = ${scope.publisher}
-        and stream = 'onboarding' and source_identity = ${identity}`;
+        and stream = ${stream} and source_identity = ${identity}`;
       if (
         Number(said?.n ?? 0) > 0 &&
         head?.current.status === 'active' &&
@@ -136,12 +160,13 @@ export class ExperienceMemory {
       )
         return head.id;
       const evidence = await persistEvidence(tx, scope, {
-        stream: 'onboarding',
+        stream,
         source_identity: identity,
         // Each time the sentence is said anew it is a new version of the same evidence.
         source_version: String(Number(said?.n ?? 0) + 1),
-        source_type: 'message',
-        author: 'owner',
+        ...(savedBy
+          ? { source_type: 'assistant' as const, author: 'external' as const }
+          : { source_type: 'message' as const, author: 'owner' as const }),
         event_at: at,
         text: statement,
       });
@@ -156,7 +181,8 @@ export class ExperienceMemory {
         factual_status: 'attributed',
         valid_from: at,
         valid_until: null,
-        protected: true,
+        // What the person said holds against extraction; what an assistant saved does not.
+        protected: !savedBy,
         sources: [
           {
             source_id: evidence.source.source_id,
@@ -169,7 +195,7 @@ export class ExperienceMemory {
       // The statement is the claim's evidence already; nothing is left to extract.
       await tx`update memory_work set status = 'done' where source_id = ${evidence.source.source_id}`;
       await tx`update memory_streams set consumed_sequence = committed_sequence
-        where space_id = ${scope.spaceId} and publisher = ${scope.publisher} and stream = 'onboarding'`;
+        where space_id = ${scope.spaceId} and publisher = ${scope.publisher} and stream = ${stream}`;
       // Replacing an answer must retire delivered context just as a correction
       // does, including repair briefs for results that used its previous value.
       if (head) {

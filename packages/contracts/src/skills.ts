@@ -163,5 +163,7 @@ export const BUILT_IN_SKILLS = [
   'price-rise',
   'get-quotes',
   'unpaid-invoice',
+  /** A reply the person is waiting on, chased from "Waiting on". */
+  'chase-reply',
 ] as const;
 export type BuiltInSkill = (typeof BUILT_IN_SKILLS)[number];

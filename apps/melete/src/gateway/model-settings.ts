@@ -16,6 +16,12 @@
  *
  * Every read goes to the database, so the runner and the gateway see a change
  * on the next attempt and the next model call, in any process, without a restart.
+ * The service's own model calls (memory reads, learning proposals, the
+ * companies scan) take their model and keys from `serviceModelSource`, the same
+ * way.
+ *
+ * A key for the OpenAI-compatible endpoint is bound to the address it was saved
+ * for, the operator's or the owner's, and is only ever sent there.
  */
 import {
   MODEL_PROVIDERS,
@@ -178,9 +184,25 @@ export class ModelSettingsService {
     if (provider === CHATGPT_PROVIDER || this.operatorSignIn(provider))
       return this.signedIn(provider);
     if (this.operatorKey(provider)) return true;
+    return Boolean(this.usableRow(provider, rows));
+  }
+
+  /**
+   * The stored key a call to this provider may carry. A compatible endpoint's
+   * key only goes to the address it was saved for: when the operator's address
+   * has changed since, it is not used.
+   */
+  private usableRow(provider: string, rows: Map<string, KeyRow>): KeyRow | undefined {
     const row = rows.get(provider);
-    if (!row) return false;
-    return provider !== OPENAI_COMPATIBLE || Boolean(this.operatorBaseUrl() ?? row.baseUrl);
+    if (!row || provider !== OPENAI_COMPATIBLE) return row;
+    if (!row.baseUrl) return undefined;
+    const operatorBase = this.operatorBaseUrl();
+    return !operatorBase || operatorBase === row.baseUrl ? row : undefined;
+  }
+
+  /** Whether a model call to this provider would carry a credential now. */
+  async isConnected(provider: string): Promise<boolean> {
+    return this.connected(provider, await this.keyRows());
   }
 
   /**
@@ -201,7 +223,7 @@ export class ModelSettingsService {
       : { provider: this.env.MELETE_DEFAULT_PROVIDER, model: this.env.MELETE_DEFAULT_MODEL };
     const providers = await Promise.all(
       MODEL_PROVIDERS.map(async (provider) => {
-        const row = rows.get(provider);
+        const row = this.usableRow(provider, rows);
         const byOperator =
           provider !== CHATGPT_PROVIDER &&
           (Boolean(this.operatorKey(provider)) || this.operatorSignIn(provider));
@@ -283,8 +305,10 @@ export class ModelSettingsService {
         'That does not look like an API key. Paste the whole key, without spaces.',
         400,
       );
+    // A compatible endpoint's key is bound to the address it is saved for.
     let baseUrl: string | null = null;
-    if (provider === OPENAI_COMPATIBLE && !this.operatorBaseUrl()) {
+    if (provider === OPENAI_COMPATIBLE) baseUrl = this.operatorBaseUrl() ?? null;
+    if (provider === OPENAI_COMPATIBLE && !baseUrl) {
       if (!input.base_url)
         throw new ServiceError(
           'invalid_address',
@@ -356,7 +380,9 @@ export class ModelSettingsService {
     if (!rows.size) return configured;
     const result = configured.map((provider) => {
       const row = rows.get(provider.name);
-      return row && !provider.fake && !provider.apiKey && !provider.signedIn
+      // A compatible endpoint's key is attached only at the address it was saved for.
+      const boundHere = provider.name !== OPENAI_COMPATIBLE || row?.baseUrl === provider.baseUrl;
+      return row && boundHere && !provider.fake && !provider.apiKey && !provider.signedIn
         ? { ...provider, signedIn: this.storedCredential(row) }
         : provider;
     });
@@ -382,7 +408,7 @@ export class ModelSettingsService {
   private async currentKey(provider: string): Promise<string | undefined> {
     const operator = this.operatorKey(provider);
     if (operator) return operator;
-    const row = (await this.keyRows()).get(provider);
+    const row = this.usableRow(provider, await this.keyRows());
     return row ? this.box.open(row) : undefined;
   }
 
@@ -412,7 +438,9 @@ export class ModelSettingsService {
     let base: string;
     const configuredBase =
       provider === OPENAI_COMPATIBLE
-        ? (this.operatorBaseUrl() ?? (await this.keyRows()).get(provider)?.baseUrl ?? undefined)
+        ? (this.operatorBaseUrl() ??
+          this.usableRow(provider, await this.keyRows())?.baseUrl ??
+          undefined)
         : BUILT_IN.get(provider)?.baseUrl;
     try {
       base =
@@ -518,6 +546,54 @@ export class ModelSettingsService {
     const models = modelIds(body);
     return { ok: true, models, latency_ms: Math.round(performance.now() - started) };
   }
+}
+
+/** The provider and model one service-side model call uses. */
+export type ServiceModel = { provider: string; model: string };
+
+/**
+ * Where a model call the service makes on its own (memory reads, learning
+ * proposals, the companies scan, the action reviewer) takes its model and its
+ * credentials from. Both are read for each call, so a model or key the owner
+ * connects in the app applies to the next call without a restart.
+ */
+export type ServiceModelSource = {
+  /** The model the next call uses. */
+  current(): Promise<ServiceModel>;
+  /** The gateway's providers for one call: the configured ones plus keys connected in the app. */
+  providers(configured: GatewayProvider[]): Promise<GatewayProvider[]>;
+  /** Whether a call to this provider would carry a credential now. */
+  connected(provider: string): Promise<boolean>;
+};
+
+/**
+ * The one resolver every service-side model call uses. A model the operator
+ * set outright for that use (`pinned`, from MELETE_MEMORY_MODEL and the like)
+ * wins; otherwise the model chosen in the app, else the server's default.
+ * Without the settings service (a test, a process with no database) it is the
+ * server's default with the configured providers.
+ */
+export function serviceModelSource(options: {
+  env: Pick<Env, 'MELETE_DEFAULT_PROVIDER' | 'MELETE_DEFAULT_MODEL'>;
+  settings?: ModelSettingsService;
+  pinned?: { provider?: string; model?: string };
+}): ServiceModelSource {
+  const { env, settings } = options;
+  const pinned = options.pinned?.provider || options.pinned?.model ? options.pinned : undefined;
+  return {
+    async current() {
+      if (pinned)
+        return {
+          provider: pinned.provider || env.MELETE_DEFAULT_PROVIDER,
+          model: pinned.model || env.MELETE_DEFAULT_MODEL,
+        };
+      return settings
+        ? settings.activeChoice()
+        : { provider: env.MELETE_DEFAULT_PROVIDER, model: env.MELETE_DEFAULT_MODEL };
+    },
+    providers: async (configured) => (settings ? settings.providers(configured) : configured),
+    connected: async (provider) => (settings ? settings.isConnected(provider) : true),
+  };
 }
 
 const INVALID_ADDRESS =

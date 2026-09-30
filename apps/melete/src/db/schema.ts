@@ -704,6 +704,72 @@ export const notification = pgTable(
 );
 
 /**
+ * A browser that receives pushes for one person. The endpoint and keys stay in
+ * the service: the person sees a device name and when it was last used.
+ */
+export const pushSubscription = pgTable(
+  'push_subscription',
+  {
+    id: text('id').primaryKey(),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    endpoint: text('endpoint').notNull().unique(),
+    p256dh: text('p256dh').notNull(),
+    auth: text('auth').notNull(),
+    deviceLabel: text('device_label').notNull().default(''),
+    createdAt: created(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  },
+  (t) => [index('push_subscription_principal_idx').on(t.principalId)],
+);
+
+/** What a person wants pushed, and how often. No row means the defaults. */
+export const pushSetting = pgTable('push_setting', {
+  principalId: text('principal_id')
+    .primaryKey()
+    .references(() => principal.id, { onDelete: 'cascade' }),
+  decisions: boolean('decisions').notNull().default(true),
+  settled: boolean('settled').notNull().default(true),
+  weeklySummary: boolean('weekly_summary').notNull().default(true),
+  dailyCap: integer('daily_cap').notNull().default(4),
+  batchMinutes: integer('batch_minutes').notNull().default(10),
+});
+
+/**
+ * One thing worth saying, recorded once by its dedup key. It goes out alone or
+ * folded into a batch, and it cannot exist without saying why.
+ */
+export const pushIntent = pgTable(
+  'push_intent',
+  {
+    id: text('id').primaryKey(),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    /** `decision`, `settled` or `weekly`. */
+    kind: text('kind').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    because: text('because').notNull(),
+    url: text('url').notNull(),
+    dedupKey: text('dedup_key').notNull().unique(),
+    createdAt: created(),
+    /** The batch it went out in; null while it waits. */
+    batchId: text('batch_id'),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    /** Set instead of sending when it stopped being true: the decision was made. */
+    droppedAt: timestamp('dropped_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('push_intent_waiting_idx')
+      .on(t.principalId)
+      .where(sql`sent_at is null and dropped_at is null`),
+    check('push_intent_because_not_empty', sql`length(${t.because}) > 0`),
+  ],
+);
+
+/**
  * The owner's question queue. One open row per job, enforced in the database, so
  * a talkative responsibility cannot turn one queue into its own inbox.
  */

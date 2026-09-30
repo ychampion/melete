@@ -3,11 +3,13 @@ import {
   accountSignInAvailability,
   accountSignInStart,
   accountSignInStatus,
+  connectionKindListResponse,
   connectionListResponse,
 } from '@melete/contracts';
 import { ConnectorFactory, useConnectorFactory } from '../../src/connectors/configured.ts';
 import { EmailConnector } from '../../src/connectors/email.ts';
 import { startFakeMicrosoft } from '../../src/connectors/fixtures/fake-microsoft.ts';
+import { MICROSOFT_SIGN_IN_SCOPE } from '../../src/connectors/microsoft.ts';
 import { OutlookCalendarConnector } from '../../src/connectors/outlook-calendar.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -69,6 +71,10 @@ async function harness() {
     const started = await app.request('/microsoft-sign-ins', as(cookie, {}));
     expect(started.status).toBe(201);
     const start = accountSignInStart.parse(await started.json());
+    // Where the person will sign in, and everything asked for, before the browser goes there.
+    expect(start.issuer).toBe(new URL(start.authorize_url).origin);
+    expect(start.scopes.map((item) => item.scope)).toEqual(MICROSOFT_SIGN_IN_SCOPE.split(' '));
+    expect(start.scopes.every((item) => Boolean(item.label))).toBe(true);
     const approved = await fetch(start.authorize_url, { redirect: 'manual' });
     const back = new URL(approved.headers.get('location') ?? '');
     expect(`${back.origin}${back.pathname}`).toBe(start.redirect_uri);
@@ -99,6 +105,17 @@ withDb('signing in with Microsoft', () => {
         await (await h.app.request('/google-sign-ins', h.as(h.cookie))).json(),
       ).available,
     ).toBe(false);
+    // The catalog says the same, and offers the known MCP servers now there is an address to return to.
+    const catalog =
+      connectionKindListResponse.parse(
+        await (await h.app.request('/connection-kinds', h.as(h.cookie))).json(),
+      ).catalog ?? [];
+    expect(catalog.find((entry) => entry.id === 'microsoft')?.available).toBe(true);
+    expect(catalog.find((entry) => entry.id === 'google')?.available).toBe(false);
+    expect(catalog.find((entry) => entry.id === 'linear')).toMatchObject({
+      available: true,
+      connect: { method: 'mcp_sign_in', url: 'https://mcp.linear.app/mcp' },
+    });
 
     const { landed, page, status } = await h.signIn();
     expect(landed.status).toBe(200);

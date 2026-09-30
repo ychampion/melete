@@ -20,10 +20,12 @@ import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
+import { mcpActorOf } from '../mcp-server/actor.ts';
 import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import { AGENT_TEMPLATES } from './agents.ts';
+import { type ComputerBinding, projectComputer } from './computer.ts';
 import { ExperienceEffects } from './effects.ts';
 import { ExperienceEvents } from './events.ts';
 import { ExperienceHome } from './home.ts';
@@ -47,6 +49,8 @@ export type ExperienceDeps = {
   /** Provisions a space's memory on its owner's first use. */
   memoryProvision?: (spaceId: string, principalId: string) => Promise<void>;
   triggers?: TriggerService;
+  /** A browser worker is configured, so a conversation's agent can have a browser. */
+  browser?: boolean;
 };
 /**
  * Rows these routes keep for the space as a whole rather than for one job: the
@@ -92,24 +96,24 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
   });
   service.progress = (spaceId, jobId, turnId, stage) =>
     events.progress(spaceId, jobId, turnId, stage);
-  const effects = async (spaceId: string, id: string) => {
+  /** The conversation's own job and the command jobs it started, all the caller's own. */
+  const conversationJobs = async (spaceId: string, id: string) => {
     await service.requireConversation(spaceId, id);
     const linked = deps.sql
       ? await deps.sql`select j.id from job j where j.experience_parent_id = ${id}
           and j.space_id = ${spaceId} ${ownJobClause(deps.sql, 'j')}`
       : [];
-    return deps.db
+    return [id, ...linked.map((row) => String(row.id))];
+  };
+  const actionsOf = (spaceId: string, jobIds: string[]) =>
+    deps.db
       .select({ action, connection })
       .from(action)
       .innerJoin(connection, eq(connection.id, action.connectionId))
-      .where(
-        and(
-          inArray(action.jobId, [id, ...linked.map((row) => String(row.id))]),
-          eq(connection.spaceId, spaceId),
-        ),
-      )
+      .where(and(inArray(action.jobId, jobIds), eq(connection.spaceId, spaceId)))
       .orderBy(action.createdAt, action.id);
-  };
+  const effects = async (spaceId: string, id: string) =>
+    actionsOf(spaceId, await conversationJobs(spaceId, id));
   const handlers: Record<
     string,
     (spaceId: string, c: Context, input: Record<string, unknown>) => Promise<unknown> | unknown
@@ -154,9 +158,18 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'GET /quick-answers': (spaceId) => questions.list(spaceId),
     'POST /quick-answers/{id}': (spaceId, c, input) =>
       questions.answer(spaceId, c.req.param('id') ?? '', String(input.option_id)),
-    'POST /memory/items': (spaceId, c, input) =>
-      memory?.create(spaceId, c.get('owner').id, input) ??
-      unavailable('Your saved details are not connected yet.'),
+    'POST /memory/items': (spaceId, c, input) => {
+      // Another assistant saving through the MCP endpoint is recorded as that assistant.
+      const assistant = mcpActorOf(c.env);
+      return (
+        memory?.create(
+          spaceId,
+          c.get('owner').id,
+          input,
+          assistant ? { assistantClientId: assistant.clientId } : undefined,
+        ) ?? unavailable('Your saved details are not connected yet.')
+      );
+    },
     'GET /memory/items': (spaceId, c) =>
       memory?.list(spaceId, c.get('owner').id, c.req.query('after') ?? null) ??
       unavailable('Your saved details are not connected yet.'),
@@ -240,6 +253,31 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         if (receipt) receipts.push(receipt);
       }
       return { receipts };
+    },
+    'GET /conversations/{id}/computer': async (spaceId, c) => {
+      const jobIds = await conversationJobs(spaceId, c.req.param('id') ?? '');
+      const rows = await actionsOf(spaceId, jobIds);
+      const bindings = deps.sql
+        ? await deps.sql<ComputerBinding[]>`select id, control, updated_at
+            from browser_session_binding
+            where space_id = ${spaceId} and job_id in ${deps.sql(jobIds)}`
+        : [];
+      const [sandbox] = await deps.db
+        .select({ id: connection.id })
+        .from(connection)
+        .where(
+          and(
+            eq(connection.spaceId, spaceId),
+            eq(connection.provider, 'sandbox'),
+            eq(connection.status, 'active'),
+          ),
+        )
+        .limit(1);
+      return projectComputer({
+        rows: rows.map((row) => row.action),
+        bindings,
+        available: { browser: deps.browser ?? false, terminal: Boolean(sandbox) },
+      });
     },
     'GET /conversations/{id}/drafts': async (spaceId, c) => {
       const rows = await effects(spaceId, c.req.param('id') ?? '');

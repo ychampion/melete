@@ -223,12 +223,14 @@ export function providerKeyProblem(
   if (!provider || provider.fake || provider.apiKey || provider.signedIn) return null;
   if (selected === CHATGPT_PROVIDER)
     return `MELETE_DEFAULT_PROVIDER is "${CHATGPT_PROVIDER}", which is used through the owner's ChatGPT sign-in, and signing in needs MELETE_MASTER_KEY. Every model call is refused with provider_key_unavailable until it is set and the owner has signed in.`;
+  const inApp =
+    ' The owner can also connect a key in the app, under Settings › Models, when MELETE_MASTER_KEY is set.';
   const variables = providerKeyVariables(selected, provider.baseUrl);
   const plainHttp =
     selected === OPENAI_COMPATIBLE && !isHttpsAddress(provider.baseUrl)
       ? ' OPENAI_API_KEY is never sent to a plain http:// endpoint.'
       : '';
-  return `MELETE_DEFAULT_PROVIDER is "${selected}", but ${variables.join(' and ')} ${variables.length > 1 ? 'are' : 'is'} empty. Every model call is refused with provider_key_unavailable until a key is set. A model server that checks no key still needs any non-empty value.${plainHttp}`;
+  return `MELETE_DEFAULT_PROVIDER is "${selected}", but ${variables.join(' and ')} ${variables.length > 1 ? 'are' : 'is'} empty. Model calls are refused with provider_key_unavailable until a key is set. A model server that checks no key still needs any non-empty value.${plainHttp}${inApp}`;
 }
 
 /** HTTP absolute-form requests may only address the exact inference endpoints. */
