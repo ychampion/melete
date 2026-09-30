@@ -218,6 +218,71 @@ test('a draft card offers sending only while its draft can still be sent', () =>
   expect(projectCards(base, mail, 'draft')[0]?.primary_action ?? null).toBeNull();
 });
 
+test('a permission for a connected computer writes out what would not show', () => {
+  const run: ActionRow = {
+    ...base,
+    kind: 'device.run',
+    effectClass: 'write_external',
+    connectionId: 'device-connection',
+    // A right-to-left override and a zero-width space would make this read differently.
+    canonicalPayload: {
+      command: `echo safe ${String.fromCodePoint(0x202e)}hs.lave${String.fromCodePoint(0x200b)}`,
+    },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const permission = (action: ActionRow) =>
+    projectPermission({
+      id: 'apr_device',
+      version: 'v1',
+      action,
+      connection: { id: 'device-connection', label: 'Test laptop', provider: 'device' },
+      reasons: ['This change needs your permission before it happens.'],
+      canAlways: false,
+      requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+    });
+  expect(permission(run).preview?.facts).toEqual([
+    { label: 'Command', value: 'echo safe <U+202E>hs.lave<U+200B>' },
+  ]);
+  const open: ActionRow = {
+    ...run,
+    kind: 'device.open_url',
+    effectClass: 'write_reversible',
+    canonicalPayload: { url: 'http://192.168.1.1/admin' },
+  };
+  expect(permission(open).preview?.facts).toEqual([
+    { label: 'Page', value: 'http://192.168.1.1/admin' },
+    { label: 'Network', value: 'This page is on your computer or your local network' },
+  ]);
+});
+
+test('a permission for a connected computer shows the exact command and where it runs', () => {
+  const run: ActionRow = {
+    ...base,
+    kind: 'device.run',
+    effectClass: 'write_external',
+    connectionId: 'device-connection',
+    canonicalPayload: { command: 'echo hello', cwd: 'Projects', timeout_ms: 30000 },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const shown = projectPermission({
+    id: 'apr_device',
+    version: 'v1',
+    action: run,
+    connection: { id: 'device-connection', label: 'Test laptop', provider: 'device' },
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: true,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+  });
+  // Asked before it runs, never phrased as already done.
+  expect(shown.what).toBe('Run a command on your computer');
+  expect(shown.preview?.facts).toEqual([
+    { label: 'Command', value: 'echo hello' },
+    { label: 'Runs in', value: 'Projects' },
+  ]);
+});
+
 test('answer text keeps prose that starts with a bracket and drops whole records', () => {
   expect(answerText('\n\n[')).toBe('\n\n[');
   expect(answerText('[your name]\n\nSay the word')).toBe('[your name]\n\nSay the word');

@@ -39,6 +39,8 @@ export function mountPrincipals(
       (!c.get('owner') && mcpPublicPath(c.req.method, c.req.path))
     )
       return next();
+    // A paired computer's companion has no session; each of its routes checks its token.
+    if (c.req.path.startsWith('/device/')) return next();
     const actor = c.get('owner').id;
     const path = c.req.path;
     const parts = path.split('/').filter(Boolean);

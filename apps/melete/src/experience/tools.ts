@@ -135,6 +135,14 @@ export function actionKind(kind: string): ToolKind {
   if (family === 'files') return 'file';
   if (family === 'browser') return 'browser';
   if (family === 'exec' || family === 'terminal') return 'sandbox';
+  if (family === 'device')
+    return kind === 'device.run'
+      ? 'sandbox'
+      : kind === 'device.open_url'
+        ? 'browser'
+        : ['device.list_files', 'device.read_file', 'device.write_file'].includes(kind)
+          ? 'file'
+          : 'tool';
   if (kind === 'artifact.publish' || kind === 'audio.synthesize') return 'artifact';
   return 'connector';
 }
@@ -196,7 +204,18 @@ function actionInput(row: ActionRow): ToolSummary | null {
     }
     case 'exec.run':
     case 'terminal.run':
+    case 'device.run':
       return summary('Command', quote(firstLine(payload.command), 'request'));
+    case 'device.list_files':
+    case 'device.read_file':
+    case 'device.write_file':
+      return payload.path === undefined
+        ? null
+        : summary('On your computer', quote(filename(payload.path), 'file'));
+    case 'device.open_url': {
+      const site = host(payload.url);
+      return site ? summary(`On ${site}`) : null;
+    }
     case 'exec.python':
       return summary('Python code', quote(firstLine(payload.code), 'request'));
     case 'artifact.publish':
@@ -258,9 +277,22 @@ function actionOutput(row: ActionRow, status: ToolStatus, raw: string): ToolSumm
       return summary('Restored');
     case 'web.fetch':
       return summary('Page read', quote(pageTitle(detail), 'page'));
+    case 'device.list_files':
+      return summary(count(array(detail.entries).length, 'item', 'items'));
+    case 'device.read_file':
+      return summary('File read');
+    case 'device.write_file':
+      return summary('Saved');
+    case 'device.open_url':
+      return summary('Opened in your browser');
+    case 'device.screenshot':
+      return summary('Screenshot taken');
+    case 'device.status':
+      return summary(object(detail).online === true ? 'Connected' : 'Not connected right now');
     case 'exec.run':
     case 'exec.python':
     case 'terminal.run':
+    case 'device.run':
       return summary(
         detail.timed_out === true
           ? 'Stopped after running too long'

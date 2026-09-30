@@ -58,6 +58,8 @@ import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { connection } from './db/schema.ts';
+import { mountDevices } from './devices/routes.ts';
+import { DeviceService } from './devices/service.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { mountExperience } from './experience/routes.ts';
@@ -239,6 +241,14 @@ export function createApp(deps: AppDeps) {
   if (deps.removals && deps.db && deps.sql)
     mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
   if (connections) mountConnections(app, connections);
+  if (connections)
+    mountDevices(
+      app,
+      new DeviceService({
+        ...connections,
+        policy: deps.policy ?? (deps.jobs ? new PolicyService(deps.jobs) : undefined),
+      }),
+    );
   const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
   // One reader of the model connected in the app, for its routes and the companies scan.
   const modelSettings =

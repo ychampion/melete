@@ -428,6 +428,13 @@
       "when": 1789232400040,
       "tag": "0060_privacy_router",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1789232400041,
+      "tag": "0061_paired_devices",
+      "breakpoints": true
     }
   ]
 }

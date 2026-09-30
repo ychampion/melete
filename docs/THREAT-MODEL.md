@@ -582,6 +582,32 @@ scenario builds the browser image, starts the stack with the browser override,
 or probes the worker's network from inside it. Installation and operation are
 described in [browser-worker.md](browser-worker.md).
 
+## Paired computer boundary
+
+A person can pair their own computer with a one-time code from Settings (see
+[connecting your computer](DEVICES.md)). The companion there holds one outbound connection and
+authenticates every call with a device token; nothing on the computer listens.
+
+- **Pairing.** A code is eight characters from a 31-letter alphabet, stored only as a SHA-256
+  hash, usable once, and valid for ten minutes. It is spent in the same statement that checks it,
+  so two companions racing with one code cannot both pair. Wrong codes are throttled per client
+  address. Only the owner of a personal space makes codes, and the code's maker must still own the
+  space when it is used.
+- **Token.** 32 random bytes, returned once to the companion, stored by the service only as a hash,
+  and kept on the computer in a file only its user can read. Revoking the device, or its
+  connection, makes every companion route answer 401 at once; the companion then deletes its copy.
+- **Authority.** A computer is an ordinary connection to the broker. Its scopes are the tools both
+  Settings and the companion allow, recomputed whenever either side changes. `device.run` and
+  `device.write_file` require payload-bound approval, or an owner rule that covers them.
+- **Paths.** The service refuses a path that is not a shared folder name followed by plain
+  segments before anything is queued. The companion checks the same rule again, refuses any
+  symbolic link or junction on the way, opens files with `O_NOFOLLOW` where the platform has it,
+  and confirms the resolved path is inside the folder's real location.
+- **What it does not contain.** An approved command runs as the person, with their rights, and is
+  not confined to the shared folder. The approval shows the exact command; that is the control.
+- **Lost answers.** A request the computer collected but did not answer is recorded as `unknown`
+  and never re-sent blindly; one it never collected is refused as not sent.
+
 ## Tailnet access boundary
 
 The optional Tailscale override puts one node in front of the web client so the

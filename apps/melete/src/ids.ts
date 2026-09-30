@@ -19,6 +19,8 @@ export function newId(
     | 'rule'
     | 'undo'
     | 'rem'
+    | 'dev'
+    | 'dpr'
     | 'psub'
     | 'pint'
     | 'pbat',

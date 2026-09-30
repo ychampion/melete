@@ -1,6 +1,7 @@
 import {
   type ActionReview,
   type BecauseLink,
+  DEVICE_LIMITS,
   type ExperienceDecision,
   type ExperienceDraft,
   type ExperienceSource,
@@ -13,6 +14,7 @@ import {
   type TrailStep,
 } from '@melete/contracts';
 import type { action, artifact, connection } from '../db/schema.ts';
+import { namesLocalNetwork } from '../devices/paths.ts';
 
 export type ActionRow = Pick<
   typeof action.$inferSelect,
@@ -98,6 +100,7 @@ export function appName(row: ConnectionRow): string {
     files: 'Files',
     web: 'Web',
     test: 'Test connection',
+    device: 'Computer',
   };
   return names[row.provider] ?? 'Connected app';
 }
@@ -151,7 +154,70 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'audio.synthesize': ['Making audio', 'Made audio'],
   'test.read': ['Checking the connected app', 'Checked the connected app'],
   'test.send': ['Sending a message', 'Sent a message'],
+  'device.status': ['Checking your computer', 'Checked your computer'],
+  'device.list_files': [
+    'Looking through files on your computer',
+    'Looked through files on your computer',
+  ],
+  'device.read_file': ['Reading a file on your computer', 'Read a file on your computer'],
+  'device.write_file': ['Saving a file on your computer', 'Saved a file on your computer'],
+  'device.run': ['Running a command on your computer', 'Ran a command on your computer'],
+  'device.open_url': ['Opening a page on your computer', 'Opened a page on your computer'],
+  'device.screenshot': ['Looking at your screen', 'Looked at your screen'],
 };
+/** What a permission card asks for a connected computer, before anything has run. */
+const DEVICE_ASKS: Record<string, string> = {
+  'device.run': 'Run a command on your computer',
+  'device.write_file': 'Save a file on your computer',
+  'device.open_url': 'Open a page on your computer',
+  'device.screenshot': 'Look at your screen',
+};
+
+/**
+ * Characters that change how text around them reads without showing
+ * themselves: direction overrides and isolates, zero-width characters, other
+ * format characters, and controls apart from newline and tab. On a permission
+ * card each is written out as its code point, so what is approved reads the
+ * way it will run.
+ */
+const INVISIBLE = /[\p{Cf}\p{Cc}\u2028\u2029\u115F\u1160\u3164\uFFA0]/gu;
+export function showInvisible(text: string): string {
+  return text.replace(INVISIBLE, (char) =>
+    char === '\n' || char === '\t'
+      ? char
+      : `<U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}>`,
+  );
+}
+
+/**
+ * The exact command, folder, file or page a permission is for, as it will be
+ * sent. A command is never longer than this limit (the connector refuses a
+ * longer one), so it is always shown whole, with anything invisible in it
+ * written out.
+ */
+function deviceFacts(kind: string, payload: Record<string, unknown>) {
+  if (!kind.startsWith('device.')) return [];
+  const fact = (label: string, value: unknown, limit: number = DEVICE_LIMITS.max_command_chars) =>
+    typeof value === 'string' && value.length
+      ? [
+          {
+            label,
+            value: showInvisible(value.length > limit ? `${value.slice(0, limit)}…` : value),
+          },
+        ]
+      : [];
+  return [
+    ...fact('Command', payload.command),
+    ...fact('Runs in', payload.cwd),
+    ...fact('File', payload.path),
+    ...fact('Content', payload.content),
+    ...fact('Page', payload.url),
+    ...(namesLocalNetwork(payload.url)
+      ? [{ label: 'Network', value: 'This page is on your computer or your local network' }]
+      : []),
+  ];
+}
+
 export function actionLabel(row: ActionRow, connection?: ConnectionRow): string {
   return (
     LABELS[row.kind] ??
@@ -470,8 +536,11 @@ export function projectPermission(input: {
     .replace(/^Created /, 'Create ')
     .replace(/^Updated /, 'Update ')
     .replace(/^Removed /, 'Remove ');
-  const what = input.action.kind.endsWith('.send') ? `${base} to ${recipientText(payload)}` : base;
+  const what = input.action.kind.endsWith('.send')
+    ? `${base} to ${recipientText(payload)}`
+    : (DEVICE_ASKS[input.action.kind] ?? base);
   const facts = [
+    ...deviceFacts(input.action.kind, payload),
     ...(draft
       ? [
           ...(input.connection.sender ? [{ label: 'From', value: input.connection.sender }] : []),
