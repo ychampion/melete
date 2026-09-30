@@ -66,6 +66,11 @@ export const DEVICE_LIMITS = {
   /** Default and longest wall clock for one command. */
   default_command_timeout_ms: 30_000,
   max_command_timeout_ms: 120_000,
+  /**
+   * The longest command, in characters. The approval shows every character of
+   * a command before it runs, so a longer one is refused rather than shown cut.
+   */
+  max_command_chars: 3_000,
   /** Each of stdout and stderr is kept up to this many bytes; the rest is counted and dropped. */
   max_output_bytes: 65_536,
   /** The largest file read or written in one call. */
