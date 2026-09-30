@@ -156,10 +156,7 @@ export class Redactor {
     }
     const firm = resolveOverlaps(certain);
     const extra = this.options.extra?.(text) ?? [];
-    const found = [...extra, ...detect(text, this.options.enabled)].filter(
-      (span) => !firm.some((other) => span.start < other.end && other.start < span.end),
-    );
-    return resolveOverlaps([...firm, ...resolveOverlaps(found)]);
+    return resolveOverlaps([...extra, ...detect(text, this.options.enabled)], firm);
   }
 
   /** A whole request body, copied; the input is not modified. */
@@ -167,24 +164,39 @@ export class Redactor {
     return this.walk(body, protocol, null) as Record<string, unknown>;
   }
 
-  private walk(value: unknown, protocol: Protocol, key: string | null): unknown {
+  /**
+   * `inner` is set inside JSON text (tool arguments, tool results): there the
+   * protocol's field names mean nothing, so a `name`, `id` or `type` a tool
+   * wrote is content like any other, and so are its keys.
+   */
+  private walk(value: unknown, protocol: Protocol, key: string | null, inner = false): unknown {
     if (typeof value === 'string') {
       // Tool arguments and most tool results are JSON text: its escapes would
       // glue words together ("\nCard"), so it is read as JSON, not as prose.
       if (key === 'arguments' || looksLikeJson(value)) return this.encodedJson(value, protocol);
       return this.text(value);
     }
-    if (Array.isArray(value)) return value.map((item) => this.walk(item, protocol, key));
+    if (Array.isArray(value)) return value.map((item) => this.walk(item, protocol, key, inner));
     if (!value || typeof value !== 'object') return value;
     const node = value as Record<string, unknown>;
+    if (inner) {
+      const copy: Record<string, unknown> = {};
+      for (const [field, child] of Object.entries(node))
+        copy[this.text(field)] = this.walk(child, protocol, field, true);
+      return copy;
+    }
     // Signed thinking must reach the provider byte for byte; redacted thinking is opaque.
     if (node.type === 'redacted_thinking') return node;
     if (node.type === 'thinking' && typeof node.thinking === 'string')
       return { ...node, thinking: this.text(node.thinking, 'vault') };
     if (node.type === 'reasoning' && protocol === 'responses') return this.reasoning(node);
     const copy: Record<string, unknown> = {};
+    // A tool call's input object (messages protocol) is what the tool gets: content throughout.
+    const toolInput = typeof node.type === 'string' && node.type.endsWith('tool_use');
     for (const [field, child] of Object.entries(node)) {
-      copy[field] = STRUCTURAL.has(field) ? child : this.walk(child, protocol, field);
+      copy[field] = STRUCTURAL.has(field)
+        ? child
+        : this.walk(child, protocol, field, toolInput && field === 'input');
     }
     return copy;
   }
@@ -223,7 +235,7 @@ export class Redactor {
     this.captured = inner;
     let output: string;
     try {
-      const serialized = JSON.stringify(this.walk(parsed, protocol, null));
+      const serialized = JSON.stringify(this.walk(parsed, protocol, null, true));
       // Unchanged arguments keep the model's own bytes.
       output = inner.length === 0 && serialized === JSON.stringify(parsed) ? value : serialized;
     } finally {

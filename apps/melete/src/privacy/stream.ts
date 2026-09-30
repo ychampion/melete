@@ -150,7 +150,8 @@ export class Rehydrator {
     const node = object(value);
     if (!node) return value;
     const copy: Record<string, unknown> = {};
-    for (const [name, child] of Object.entries(node)) copy[name] = this.deep(child, name);
+    for (const [name, child] of Object.entries(node))
+      copy[this.replace(name, false)] = this.deep(child, name);
     return copy;
   }
 

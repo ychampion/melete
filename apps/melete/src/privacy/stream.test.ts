@@ -298,6 +298,16 @@ describe('placeholders split anywhere come back whole', () => {
       who: 'Ann "Nan" O\'Neil \\ Jr',
     });
   });
+
+  test('a placeholder used as a key in a tool input object is rehydrated too', () => {
+    const rehydrator = new Rehydrator(vault, 'messages');
+    const body = JSON.stringify({
+      content: [{ type: 'tool_use', id: 't1', name: 'note', input: { [EMAIL]: ACCOUNT } }],
+    });
+    expect(JSON.parse(rehydrator.json(body)).content[0].input).toEqual({
+      'sam.rivera@example.org': '000123456789',
+    });
+  });
 });
 
 describe('partialStart', () => {

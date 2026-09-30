@@ -127,6 +127,15 @@ describe('detectors find what they are for', () => {
       'credential',
       'abcdefghijklmnop1234567890',
     ],
+    ['DB_PASSWORD=supersecret99', 'credential', 'supersecret99'],
+    ['export SMTP_PASSWORD="hunter22x"', 'credential', 'hunter22x'],
+    [
+      'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+      'credential',
+      'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    ],
+    ['Please pay account 98765432 today', 'account', '98765432'],
+    ['transfer the fee to account 12345678', 'account', '12345678'],
   ];
   for (const [text, category, value] of cases)
     test(`${category}: ${value}`, () => {
@@ -155,6 +164,8 @@ describe('false-positive guards', () => {
     'A timestamp: 1727712345678.',
     'Year range 1990-2020 and page 12-34.',
     'Room 101 on floor 3.',
+    'max_tokens: 4096 and prompt_tokens=1200',
+    'The savings account balance is 123456 dollars.',
   ];
   for (const text of clean)
     test(text, () => {
@@ -198,6 +209,22 @@ describe('randomized look-alikes stay untouched', () => {
       if (detect(text, ALL).length) flagged.push(text);
     }
     expect(flagged).toEqual([]);
+  });
+});
+
+describe('large texts', () => {
+  test('a long run of letters and dashes is read in linear time', () => {
+    const started = performance.now();
+    expect(detect('a-'.repeat(100_000), ALL)).toEqual([]);
+    expect(detect('-----BEGIN RSA PRIVATE KEY-----'.repeat(6_000), ALL)).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(3000);
+  });
+
+  test('tens of thousands of details are resolved without comparing every pair', () => {
+    const text = Array.from({ length: 30_000 }, (_, index) => `p${index}@example.org`).join(', ');
+    const started = performance.now();
+    expect(detect(text, ALL)).toHaveLength(30_000);
+    expect(performance.now() - started).toBeLessThan(3000);
   });
 });
 

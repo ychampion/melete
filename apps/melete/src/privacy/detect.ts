@@ -201,7 +201,9 @@ const RULES: Rule[] = [
   // Credentials first: a key can contain long digit runs another rule would misread.
   {
     category: 'credential',
-    pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{16,}?-----END [A-Z ]*PRIVATE KEY-----/g,
+    // The body stops at the next BEGIN, so a text of many BEGINs is read once.
+    pattern:
+      /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----(?:(?!-----BEGIN )[\s\S]){16,65536}?-----END [A-Z ]{0,40}PRIVATE KEY-----/g,
   },
   {
     category: 'credential',
@@ -210,8 +212,9 @@ const RULES: Rule[] = [
   },
   {
     category: 'credential',
+    // Also as a configuration name: DB_PASSWORD=, AWS_SECRET_ACCESS_KEY=.
     pattern:
-      /\b(?:password|passwd|passcode|pwd|pin|api[ _-]?key|secret(?:[ _-]?key)?|access[ _-]?(?:key|token)|auth[ _-]?token|token|client[ _-]?secret)\b["']?\s*(?:is|was|:|=|=>)\s*["']?(?!(?:not|required|invalid|incorrect|correct|wrong|missing|expired|empty|set|valid|stored|changed|reset|null|none|undefined|true|false|the|a|an|your|my|in|on|being|still|now|also|too|here|there|below|above)\b)(?<v>[^\s"',;]{3,199}[^\s"',;.!?])/gi,
+      /(?<![A-Za-z0-9])(?:[A-Za-z0-9]{1,20}[_-]){0,3}(?:password|passwd|passcode|pwd|pin|api[ _-]?key|secret(?:[ _-]?key)?|access[ _-]?(?:key|token)|auth[ _-]?token|token|client[ _-]?secret)(?:[_-][A-Za-z0-9]{1,20}){0,3}(?![A-Za-z0-9])["']?\s*(?:is|was|:|=|=>)\s*["']?(?!(?:not|required|invalid|incorrect|correct|wrong|missing|expired|empty|set|valid|stored|changed|reset|null|none|undefined|true|false|the|a|an|your|my|in|on|being|still|now|also|too|here|there|below|above)\b)(?<v>[^\s"',;]{3,199}[^\s"',;.!?])/gi,
   },
   {
     category: 'credential',
@@ -220,7 +223,9 @@ const RULES: Rule[] = [
   {
     category: 'credential',
     // user:password@host in a URL or a connection string: only the password.
-    pattern: /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:(?<v>[^\s/@]{3,})@/gi,
+    // Bounded: an unbounded scheme rescans a long run of letters and dashes
+    // from every position, which takes seconds on a large tool result.
+    pattern: /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s/:@]{1,256}:(?<v>[^\s/@]{3,256})@/gi,
   },
   // Payment cards and their security codes.
   {
@@ -532,6 +537,11 @@ const PRECEDENCE: PrivacyCategory[] = [
   'phone',
 ];
 
+const RANK = Object.fromEntries(PRECEDENCE.map((category, index) => [category, index])) as Record<
+  PrivacyCategory,
+  number
+>;
+
 function valueSpan(match: RegExpExecArray): [number, number] {
   const indices = (
     match as RegExpExecArray & { indices?: { groups?: Record<string, [number, number]> } }
@@ -564,6 +574,9 @@ function compile(rule: Rule) {
     pattern: new RegExp(source, flags),
     notAfter: lookbehind?.[1] ? new RegExp(`^${lookbehind[1]}$`, 'u') : undefined,
     hint,
+    // A refusal word only counts after the rule's own word: "pay account
+    // 12345678" is an account, "account balance 123456" an amount.
+    contextAll: rule.context && rule.refuse ? new RegExp(rule.context.source, 'gi') : undefined,
   };
 }
 
@@ -604,7 +617,15 @@ export function detect(text: string, enabled: ReadonlySet<PrivacyCategory>): Det
       const [start, end] = valueSpan(match);
       const value = text.slice(start, end);
       if (rule.context && !rule.context.test(before(text, start, rule.window ?? 40))) continue;
-      if (rule.refuse?.test(before(text, match.index, 32))) continue;
+      if (rule.refuse) {
+        let lead = before(text, match.index, 32);
+        if (rule.contextAll) {
+          let after = -1;
+          for (const word of lead.matchAll(rule.contextAll)) after = word.index + word[0].length;
+          if (after >= 0) lead = lead.slice(after);
+        }
+        if (rule.refuse.test(lead)) continue;
+      }
       if (rule.valid && !rule.valid(value)) continue;
       if (isPlaceholderText(value)) continue;
       found.push({ start, end, category: rule.category });
@@ -613,14 +634,30 @@ export function detect(text: string, enabled: ReadonlySet<PrivacyCategory>): Det
   return resolveOverlaps(found);
 }
 
-export function resolveOverlaps(found: Detection[]): Detection[] {
-  const rank = (category: PrivacyCategory) => PRECEDENCE.indexOf(category);
+/**
+ * Overlapping detections, one kept: `fixed` spans first and whole, then the
+ * rest by precedence and length. Positions already taken are marked in one
+ * array, so a text with tens of thousands of details (a contact export) is
+ * resolved in linear time rather than by comparing every pair.
+ */
+export function resolveOverlaps(found: Detection[], fixed: Detection[] = []): Detection[] {
   const ordered = [...found].sort(
-    (a, b) => rank(a.category) - rank(b.category) || b.end - b.start - (a.end - a.start),
+    (a, b) => RANK[a.category] - RANK[b.category] || b.end - b.start - (a.end - a.start),
   );
+  let size = 0;
+  for (const span of [...fixed, ...ordered]) size = Math.max(size, span.end);
+  const taken = new Uint8Array(size);
   const kept: Detection[] = [];
-  for (const candidate of ordered) {
-    if (kept.some((other) => candidate.start < other.end && other.start < candidate.end)) continue;
+  for (const candidate of [...fixed, ...ordered]) {
+    if (candidate.end <= candidate.start) continue;
+    let free = true;
+    for (let index = candidate.start; index < candidate.end; index++)
+      if (taken[index]) {
+        free = false;
+        break;
+      }
+    if (!free) continue;
+    taken.fill(1, candidate.start, candidate.end);
     kept.push(candidate);
   }
   return kept.sort((a, b) => a.start - b.start);

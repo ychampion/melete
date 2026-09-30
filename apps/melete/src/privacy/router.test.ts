@@ -369,6 +369,83 @@ describe('cloud requests: redact out, rehydrate back', () => {
     expect(JSON.parse(body.messages[1].content)).toEqual({ sent_to: '⟦EMAIL_1⟧' });
   });
 
+  test('inside tool JSON a name, id or key is content: listed and detected values are swapped there too', async () => {
+    const store = new MemoryPrivacyStore();
+    store.scopes.set('job_chat', {
+      spaceId: 'spc_1',
+      conversationId: 'job_chat',
+      agentId: null,
+      turnId: 'trn_1',
+    });
+    await store.saveSettings(
+      'spc_1',
+      {},
+      { known: [{ id: 'pv_1', label: 'sister', category: 'private', value: 'Priya Sharma' }] },
+    );
+    const { captured, post } = await start({ store });
+    await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: [
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: {
+                name: 'contacts.add',
+                arguments: JSON.stringify({ name: 'Priya Sharma', id: '123-45-6789' }),
+              },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          tool_call_id: 'call_1',
+          content: JSON.stringify({ name: 'Priya Sharma', by_email: { [SAM.email]: 'sam' } }),
+        },
+      ],
+    });
+    const sent = captured[0]?.body ?? '';
+    for (const value of ['Priya Sharma', '123-45-6789', SAM.email])
+      expect(sent).not.toContain(value);
+    const body = JSON.parse(sent);
+    expect(body.messages[0].tool_calls[0].function.name).toBe('contacts.add');
+    expect(JSON.parse(body.messages[0].tool_calls[0].function.arguments)).toEqual({
+      name: '⟦PRIVATE_1⟧',
+      id: '⟦SSN_1⟧',
+    });
+    expect(JSON.parse(body.messages[1].content)).toEqual({
+      name: '⟦PRIVATE_1⟧',
+      by_email: { '⟦EMAIL_1⟧': 'sam' },
+    });
+    // The messages protocol carries a tool call's input as an object, not text.
+    await post('/providers/anthropic/v1/messages', {
+      stream: true,
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_1',
+              name: 'contacts.add',
+              input: { name: 'Priya Sharma', id: '123-45-6789' },
+            },
+          ],
+        },
+      ],
+    });
+    const anthropic = JSON.parse(captured[1]?.body ?? '{}');
+    expect(anthropic.messages[0].content[0]).toEqual({
+      type: 'tool_use',
+      id: 'toolu_1',
+      name: 'contacts.add',
+      input: { name: '⟦PRIVATE_1⟧', id: '⟦SSN_1⟧' },
+    });
+  });
+
   test('responses and messages protocols are redacted and rehydrated as well', async () => {
     const { captured, post } = await start({
       reply: ({ url, body }) => {
