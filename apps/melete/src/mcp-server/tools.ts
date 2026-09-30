@@ -252,7 +252,7 @@ async function handle(deps: ToolDeps, input: z.infer<typeof TOOL_INPUTS.handle>)
     return routeRefusal(status, body, 'Melete could not start handling this.');
   const jobId = (body as { job_id: string }).job_id;
   return answer(
-    'Melete is handling it. Any message to the company waits for the person to approve it in Melete.',
+    'Melete is handling it. The person approves the first message to the company in Melete, and Melete follows up within the limits they set.',
     { job_id: jobId, status: status === 201 ? 'started' : 'already_handling' },
   );
 }
