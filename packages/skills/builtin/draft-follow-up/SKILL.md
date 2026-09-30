@@ -25,8 +25,8 @@ asking for, and by when.
 Never invent a deadline, a price, or a commitment. If the thread does not say
 it, leave it out or ask.
 
-Stop at the draft. Sending is an external effect and needs approval bound to
-the exact text shown. If the person edits the draft, that is a new draft and a
-new approval.
+Stop at the draft. You cannot send from a chat: say the draft is ready and
+that they can send it from its draft card, which shows the exact text. If the
+person asks for changes, that is a new draft.
 
 Say plainly if the thread shows the question was already answered.

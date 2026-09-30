@@ -214,6 +214,10 @@ databaseTest(
     const catalog = await s.broker.catalog(s.claims);
     expect(catalog.some((tool) => tool.name === 'email.send')).toBe(false);
     expect(catalog.some((tool) => tool.name === 'say')).toBe(true);
+    // The model is told where the person sends a draft, so it never offers to send one itself.
+    expect(catalog.find((tool) => tool.name === 'email.draft')?.description).toContain(
+      'the person sends it from its draft card',
+    );
     expect(
       await rejectionOf(
         s.broker.propose(s.claims, {
@@ -222,7 +226,10 @@ databaseTest(
           payload: { to: 'alex@example.test', subject: 'No', body: 'No' },
         }),
       ),
-    ).toMatchObject({ code: 'scope_denied' });
+    ).toMatchObject({
+      code: 'scope_denied',
+      message: 'In a chat the person sends a draft from its draft card. Say the draft is ready.',
+    });
     const id = await s.draft();
     const proposed = await s.permissions.send(s.claims.space_id, id);
     if ('reason' in proposed || !proposed.permission) throw new Error('Expected permission');

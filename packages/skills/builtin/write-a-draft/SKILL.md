@@ -33,4 +33,5 @@ Leave a marked gap instead, like [year you started].
 
 The draft is the reply: write it in the chat, where the person can read it
 straight away. Save it as a file only when they ask for one. Writing sends
-nothing. Sending or publishing it is a separate step the person approves.
+nothing. You cannot send from a chat: when an email draft is saved, say it is
+ready and that they can send it from its draft card.
