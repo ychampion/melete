@@ -1,4 +1,5 @@
 import {
+  DEVICE_LIMITS,
   type ExperienceDecision,
   type ExperienceDraft,
   type ExperienceSource,
@@ -166,10 +167,14 @@ const DEVICE_ASKS: Record<string, string> = {
   'device.browser_type': 'Fill in a field in your browser',
 };
 
-/** The exact command, folder, file or page a permission is for, as it will be sent. */
+/**
+ * The exact command, folder, file or page a permission is for, as it will be
+ * sent. A command is never longer than this limit (the connector refuses a
+ * longer one), so it is always shown whole.
+ */
 function deviceFacts(kind: string, payload: Record<string, unknown>) {
   if (!kind.startsWith('device.')) return [];
-  const fact = (label: string, value: unknown, limit = 3000) =>
+  const fact = (label: string, value: unknown, limit: number = DEVICE_LIMITS.max_command_chars) =>
     typeof value === 'string' && value.length
       ? [{ label, value: value.length > limit ? `${value.slice(0, limit)}…` : value }]
       : [];

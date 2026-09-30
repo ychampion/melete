@@ -9,7 +9,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { CapabilityClaims } from '@melete/contracts';
+import { type CapabilityClaims, DEVICE_LIMITS } from '@melete/contracts';
 import { BrowserBridge } from '../../../../packages/device/src/browser.ts';
 import {
   ApiError,
@@ -24,6 +24,7 @@ import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { sharedDeviceHub } from '../../src/devices/hub.ts';
 import { PUBLIC_ONLY_NOTE, routedDescription, SIGNED_IN_NOTE } from '../../src/devices/routing.ts';
 import { loadEnv } from '../../src/env.ts';
+import { projectPermission } from '../../src/experience/projectors.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { JobService } from '../../src/jobs/service.ts';
@@ -355,6 +356,60 @@ withDb('the agent uses the computer through the broker', () => {
       });
       expect(write.status).toBe('needs_approval');
     });
+  }, 60_000);
+
+  test('a command too long to show whole is refused before anyone is asked', async () => {
+    const s = need();
+    const { config } = await s.computer({ grant: { commands: true } });
+    const connectionId = await connectionOf(config.device_id);
+    const claims = await s.job(tools);
+    // What the person would see, then what would run after it, out of sight.
+    const shown = 'echo tidy up #';
+    const hidden = '; echo not shown';
+    const command = `${shown}${' '.repeat(DEVICE_LIMITS.max_command_chars - shown.length)}${hidden}`;
+    expect(
+      await rejectionOf(
+        s.broker.propose(claims, {
+          kind: 'device.run',
+          connection_id: connectionId,
+          payload: { command, cwd: 'Shared' },
+        }),
+      ),
+    ).toMatchObject({ code: 'payload_invalid' });
+    expect(
+      await s.sql`select a.id from approval a join action x on x.id = a.action_id
+        where x.job_id = ${claims.job_id}`,
+    ).toHaveLength(0);
+    // At the limit, it is asked for, and the card carries every character.
+    const longest = `echo ${'x'.repeat(DEVICE_LIMITS.max_command_chars - 5)}`;
+    const proposal = await s.broker.propose(claims, {
+      kind: 'device.run',
+      connection_id: connectionId,
+      payload: { command: longest, cwd: 'Shared' },
+    });
+    expect(proposal.status).toBe('needs_approval');
+    const card = projectPermission({
+      id: 'apr_long',
+      version: 'v1',
+      action: {
+        id: proposal.action_id,
+        jobId: claims.job_id,
+        attemptId: claims.attempt_id,
+        kind: 'device.run',
+        effectClass: 'write_external',
+        connectionId,
+        canonicalPayload: { command: longest, cwd: 'Shared' },
+        receipt: null,
+        status: 'needs_approval',
+        createdAt: new Date(),
+        resolvedAt: null,
+      },
+      connection: { id: connectionId, label: 'Test laptop', provider: 'device' },
+      reasons: ['This change needs your permission before it happens.'],
+      canAlways: false,
+      requestedAt: new Date(),
+    });
+    expect(card.preview?.facts.find((fact) => fact.label === 'Command')?.value).toBe(longest);
   }, 60_000);
 
   test('paths outside the shared folders are refused before anything is sent', async () => {

@@ -115,7 +115,7 @@ export const DEVICE_TOOL_SHAPES: Record<DeviceTool, ToolShape> = {
       "Run a shell command on the person's computer, as them, in one of their shared folders. The person approves the exact command first.",
     input_schema: object(
       {
-        command: { type: 'string', minLength: 1, maxLength: 20_000 },
+        command: { type: 'string', minLength: 1, maxLength: DEVICE_LIMITS.max_command_chars },
         cwd: {
           ...pathArgument,
           description:
@@ -434,6 +434,11 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
       case 'run': {
         if (typeof payload.command !== 'string' || !payload.command.trim())
           throw new DevicePathError('A command is required.');
+        // Counted as the approval counts it, so nothing runs that was not shown whole.
+        if (payload.command.length > DEVICE_LIMITS.max_command_chars)
+          throw new DevicePathError(
+            'That command is too long to show in full for approval. Put it in a script file first.',
+          );
         const timeout = payload.timeout_ms;
         if (
           timeout !== undefined &&
