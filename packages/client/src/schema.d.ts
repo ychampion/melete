@@ -1800,8 +1800,12 @@ export interface paths {
                             source: components["schemas"]["__schema74"];
                             tools: components["schemas"]["__schema68"];
                         };
+                        meetings?: {
+                            /** @enum {string} */
+                            region: "us-east-1" | "us-west-2" | "eu-central-1" | "ap-northeast-1";
+                        };
                         /** @enum {string} */
-                        provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox";
+                        provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "meetings";
                         sandbox?: {
                             /** @enum {string} */
                             adapter: "e2b" | "daytona" | "modal";
@@ -11446,6 +11450,55 @@ export interface paths {
         };
         trace?: never;
     };
+    "/webhooks/meetings/{connectionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Where Recall.ai reports on a meeting notetaker
+         * @description No session is needed. The request must carry a valid Recall.ai signature (`webhook-id`, `webhook-timestamp`, `webhook-signature`) made with the verification secret sealed in that meetings connection, dated within five minutes. A verified event only makes the service check the named notetaker now; the notes are always fetched from Recall.ai with the connection key.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Meetings connection id */
+                    connectionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Verified; the notetaker, if known, is checked now */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description The signature, the timestamp or the connection could not be verified */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema143"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -12940,7 +12993,7 @@ export interface components {
         __schema325: string;
         __schema326: string;
         /** @enum {string} */
-        __schema327: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox";
+        __schema327: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "meetings";
         __schema328: string;
         __schema329: string[];
         /** @enum {string} */
@@ -13008,7 +13061,7 @@ export interface components {
         };
         __schema351: string;
         /** @enum {string} */
-        __schema352: "mail" | "caldav" | "ics" | "mcp" | "mcp_stdio" | "sandbox";
+        __schema352: "mail" | "caldav" | "ics" | "mcp" | "mcp_stdio" | "sandbox" | "meetings";
         __schema353: string;
         __schema354: string;
         __schema355: {
@@ -13052,7 +13105,7 @@ export interface components {
         __schema370: string;
         __schema371: string;
         __schema372: string;
-        __schema373: ("mail" | "calendar" | "tools" | "execution")[];
+        __schema373: ("mail" | "calendar" | "tools" | "execution" | "meetings")[];
         __schema374: {
             /** @constant */
             method: "sign_in";

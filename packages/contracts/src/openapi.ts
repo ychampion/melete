@@ -1650,6 +1650,26 @@ export function buildOpenApiDocument() {
           },
         },
 
+        '/webhooks/meetings/{connectionId}': {
+          post: {
+            tags: ['connections'],
+            summary: 'Where Recall.ai reports on a meeting notetaker',
+            description:
+              'No session is needed. The request must carry a valid Recall.ai signature ' +
+              '(`webhook-id`, `webhook-timestamp`, `webhook-signature`) made with the verification ' +
+              'secret sealed in that meetings connection, dated within five minutes. A verified event ' +
+              'only makes the service check the named notetaker now; the notes are always fetched ' +
+              'from Recall.ai with the connection key.',
+            requestParams: idParam('connectionId', 'Meetings connection id'),
+            responses: {
+              '204': { description: 'Verified; the notetaker, if known, is checked now' },
+              '401': problem(
+                'The signature, the timestamp or the connection could not be verified',
+              ),
+            },
+          },
+        },
+
         '/oauth/client-metadata.json': {
           get: {
             tags: ['connections'],

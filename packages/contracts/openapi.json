@@ -11240,7 +11240,8 @@
                       "artifacts",
                       "generation",
                       "mcp",
-                      "sandbox"
+                      "sandbox",
+                      "meetings"
                     ]
                   },
                   "label": {
@@ -11486,6 +11487,24 @@
                       "egress",
                       "persistence",
                       "lifetime_seconds"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "meetings": {
+                    "type": "object",
+                    "properties": {
+                      "region": {
+                        "type": "string",
+                        "enum": [
+                          "us-east-1",
+                          "us-west-2",
+                          "eu-central-1",
+                          "ap-northeast-1"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "region"
                     ],
                     "additionalProperties": false
                   }
@@ -11991,6 +12010,42 @@
               "text/html": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/meetings/{connectionId}": {
+      "post": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "Where Recall.ai reports on a meeting notetaker",
+        "description": "No session is needed. The request must carry a valid Recall.ai signature (`webhook-id`, `webhook-timestamp`, `webhook-signature`) made with the verification secret sealed in that meetings connection, dated within five minutes. A verified event only makes the service check the named notetaker now; the notes are always fetched from Recall.ai with the connection key.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connectionId",
+            "schema": {
+              "type": "string",
+              "description": "Meetings connection id"
+            },
+            "required": true,
+            "description": "Meetings connection id"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Verified; the notetaker, if known, is checked now"
+          },
+          "401": {
+            "description": "The signature, the timestamp or the connection could not be verified",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema143"
                 }
               }
             }
@@ -23138,7 +23193,8 @@
           "artifacts",
           "generation",
           "mcp",
-          "sandbox"
+          "sandbox",
+          "meetings"
         ]
       },
       "__schema328": {
@@ -23447,7 +23503,8 @@
           "ics",
           "mcp",
           "mcp_stdio",
-          "sandbox"
+          "sandbox",
+          "meetings"
         ]
       },
       "__schema353": {
@@ -23650,7 +23707,8 @@
             "mail",
             "calendar",
             "tools",
-            "execution"
+            "execution",
+            "meetings"
           ]
         }
       },
