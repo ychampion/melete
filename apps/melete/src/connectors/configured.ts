@@ -1,5 +1,9 @@
 import { readFile } from 'node:fs/promises';
-import { caldavConnectionConfig, mailConnectionConfig } from '@melete/contracts';
+import {
+  caldavConnectionConfig,
+  mailConnectionConfig,
+  meetingsConnectionConfig,
+} from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import type { Env } from '../env.ts';
@@ -37,6 +41,7 @@ import {
   type StdioLifecycleOptions,
   storedStdioConnection,
 } from './mcp-stdio.ts';
+import { MeetingsConnector } from './meetings.ts';
 import { type MicrosoftEndpoints, microsoftEndpoints, microsoftIssuer } from './microsoft.ts';
 import { OutlookCalendarConnector } from './outlook-calendar.ts';
 import { OutlookMailTransport } from './outlook-mail.ts';
@@ -194,6 +199,8 @@ export type ConnectorOptions = {
   google?: { client: AccountClient; endpoints?: GoogleEndpoints };
   /** The operator's Microsoft client, as for Google; `tenant` is `common` unless named. */
   microsoft?: { client: AccountClient; tenant?: string; endpoints?: MicrosoftEndpoints };
+  /** Replaces the Recall.ai and ElevenLabs transport of a meetings connection. Only a test passes one. */
+  meetingsFetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 };
 
 /**
@@ -235,6 +242,7 @@ const storedConfiguration = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('outlook_mail'), account: z.email() }),
   z.object({ kind: z.literal('outlook_calendar'), account: z.email() }),
   storedSandboxConnection,
+  z.object({ kind: z.literal('meetings'), meetings: meetingsConnectionConfig }),
 ]);
 
 /**
@@ -381,6 +389,20 @@ export class ConnectorFactory {
           maxConcurrent: sandbox.maxConcurrent,
           maxPerConnection: sandbox.maxPerConnection,
           close: opened.close,
+        }),
+      );
+    }
+    if (row.provider === 'meetings' && stored?.kind === 'meetings') {
+      if (!row.secretRef) return undefined;
+      return ownerOnly(
+        new MeetingsConnector({
+          id: row.id,
+          spaceId: row.spaceId,
+          secretRef: row.secretRef,
+          config: stored.meetings,
+          secrets: this.secrets,
+          sql: options.sql,
+          ...(options.meetingsFetch ? { fetcher: options.meetingsFetch } : {}),
         }),
       );
     }

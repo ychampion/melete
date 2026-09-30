@@ -66,6 +66,7 @@ import { connection, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
+import { mountMeetingWebhook } from '../meetings/routes.ts';
 import { ownedSpace, spaceAuthority } from '../principals/authority.ts';
 import {
   checkSandboxConfiguration,
@@ -277,6 +278,9 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     );
     return [...accounts, ...servers, ...forms];
   };
+
+  // Recall.ai reports on a notetaker here, with no session; see meetings/routes.ts.
+  mountMeetingWebhook(app, { sql: deps.sql, secrets });
 
   // A kind this service cannot run is not offered: stdio servers need an isolating launcher.
   app.get('/connection-kinds', (c) => {
@@ -1005,6 +1009,7 @@ const KIND_COVERS = {
   mcp: 'tools',
   mcp_stdio: 'tools',
   sandbox: 'execution',
+  meetings: 'meetings',
 } as const satisfies Record<
   ConnectionKindDescriptor['kind'],
   ConnectionCatalogEntry['covers'][number]
@@ -1258,6 +1263,14 @@ async function requestedShape(
       configuration: { kind: 'sandbox', sandbox: installation.config },
     };
   }
+  if (installation.kind === 'meetings')
+    // The key is tested by the installation's own check, which asks Recall.ai
+    // once through the connector and keeps the row failing if it is refused.
+    return {
+      scopes: installation.scopes,
+      secret: JSON.stringify(installation.credentials),
+      configuration: { kind: 'meetings', meetings: installation.config },
+    };
   const shape =
     installation.kind === 'mail'
       ? {

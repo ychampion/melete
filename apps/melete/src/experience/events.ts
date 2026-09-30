@@ -3,6 +3,7 @@ import {
   conversationProgress,
   type ExperienceEvent,
   experienceEvent,
+  MEETING_NOTES_NOTICE,
   MEMORY_TOOL_NOTICE,
   TOOL_TRACE_NOTICE,
   type ToolCall,
@@ -505,6 +506,14 @@ export class ExperienceEvents {
                   : payload.kind === 'experience_paused'
                     ? 'resume'
                     : 'pause',
+            });
+          } else if (source.type === 'notice' && payload.kind === MEETING_NOTES_NOTICE) {
+            await emit(source, {
+              type: 'note',
+              text:
+                payload.status === 'done'
+                  ? 'Your meeting notes are ready.'
+                  : 'The meeting notes could not be brought back.',
             });
           } else if (source.type === 'notice' && payload.kind === 'gap') {
             await emit(source, {

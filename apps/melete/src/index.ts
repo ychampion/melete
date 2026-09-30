@@ -92,6 +92,8 @@ import type { ProcedureProposer } from './learning/proposer.ts';
 import { expireEpisodes } from './learning/retention.ts';
 import { mountLearning } from './learning/routes.ts';
 import { startLearning } from './learning/start.ts';
+import { rememberMeeting } from './meetings/memory.ts';
+import { MeetingNotesWorker } from './meetings/notes.ts';
 import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { withMemoryRuntime } from './memory/context.ts';
@@ -424,6 +426,7 @@ export async function bootstrap(
   let registry: ConnectorRegistry | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
+  let meetingNotes: MeetingNotesWorker | undefined;
   let signIn: ProviderSignIn | undefined;
   let sandboxes: SandboxWiring | undefined;
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
@@ -442,6 +445,7 @@ export async function bootstrap(
           learning?.close(),
           events?.close(),
           companyReplies?.stop(),
+          meetingNotes?.stop(),
           triggers?.stop(),
           runner?.stop(),
           operations?.stop(),
@@ -816,6 +820,27 @@ export async function bootstrap(
               }),
           });
           await companyReplies.start();
+          // A notetaker's notes come back to the conversation that sent it.
+          const memoryScope = (memory ?? deploymentMemory)?.scopeForJob;
+          const boss = queue?.boss;
+          meetingNotes = new MeetingNotesWorker({
+            sql: handle.sql,
+            secrets: connectorFactoryFor(connectors, () => connectorOptionsFromEnv(handle.sql, env))
+              .secrets,
+            spacesRoot: env.MELETE_SPACES_DIR,
+            publicUrl: env.MELETE_PUBLIC_URL,
+            gateway: memoryGateway?.gateway ?? null,
+            ...(memoryScope
+              ? {
+                  remember: (conversationId, evidence) =>
+                    rememberMeeting(handle.sql, memoryScope, boss, conversationId, evidence),
+                }
+              : {}),
+            onError: (message) =>
+              process.stderr.write(`${message}
+`),
+          });
+          meetingNotes.start();
         }
       }
       if (options.workers === false) await replies?.recover();

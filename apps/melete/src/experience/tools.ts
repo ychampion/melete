@@ -200,6 +200,10 @@ function actionInput(row: ActionRow): ToolSummary | null {
       return summary('File', quote(filename(payload.path ?? payload.name), 'file'));
     case 'audio.synthesize':
       return summary('Spoken text', quote(payload.text, 'request'));
+    case 'meeting.join': {
+      const site = host(payload.meeting_url);
+      return summary(site ? `Meeting on ${site}` : 'A meeting', quote(payload.bot_name, 'request'));
+    }
     default:
       return null;
   }
@@ -271,6 +275,14 @@ function actionOutput(row: ActionRow, status: ToolStatus, raw: string): ToolSumm
       return summary('Published');
     case 'audio.synthesize':
       return summary('Audio ready');
+    case 'meeting.join': {
+      const start = when(object(row.canonicalPayload).join_at);
+      return summary(
+        start
+          ? `Joins ${start}. The notes come back here after the meeting.`
+          : 'On its way. The notes come back here after the meeting.',
+      );
+    }
     default:
       return summary('Done');
   }

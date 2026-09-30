@@ -20,6 +20,7 @@ import { owner, principal, space } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import { ExperienceSignIn } from '../experience/signin.ts';
 import { newId } from '../ids.ts';
+import { MEETING_WEBHOOK_PATH } from '../meetings/routes.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
 import { resolveSessionSpace, type SessionSpace } from '../principals/session-space.ts';
 import { ensureDefaultConnections } from './connections.ts';
@@ -208,7 +209,9 @@ export function mountAuth(
           '/signin/magic-link/consume',
           '/signin/google',
           '/signin/apple',
-        ].includes(c.req.path));
+        ].includes(c.req.path)) ||
+      // Recall.ai's webhook carries a signature instead of a session.
+      (c.req.method === 'POST' && MEETING_WEBHOOK_PATH.test(c.req.path));
     // A body is counted as it arrives, so one sent without a length, or with a
     // false one, is dropped at the limit rather than read and parsed whole.
     if (publicRoute) return publicBody(c, next);

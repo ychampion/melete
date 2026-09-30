@@ -13,6 +13,7 @@ import {
   jobBudget,
   jobConstraints,
   jsonObject,
+  MEETING_NOTES_NOTICE,
   QUESTION_GUIDANCE,
   type RecallResult,
   type ResponsibilityAttemptBundle,
@@ -173,6 +174,17 @@ export function assembleHistory(
       };
       transcript.push(message);
       if (row.seq > afterSeq) inputs.new_user_messages.push(message);
+    } else if (
+      row.type === 'notice' &&
+      payload.kind === MEETING_NOTES_NOTICE &&
+      typeof payload.text === 'string'
+    ) {
+      // Notes the service posted on its own; the next turn reads them as said.
+      transcript.push({
+        role: 'assistant',
+        content: payload.text,
+        at: row.createdAt.toISOString(),
+      });
     } else if (row.type === 'tool_result') {
       const result = toolResult.parse(payload);
       transcript.push({

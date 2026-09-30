@@ -80,6 +80,7 @@ export function appName(row: ConnectionRow): string {
     files: 'Files',
     web: 'Web',
     test: 'Test connection',
+    meetings: 'Meetings',
   };
   return names[row.provider] ?? 'Connected app';
 }
@@ -101,6 +102,7 @@ const LABELS: Record<string, string> = {
   'web.fetch': 'Read a web page',
   'test.read': 'Checked the connected app',
   'test.send': 'Sent a message',
+  'meeting.join': 'Sent a notetaker to the meeting',
 };
 /** How each connector verb reads while it runs and once it is done. */
 export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
@@ -133,6 +135,7 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'audio.synthesize': ['Making audio', 'Made audio'],
   'test.read': ['Checking the connected app', 'Checked the connected app'],
   'test.send': ['Sending a message', 'Sent a message'],
+  'meeting.join': ['Sending a notetaker', 'Sent a notetaker to the meeting'],
 };
 export function actionLabel(row: ActionRow, connection?: ConnectionRow): string {
   return (
@@ -421,6 +424,23 @@ export function projectQuestionDecision(input: {
   });
 }
 
+/** What the person approves when a notetaker is sent: every value the approval is bound to. */
+function meetingFacts(payload: Record<string, unknown>) {
+  return [
+    { label: 'Meeting', value: plainText(payload.meeting_url, 'Meeting link', 600) },
+    { label: 'Shown as', value: plainText(payload.bot_name, 'Notetaker') },
+    {
+      label: 'Joins',
+      value:
+        typeof payload.join_at === 'string' ? plainText(payload.join_at, 'Later') : 'Right away',
+    },
+    {
+      label: 'Posts in the meeting chat',
+      value: plainText(payload.announcement, 'An announcement that the meeting is recorded'),
+    },
+  ];
+}
+
 export function projectPermission(input: {
   id: string;
   version: string;
@@ -467,6 +487,7 @@ export function projectPermission(input: {
     ...(typeof payload.summary === 'string'
       ? [{ label: 'Event', value: plainText(payload.summary, 'Event') }]
       : []),
+    ...(input.action.kind === 'meeting.join' ? meetingFacts(payload) : []),
     ...(['start', 'end', 'location'] as const).flatMap((key) =>
       typeof payload[key] === 'string'
         ? [
