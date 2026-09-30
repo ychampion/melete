@@ -156,6 +156,12 @@ export class PrincipalService {
       await tx.execute(
         sql`update memory_contexts set invalidated_at = now(), items = '[]'::jsonb where space_id = ${spaceId} and invalidated_at is null`,
       );
+      // So do the copies of what memory handed the member's own actions, kept to
+      // say why each was taken.
+      await tx.execute(
+        sql`update memory_action_basis b set items = '[]'::jsonb from job j
+          where b.space_id = ${spaceId} and j.id = b.job_id and j.principal_id = ${memberId}`,
+      );
       await tx.execute(
         sql`update memory_prepared set stale = true, content = null where space_id = ${spaceId}`,
       );
