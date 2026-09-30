@@ -23,6 +23,8 @@ export type MockOptions = {
   experience?: { seed?: boolean };
   /** Start as a fresh install: no account yet, and signed out until one is made. */
   setupNeeded?: boolean;
+  /** Off, conversations have no browser or sandbox, as on a fresh install. */
+  computer?: boolean;
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -40,6 +42,7 @@ export function createMock(options: MockOptions = {}) {
     experienceSpeed: options.speed ?? 1,
     seedExperience: options.experience?.seed ?? false,
     setupNeeded: options.setupNeeded ?? false,
+    computer: options.computer ?? true,
   });
   return { app, store, runner, scenarios, spaceId, connections };
 }
@@ -49,6 +52,7 @@ if (import.meta.main) {
   const { app, spaceId, scenarios } = createMock({
     experience: { seed: process.env.MOCK_SEED !== 'off' },
     setupNeeded: process.env.MELETE_MOCK_SETUP === 'needed',
+    computer: process.env.MELETE_MOCK_COMPUTER !== 'off',
   });
   Bun.serve({ port, fetch: app.fetch, idleTimeout: 0 });
   process.stdout.write(

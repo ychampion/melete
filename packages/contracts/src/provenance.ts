@@ -179,6 +179,10 @@ export const REJECTION_REASONS = [
   'value_not_well_formed',
   'confidence_is_not_a_status',
   'checked_status_requires_tier0',
+  /** The model's answer held an entry that is not a proposal at all. */
+  'invalid_shape',
+  /** The person asked Melete not to learn this subject again. */
+  'blocked_by_person',
 ] as const;
 export const rejectionReason = z.enum(REJECTION_REASONS);
 export type RejectionReason = z.infer<typeof rejectionReason>;

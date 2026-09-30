@@ -27,6 +27,7 @@ async function fixture(workers = false, onJobRecompute?: (jobId: string) => Prom
   const queue = await startQueue(handle.url);
   const directory = await mkdtemp(join(tmpdir(), 'melete-memory-bootstrap-'));
   const options = {
+    privacyOrigin: async () => null,
     sql: handle.sql,
     boss: queue.boss,
     restrictionsDir: directory,

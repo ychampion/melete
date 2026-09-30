@@ -34,6 +34,7 @@ import {
   providerSelectionProblem,
   providersFromEnv,
 } from '../../apps/melete/src/gateway/providers.ts';
+import { generateVapidKeys } from '../../apps/melete/src/push/webpush.ts';
 import {
   type CommandOutput,
   readHostDocker,
@@ -203,6 +204,17 @@ export function sandboxProject(): string {
   return `melete-${randomBytes(4).toString('hex')}`;
 }
 
+/**
+ * The service's database address, for the user and database the template
+ * names: Postgres creates both from POSTGRES_USER and POSTGRES_DB, so the
+ * address follows them rather than assuming the defaults.
+ */
+export function databaseUrl(template: Record<string, string>, password: string): string {
+  const user = template.POSTGRES_USER?.trim() || 'melete';
+  const database = template.POSTGRES_DB?.trim() || 'melete';
+  return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@postgres:5432/${encodeURIComponent(database)}`;
+}
+
 /** A reason to stop that the operator acts on; printed as one line, without a stack. */
 export class ConfigureRefusal extends Error {}
 
@@ -243,7 +255,8 @@ async function configure(root: string) {
   if (existsSync(target)) throw new ConfigureRefusal(ENV_EXISTS);
   const template = await readFile(resolve(root, 'deploy/.env.example'), 'utf8');
   // A production run without its key stops here, before Docker is asked anything.
-  const provider = providerSettings(options, parseEnvFile(template), process.env);
+  const defaults = parseEnvFile(template);
+  const provider = providerSettings(options, defaults, process.env);
   // An unsupported engine, Compose or host is named now, not as a failed `up` later.
   const host = readDockerHost(spawnCommand, root);
   const unsupported = judgeDockerMachine(readHostDocker(), host);
@@ -258,7 +271,11 @@ async function configure(root: string) {
     },
   });
   const password = randomBytes(24).toString('hex');
+  // This installation's own Web Push key pair: phones are reached without a third party.
+  const vapid = await generateVapidKeys();
   const values: Record<string, string> = {
+    MELETE_VAPID_PUBLIC_KEY: vapid.publicKey,
+    MELETE_VAPID_PRIVATE_KEY: vapid.privateKey,
     MELETE_MASTER_KEY: randomBytes(32).toString('base64'),
     MELETE_CAPABILITY_KEY: randomBytes(32).toString('hex'),
     // Labels this installation's sandboxes at a provider; written once, kept after.
@@ -266,7 +283,7 @@ async function configure(root: string) {
     MELETE_APPROVAL_KEY: randomBytes(32).toString('hex'),
     MELETE_RUNTIME_KEY: randomBytes(32).toString('hex'),
     POSTGRES_PASSWORD: password,
-    DATABASE_URL: `postgres://melete:${password}@postgres:5432/melete`,
+    DATABASE_URL: databaseUrl(defaults, password),
     DOCKER_GID: String(dockerGid),
     ...provider,
     // TS_AUTHKEY stays as the template leaves it, which is empty: it is issued by

@@ -53,6 +53,9 @@ export async function endSpaceAccess(
         set revoked_at = now(), generation = generation + 1
         where space_id = ${spaceId} and revoked_at is null`;
     await tx`delete from magic_link where space_id = ${spaceId}`;
+    // An assistant connected over MCP from this space loses it with everyone else.
+    await tx`delete from mcp_authorization where space_id = ${spaceId}`;
+    await tx`delete from mcp_token where space_id = ${spaceId}`;
   });
 }
 
@@ -87,6 +90,7 @@ export async function sweepOperational(
     // one after it.
     await tx`delete from company_scan where space_id = ${spaceId}`;
     await tx`delete from ledger_item where space_id = ${spaceId}`;
+    await tx`delete from awaited_reply where space_id = ${spaceId}`;
     await tx`delete from company_message where space_id = ${spaceId}`;
     await tx`delete from company where space_id = ${spaceId}`;
     // One statement takes attempts, actions, approvals, events, triggers, the
@@ -118,6 +122,10 @@ export async function sweepOperational(
 const SPACE_KEYED_OPERATIONAL = [
   'browser_recipe_candidate',
   'experience_profile',
+  // How the person lets auto-review answer for them, and what it decided.
+  // The decisions went with their jobs; named again so the phase is whole.
+  'approval_review_policy',
+  'action_review',
   'knowledge_record',
   'skill',
   'task',
@@ -131,6 +139,11 @@ const SPACE_KEYED_OPERATIONAL = [
   'learned_change',
   // Held while a procedure is evaluated in the space; a removal ends it.
   'learning_evaluation_lease',
+  // The privacy router's sealed vaults, its settings and its audit rows.
+  'privacy_vault',
+  'privacy_settings',
+  'privacy_conversation',
+  'privacy_request',
   // The browser phase deletes these with the profile they describe. A
   // deployment with no browser worker has no profile, and any rows an earlier
   // configuration left go here, since an emptied space keeps its row and the
@@ -208,6 +221,10 @@ const MEMORY_TABLES = [
   'memory_rejections',
   'memory_capture',
   'memory_model_calls',
+  'memory_action_basis',
+  'memory_blocks',
+  'memory_rewinds',
+  'memory_digests',
   'memory_spaces',
 ] as const;
 

@@ -44,6 +44,8 @@ export const ID_PREFIXES = {
   scan: 'scn',
   /** A stored message the ledger's evidence spans are checked against. */
   company_message: 'msg',
+  /** A message the person sent that is still waiting on a reply. */
+  awaited_reply: 'awr',
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];

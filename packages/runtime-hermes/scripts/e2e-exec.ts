@@ -26,6 +26,7 @@ import { createInternalServer } from '../../../apps/melete/src/broker/internal-s
 import { recordId } from '../../../apps/melete/src/broker/records.ts';
 import { configuredConnectors } from '../../../apps/melete/src/connectors/configured.ts';
 import { createScriptedProvider, fakeProvider } from '../../../apps/melete/src/gateway/index.ts';
+import { defaultPrivacyRouter } from '../../../apps/melete/src/privacy/index.ts';
 import { seedJob } from '../../../apps/melete/test/helpers/broker.ts';
 import { createPostgresFixture } from '../../../apps/melete/test/helpers/postgres.ts';
 import { brokerParkedActions, HermesRuntimeAdapter } from '../src/adapter.ts';
@@ -153,6 +154,7 @@ async function main() {
   });
 
   const internal = createInternalServer({
+    privacy: defaultPrivacyRouter(),
     artifactRoots: { workRoot, spacesRoot },
     sql: db.sql,
     connectors: registry,

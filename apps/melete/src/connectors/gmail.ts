@@ -7,6 +7,7 @@
 import { simpleParser } from 'mailparser';
 import {
   composeMail,
+  type MailFolder,
   type MailMessage,
   type MailTransport,
   type OutgoingMail,
@@ -91,8 +92,11 @@ export class GmailApiTransport implements MailTransport {
     return toMailMessage(id, await simpleParser(source, { skipImageLinks: true }));
   }
 
-  async search(query: string, limit: number): Promise<MailMessage[]> {
-    const params = new URLSearchParams({ maxResults: String(limit), labelIds: 'INBOX' });
+  async search(query: string, limit: number, folder: MailFolder = 'inbox'): Promise<MailMessage[]> {
+    const params = new URLSearchParams({
+      maxResults: String(limit),
+      labelIds: folder === 'sent' ? 'SENT' : 'INBOX',
+    });
     if (query) params.set('q', query);
     const messages: MailMessage[] = [];
     for (const id of await this.ids(params)) {

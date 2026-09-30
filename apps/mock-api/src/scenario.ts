@@ -11,6 +11,15 @@ import { EVENT_TYPES, effectClass } from '@melete/contracts';
 import { z } from 'zod';
 
 const label = z.string().min(1).max(60);
+/**
+ * What auto-review made of an action: on an approval step it sent the action
+ * to the person, on a dispatch with no approval step it let the action through.
+ */
+const autoReview = z.object({
+  by: z.enum(['policy', 'reviewer']).default('reviewer'),
+  reason: z.string().min(1),
+  risk: z.enum(['low', 'medium', 'high']).nullable().default(null),
+});
 
 /** Where an action's evidence came from, for the trail's source chips. */
 const source = z.object({
@@ -127,6 +136,7 @@ export const scenarioStep = z.discriminatedUnion('step', [
     delay_ms: z.number().int().nonnegative().default(200),
     ref: label,
     on_denied: label.nullable().default(null),
+    auto_review: autoReview.optional(),
   }),
   /** The job parks on one precise question. */
   z.object({
@@ -143,6 +153,7 @@ export const scenarioStep = z.discriminatedUnion('step', [
     external_ref: z.string().nullable().default(null),
     reason: z.string().default(''),
     detail: z.record(z.string(), z.unknown()).default({}),
+    auto_review: autoReview.optional(),
   }),
   /** A plain notice in the feed, for the inbox. */
   z.object({

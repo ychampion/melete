@@ -1,5 +1,5 @@
 /**
- * What I've learned: the lessons Melete took from the person's corrections and
+ * Memory's lessons and skills: the lessons Melete took from the person's corrections and
  * the skills it wrote for itself, in one list. Each item says what it does,
  * where it came from and whether it is in use, and offers only the actions the
  * service allows in its state. Every change can be undone by the id the
@@ -37,7 +37,7 @@ export const CHANGE_WORD: Record<LearnedChange['action'], string> = {
 };
 
 /** Why stopping is recorded: the person said so here. */
-const STOP_REASON = 'You said not to do this, from What I’ve learned.';
+const STOP_REASON = 'You said not to do this, from Memory.';
 
 export function stateBadge(item: LearnedItem): { text: string; tone: BadgeTone } {
   switch (item.state) {

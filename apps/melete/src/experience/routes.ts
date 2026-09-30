@@ -13,6 +13,7 @@ import { BrokerFault } from '../broker/errors.ts';
 import { loadAction } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
+import { saveWebReadSetting, webReadSetting } from '../connectors/web.ts';
 import type { Database } from '../db/client.ts';
 import { action, artifact, connection, experienceDraftSend } from '../db/schema.ts';
 import type { QuestionService } from '../jobs/questions.ts';
@@ -20,10 +21,14 @@ import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
+import { mcpActorOf } from '../mcp-server/actor.ts';
+import { actionBecause } from '../memory/basis.ts';
 import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import { AGENT_TEMPLATES } from './agents.ts';
+import { ExperienceBeliefs } from './beliefs.ts';
+import { type ComputerBinding, projectComputer } from './computer.ts';
 import { ExperienceEffects } from './effects.ts';
 import { ExperienceEvents } from './events.ts';
 import { ExperienceHome } from './home.ts';
@@ -47,6 +52,8 @@ export type ExperienceDeps = {
   /** Provisions a space's memory on its owner's first use. */
   memoryProvision?: (spaceId: string, principalId: string) => Promise<void>;
   triggers?: TriggerService;
+  /** A browser worker is configured, so a conversation's agent can have a browser. */
+  browser?: boolean;
 };
 /**
  * Rows these routes keep for the space as a whole rather than for one job: the
@@ -54,6 +61,7 @@ export type ExperienceDeps = {
  * the caller is always the owner. In a shared space only its owner works with
  * them; a member keeps to conversations, plans and routines of their own.
  */
+const NOT_CONNECTED = 'Your saved details are not connected yet.';
 const SPACE_OWNER_SURFACES = new Set([
   'GET /profile',
   'PATCH /profile',
@@ -65,6 +73,10 @@ const SPACE_OWNER_SURFACES = new Set([
   'GET /experience/connections',
   'GET /rules',
   'DELETE /rules/{id}',
+  'GET /web/settings',
+  'PUT /web/settings',
+  'GET /approval-settings',
+  'PUT /approval-settings',
   'POST /agents',
   'PATCH /agents/{id}',
 ]);
@@ -75,6 +87,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
   const memory = deps.sql
     ? new ExperienceMemory(deps.sql, deps.memoryJournal, deps.memoryProvision)
     : undefined;
+  const beliefs = memory ? new ExperienceBeliefs(memory) : undefined;
   const ownerEffects =
     deps.sql && deps.broker && deps.registry
       ? new ExperienceEffects(deps.sql, deps.broker, deps.registry)
@@ -89,27 +102,29 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     permission: (spaceId, id) => permissions?.card(spaceId, id) ?? Promise.resolve(undefined),
     question: async (spaceId, id) =>
       (await questions.list(spaceId)).questions.find((item) => item.id === id),
+    because: async (spaceId, actionId) =>
+      deps.sql ? actionBecause(deps.sql, spaceId, actionId) : [],
   });
   service.progress = (spaceId, jobId, turnId, stage) =>
     events.progress(spaceId, jobId, turnId, stage);
-  const effects = async (spaceId: string, id: string) => {
+  /** The conversation's own job and the command jobs it started, all the caller's own. */
+  const conversationJobs = async (spaceId: string, id: string) => {
     await service.requireConversation(spaceId, id);
     const linked = deps.sql
       ? await deps.sql`select j.id from job j where j.experience_parent_id = ${id}
           and j.space_id = ${spaceId} ${ownJobClause(deps.sql, 'j')}`
       : [];
-    return deps.db
+    return [id, ...linked.map((row) => String(row.id))];
+  };
+  const actionsOf = (spaceId: string, jobIds: string[]) =>
+    deps.db
       .select({ action, connection })
       .from(action)
       .innerJoin(connection, eq(connection.id, action.connectionId))
-      .where(
-        and(
-          inArray(action.jobId, [id, ...linked.map((row) => String(row.id))]),
-          eq(connection.spaceId, spaceId),
-        ),
-      )
+      .where(and(inArray(action.jobId, jobIds), eq(connection.spaceId, spaceId)))
       .orderBy(action.createdAt, action.id);
-  };
+  const effects = async (spaceId: string, id: string) =>
+    actionsOf(spaceId, await conversationJobs(spaceId, id));
   const handlers: Record<
     string,
     (spaceId: string, c: Context, input: Record<string, unknown>) => Promise<unknown> | unknown
@@ -154,12 +169,22 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'GET /quick-answers': (spaceId) => questions.list(spaceId),
     'POST /quick-answers/{id}': (spaceId, c, input) =>
       questions.answer(spaceId, c.req.param('id') ?? '', String(input.option_id)),
-    'POST /memory/items': (spaceId, c, input) =>
-      memory?.create(spaceId, c.get('owner').id, input) ??
-      unavailable('Your saved details are not connected yet.'),
+    'POST /memory/items': (spaceId, c, input) => {
+      // Another assistant saving through the MCP endpoint is recorded as that assistant.
+      const assistant = mcpActorOf(c.env);
+      return (
+        memory?.create(
+          spaceId,
+          c.get('owner').id,
+          input,
+          assistant ? { assistantClientId: assistant.clientId } : undefined,
+        ) ?? unavailable('Your saved details are not connected yet.')
+      );
+    },
     'GET /memory/items': (spaceId, c) =>
-      memory?.list(spaceId, c.get('owner').id, c.req.query('after') ?? null) ??
-      unavailable('Your saved details are not connected yet.'),
+      memory?.list(spaceId, c.get('owner').id, c.req.query('after') ?? null, {
+        forAssistant: mcpActorOf(c.env) !== undefined,
+      }) ?? unavailable('Your saved details are not connected yet.'),
     'PATCH /memory/items/{id}': (spaceId, c, input) =>
       memory?.edit(spaceId, c.get('owner').id, c.req.param('id') ?? '', input) ??
       unavailable('Your saved details are not connected yet.'),
@@ -175,11 +200,55 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'PUT /memory/settings': (_spaceId, c, input) =>
       memory?.saveSettings(c.get('owner').id, input) ??
       unavailable('Your saved details are not connected yet.'),
+    'GET /web/settings': (spaceId) =>
+      deps.sql
+        ? webReadSetting(deps.sql, spaceId)
+        : unavailable('Web reading is not connected yet.'),
+    'PUT /web/settings': (spaceId, _c, input) =>
+      deps.sql
+        ? saveWebReadSetting(deps.sql, spaceId, input.enabled === true)
+        : unavailable('Web reading is not connected yet.'),
+    'GET /memory/beliefs': (spaceId, c) =>
+      beliefs?.list(spaceId, c.get('owner').id) ?? unavailable(NOT_CONNECTED),
+    'GET /memory/beliefs/{id}/history': (spaceId, c) =>
+      beliefs?.history(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
+      unavailable(NOT_CONNECTED),
+    'POST /memory/beliefs/{id}/block': (spaceId, c) =>
+      beliefs?.block(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
+      unavailable(NOT_CONNECTED),
+    'GET /memory/blocks': (spaceId, c) =>
+      beliefs?.blocks(spaceId, c.get('owner').id) ?? unavailable(NOT_CONNECTED),
+    'DELETE /memory/blocks/{id}': (spaceId, c) =>
+      beliefs?.unblock(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
+      unavailable(NOT_CONNECTED),
+    'GET /memory/timeline': (spaceId, c) =>
+      beliefs?.timeline(spaceId, c.get('owner').id, c.req.query()) ?? unavailable(NOT_CONNECTED),
+    'POST /memory/rewind/preview': (spaceId, c, input) =>
+      beliefs?.preview(spaceId, c.get('owner').id, input) ?? unavailable(NOT_CONNECTED),
+    'POST /memory/rewind': (spaceId, c, input) =>
+      beliefs?.rewind(spaceId, c.get('owner').id, input) ?? unavailable(NOT_CONNECTED),
+    'POST /memory/rewinds/{id}/undo': (spaceId, c) =>
+      beliefs?.undoRewind(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
+      unavailable(NOT_CONNECTED),
+    'GET /memory/digest': (spaceId, c) =>
+      beliefs?.digest(spaceId, c.get('owner').id) ?? unavailable(NOT_CONNECTED),
+    'POST /memory/digest/{id}/seen': (spaceId, c) =>
+      beliefs?.seen(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
+      unavailable(NOT_CONNECTED),
+    'GET /memory/export': (spaceId, c) =>
+      beliefs?.export(spaceId, c.get('owner').id, c.req.query()) ?? unavailable(NOT_CONNECTED),
+    'POST /memory/import': (spaceId, c, input) =>
+      beliefs?.import(spaceId, c.get('owner').id, input) ?? unavailable(NOT_CONNECTED),
     'GET /permissions': (spaceId) =>
       permissions?.list(spaceId) ?? unavailable('Permissions are not connected yet.'),
     'POST /permissions/{id}': (spaceId, c, input) =>
       permissions?.decide(spaceId, c.req.param('id') ?? '', input) ??
       unavailable('Permissions are not connected yet.'),
+    'GET /approval-settings': (spaceId) =>
+      permissions?.approvalSettings(spaceId) ?? unavailable('Approvals are not connected yet.'),
+    'PUT /approval-settings': (spaceId, _c, input) =>
+      permissions?.saveApprovalSettings(spaceId, input) ??
+      unavailable('Approvals are not connected yet.'),
     'GET /rules': (spaceId) =>
       permissions?.rules(spaceId) ?? unavailable('Rules are not connected yet.'),
     'DELETE /rules/{id}': (spaceId, c) =>
@@ -240,6 +309,31 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         if (receipt) receipts.push(receipt);
       }
       return { receipts };
+    },
+    'GET /conversations/{id}/computer': async (spaceId, c) => {
+      const jobIds = await conversationJobs(spaceId, c.req.param('id') ?? '');
+      const rows = await actionsOf(spaceId, jobIds);
+      const bindings = deps.sql
+        ? await deps.sql<ComputerBinding[]>`select id, control, updated_at
+            from browser_session_binding
+            where space_id = ${spaceId} and job_id in ${deps.sql(jobIds)}`
+        : [];
+      const [sandbox] = await deps.db
+        .select({ id: connection.id })
+        .from(connection)
+        .where(
+          and(
+            eq(connection.spaceId, spaceId),
+            eq(connection.provider, 'sandbox'),
+            eq(connection.status, 'active'),
+          ),
+        )
+        .limit(1);
+      return projectComputer({
+        rows: rows.map((row) => row.action),
+        bindings,
+        available: { browser: deps.browser ?? false, terminal: Boolean(sandbox) },
+      });
     },
     'GET /conversations/{id}/drafts': async (spaceId, c) => {
       const rows = await effects(spaceId, c.req.param('id') ?? '');

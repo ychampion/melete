@@ -1,7 +1,39 @@
+/**
+ * Where a request went and what was swapped out of it, never the values. The
+ * same shape as the contract's `privacyReceipt`, written out here because the
+ * release scripts load this file with nothing but Bun's own modules.
+ */
+export type GatewayPrivacyReceipt = {
+  route: 'cloud' | 'local' | 'ask' | 'on_device';
+  protected: number;
+  categories: Record<string, number>;
+  placeholders: string[];
+  local_detection?: 'off' | 'used' | 'failed';
+};
+
+/**
+ * Whose data a request carries, so the privacy router applies the right
+ * space's settings and the right conversation's privacy. Every principal names
+ * one; there is no default.
+ *
+ * - `job`: an engine attempt. The space, conversation and agent are read from
+ *   the job itself.
+ * - `service`: one of the service's own calls (memory, a mailbox scan, a
+ *   reviewer, a voice or phone integration). `spaceId` is the space it works
+ *   for. `sourceJobId` names the conversation whose words it carries, so that
+ *   conversation's private agent, sensitive topic and answers apply to it too;
+ *   null when it carries none.
+ */
+export type GatewayPrivacyScope =
+  | { kind: 'job' }
+  | { kind: 'service'; purpose: string; spaceId: string; sourceJobId: string | null };
+
 /** Service-owned authorization, rechecked transactionally by the budget adapter. */
 export interface GatewayPrincipal {
   jobId: string;
   attemptId: string;
+  /** Whose data this request carries, for the privacy router. Required: see `GatewayPrivacyScope`. */
+  privacy: GatewayPrivacyScope;
   epoch: number;
   revision: number;
   maxRequests: number;
@@ -49,6 +81,8 @@ export interface GatewaySettlement {
   latencyMs: number;
   status: 'succeeded' | 'failed' | 'unknown';
   httpStatus: number | null;
+  /** Where the request went and what was swapped out of it, never the values. */
+  privacy?: GatewayPrivacyReceipt;
 }
 
 export interface GatewayBudget {

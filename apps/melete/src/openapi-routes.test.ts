@@ -31,7 +31,8 @@ const DOCUMENTED_ELSEWHERE = [
 function servedRoutes(): string[] {
   const stub = new Proxy({}, { get: () => () => undefined }) as never;
   const deps: AppDeps = {
-    env: loadEnv({}),
+    // A public address, so the MCP endpoint and its OAuth routes are served too.
+    env: loadEnv({ MELETE_PUBLIC_URL: 'https://melete.example' }),
     checkDatabase: async () => 'ok',
     db: stub,
     sql: stub,

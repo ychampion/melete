@@ -1,6 +1,23 @@
 /** Outcome vocabulary for personal interfaces. Never pass an internal record through here. */
 import { z } from 'zod';
+import {
+  becauseLink,
+  beliefBlockList,
+  beliefExport,
+  beliefExportQuery,
+  beliefHistory,
+  beliefImport,
+  beliefImportResult,
+  beliefList,
+  memoryDigestResponse,
+  memoryRewindResponse,
+  memoryTimeline,
+  memoryTimelineQuery,
+  rewindPreview,
+  rewindTarget,
+} from './beliefs.ts';
 import { memoryKey } from './memory.ts';
+import { privacyOperations } from './privacy.ts';
 import { messageId } from './reactions.ts';
 
 const id = z.string().min(1).max(240);
@@ -68,12 +85,30 @@ export const resultCard = z.strictObject({
   source_connection: id.nullable(),
 });
 export type ResultCard = z.infer<typeof resultCard>;
+/**
+ * What auto-review decided about one action, in the service's words.
+ * `policy` is the fixed rule (work inside the agent's own sandbox, or a limit
+ * that sent the action to the person); `reviewer` is the independent model
+ * review. `risk` is the reviewer's own rating, absent when none was given.
+ */
+export const actionReview = z.strictObject({
+  outcome: z.enum(['auto_approved', 'escalated']),
+  by: z.enum(['policy', 'reviewer']),
+  reason: text,
+  risk: z.enum(['low', 'medium', 'high']).nullable(),
+  reviewed_at: date,
+});
+export type ActionReview = z.infer<typeof actionReview>;
 export const experienceReceipt = z.strictObject({
   id,
   what: text,
   where: text,
   when: date,
   undo: z.strictObject({ handle: id, valid_until: date }).optional(),
+  /** Present when nobody was asked because auto-review approved it. */
+  review: actionReview.optional(),
+  /** The beliefs or rule the action rested on, recorded when it was proposed. */
+  because: z.array(becauseLink).max(20).optional(),
 });
 export type ExperienceReceipt = z.infer<typeof experienceReceipt>;
 export const experienceDraft = z.strictObject({
@@ -142,10 +177,45 @@ export const permissionCard = z.strictObject({
   version: id,
   preview: resultCard.nullable(),
   draft: experienceDraft.optional(),
+  /** Present when auto-review looked at this first and sent it to the person. */
+  review: actionReview.optional(),
   /** When permission was asked for; the queue is oldest first. */
   created_at: date,
+  /** The beliefs the action rested on, recorded when it was proposed. */
+  because: z.array(becauseLink).max(20).optional(),
 });
 export type PermissionCard = z.infer<typeof permissionCard>;
+
+/**
+ * The action classes a person can let auto-review decide. Anything that
+ * spends, sends, deletes, carries credentials, or rests on a value the person
+ * never confirmed is not a class here: it always asks.
+ */
+export const AUTO_REVIEW_CLASSES = ['sandbox', 'calendar', 'app_changes'] as const;
+export const autoReviewClass = z.enum(AUTO_REVIEW_CLASSES);
+export type AutoReviewClass = z.infer<typeof autoReviewClass>;
+export const approvalSettings = z.strictObject({
+  /** `ask`: every change waits for the person. `auto_review`: the classes switched on below do not. */
+  mode: z.enum(['ask', 'auto_review']),
+  classes: z.strictObject({
+    /** Work in the agent's own workspace: commands, files, its own browser. */
+    sandbox: z.boolean(),
+    /** Events on the person's own calendar, after the reviewer approves. */
+    calendar: z.boolean(),
+    /** Reversible changes in connected apps, after the reviewer approves. */
+    app_changes: z.boolean(),
+  }),
+});
+export type ApprovalSettings = z.infer<typeof approvalSettings>;
+export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
+  mode: 'auto_review',
+  classes: { sandbox: true, calendar: false, app_changes: false },
+};
+export const approvalSettingsResponse = z.strictObject({
+  settings: approvalSettings,
+  /** Whether an independent reviewer is configured; without one, reviewed classes ask. */
+  reviewer_available: z.boolean(),
+});
 export const permissionDecision = z.discriminatedUnion('option', [
   z.strictObject({ option: z.literal('allow_once'), version: id }),
   z.strictObject({ option: z.literal('always'), version: id, bounds: standingRuleBounds }),
@@ -451,6 +521,8 @@ export const memoryItem = z.strictObject({
   last_used: date.nullable(),
   editable: z.boolean(),
   version: id,
+  /** The assistant that saved this detail through Melete's MCP endpoint, by the name it registered. */
+  saved_by: z.string().max(120).optional(),
 });
 export const memoryItemEdit = z.strictObject({ value: z.string().min(1).max(16000), version: id });
 /**
@@ -477,6 +549,19 @@ export const memoryItemList = z.strictObject({
  * nothing new they say in chat is kept, and "forget ..." still works.
  */
 export const memorySettings = z.strictObject({ capture: z.boolean() });
+/**
+ * Whether conversations in this space read public web pages: GET and HEAD
+ * only, public addresses only, never signed in. On unless it is turned
+ * off; a private space or agent stays offline whatever this says.
+ */
+export const webReadSettings = z.strictObject({ enabled: z.boolean() });
+export const webReadStatus = z
+  .strictObject({
+    enabled: z.boolean(),
+    /** False when the space has no web connection for the setting to apply to. */
+    available: z.boolean(),
+  })
+  .meta({ id: 'WebReadStatus' });
 export const memoryExplanation = z.strictObject({
   reasons: z.array(text),
   output: z.string().nullable(),
@@ -627,6 +712,39 @@ export const browserResponse = z.strictObject({ session: browserSession });
 export const browserControl = z.strictObject({
   control: z.enum(['take_control', 'resume', 'stop']),
 });
+/** How many recent commands a conversation's computer view carries. */
+export const COMPUTER_TERMINAL_LIMIT = 8;
+/** One command the agent ran in its sandbox, with what it printed, scrubbed and clipped. */
+export const computerCommand = z.strictObject({
+  id,
+  command: z.string().max(2000),
+  /** The last lines it printed; empty while it runs or when the output was not text. */
+  output: z.string().max(4000),
+  status: z.enum(['running', 'done', 'failed', 'unknown']),
+  exit_code: z.number().int().nullable(),
+  started_at: date,
+});
+export type ComputerCommand = z.infer<typeof computerCommand>;
+/** The page the agent's browser was last seen on, and who holds the browser now. */
+export const computerBrowser = z.strictObject({
+  session_id: id,
+  control: z.enum(['agent', 'you']),
+  /** Scheme, host and path only. */
+  url: z.string().max(2048).nullable(),
+  title: z.string().max(200).nullable(),
+  /** A picture of the page as the agent last saw it; none while a handed-back page is shown. */
+  screenshot: z.strictObject({ artifact_id: id }).nullable(),
+  seen_at: date.nullable(),
+});
+export type ComputerBrowser = z.infer<typeof computerBrowser>;
+/** What a conversation's agent is doing on its computer: its browser and its terminal. */
+export const agentComputer = z.strictObject({
+  browser: computerBrowser.nullable(),
+  terminal: z.array(computerCommand).max(COMPUTER_TERMINAL_LIMIT),
+  /** Which parts this service can run at all, so an empty view can say what to connect. */
+  available: z.strictObject({ browser: z.boolean(), terminal: z.boolean() }),
+});
+export type AgentComputer = z.infer<typeof agentComputer>;
 export const nowPlaying = z.strictObject({
   title: text,
   artist: text,
@@ -678,6 +796,7 @@ export const experienceOperations = {
     response: z.strictObject({ receipts: z.array(experienceReceipt) }),
   },
   'POST /receipts/{id}/undo': { response: z.strictObject({ receipt: experienceReceipt }) },
+  'GET /conversations/{id}/computer': { response: agentComputer },
   'GET /conversations/{id}/drafts': {
     response: z.strictObject({ drafts: z.array(experienceDraft) }),
   },
@@ -690,6 +809,8 @@ export const experienceOperations = {
   },
   'GET /permissions': { response: z.strictObject({ permissions: z.array(permissionCard) }) },
   'POST /permissions/{id}': { request: permissionDecision, response: permissionOutcome },
+  'GET /approval-settings': { response: approvalSettingsResponse },
+  'PUT /approval-settings': { request: approvalSettings, response: approvalSettingsResponse },
   'GET /rules': { response: z.strictObject({ rules: z.array(standingRule) }) },
   'DELETE /rules/{id}': { response: experienceOk },
   'GET /quick-answers': { response: z.strictObject({ questions: z.array(experienceQuestion) }) },
@@ -711,6 +832,21 @@ export const experienceOperations = {
   'GET /memory/items/{id}/why': { response: memoryExplanation },
   'GET /memory/settings': { response: memorySettings },
   'PUT /memory/settings': { request: memorySettings, response: memorySettings },
+  'GET /web/settings': { response: webReadStatus },
+  'PUT /web/settings': { request: webReadSettings, response: webReadStatus },
+  'GET /memory/beliefs': { response: beliefList },
+  'GET /memory/beliefs/{id}/history': { response: beliefHistory },
+  'POST /memory/beliefs/{id}/block': { response: experienceOk },
+  'GET /memory/blocks': { response: beliefBlockList },
+  'DELETE /memory/blocks/{id}': { response: experienceOk },
+  'GET /memory/timeline': { query: memoryTimelineQuery, response: memoryTimeline },
+  'POST /memory/rewind/preview': { request: rewindTarget, response: rewindPreview },
+  'POST /memory/rewind': { request: rewindTarget, response: memoryRewindResponse },
+  'POST /memory/rewinds/{id}/undo': { response: memoryRewindResponse },
+  'GET /memory/digest': { response: memoryDigestResponse },
+  'POST /memory/digest/{id}/seen': { response: experienceOk },
+  'GET /memory/export': { query: beliefExportQuery, response: beliefExport },
+  'POST /memory/import': { request: beliefImport, response: beliefImportResult },
   'GET /plans': { response: planList },
   'POST /plans': { request: planCreate, response: planResponse },
   'GET /plans/{id}': { response: planResponse },
@@ -742,6 +878,7 @@ export const experienceOperations = {
   'POST /signin/magic-link/consume': { request: magicLinkConsume, response: experienceOk },
   'POST /signin/google': { response: notAvailable },
   'POST /signin/apple': { response: notAvailable },
+  'POST /signin/chatgpt': { response: notAvailable },
   /** Ends the session behind the cookie; the next request needs a new sign-in. */
   'POST /signout': { response: experienceOk },
   'GET /browser/sessions/{id}': { response: browserResponse },
@@ -752,6 +889,7 @@ export const experienceOperations = {
     query: z.strictObject({ q: z.string().min(1).max(200) }),
     response: experienceSearch,
   },
+  ...privacyOperations,
 } satisfies Record<
   string,
   { request?: z.ZodType; query?: z.ZodType; response: z.ZodType; stream?: boolean }

@@ -48,6 +48,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
         return {
           jobId: job.id,
           attemptId: claims.attempt_id,
+          privacy: { kind: 'job' as const },
           epoch: claims.epoch,
           revision: claims.revision,
           maxRequests: job.budget.max_turns,
@@ -228,6 +229,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
           http_status: result.httpStatus,
           usage_uncertain: usage === null,
           late,
+          ...(result.privacy ? { privacy: result.privacy } : {}),
         },
         dedup,
       );

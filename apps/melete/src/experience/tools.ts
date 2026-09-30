@@ -38,7 +38,7 @@ import {
   safeUrl,
 } from './projectors.ts';
 
-const CREDENTIAL =
+export const CREDENTIAL =
   /\bBearer\s+\S|\bsk-[A-Za-z0-9_-]{8,}|\bgh[opsu]_[A-Za-z0-9]{8,}|\bgithub_pat_|\bxox[abprs]-|\bAKIA[0-9A-Z]{12}|\bAIza[0-9A-Za-z_-]{20}|\beyJ[A-Za-z0-9_-]{8,}\.|sealed-box-v1:|-----BEGIN|(?:^|[^A-Za-z])[A-Za-z_]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie|credential)[A-Za-z_]*\s*[:=]|[A-Za-z0-9+/_-]{40,}/i;
 /** A path segment that reads like a key rather than a word: long, and mixing letters and digits. */
 const TOKEN_SEGMENT = /^(?=[^/]*\d)(?=[^/]*[A-Za-z])[A-Za-z0-9_.~-]{12,}$/;
@@ -109,10 +109,13 @@ const when = (value: unknown): string | undefined => {
     ? undefined
     : `${at.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 };
-const pageTitle = (value: unknown) =>
-  typeof value === 'string'
-    ? /<title[^>]*>([^<]{1,500})<\/title>/i.exec(value)?.[1]?.replace(/&amp;/g, '&')
-    : undefined;
+/** A read page names its title; a receipt from before that carries the page itself. */
+const pageTitle = (detail: Record<string, unknown>) =>
+  typeof detail.title === 'string' && detail.title.trim()
+    ? detail.title
+    : typeof detail.body === 'string'
+      ? /<title[^>]*>([^<]{1,500})<\/title>/i.exec(detail.body)?.[1]?.replace(/&amp;/g, '&')
+      : undefined;
 
 /** A stable id no longer than the contract allows, whatever the source identifiers were. */
 export function toolId(prefix: string, ...parts: string[]): string {
@@ -254,7 +257,7 @@ function actionOutput(row: ActionRow, status: ToolStatus, raw: string): ToolSumm
     case 'files.restore':
       return summary('Restored');
     case 'web.fetch':
-      return summary('Page read', quote(pageTitle(detail.body), 'page'));
+      return summary('Page read', quote(pageTitle(detail), 'page'));
     case 'exec.run':
     case 'exec.python':
     case 'terminal.run':

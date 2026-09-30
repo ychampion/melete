@@ -26,6 +26,7 @@ import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
 import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
+import { mountModelSettings } from './api/model-settings.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
 import { mountProviderSignIn } from './api/provider-signin.ts';
@@ -60,9 +61,12 @@ import { connection } from './db/schema.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { mountExperience } from './experience/routes.ts';
+import type { FeedbackLimiter } from './feedback/rate-limit.ts';
+import { mountFeedback } from './feedback/routes.ts';
 import { providerSignIn } from './gateway/configured.ts';
 import type { ProviderSignIn } from './gateway/credentials.ts';
 import type { GatewayOptions } from './gateway/index.ts';
+import { ModelSettingsService } from './gateway/model-settings.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
@@ -92,6 +96,7 @@ import type { ProcedureProposer } from './learning/proposer.ts';
 import { expireEpisodes } from './learning/retention.ts';
 import { mountLearning } from './learning/routes.ts';
 import { startLearning } from './learning/start.ts';
+import { mountMcpServer } from './mcp-server/routes.ts';
 import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { withMemoryRuntime } from './memory/context.ts';
@@ -107,6 +112,12 @@ import {
   spaceAuthority,
 } from './principals/authority.ts';
 import { mountPrincipals } from './principals/routes.ts';
+import { withPrivacyGate } from './privacy/gate.ts';
+import { defaultPrivacyRouter, PostgresPrivacyStore, PrivacyRouter } from './privacy/index.ts';
+import { mountPrivacy } from './privacy/routes.ts';
+import { engineProtocol, providerAddress, servicePrivacyRouter } from './privacy/service.ts';
+import { mountPush } from './push/routes.ts';
+import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
 import { assertDockerEngine } from './runtime/docker-engine.ts';
@@ -176,10 +187,18 @@ export type AppDeps = {
   broker?: BrokerService;
   registry?: ConnectorRegistry;
   sql?: Sql;
+  /** Phone presence. Left out, built from the database and the VAPID keys in the environment. */
+  push?: PushService;
   /** Overrides for the company map: a test's store, extractor or handler. */
   companies?: Partial<CompaniesDeps>;
   /** The owner's model-provider sign-ins. Left out, built from `sql` and the master key. */
   providerSignIn?: ProviderSignIn;
+  /** The router every model gateway of this service uses; Settings → Privacy edits it. */
+  privacy?: PrivacyRouter;
+  /** The model connected in the app. Left out, built from `db` and the sign-ins. */
+  modelSettings?: ModelSettingsService;
+  /** How many problem reports one person may send in a short time; a test supplies its clock. */
+  feedbackLimiter?: FeedbackLimiter;
 };
 
 export function createApp(deps: AppDeps) {
@@ -223,11 +242,15 @@ export function createApp(deps: AppDeps) {
   if (deps.removals && deps.db && deps.sql)
     mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
   if (connections) mountConnections(app, connections);
-  if (deps.db)
-    mountProviderSignIn(app, {
-      db: deps.db,
-      signIn: deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined),
-    });
+  const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
+  // One reader of the model connected in the app, for its routes and the companies scan.
+  const modelSettings =
+    deps.modelSettings ??
+    (deps.db ? new ModelSettingsService({ db: deps.db, env: deps.env, signIn }) : undefined);
+  if (deps.db && modelSettings) {
+    mountProviderSignIn(app, { db: deps.db, signIn });
+    mountModelSettings(app, { db: deps.db, settings: modelSettings });
+  }
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -261,6 +284,18 @@ export function createApp(deps: AppDeps) {
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
+  // The router every model call made from these routes goes through, and the
+  // one Settings → Privacy edits.
+  const privacy =
+    deps.privacy ??
+    (deps.sql
+      ? new PrivacyRouter({
+          store: new PostgresPrivacyStore(deps.sql, () => deps.env.MELETE_MASTER_KEY),
+        })
+      : defaultPrivacyRouter());
+  // Before the experience routes, which answer every operation they do not implement.
+  if (deps.db) mountPrivacy(app, { router: () => privacy, providerUrl: providerAddress(deps.env) });
+  if (deps.db) mountPush(app, deps.push ?? new PushService(deps.db, pushConfig(deps.env)));
   if (deps.db)
     mountExperience(app, {
       db: deps.db,
@@ -274,6 +309,7 @@ export function createApp(deps: AppDeps) {
       memoryJournal: deps.memory?.journal,
       memoryProvision: deps.memory?.provision,
       triggers: deps.triggers,
+      browser: Boolean(deps.browserSessions),
     });
   if (deps.db)
     mountCompanies(app, {
@@ -282,11 +318,22 @@ export function createApp(deps: AppDeps) {
         sql: deps.sql,
         registry: deps.registry,
         env: deps.env,
+        privacy,
         jobs: deps.jobs,
         triggers: deps.triggers,
+        modelSettings,
       }),
       ...deps.companies,
     });
+  if (deps.db && deps.sql)
+    mountMcpServer(app, {
+      db: deps.db,
+      sql: deps.sql,
+      env: deps.env,
+      broker: deps.broker,
+      registry: deps.registry,
+    });
+  if (deps.db) mountFeedback(app, { db: deps.db, version: VERSION, limiter: deps.feedbackLimiter });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory)
     app.route(
@@ -399,6 +446,9 @@ export async function bootstrap(
       env.MELETE_DOCKER_SOCKET,
     );
   const handle = env.DATABASE_URL ? openDatabase(env.DATABASE_URL) : null;
+  // One privacy router for this service, over its database, handed to every model
+  // gateway it opens, the attempt gate and the settings routes.
+  const privacy = handle ? servicePrivacyRouter(handle.sql, env) : defaultPrivacyRouter();
   let queue: Awaited<ReturnType<typeof startQueue>> | null = null;
   let jobs: JobService | undefined;
   let runner: AttemptRunner | undefined;
@@ -428,7 +478,9 @@ export async function bootstrap(
   let registry: ConnectorRegistry | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
+  let pushDispatcher: PushDispatcher | undefined;
   let signIn: ProviderSignIn | undefined;
+  let modelSettings: ModelSettingsService | undefined;
   let sandboxes: SandboxWiring | undefined;
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
@@ -447,6 +499,7 @@ export async function bootstrap(
           learning?.close(),
           events?.close(),
           companyReplies?.stop(),
+          pushDispatcher?.stop(),
           triggers?.stop(),
           runner?.stop(),
           operations?.stop(),
@@ -484,6 +537,8 @@ export async function bootstrap(
       await expireEpisodes(handle.sql);
       // One sign-in service, so the API and the gateway share one refresh per provider.
       signIn = providerSignIn(handle.sql, env);
+      // One reader of the model chosen in the app, for the API, the runner and the gateway.
+      modelSettings = new ModelSettingsService({ db: handle.db, env, signIn });
       episodeRetention = setInterval(() => {
         void expireEpisodes(handle.sql).catch(() =>
           process.stderr.write('episode retention failed\n'),
@@ -518,6 +573,8 @@ export async function bootstrap(
         connections,
         browserSessions: browser?.sessions,
         stdioLauncher,
+        // A space or agent the person marked private reads no public web pages.
+        privateContext: ({ spaceId, agentId }) => privacy.marksPrivate(spaceId, agentId),
       });
       catalog = new RuntimeCatalog(handle.db, registry);
       // Sandboxes are the service's own: their providers come from the same
@@ -571,7 +628,13 @@ export async function bootstrap(
     // Automatic memory: what a person says in chat is read by the memory model
     // through the gateway, within a per-person daily budget.
     if (handle && queue && options.workers !== false)
-      memoryGateway = await configuredMemoryGateway(handle.sql, env, options.fakeProvider);
+      memoryGateway = await configuredMemoryGateway(
+        handle.sql,
+        env,
+        options.fakeProvider,
+        privacy,
+        { settings: modelSettings, signIn },
+      );
     if (handle && queue && env.MELETE_RUNTIME_ADAPTER === 'docker') {
       deploymentMemory = await startDeploymentMemory({
         sql: handle.sql,
@@ -580,6 +643,7 @@ export async function bootstrap(
         workers: options.workers,
         onJobRecompute: wakeRecomputedJob,
         gateway: memoryGateway?.gateway,
+        privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
       });
     }
     if (jobs) {
@@ -624,7 +688,13 @@ export async function bootstrap(
           queue.boss,
           env.MELETE_SPACES_DIR,
           wakeRecomputedJob,
-          { gateway: memoryGateway?.gateway, captureChat: options.workers !== false },
+          options.workers !== false
+            ? {
+                gateway: memoryGateway?.gateway,
+                captureChat: true,
+                privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
+              }
+            : { gateway: memoryGateway?.gateway },
         );
       }
       if (env.MELETE_RUNTIME_ADAPTER === 'hermes' && !options.runtime && handle && queue) {
@@ -634,11 +704,13 @@ export async function bootstrap(
         if (!env.MELETE_CAPABILITY_KEY)
           throw new Error('MELETE_CAPABILITY_KEY is required to issue attempt capabilities.');
         effectBoundary = await startEffectBoundary(handle, env, {
+          privacy,
           fakeProvider: options.fakeProvider,
           browserSessions: browser?.sessions,
           connections,
           registry,
           signIn,
+          modelSettings,
         });
         const Supervisor =
           env.MELETE_RUNTIME_SUPERVISOR === 'docker'
@@ -690,6 +762,12 @@ export async function bootstrap(
             })
           : memory && handle
             ? withMemoryRuntime(observed, handle.sql, memory.scopeForJob, {
+                // Private memory is recalled only into attempts that stay on the person's own model.
+                recallsPrivateMemory: (jobId, attemptId) =>
+                  privacy.recallsPrivateMemory(jobId, attemptId, {
+                    protocol: engineProtocol(env),
+                    providerUrl: providerAddress(env),
+                  }),
                 catalog: async (bundle) =>
                   boundaryForCatalog
                     ? boundaryForCatalog.broker.catalog(
@@ -698,11 +776,23 @@ export async function bootstrap(
                     : [],
               })
             : observed;
-      runner = new AttemptRunner(jobs, contextualRuntime, {
+      // A conversation that must stay private, with no local model to stay on,
+      // asks the person before the engine starts.
+      const gatedRuntime = withPrivacyGate(contextualRuntime, {
+        router: () => privacy,
+        engineProtocol: engineProtocol(env),
+        providerUrl: providerAddress(env),
+        onError: (error) => process.stderr.write(`privacy gate: ${error.message}\n`),
+      });
+      runner = new AttemptRunner(jobs, gatedRuntime, {
         key: env.MELETE_CAPABILITY_KEY,
         artifactRoots: { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
+        // A model chosen in the app applies from the next attempt.
+        ...(env.MELETE_RUNTIME_ADAPTER !== 'stub' && modelSettings
+          ? { resolveModel: modelSettings.activeChoice.bind(modelSettings) }
+          : {}),
         loadCatalog: catalog?.forAttempt,
         liveConnectionScopes: !env.MELETE_ENABLE_TEST_CONNECTOR,
         // The scopes the space's active connections grant, and the lifecycle
@@ -743,6 +833,8 @@ export async function bootstrap(
         options.workers !== false,
         options.fakeProvider,
         signIn,
+        privacy,
+        modelSettings,
       );
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
@@ -775,6 +867,8 @@ export async function bootstrap(
           connections,
           registry,
           signIn,
+          privacy,
+          modelSettings,
         });
       // A removal outlives the request that asked for it and the process that
       // was running it, so it is resumed at startup and every minute after.
@@ -831,6 +925,14 @@ export async function bootstrap(
           });
           await companyReplies.start();
         }
+        // Pushes to people's devices, when this installation has its VAPID keys.
+        if (handle) {
+          pushDispatcher = new PushDispatcher(
+            new PushService(handle.db, pushConfig(env)),
+            triggers.jobs.boss,
+          );
+          await pushDispatcher.start();
+        }
       }
       if (options.workers === false) await replies?.recover();
       if (options.workers === false) await operations.recover();
@@ -842,6 +944,7 @@ export async function bootstrap(
 
   const app = createApp({
     env,
+    privacy,
     db: handle?.db ?? null,
     jobs,
     triggers,
@@ -873,6 +976,7 @@ export async function bootstrap(
     registry,
     sql: handle?.sql,
     providerSignIn: signIn,
+    modelSettings,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
