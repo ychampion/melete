@@ -6,6 +6,8 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { createDeviceConnector } from '../devices/connector.ts';
+import type { DeviceHub } from '../devices/hub.ts';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import type { DockerSandboxSettings } from '../sandbox/adapters/docker.ts';
@@ -197,6 +199,8 @@ export type ConnectorOptions = {
   stdioLifecycle?: StdioLifecycleOptions;
   /** Everything a sandbox connection needs besides its own row. */
   sandbox?: SandboxRuntimeOptions;
+  /** Where work for paired computers waits. Left out, the process's shared hub. */
+  devices?: DeviceHub;
   /**
    * The operator's Google OAuth client. Without it, Google sign-in is not
    * offered and a Google connection offers nothing. Only a test replaces the
@@ -406,6 +410,24 @@ export class ConnectorFactory {
       });
       // A sandbox runs whatever it is asked to, so it is never offered to a public compartment.
       return ownerOnly(connector);
+    }
+    if (row.provider === 'device') {
+      // The computer's own row says whether it still stands; a revoked one offers nothing.
+      const deviceId = row.configuration?.device_id;
+      if (typeof deviceId !== 'string') return undefined;
+      const [device] = await options.sql`select id, name from paired_device
+        where id = ${deviceId} and connection_id = ${row.id} and revoked_at is null`;
+      if (!device) return undefined;
+      return ownerOnly(
+        createDeviceConnector({
+          deviceId,
+          connectionId: row.id,
+          name: String(device.name),
+          sql: options.sql,
+          workRoot: options.workRoot,
+          ...(options.devices ? { hub: options.devices } : {}),
+        }),
+      );
     }
     if (row.provider === 'test' && options.enableTestConnector)
       return createTestConnector(options.sql);
