@@ -18,6 +18,7 @@
   },
   "files": [
     "src",
+    "extension",
     "!src/**/*.test.ts",
     "README.md"
   ],

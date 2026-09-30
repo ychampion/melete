@@ -144,6 +144,17 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'device.run': ['Running a command on your computer', 'Ran a command on your computer'],
   'device.open_url': ['Opening a page on your computer', 'Opened a page on your computer'],
   'device.screenshot': ['Looking at your screen', 'Looked at your screen'],
+  'device.browser_open': ['Opening a page in your browser', 'Opened a page in your browser'],
+  'device.browser_read': ['Reading a page in your browser', 'Read a page in your browser'],
+  'device.browser_click': ['Clicking in your browser', 'Clicked in your browser'],
+  'device.browser_type': [
+    'Filling in a field in your browser',
+    'Filled in a field in your browser',
+  ],
+  'device.browser_screenshot': [
+    'Looking at a page in your browser',
+    'Looked at a page in your browser',
+  ],
 };
 /** What a permission card asks for a connected computer, before anything has run. */
 const DEVICE_ASKS: Record<string, string> = {
@@ -151,6 +162,8 @@ const DEVICE_ASKS: Record<string, string> = {
   'device.write_file': 'Save a file on your computer',
   'device.open_url': 'Open a page on your computer',
   'device.screenshot': 'Look at your screen',
+  'device.browser_click': 'Click in your browser',
+  'device.browser_type': 'Fill in a field in your browser',
 };
 
 /** The exact command, folder, file or page a permission is for, as it will be sent. */
@@ -166,6 +179,11 @@ function deviceFacts(kind: string, payload: Record<string, unknown>) {
     ...fact('File', payload.path),
     ...fact('Content', payload.content),
     ...fact('Page', payload.url),
+    ...(typeof payload.tab_id === 'number'
+      ? [{ label: 'Tab', value: String(payload.tab_id) }]
+      : []),
+    ...fact('Element', payload.ref),
+    ...fact('Text', payload.text),
   ];
 }
 

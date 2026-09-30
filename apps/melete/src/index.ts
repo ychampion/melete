@@ -233,6 +233,7 @@ export function createApp(deps: AppDeps) {
       new DeviceService({
         ...connections,
         policy: deps.policy ?? (deps.jobs ? new PolicyService(deps.jobs) : undefined),
+        ...(deps.jobs ? { jobs: deps.jobs } : {}),
       }),
     );
   if (deps.db)

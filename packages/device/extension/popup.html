@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Melete</title>
+    <style>
+      body { margin: 0; width: 300px; font: 13px system-ui, sans-serif; color: #1d2a44; background: #fff; }
+      main { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
+      h1 { margin: 0; font-size: 15px; }
+      p { margin: 0; color: #5a6478; line-height: 1.4; }
+      .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid #c9cfdb; background: #fff; cursor: pointer; }
+      button.primary { background: #2b5bd7; border-color: #2b5bd7; color: #fff; }
+      #state { font-weight: 600; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #1b1f27; color: #e8ebf2; }
+        p { color: #a7afc0; }
+        button { background: #262b36; color: #e8ebf2; border-color: #3a4152; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Melete</h1>
+      <p>
+        While this is on, your Melete agent can open pages in this browser, signed in as you, and read
+        them. Every click and entry waits for your approval in Melete. Passwords are never typed.
+      </p>
+      <div class="row">
+        <span>Status: <span id="state">Off</span></span>
+        <button id="toggle" class="primary" type="button">Switch on</button>
+      </div>
+      <p id="hint"></p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

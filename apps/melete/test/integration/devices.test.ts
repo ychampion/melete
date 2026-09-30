@@ -10,6 +10,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CapabilityClaims } from '@melete/contracts';
+import { BrowserBridge } from '../../../../packages/device/src/browser.ts';
 import {
   ApiError,
   type Capabilities,
@@ -21,6 +22,7 @@ import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorFactory, useConnectorFactory } from '../../src/connectors/configured.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { sharedDeviceHub } from '../../src/devices/hub.ts';
+import { PUBLIC_ONLY_NOTE, routedDescription, SIGNED_IN_NOTE } from '../../src/devices/routing.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
@@ -42,7 +44,13 @@ afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 }, 30_000);
 
-const ALL: Capabilities = { commands: true, files: true, open_url: true, screenshot: true };
+const ALL: Capabilities = {
+  commands: true,
+  files: true,
+  open_url: true,
+  screenshot: true,
+  browser: true,
+};
 
 async function harness() {
   if (!fixture || !queue) throw new Error('Postgres unavailable');
@@ -57,6 +65,7 @@ async function harness() {
       masterKey: MASTER_KEY,
     }),
   );
+  const jobs = new JobService(fixture.db, queue.boss);
   const app = createApp({
     env: loadEnv({
       NODE_ENV: 'test',
@@ -66,7 +75,7 @@ async function harness() {
     db: fixture.db,
     sql: fixture.sql,
     registry,
-    jobs: new JobService(fixture.db, queue.boss),
+    jobs,
     checkDatabase: async () => 'ok',
   });
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: app.fetch });
@@ -154,7 +163,7 @@ async function harness() {
   };
 
   const broker = new BrokerService({ sql: fixture.sql, connectors: registry });
-  return { app, as, cookie, address, code, computer, job, broker, sql: fixture.sql };
+  return { app, as, cookie, address, code, computer, job, broker, jobs, sql: fixture.sql };
 }
 
 const h = fixture ? await harness() : null;
@@ -402,16 +411,145 @@ withDb('the agent uses the computer through the broker', () => {
     expect(after?.scopes).not.toContain('device.run');
   }, 60_000);
 
-  test('an offline computer is told nothing, and the action says so', async () => {
+  test('work for an offline computer waits, and goes when it connects again', async () => {
     const s = need();
-    const { config } = await s.computer();
-    sharedDeviceHub.disconnect(config.device_id);
+    const { config, agent, log } = await s.computer();
+    sharedDeviceHub.disconnect(config.device_id, false);
+    const claims = await s.job(tools);
+    const proposal = await s.broker.propose(claims, {
+      kind: 'device.list_files',
+      connection_id: await connectionOf(config.device_id),
+      payload: { path: 'Shared/notes' },
+    });
+    // Nothing was sent; the action waits for the computer and the job waits with it.
+    expect(proposal.status).toBe('admitted');
+    const [parked] = await s.sql`select status, retry_after_at, repair_trace from action
+      where id = ${proposal.action_id}`;
+    expect(parked?.retry_after_at).not.toBeNull();
+    expect(parked?.repair_trace.at(-1)?.decision).toBe('park_until_reconnect');
+    const [waiting] = await s.sql`select state from job where id = ${claims.job_id}`;
+    expect(waiting?.state).toBe('waiting_for_event_or_time');
+    expect(log.some((line) => line.includes('→ list_files'))).toBe(false);
+
+    await connected(agent, async () => {
+      // Connecting made the action due now and woke the job.
+      const [due] = await s.sql`select retry_after_at <= now() as due from action
+        where id = ${proposal.action_id}`;
+      expect(due?.due).toBe(true);
+      const [woken] = await s.sql`select next_wake_at <= now() as due from job
+        where id = ${claims.job_id}`;
+      expect(woken?.due).toBe(true);
+      // The broker's sweep carries it out.
+      expect(await s.broker.resumeParked()).toBe(1);
+      const [done] =
+        await s.sql`select status, receipt from action where id = ${proposal.action_id}`;
+      expect(done?.status).toBe('succeeded');
+      expect(done?.receipt.detail.entries).toEqual([{ name: 'todo.md', kind: 'file', size: 9 }]);
+    });
+  }, 60_000);
+
+  test('stopping the conversation cancels what waited for the computer', async () => {
+    const s = need();
+    const { config, agent, log } = await s.computer();
+    sharedDeviceHub.disconnect(config.device_id, false);
     const claims = await s.job(tools);
     const proposal = await s.broker.propose(claims, {
       kind: 'device.list_files',
       connection_id: await connectionOf(config.device_id),
       payload: { path: 'Shared' },
     });
-    expect(proposal.status).toBe('failed');
-  }, 30_000);
+    expect(proposal.status).toBe('admitted');
+    await s.jobs.cancel(claims.job_id, 'stopped by the person');
+    await connected(agent, async () => {
+      await s.broker.resumeParked();
+      await Bun.sleep(300);
+    });
+    expect(log.some((line) => line.includes('→ list_files'))).toBe(false);
+    const [row] = await s.sql`select status from action where id = ${proposal.action_id}`;
+    expect(row?.status).not.toBe('succeeded');
+  }, 60_000);
+});
+
+withDb("the person's own browser", () => {
+  test('sign-in work goes to their browser, waits for it, and needs approval to click', async () => {
+    const s = need();
+    const { config } = await s.computer({ grant: { browser: true } });
+    const [row] =
+      await s.sql`select connection_id from paired_device where id = ${config.device_id}`;
+    const connectionId = String(row?.connection_id);
+    const claims = await s.job([
+      'device.browser_open',
+      'device.browser_read',
+      'device.browser_click',
+    ]);
+
+    // The routing rule is in the tools the agent is offered.
+    const offered = await s.broker.discovery.available(claims);
+    const open = offered.find((tool) => tool.name === 'device.browser_open');
+    expect(open?.description).toContain(SIGNED_IN_NOTE.trim());
+
+    // The browser is not connected yet: the step waits for it.
+    const proposal = await s.broker.propose(claims, {
+      kind: 'device.browser_open',
+      connection_id: connectionId,
+      payload: { url: 'https://example.com/account' },
+    });
+    expect(proposal.status).toBe('admitted');
+
+    const opened: unknown[] = [];
+    const bridge: BrowserBridge = new BrowserBridge({
+      config: { ...config, capabilities: { ...config.capabilities, browser: true } },
+      send: (message) => {
+        const value = message as { type: string; id?: string; arguments?: unknown };
+        if (value.type !== 'request') return;
+        opened.push(value.arguments);
+        queueMicrotask(() =>
+          bridge.receive({
+            type: 'answer',
+            id: value.id,
+            answer: {
+              ok: true,
+              result: { tab_id: 41, url: 'https://example.com/account', title: 'Your account' },
+            },
+          }),
+        );
+      },
+    });
+    const running = bridge.run();
+    try {
+      for (let tries = 0; tries < 50; tries++) {
+        const [due] = await s.sql`select retry_after_at <= now() as due from action
+          where id = ${proposal.action_id}`;
+        if (due?.due) break;
+        await Bun.sleep(100);
+      }
+      expect(await s.broker.resumeParked()).toBe(1);
+      const [done] =
+        await s.sql`select status, receipt from action where id = ${proposal.action_id}`;
+      expect(done?.status).toBe('succeeded');
+      expect(done?.receipt.detail).toMatchObject({ tab_id: 41, title: 'Your account' });
+      expect(opened).toEqual([{ url: 'https://example.com/account' }]);
+
+      // Parking released that attempt; the next step comes from a later one.
+      const later = await s.job(['device.browser_click']);
+      const click = await s.broker.propose(later, {
+        kind: 'device.browser_click',
+        connection_id: connectionId,
+        payload: { tab_id: 41, ref: 'e3' },
+      });
+      expect(click.status).toBe('needs_approval');
+    } finally {
+      bridge.stop();
+      await running;
+    }
+  }, 60_000);
+
+  test("the cloud browser is kept for public pages once the person's browser is there", () => {
+    expect(routedDescription('browser.open', 'Open a page.', true)).toBe(
+      `Open a page.${PUBLIC_ONLY_NOTE}`,
+    );
+    expect(routedDescription('browser.open', 'Open a page.', false)).toBe('Open a page.');
+    expect(routedDescription('device.browser_open', 'Open.', true)).toBe(`Open.${SIGNED_IN_NOTE}`);
+    expect(routedDescription('email.send', 'Send.', true)).toBe('Send.');
+  });
 });

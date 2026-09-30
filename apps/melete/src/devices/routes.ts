@@ -69,6 +69,11 @@ const clientAddress = (c: Context): string => {
   return source?.clientAddress ?? source?.remoteAddress ?? 'unknown';
 };
 
+const browserAllowed = (device: {
+  capabilities: { browser?: boolean };
+  localCapabilities: { browser?: boolean };
+}) => device.capabilities.browser === true && device.localCapabilities.browser === true;
+
 export function mountDevices(app: Hono, devices: DeviceService) {
   const throttle = new PairingThrottle();
 
@@ -140,12 +145,33 @@ export function mountDevices(app: Hono, devices: DeviceService) {
     const device = await devices.authenticate(c.req.header('authorization'));
     if (!device) return unauthorized(c);
     await devices.seen(device);
+    // The browser bridge polls its own channel; everything else is the companion's.
+    const channel = c.req.query('channel') === 'browser' ? 'browser' : 'main';
+    if (channel === 'browser' && !browserAllowed(device))
+      return c.json(
+        {
+          error: {
+            code: 'capability_off',
+            message: 'Using the browser is turned off for this computer.',
+          },
+        },
+        403,
+      );
     const requests = await devices.hub.poll(
       device.id,
       DEVICE_LIMITS.poll_wait_ms,
       c.req.raw.signal,
+      channel,
     );
     return c.json(devicePollResponse.parse({ requests }));
+  });
+
+  // The browser extension was switched off or closed: nothing more is handed to it.
+  app.post('/device/browser/leave', smallBody, async (c) => {
+    const device = await devices.authenticate(c.req.header('authorization'));
+    if (!device) return unauthorized(c);
+    devices.hub.leave(device.id, 'browser');
+    return c.json({ status: 'ok' as const });
   });
 
   app.post('/device/requests/:id/result', resultBody, async (c) => {

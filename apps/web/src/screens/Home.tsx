@@ -277,7 +277,7 @@ function DecisionCard({
   const to = field('To') ?? permission?.draft?.recipient;
   /** What will run or change on a connected computer, exactly as it will be sent. */
   const onComputer = (permission?.preview?.facts ?? []).filter((fact) =>
-    ['Command', 'Runs in', 'File', 'Page'].includes(fact.label),
+    ['Command', 'Runs in', 'File', 'Page', 'Tab', 'Element', 'Text'].includes(fact.label),
   );
   const amount = linked ? amountWords(linked.item) : null;
   const state = linked ? statusOf(linked.item, now) : null;

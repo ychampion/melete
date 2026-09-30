@@ -7,7 +7,13 @@ import { folderName } from './config.ts';
 import { parsePath, Refusal, resolveInside } from './policy.ts';
 import { LIMITS, runCommand, runTool } from './tools.ts';
 
-const ALL: Capabilities = { commands: true, files: true, open_url: true, screenshot: true };
+const ALL: Capabilities = {
+  commands: true,
+  files: true,
+  open_url: true,
+  screenshot: true,
+  browser: true,
+};
 let root: string;
 let shared: string;
 let outside: string;
@@ -125,7 +131,13 @@ describe('paths stay inside the shared folders', () => {
 });
 
 describe('capabilities turned off here are refused here', () => {
-  const off: Capabilities = { commands: false, files: false, open_url: false, screenshot: false };
+  const off: Capabilities = {
+    commands: false,
+    files: false,
+    open_url: false,
+    screenshot: false,
+    browser: false,
+  };
   test.each([
     ['run', { command: 'echo hi' }],
     ['read_file', { path: 'Shared/notes/todo.md' }],

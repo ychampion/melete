@@ -28,11 +28,13 @@ import {
   type DeviceFolder,
   type DeviceTool,
   type DispatchResult,
+  deviceChannelOf,
   type JsonValue,
   type Receipt,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { ConnectorFaultError } from '../connectors/faults.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
 import { type DeviceHub, sharedDeviceHub } from './hub.ts';
 import { DevicePathError, devicePath, openableUrl } from './paths.ts';
@@ -43,6 +45,17 @@ const pathArgument = {
   maxLength: 1024,
   description:
     'A shared folder name, then a path inside it with forward slashes, e.g. "Projects/notes/todo.md". device.status lists the folder names.',
+};
+
+const tabArgument = {
+  type: 'integer',
+  minimum: 0,
+  description: 'The tab id device.browser_open returned.',
+};
+const refArgument = {
+  type: 'string',
+  pattern: '^e[0-9]{1,5}$',
+  description: 'The ref device.browser_read gave the element, like "e12".',
 };
 
 type ToolShape = {
@@ -134,6 +147,54 @@ export const DEVICE_TOOL_SHAPES: Record<DeviceTool, ToolShape> = {
     requires_approval: false,
     verify: false,
   },
+  browser_open: {
+    description:
+      "Open a page in the person's own browser, where they are already signed in. Use this for any site that needs their account: bills, insurance, school, government and other portals. Returns a tab id for the other browser tools.",
+    input_schema: object({ url: { type: 'string', minLength: 1, maxLength: 2048 } }, ['url']),
+    effect_class: 'write_reversible',
+    requires_approval: false,
+    verify: false,
+  },
+  browser_read: {
+    description:
+      "Read a tab opened with device.browser_open in the person's own browser: its address, title, visible text, and the links, buttons and fields on it, each with a ref for device.browser_click and device.browser_type.",
+    input_schema: object({ tab_id: tabArgument }, ['tab_id']),
+    effect_class: 'read',
+    requires_approval: false,
+    verify: false,
+  },
+  browser_click: {
+    description:
+      "Click a link or button, by the ref device.browser_read gave it, in a tab of the person's own browser. The person approves it first.",
+    input_schema: object({ tab_id: tabArgument, ref: refArgument }, ['tab_id', 'ref']),
+    effect_class: 'write_external',
+    requires_approval: true,
+    verify: false,
+  },
+  browser_type: {
+    description:
+      "Type text into a field, by the ref device.browser_read gave it, in a tab of the person's own browser. Password fields are never typed into. The person approves it first.",
+    input_schema: object(
+      {
+        tab_id: tabArgument,
+        ref: refArgument,
+        text: { type: 'string', maxLength: 10_000 },
+        submit: { type: 'boolean', description: 'Press Enter after typing.' },
+      },
+      ['tab_id', 'ref', 'text'],
+    ),
+    effect_class: 'write_external',
+    requires_approval: true,
+    verify: false,
+  },
+  browser_screenshot: {
+    description:
+      "Take a screenshot of a tab opened with device.browser_open in the person's own browser.",
+    input_schema: object({ tab_id: tabArgument }, ['tab_id']),
+    effect_class: 'read',
+    requires_approval: false,
+    verify: false,
+  },
 };
 
 export const deviceToolName = (tool: DeviceTool) => `device.${tool}`;
@@ -172,6 +233,7 @@ export function effectiveCapabilities(
     files: granted.files && local.files,
     open_url: granted.open_url && local.open_url,
     screenshot: granted.screenshot && local.screenshot,
+    browser: Boolean(granted.browser && local.browser),
   };
 }
 
@@ -189,6 +251,7 @@ const CAPABILITY_WORDS: Record<keyof DeviceCapabilities, string> = {
   files: 'Using files',
   open_url: 'Opening web pages',
   screenshot: 'Taking screenshots',
+  browser: 'Using your browser',
 };
 
 type DeviceRow = {
@@ -237,6 +300,24 @@ const runResult = z.object({
 });
 const openResult = z.object({ opened: z.literal(true) });
 const screenshotResult = z.object({ png_base64: z.string() });
+const tabResult = z.object({
+  tab_id: z.number().int().nonnegative(),
+  url: z.string().max(4096),
+  title: z.string().max(1024),
+});
+const pageResult = tabResult.extend({
+  text: z.string(),
+  truncated: z.boolean(),
+  elements: z
+    .array(
+      z.object({
+        ref: z.string().regex(/^e[0-9]{1,5}$/),
+        role: z.string().max(40),
+        name: z.string().max(300),
+      }),
+    )
+    .max(DEVICE_LIMITS.max_page_elements),
+});
 
 const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const cap = (text: string, bytes: number) => {
@@ -314,7 +395,19 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
       // collecting the request and posting the answer back.
       return timeout + 15_000;
     }
-    return tool === 'screenshot' ? 45_000 : 30_000;
+    return tool === 'screenshot' || tool === 'browser_screenshot' ? 45_000 : 30_000;
+  };
+
+  const tabOf = (payload: Record<string, unknown>) => {
+    const tab = payload.tab_id;
+    if (typeof tab !== 'number' || !Number.isInteger(tab) || tab < 0)
+      throw new DevicePathError('Name a tab by the id device.browser_open returned.');
+    return tab;
+  };
+  const refOf = (payload: Record<string, unknown>) => {
+    if (typeof payload.ref !== 'string' || !/^e[0-9]{1,5}$/.test(payload.ref))
+      throw new DevicePathError('Name the element by the ref device.browser_read gave it.');
+    return payload.ref;
   };
 
   /** Arguments as they will be sent, or a refusal in plain words. */
@@ -365,7 +458,23 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         };
       }
       case 'open_url':
+      case 'browser_open':
         return { url: openableUrl(payload.url) };
+      case 'browser_read':
+      case 'browser_screenshot':
+        return { tab_id: tabOf(payload) };
+      case 'browser_click':
+        return { tab_id: tabOf(payload), ref: refOf(payload) };
+      case 'browser_type': {
+        if (typeof payload.text !== 'string' || payload.text.length > 10_000)
+          throw new DevicePathError('The text to type is required, up to 10,000 characters.');
+        return {
+          tab_id: tabOf(payload),
+          ref: refOf(payload),
+          text: payload.text,
+          submit: payload.submit === true,
+        };
+      }
       default:
         return {};
     }
@@ -442,7 +551,8 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
       case 'open_url':
         openResult.parse(result);
         return { detail: { url: String(sent.url) }, ref: null };
-      case 'screenshot': {
+      case 'screenshot':
+      case 'browser_screenshot': {
         const parsed = screenshotResult.parse(result);
         const bytes = Buffer.from(parsed.png_base64, 'base64');
         if (bytes.byteLength > DEVICE_LIMITS.max_screenshot_bytes)
@@ -457,6 +567,7 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         const hash = digest(bytes);
         return {
           detail: {
+            ...(tool === 'browser_screenshot' ? { tab_id: Number(sent.tab_id) } : {}),
             path: `device/${file}`,
             bytes: bytes.byteLength,
             width: bytes.readUInt32BE(16),
@@ -464,6 +575,52 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
             content_hash: hash,
           },
           ref: hash,
+        };
+      }
+      case 'browser_open':
+      case 'browser_click': {
+        const parsed = tabResult.parse(result);
+        return {
+          detail: {
+            tab_id: parsed.tab_id,
+            ...(tool === 'browser_click' ? { ref: String(sent.ref) } : {}),
+            url: cap(parsed.url, 2048),
+            title: cap(parsed.title, 300),
+          },
+          ref: null,
+        };
+      }
+      case 'browser_type': {
+        const parsed = tabResult.parse(result);
+        return {
+          detail: {
+            tab_id: parsed.tab_id,
+            ref: String(sent.ref),
+            // What was typed is in the approved action; the receipt does not repeat it.
+            characters: String(sent.text).length,
+            submitted: sent.submit === true,
+            url: cap(parsed.url, 2048),
+            title: cap(parsed.title, 300),
+          },
+          ref: null,
+        };
+      }
+      case 'browser_read': {
+        const parsed = pageResult.parse(result);
+        return {
+          detail: {
+            tab_id: parsed.tab_id,
+            url: cap(parsed.url, 2048),
+            title: cap(parsed.title, 300),
+            text: cap(parsed.text, DEVICE_LIMITS.max_page_text_bytes).replaceAll('\0', '\uFFFD'),
+            truncated: parsed.truncated,
+            elements: parsed.elements.map((element) => ({
+              ref: element.ref,
+              role: element.role,
+              name: cap(element.name, 200),
+            })),
+          },
+          ref: null,
         };
       }
       default:
@@ -475,6 +632,7 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
     name: device.name,
     platform: device.platform,
     online: hub.online(device.id),
+    browser_connected: hub.online(device.id, 'browser'),
     allows: effectiveCapabilities(device.capabilities, device.local_capabilities),
     folders: device.folders.map((folder) => folder.name),
   });
@@ -492,6 +650,19 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         'device.run': ['run a command on my laptop', 'terminal on my computer', 'shell'],
         'device.open_url': ['open this page in my browser', 'show me the page'],
         'device.screenshot': ['look at my screen', 'screenshot'],
+        'device.browser_open': [
+          'log in',
+          'my account',
+          'pay my bill',
+          'insurance portal',
+          'school portal',
+          'government website',
+          'signed in',
+        ],
+        'device.browser_read': ['read the page in my browser', 'what does my account say'],
+        'device.browser_click': ['click the button', 'click the link'],
+        'device.browser_type': ['fill in the form', 'type into the field'],
+        'device.browser_screenshot': ['screenshot of the page'],
       },
     },
 
@@ -526,18 +697,27 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         if (error instanceof DevicePathError) return refused(error.message);
         throw error;
       }
+      const channel = deviceChannelOf(tool);
       const outcome = await hub.call(
         device.id,
         { id: action.id, tool, arguments: sent },
         timeoutFor(tool, sent),
         ctx.signal,
+        channel,
       );
-      if (outcome.kind === 'not_delivered')
-        return refused(
-          outcome.reason === 'disconnected'
-            ? `${device.name} was disconnected, so nothing was sent.`
-            : `${device.name} is not connected right now, so nothing was sent.`,
-        );
+      if (outcome.kind === 'not_delivered') {
+        if (outcome.reason === 'disconnected')
+          return refused(`${device.name} was disconnected, so nothing was sent.`);
+        // Nothing left the service. The action waits for the computer, or for
+        // its browser, and goes as soon as it connects again.
+        throw new ConnectorFaultError({
+          kind: 'destination_offline',
+          detail:
+            channel === 'browser'
+              ? `The browser on ${device.name} is not connected right now; this waits for it.`
+              : `${device.name} is not connected right now; this waits for it.`,
+        });
+      }
       if (outcome.kind === 'no_answer')
         return {
           outcome: 'unknown',
@@ -600,7 +780,7 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
 
     /** The connection is gone: nothing more is handed to the computer. */
     async retire() {
-      hub.disconnect(options.deviceId);
+      hub.disconnect(options.deviceId, false);
     },
   };
 }

@@ -27,6 +27,11 @@ const CAPABILITIES: { key: keyof DeviceCapabilities; label: string; sub: string 
     label: 'Run commands',
     sub: 'Each command waits for your approval, runs with a time limit, and is logged on the computer.',
   },
+  {
+    key: 'browser',
+    label: 'Use my browser, signed in as me',
+    sub: 'Through the Melete extension you switch on in Chrome, Edge or Brave. Clicks and typing wait for your approval; passwords are never typed or read.',
+  },
   { key: 'open_url', label: 'Open web pages', sub: 'In the computer’s default browser.' },
   { key: 'screenshot', label: 'Take screenshots', sub: 'Of the computer’s screen.' },
 ];
@@ -36,6 +41,7 @@ const DEFAULTS: DeviceCapabilities = {
   files: true,
   open_url: true,
   screenshot: false,
+  browser: false,
 };
 
 const PLATFORM: Record<Device['platform'], string> = {
@@ -266,6 +272,11 @@ function DeviceCard({ device, onChanged }: { device: Device; onChanged: () => vo
           </span>
         </div>
         {status}
+        {device.browser_connected ? (
+          <Badge tone="success" dot>
+            Browser connected
+          </Badge>
+        ) : null}
         {revoked ? null : (
           <Button size="sm" variant="outline" onClick={() => setConfirming(true)}>
             Disconnect

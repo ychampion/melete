@@ -48,6 +48,7 @@ const WORDS: Record<keyof Capabilities, string> = {
   files: 'Using files',
   open_url: 'Opening web pages',
   screenshot: 'Taking screenshots',
+  browser: 'Using the browser',
 };
 
 export function checkCapability(tool: string, capabilities: Capabilities): void {

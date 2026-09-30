@@ -18,5 +18,7 @@ Setup, what it can and cannot do, and how to disconnect: [docs/DEVICES.md](../..
 | `src/policy.ts` | The checks made on this computer: capabilities, shared-folder paths, links, web addresses |
 | `src/tools.ts` | Listing, reading and writing files, running commands, opening pages, screenshots, with their limits |
 | `src/config.ts` | Where settings and the token live, written readable only by you |
+| `src/browser.ts` | The browser bridge: native messaging with the extension, its own poll, and `browser install` |
+| `extension/` | The Melete browser extension: tabs it opens, the bar with Stop, and the page actions |
 
 Tests: `bun test packages/device`.

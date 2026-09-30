@@ -18,10 +18,13 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import {
   DEVICE_LIMITS,
+  DEVICE_TOOLS,
   type DeviceCapabilities,
+  type DeviceChannel,
   type DeviceFolder,
   type DevicePlatform,
   type DeviceView,
+  deviceChannelOf,
   deviceView,
 } from '@melete/contracts';
 import { and, desc, eq, gt, isNull, sql as query } from 'drizzle-orm';
@@ -30,11 +33,12 @@ import { ServiceError } from '../api/errors.ts';
 import { connectorFactoryFor, connectorOptionsFromEnv } from '../connectors/configured.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Database } from '../db/client.ts';
-import { connection } from '../db/schema.ts';
+import { connection, job } from '../db/schema.ts';
 import { serviceTransaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
 import type { PolicyService } from '../jobs/policy.ts';
+import type { JobService } from '../jobs/service.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { deviceScopes } from './connector.ts';
 import { type DeviceHub, sharedDeviceHub } from './hub.ts';
@@ -80,6 +84,8 @@ export type DeviceServiceDeps = {
   registry: ConnectorRegistry;
   env: Env;
   policy?: PolicyService;
+  /** Wakes work that was waiting for a computer when it connects again. */
+  jobs?: JobService;
   hub?: DeviceHub;
   now?: () => Date;
 };
@@ -91,6 +97,46 @@ export class DeviceService {
   constructor(private readonly deps: DeviceServiceDeps) {
     this.hub = deps.hub ?? sharedDeviceHub;
     this.now = deps.now ?? (() => new Date());
+    this.hub.onOnline((deviceId, channel) => {
+      void this.resume(deviceId, channel).catch(() => {
+        process.stderr.write('work waiting for a computer could not be resumed\n');
+      });
+    });
+  }
+
+  /**
+   * A computer, or its browser, is connected again. Every action that was
+   * waiting for it is due now, and a conversation that was waiting on one is
+   * woken, so the work carries on without the person asking again. The
+   * broker's own sweep dispatches the actions; the woken attempt finds them
+   * done or on their way.
+   */
+  async resume(deviceId: string, channel: DeviceChannel): Promise<number> {
+    const [device] = await this.deps.sql`select connection_id from paired_device
+      where id = ${deviceId} and revoked_at is null`;
+    if (!device) return 0;
+    const kinds = DEVICE_TOOLS.filter((tool) => deviceChannelOf(tool) === channel).map(
+      (tool) => `device.${tool}`,
+    );
+    const due = await this.deps.sql`update action set retry_after_at = now()
+      where connection_id = ${device.connection_id as string} and status = 'admitted'
+        and retry_after_at is not null and retry_after_at > now() and kind = any(${kinds})
+      returning job_id`;
+    const jobs = [...new Set(due.map((row) => String(row.job_id)))];
+    const service = this.deps.jobs;
+    if (service)
+      for (const id of jobs)
+        await service.transaction(async (tx) => {
+          const row = await service.lock(tx, id);
+          if (!row || row.state !== 'waiting_for_event_or_time' || row.paused) return;
+          const [woken] = await tx
+            .update(job)
+            .set({ nextWakeAt: this.now() })
+            .where(eq(job.id, id))
+            .returning();
+          if (woken) await service.enqueue(tx, woken, 'timer');
+        });
+    return due.length;
   }
 
   view(row: DeviceRow, connectionStatus: string): DeviceView {
@@ -109,6 +155,7 @@ export class DeviceService {
       local_capabilities: row.localCapabilities,
       folders: row.folders,
       status: revoked ? 'revoked' : this.hub.online(row.id) ? 'online' : 'offline',
+      browser_connected: !revoked && this.hub.online(row.id, 'browser'),
       companion_version: row.companionVersion,
       paired_at: row.pairedAt.toISOString(),
       last_seen_at: lastSeen?.toISOString() ?? null,

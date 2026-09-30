@@ -1192,6 +1192,13 @@ export class BrokerService implements BrokerOperations {
       if (action.retry_after_at && Date.parse(action.retry_after_at) > now) {
         return { action, context: null };
       }
+      // A conversation that was stopped sends nothing more, however long an
+      // action of it waited for its destination.
+      if (['cancelled', 'failed', 'completed'].includes(job.state))
+        return {
+          action: await this.rejectDispatch(tx, job, action, 'the conversation was stopped'),
+          context: null,
+        };
       const inCell =
         this.options.connectors
           .get(action.connection_id)
