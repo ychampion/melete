@@ -1,8 +1,8 @@
-import { expect, test } from 'bun:test';
+import { expect, spyOn, test } from 'bun:test';
 import type { CapabilityClaims, ToolSpec } from '@melete/contracts';
 import { signCapability, verifyCapability } from './capability.ts';
 import { BrokerFault } from './errors.ts';
-import { type BrokerOperations, createBrokerApp } from './http.ts';
+import { type BrokerOperations, brokerFailureLine, createBrokerApp } from './http.ts';
 
 const key = 'attempt-key-for-tests-only-000000000000';
 const approvalKey = 'approval-key-for-tests-only-0000000000';
@@ -135,5 +135,82 @@ test('unlisted paths and methods rejected including HEAD', async () => {
     ['/actions/x/dispatch', 'POST'],
   ]) {
     expect((await app.request(path as string, { method, headers: auth() })).status).toBe(404);
+  }
+});
+
+test('an unexpected failure is logged with its cause, and the caller still learns nothing more', async () => {
+  const token = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvd25lciJ9.c2lnbmF0dXJlc2lnbmF0dXJl';
+  const failing = createBrokerApp({
+    broker: {
+      ...broker,
+      discovery: {
+        async find() {
+          throw new TypeError(
+            `Cannot read properties of undefined (reading 'agent_id') for someone@example.com with Bearer ${token}`,
+          );
+        },
+      } as unknown as NonNullable<BrokerOperations['discovery']>,
+    },
+    capabilityKey: key,
+    approvalKey,
+  });
+  const written: string[] = [];
+  const spy = spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+    written.push(String(chunk));
+    return true;
+  });
+  let response: Response;
+  try {
+    response = await failing.request('/tools/search', {
+      method: 'POST',
+      headers: auth(),
+      body: JSON.stringify({ query: 'current time' }),
+    });
+  } finally {
+    spy.mockRestore();
+  }
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({
+    error: { code: 'internal_error', message: 'Broker request failed' },
+  });
+  const line = written.join('');
+  expect(line).toContain('broker POST /tools/search failed: TypeError');
+  expect(line).toContain("reading 'agent_id'");
+  // Where it was thrown, so the cause can be found from the log alone.
+  expect(line).toContain('http.test.ts');
+  // Never the credential, never an address, never the request body.
+  expect(line).not.toContain(token);
+  expect(line).not.toContain('someone@example.com');
+  expect(line).not.toContain('current time');
+});
+
+test('the failure line keeps a long install path and package versions readable', () => {
+  const failure = new Error('relation "attempt_tool_context" does not exist');
+  failure.stack = [
+    'Error: relation "attempt_tool_context" does not exist',
+    '    at find (/home/runner/work/melete/melete/apps/melete/src/broker/catalog.ts:711:18)',
+    '    at dispatch (/home/runner/work/melete/melete/node_modules/.bun/hono@4.12.3/node_modules/hono/dist/compose.js:22:23)',
+  ].join('\n');
+  const line = brokerFailureLine('POST', '/tools/search', failure);
+  expect(line).toContain('relation "attempt_tool_context" does not exist');
+  expect(line).toContain(
+    '/home/runner/work/melete/melete/apps/melete/src/broker/catalog.ts:711:18',
+  );
+  expect(line).toContain('hono@4.12.3');
+  expect(line.endsWith('\n')).toBe(true);
+  expect(line.trimEnd()).not.toContain('\n');
+});
+
+test('the failure line drops short keys, basic credentials and refresh tokens with slashes', () => {
+  const cases: Array<[message: string, secret: string]> = [
+    ['invalid api key sk-proj-ABCDEF1234567890XYZ', 'ABCDEF1234567890XYZ'],
+    ['upstream said: Authorization: Basic dXNlcjpwYXNz', 'dXNlcjpwYXNz'],
+    ['bad grant: refresh_token=1//0gAbC/dEf-GhI_jk', '0gAbC'],
+    ['fetch failed for https://alice:hunter2@api.example.com/v1', 'hunter2'],
+  ];
+  for (const [message, secret] of cases) {
+    const line = brokerFailureLine('POST', '/actions', new Error(message));
+    expect(line).not.toContain(secret);
+    expect(line).toContain('broker POST /actions failed');
   }
 });

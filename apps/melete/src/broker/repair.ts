@@ -608,6 +608,12 @@ export type RepairOptions = {
   trustGated?: boolean;
   /** The tool being repaired. A mapping is never allowed to change it. */
   operation: string;
+  /**
+   * True for a `read`. A read that could not be done is a failed read with its
+   * reason for the model to act on: never an uncertain effect, and never a
+   * question for a person unless a person has to reconnect something.
+   */
+  readOnly?: boolean;
   classify(error: unknown): ConnectorFault;
 };
 
@@ -759,11 +765,39 @@ export async function runRepair(
       // A connector that answered rather than threw has already decided. The
       // policy does not second-guess a plain failed or a plain unknown, which
       // is exactly what the broker did before typed faults existed.
-      if (outcome.outcome === 'unknown') return finish('needs_reconciliation', outcome, null);
+      if (outcome.outcome === 'unknown')
+        return options.readOnly
+          ? finish(
+              'repair_exhausted',
+              { outcome: 'failed', reason: outcome.reason, retryable: true },
+              null,
+            )
+          : finish('needs_reconciliation', outcome, null);
       return finish('repair_exhausted', outcome, null);
     }
 
     count(fault.kind);
+
+    // A read whose answer was lost is not sent again: the connector said it may
+    // have landed, and a tool can be called a read by mistake. It changed
+    // nothing the person has to settle either, so it fails with its reason.
+    if (options.readOnly && (fault.may_have_committed || fault.kind === 'uncertain_outcome')) {
+      note({
+        attempt: state.attempt,
+        fault_kind: fault.kind,
+        decision: 'escalate_diagnosis',
+        detail: 'a read whose answer was lost is reported as failed and not sent again',
+        delay_ms: null,
+        retry_after: null,
+        candidate_id: candidateId,
+        route,
+      });
+      return finish(
+        'repair_exhausted',
+        { outcome: 'failed', reason: fault.detail, retryable: false },
+        null,
+      );
+    }
 
     // One fault, as many decisions as it takes to know what to do about it.
     for (;;) {
@@ -875,6 +909,15 @@ export async function runRepair(
             'needs_reconciliation',
             { outcome: 'unknown', reason: fault.detail },
             UNCERTAIN_QUESTION,
+          );
+        }
+        // A read that could not be done is the model's to work around, with the
+        // reason in hand. Nobody is asked about a lookup that changed nothing.
+        if (options.readOnly && choice.disposition === 'repair_exhausted') {
+          return finish(
+            'repair_exhausted',
+            { outcome: 'failed', reason: fault.detail, retryable: false },
+            null,
           );
         }
         return finish(

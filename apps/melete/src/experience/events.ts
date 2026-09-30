@@ -27,6 +27,7 @@ import {
 } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { LIMIT_REACHED_NOTE } from '../jobs/limits.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import {
   answerText,
@@ -520,6 +521,9 @@ export class ExperienceEvents {
                   `file:${file.id}`,
                 );
             } else if (payload.experience_completed === false) {
+              // The saved turn ends with this sentence; a page following live reads it too.
+              if (source.jobId === id && outcome.kind === 'budget_exhausted')
+                await emit(source, { type: 'note', text: LIMIT_REACHED_NOTE });
               if (!settled)
                 await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
             } else if (outcome.kind === 'failed')

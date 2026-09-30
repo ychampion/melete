@@ -27,6 +27,7 @@ const INPUTS: Record<TransitionInput['kind'], TransitionInput> = {
   attempt_budget_exhausted: { kind: 'attempt_budget_exhausted' },
   action_unknown: { kind: 'action_unknown' },
   user_input_received: { kind: 'user_input_received' },
+  conversation_continued: { kind: 'conversation_continued' },
   approval_decided: { kind: 'approval_decided', decision: 'approved' },
   event_fired: { kind: 'event_fired' },
   timer_fired: { kind: 'timer_fired' },
@@ -142,11 +143,36 @@ describe('illegal transitions are refused, not tolerated', () => {
   test('nothing moves a finished job, including another cancellation', () => {
     for (const state of ['completed', 'failed', 'cancelled'] as const) {
       for (const input of Object.values(INPUTS)) {
+        // A conversation's next message is the one way on; see below.
+        if (input.kind === 'conversation_continued' && state !== 'cancelled') continue;
         const result = transition(state, input);
         expect(isErr(result)).toBe(true);
         if (isErr(result)) expect(result.error.code).toBe('already_terminal');
       }
     }
+  });
+});
+
+describe('a conversation goes on after a turn that did not finish cleanly', () => {
+  test('a failed, finished or unreconciled conversation takes its next message as a new turn', () => {
+    for (const state of ['failed', 'completed', 'needs_reconciliation'] as const) {
+      expect(unwrap(transition(state, { kind: 'conversation_continued' }))).toBe('queued');
+    }
+  });
+
+  test('a cancelled conversation stays ended, and a live turn is not interrupted', () => {
+    const cancelled = transition('cancelled', { kind: 'conversation_continued' });
+    expect(isErr(cancelled) && cancelled.error.code).toBe('already_terminal');
+    for (const state of ['queued', 'running', 'waiting_for_approval'] as const) {
+      const result = transition(state, { kind: 'conversation_continued' });
+      expect(isErr(result) && result.error.code).toBe('illegal_transition');
+    }
+  });
+
+  test('the ordinary reply to a question is unchanged', () => {
+    expect(unwrap(transition('waiting_for_input', { kind: 'user_input_received' }))).toBe('queued');
+    const failed = transition('failed', { kind: 'user_input_received' });
+    expect(isErr(failed) && failed.error.code).toBe('already_terminal');
   });
 });
 

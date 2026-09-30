@@ -589,3 +589,46 @@ databaseTest(
     expect(s.calls).toHaveLength(2);
   },
 );
+
+databaseTest(
+  'an effect whose outcome is unknown is not asked for or sent again from a later turn',
+  async () => {
+    const s = await setup('calendar');
+    const connector = s.registry.get(s.connectionId);
+    if (!connector) throw new Error('fixture connector missing');
+    const answer = connector.execute.bind(connector);
+    let lost = true;
+    connector.execute = async (action, context) => {
+      if (!lost) return answer(action, context);
+      lost = false;
+      s.calls.push(action);
+      throw new Error('socket hang up');
+    };
+    const request = {
+      connection_id: s.connectionId,
+      kind: 'calendar.create',
+      payload: { summary: 'Dinner', start: '2026-09-13T18:00:00Z', end: '2026-09-13T19:00:00Z' },
+    };
+    await s.sql`update job set current_turn_id = 'first-turn' where id = ${s.claims.job_id}`;
+    const first = await s.broker.propose(s.claims, request);
+    const card = await s.permissions.card(s.claims.space_id, first.approval_id ?? '');
+    await s.permissions.decide(s.claims.space_id, card.id, {
+      option: 'allow_once',
+      version: card.version,
+    });
+    await s.broker.admit(s.claims, first.action_id, first.payload_hash);
+    expect((await s.broker.dispatch(first.action_id)).status).toBe('unknown');
+    // The person writes again and the conversation goes on in a new turn.
+    await s.sql`update job set current_turn_id = 'second-turn', state = 'running'
+      where id = ${s.claims.job_id}`;
+    const again = await s.broker.propose(s.claims, request);
+    expect(again.action_id).toBe(first.action_id);
+    expect(again.status).toBe('unknown');
+    expect(again.requires_approval).toBe(false);
+    expect(again.message).toContain('was not sent again');
+    expect(s.calls).toHaveLength(1);
+    const [row] = await s.sql`select count(*)::int as count from action
+      where job_id = ${s.claims.job_id}`;
+    expect(row?.count).toBe(1);
+  },
+);

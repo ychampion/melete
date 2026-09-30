@@ -220,6 +220,19 @@ type PendingReview = {
 
 const question =
   'Melete cannot confirm whether this was sent. Check the destination, then mark it.';
+/**
+ * A dispatch that ended without an answer. A read changes nothing, so it simply
+ * failed and can be tried again; anything else may have landed and is unknown.
+ */
+const uncertainResult = (
+  readOnly: boolean,
+  reason: string,
+  unknownReason = reason,
+): DispatchResult =>
+  readOnly
+    ? { outcome: 'failed', reason, retryable: true }
+    : { outcome: 'unknown', reason: unknownReason };
+
 /** Settled by the owner's answer rather than by evidence, so later evidence still counts. */
 const ownerAnswered = (action: Action) =>
   ['succeeded', 'failed'].includes(action.status) &&
@@ -268,8 +281,13 @@ function dispositionMessage(action: Action, repeated: boolean): string {
       return `This effect was ${already}dispatched and the result has not come back yet.`;
     case 'succeeded':
       return `This effect ${already}succeeded at ${action.resolved_at ?? action.created_at}, receipt ${receiptRef}. Nothing was sent again.`;
-    case 'failed':
+    case 'failed': {
+      if (action.effect_class === 'read') {
+        const reason = (action.reconciliation as { reason?: unknown } | null)?.reason;
+        return `This read ${already}failed${typeof reason === 'string' && reason ? `: ${reason}` : ''}. It changed nothing, so it can be tried again or done another way.`;
+      }
       return `This effect ${already}failed at ${action.resolved_at ?? action.created_at}. Nothing was sent again.`;
+    }
     case 'unknown':
       return `${question} It was ${already}attempted at ${action.dispatched_at ?? action.created_at} and was not sent again.`;
     case 'unresolved':
@@ -1109,6 +1127,17 @@ export class BrokerService implements BrokerOperations {
           }
         }
       }
+      // A conversation goes on after a turn that left an effect uncertain, and
+      // the same effect asked for from a later turn is that one: it is not sent
+      // again, nor asked for again, until the person has settled it.
+      if (tool.effect_class !== 'read') {
+        const [uncertain] = await tx`select * from action where job_id = ${job.id}
+          and connection_id = ${request.connection_id} and kind = ${request.kind}
+          and payload_hash = ${canonical.hash}
+          and status in ('dispatched', 'unknown', 'unresolved')
+          order by created_at desc limit 1 for update`;
+        if (uncertain) return { action: actionFromRow(uncertain), key, repeated: true };
+      }
       // The unique index is the durable half of this; the job row lock is what
       // makes two live attempts take their turn rather than race.
       const [prior] = await tx`select * from action where intent_key = ${key} for update`;
@@ -1668,11 +1697,12 @@ export class BrokerService implements BrokerOperations {
       return prepared.action;
     }
     const connector = this.options.connectors.get(prepared.action.connection_id);
+    const readOnly = prepared.action.effect_class === 'read';
     if (!connector)
-      return this.recordResult(id, {
-        outcome: 'unknown',
-        reason: 'Connector disappeared after dispatch admission',
-      });
+      return this.recordResult(
+        id,
+        uncertainResult(readOnly, 'Connector disappeared after dispatch admission'),
+      );
     const controller = new AbortController();
     const budgetMs = this.dispatchBudget(connector, prepared.action);
     const execution = Promise.resolve().then(() =>
@@ -1680,7 +1710,9 @@ export class BrokerService implements BrokerOperations {
         prepared.action.canonical_payload,
         this.repairPorts(prepared, connector, controller),
         {
-          classify: (error) => asConnectorFault(error) ?? unclassifiedFault(error),
+          classify: (error) =>
+            asConnectorFault(error) ?? unclassifiedFault(error, prepared.action.effect_class),
+          readOnly,
           // An approved send keeps the hash the person read, so a revision of one
           // is refused rather than sent under an approval it no longer matches.
           trustGated: isTrustGatedEffect(prepared.action.effect_class),
@@ -1699,7 +1731,7 @@ export class BrokerService implements BrokerOperations {
     clearTimeout(timer);
     if (result === 'timeout') {
       controller.abort();
-      const unknown = await this.recordResult(id, { outcome: 'unknown', reason: question });
+      const unknown = await this.recordResult(id, uncertainResult(readOnly, 'timed out', question));
       // A cooperative abort is not proof of non-delivery; a later receipt is still a fact.
       void execution.then((late) => this.settleRepair(prepared.action, late)).catch(() => {});
       return unknown;
@@ -2318,7 +2350,8 @@ export class BrokerService implements BrokerOperations {
   /** Only uncertain dispositions are recovered. This path never invokes execute(). */
   async recoverDispatched(now = Date.now()): Promise<number> {
     const cutoff = new Date(now - this.dispatchTimeoutMs).toISOString();
-    const rows = await this.sql`select id, connection_id, kind, canonical_payload, dispatched_at
+    const rows = await this
+      .sql`select id, connection_id, kind, effect_class, canonical_payload, dispatched_at
       from action where status = 'dispatched' and dispatched_at <= ${cutoff}`;
     let recovered = 0;
     for (const row of rows) {
@@ -2332,10 +2365,10 @@ export class BrokerService implements BrokerOperations {
           })
         : this.dispatchTimeoutMs;
       if (new Date(row.dispatched_at).getTime() > now - budgetMs) continue;
-      await this.recordResult(row.id, {
-        outcome: 'unknown',
-        reason: 'Dispatch ended without a durable receipt',
-      });
+      await this.recordResult(
+        row.id,
+        uncertainResult(row.effect_class === 'read', 'Dispatch ended without a durable receipt'),
+      );
       recovered += 1;
     }
     return recovered;

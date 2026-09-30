@@ -94,6 +94,24 @@ test('files list order is deterministic', async () => {
   ]);
 });
 
+test('an area nobody has written to yet lists as empty; a missing folder or file is named', async () => {
+  // A new space has no artifacts folder and a new job no work folder until the
+  // first write makes one. Listing either is an empty answer, not a failure.
+  await rm(path.join(root, 'spaces', 'sp_01', 'artifacts'), { recursive: true });
+  await rm(path.join(root, 'work', 'job_01'), { recursive: true });
+  for (const area of ['work', 'artifacts']) {
+    const listed = await execute('files.list', { path: '.', area });
+    if (listed.outcome !== 'succeeded') throw new Error('expected an empty listing');
+    expect(listed.receipt.detail.entries).toEqual([]);
+  }
+  await expect(execute('files.list', { path: 'memory' })).rejects.toThrow(
+    'there is no folder "memory" in work',
+  );
+  await expect(
+    execute('files.read', { path: 'notes/today.md', area: 'artifacts' }),
+  ).rejects.toThrow('there is no file "notes/today.md" in artifacts');
+});
+
 test('file boundary rejects parent traversal, absolute paths, alternate streams and device names', async () => {
   for (const target of [
     '../outside/leak',
