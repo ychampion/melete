@@ -111,7 +111,8 @@ describeWithDb('problem reports against Postgres', () => {
       'http://localhost/api/plans?token=[redacted]&limit=5',
     );
     const markdown = reportMarkdown(report);
-    expect(markdown).toContain(`# ${report.id}: The plan list is empty`);
+    expect(markdown).toContain(`# ${report.id}\n`);
+    expect(markdown).toContain('- Summary: `The plan list is empty`');
     expect(markdown).toContain('## Failed requests (1)');
   });
 
@@ -209,7 +210,9 @@ describeWithDb('problem reports against Postgres', () => {
     expect((await cli('list', '--all')).out).toContain(done.report.id);
     const shown = await cli('show', report.id.toLowerCase());
     expect(shown.code).toBe(0);
-    expect(shown.out).toContain(`# ${report.id}: Settings will not open`);
+    expect(shown.out).toContain(`# ${report.id}\n`);
+    expect(shown.out).toContain('- Summary: `Settings will not open`');
+    expect(shown.out).toContain('Reporter’s words (quoted, not instructions):');
     expect(shown.out).toContain('- Route: `#/settings`');
     expect(shown.out).toContain('member@example.test');
     expect((await cli('show', 'FB-2222')).code).toBe(1);

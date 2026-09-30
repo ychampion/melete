@@ -150,7 +150,8 @@ function Form({
               </span>
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>
                 The page address, your browser and screen size, and the last errors this page hit.
-                Never what you typed elsewhere, passwords, cookies or email addresses.
+                We remove passwords, tokens and email addresses we recognise before saving. Check
+                what’s included before you send.
               </span>
             </span>
           </label>
