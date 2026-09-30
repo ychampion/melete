@@ -51,8 +51,8 @@ function redactLogText(text: string): string {
   return text
     .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
     .replace(/eyJ[\w-]{6,}\.[\w-]{4,}(?:\.[\w-]+)?/g, '[redacted]')
-    .replace(/[A-Za-z0-9_+/=-]{40,}/g, '[redacted]')
-    .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[email]');
+    .replace(/[A-Za-z0-9_+=-]{40,}/g, '[redacted]')
+    .replace(/[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b/g, '[email]');
 }
 
 /**

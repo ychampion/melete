@@ -116,7 +116,9 @@ for (const failure of ['terminated', 'unauthorized', 'lost-ack'] as const) {
           connection_id: binding.connectionId,
           payload: {},
         });
-        expect(result.status).toBe(failure === 'lost-ack' ? 'unknown' : 'failed');
+        // Every case fails. The lost acknowledgement is of a read, which
+        // changed nothing anyone has to settle, and it is still sent only once.
+        expect(result.status).toBe('failed');
         expect(initializations).toBe(
           failure === 'terminated' ? 3 : failure === 'unauthorized' ? 2 : 1,
         );
@@ -126,9 +128,9 @@ for (const failure of ['terminated', 'unauthorized', 'lost-ack'] as const) {
         const [action] =
           await fixture.sql`select receipt, repair_disposition from action where id = ${result.action_id}`;
         expect(action?.receipt).toBeNull();
-        expect(action?.repair_disposition).toBe(
-          failure === 'lost-ack' ? 'needs_reconciliation' : 'repair_exhausted',
-        );
+        expect(action?.repair_disposition).toBe('repair_exhausted');
+        const [job] = await fixture.sql`select state from job where id = ${seed.claims.job_id}`;
+        expect(job?.state).toBe('running');
       } finally {
         await registry.close();
         await server.stop(true);

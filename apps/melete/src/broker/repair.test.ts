@@ -714,24 +714,26 @@ describe('a read that fails is a failed read, never an effect that may have land
     });
   });
 
-  test('a read that answers unknown, or claims it may have committed, is repeated or failed', async () => {
+  test('a read that answers unknown, or whose answer was lost, fails and is not sent again', async () => {
     const unknown = await readRun(async () => ({ outcome: 'unknown', reason: 'no answer' }));
     expect(unknown.disposition).toBe('repair_exhausted');
     expect(unknown.result).toMatchObject({ outcome: 'failed', reason: 'no answer' });
+    expect(unknown.question).toBeNull();
     let calls = 0;
-    const flaky = await readRun(async () => {
+    const lost = await readRun(async () => {
       calls++;
-      if (calls === 1)
-        throw new ConnectorFaultError({
-          kind: 'uncertain_outcome',
-          detail: 'the response was cut off',
-          may_have_committed: true,
-        });
-      return { outcome: 'succeeded', receipt: receiptFor() };
+      throw new ConnectorFaultError({
+        kind: 'uncertain_outcome',
+        detail: 'the response was cut off',
+        may_have_committed: true,
+      });
     });
-    // Repeating a read is safe, so it is repeated instead of being reconciled.
-    expect(flaky.disposition).toBe('completed');
-    expect(calls).toBe(2);
+    // Nobody reconciles a lookup, and a tool called a read by mistake is still
+    // never sent twice on a lost answer.
+    expect(lost.disposition).toBe('repair_exhausted');
+    expect(lost.result).toMatchObject({ outcome: 'failed', reason: 'the response was cut off' });
+    expect(lost.question).toBeNull();
+    expect(calls).toBe(1);
   });
 
   test('a write that throws untyped still rests unknown for a person to settle', () => {

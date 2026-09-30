@@ -80,16 +80,6 @@ export function unclassifiedFault(error: unknown, effectClass?: EffectClass): Co
   });
 }
 
-/**
- * The fault a read reports, whoever classified it. Nothing a read does can
- * have committed, and an uncertain outcome of a read is just a read to repeat.
- */
-export function readFault(fault: ConnectorFault): ConnectorFault {
-  if (fault.kind === 'uncertain_outcome')
-    return { ...fault, kind: 'transient_before_dispatch', may_have_committed: false };
-  return fault.may_have_committed ? { ...fault, may_have_committed: false } : fault;
-}
-
 const SYSTEM_FAILURES: Record<string, string> = {
   ENOENT: 'not found',
   ENOTDIR: 'not a folder',

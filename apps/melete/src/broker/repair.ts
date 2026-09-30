@@ -35,7 +35,7 @@ import {
   repairTraceEntry,
   type VerifyResult,
 } from '@melete/contracts';
-import { type ConnectorDescription, readFault } from '../connectors/faults.ts';
+import type { ConnectorDescription } from '../connectors/faults.ts';
 import { collectOriginFields } from './trust.ts';
 
 // --------------------------------------------------------------------------
@@ -752,8 +752,28 @@ export async function runRepair(
       return finish('repair_exhausted', outcome, null);
     }
 
-    if (options.readOnly) fault = readFault(fault);
     count(fault.kind);
+
+    // A read whose answer was lost is not sent again: the connector said it may
+    // have landed, and a tool can be called a read by mistake. It changed
+    // nothing the person has to settle either, so it fails with its reason.
+    if (options.readOnly && (fault.may_have_committed || fault.kind === 'uncertain_outcome')) {
+      note({
+        attempt: state.attempt,
+        fault_kind: fault.kind,
+        decision: 'escalate_diagnosis',
+        detail: 'a read whose answer was lost is reported as failed and not sent again',
+        delay_ms: null,
+        retry_after: null,
+        candidate_id: candidateId,
+        route,
+      });
+      return finish(
+        'repair_exhausted',
+        { outcome: 'failed', reason: fault.detail, retryable: false },
+        null,
+      );
+    }
 
     // One fault, as many decisions as it takes to know what to do about it.
     for (;;) {

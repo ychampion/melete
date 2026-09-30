@@ -2,7 +2,7 @@ import { expect, spyOn, test } from 'bun:test';
 import type { CapabilityClaims, ToolSpec } from '@melete/contracts';
 import { signCapability, verifyCapability } from './capability.ts';
 import { BrokerFault } from './errors.ts';
-import { type BrokerOperations, createBrokerApp } from './http.ts';
+import { type BrokerOperations, brokerFailureLine, createBrokerApp } from './http.ts';
 
 const key = 'attempt-key-for-tests-only-000000000000';
 const approvalKey = 'approval-key-for-tests-only-0000000000';
@@ -182,4 +182,21 @@ test('an unexpected failure is logged with its cause, and the caller still learn
   expect(line).not.toContain(token);
   expect(line).not.toContain('someone@example.com');
   expect(line).not.toContain('current time');
+});
+
+test('the failure line keeps a long install path and package versions readable', () => {
+  const failure = new Error('relation "attempt_tool_context" does not exist');
+  failure.stack = [
+    'Error: relation "attempt_tool_context" does not exist',
+    '    at find (/home/runner/work/melete/melete/apps/melete/src/broker/catalog.ts:711:18)',
+    '    at dispatch (/home/runner/work/melete/melete/node_modules/.bun/hono@4.12.3/node_modules/hono/dist/compose.js:22:23)',
+  ].join('\n');
+  const line = brokerFailureLine('POST', '/tools/search', failure);
+  expect(line).toContain('relation "attempt_tool_context" does not exist');
+  expect(line).toContain(
+    '/home/runner/work/melete/melete/apps/melete/src/broker/catalog.ts:711:18',
+  );
+  expect(line).toContain('hono@4.12.3');
+  expect(line.endsWith('\n')).toBe(true);
+  expect(line.trimEnd()).not.toContain('\n');
 });
