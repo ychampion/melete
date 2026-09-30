@@ -13,6 +13,7 @@ import { appendEvent, loadAction, recordId } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { DEFAULT_BUDGET } from '../jobs/service.ts';
+import { actionBecause } from '../memory/basis.ts';
 import { ownJobClause, requestPrincipal } from '../principals/authority.ts';
 import { type ActionRow, draftForReview, object, projectReceipt } from './projectors.ts';
 import { experienceMissing } from './service.ts';
@@ -227,6 +228,7 @@ export class ExperienceEffects {
       actionProjectionRow(source),
       { id: String(row.connection_id), label: String(row.label), provider: String(row.provider) },
       undo,
+      await actionBecause(this.sql, spaceId, source.id),
     );
   }
 

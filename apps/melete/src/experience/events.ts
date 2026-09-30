@@ -1,4 +1,5 @@
 import {
+  type BecauseLink,
   type ConversationProgress,
   conversationProgress,
   type ExperienceEvent,
@@ -212,6 +213,8 @@ export class ExperienceEvents {
         spaceId: string,
         id: string,
       ) => Promise<Extract<ExperienceEvent['item'], { type: 'question' }>['question'] | undefined>;
+      /** What an action rested on, named on its receipt. */
+      because?: (spaceId: string, actionId: string) => Promise<BecauseLink[]>;
     },
   ) {}
 
@@ -417,7 +420,12 @@ export class ExperienceEvents {
                 ),
               );
             if (effect) {
-              const receipt = projectReceipt(effect.action, effect.connection);
+              const receipt = projectReceipt(
+                effect.action,
+                effect.connection,
+                undefined,
+                await this.projections?.because?.(spaceId, effect.action.id),
+              );
               if (receipt) await emit(source, { type: 'receipt', receipt });
               // A card is projected once, when its draft is freshly prepared; its
               // later status reaches the person through the conversation's drafts.

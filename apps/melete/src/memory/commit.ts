@@ -5,6 +5,7 @@ import {
   type SourceEvent,
   type SourceRef,
 } from '@melete/contracts';
+import { blockedSubjects, isBlocked } from './beliefs.ts';
 import {
   addReferences,
   type ClaimHead,
@@ -198,6 +199,13 @@ async function publishKeyed(
     confidence: proposal.confidence ?? null,
   };
   const identity = stableEntityId('k', batch.work.id, key);
+  // A belief a rewind set aside holds no value to weigh against: saying it
+  // again learns it again, on the same claim.
+  if (head && head.current.status === 'retracted') {
+    const revision = await publishRevision(tx, { ...scope, audience }, key, head, draft, 'active');
+    await invalidateDependencies(tx, scope, [head.id], revision.data_revision);
+    return head.id;
+  }
   if (!head) {
     const revision = await publishRevision(
       tx,
@@ -319,13 +327,27 @@ export async function commitExtraction(
     // not in the registry, or whose value Tier 0 cannot find in the evidence it
     // cited is rejected here with a reason. It is never attached to a nearby
     // message. Proposals with no key are untouched and keep their existing path.
-    const { accepted: proposals, rejected } = validateTier1(parsed.proposals, {
+    const { accepted, rejected } = validateTier1(parsed.proposals, {
       source: batch.source,
       text: batch.text,
       segmentStart: batch.work.segment_start,
       segmentEnd: batch.work.segment_end,
       timeZone: batch.time_zone ?? undefined,
     });
+    // A subject the person asked not to be learned again is refused here, with
+    // its reason recorded, whichever extractor proposed it.
+    const blocked = await blockedSubjects(sql, scope.spaceId);
+    const proposals: ExtractionProposal[] = [];
+    for (const [index, proposal] of accepted.entries()) {
+      if ((proposal.op === 'add' || proposal.op === 'supersede') && isBlocked(blocked, proposal))
+        rejected.push({
+          index,
+          key: typeof proposal.key === 'string' ? proposal.key : null,
+          reason: 'blocked_by_person',
+          detail: 'The person asked not to learn this again.',
+        });
+      else proposals.push(proposal);
+    }
     if (rejected.length) await recordRejections(sql, scope, batch, rejected);
     const result = await sql.begin(async (tx) => {
       await lockEventOrder(tx);
@@ -409,7 +431,13 @@ export async function commitExtraction(
                 history: history.revisions,
               }
             : undefined;
-        const resolution = resolveMeaning(proposal, sources, existing);
+        // A belief a rewind set aside is learned again as new, on the same claim.
+        const resolution =
+          head?.current.status === 'retracted'
+            ? ({ decision: 'publish', reason: 'set_aside_by_rewind' } as ReturnType<
+                typeof resolveMeaning
+              >)
+            : resolveMeaning(proposal, sources, existing);
         if (resolution.decision === 'no-op') continue;
         if (resolution.decision === 'attach' && head && resolution.revision) {
           await addReferences(tx, scope.spaceId, head.id, resolution.revision, refs);

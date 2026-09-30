@@ -7,6 +7,7 @@
 
 export * from './api.ts';
 export * from './artifacts.ts';
+export * from './beliefs.ts';
 export * from './broker.ts';
 export * from './browser.ts';
 export * from './browser-live.ts';

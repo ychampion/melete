@@ -364,6 +364,13 @@ async function seedMemory(
     values ((select coalesce(max(event_seq), 0) + 1 from memory_capture), ${spaceId}, 'skipped:asked')`;
   await sql`insert into memory_model_calls (id, owner_id, space_id, work_id, provider, model, reserved_tokens)
     values (${newId('mmc')}, 'own_removal', ${spaceId}, ${newId('mw')}, 'fake', 'fake-scripted-v1', 100)`;
+  // A subject not to learn again, a rewind of a day, and a weekly digest.
+  await sql`insert into memory_blocks (id, space_id, domain_key, label)
+    values (${newId('blk')}, ${spaceId}, 'home.address', 'Home address')`;
+  await sql`insert into memory_rewinds (id, space_id, label, target, window_start, window_end, steps)
+    values (${newId('rwd')}, ${spaceId}, 'Undo a day', '{}'::jsonb, now() - interval '1 day', now(), '[]'::jsonb)`;
+  await sql`insert into memory_digests (id, space_id, week_of, time_zone, window_start, window_end, items)
+    values (${newId('dgs')}, ${spaceId}, '2026-09-27', 'UTC', now() - interval '7 days', now(), '[]'::jsonb)`;
 }
 
 /** The directories a space uses, each with something in it, and one job workspace. */

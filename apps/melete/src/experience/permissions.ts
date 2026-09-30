@@ -3,6 +3,7 @@ import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { loadAction } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
+import { actionBecause } from '../memory/basis.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import { actionProjectionRow, type ExperienceEffects } from './effects.ts';
 import { explainHandles } from './evidence.ts';
@@ -69,6 +70,7 @@ export class ExperiencePermissions {
       reasons,
       canAlways: warnings.length === 0 && Boolean(ruleKinds[action.kind]),
       requestedAt: new Date(row.requested_at),
+      because: await actionBecause(this.sql, spaceId, action.id),
     });
   }
 
