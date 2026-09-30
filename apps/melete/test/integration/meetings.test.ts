@@ -105,6 +105,10 @@ async function setup() {
   await sql`update connection set secret_ref = ${secretRef},
     configuration = ${JSON.stringify({ kind: 'meetings', meetings: { region: 'us-west-2' } })}::jsonb
     where id = ${seed.connectionId}`;
+  // Every real space has an owner; the summary is charged to them.
+  const ownerId = recordId('own');
+  await sql`insert into principal (id, email) values (${ownerId}, ${`${ownerId}@example.test`})`;
+  await sql`update space set owner_principal_id = ${ownerId} where id = ${seed.claims.space_id}`;
   await sql`insert into experience_profile (space_id, name) values (${seed.claims.space_id}, 'Zara')`;
   const service = recall();
   const connector = new MeetingsConnector({
