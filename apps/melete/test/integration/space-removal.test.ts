@@ -333,6 +333,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   engine_skill_prohibition: 'operational',
   ledger_item: 'operational',
   procedure_candidate: 'operational',
+  paired_device: 'operational',
+  device_pairing: 'operational',
   question: 'operational',
   sandbox_session: 'operational',
   skill: 'operational',
@@ -1813,7 +1815,8 @@ describe.if(handle !== null)('removing a space', () => {
       const shown = (await preview.json()) as { preview: Record<string, unknown> };
       expect(shown.preview.counts).toMatchObject({
         jobs: 2,
-        connections: 1,
+        // The mailbox and the paired computer.
+        connections: 2,
         memory_claims: 1,
         companies: 1,
         ledger_items: 1,

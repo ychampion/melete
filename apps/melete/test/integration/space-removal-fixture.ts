@@ -162,6 +162,17 @@ export async function seedSpace(
   await sql`insert into skill (id, space_id, name, path, frontmatter)
     values (${newId('skl')}, ${spaceId}, 'summarize', 'skills/summarize.md', '{}'::jsonb)`;
   await sql`insert into task (id, space_id, title) values (${newId('task')}, ${spaceId}, 'Do it')`;
+  // A paired computer is its own connection, and a pairing code names its space.
+  const deviceConnectionId = newId('conn');
+  await sql`insert into connection (id, space_id, provider, label, scopes)
+    values (${deviceConnectionId}, ${spaceId}, 'device', 'Laptop', '[]'::jsonb)`;
+  await sql`insert into paired_device (id, space_id, connection_id, name, platform, token_hash,
+      capabilities, local_capabilities, paired_by)
+    values (${newId('dev')}, ${spaceId}, ${deviceConnectionId}, 'Laptop', 'linux',
+      ${newId('tokh')}, '{}'::jsonb, '{}'::jsonb, ${ownerId})`;
+  await sql`insert into device_pairing (id, space_id, principal_id, code_hash, capabilities, expires_at)
+    values (${newId('dpr')}, ${spaceId}, ${ownerId}, ${newId('codeh')}, '{}'::jsonb,
+      now() + interval '10 minutes')`;
   await sql`insert into experience_profile (space_id, name) values (${spaceId}, 'Profile')`;
   await sql`insert into experience_rule
     (id, space_id, connection_id, tool_kind, recipient, recipient_class, origin_trust,
