@@ -157,12 +157,12 @@ withDb('beliefs a person can see and correct', () => {
 withDb('don’t learn again, while a message is being read', () => {
   test('a block written after the message was read but before it is saved is honoured', async () => {
     if (!db) return;
-    const scope = await createScope(db);
-    await pref(db, scope, 'pref.music.genre', 'jazz', '2026-09-02T09:00:00Z');
-    const id = await keyed(db, scope, 'pref.music.genre');
-    const journal = await journalFor('race');
+    const database = db;
+    const scope = await createScope(database);
+    // "Forget and don't learn again" writes the block first, then forgets. A
+    // message already read commits in between: it must see the block.
     const again = await record(
-      db,
+      database,
       scope,
       {
         identity: 'pref.music.genre:blues',
@@ -170,12 +170,18 @@ withDb('don’t learn again, while a message is being read', () => {
         eventAt: '2026-09-03T09:00:00Z',
       },
       [{ key: 'pref.music.genre', content: 'blues', quote: 'blues', kind: 'preference' }],
-      { beforeLock: () => blockBelief(db.sql, experienceScope(scope), id, journal).then(() => {}) },
+      {
+        beforeLock: async () => {
+          await database.sql`insert into memory_blocks (id, space_id, domain_key, key, label)
+            values ('blk_race', ${scope.spaceId}, 'pref.music.genre', 'pref.music.genre', 'Music: genre')`;
+        },
+      },
     );
+    expect(again.status).toBe('committed');
     expect(again.claim_ids).toEqual([]);
-    expect(await listBeliefs(db.sql, scope, 'UTC')).toEqual([]);
+    expect(await listBeliefs(database.sql, scope, 'UTC')).toEqual([]);
     const reasons =
-      await db.sql`select reason from memory_rejections where space_id = ${scope.spaceId}`;
+      await database.sql`select reason from memory_rejections where space_id = ${scope.spaceId}`;
     expect(reasons.map((row) => row.reason)).toEqual(['blocked_by_person']);
   });
 });
