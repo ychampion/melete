@@ -60,6 +60,8 @@ import { connection } from './db/schema.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { mountExperience } from './experience/routes.ts';
+import type { FeedbackLimiter } from './feedback/rate-limit.ts';
+import { mountFeedback } from './feedback/routes.ts';
 import { providerSignIn } from './gateway/configured.ts';
 import type { ProviderSignIn } from './gateway/credentials.ts';
 import type { GatewayOptions } from './gateway/index.ts';
@@ -182,6 +184,8 @@ export type AppDeps = {
   companies?: Partial<CompaniesDeps>;
   /** The owner's model-provider sign-ins. Left out, built from `sql` and the master key. */
   providerSignIn?: ProviderSignIn;
+  /** How many problem reports one person may send in a short time; a test supplies its clock. */
+  feedbackLimiter?: FeedbackLimiter;
 };
 
 export function createApp(deps: AppDeps) {
@@ -277,6 +281,7 @@ export function createApp(deps: AppDeps) {
       memoryJournal: deps.memory?.journal,
       memoryProvision: deps.memory?.provision,
       triggers: deps.triggers,
+      browser: Boolean(deps.browserSessions),
     });
   if (deps.db)
     mountCompanies(app, {
@@ -298,6 +303,7 @@ export function createApp(deps: AppDeps) {
       broker: deps.broker,
       registry: deps.registry,
     });
+  if (deps.db) mountFeedback(app, { db: deps.db, version: VERSION, limiter: deps.feedbackLimiter });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory)
     app.route(

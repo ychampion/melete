@@ -10,7 +10,8 @@
     "baseUrl": "../..",
     "paths": {
       "@melete/client": ["./packages/client/src/index.ts"],
-      "@melete/client/*": ["./packages/client/src/*"]
+      "@melete/client/*": ["./packages/client/src/*"],
+      "@melete/contracts/redact": ["./packages/contracts/src/redact.ts"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]

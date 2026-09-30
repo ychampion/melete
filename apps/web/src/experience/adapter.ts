@@ -9,16 +9,19 @@
  * that gets one is not drawn.
  */
 import { createMeleteClient, errorMessage, readSse, subscribeEvents } from '@melete/client';
+import { recordingFetch } from '../feedback/diagnostics.ts';
 import { markValueMoment } from './push.ts';
 import type {
   AccountSignInStart,
   AccountSignInStatus,
   ActionResolution,
   Agent,
+  AgentComputer,
   AgentInput,
   AgentTemplate,
   Automation,
   AutomationCreate,
+  BrowserControl,
   BrowserSession,
   CatalogEntry,
   ConnectedAssistant,
@@ -31,10 +34,16 @@ import type {
   Draft,
   EngineSkill,
   ExperienceEvent,
+  FeedbackCreate,
+  FeedbackList,
+  FeedbackReport,
+  FeedbackStatus,
   Home,
   LearnedItemResult,
   LearnedList,
   LedgerAction,
+  LiveOpen,
+  LiveUp,
   MemoryExplanation,
   MemoryItem,
   MemoryItemCreate,
@@ -88,7 +97,11 @@ export const API_BASE_URL: string = new URL(
   .toString()
   .replace(/\/+$/, '');
 
-export const client = createMeleteClient({ baseUrl: API_BASE_URL });
+// Failed requests are remembered, without their bodies, for a problem report.
+export const client = createMeleteClient({
+  baseUrl: API_BASE_URL,
+  fetch: recordingFetch(globalThis.fetch.bind(globalThis)),
+});
 
 const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
 
@@ -144,6 +157,7 @@ export const adapter = {
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link/consume', { body: { token } })),
   signInGoogle: () => guard<{ status: 'ok' }>(() => api.POST('/signin/google')),
   signInApple: () => guard<{ status: 'ok' }>(() => api.POST('/signin/apple')),
+  signInChatGPT: () => guard<{ status: 'ok' }>(() => api.POST('/signin/chatgpt')),
   /** Ends the session; the next request needs a new sign-in. */
   signOut: () => guard<{ status: 'ok' }>(() => api.POST('/signout')),
 
@@ -438,8 +452,54 @@ export const adapter = {
     guard<{ session: BrowserSession }>(() =>
       api.POST('/browser/sessions/{id}/control', { ...path(id), body: { control } }),
     ),
+  /* ---------- the agent's computer ---------- */
+  computer: (id: string) =>
+    guard<AgentComputer>(() => api.GET('/conversations/{id}/computer', path(id))),
+  takeOver: (sessionId: string) =>
+    guard<BrowserControl>(() => api.POST('/browser/sessions/{id}/takeover', path(sessionId))),
+  handBack: (sessionId: string) =>
+    guard<BrowserControl>(() => api.POST('/browser/sessions/{id}/handback', path(sessionId))),
+  liveOpen: (sessionId: string) =>
+    guard<LiveOpen>(() => api.POST('/browser/sessions/{id}/live', path(sessionId))),
+  liveInput: (sessionId: string, body: LiveUp) =>
+    guard<{ accepted: number }>(() =>
+      api.POST('/browser/sessions/{id}/live/input', { ...path(sessionId), body }),
+    ),
+  liveScope: (sessionId: string, liveId: string, host: string) =>
+    guard<{ site_scope: string[] }>(() =>
+      api.POST('/browser/sessions/{id}/live/scope', {
+        ...path(sessionId),
+        body: { live_id: liveId, host },
+      }),
+    ),
+  liveClose: (sessionId: string, liveId: string) =>
+    guard<{ closed: true }>(() =>
+      api.POST('/browser/sessions/{id}/live/close', {
+        ...path(sessionId),
+        body: { live_id: liveId },
+      }),
+    ),
+  /** Where a picture the service keeps can be loaded from, with the session's cookie. */
+  artifactUrl: (id: string) => `${API_BASE_URL}/artifacts/${encodeURIComponent(id)}/content`,
   search: (q: string) =>
     guard<{ results: SearchResult[] }>(() => api.GET('/search', { params: { query: { q } } })),
+
+  /* ---------- problem reports ---------- */
+  sendFeedback: (report: FeedbackCreate) =>
+    guard<{ report: FeedbackReport }>(() => api.POST('/feedback', { body: report })),
+  feedback: (status?: FeedbackStatus) =>
+    guard<FeedbackList>(() =>
+      api.GET('/feedback', { params: { query: status ? { status } : {} } }),
+    ),
+  feedbackReport: (id: string) =>
+    guard<{ report: FeedbackReport }>(() => api.GET('/feedback/{id}', path(id))),
+  setFeedbackStatus: (id: string, status: FeedbackStatus, note?: string | null) =>
+    guard<{ report: FeedbackReport }>(() =>
+      api.PATCH('/feedback/{id}', {
+        ...path(id),
+        body: { status, ...(note !== undefined ? { note } : {}) },
+      }),
+    ),
 };
 
 export type Adapter = typeof adapter;
@@ -508,5 +568,41 @@ export async function* subscribeConversation(
         return;
     }
     if (options.signal?.aborted) return;
+  }
+}
+
+/** One event of a live browser view. Frames are painted and dropped, never kept. */
+export type LiveDown =
+  | { type: 'frame'; seq: number; data: string }
+  | { type: 'where'; url: string; title: string; in_scope: boolean }
+  | { type: 'notice'; code: string; host?: string }
+  | { type: 'ended'; code: string };
+
+/**
+ * Follow a live browser view. It ends when the service ends it or the stream
+ * drops; the view is then opened again rather than resumed, since nothing is
+ * replayed.
+ */
+export async function* followLive(
+  sessionId: string,
+  liveId: string,
+  signal: AbortSignal,
+): AsyncGenerator<LiveDown, void, void> {
+  const response = await client.options.fetch(
+    `${client.options.baseUrl}/browser/sessions/${encodeURIComponent(sessionId)}/live/frames?live_id=${encodeURIComponent(liveId)}`,
+    {
+      headers: { ...client.options.headers, Accept: 'text/event-stream' },
+      credentials: client.options.credentials,
+      signal,
+    },
+  );
+  if (!response.ok || !response.body) return;
+  for await (const frame of readSse(response.body)) {
+    if (frame.comment) continue;
+    try {
+      yield JSON.parse(frame.data) as LiveDown;
+    } catch {
+      // A frame that does not parse is skipped; the next one repaints.
+    }
   }
 }

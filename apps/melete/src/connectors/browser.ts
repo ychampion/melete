@@ -139,6 +139,7 @@ const output = z.strictObject({
     .strictObject({
       id: z.string().min(1),
       url: z.string(),
+      title: z.string().max(1000).optional(),
       tree: z.string().max(4 * 1024 * 1024),
       screenshot: z.string().max(6 * 1024 * 1024),
       schema: jsonValue,

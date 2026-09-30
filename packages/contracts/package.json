@@ -12,7 +12,11 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
-    "./openapi.json": "./openapi.json"
+    "./openapi.json": "./openapi.json",
+    "./redact": {
+      "types": "./src/redact.ts",
+      "default": "./src/redact.ts"
+    }
   },
   "scripts": {
     "openapi": "bun run scripts/openapi.ts",
