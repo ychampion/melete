@@ -38,6 +38,7 @@ import { adapter } from '../experience/adapter.ts';
 import { agentById, lookOf, useApp, useDecisions, useLoad, useMedia } from '../experience/hooks.ts';
 import { givenName } from '../experience/profile.ts';
 import type { CalendarEvent, Conversation } from '../experience/types.ts';
+import { FeedbackHost, openFeedback } from '../feedback/FeedbackPanel.tsx';
 import { href, navigate, useRoute } from '../router.ts';
 import { useTheme } from '../theme.ts';
 import { CommandPalette } from './CommandPalette.tsx';
@@ -105,6 +106,12 @@ const NAV: { icon: IconName; label: string; path: string; match: (path: string) 
   },
   { icon: 'plans', label: 'Plans', path: '/plans', match: (p) => p.startsWith('/plans') },
   { icon: 'smile', label: 'Agents', path: '/agents', match: (p) => p.startsWith('/agents') },
+  {
+    icon: 'bookmark',
+    label: 'Memory',
+    path: '/settings/memory',
+    match: (p) => p.startsWith('/settings/memory'),
+  },
   {
     icon: 'automations',
     label: 'Automations',
@@ -209,6 +216,7 @@ function AccountMenu({ address }: { address: string | null }) {
           </Menu>
         </Popover>
       </div>
+      <IconButton name="bug" label="Report a problem" onClick={() => openFeedback()} />
       <IconButton
         name="sliders"
         label="Settings"
@@ -780,6 +788,7 @@ export function Shell({
           </div>
         </div>
         <CommandPalette open={palette} onClose={() => setPalette(false)} />
+        <FeedbackHost />
         <ToastStack />
       </div>
     </RailContext.Provider>

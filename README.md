@@ -171,7 +171,8 @@ the key it reads first:
 | `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`, which can point at a model server on your own network |
 | `chatgpt` | No key. Once Melete is running, you sign in to your ChatGPT account under **Settings → Models**, or through its [sign-in routes](docs/DEPLOYMENT.md#signing-in-to-a-provider). |
 
-Write the model's name the way the provider does. To change provider or model
+You can also connect a provider from the app, in Settings › Models: paste a key,
+test it, and choose the model, with no restart. Write the model's name the way the provider does. To change provider or model
 later, edit `MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL` and the key in
 `deploy/.env`, then restart the two services that use them:
 
@@ -211,7 +212,7 @@ in with ChatGPT.
 
 ## More it can do
 
-- Teach it by correcting it, then see, pause or remove what it learned in **Settings → What I've learned**.
+- Teach it by correcting it, then see, pause or remove what it learned in **Settings → Memory**.
 - Start your day with a short brief of your calendar, your tasks and the decisions waiting on you.
 - Correct or forget anything it remembers, and a forgotten fact stays gone after a restore.
 
@@ -229,6 +230,7 @@ in with ChatGPT.
 - [Memory](docs/MEMORY.md) and [learning](docs/LEARNING.md)
 - [Architecture](docs/ARCHITECTURE.md) and [threat model](docs/THREAT-MODEL.md)
 - [Building a client](docs/CLIENT.md): the API and how the app uses it
+- [Problem reports](docs/FEEDBACK.md): reporting a problem from the app, and pulling one by its id to fix it
 - [Contributing](CONTRIBUTING.md): setting up, testing and sending changes
 
 ## Licence and credits

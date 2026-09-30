@@ -62,6 +62,7 @@ type GraphEvent = {
   end?: { dateTime?: string; timeZone?: string };
   recurrence?: { pattern?: { type?: string; interval?: number } } | null;
   singleValueExtendedProperties?: { id?: string; value?: string }[];
+  attendees?: { emailAddress?: { address?: string } }[];
 };
 
 /** A Graph dateTime in UTC ("2026-09-30T09:00:00.0000000") as an instant. */
@@ -227,6 +228,17 @@ export class OutlookCalendarConnector implements Connector {
       outcome: 'unknown',
       reason: 'Calendar write was not confirmed. Verify its UID before deciding.',
     };
+  }
+
+  /** The attendees of the event an update rewrites; Graph lists the organizer apart from them. */
+  async existingGuests(action: Action, ctx: ConnectorContext): Promise<number> {
+    this.assertContext(action, ctx);
+    if (action.kind !== 'calendar.update') throw new Error('Only an update changes an event');
+    const found = await this.find(updatePayload.parse(action.canonical_payload).uid, ctx);
+    if (!found || found.isCancelled) throw new Error('Calendar event unavailable');
+    // Graph always lists attendees, as [] when there are none; a missing list is no answer.
+    if (!Array.isArray(found.attendees)) throw new Error('Calendar event attendees unavailable');
+    return found.attendees.length;
   }
 
   async execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult> {

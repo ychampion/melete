@@ -64,6 +64,11 @@ export type PermissionDecision = Body<paths['/permissions/{id}'], 'post'>;
 export type RuleBounds = Extract<PermissionDecision, { option: 'always' }>['bounds'];
 export type PermissionOutcome = Success<Ok<paths['/permissions/{id}'], 'post'>>;
 export type Rule = Success<Ok<paths['/rules'], 'get'>>['rules'][number];
+/** Which of an agent's actions auto-review may decide without asking the person. */
+export type ApprovalSettingsView = Success<Ok<paths['/approval-settings'], 'get'>>;
+export type ApprovalSettings = Body<paths['/approval-settings'], 'put'>;
+/** What auto-review decided about one action, on its card or receipt. */
+export type ActionReview = NonNullable<Permission['review']>;
 export type PushSettings = Ok<paths['/push/settings'], 'get'>['settings'];
 export type PushSettingsUpdate = Body<paths['/push/settings'], 'patch'>;
 export type PushDevice = Ok<paths['/push/subscriptions'], 'get'>['subscriptions'][number];
@@ -86,6 +91,21 @@ export type AgentTemplate = Success<Ok<paths['/agents/templates'], 'get'>>['temp
 export type MemoryItem = Success<Ok<paths['/memory/items'], 'get'>>['items'][number];
 export type MemoryExplanation = Success<Ok<paths['/memory/items/{id}/why'], 'get'>>;
 export type MemoryItemCreate = Body<paths['/memory/items'], 'post'>;
+export type Belief = Success<Ok<paths['/memory/beliefs'], 'get'>>['beliefs'][number];
+export type BeliefCategory = Belief['category'];
+export type BeliefHistory = Success<Ok<paths['/memory/beliefs/{id}/history'], 'get'>>;
+export type BeliefBlock = Success<Ok<paths['/memory/blocks'], 'get'>>['blocks'][number];
+export type MemoryTimeline = Success<Ok<paths['/memory/timeline'], 'get'>>;
+export type MemoryDay = MemoryTimeline['days'][number];
+export type RewindTarget = Body<paths['/memory/rewind'], 'post'>;
+export type RewindPreview = Success<Ok<paths['/memory/rewind/preview'], 'post'>>;
+export type MemoryRewind = Success<Ok<paths['/memory/rewind'], 'post'>>['rewind'];
+export type MemoryDigestResponse = Success<Ok<paths['/memory/digest'], 'get'>>;
+export type MemoryDigest = NonNullable<MemoryDigestResponse['digest']>;
+export type BeliefExport = Success<Ok<paths['/memory/export'], 'get'>>;
+export type BeliefImport = Body<paths['/memory/import'], 'post'>;
+export type BeliefImportResult = Success<Ok<paths['/memory/import'], 'post'>>;
+export type BecauseLink = NonNullable<Receipt['because']>[number];
 
 /* ---------- plans, tasks, home, routines ---------- */
 
@@ -117,6 +137,14 @@ export type ConnectionCreate = Body<paths['/connections'], 'post'>;
 export type ConnectionInstalled = Ok<paths['/connections'], 'post'>;
 export type ConnectionChecked = Ok<paths['/connections/{connectionId}/health'], 'post'>;
 export type BrowserSession = Success<Ok<paths['/browser/sessions/{id}'], 'get'>>['session'];
+/** What a conversation's agent is doing on its computer: its browser and its terminal. */
+export type AgentComputer = Success<Ok<paths['/conversations/{id}/computer'], 'get'>>;
+export type ComputerBrowser = NonNullable<AgentComputer['browser']>;
+export type ComputerCommand = AgentComputer['terminal'][number];
+export type BrowserControl = Ok<paths['/browser/sessions/{id}/takeover'], 'post'>;
+export type LiveOpen = Ok<paths['/browser/sessions/{id}/live'], 'post'>;
+export type LiveUp = Body<paths['/browser/sessions/{id}/live/input'], 'post'>;
+export type LiveInput = LiveUp['events'][number];
 export type SearchResult = Success<Ok<paths['/search'], 'get'>>['results'][number];
 /**
  * An entry in the broker's action ledger. The interface reads it only for
@@ -170,3 +198,10 @@ export type ScanProgress = Ok<paths['/spaces/{spaceId}/companies/scan/{scanId}']
 /** What the person is waiting on: money owed to them, and replies nobody has sent. */
 export type WaitingOn = Ok<paths['/waiting-on'], 'get'>;
 export type WaitingOnEntry = WaitingOn['top'][number];
+
+/* ---------- problem reports ---------- */
+
+export type FeedbackList = Ok<paths['/feedback'], 'get'>;
+export type FeedbackReport = FeedbackList['reports'][number];
+export type FeedbackStatus = FeedbackReport['status'];
+export type FeedbackCreate = Body<paths['/feedback'], 'post'>;

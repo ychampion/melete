@@ -12,6 +12,8 @@ import {
   projectCards,
 } from '../../melete/src/experience/projectors.ts';
 import type { AppDeps } from './app.ts';
+import { MockBeliefError, MockBeliefs } from './beliefs.ts';
+import { ComputerMock } from './computer.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { newId } from './store.ts';
 
@@ -46,6 +48,8 @@ type Chat = {
    * ledger item settled when the script completes.
    */
   follow?: { from: string; settle?: () => void };
+  /** A command under way on the agent's computer, finished with its tool entry. */
+  openCommand?: () => void;
 };
 type Proposal = {
   ref: string;
@@ -94,6 +98,7 @@ const PROPOSAL_WORDS: Record<string, { what: string; where: string; reversible: 
     reversible: true,
   },
   'browser.reserve': { what: 'Hold a table through the browser', where: 'Resy', reversible: false },
+  'tasks.create': { what: 'Add a task', where: 'Tasks', reversible: true },
 };
 
 class MockExperienceError extends Error {
@@ -123,11 +128,18 @@ export class ExperienceMock {
   >();
   readonly sentReceipts = new Map<string, C.ExperienceReceipt>();
   readonly rules = new Map<string, C.StandingRule>();
+  /** Settings → Approvals, as the person last saved them. */
+  approvalSettings: C.ApprovalSettings = structuredClone(C.DEFAULT_APPROVAL_SETTINGS);
   readonly questions = new Map<string, Question>();
   readonly plans = new Map<string, Plan>();
   readonly tasks = new Map<string, ReturnType<typeof C.experienceTask.parse>>();
   readonly automations = new Map<string, ReturnType<typeof C.experienceAutomation.parse>>();
   readonly memories = new Map<string, ReturnType<typeof C.memoryItem.parse>>();
+  /** What the mock believes about the person, with its history and rewinds. */
+  readonly beliefs = new MockBeliefs(
+    () => this.deps.store.now(),
+    () => this.profile.time_zone,
+  );
   /** Answers given during setup, by key, so the first message can refer to one. */
   readonly answers = new Map<string, string>();
   /** Set once the welcome scenario has played; every later message picks by text. */
@@ -145,7 +157,11 @@ export class ExperienceMock {
   });
   /** The address messages leave from, when a mailbox that can send is connected. */
   sendingAddress: string | null = null;
+  readonly computer: ComputerMock;
   constructor(readonly deps: AppDeps & { experienceSpeed?: number }) {
+    this.computer = new ComputerMock(deps.store, deps.spaceId, deps.computer ?? true, () =>
+      this.now(),
+    );
     for (const template of AGENT_TEMPLATES.templates) {
       const agent = C.experienceAgent.parse({
         ...template.agent,
@@ -486,6 +502,7 @@ export class ExperienceMock {
     );
     japan.conversation_ids = [kyoto.id];
     this.start('Passport renewal', atlas.id, 'Which documents do I need to renew in person?');
+    this.beliefs.seed(kyoto.id);
   }
   /**
    * Every experience event is also a store event on the conversation's job, so
@@ -613,6 +630,8 @@ export class ExperienceMock {
   }
   /** Finish the entry under way: its done copy, its trail step, and one more step done. */
   settleTool(chat: Chat) {
+    chat.openCommand?.();
+    chat.openCommand = undefined;
     const open = chat.openTool;
     if (!open) return;
     chat.openTool = undefined;
@@ -670,6 +689,8 @@ export class ExperienceMock {
       return;
     }
     if (step.step === 'tool') {
+      const command = this.computer.command(chat.view.id, step, 'running');
+      if (command) chat.openCommand = () => this.computer.finish(chat.view.id, command, step);
       const kind: C.ToolKind = step.name.startsWith('skills.')
         ? 'skill'
         : step.name.startsWith('browser')
@@ -795,7 +816,8 @@ export class ExperienceMock {
       this.state(chat, 'needs_you');
       return;
     } else if (step.step === 'browser') {
-      // The contract has no way to announce a browser session yet; nothing is drawn.
+      // The page is shown on the conversation's computer, not in the transcript.
+      this.computer.browser(chat.view.id, step);
     } else if (step.step === 'propose' && !this.isDraftKind(step.kind, step.payload)) {
       this.flush(chat);
       const words = PROPOSAL_WORDS[step.kind] ?? {
@@ -838,7 +860,11 @@ export class ExperienceMock {
           options: ['allow_once', 'always', 'deny'],
           version: newId('v'),
           preview: chat.lastCard,
+          ...(step.auto_review
+            ? { review: { ...step.auto_review, outcome: 'escalated', reviewed_at: this.now() } }
+            : {}),
           created_at: this.now(),
+          because: this.beliefs.becauseFor(`${proposal.what} ${proposal.where}`),
         });
         proposal.permissionId = permission.id;
         this.permissions.set(permission.id, permission);
@@ -855,9 +881,11 @@ export class ExperienceMock {
           id: newId('receipt'),
           what: proposal.what
             .replace(/^Add an event to your calendar/, 'Added to your calendar')
-            .replace(/^Hold a table/, 'Held a table'),
+            .replace(/^Hold a table/, 'Held a table')
+            .replace(/^Add a task/, 'Added a task'),
           where: proposal.where,
           when: this.now(),
+          because: this.beliefs.becauseFor(`${proposal.what} ${proposal.where}`),
           ...(words?.reversible
             ? {
                 undo: {
@@ -865,6 +893,9 @@ export class ExperienceMock {
                   valid_until: new Date(Date.now() + 10 * 60_000).toISOString(),
                 },
               }
+            : {}),
+          ...(step.auto_review
+            ? { review: { ...step.auto_review, outcome: 'auto_approved', reviewed_at: this.now() } }
             : {}),
         });
         chat.receipts.push(receipt);
@@ -1416,6 +1447,14 @@ export class ExperienceMock {
     if (this.signedOut && !key.startsWith('POST /signin'))
       throw new MockExperienceError(401, 'A session is required.');
     const id = c.req.param('id') ?? '';
+    try {
+      const answered = this.beliefs.handle(key, id, input, c.req.query());
+      if (answered !== undefined) return answered;
+    } catch (error) {
+      if (error instanceof MockBeliefError)
+        throw new MockExperienceError(error.status, error.message);
+      throw error;
+    }
     switch (key) {
       case 'GET /agents/templates':
         return AGENT_TEMPLATES;
@@ -1489,6 +1528,8 @@ export class ExperienceMock {
         return { cards: required(this.chats, id).cards };
       case 'GET /conversations/{id}/receipts':
         return { receipts: required(this.chats, id).receipts };
+      case 'GET /conversations/{id}/computer':
+        return this.computer.view(required(this.chats, id).view.id);
       case 'GET /conversations/{id}/drafts':
         return { drafts: required(this.chats, id).drafts };
       case 'POST /conversations/{id}/pause':
@@ -1515,6 +1556,11 @@ export class ExperienceMock {
         return this.decide(id, input);
       case 'GET /rules':
         return { rules: [...this.rules.values()] };
+      case 'GET /approval-settings':
+        return { settings: this.approvalSettings, reviewer_available: true };
+      case 'PUT /approval-settings':
+        this.approvalSettings = C.approvalSettings.parse(input);
+        return { settings: this.approvalSettings, reviewer_available: true };
       case 'DELETE /rules/{id}':
         required(this.rules, id);
         this.rules.delete(id);
@@ -1577,6 +1623,8 @@ export class ExperienceMock {
       case 'POST /signin/magic-link/consume':
         this.signedOut = false;
         return { status: 'ok' };
+      case 'POST /signin/chatgpt':
+        return C.unavailable('This installation hasn’t set up ChatGPT sign-in yet.');
       case 'PATCH /memory/items/{id}': {
         const item = required(this.memories, id);
         if (input.version !== item.version)
