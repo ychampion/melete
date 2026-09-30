@@ -1,7 +1,7 @@
 # Service conformance
 
-The runner lists ten scenarios, then executes the tests in
-`conformance/scenarios`. Scenarios 1–5 and 9 run anywhere with disposable
+The runner lists eleven scenarios, then executes the tests in
+`conformance/scenarios`. Scenarios 1–5, 9 and 11 run anywhere with disposable
 Postgres; 6–8 run against the Compose stack when `MELETE_CONFORMANCE_COMPOSE=1`
 is set; 10 runs against a Docker engine when `MELETE_CONFORMANCE_DOCKER=1` is
 set.
@@ -35,6 +35,7 @@ executable test bodies and the reported results are the evidence.
 | 3: [unknown outcomes](scenarios/03-unknown-outcomes.test.ts) | Durable destination acceptance followed by lost acknowledgement, broker reconstruction and verification | `the action is never dispatched a second time, including after broker restart` |
 | 4: [approval binding](scenarios/04-approval-binding.test.ts) | Changed payload/revision and cancellation while dispatch is in flight | `admission is rejected when the payload hash no longer matches the approval` |
 | 5: [runtime death](scenarios/05-runtime-death.test.ts) | Child-process faults during streaming and after a completed tool result | `no action is duplicated: the completed tool call is not run twice` |
+| 11: [MCP server](scenarios/11-mcp-server.test.ts) | Two accounts connect assistants with `@modelcontextprotocol/sdk` through the web proxy, call every tool, ask to send an email, try each other's work, refresh and disconnect; seven tests | `an assistant connects through discovery, registration, PKCE and consent`; `each tool acts as the person the token names`; `another person's token is refused the first person's work`; `safe_send waits for approval in Melete and never sends on its own`; `the person approves the exact text in Melete and the broker sends it once` |
 
 The fixture tests also check recorded receipts, recovery events and uncertainty
 messages. An assertion mentioning UI text checks the returned message, not a

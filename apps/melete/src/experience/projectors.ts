@@ -51,11 +51,27 @@ export function plainText(value: unknown, fallback: string, limit = 4000): strin
     .trim()
     .slice(0, limit);
 }
+/** A whole JSON object or array: an internal record, not something the agent said. */
+function isRecord(value: string): boolean {
+  const text = value.trim();
+  if (!/^[[{]/.test(text)) return false;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === 'object' && parsed !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Answer text, whole or one streamed piece of it. A piece that merely starts
+ * with a bracket ("[your name]", a Markdown link) is prose and is kept.
+ */
 export function answerText(value: unknown): string {
   if (
     typeof value !== 'string' ||
     BACKEND_VOCABULARY.test(value) ||
-    /^[\s]*[[{]/.test(value) ||
+    isRecord(value) ||
     /\b(?:Bearer\s+|sk-[A-Za-z0-9]{12})/.test(value)
   )
     return '';

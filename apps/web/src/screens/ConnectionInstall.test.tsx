@@ -1,7 +1,12 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ConnectionKind } from '../experience/types.ts';
-import { ConnectionActions, KindForm } from './ConnectionInstall.tsx';
+import {
+  AccountSignIn,
+  ConnectionActions,
+  KindForm,
+  type SignInEntry,
+} from './ConnectionInstall.tsx';
 
 /** A kind this application has never heard of: the form has only the descriptor to go on. */
 const invented = {
@@ -136,4 +141,63 @@ test('a connection the service keeps in every space is tested here and not remov
   );
   expect(installed).toContain('Test');
   expect(installed).toContain('Remove');
+});
+
+/** A catalog entry for Google, as the service serves it. */
+const SCOPES = [
+  { scope: 'openid', label: 'Confirm who you are' },
+  { scope: 'https://www.googleapis.com/auth/gmail.readonly', label: 'Read your Gmail messages' },
+];
+const googleEntry = (extra: Partial<SignInEntry>): SignInEntry => ({
+  id: 'google',
+  title: 'Google',
+  description: 'Sign in with Google to connect Gmail and Google Calendar.',
+  covers: ['mail', 'calendar'],
+  connect: {
+    method: 'sign_in',
+    provider: 'google',
+    start: '/google-sign-ins',
+    issuer: 'https://accounts.google.com',
+    scopes: SCOPES,
+  },
+  available: true,
+  ...extra,
+});
+
+test('before signing in, the person sees where and everything that is asked for', () => {
+  const html = renderToStaticMarkup(
+    <AccountSignIn entry={googleEntry({})} onDone={() => {}} onInstalled={() => {}} />,
+  );
+  expect(html).toContain('You sign in at <strong>accounts.google.com</strong>');
+  for (const scope of SCOPES) expect(html).toContain(scope.label);
+  expect(html).toContain('Continue to Google');
+});
+
+test('an entry this Melete does not offer says why in plain words, with no way to continue', () => {
+  const plain = renderToStaticMarkup(
+    <AccountSignIn
+      entry={googleEntry({
+        available: false,
+        unavailable_reason: 'Signing in with Google is not set up on this Melete yet.',
+      })}
+      onDone={() => {}}
+      onInstalled={() => {}}
+    />,
+  );
+  expect(plain).toContain('not set up on this Melete yet');
+  expect(plain).not.toContain('GOOGLE_OAUTH');
+  expect(plain).not.toContain('Continue to Google');
+  // The operator, and only the operator, is told what to set.
+  const operator = renderToStaticMarkup(
+    <AccountSignIn
+      entry={googleEntry({
+        available: false,
+        unavailable_reason: 'Signing in with Google is not set up on this Melete yet.',
+        setup_hint: 'Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.',
+      })}
+      onDone={() => {}}
+      onInstalled={() => {}}
+    />,
+  );
+  expect(operator).toContain('GOOGLE_OAUTH_CLIENT_ID');
 });

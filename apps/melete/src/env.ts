@@ -120,6 +120,34 @@ const variables = z.object({
       'must be a postgres:// address, for example postgres://melete:password@postgres:5432/melete',
     )
     .optional(),
+  /**
+   * Web Push: this installation's VAPID key pair, base64url, written once by
+   * configure.ts. Unset, the web app does not offer push.
+   */
+  MELETE_VAPID_PUBLIC_KEY: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{86,88}$/)
+      .optional(),
+  ),
+  MELETE_VAPID_PRIVATE_KEY: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{42,44}$/)
+      .optional(),
+  ),
+  /** Who push services contact about this installation; defaults to mailto: the owner. */
+  MELETE_VAPID_SUBJECT: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^(mailto:|https:\/\/)/)
+      .optional(),
+  ),
+  /**
+   * Push endpoints on origins other than the browser push services, comma separated:
+   * a self-hosted push server, or a test's stand-in.
+   */
+  MELETE_PUSH_EXTRA_ORIGINS: unsetWhenBlank(z.string().optional()),
   MELETE_PUBLIC_URL: unsetWhenBlank(
     z
       .url()

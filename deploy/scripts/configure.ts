@@ -34,6 +34,7 @@ import {
   providerSelectionProblem,
   providersFromEnv,
 } from '../../apps/melete/src/gateway/providers.ts';
+import { generateVapidKeys } from '../../apps/melete/src/push/webpush.ts';
 import {
   type CommandOutput,
   readHostDocker,
@@ -258,7 +259,11 @@ async function configure(root: string) {
     },
   });
   const password = randomBytes(24).toString('hex');
+  // This installation's own Web Push key pair: phones are reached without a third party.
+  const vapid = await generateVapidKeys();
   const values: Record<string, string> = {
+    MELETE_VAPID_PUBLIC_KEY: vapid.publicKey,
+    MELETE_VAPID_PRIVATE_KEY: vapid.privateKey,
     MELETE_MASTER_KEY: randomBytes(32).toString('base64'),
     MELETE_CAPABILITY_KEY: randomBytes(32).toString('hex'),
     // Labels this installation's sandboxes at a provider; written once, kept after.

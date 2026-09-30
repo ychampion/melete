@@ -689,6 +689,44 @@ job's output budget until the call settles at its real usage, and it is lowered
 to what the job has left rather than refused. A limit the runtime does name is
 never rewritten: it is honoured, or refused when it exceeds the job's budget.
 
+### Connecting a model in the app
+
+The owner can also connect a model from the web app, in Settings › Models, or
+in the first-run step that appears while no working model is configured. Pick a
+provider, paste its API key (and, for `openai-compatible`, the endpoint's
+address), test the connection, choose a model from the provider's list or type
+its identifier, and use it. The test makes one small call, the provider's model
+list, and says plainly when the key is refused, the address answers 404, or the
+provider does not answer in time. Only the setup owner can change a key or the
+model; every other account sees which model is active.
+
+A key entered this way is sealed with `MELETE_MASTER_KEY` before it is stored,
+so the app refuses to store one while that key is unset. No answer ever carries
+a stored key back, only its last four characters, and a change applies from the
+next reply without a restart.
+
+The model chosen here, and the keys connected here, are also what Melete's own
+background reads use: automatic memory, learning from corrections, and the
+companies scan. `MELETE_MEMORY_PROVIDER` / `MELETE_MEMORY_MODEL` and
+`MELETE_COMPANIES_MODEL` still name a model outright for their own use when set.
+
+A key for the `openai-compatible` endpoint is bound to the address it was saved
+for, whether the owner typed it or `OPENAI_COMPAT_BASE_URL` named it. If that
+address later changes, the stored key is not sent to the new one; paste the key
+again for the new address.
+
+Where both are set, the environment wins:
+
+- A provider key in the environment (`FIREWORKS_API_KEY` and the others above,
+  or `OPENAI_COMPAT_API_KEY` for the compatible endpoint) is used for that
+  provider, shown in the app as set by the operator, and cannot be replaced
+  there. Remove it from `deploy/.env` to manage that provider in the app.
+- `OPENAI_COMPAT_BASE_URL` fixes the compatible endpoint's address; the app can
+  then only add a key for that address.
+- `MELETE_DEFAULT_PROVIDER` and `MELETE_DEFAULT_MODEL` are the starting model. A
+  model chosen in the app replaces them for new work until the owner picks
+  "Use the server default", which goes back to them.
+
 ### Signing in to a provider
 
 A sign-in is an alternative to a key for two providers. OpenAI models are
@@ -827,6 +865,37 @@ Model calls are bounded per person: across all their spaces, one person's scans
 make at most `MELETE_COMPANIES_DAILY_CALLS` calls in any 24 hours, 500 when it is
 unset, and each scan reads at most fifty messages. A message past the allowance
 is read on a later scan. Set these in `deploy/.env` and recreate the service.
+
+## Phone notifications
+
+The web app installs to a phone's Home Screen or a desktop as an app, and can
+receive Web Push: one push when a decision is waiting, one when a chase
+settles, and a weekly "what came back". Pushes are signed with this
+installation's own VAPID key pair and encrypted for each browser (RFC 8291), so
+no third-party service is involved beyond the browser's own push service, which
+sees neither the words nor who they are for.
+
+`configure.ts` writes the key pair to `deploy/.env` as `MELETE_VAPID_PUBLIC_KEY`
+and `MELETE_VAPID_PRIVATE_KEY`. An installation configured before push existed
+gets a pair with `bun run deploy/scripts/vapid-keys.ts`; add the two lines to
+`deploy/.env` and recreate the service. Without the keys the web app does not
+offer push and everything else works the same. `MELETE_VAPID_SUBJECT` is who a
+push service contacts about this installation, `mailto:` the owner when unset.
+
+A subscription is accepted only for the browser push services (Google, Mozilla,
+Apple, Microsoft). `MELETE_PUSH_EXTRA_ORIGINS` adds other origins, comma
+separated, for a self-hosted push server; leave it empty otherwise.
+
+Browsers offer push only on a secure origin: `https://`, such as the Tailscale
+address in [From a phone or a laptop](#from-a-phone-or-a-laptop), or
+`localhost`. On an iPhone or iPad (iOS 16.4 or later), add Melete to the Home
+Screen from Safari's Share menu and open it from there; Safari in a tab does not
+receive pushes.
+
+Each person chooses under Settings › Notifications what is pushed, at most how
+many a day, and how close together events are grouped into one push. Nothing is
+sent outside their day hours, in their own time zone, and every push says why
+it was sent.
 
 ## Engine limits
 

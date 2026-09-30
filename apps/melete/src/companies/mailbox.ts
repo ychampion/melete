@@ -23,6 +23,11 @@ import { fromMailMessage, type ScanMessage } from './messages.ts';
 export interface ScanMailbox {
   /** Newest first, hygiene already applied. */
   recent(limit: number): Promise<ScanMessage[]>;
+  /**
+   * What the person sent, newest first, when the mailbox can read its Sent
+   * folder. It is what "waiting on a reply" is found from.
+   */
+  sent?(limit: number): Promise<ScanMessage[]>;
 }
 
 /**
@@ -48,12 +53,25 @@ const unreadable = (reason: keyof typeof MAILBOX_UNREADABLE) => new MailboxUnrea
 /** The connector's own ceiling on one read; `email.search` refuses more. */
 export const MAILBOX_READ_LIMIT = 50;
 
+const newest = (messages: readonly ScanMessage[], limit: number) =>
+  [...messages].sort((a, b) => b.receivedAt.localeCompare(a.receivedAt)).slice(0, limit);
+
 /** A fixed set of messages, for tests, the demo seed and the screens. */
-export function fixtureMailbox(messages: readonly ScanMessage[]): ScanMailbox {
+export function fixtureMailbox(
+  messages: readonly ScanMessage[],
+  sent?: readonly ScanMessage[],
+): ScanMailbox {
   return {
     async recent(limit: number) {
-      return [...messages].sort((a, b) => b.receivedAt.localeCompare(a.receivedAt)).slice(0, limit);
+      return newest(messages, limit);
     },
+    ...(sent
+      ? {
+          async sent(limit: number) {
+            return newest(sent, limit);
+          },
+        }
+      : {}),
   };
 }
 
@@ -70,76 +88,89 @@ export function connectorMailbox(options: {
   /** When the transport gives a message no date, this stands in for one. */
   undatedAt: string;
 }): ScanMailbox {
-  return {
-    async recent(limit: number) {
-      const connector = options.registry.get(options.connectionId);
-      if (!(connector instanceof EmailConnector)) throw unreadable('not_open');
-      const id = newId('act');
-      const payload = canonicalizePayload({
-        query: '',
-        limit: Math.min(limit, MAILBOX_READ_LIMIT),
-      });
-      const result = await connector.execute(
+  const read = async (limit: number, folder: 'inbox' | 'sent'): Promise<ScanMessage[]> => {
+    const connector = options.registry.get(options.connectionId);
+    if (!(connector instanceof EmailConnector)) throw unreadable('not_open');
+    const id = newId('act');
+    const payload = canonicalizePayload({
+      query: '',
+      limit: Math.min(limit, MAILBOX_READ_LIMIT),
+      ...(folder === 'sent' ? { folder } : {}),
+    });
+    const result = await connector.execute(
+      {
+        id,
+        job_id: id,
+        attempt_id: id,
+        connection_id: options.connectionId,
+        kind: 'email.search',
+        effect_class: 'read',
+        canonical_payload: payload.canonical,
+        payload_hash: payload.hash,
+        intent_key: null,
+        status: 'dispatched',
+        authorization_ref: null,
+        budget_reservation: null,
+        idempotency_key: id,
+        dispatched_at: options.undatedAt,
+        receipt: null,
+        resolved_at: null,
+        reconciliation: null,
+        repair_trace: [],
+        repair_counters: {},
+        repair_disposition: null,
+        retry_after_at: null,
+        created_at: options.undatedAt,
+      },
+      {
+        job_id: id,
+        space_id: options.spaceId,
+        idempotency_key: id,
+        constraints: jobConstraints.parse({}),
+      },
+    );
+    if (result.outcome !== 'succeeded') throw unreadable('no_answer');
+    const messages = result.receipt.detail.messages;
+    if (!Array.isArray(messages)) throw unreadable('no_messages');
+    const found: ScanMessage[] = [];
+    for (const entry of messages) {
+      if (!entry || typeof entry !== 'object') continue;
+      const record = entry as Record<string, unknown>;
+      const message = fromMailMessage(
         {
-          id,
-          job_id: id,
-          attempt_id: id,
-          connection_id: options.connectionId,
-          kind: 'email.search',
-          effect_class: 'read',
-          canonical_payload: payload.canonical,
-          payload_hash: payload.hash,
-          intent_key: null,
-          status: 'dispatched',
-          authorization_ref: null,
-          budget_reservation: null,
-          idempotency_key: id,
-          dispatched_at: options.undatedAt,
-          receipt: null,
-          resolved_at: null,
-          reconciliation: null,
-          repair_trace: [],
-          repair_counters: {},
-          repair_disposition: null,
-          retry_after_at: null,
-          created_at: options.undatedAt,
+          uid: Number(record.uid ?? 0),
+          message_id: typeof record.message_id === 'string' ? record.message_id : null,
+          from: String(record.from ?? ''),
+          ...(Array.isArray(record.from_addresses)
+            ? {
+                from_addresses: record.from_addresses.filter(
+                  (entry): entry is string => typeof entry === 'string',
+                ),
+              }
+            : {}),
+          to: String(record.to ?? ''),
+          subject: String(record.subject ?? ''),
+          text: String(record.text ?? ''),
+          html: '',
+          ...(Array.isArray(record.to_addresses)
+            ? { to_addresses: record.to_addresses.filter(isText) }
+            : {}),
+          ...(typeof record.in_reply_to === 'string' ? { in_reply_to: record.in_reply_to } : {}),
+          ...(Array.isArray(record.references)
+            ? { references: record.references.filter(isText) }
+            : {}),
+          ...(typeof record.automated === 'boolean' ? { automated: record.automated } : {}),
         },
-        {
-          job_id: id,
-          space_id: options.spaceId,
-          idempotency_key: id,
-          constraints: jobConstraints.parse({}),
-        },
+        typeof record.date === 'string' ? record.date : options.undatedAt,
       );
-      if (result.outcome !== 'succeeded') throw unreadable('no_answer');
-      const messages = result.receipt.detail.messages;
-      if (!Array.isArray(messages)) throw unreadable('no_messages');
-      const read: ScanMessage[] = [];
-      for (const entry of messages) {
-        if (!entry || typeof entry !== 'object') continue;
-        const record = entry as Record<string, unknown>;
-        const message = fromMailMessage(
-          {
-            uid: Number(record.uid ?? 0),
-            message_id: typeof record.message_id === 'string' ? record.message_id : null,
-            from: String(record.from ?? ''),
-            ...(Array.isArray(record.from_addresses)
-              ? {
-                  from_addresses: record.from_addresses.filter(
-                    (entry): entry is string => typeof entry === 'string',
-                  ),
-                }
-              : {}),
-            to: String(record.to ?? ''),
-            subject: String(record.subject ?? ''),
-            text: String(record.text ?? ''),
-            html: '',
-          },
-          typeof record.date === 'string' ? record.date : options.undatedAt,
-        );
-        if (message) read.push(message);
-      }
-      return read.sort((a, b) => b.receivedAt.localeCompare(a.receivedAt)).slice(0, limit);
-    },
+      if (message) found.push(message);
+    }
+    return newest(found, limit);
+  };
+  return {
+    recent: (limit: number) => read(limit, 'inbox'),
+    sent: (limit: number) => read(limit, 'sent'),
   };
 }
+
+const isText = (entry: unknown): entry is string => typeof entry === 'string';
