@@ -9,16 +9,23 @@
  * the tests and the demo seed, which want neither a database nor a network.
  */
 
-import type { Company, CompanyMap, LedgerItem, LedgerItemStatus } from '@melete/contracts';
-import { and, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
+import type {
+  AwaitedReply,
+  Company,
+  CompanyMap,
+  LedgerItem,
+  LedgerItemStatus,
+} from '@melete/contracts';
+import { and, asc, desc, eq, gte, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
 import { recordSettled } from '../push/service.ts';
-import { company, companyMessage, companyScan, ledgerItem } from './schema.ts';
+import { awaitedReply, company, companyMessage, companyScan, ledgerItem } from './schema.ts';
 import { computeTotals, DEFAULT_CURRENCY } from './totals.ts';
 import { dedupeKey } from './validate.ts';
+import { AWAITED_WINDOW_DAYS, type AwaitedFinding } from './waiting.ts';
 
 export type Owner = { spaceId: string; principalId: string };
 
@@ -98,7 +105,41 @@ export interface CompanyStore {
   exclusive<T>(key: string, work: (store: CompanyStore) => Promise<T>): Promise<T>;
   /** Back to open: no job names it, and it can be handled again. */
   release(owner: Owner, id: string): Promise<LedgerItem | null>;
+  /** The newest scan, running or finished. */
+  latestScan(owner: Owner): Promise<ScanRecord | null>;
+  /**
+   * Record what a scan found still waiting on a reply, once per sent message.
+   * A message found before that has since been answered is settled, whether or
+   * not a chase has it: the answer is what the chase was for. Returns how many
+   * were new.
+   */
+  saveAwaited(
+    owner: Owner,
+    scanId: string,
+    found: readonly AwaitedFinding[],
+    answered: readonly string[],
+  ): Promise<number>;
+  /**
+   * Every reply still open, longest waiting first. One nothing is chasing that
+   * went out more than the detection window ago is history, and is left out.
+   */
+  awaitedReplies(owner: Owner, now: Date): Promise<AwaitedReply[]>;
+  /** One awaited reply, with the stored text its evidence cites. */
+  awaitedReply(
+    owner: Owner,
+    id: string,
+  ): Promise<{ reply: AwaitedReply; text: string | null } | null>;
+  /** A chase has it now. */
+  setAwaitedJob(owner: Owner, id: string, jobId: string): Promise<AwaitedReply | null>;
+  /** The person dismissed it: it is not waited on any more, and a rescan leaves it so. */
+  dropAwaited(owner: Owner, id: string): Promise<AwaitedReply | null>;
 }
+
+/** The statuses that are still being waited on. */
+const OPEN_AWAITED = ['found', 'handling', 'waiting'] as const;
+
+/** Before this, a reply nothing is chasing is history rather than something waited on. */
+const awaitedSince = (now: Date) => new Date(now.getTime() - AWAITED_WINDOW_DAYS * 86_400_000);
 
 const iso = (value: Date | string): string =>
   typeof value === 'string' ? new Date(value).toISOString() : value.toISOString();
@@ -152,6 +193,21 @@ const ownedCompany = (owner: Owner) =>
   and(eq(company.spaceId, owner.spaceId), ownJob(company.principalId, owner.principalId));
 const ownedItem = (owner: Owner) =>
   and(eq(ledgerItem.spaceId, owner.spaceId), ownJob(ledgerItem.principalId, owner.principalId));
+const ownedAwaited = (owner: Owner) =>
+  and(eq(awaitedReply.spaceId, owner.spaceId), ownJob(awaitedReply.principalId, owner.principalId));
+const awaitedRow = (row: typeof awaitedReply.$inferSelect): AwaitedReply => ({
+  id: row.id,
+  space_id: row.spaceId,
+  principal_id: row.principalId,
+  message_id: row.messageId,
+  to: row.toAddress,
+  to_name: row.toName,
+  subject: row.subject,
+  sent_at: row.sentAt.toISOString(),
+  evidence: row.evidence,
+  status: row.status as LedgerItemStatus,
+  job_id: row.jobId,
+});
 const ownedScan = (owner: Owner) =>
   and(eq(companyScan.spaceId, owner.spaceId), ownJob(companyScan.principalId, owner.principalId));
 
@@ -546,6 +602,119 @@ export class PostgresCompanyStore implements CompanyStore {
       .returning();
     return row ? itemView(row) : null;
   }
+
+  async latestScan(owner: Owner): Promise<ScanRecord | null> {
+    const [row] = await this.db
+      .select()
+      .from(companyScan)
+      .where(ownedScan(owner))
+      .orderBy(desc(companyScan.startedAt), desc(companyScan.id))
+      .limit(1);
+    return row ? scanRecord(row) : null;
+  }
+
+  async saveAwaited(
+    owner: Owner,
+    scanId: string,
+    found: readonly AwaitedFinding[],
+    answered: readonly string[],
+  ): Promise<number> {
+    return this.db.transaction(async (tx) => {
+      await this.holdScan(tx, owner, scanId);
+      const inserted = found.length
+        ? await tx
+            .insert(awaitedReply)
+            .values(
+              found.map((entry) => ({
+                id: newId('awr'),
+                spaceId: owner.spaceId,
+                principalId: owner.principalId,
+                messageId: entry.messageId,
+                toAddress: entry.to,
+                toName: entry.toName,
+                subject: entry.subject,
+                sentAt: new Date(entry.sentAt),
+                evidence: {
+                  message_id: entry.messageId,
+                  quote: entry.quote,
+                  start: entry.start,
+                  end: entry.end,
+                },
+                scanId,
+              })),
+            )
+            .onConflictDoNothing()
+            .returning({ id: awaitedReply.id })
+        : [];
+      if (answered.length)
+        await tx
+          .update(awaitedReply)
+          .set({ status: 'settled' })
+          .where(
+            and(
+              ownedAwaited(owner),
+              inArray(awaitedReply.messageId, [...answered]),
+              inArray(awaitedReply.status, [...OPEN_AWAITED]),
+            ),
+          );
+      return inserted.length;
+    });
+  }
+
+  async awaitedReplies(owner: Owner, now: Date): Promise<AwaitedReply[]> {
+    const rows = await this.db
+      .select()
+      .from(awaitedReply)
+      .where(
+        and(
+          ownedAwaited(owner),
+          inArray(awaitedReply.status, [...OPEN_AWAITED]),
+          or(isNotNull(awaitedReply.jobId), gte(awaitedReply.sentAt, awaitedSince(now))),
+        ),
+      )
+      .orderBy(asc(awaitedReply.sentAt), asc(awaitedReply.id));
+    return rows.map(awaitedRow);
+  }
+
+  async awaitedReply(
+    owner: Owner,
+    id: string,
+  ): Promise<{ reply: AwaitedReply; text: string | null } | null> {
+    const [row] = await this.db
+      .select()
+      .from(awaitedReply)
+      .where(and(ownedAwaited(owner), eq(awaitedReply.id, id)));
+    if (!row) return null;
+    const [message] = await this.db
+      .select({ body: companyMessage.body })
+      .from(companyMessage)
+      .where(
+        and(
+          eq(companyMessage.spaceId, owner.spaceId),
+          ownJob(companyMessage.principalId, owner.principalId),
+          eq(companyMessage.messageId, row.messageId),
+        ),
+      );
+    return { reply: awaitedRow(row), text: message?.body ?? null };
+  }
+
+  async setAwaitedJob(owner: Owner, id: string, jobId: string): Promise<AwaitedReply | null> {
+    const [row] = await this.db
+      .update(awaitedReply)
+      .set({ jobId, status: 'handling' })
+      .where(and(ownedAwaited(owner), eq(awaitedReply.id, id)))
+      .returning();
+    return row ? awaitedRow(row) : null;
+  }
+
+  async dropAwaited(owner: Owner, id: string): Promise<AwaitedReply | null> {
+    const [row] = await this.db
+      .update(awaitedReply)
+      .set({ status: 'dropped' })
+      .where(and(ownedAwaited(owner), eq(awaitedReply.id, id)))
+      .returning();
+    return row ? awaitedRow(row) : null;
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -560,6 +729,7 @@ export class MemoryCompanyStore implements CompanyStore {
   private readonly messages = new Map<string, StoredMessage & Owner>();
   /** Dedupe key to the id of the item holding it, so a refresh can find the row. */
   private readonly keys = new Map<string, string>();
+  private readonly awaited = new Map<string, AwaitedReply & Owner>();
 
   private key(owner: Owner, suffix: string) {
     return `${owner.spaceId}|${owner.principalId}|${suffix}`;
@@ -765,5 +935,100 @@ export class MemoryCompanyStore implements CompanyStore {
     const updated: LedgerItem = { ...item, job_id: null, status: 'found' };
     this.items.set(id, updated);
     return updated;
+  }
+
+  async latestScan(owner: Owner): Promise<ScanRecord | null> {
+    const mine = [...this.scans.values()].filter(
+      (scan) => scan.spaceId === owner.spaceId && scan.principalId === owner.principalId,
+    );
+    mine.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.id.localeCompare(a.id));
+    const [scan] = mine;
+    if (!scan) return null;
+    const { spaceId: _space, principalId: _principal, ...record } = scan;
+    return record;
+  }
+
+  async saveAwaited(
+    owner: Owner,
+    _scanId: string,
+    found: readonly AwaitedFinding[],
+    answered: readonly string[],
+  ): Promise<number> {
+    let added = 0;
+    for (const entry of found) {
+      const key = this.key(owner, `awaited:${entry.messageId}`);
+      if (this.awaited.has(key)) continue;
+      added += 1;
+      this.awaited.set(key, {
+        ...owner,
+        id: newId('awr'),
+        space_id: owner.spaceId,
+        principal_id: owner.principalId,
+        message_id: entry.messageId,
+        to: entry.to,
+        to_name: entry.toName,
+        subject: entry.subject,
+        sent_at: entry.sentAt,
+        evidence: {
+          message_id: entry.messageId,
+          quote: entry.quote,
+          start: entry.start,
+          end: entry.end,
+        },
+        status: 'found',
+        job_id: null,
+      });
+    }
+    for (const messageId of answered) {
+      const held = this.awaited.get(this.key(owner, `awaited:${messageId}`));
+      if (held && (OPEN_AWAITED as readonly string[]).includes(held.status))
+        held.status = 'settled';
+    }
+    return added;
+  }
+
+  private awaitedOf(owner: Owner) {
+    return [...this.awaited.values()].filter(
+      (entry) => entry.spaceId === owner.spaceId && entry.principalId === owner.principalId,
+    );
+  }
+
+  private strip(entry: AwaitedReply & Owner): AwaitedReply {
+    const { spaceId: _space, principalId: _principal, ...reply } = entry;
+    return { ...reply };
+  }
+
+  async awaitedReplies(owner: Owner, now: Date): Promise<AwaitedReply[]> {
+    const since = awaitedSince(now).getTime();
+    return this.awaitedOf(owner)
+      .filter((entry) => (OPEN_AWAITED as readonly string[]).includes(entry.status))
+      .filter((entry) => entry.job_id !== null || Date.parse(entry.sent_at) >= since)
+      .sort((a, b) => a.sent_at.localeCompare(b.sent_at) || a.id.localeCompare(b.id))
+      .map((entry) => this.strip(entry));
+  }
+
+  async awaitedReply(
+    owner: Owner,
+    id: string,
+  ): Promise<{ reply: AwaitedReply; text: string | null } | null> {
+    const entry = this.awaitedOf(owner).find((candidate) => candidate.id === id);
+    if (!entry) return null;
+    const message = this.messages.get(this.key(owner, entry.message_id));
+    return { reply: this.strip(entry), text: message?.text ?? null };
+  }
+
+  async setAwaitedJob(owner: Owner, id: string, jobId: string): Promise<AwaitedReply | null> {
+    const entry = this.awaitedOf(owner).find((candidate) => candidate.id === id);
+    if (!entry) return null;
+    entry.job_id = jobId;
+    entry.status = 'handling';
+    return this.strip(entry);
+  }
+
+  async dropAwaited(owner: Owner, id: string): Promise<AwaitedReply | null> {
+    const entry = this.awaitedOf(owner).find((candidate) => candidate.id === id);
+    if (!entry) return null;
+    entry.status = 'dropped';
+    return this.strip(entry);
   }
 }

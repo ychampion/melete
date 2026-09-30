@@ -250,6 +250,11 @@ export async function seedSpace(
     values (${newId('li')}, ${spaceId}, ${principalId}, ${companyId}, 'invoice', 'you_pay', 'high',
       ${json([{ message_id: '<m1@example.test>', quote: 'Your invoice for 148.00' }])}::text::jsonb,
       ${jobId}, 'Invoice due', ${scanId}, 'invoice:example.test')`;
+  await sql`insert into awaited_reply
+    (id, space_id, principal_id, message_id, to_address, subject, sent_at, evidence, job_id, scan_id)
+    values (${newId('awr')}, ${spaceId}, ${principalId}, '<m1@example.test>', 'billing@example.test',
+      'Invoice', now(), ${json({ message_id: '<m1@example.test>', quote: 'Your invoice', start: 0, end: 12 })}::text::jsonb,
+      ${jobId}, ${scanId})`;
 
   await seedMemory(sql, { spaceId, ownerId, jobId, attemptId });
   const claim = await sql<

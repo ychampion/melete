@@ -190,6 +190,7 @@ import {
   spaceRemovalPreview,
   spaceRemovalReport,
 } from './spaces.ts';
+import { awaitedReply, waitingOn } from './waiting.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
   content: { 'application/json': { schema } },
@@ -2196,6 +2197,74 @@ export function buildOpenApiDocument() {
               '404': problem('No such item for this person'),
               '409': problem('Already finished, or no longer quotable'),
               '503': problem('Handling is not connected yet'),
+            },
+          },
+        },
+
+        '/waiting-on': {
+          get: {
+            tags: ['companies'],
+            summary: 'What this person is waiting on: money owed to them, and replies',
+            description:
+              'Combines the company map’s owed items with messages the person sent that ' +
+              'asked for something and have not been answered after three days. The owed ' +
+              'figure is the company map’s own. `top` holds up to three nothing is chasing ' +
+              'yet. A reply nothing is chasing that went out more than thirty days ago is ' +
+              'left out. Reads only; a scan is started with ' +
+              '`POST /spaces/{spaceId}/companies/scan` in the space `scan.space_id` names.',
+            requestParams: {
+              query: z.object({
+                space_id: z
+                  .string()
+                  .optional()
+                  .meta({ description: 'One space; every space the person can see if absent' }),
+              }),
+            },
+            responses: {
+              '200': jsonResponse('What is waited on, and the latest scan', waitingOn),
+              '403': problem('This space is not accessible to the signed-in account'),
+            },
+          },
+        },
+        '/waiting-on/replies/{id}/chase': {
+          post: {
+            tags: ['companies'],
+            summary: 'Start the job that chases a reply the person is waiting on',
+            description:
+              'Creates the job that runs the chase-reply playbook for one sent message. The ' +
+              'follow-up goes through the existing approval path, which shows the exact text; ' +
+              'this route starts the work, it does not send.',
+            requestParams: {
+              ...idParam('id', 'Awaited reply id'),
+              query: z.object({ space_id: z.string().optional() }),
+            },
+            responses: {
+              '200': jsonResponse(
+                'Already being chased, by the job named here',
+                z.object({ job_id: z.string() }),
+              ),
+              '201': jsonResponse('The job now chasing it', z.object({ job_id: z.string() })),
+              '404': problem('No such awaited reply for this person'),
+              '409': problem('Already finished, or no longer quotable'),
+              '503': problem('Chasing is not connected yet'),
+            },
+          },
+        },
+        '/waiting-on/replies/{id}/drop': {
+          post: {
+            tags: ['companies'],
+            summary: 'Dismiss a reply the person is no longer waiting on',
+            description:
+              'Marks the awaited reply dropped, so it leaves the list and a later scan does ' +
+              'not bring it back. A chase that has it is stopped first.',
+            requestParams: {
+              ...idParam('id', 'Awaited reply id'),
+              query: z.object({ space_id: z.string().optional() }),
+            },
+            responses: {
+              '200': jsonResponse('The reply, now dropped', awaitedReply),
+              '404': problem('No such awaited reply for this person'),
+              '503': problem('Stopping its chase is not connected yet'),
             },
           },
         },

@@ -379,6 +379,13 @@
       "when": 1789232400033,
       "tag": "0053_push_presence",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1789232400034,
+      "tag": "0054_awaited_replies",
+      "breakpoints": true
     }
   ]
 }

@@ -161,3 +161,6 @@ export type LedgerDetail = Ok<paths['/ledger/{id}'], 'get'>;
 export type LedgerMessage = NonNullable<LedgerDetail['message']>;
 export type ScanStarted = Ok<paths['/spaces/{spaceId}/companies/scan'], 'post'>;
 export type ScanProgress = Ok<paths['/spaces/{spaceId}/companies/scan/{scanId}'], 'get'>;
+/** What the person is waiting on: money owed to them, and replies nobody has sent. */
+export type WaitingOn = Ok<paths['/waiting-on'], 'get'>;
+export type WaitingOnEntry = WaitingOn['top'][number];

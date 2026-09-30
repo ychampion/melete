@@ -87,6 +87,7 @@ export async function sweepOperational(
     // one after it.
     await tx`delete from company_scan where space_id = ${spaceId}`;
     await tx`delete from ledger_item where space_id = ${spaceId}`;
+    await tx`delete from awaited_reply where space_id = ${spaceId}`;
     await tx`delete from company_message where space_id = ${spaceId}`;
     await tx`delete from company where space_id = ${spaceId}`;
     // One statement takes attempts, actions, approvals, events, triggers, the

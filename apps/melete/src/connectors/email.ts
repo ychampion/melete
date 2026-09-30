@@ -40,6 +40,7 @@ const search = z
   .object({
     query: z.string().max(1000).default(''),
     limit: z.number().int().min(1).max(50).default(20),
+    folder: z.enum(['inbox', 'sent']).default('inbox'),
   })
   .strict();
 const read = z.object({ uid: z.number().int().positive() }).strict();
@@ -79,13 +80,15 @@ export const emailManifest: ConnectorManifest = {
   tools: [
     {
       name: 'email.search',
-      description: 'Search inbox messages; authentication messages are filtered best-effort.',
+      description:
+        'Search inbox messages, or sent ones with folder "sent"; authentication messages are filtered best-effort.',
       input_schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
           query: { type: 'string', maxLength: 1000 },
           limit: { type: 'integer', minimum: 1, maximum: 50 },
+          folder: { type: 'string', enum: ['inbox', 'sent'] },
         },
       },
       effect_class: 'read',
@@ -357,7 +360,7 @@ export class EmailConnector implements Connector {
       if (action.kind === 'email.search') {
         const payload = search.parse(action.canonical_payload);
         const messages = await this.use((transport) =>
-          transport.search(payload.query, payload.limit),
+          transport.search(payload.query, payload.limit, payload.folder),
         );
         return this.success(action, {
           messages: messages
