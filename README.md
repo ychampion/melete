@@ -144,7 +144,8 @@ Melete works with the model you choose. Pass the provider to `configure.ts` with
 | `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`, which can point at a model server on your own network |
 | `chatgpt` | No key. You sign in with your ChatGPT account once Melete is running. |
 
-Write the model's name as the provider does. To change provider or model later,
+You can also connect a provider from the app, in Settings › Models: paste a key,
+test it, and choose the model, with no restart. Write the model's name as the provider does. To change provider or model later,
 edit `MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL` and the key in
 `deploy/.env`, then restart the two services that use them:
 

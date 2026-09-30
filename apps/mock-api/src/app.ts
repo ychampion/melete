@@ -71,6 +71,7 @@ import type { z } from 'zod';
 import { mountCompaniesMock } from './companies.ts';
 import { mountExperienceMock } from './experience.ts';
 import { mountLearnedMock } from './learned.ts';
+import { mountModelsMock } from './models.ts';
 import type { Runner } from './runner.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { MockConflict, newId, type Store } from './store.ts';
@@ -120,7 +121,7 @@ export function createMockApp(deps: AppDeps) {
       origin: (origin) => origin ?? '*',
       credentials: true,
       allowHeaders: ['content-type', 'accept', 'last-event-id', 'idempotency-key'],
-      allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     }),
   );
 
@@ -130,6 +131,7 @@ export function createMockApp(deps: AppDeps) {
   // its own routes rather than going through the contract's operation table.
   mountCompaniesMock(app, deps, experience);
   mountLearnedMock(app, deps);
+  mountModelsMock(app);
 
   /**
    * Parse an outgoing body with the contract before it leaves. A failure here is

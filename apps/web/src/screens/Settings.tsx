@@ -13,6 +13,8 @@ import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import { givenName } from '../experience/profile.ts';
 import type { Connection, MemoryItem, Rule } from '../experience/types.ts';
+import { models } from '../models/api.ts';
+import { ModelLine, ModelsTab } from '../models/ModelConnect.tsx';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
@@ -255,7 +257,11 @@ export function SettingsScreen({ tab }: { tab: string }) {
   const memory = useLoad(() => adapter.memory(), []);
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
-  const current = tab === 'connections' || tab === 'rules' || tab === 'learned' ? tab : 'memory';
+  const model = useLoad(() => models.settings(), []);
+  const current =
+    tab === 'connections' || tab === 'rules' || tab === 'learned' || tab === 'models'
+      ? tab
+      : 'memory';
   const [learnedCount, setLearnedCount] = useState<number | undefined>(undefined);
   const items = memory.data?.items ?? [];
   const list = connections.data?.connections ?? [];
@@ -281,6 +287,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>
               Signing out ends this session on every open tab; nothing saved here is lost.
             </span>
+            {model.data ? <ModelLine settings={model.data} /> : null}
           </div>
           <Button
             variant="outline"
@@ -308,6 +315,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
               count: list.filter((c) => c.status === 'connected').length,
             },
             { value: 'rules', label: 'Rules', count: rules.data?.rules.length ?? 0 },
+            { value: 'models', label: 'Models' },
           ]}
         />
         {current === 'memory' ? (
@@ -372,6 +380,8 @@ export function SettingsScreen({ tab }: { tab: string }) {
           </div>
         ) : current === 'learned' ? (
           <LearnedTab onCount={setLearnedCount} />
+        ) : current === 'models' ? (
+          <ModelsTab loaded={model} />
         ) : current === 'connections' ? (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>

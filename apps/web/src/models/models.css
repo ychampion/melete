@@ -1,0 +1,221 @@
+/* Settings › Models and the model step of first-run setup. Colours are tokens,
+   so light and dark follow tokens.css. */
+
+.models-overline {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.models-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+
+.models-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.models-active {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-start;
+  padding: 14px 16px;
+}
+/* The name wraps the badge and button below it rather than shrinking beside them. */
+.models-active > :first-child {
+  flex: 1 1 260px;
+}
+.models-active-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.models-active-side {
+  gap: 8px;
+  align-items: flex-end;
+}
+@media (max-width: 560px) {
+  .models-active-side {
+    align-items: flex-start;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+.models-warning {
+  display: inline-flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+.models-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.models-fieldset > legend {
+  padding: 0;
+  margin-bottom: 8px;
+}
+
+.models-providers {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 8px;
+}
+@media (max-width: 420px) {
+  .models-providers {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.models-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px;
+  text-align: left;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+.models-provider:hover {
+  background: var(--row-hover);
+}
+.models-provider[data-on="true"] {
+  border-color: var(--blue-line);
+  background: var(--blue-soft);
+  box-shadow: inset 0 0 0 1px var(--blue-line);
+}
+.models-provider-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.models-provider-blurb {
+  font-size: 12px;
+  color: var(--muted);
+}
+.models-provider-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.models-provider-state[data-tone="ok"] {
+  color: var(--success);
+}
+.models-in-use {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.models-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  min-width: 0;
+}
+.models-panel-title {
+  font-family: var(--font-head);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.models-hint {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--muted);
+}
+.models-readonly {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--secondary);
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--soft);
+  overflow-wrap: anywhere;
+}
+
+.models-result {
+  display: inline-flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 13px;
+  line-height: 19px;
+}
+.models-result > svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.models-result[data-tone="ok"] {
+  color: var(--success);
+}
+.models-result[data-tone="err"] {
+  color: var(--danger);
+}
+
+.models-link {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--blue-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.models-steps {
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.models-steps a {
+  color: var(--blue-ink);
+}
+.models-code {
+  align-self: flex-start;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 20px;
+  letter-spacing: 0.12em;
+  padding: 6px 14px;
+  border-radius: 10px;
+  background: var(--soft);
+  color: var(--heading);
+}

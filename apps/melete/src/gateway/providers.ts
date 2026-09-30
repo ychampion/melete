@@ -101,22 +101,34 @@ export function providersFromEnv(
     },
   ];
   if (env.OPENAI_COMPAT_BASE_URL) {
-    const baseUrl = `${env.OPENAI_COMPAT_BASE_URL.replace(/\/+$/, '')}/`;
-    providers.push({
-      name: OPENAI_COMPATIBLE,
-      baseUrl,
+    const baseUrl = compatibleBaseUrl(env.OPENAI_COMPAT_BASE_URL);
+    providers.push(
       // Compose passes an unset variable as an empty string, which is not a key.
       // The OpenAI key is a built-in provider's credential: it may stand in only
       // for an endpoint reached over HTTPS, never travel in plain text.
-      apiKey:
+      openAiCompatibleProvider(
+        baseUrl,
         env.OPENAI_COMPAT_API_KEY || (isHttpsAddress(baseUrl) ? env.OPENAI_API_KEY : undefined),
-      protocols: [...PROVIDER_PROTOCOLS[OPENAI_COMPATIBLE]],
-      // The operator chose this address, and it may be a model server on their
-      // own network. Every built-in upstream stays HTTPS.
-      allowHttp: true,
-    });
+      ),
+    );
   }
   return providers;
+}
+
+/** An endpoint address as the gateway keeps it: its version prefix, ending in one slash. */
+export const compatibleBaseUrl = (address: string): string => `${address.replace(/\/+$/, '')}/`;
+
+/** The OpenAI-compatible endpoint at an address the operator or the owner chose. */
+export function openAiCompatibleProvider(baseUrl: string, apiKey?: string): GatewayProvider {
+  return {
+    name: OPENAI_COMPATIBLE,
+    baseUrl,
+    apiKey,
+    protocols: [...PROVIDER_PROTOCOLS[OPENAI_COMPATIBLE]],
+    // The operator or owner chose this address, and it may be a model server
+    // on their own network. Every built-in upstream stays HTTPS.
+    allowHttp: true,
+  };
 }
 
 export function providerUrl(provider: GatewayProvider, protocol: GatewayProtocol): URL {

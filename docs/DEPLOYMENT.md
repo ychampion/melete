@@ -689,6 +689,32 @@ job's output budget until the call settles at its real usage, and it is lowered
 to what the job has left rather than refused. A limit the runtime does name is
 never rewritten: it is honoured, or refused when it exceeds the job's budget.
 
+### Connecting a model in the app
+
+The owner can also connect a model from the web app, in Settings › Models, or
+in the first-run step that appears while no working model is configured. Pick a
+provider, paste its API key (and, for `openai-compatible`, the endpoint's
+address), test the connection, choose a model from the provider's list or type
+its identifier, and use it. The test makes one small call, the provider's model
+list, and says plainly when the key is refused, the address answers 404, or the
+provider does not answer in time. Only the setup owner can change a key or the
+model; every other account sees which model is active.
+
+A key entered this way is sealed with `MELETE_MASTER_KEY` before it is stored,
+so the app refuses to store one while that key is unset. No answer ever carries
+a stored key back, only its last four characters, and a change applies from the
+next reply without a restart.
+
+Where both are set, the environment wins:
+
+- A provider key in the environment (`FIREWORKS_API_KEY` and the others above,
+  or `OPENAI_COMPAT_BASE_URL` for the compatible endpoint) is used for that
+  provider, shown in the app as set by the operator, and cannot be replaced
+  there. Remove it from `deploy/.env` to manage that provider in the app.
+- `MELETE_DEFAULT_PROVIDER` and `MELETE_DEFAULT_MODEL` are the starting model. A
+  model chosen in the app replaces them for new work until the owner picks
+  "Use the server default", which goes back to them.
+
 ### Signing in to a provider
 
 A sign-in is an alternative to a key for two providers. OpenAI models are
