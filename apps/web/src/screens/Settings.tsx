@@ -8,7 +8,7 @@ import { type ReactNode, useState } from 'react';
 import { logoFor } from '../chat/parts.tsx';
 import { Icon } from '../design/icons.tsx';
 import { Logo } from '../design/logos.tsx';
-import { Badge, Button, TabsUnderline } from '../design/primitives.tsx';
+import { Badge, Button, TabsUnderline, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import { givenName } from '../experience/profile.ts';
@@ -175,6 +175,65 @@ function ConnectedAssistants() {
   );
 }
 
+/**
+ * Reading public web pages in conversations, for this space. On by default;
+ * an installation without the setting draws nothing here.
+ */
+function WebReads() {
+  const setting = useLoad(() => adapter.webReads(), []);
+  const [saving, setSaving] = useState(false);
+  if (!setting.data?.available) return null;
+  const enabled = setting.data.enabled;
+  return (
+    <div className="card-12 row" style={{ gap: 12, padding: '12px 16px', flexWrap: 'wrap' }}>
+      <span
+        className="row"
+        style={{
+          justifyContent: 'center',
+          width: 40,
+          height: 40,
+          borderRadius: 10,
+          background: 'var(--blue-soft)',
+          color: 'var(--blue-ink)',
+          flexShrink: 0,
+        }}
+      >
+        <Icon name="globe" size={20} />
+      </span>
+      <div className="col grow" style={{ gap: 2, minWidth: 200 }}>
+        <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
+          Read public web pages
+        </span>
+        <span style={{ fontSize: 12, color: 'var(--muted)', maxWidth: 520 }}>
+          {enabled ? 'On' : 'Off'} · on by default. Conversations can open public pages to answer
+          you. They never sign in, fill in forms or post, and private spaces and agents stay
+          offline.
+        </span>
+      </div>
+      <Toggle
+        on={enabled}
+        disabled={saving}
+        label="Read public web pages"
+        onChange={(next) => {
+          setSaving(true);
+          void adapter.saveWebReads(next).then((r) => {
+            setSaving(false);
+            if (r.data === null) {
+              toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t save' });
+              return;
+            }
+            setting.set(r.data);
+            toast({
+              kind: 'ok',
+              title: r.data.enabled ? 'Public web pages on' : 'Public web pages off',
+            });
+          });
+        }}
+      />
+    </div>
+  );
+}
+
 const ruleWhen = (rule: Rule) => {
   const expires = new Date(rule.bounds.expires_at).toLocaleDateString('en-US', {
     month: 'short',
@@ -273,6 +332,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
               Melete reads what you connect and asks before it writes anywhere. Access is per agent;
               set it on each agent’s Access tab.
             </p>
+            <WebReads />
             {connections.error ? (
               <p style={{ color: 'var(--danger)', fontSize: 13 }}>{connections.error}</p>
             ) : null}
