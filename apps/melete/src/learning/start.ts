@@ -34,12 +34,14 @@ export async function startLearning(
   jobs: JobService,
   env: Env,
   workers: boolean,
-  fake?: GatewayOptions['fake'],
-  signIn?: ProviderSignIn,
+  fake: GatewayOptions['fake'] | undefined,
+  signIn: ProviderSignIn | undefined,
+  privacy: GatewayOptions['privacy'],
   settings?: ModelSettingsService,
 ) {
   const gateway = await openProposalGateway({
     db: jobs.db,
+    privacy,
     provider: env.MELETE_DEFAULT_PROVIDER,
     model: env.MELETE_DEFAULT_MODEL,
     // Proposals use the model new chats use, the one chosen in the app included.

@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { prefixedId } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
 import { SESSION_COOKIE } from '../api/auth.ts';
-import { startChatCapture } from './capture.ts';
+import { type CaptureOptions, startChatCapture } from './capture.ts';
 import { MemoryError, type MemoryScope, type MemorySql, provisionMemorySpace } from './db.ts';
 import type { ExtractionGateway } from './extract.ts';
 import { applyRestriction } from './forget.ts';
@@ -84,7 +84,14 @@ export async function startServiceMemory(
   boss: PgBoss,
   spacesRoot: string,
   onJobRecompute?: (jobId: string) => Promise<void>,
-  automatic: { gateway?: ExtractionGateway; captureChat?: boolean } = {},
+  automatic:
+    | { gateway?: ExtractionGateway; captureChat?: false }
+    | {
+        gateway?: ExtractionGateway;
+        captureChat: true;
+        /** Why a chat message is private, recorded on what memory learns from it. */
+        privacyOrigin: CaptureOptions['privacyOrigin'];
+      } = {},
 ) {
   const journal = new FileRestrictionJournal(join(spacesRoot, '.memory', 'restrictions.jsonl'));
   try {
@@ -154,7 +161,14 @@ export async function startServiceMemory(
   }
   // What a person says in chat is offered to their memory with no step of theirs.
   const stopCapture = automatic.captureChat
-    ? startChatCapture({ sql, boss, journal, scopeForJob, onError })
+    ? startChatCapture({
+        sql,
+        boss,
+        journal,
+        scopeForJob,
+        onError,
+        privacyOrigin: automatic.privacyOrigin,
+      })
     : undefined;
   return {
     async stop() {

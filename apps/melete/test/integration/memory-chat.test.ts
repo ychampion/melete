@@ -24,6 +24,7 @@ import { runExtractionWork } from '../../src/memory/service.ts';
 import { appendMemoryNotices, memoryNotice } from '../../src/memory/trace.ts';
 import { buildViews } from '../../src/memory/views.ts';
 import { principalContext } from '../../src/principals/authority.ts';
+import { PostgresPrivacyStore, PrivacyRouter } from '../../src/privacy/index.ts';
 import { createJournal } from './lifecycle-fixtures.ts';
 import { createScope, createTestDatabase, type TestDatabase } from './postgres.ts';
 import { record } from './properties-fixtures.ts';
@@ -169,7 +170,12 @@ withDb('automatic memory from chat', () => {
     const journal = await createJournal();
     const gateway = scriptedGateway();
     const service = { sql: db.sql, boss: db.boss, journal: journal.journal, gateway };
-    const capture = { sql: db.sql, journal: journal.journal, scopeForJob: scopeFor(db, owner) };
+    const capture = {
+      privacyOrigin: async () => null,
+      sql: db.sql,
+      journal: journal.journal,
+      scopeForJob: scopeFor(db, owner),
+    };
     // One pass of what the service's loops do: capture, extract, rebuild views.
     const settle = async () => {
       await captureChat(capture);
@@ -289,7 +295,12 @@ withDb('automatic memory from chat', () => {
     const owner: MemoryScope = { ...scope, principalId: scope.ownerId };
     const journal = await createJournal();
     try {
-      const capture = { sql: db.sql, journal: journal.journal, scopeForJob: scopeFor(db, owner) };
+      const capture = {
+        privacyOrigin: async () => null,
+        sql: db.sql,
+        journal: journal.journal,
+        scopeForJob: scopeFor(db, owner),
+      };
       await db.sql`insert into memory_settings (principal_id, capture) values (${scope.ownerId}, false)
         on conflict (principal_id) do update set capture = false`;
       const job = await conversation(db, scope);
@@ -318,7 +329,12 @@ withDb('automatic memory from chat', () => {
         role: 'reader',
         audience: 'space',
       };
-      const capture = { sql: db.sql, journal: journal.journal, scopeForJob: scopeFor(db, member) };
+      const capture = {
+        privacyOrigin: async () => null,
+        sql: db.sql,
+        journal: journal.journal,
+        scopeForJob: scopeFor(db, member),
+      };
       const job = await conversation(db, scope);
       await say(db, job, 'My sister Maya is on +351 912 345 678.');
       await captureChat(capture);
@@ -331,7 +347,10 @@ withDb('automatic memory from chat', () => {
       const theirs = await legacyConversation(db, scope);
       await db.sql`update job set principal_id = ${memberId} where id = ${theirs}`;
       await legacySay(db, theirs, 'My sister Maya is on +351 912 345 678.', memberId);
-      await captureChat({ ...capture, scopeForJob: scopeFor(db, scope) });
+      await captureChat({
+        ...capture,
+        scopeForJob: scopeFor(db, scope),
+      });
       const [row] =
         await db.sql`select count(*)::int as n from memory_sources where space_id = ${scope.spaceId}`;
       expect(row?.n).toBe(0);
@@ -340,7 +359,10 @@ withDb('automatic memory from chat', () => {
       const owners = await legacyConversation(db, scope);
       await legacySay(db, owners, 'My sister Maya is on +351 912 345 678.', memberId);
       await legacySay(db, owners, 'My sister Maya is on +351 912 345 678.', null);
-      await captureChat({ ...capture, scopeForJob: scopeFor(db, scope) });
+      await captureChat({
+        ...capture,
+        scopeForJob: scopeFor(db, scope),
+      });
       const [kept] =
         await db.sql`select count(*)::int as n from memory_sources where space_id = ${scope.spaceId}`;
       expect(kept?.n).toBe(0);
@@ -360,6 +382,7 @@ withDb('automatic memory from chat', () => {
   test('the memory gateway holds each person to a daily number of calls', async () => {
     if (!db) return;
     const opened = await openMemoryGateway({
+      privacy: new PrivacyRouter({ store: new PostgresPrivacyStore(db.sql) }),
       sql: db.sql,
       provider: 'fake',
       model: 'fake-scripted-v1',
@@ -379,7 +402,7 @@ withDb('automatic memory from chat', () => {
             max_tokens: 100,
             signal: AbortSignal.timeout(10_000),
           },
-          { ownerId, spaceId: 'sp_budget', workId },
+          { sourceJobId: null, ownerId, spaceId: 'sp_budget', workId },
         );
       expect(await ask('first-call')).toBe('{"proposals":[]}');
       expect(await ask('second-call')).toBe('{"proposals":[]}');
@@ -394,7 +417,7 @@ withDb('automatic memory from chat', () => {
             max_tokens: 100,
             signal: AbortSignal.timeout(10_000),
           },
-          { ownerId: newId('own'), spaceId: 'sp_budget', workId: 'fourth-call' },
+          { sourceJobId: null, ownerId: newId('own'), spaceId: 'sp_budget', workId: 'fourth-call' },
         )
         .catch((error: Error) => error.message);
       expect(other).toBe('{"proposals":[]}');
@@ -414,7 +437,7 @@ withDb('automatic memory from chat', () => {
             max_tokens: 100,
             signal: AbortSignal.timeout(10_000),
           },
-          { ownerId: sent, spaceId: 'sp_budget', workId: 'after-timeouts' },
+          { sourceJobId: null, ownerId: sent, spaceId: 'sp_budget', workId: 'after-timeouts' },
         )
         .catch((error: Error) => error.message);
       expect(timedOut).toBe('memory_daily_budget');
@@ -429,7 +452,7 @@ withDb('automatic memory from chat', () => {
             max_tokens: 100,
             signal: AbortSignal.timeout(10_000),
           },
-          { ownerId: refused, spaceId: 'sp_budget', workId: 'after-errors' },
+          { sourceJobId: null, ownerId: refused, spaceId: 'sp_budget', workId: 'after-errors' },
         )
         .catch((error: Error) => error.message);
       expect(afterErrors).toBe('{"proposals":[]}');
@@ -483,6 +506,7 @@ withDb('a model provider outage', () => {
     let down = true;
     const answers = createScriptedProvider([{ text: reply }]);
     const opened = await openMemoryGateway({
+      privacy: new PrivacyRouter({ store: new PostgresPrivacyStore(db.sql) }),
       sql: db.sql,
       provider: 'fake',
       model: 'fake-scripted-v1',
@@ -601,7 +625,12 @@ withDb('asking to forget in plain words', () => {
         'contact.maya.email',
         'maya@home.example',
       );
-      const capture = { sql: db.sql, journal: journal.journal, scopeForJob: scopeFor(db, owner) };
+      const capture = {
+        privacyOrigin: async () => null,
+        sql: db.sql,
+        journal: journal.journal,
+        scopeForJob: scopeFor(db, owner),
+      };
       const chat = await conversation(db, scope);
       const kept = async () =>
         (
@@ -707,6 +736,7 @@ withDb('asking to forget in plain words', () => {
       await task('Book the dentist for me, Dr Silva is on +351 912 000 111.', 'owner_request');
       await task('Reply to the supplier who wrote +351 912 000 222.', 'derived');
       await captureChat({
+        privacyOrigin: async () => null,
         sql: db.sql,
         journal: journal.journal,
         scopeForJob: scopeFor(db, owner),
@@ -732,6 +762,7 @@ withDb('spent daily reads', () => {
       Array.from({ length: 20 }, () => ({ text: '{"proposals":[]}' })),
     );
     const opened = await openMemoryGateway({
+      privacy: new PrivacyRouter({ store: new PostgresPrivacyStore(db.sql) }),
       sql: db.sql,
       provider: 'fake',
       model: 'fake-scripted-v1',
@@ -826,6 +857,7 @@ withDb('failures asking again cannot fix', () => {
       Array.from({ length: 10 }, () => ({ text: '{"proposals":[]}' })),
     );
     const opened = await openMemoryGateway({
+      privacy: new PrivacyRouter({ store: new PostgresPrivacyStore(db.sql) }),
       sql: db.sql,
       provider: 'fake',
       model: 'no-such-model',

@@ -109,7 +109,11 @@ export function createMemoryRouter(options: MemoryRouteOptions) {
   );
   app.post('/memory/recall', async (c) =>
     c.json(
-      await recall(options.sql, c.get('memoryScope'), await body(c.req.raw), options.recallOptions),
+      // The person reads their own memory here, including what was learned privately.
+      await recall(options.sql, c.get('memoryScope'), await body(c.req.raw), {
+        ...options.recallOptions,
+        privateOrigin: true,
+      }),
     ),
   );
   app.post('/memory/corrections', async (c) =>
