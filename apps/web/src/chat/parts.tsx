@@ -27,7 +27,9 @@ import { OPEN_TEXT_LIMIT_BYTES } from '../experience/text-prefix.ts';
 import { type ToolEntry, toolOf } from '../experience/trace.ts';
 import type {
   ActionResolution,
+  ActionReview,
   Agent,
+  BecauseLink,
   Draft,
   LedgerAction,
   Permission,
@@ -41,6 +43,7 @@ import type {
   TrailStep,
   TurnStatus,
 } from '../experience/types.ts';
+import { href } from '../router.ts';
 
 export const timeOf = (iso: string) =>
   new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -671,6 +674,36 @@ export function ResultCard({
   );
 }
 
+/* ---------- why an action was taken ---------- */
+
+/**
+ * "Because: …" under a receipt or a permission card, linking each belief to its
+ * place in Memory. When the agent did not say which belief it used, the links
+ * are what memory handed that turn, and the line says so.
+ */
+export function BecauseLine({ because }: { because?: BecauseLink[] }) {
+  if (!because?.length) return null;
+  const recalled = because.some((link) => link.basis === 'recalled');
+  return (
+    <span className="because">
+      <span>Because:</span>
+      {because.map((link) => (
+        <a
+          key={`${link.kind}:${link.id}`}
+          href={href(
+            link.kind === 'belief' ? `/settings/memory?belief=${link.id}` : '/settings/rules',
+          )}
+        >
+          {link.label}
+        </a>
+      ))}
+      {recalled ? (
+        <span>(what I remembered for this; the agent didn’t say which it used)</span>
+      ) : null}
+    </span>
+  );
+}
+
 /* ---------- receipt ---------- */
 
 export function ReceiptRow({
@@ -707,19 +740,21 @@ export function ReceiptRow({
       >
         <Icon name={reversed || reversal ? 'refresh' : 'check'} size={12} stroke={3} />
       </span>
-      <span
-        className="grow"
-        style={{
-          fontSize: 13,
-          color: 'var(--text)',
-          minWidth: 0,
-          textDecoration: reversed ? 'line-through' : undefined,
-        }}
-      >
-        {receipt.what}{' '}
-        <span style={{ color: 'var(--muted)' }}>
-          · {timeOf(receipt.when)} · {receipt.where}
+      <span className="grow col" style={{ gap: 2, minWidth: 0 }}>
+        <span
+          style={{
+            fontSize: 13,
+            color: 'var(--text)',
+            textDecoration: reversed ? 'line-through' : undefined,
+          }}
+        >
+          {receipt.what}{' '}
+          <span style={{ color: 'var(--muted)' }}>
+            · {timeOf(receipt.when)} · {receipt.where}
+          </span>
         </span>
+        {receipt.review ? <ReviewNote review={receipt.review} /> : null}
+        <BecauseLine because={receipt.because} />
       </span>
       {canUndo ? (
         <Button
@@ -733,6 +768,24 @@ export function ReceiptRow({
         </Button>
       ) : null}
     </div>
+  );
+}
+
+/** A sentence as the tail of another one: "approved because it only reads." */
+const asClause = (text: string) =>
+  /^[A-Z][a-z]/.test(text) ? `${text[0]?.toLowerCase()}${text.slice(1)}` : text;
+
+/** What auto-review decided, on the receipt of what it let through or the card it sent on. */
+export function ReviewNote({ review }: { review: ActionReview }) {
+  const approved = review.outcome === 'auto_approved';
+  return (
+    <span className="review-note" data-outcome={review.outcome}>
+      <Icon name={approved ? 'check' : 'info'} size={12} stroke={2.5} />
+      <span>
+        <strong>{approved ? 'Auto-reviewed:' : 'Escalated:'}</strong>{' '}
+        {approved ? `approved because ${asClause(review.reason)}` : review.reason}
+      </span>
+    </span>
   );
 }
 
@@ -895,6 +948,7 @@ export function PermissionCard({
               {note}
             </span>
           ))}
+          <BecauseLine because={permission.because} />
         </div>
         {outcome ? (
           <Status tone={decided === 'allow_once' || decided === 'always' ? 'settled' : 'kind'}>
@@ -904,6 +958,7 @@ export function PermissionCard({
       </div>
       {pending ? (
         <div className="permission-body">
+          {permission.review ? <ReviewNote review={permission.review} /> : null}
           {fields.length ? (
             <div className="permission-fields">
               {fields.map((field) => (

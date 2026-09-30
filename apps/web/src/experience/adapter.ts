@@ -20,8 +20,16 @@ import type {
   AgentComputer,
   AgentInput,
   AgentTemplate,
+  ApprovalSettings,
+  ApprovalSettingsView,
   Automation,
   AutomationCreate,
+  Belief,
+  BeliefBlock,
+  BeliefExport,
+  BeliefHistory,
+  BeliefImport,
+  BeliefImportResult,
   BrowserControl,
   BrowserSession,
   CatalogEntry,
@@ -45,9 +53,12 @@ import type {
   LedgerAction,
   LiveOpen,
   LiveUp,
+  MemoryDigestResponse,
   MemoryExplanation,
   MemoryItem,
   MemoryItemCreate,
+  MemoryRewind,
+  MemoryTimeline,
   MessageAcceptance,
   Permission,
   PermissionOutcome,
@@ -63,6 +74,8 @@ import type {
   Reaction,
   Receipt,
   ResultCard,
+  RewindPreview,
+  RewindTarget,
   Rule,
   RuleBounds,
   SearchResult,
@@ -274,6 +287,9 @@ export const adapter = {
   savePushSettings: (patch: PushSettingsUpdate) =>
     guard<{ settings: PushSettings }>(() => api.PATCH('/push/settings', { body: patch })),
   rules: () => guard<{ rules: Rule[] }>(() => api.GET('/rules')),
+  approvalSettings: () => guard<ApprovalSettingsView>(() => api.GET('/approval-settings')),
+  saveApprovalSettings: (body: ApprovalSettings) =>
+    guard<ApprovalSettingsView>(() => api.PUT('/approval-settings', { body })),
   /* ---------- reactions: a glyph on a message, either direction ---------- */
   messageEvents: (conversationId: string, signal: AbortSignal) =>
     subscribeEvents(client, { jobId: conversationId, signal }),
@@ -389,6 +405,32 @@ export const adapter = {
     guard<{ status: 'ok' }>(() => api.DELETE('/memory/items/{id}', path(id))),
   memoryWhy: (id: string) =>
     guard<MemoryExplanation>(() => api.GET('/memory/items/{id}/why', path(id))),
+  beliefs: () => guard<{ beliefs: Belief[]; time_zone: string }>(() => api.GET('/memory/beliefs')),
+  beliefHistory: (id: string) =>
+    guard<BeliefHistory>(() => api.GET('/memory/beliefs/{id}/history', path(id))),
+  /** Forget a belief and never learn its subject again. */
+  blockBelief: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/memory/beliefs/{id}/block', path(id))),
+  beliefBlocks: () => guard<{ blocks: BeliefBlock[] }>(() => api.GET('/memory/blocks')),
+  unblockBelief: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.DELETE('/memory/blocks/{id}', path(id))),
+  memoryTimeline: (days = 30) =>
+    guard<MemoryTimeline>(() =>
+      api.GET('/memory/timeline', { params: { query: { days: String(days) } } }),
+    ),
+  previewRewind: (body: RewindTarget) =>
+    guard<RewindPreview>(() => api.POST('/memory/rewind/preview', { body })),
+  rewind: (body: RewindTarget) =>
+    guard<{ rewind: MemoryRewind }>(() => api.POST('/memory/rewind', { body })),
+  undoRewind: (id: string) =>
+    guard<{ rewind: MemoryRewind }>(() => api.POST('/memory/rewinds/{id}/undo', path(id))),
+  memoryDigest: () => guard<MemoryDigestResponse>(() => api.GET('/memory/digest')),
+  digestSeen: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/memory/digest/{id}/seen', path(id))),
+  exportBeliefs: (format: 'json' | 'markdown') =>
+    guard<BeliefExport>(() => api.GET('/memory/export', { params: { query: { format } } })),
+  importBeliefs: (body: BeliefImport) =>
+    guard<BeliefImportResult>(() => api.POST('/memory/import', { body })),
 
   /* ---------- plans ---------- */
   plans: () => guard<{ plans: Plan[] }>(() => api.GET('/plans')),

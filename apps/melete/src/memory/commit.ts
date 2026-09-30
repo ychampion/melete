@@ -5,6 +5,7 @@ import {
   type SourceEvent,
   type SourceRef,
 } from '@melete/contracts';
+import { blockedSubjects, isBlocked } from './beliefs.ts';
 import {
   addReferences,
   type ClaimHead,
@@ -152,7 +153,7 @@ export type CommitResult = {
 
 /** A rejection is a durable record with a reason, readable at /memory/rejections. */
 async function recordRejections(
-  sql: MemorySql,
+  sql: MemorySql | MemoryTx,
   scope: MemoryScope,
   batch: ExtractionBatch,
   rejected: readonly Tier1Rejection[],
@@ -198,6 +199,13 @@ async function publishKeyed(
     confidence: proposal.confidence ?? null,
   };
   const identity = stableEntityId('k', batch.work.id, key);
+  // A belief a rewind set aside holds no value to weigh against: saying it
+  // again learns it again, on the same claim.
+  if (head && head.current.status === 'retracted') {
+    const revision = await publishRevision(tx, { ...scope, audience }, key, head, draft, 'active');
+    await invalidateDependencies(tx, scope, [head.id], revision.data_revision);
+    return head.id;
+  }
   if (!head) {
     const revision = await publishRevision(
       tx,
@@ -302,7 +310,10 @@ async function publishKeyed(
 }
 
 /** Internal failure-schedule seam; no request, model, or queue payload can install a hook. */
-export type PublicationHooks = { beforePublication?: () => Promise<void> };
+export type PublicationHooks = {
+  beforeLock?: () => Promise<void>;
+  beforePublication?: () => Promise<void>;
+};
 /** Validate every operation before publishing any revision, edge, cursor or invalidation. */
 export async function commitExtraction(
   sql: MemorySql,
@@ -319,7 +330,7 @@ export async function commitExtraction(
     // not in the registry, or whose value Tier 0 cannot find in the evidence it
     // cited is rejected here with a reason. It is never attached to a nearby
     // message. Proposals with no key are untouched and keep their existing path.
-    const { accepted: proposals, rejected } = validateTier1(parsed.proposals, {
+    const { accepted, rejected } = validateTier1(parsed.proposals, {
       source: batch.source,
       text: batch.text,
       segmentStart: batch.work.segment_start,
@@ -327,9 +338,28 @@ export async function commitExtraction(
       timeZone: batch.time_zone ?? undefined,
     });
     if (rejected.length) await recordRejections(sql, scope, batch, rejected);
+    await hooks.beforeLock?.();
     const result = await sql.begin(async (tx) => {
       await lockEventOrder(tx);
       const space = await lockSpace(tx, scope);
+      // A subject the person asked not to be learned again is refused here, with
+      // its reason recorded, whichever extractor proposed it. The blocks are read
+      // under the space lock a block is written under, so one written a moment
+      // ago is seen.
+      const blocked = await blockedSubjects(tx, scope.spaceId);
+      const proposals: ExtractionProposal[] = [];
+      const refused: Tier1Rejection[] = [];
+      for (const [index, proposal] of accepted.entries()) {
+        if ((proposal.op === 'add' || proposal.op === 'supersede') && isBlocked(blocked, proposal))
+          refused.push({
+            index,
+            key: typeof proposal.key === 'string' ? proposal.key : null,
+            reason: 'blocked_by_person',
+            detail: 'The person asked not to learn this again.',
+          });
+        else proposals.push(proposal);
+      }
+      if (refused.length) await recordRejections(tx, scope, batch, refused);
       const [prior] =
         await tx`select status, fence from memory_work where id = ${batch.work.id} and space_id = ${scope.spaceId}`;
       if (prior?.status === 'done') return { status: 'duplicate', claim_ids: [] } as CommitResult;
@@ -409,7 +439,13 @@ export async function commitExtraction(
                 history: history.revisions,
               }
             : undefined;
-        const resolution = resolveMeaning(proposal, sources, existing);
+        // A belief a rewind set aside is learned again as new, on the same claim.
+        const resolution =
+          head?.current.status === 'retracted'
+            ? ({ decision: 'publish', reason: 'set_aside_by_rewind' } as ReturnType<
+                typeof resolveMeaning
+              >)
+            : resolveMeaning(proposal, sources, existing);
         if (resolution.decision === 'no-op') continue;
         if (resolution.decision === 'attach' && head && resolution.revision) {
           await addReferences(tx, scope.spaceId, head.id, resolution.revision, refs);

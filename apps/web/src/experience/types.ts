@@ -64,6 +64,11 @@ export type PermissionDecision = Body<paths['/permissions/{id}'], 'post'>;
 export type RuleBounds = Extract<PermissionDecision, { option: 'always' }>['bounds'];
 export type PermissionOutcome = Success<Ok<paths['/permissions/{id}'], 'post'>>;
 export type Rule = Success<Ok<paths['/rules'], 'get'>>['rules'][number];
+/** Which of an agent's actions auto-review may decide without asking the person. */
+export type ApprovalSettingsView = Success<Ok<paths['/approval-settings'], 'get'>>;
+export type ApprovalSettings = Body<paths['/approval-settings'], 'put'>;
+/** What auto-review decided about one action, on its card or receipt. */
+export type ActionReview = NonNullable<Permission['review']>;
 export type PushSettings = Ok<paths['/push/settings'], 'get'>['settings'];
 export type PushSettingsUpdate = Body<paths['/push/settings'], 'patch'>;
 export type PushDevice = Ok<paths['/push/subscriptions'], 'get'>['subscriptions'][number];
@@ -86,6 +91,21 @@ export type AgentTemplate = Success<Ok<paths['/agents/templates'], 'get'>>['temp
 export type MemoryItem = Success<Ok<paths['/memory/items'], 'get'>>['items'][number];
 export type MemoryExplanation = Success<Ok<paths['/memory/items/{id}/why'], 'get'>>;
 export type MemoryItemCreate = Body<paths['/memory/items'], 'post'>;
+export type Belief = Success<Ok<paths['/memory/beliefs'], 'get'>>['beliefs'][number];
+export type BeliefCategory = Belief['category'];
+export type BeliefHistory = Success<Ok<paths['/memory/beliefs/{id}/history'], 'get'>>;
+export type BeliefBlock = Success<Ok<paths['/memory/blocks'], 'get'>>['blocks'][number];
+export type MemoryTimeline = Success<Ok<paths['/memory/timeline'], 'get'>>;
+export type MemoryDay = MemoryTimeline['days'][number];
+export type RewindTarget = Body<paths['/memory/rewind'], 'post'>;
+export type RewindPreview = Success<Ok<paths['/memory/rewind/preview'], 'post'>>;
+export type MemoryRewind = Success<Ok<paths['/memory/rewind'], 'post'>>['rewind'];
+export type MemoryDigestResponse = Success<Ok<paths['/memory/digest'], 'get'>>;
+export type MemoryDigest = NonNullable<MemoryDigestResponse['digest']>;
+export type BeliefExport = Success<Ok<paths['/memory/export'], 'get'>>;
+export type BeliefImport = Body<paths['/memory/import'], 'post'>;
+export type BeliefImportResult = Success<Ok<paths['/memory/import'], 'post'>>;
+export type BecauseLink = NonNullable<Receipt['because']>[number];
 
 /* ---------- plans, tasks, home, routines ---------- */
 

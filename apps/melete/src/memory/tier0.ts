@@ -20,6 +20,7 @@ import {
   type SupportingSpan,
 } from '@melete/contracts';
 import * as chrono from 'chrono-node';
+import { dateFormat } from '../dates.ts';
 
 export type Tier0ValueType = 'date' | 'email' | 'phone' | 'url' | 'amount';
 export type Tier0Value = {
@@ -42,7 +43,7 @@ export type Tier0Value = {
  */
 export function zoneOffsetMinutes(timeZone: string, at: Date): number {
   try {
-    const parts = new Intl.DateTimeFormat('en-US', {
+    const parts = dateFormat('en-US', {
       timeZone,
       hour12: false,
       year: 'numeric',

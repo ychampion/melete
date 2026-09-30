@@ -275,12 +275,15 @@ const SWEEP_ORDER: readonly RemovalPhase[] = [
 ];
 
 const MEMORY: readonly string[] = [
+  'memory_action_basis',
+  'memory_blocks',
   'memory_capture',
   'memory_claims',
   'memory_contexts',
   'memory_contradictions',
   'memory_dense_entries',
   'memory_derivations',
+  'memory_digests',
   'memory_index_entries',
   'memory_index_manifest',
   'memory_invalidations',
@@ -293,6 +296,7 @@ const MEMORY: readonly string[] = [
   'memory_questions',
   'memory_rejections',
   'memory_repair_briefs',
+  'memory_rewinds',
   'memory_sources',
   'memory_spaces',
   'memory_streams',
@@ -327,6 +331,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   episode: 'operational',
   experience_profile: 'operational',
   experience_rule: 'operational',
+  approval_review_policy: 'operational',
+  action_review: 'operational',
   knowledge_record: 'operational',
   learning_evaluation_lease: 'operational',
   learning_job: 'operational',

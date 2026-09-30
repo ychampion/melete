@@ -64,6 +64,7 @@ type GoogleEvent = {
   start?: { dateTime?: string; date?: string };
   end?: { dateTime?: string; date?: string };
   extendedProperties?: { private?: Record<string, string> };
+  attendees?: { email?: string; self?: boolean }[];
 };
 
 function eventView(event: GoogleEvent): EventView {
@@ -184,6 +185,15 @@ export class GoogleCalendarConnector implements Connector {
       throw new Error('Calendar event unavailable');
     }
     return (await boundedJson(response, MAX_RESPONSE_BYTES)) as GoogleEvent;
+  }
+
+  /** The guests of the event an update rewrites, not counting the calendar's own account. */
+  async existingGuests(action: Action, ctx: ConnectorContext): Promise<number> {
+    this.assertContext(action, ctx);
+    if (action.kind !== 'calendar.update') throw new Error('Only an update changes an event');
+    const found = await this.event(updatePayload.parse(action.canonical_payload).uid, ctx);
+    if (!found || found.status === 'cancelled') throw new Error('Calendar event unavailable');
+    return (found.attendees ?? []).filter((attendee) => !attendee.self).length;
   }
 
   async execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult> {
