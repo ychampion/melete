@@ -16,6 +16,7 @@ import {
   type SandboxAdapter,
   type SandboxConnectionConfig,
   sandboxAdapter,
+  sandboxAdapterTakesKey,
   sandboxConnectionConfig,
   sandboxCredentialRefusal,
   sandboxCredentials,
@@ -23,13 +24,19 @@ import {
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import type { SecretAccess } from '../connectors/secrets.ts';
+import type { DockerSandboxSettings } from './adapters/docker.ts';
 import { SANDBOX_ADAPTER_PLUGINS } from './adapters/registry.ts';
 import { checkSpec, SandboxRefusal, sandboxLabels } from './manifest.ts';
 import type { EgressPolicy, SandboxCapabilities, SandboxProvider, SandboxSpec } from './types.ts';
 
 /** What `POST /connections` stores for a sandbox: never the key. */
 export const storedSandboxConnection = z
-  .object({ kind: z.literal('sandbox'), sandbox: sandboxConnectionConfig })
+  .object({
+    kind: z.literal('sandbox'),
+    sandbox: sandboxConnectionConfig,
+    /** Set on the sandbox the service gives every space; see connectors/builtin.ts. */
+    builtin: z.literal('sandbox').optional(),
+  })
   .strict();
 
 export type SandboxCredentialValue =
@@ -53,6 +60,8 @@ export type SandboxProviderOptions = {
   snapshotTtlSeconds?: number | null;
   /** Replaces the E2B and Daytona HTTP transport. Only a test fixture passes one. */
   fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  /** The engine and limits the docker adapter uses; it holds no key. */
+  docker?: DockerSandboxSettings;
 };
 
 /** A sandbox id no provider will have, for asking whether a key is accepted at all. */
@@ -183,9 +192,12 @@ export function sandboxTeardownProviders(options: SandboxTeardownOptions): {
       throw new Error(
         `connection ${connectionId} holds the ${stored.data.sandbox.adapter} adapter, not ${adapter}`,
       );
-    if (!row.secret_ref)
+    if (!row.secret_ref && sandboxAdapterTakesKey(adapter))
       throw new Error(`connection ${connectionId} no longer holds a provider key`);
-    return { spaceId: String(row.space_id), secretRef: String(row.secret_ref) };
+    return {
+      spaceId: String(row.space_id),
+      secretRef: row.secret_ref ? String(row.secret_ref) : null,
+    };
   };
   return {
     providerFor(name, connectionId) {
@@ -201,6 +213,7 @@ export function sandboxTeardownProviders(options: SandboxTeardownOptions): {
             ...settings,
             credential: async (use) => {
               const held = await holding(adapter, connectionId);
+              if (!held.secretRef) throw new Error(`connection ${connectionId} holds no key`);
               return secrets.withSecret(held.secretRef, held.spaceId, (sealed) =>
                 use(sandboxCredentialValue(adapter, sealed)),
               );
@@ -262,6 +275,8 @@ export function sandboxKeyCheck(teardown: ReturnType<typeof sandboxTeardownProvi
     if (connection.provider !== 'sandbox') return null;
     const stored = storedSandboxConnection.safeParse(connection.configuration);
     if (!stored.success) return 'this connection holds no sandbox configuration';
+    if (!sandboxAdapterTakesKey(stored.data.sandbox.adapter))
+      return `a ${stored.data.sandbox.adapter} sandbox takes no key`;
     const opened = teardown.withKey(stored.data.sandbox.adapter, secretRef, connection.spaceId);
     try {
       return (await probeSandboxProvider(opened.provider, signal)) === 'ok'

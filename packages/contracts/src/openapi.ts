@@ -177,6 +177,11 @@ import {
 } from './responsibility.ts';
 import { runtimeEvent } from './runtime.ts';
 import {
+  sandboxComputerList,
+  sandboxComputerQuery,
+  sandboxControlResponse,
+} from './sandbox-computer.ts';
+import {
   deleteSpaceRequest,
   spaceRemoval,
   spaceRemovalPreview,
@@ -369,6 +374,7 @@ export function buildOpenApiDocument() {
         { name: 'skills' },
         { name: 'memory' },
         { name: 'browser' },
+        { name: 'sandbox' },
         { name: 'learning' },
         { name: 'companies' },
       ],
@@ -2002,6 +2008,136 @@ export function buildOpenApiDocument() {
               '403': problem('Request origin refused'),
               '404': problem('No such browser session'),
               '409': problem('Browser control could not change'),
+            },
+          },
+        },
+        '/sandbox/computers': {
+          get: {
+            tags: ['sandbox'],
+            summary: "Find the computer in a job's sandbox",
+            description:
+              "The desktop of the sandbox the job's agent works in, with who is driving it. Only " +
+              'the person who owns the job may ask. Empty when the job has used no sandbox with a desktop.',
+            requestParams: { query: sandboxComputerQuery },
+            responses: {
+              '200': jsonResponse("The job's computers", sandboxComputerList),
+              '401': problem('Owner authentication required'),
+              '404': problem('No such job'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/takeover': {
+          post: {
+            tags: ['sandbox'],
+            summary: 'Take control of the computer from the agent',
+            description:
+              'Requires the owner session and same-origin protection. The control epoch is ' +
+              'incremented and the job is parked waiting for input before this answers; every ' +
+              'computer action the agent planned before is refused from then on.',
+            requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            responses: {
+              '200': jsonResponse('The person holds control', sandboxControlResponse),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused'),
+              '404': problem('No such computer'),
+              '409': problem('Control could not change'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/handback': {
+          post: {
+            tags: ['sandbox'],
+            summary: 'Give the computer back to the agent',
+            description:
+              'Increments the control epoch again. The job stays parked until the person answers it.',
+            requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            responses: {
+              '200': jsonResponse('The agent holds control', sandboxControlResponse),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused'),
+              '404': problem('No such computer'),
+              '409': problem('Control could not change'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/live': {
+          post: {
+            tags: ['sandbox'],
+            summary: "Open a live view of the sandbox's desktop",
+            description:
+              'Watching is allowed while the agent drives; input only while the person holds ' +
+              'control. The live id is held in memory and bound to this principal, session, ' +
+              'control epoch and address. One view per computer.',
+            requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            responses: {
+              '200': jsonResponse('The live view is open', liveOpen),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused'),
+              '404': problem('No such computer'),
+              '409': problem('The live view could not open'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/live/frames': {
+          get: {
+            tags: ['sandbox'],
+            summary: 'Follow the desktop as Server-Sent Events',
+            description:
+              'JPEG frames of the whole desktop, paced and written through, never stored, and the ' +
+              'end of the view. Only frames carry an id; a reconnect is repainted from the screen as it is now.',
+            requestParams: {
+              ...idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+              query: z.object({
+                live_id: liveId.meta({ description: 'The live id this view was opened with' }),
+                after: z.string().optional().meta({
+                  description: 'Frame sequence to resume after, for clients without Last-Event-ID',
+                }),
+              }),
+            },
+            responses: {
+              '200': {
+                description: 'The live event stream',
+                content: { 'text/event-stream': { schema: z.string() } },
+              },
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused, or another person or address'),
+              '404': problem('No such computer'),
+              '410': problem('The live view is closed'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/live/input': {
+          post: {
+            tags: ['sandbox'],
+            summary: "Send a person's input to the desktop",
+            description:
+              'Pointer, wheel, key and text events at the live viewport, dispatched in order. ' +
+              'Refused unless the person holds control under the epoch the view was opened with.',
+            requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            requestBody: json(liveUp),
+            responses: {
+              '200': jsonResponse('Events accepted in order', liveInputResponse),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused, or another person or address'),
+              '404': problem('No such computer'),
+              '409': problem('The person does not hold control'),
+              '410': problem('The live view is closed'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/live/close': {
+          post: {
+            tags: ['sandbox'],
+            summary: 'Close the live view of the desktop',
+            description: 'Ends the view; control stays where it is.',
+            requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            requestBody: json(liveClose),
+            responses: {
+              '200': jsonResponse('The live view is closed', liveClosed),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused, or another person or address'),
+              '404': problem('No such computer'),
+              '410': problem('The live view was already closed'),
             },
           },
         },

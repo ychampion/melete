@@ -1,9 +1,14 @@
 import { readFile } from 'node:fs/promises';
-import { caldavConnectionConfig, mailConnectionConfig } from '@melete/contracts';
+import {
+  caldavConnectionConfig,
+  mailConnectionConfig,
+  sandboxAdapterTakesKey,
+} from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
+import type { DockerSandboxSettings } from '../sandbox/adapters/docker.ts';
 import {
   createSandboxProvider,
   modalEnvironmentRefusal,
@@ -11,6 +16,7 @@ import {
   sandboxTeardownProviders,
   storedSandboxConnection,
 } from '../sandbox/connection.ts';
+import { dockerSandboxSettings } from '../sandbox/docker-default.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
 import type { SandboxProvider } from '../sandbox/types.ts';
 import { browserArtifactSink } from '../workers/browser/artifacts.ts';
@@ -214,6 +220,8 @@ export type SandboxRuntimeOptions = {
   modalRefusal: string | null;
   /** Replaces E2B's HTTP transport. Only a test fixture passes one. */
   fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  /** The engine the docker adapter runs sandboxes on, and their limits. */
+  docker?: DockerSandboxSettings;
 };
 
 /** What a connector is built from: the persisted row, never a request payload. */
@@ -275,6 +283,7 @@ export class ConnectorFactory {
       snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
       modalRefusal: sandbox.modalRefusal,
       ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
+      ...(sandbox.docker ? { docker: sandbox.docker } : {}),
     });
   }
 
@@ -341,7 +350,8 @@ export class ConnectorFactory {
     if (row.provider === 'web') return createWebConnector();
     if (row.provider === 'sandbox' && stored?.kind === 'sandbox') {
       const sandbox = options.sandbox;
-      if (!sandbox || !row.secretRef) return undefined;
+      const keyed = sandboxAdapterTakesKey(stored.sandbox.adapter);
+      if (!sandbox || (keyed && !row.secretRef)) return undefined;
       if (stored.sandbox.adapter === 'modal' && sandbox.modalRefusal)
         throw new Error(sandbox.modalRefusal);
       const config = stored.sandbox;
@@ -362,27 +372,28 @@ export class ConnectorFactory {
         e2bPlan: sandbox.e2bPlan,
         snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
         ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
+        ...(sandbox.docker ? { docker: sandbox.docker } : {}),
       });
       this.sandboxProviders.set(row.id, {
         adapter: config.adapter,
         provider: opened.provider,
       });
-      return ownerOnly(
-        createSandboxExecConnector({
-          sessions: sandbox.sessions,
-          provider: opened.provider,
-          config,
-          connectionId: row.id,
-          spaceId: row.spaceId,
-          project: sandbox.project,
-          workRoot: options.workRoot,
-          sql: options.sql,
-          e2bPlan: sandbox.e2bPlan,
-          maxConcurrent: sandbox.maxConcurrent,
-          maxPerConnection: sandbox.maxPerConnection,
-          close: opened.close,
-        }),
-      );
+      const connector = createSandboxExecConnector({
+        sessions: sandbox.sessions,
+        provider: opened.provider,
+        config,
+        connectionId: row.id,
+        spaceId: row.spaceId,
+        project: sandbox.project,
+        workRoot: options.workRoot,
+        sql: options.sql,
+        e2bPlan: sandbox.e2bPlan,
+        maxConcurrent: sandbox.maxConcurrent,
+        maxPerConnection: sandbox.maxPerConnection,
+        close: opened.close,
+      });
+      // A sandbox runs whatever it is asked to, so it is never offered to a public compartment.
+      return ownerOnly(connector);
     }
     if (row.provider === 'test' && options.enableTestConnector)
       return createTestConnector(options.sql);
@@ -711,6 +722,7 @@ export function connectorOptionsFromEnv(
               process.env,
               env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT,
             ),
+            docker: dockerSandboxSettings(env),
           },
         }
       : {}),
