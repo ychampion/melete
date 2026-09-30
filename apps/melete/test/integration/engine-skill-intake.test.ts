@@ -7,11 +7,13 @@ import { eq } from 'drizzle-orm';
 import { createInternalServer } from '../../src/broker/internal-server.ts';
 import { ENGINE_SKILL_PATH } from '../../src/learning/runtime-route.ts';
 import { procedureCandidate } from '../../src/learning/schema.ts';
+import { defaultPrivacyRouter } from '../../src/privacy/index.ts';
 import { DIGEST_BODY, engineSkillFixture, ownerItem } from './engine-skill-fixtures.ts';
 
 const fixture = await engineSkillFixture();
 const internal = fixture
   ? createInternalServer({
+      privacy: defaultPrivacyRouter(),
       sql: fixture.handle.sql,
       connectors: { get: () => undefined },
       capabilityKey: fixture.runner.options.key,

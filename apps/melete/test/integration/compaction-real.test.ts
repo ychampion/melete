@@ -24,6 +24,7 @@ import { fakeProvider } from '../../src/gateway/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { defaultPrivacyRouter } from '../../src/privacy/index.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -77,6 +78,7 @@ realTest(
     });
     const script = createCompactionScript();
     const internal = createInternalServer({
+      privacy: defaultPrivacyRouter(),
       sql: handle.sql,
       connectors: registry,
       capabilityKey: key,

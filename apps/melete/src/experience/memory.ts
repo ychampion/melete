@@ -66,13 +66,32 @@ export class ExperienceMemory {
    * One page of what the person can see and change. A disputed detail is listed
    * too: it is still what Melete uses while the question about it is open.
    */
-  async list(spaceId: string, ownerId: string, after: string | null = null) {
+  async list(
+    spaceId: string,
+    ownerId: string,
+    after: string | null = null,
+    options: { forAssistant?: boolean } = {},
+  ) {
     const scope = await this.scope(spaceId, ownerId);
     if (!scope) return unavailable('Your saved details are not connected yet.');
     const { claims, next } = await listClaims(this.sql, scope, { after });
+    const heads = claims.filter(listed);
+    // Another assistant reading through the MCP endpoint is a cloud model: what
+    // was learned in a private conversation is not shown to it.
+    const kept = options.forAssistant ? await this.learnedPrivately(heads) : new Set<string>();
     const items = [];
-    for (const head of claims.filter(listed)) items.push(await this.item(spaceId, head));
+    for (const head of heads) if (!kept.has(head.id)) items.push(await this.item(spaceId, head));
     return { items, next };
+  }
+  /** Which of these details were learned from a conversation that was private at the time. */
+  private async learnedPrivately(heads: ClaimHead[]): Promise<Set<string>> {
+    if (!heads.length) return new Set();
+    const rows = await this.sql`select distinct r.claim_id from memory_references r
+      join memory_sources s on s.id = r.source_id
+      join memory_claims c on c.id = r.claim_id and r.revision = c.head_revision
+      where r.claim_id = any(${heads.map((head) => head.id)}::text[])
+        and s.private_origin is not null`;
+    return new Set(rows.map((row) => String(row.claim_id)));
   }
   private async item(spaceId: string, head: ClaimHead) {
     const [source] = await this.sql`select bool_or(s.stream = 'onboarding') as onboarding,

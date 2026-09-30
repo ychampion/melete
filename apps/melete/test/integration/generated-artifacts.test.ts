@@ -10,6 +10,7 @@ import { connectorsFromEnv } from '../../src/connectors/configured.ts';
 import { scriptFromWav } from '../../src/connectors/wav.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
+import { defaultPrivacyRouter } from '../../src/privacy/index.ts';
 import { seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -41,6 +42,7 @@ if (fixture) {
   if (setup.status !== 201) throw new Error('Session setup failed');
   cookie = setup.headers.get('set-cookie')?.split(';')[0] ?? '';
   const internal = createInternalServer({
+    privacy: defaultPrivacyRouter(),
     sql: fixture.sql,
     connectors: await connectorsFromEnv(fixture.sql, env),
     capabilityKey: 'c'.repeat(32),
@@ -143,6 +145,7 @@ databaseTest(
     await fixture.sql`delete from artifact where id = ${artifactId}`;
     await fixture.sql`update action set status = 'unknown', receipt = null, resolved_at = null where id = ${generated.id}`;
     const restarted = createInternalServer({
+      privacy: defaultPrivacyRouter(),
       sql: fixture.sql,
       connectors: await connectorsFromEnv(fixture.sql, env),
       capabilityKey: 'c'.repeat(32),

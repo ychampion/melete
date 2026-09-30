@@ -4,6 +4,7 @@ import {
   extractionProposal,
 } from '@melete/contracts';
 import { z } from 'zod';
+import { reanchorSpans } from '../privacy/memory.ts';
 import { MemoryError, type MemoryScope, type MemorySql, stableId } from './db.ts';
 import {
   EXTRACTION_LIMITS,
@@ -12,8 +13,17 @@ import {
   reserveExtractionCall,
 } from './work.ts';
 
-/** Whose memory a call extracts for, so a gateway can hold each person to a budget. */
-export type ExtractionCall = { ownerId: string; spaceId: string; workId: string };
+/**
+ * Whose memory a call extracts for, so a gateway can hold each person to a
+ * budget, and the conversation the message came from, so the privacy router
+ * routes the call as it routes that conversation.
+ */
+export type ExtractionCall = {
+  ownerId: string;
+  spaceId: string;
+  workId: string;
+  sourceJobId: string | null;
+};
 export type ExtractionGateway = {
   chat(
     body: {
@@ -99,7 +109,12 @@ export async function proposeExtraction(
         max_tokens: EXTRACTION_LIMITS.output_tokens,
         signal: AbortSignal.timeout(EXTRACTION_LIMITS.timeout_ms),
       },
-      { ownerId: scope.ownerId, spaceId: scope.spaceId, workId: batch.work.id },
+      {
+        ownerId: scope.ownerId,
+        spaceId: scope.spaceId,
+        workId: batch.work.id,
+        sourceJobId: batch.source_job_id,
+      },
     );
   } catch (error) {
     // No answer came back: the provider failed, timed out or was unreachable, or
@@ -140,7 +155,8 @@ export async function proposeExtraction(
       values (${id}, ${scope.spaceId}, ${batch.work.id}, ${item.index}, null, 'invalid_shape', ${item.detail})
       on conflict do nothing`;
   }
-  return reply.proposals;
+  // The model read the evidence redacted: its offsets are moved to where its quotes are.
+  return reanchorSpans(reply.proposals, batch.text, batch.work.segment_start);
 }
 
 const PROPOSAL_FIELDS = new Set([

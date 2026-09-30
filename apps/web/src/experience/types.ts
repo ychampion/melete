@@ -193,6 +193,18 @@ export type LedgerDetail = Ok<paths['/ledger/{id}'], 'get'>;
  * holds it. `LedgerDetail.message` is nullable for the case where it does not.
  */
 export type LedgerMessage = NonNullable<LedgerDetail['message']>;
+/* ---------- privacy ---------- */
+
+export type PrivacySettings = Success<Ok<paths['/privacy/settings'], 'get'>>;
+export type PrivacySettingsUpdate = Body<paths['/privacy/settings'], 'put'>;
+export type PrivacyCategory = PrivacySettings['enabled'][number];
+export type SensitiveTopic = PrivacySettings['sensitive_topics'][number];
+export type PrivacyPreview = Success<Ok<paths['/privacy/preview'], 'post'>>;
+export type LocalModelCheck = Success<Ok<paths['/privacy/local-model/check'], 'post'>>;
+export type LocalModelCheckRequest = Body<paths['/privacy/local-model/check'], 'post'>;
+export type ConversationPrivacy = Success<Ok<paths['/conversations/{id}/privacy'], 'get'>>;
+export type PrivacyReveal = Success<Ok<paths['/conversations/{id}/privacy/reveal'], 'post'>>;
+
 export type ScanStarted = Ok<paths['/spaces/{spaceId}/companies/scan'], 'post'>;
 export type ScanProgress = Ok<paths['/spaces/{spaceId}/companies/scan/{scanId}'], 'get'>;
 /** What the person is waiting on: money owed to them, and replies nobody has sent. */

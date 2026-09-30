@@ -73,6 +73,7 @@ import { mountExperienceMock } from './experience.ts';
 import { mountFeedbackMock } from './feedback.ts';
 import { mountLearnedMock } from './learned.ts';
 import { mountModelsMock } from './models.ts';
+import { mountPrivacyMock } from './privacy.ts';
 import { mountPushMock } from './push.ts';
 import type { Runner } from './runner.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
@@ -129,6 +130,8 @@ export function createMockApp(deps: AppDeps) {
     }),
   );
 
+  // Before the experience routes, which answer every operation they do not implement.
+  mountPrivacyMock(app, deps, () => experience.chats);
   const experience = mountExperienceMock(app, deps);
   experience.computer.mount(app);
   if (deps.seedExperience) experience.seed();

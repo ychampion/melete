@@ -17,6 +17,7 @@ import {
   rewindTarget,
 } from './beliefs.ts';
 import { memoryKey } from './memory.ts';
+import { privacyOperations } from './privacy.ts';
 import { messageId } from './reactions.ts';
 
 const id = z.string().min(1).max(240);
@@ -873,6 +874,7 @@ export const experienceOperations = {
     query: z.strictObject({ q: z.string().min(1).max(200) }),
     response: experienceSearch,
   },
+  ...privacyOperations,
 } satisfies Record<
   string,
   { request?: z.ZodType; query?: z.ZodType; response: z.ZodType; stream?: boolean }

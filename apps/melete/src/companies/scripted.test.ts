@@ -18,6 +18,7 @@ function read(text: string, receivedAt = RECEIVED, timeZone?: string) {
   return {
     candidate: isCandidate(message),
     items: scriptedItems({
+      spaceId: 'sp_01J0000000000000000000000A',
       messageId: message.messageId,
       companyName: 'Acme',
       domain: 'acme.example',
