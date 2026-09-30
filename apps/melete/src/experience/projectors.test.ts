@@ -241,6 +241,34 @@ test('answer text keeps prose that starts with a bracket and drops whole records
   expect(answerText(' [1, 2, 3] ')).toBe('');
 });
 
+test('answer text keeps addresses, sites and file names that share a word with a tool', () => {
+  const answers = [
+    'The draft to someone@email.com is ready. Send it from the draft card when it reads right.',
+    'Maya’s new address is maya@files.com, and the old one at web.de still forwards for a month.',
+    'I saved the notes as test.txt. The guide on web.dev covers the rest.',
+    'Their support team answers at help@calendar.org within a day.',
+    'DeepSeek publishes its pricing on deepseek.com, and the team writes from hi@claude-fans.org.',
+    'Reply to billing@email.read.example.com if the invoice is wrong.',
+  ];
+  for (const answer of answers) {
+    expect(answerText(answer)).toBe(answer);
+    expect(plainText(answer, 'fallback')).toBe(answer);
+  }
+});
+
+test('answer text still drops tool calls, record fields and model ids', () => {
+  for (const leaked of [
+    'I called email.draft with the text below.',
+    'Next I will run web.fetch(https://example.com).',
+    'Saved through files.write.',
+    'The payload_hash for this action is 9f2c.',
+    'Answer from accounts/fireworks/models/deepseek-v4p1-flash follows.',
+    'Running on gpt-4o today.',
+    'Authorization: Bearer abcdefghijklmnop',
+  ])
+    expect(answerText(leaked)).toBe('');
+});
+
 test('a permission to save a file names the file and carries its exact text', () => {
   const content = '# Email and admin\n\n| When | What |\n|---|---|\n| 4pm | Replies, café |\n';
   const write: ActionRow = {

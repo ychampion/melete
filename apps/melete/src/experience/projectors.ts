@@ -34,8 +34,14 @@ export const object = (input: unknown): Record<string, unknown> =>
     ? (input as Record<string, unknown>)
     : {};
 const array = (input: unknown): unknown[] => (Array.isArray(input) ? input : []);
+/**
+ * Words only an internal record carries: a tool's name, a field of an action
+ * record or a credential, or a model's id. A tool name counts only as one, a
+ * known verb after the app's name standing on its own, so an address at
+ * email.com, a site like web.dev or a file called test.txt stays ordinary text.
+ */
 export const BACKEND_VOCABULARY =
-  /\b(?:email|calendar|files|web|test)\.[a-z_][\w.-]*|\b(?:canonical_payload|payload_hash|tool_call|model_actual|access_token|refresh_token|chain.of.thought)\b|\b(?:gpt-|claude-|deepseek)[\w.-]*/i;
+  /(?<![\w@.-])(?:email|calendar|files|web|test)\.(?:search|read|draft|send|discard|list|create|update|delete|write|move|restore|share|fetch|echo|inspect)(?:_[a-z]+)*(?![\w-]|\.[a-z])|\b(?:canonical_payload|payload_hash|tool_call|model_actual|access_token|refresh_token|chain.of.thought)\b|(?<![@.])\b(?:gpt-|claude-|deepseek-)[\w.-]*/i;
 
 /** Titles and labels are content, never a channel for an internal record or credential. */
 export function plainText(value: unknown, fallback: string, limit = 4000): string {
