@@ -543,7 +543,7 @@ export function validateArtifact(
       class: 'human',
       name: 'human',
       status: 'pending',
-      detail: 'waiting for the owner to accept this artifact',
+      detail: 'waiting for the person to look over the file',
       evidence: {},
       advisory: false,
     });
