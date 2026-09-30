@@ -468,10 +468,13 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                       <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
                         Sign in with your ChatGPT account
                       </span>
-                      <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
-                        OpenAI confirms who you are and shares your name, email address and profile
-                        picture with this installation. Your ChatGPT password stays with OpenAI.
-                      </span>
+                      {chatgpt?.ready ? (
+                        <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
+                          OpenAI confirms who you are and shares your name, email address and
+                          profile picture with this installation. Your ChatGPT password stays with
+                          OpenAI.
+                        </span>
+                      ) : null}
                       {chatgpt?.ready ? (
                         <Button
                           icon="arrowUpRight"
@@ -507,9 +510,15 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                           </span>
                           <span>
                             {chatgpt?.reason ??
-                              'This installation has no ChatGPT sign-in client yet. The person who runs it needs to add one.'}
+                              'This installation hasn’t set up ChatGPT sign-in yet.'}
                           </span>
                         </div>
+                      )}
+                      {chatgpt?.ready ? null : (
+                        <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
+                          When it’s set up, OpenAI shares your name and email with Melete. Your
+                          ChatGPT password stays with OpenAI.
+                        </span>
                       )}
                     </section>
                   ) : null}

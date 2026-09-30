@@ -279,11 +279,7 @@ export function mountAuth(
   // Sign in with ChatGPT needs a client that OpenAI issues to the operator;
   // until an installation has one, the sign-in card says so.
   app.post('/signin/chatgpt', (c) =>
-    c.json(
-      unavailable(
-        'This installation has no ChatGPT sign-in client yet. The person who runs it needs to add one.',
-      ),
-    ),
+    c.json(unavailable('This installation hasn’t set up ChatGPT sign-in yet.')),
   );
   /**
    * Ends the session the cookie names. The row is removed rather than flagged,

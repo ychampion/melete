@@ -1578,9 +1578,7 @@ export class ExperienceMock {
         this.signedOut = false;
         return { status: 'ok' };
       case 'POST /signin/chatgpt':
-        return C.unavailable(
-          'This installation has no ChatGPT sign-in client yet. The person who runs it needs to add one.',
-        );
+        return C.unavailable('This installation hasn’t set up ChatGPT sign-in yet.');
       case 'PATCH /memory/items/{id}': {
         const item = required(this.memories, id);
         if (input.version !== item.version)

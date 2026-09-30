@@ -73,12 +73,12 @@ describe('health', () => {
     expect(pulled).toBeLessThan(1024 * 1024);
   });
 
-  test('ChatGPT sign-in is public and says it is not configured', async () => {
+  test('ChatGPT sign-in is public and says it is not set up', async () => {
     const res = await testApp().request('/signin/chatgpt', { method: 'POST' });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { status: string; reason: string };
     expect(body.status).toBe('not_available');
-    expect(body.reason).toMatch(/ChatGPT sign-in client/);
+    expect(body.reason).toBe('This installation hasn’t set up ChatGPT sign-in yet.');
   });
 
   test('a protected endpoint requires a session', async () => {
