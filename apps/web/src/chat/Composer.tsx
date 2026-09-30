@@ -14,7 +14,7 @@ import { Icon } from '../design/icons.tsx';
 import { IconButton } from '../design/primitives.tsx';
 import type { ComposerState } from '../experience/types.ts';
 import { openFeedback } from '../feedback/FeedbackPanel.tsx';
-import { elapsed, useNowTick, useRecorder } from './voice.ts';
+import { elapsed, useNowTick, useRecorder, type VoicePlace } from './voice.ts';
 
 export function Composer({
   value,
@@ -42,8 +42,11 @@ export function Composer({
   autoFocus?: boolean;
   /** The rim travels while an agent works on the task. */
   working?: boolean;
-  /** Present when push-to-talk is available: the longest clip the service takes. */
-  voice?: { maxSeconds: number };
+  /**
+   * Present when push-to-talk is available: the longest clip the service takes,
+   * where the words will be used, and why voice is off there, if it is.
+   */
+  voice?: { maxSeconds: number; place: VoicePlace; off: string | null };
 }) {
   const textRef = useRef<HTMLTextAreaElement>(null);
 
@@ -64,6 +67,7 @@ export function Composer({
   latest.current = value;
   const recorder = useRecorder({
     maxSeconds: voice?.maxSeconds ?? 120,
+    ...(voice ? { place: voice.place, off: voice.off } : {}),
     onText: (heard) => {
       const current = latest.current;
       onChange(current.trim() ? `${current.replace(/\s+$/, '')} ${heard}` : heard);
@@ -158,7 +162,8 @@ export function Composer({
                     : 'Record a voice message'
               }
               aria-pressed={recording}
-              title={recording ? 'Stop recording' : 'Record a voice message'}
+              title={recording ? 'Stop recording' : (voice.off ?? 'Record a voice message')}
+              data-off={voice.off ? 'true' : undefined}
               disabled={disabled}
               // Busy rather than disabled: a disabled button drops keyboard focus mid-press.
               aria-disabled={recorder.state === 'starting' || recorder.state === 'transcribing'}

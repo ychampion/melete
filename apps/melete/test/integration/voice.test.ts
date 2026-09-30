@@ -215,4 +215,91 @@ withDb('voice through the API', () => {
     });
     expect(empty.status).toBe(400);
   });
+
+  test('a private agent, a private space and a sensitive conversation turn voice off before anything is sent', async () => {
+    const sql = handle?.sql;
+    if (!sql) throw new Error('Postgres unavailable');
+    const persona = agentResponse.parse(
+      await (await call(owner, '/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+    ).agent;
+    const created = await call(owner, '/conversations', 'POST', {
+      title: 'Kept here',
+      agent_id: persona.id,
+    });
+    const conversation = conversationResponse.parse(await created.json()).conversation.id;
+    const heardBefore = spoken.length;
+    const sessionsBefore = sessions;
+    const [usage] = await sql`select count(*)::int as n from voice_usage`;
+    const refusedHere = async (why: RegExp) => {
+      const session = await call(owner, `/conversations/${conversation}/voice/session`, 'POST');
+      expect(session.status).toBe(403);
+      const refusal = (await session.json()) as { error: { code: string; message: string } };
+      expect(refusal.error.code).toBe('voice_private');
+      expect(refusal.error.message).toMatch(why);
+      expect(refusal.error.message).toContain('ElevenLabs');
+      const speech = await call(owner, `/conversations/${conversation}/voice/speech`, 'POST', {
+        text: 'Read this',
+      });
+      expect(speech.status).toBe(403);
+      const clip = api().request(
+        `/voice/transcriptions?duration_ms=1000&conversation_id=${conversation}`,
+        {
+          method: 'POST',
+          headers: { Cookie: owner, 'Content-Type': 'audio/wav' },
+          body: silentWav({ script: 'Something private.', durationMs: 1000 }),
+        },
+      );
+      expect((await clip).status).toBe(403);
+      const status = voiceStatus.parse(
+        await (await call(owner, `/voice?conversation_id=${conversation}`)).json(),
+      );
+      expect(status.off_reason).toMatch(why);
+    };
+    const settings = (body: unknown) => call(owner, '/privacy/settings', 'PUT', body);
+
+    // Before any mark, the status says voice may be used in this conversation.
+    const open = voiceStatus.parse(
+      await (await call(owner, `/voice?conversation_id=${conversation}`)).json(),
+    );
+    expect(open.off_reason).toBeNull();
+
+    expect((await settings({ private_agent_ids: [persona.id] })).status).toBe(200);
+    await refusedHere(/marked private/);
+    // A new chat with that agent is refused too, before it exists.
+    const newChat = voiceStatus.parse(
+      await (await call(owner, `/voice?agent_id=${persona.id}`)).json(),
+    );
+    expect(newChat.off_reason).toMatch(/marked private/);
+    const pushToTalk = await api().request(
+      `/voice/transcriptions?duration_ms=1000&agent_id=${persona.id}`,
+      {
+        method: 'POST',
+        headers: { Cookie: owner, 'Content-Type': 'audio/wav' },
+        body: silentWav({ script: 'Something private.', durationMs: 1000 }),
+      },
+    );
+    expect(pushToTalk.status).toBe(403);
+
+    expect((await settings({ private_agent_ids: [], private_space: true })).status).toBe(200);
+    await refusedHere(/marked private/);
+    // The whole space is private: push-to-talk with no conversation named is refused as well.
+    const bare = await api().request('/voice/transcriptions?duration_ms=1000', {
+      method: 'POST',
+      headers: { Cookie: owner, 'Content-Type': 'audio/wav' },
+      body: silentWav({ script: 'Something private.', durationMs: 1000 }),
+    });
+    expect(bare.status).toBe(403);
+
+    expect((await settings({ private_space: false })).status).toBe(200);
+    const [row] = await sql`select space_id from job where id = ${conversation}`;
+    await sql`insert into privacy_conversation (conversation_id, space_id, sensitive)
+      values (${conversation}, ${String(row?.space_id)}, 'health')`;
+    await refusedHere(/sensitive topic/);
+
+    // Nothing reached the provider and nothing was counted.
+    expect(spoken.length).toBe(heardBefore);
+    expect(sessions).toBe(sessionsBefore);
+    const [after] = await sql`select count(*)::int as n from voice_usage`;
+    expect(Number(after?.n)).toBe(Number(usage?.n));
+  }, 60_000);
 });

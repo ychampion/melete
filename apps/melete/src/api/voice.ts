@@ -11,10 +11,17 @@
  * the provider to the browser. What is kept is how much each person used, so a
  * daily allowance can hold. A refusal says which limit, in plain words; a
  * provider failure never repeats what the provider said.
+ *
+ * Audio, what was heard and the words read aloud go to the speech provider
+ * directly, not through the model gateway, so the privacy router cannot redact
+ * or reroute them. Voice is therefore off wherever the router would keep work
+ * off a cloud model: a space or agent marked private, and a conversation found
+ * to be about a sensitive topic. The check runs before any audio is read.
  */
 import { randomUUID } from 'node:crypto';
 import {
   VOICE_LIMITS,
+  voiceContextQuery,
   voiceSession,
   voiceSpeechRequest,
   voiceStatus,
@@ -36,6 +43,7 @@ import { job } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { ownJob } from '../principals/authority.ts';
+import type { PrivacyRouter } from '../privacy/router.ts';
 import { ServiceError } from './errors.ts';
 
 export type VoiceUsageKind = 'transcribe' | 'speech' | 'session';
@@ -87,6 +95,40 @@ export type VoiceProviders = {
 };
 
 export type VoiceLimits = { seconds: number; characters: number; sessions: number };
+
+/** Why voice may not be used here, or null when it may. */
+export type VoicePrivacyReason = 'private' | 'sensitive' | null;
+
+/**
+ * Whether a place is kept off cloud services. `conversationId` is one the
+ * caller already found in `spaceId`; `agentId` is its agent, or the agent a new
+ * chat will have.
+ */
+export type VoicePrivacy = (scope: {
+  spaceId: string;
+  agentId: string | null;
+  conversationId: string | null;
+}) => Promise<VoicePrivacyReason>;
+
+/** The privacy router's answer: the same marks the model gateway and web reads follow. */
+export function voicePrivacyFrom(router: PrivacyRouter): VoicePrivacy {
+  return async ({ spaceId, agentId, conversationId }) => {
+    if (await router.marksPrivate(spaceId, agentId)) return 'private';
+    if (conversationId && (await router.store.conversation(conversationId)).sensitive)
+      return 'sensitive';
+    return null;
+  };
+}
+
+const CLOUD =
+  'Voice sends what you say, and the replies it reads aloud, to ElevenLabs, a cloud speech service.';
+
+/** What the person is told, per reason. A check that fails keeps voice off. */
+const OFF_HERE: Record<'private' | 'sensitive' | 'unchecked', string> = {
+  private: `Voice is off here because this space or its agent is marked private. ${CLOUD}`,
+  sensitive: `Voice is off in this conversation because it looks like it is about a sensitive topic. ${CLOUD}`,
+  unchecked: `Voice is off for now because Melete could not check this conversation’s privacy settings. ${CLOUD}`,
+};
 
 export function voiceProvidersFromEnv(env: Env): VoiceProviders {
   const configured = capabilitiesFromEnv({
@@ -146,9 +188,11 @@ export function mountVoice(
     allowance: VoiceAllowance | undefined;
     providers: VoiceProviders;
     limits: VoiceLimits;
+    /** Required: a route that sends words to the provider must know where it is. */
+    privacy: VoicePrivacy;
   },
 ): void {
-  const { db, allowance, providers, limits } = deps;
+  const { db, allowance, providers, limits, privacy } = deps;
   const pushToTalk = Boolean(providers.transcription && allowance);
   const voiceMode = Boolean(providers.live && allowance);
 
@@ -162,21 +206,53 @@ export function mountVoice(
   };
 
   /** The caller's own conversation in the session space, or not found. */
-  const conversation = async (c: Context) => {
-    const { spaceId, principalId } = caller(c);
+  const findConversation = async (spaceId: string, principalId: string, id: string) => {
     const [row] = await db
-      .select({ id: job.id })
+      .select({ id: job.id, agentId: job.agentId })
       .from(job)
       .where(
         and(
-          eq(job.id, c.req.param('id') ?? ''),
+          eq(job.id, id),
           eq(job.spaceId, spaceId),
           eq(job.kind, 'chat'),
           ownJob(job.principalId, principalId),
         ),
       );
     if (!row) throw new ServiceError('not_found', 'That item is not here.', 404);
-    return { principalId };
+    return { conversationId: row.id, agentId: row.agentId ?? null };
+  };
+
+  const conversation = async (c: Context) => {
+    const { spaceId, principalId } = caller(c);
+    const found = await findConversation(spaceId, principalId, c.req.param('id') ?? '');
+    return { spaceId, principalId, ...found };
+  };
+
+  /**
+   * The place a request names: its conversation (whose own agent counts), or
+   * the agent a new chat will have, or just the session space.
+   */
+  const place = async (
+    spaceId: string,
+    principalId: string,
+    query: { conversation_id?: string | undefined; agent_id?: string | undefined },
+  ) =>
+    query.conversation_id
+      ? await findConversation(spaceId, principalId, query.conversation_id)
+      : { conversationId: null, agentId: query.agent_id ?? null };
+
+  type Place = { spaceId: string; agentId: string | null; conversationId: string | null };
+
+  /** Why voice is off at this place, as a sentence for the person, or null. */
+  const offReason = async (scope: Place): Promise<string | null> => {
+    const reason = await privacy(scope).catch(() => 'unchecked' as const);
+    return reason ? OFF_HERE[reason] : null;
+  };
+
+  /** Refuse before any audio or text is read when the place is kept off cloud services. */
+  const refuseWhenPrivate = async (scope: Place) => {
+    const reason = await offReason(scope);
+    if (reason) throw new ServiceError('voice_private', reason, 403);
   };
 
   /** Take from the allowance, run the provider call, and give it back if the provider refused. */
@@ -203,20 +279,24 @@ export function mountVoice(
     }
   }
 
-  app.get('/voice', (c) => {
-    caller(c);
+  app.get('/voice', async (c) => {
+    const { spaceId, principalId } = caller(c);
+    const query = voiceContextQuery.safeParse(c.req.query());
+    if (!query.success) throw new ServiceError('invalid_request', 'Invalid voice query.', 400);
+    const at = await place(spaceId, principalId, query.data);
     return c.json(
       voiceStatus.parse({
         push_to_talk: pushToTalk,
         voice_mode: voiceMode,
         max_recording_seconds: VOICE_LIMITS.recording_seconds,
         max_recording_bytes: VOICE_LIMITS.recording_bytes,
+        off_reason: pushToTalk || voiceMode ? await offReason({ spaceId, ...at }) : null,
       }),
     );
   });
 
   app.post('/voice/transcriptions', async (c) => {
-    const { principalId } = caller(c);
+    const { spaceId, principalId } = caller(c);
     const adapter = providers.transcription;
     if (!adapter || !allowance) throw unavailable();
     const tooLarge = () =>
@@ -236,6 +316,8 @@ export function mountVoice(
     const query = voiceTranscriptionQuery.safeParse(c.req.query());
     if (!query.success)
       throw new ServiceError('invalid_request', 'Say how long the recording is.', 400);
+    // Before the body is read: a private place's audio is not even held.
+    await refuseWhenPrivate({ spaceId, ...(await place(spaceId, principalId, query.data)) });
     const type = (c.req.header('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
     const filename = CLIP_NAMES[type];
     if (!filename)
@@ -271,9 +353,10 @@ export function mountVoice(
   });
 
   app.post('/conversations/:id/voice/session', async (c) => {
-    const { principalId } = await conversation(c);
+    const { principalId, ...scope } = await conversation(c);
     const live = providers.live;
     if (!live || !allowance) throw unavailable();
+    await refuseWhenPrivate(scope);
     const opened = await metered(
       principalId,
       'session',
@@ -286,10 +369,11 @@ export function mountVoice(
   });
 
   app.post('/conversations/:id/voice/speech', async (c) => {
-    const { principalId } = await conversation(c);
+    const { principalId, ...scope } = await conversation(c);
     const live = providers.live;
     if (!live || !allowance) throw unavailable();
-    const { text } = voiceSpeechRequest.parse(await c.req.json());
+    await refuseWhenPrivate(scope);
+    const { text } = voiceSpeechRequest.parse(await c.req.json().catch(() => null));
     const spoken = await metered(
       principalId,
       'speech',

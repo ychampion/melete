@@ -602,11 +602,19 @@ export const adapter = {
 
   /* ---------- voice: push-to-talk and voice mode ---------- */
   /** Which voice features the installation has. The mic and voice mode appear only when true. */
-  voice: () => guard<VoiceStatus>(() => api.GET('/voice')),
+  voice: (place?: { conversationId: string | null; agentId: string | null }) =>
+    guard<VoiceStatus>(() => api.GET('/voice', { params: { query: voicePlace(place) } })),
   /** A recorded clip in, the words out. Nothing is sent to the conversation. */
-  transcribe: (clip: Blob, durationMs: number) =>
+  transcribe: (
+    clip: Blob,
+    durationMs: number,
+    place?: { conversationId: string | null; agentId: string | null },
+  ) =>
     binary(
-      `/voice/transcriptions?duration_ms=${Math.max(1, Math.round(durationMs))}`,
+      `/voice/transcriptions?${new URLSearchParams({
+        duration_ms: String(Math.max(1, Math.round(durationMs))),
+        ...voicePlace(place),
+      })}`,
       { method: 'POST', headers: { 'Content-Type': clip.type || 'audio/webm' }, body: clip },
       async (response) => (await response.json()) as VoiceTranscription,
     ),
@@ -642,6 +650,16 @@ export const adapter = {
       }),
     ),
 };
+
+/** The conversation, or the agent a new chat will have, as the voice routes read it. */
+function voicePlace(place?: { conversationId: string | null; agentId: string | null }): {
+  conversation_id?: string;
+  agent_id?: string;
+} {
+  if (place?.conversationId) return { conversation_id: place.conversationId };
+  if (place?.agentId) return { agent_id: place.agentId };
+  return {};
+}
 
 /**
  * A request whose body or answer is not JSON: a recording going up, or speech

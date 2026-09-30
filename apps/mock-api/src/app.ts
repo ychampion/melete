@@ -102,8 +102,11 @@ export type AppDeps = {
   seedExperience?: boolean;
   /** Start as a fresh install: no account, and signed out until one is made. */
   setupNeeded?: boolean;
-  /** Offer push-to-talk and voice mode. On unless a test or `MELETE_MOCK_VOICE=off` says not. */
-  voice?: boolean;
+  /**
+   * Offer push-to-talk and voice mode. On unless a test or `MELETE_MOCK_VOICE=off` says not;
+   * `private` (`MELETE_MOCK_VOICE=private`) offers it but keeps it off, as a private space does.
+   */
+  voice?: boolean | 'private';
   /** The agent's browser and sandbox. On unless a demonstration of a fresh install turns it off. */
   computer?: boolean;
 };
@@ -142,7 +145,11 @@ export function createMockApp(deps: AppDeps) {
   // its own routes rather than going through the contract's operation table.
   mountCompaniesMock(app, deps, experience);
   mountLearnedMock(app, deps);
-  mountVoiceMock(app, { experience, enabled: deps.voice ?? true });
+  mountVoiceMock(app, {
+    experience,
+    enabled: deps.voice !== false,
+    private: deps.voice === 'private',
+  });
   mountModelsMock(app);
   mountPushMock(app, () => experience.profile);
 

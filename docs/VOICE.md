@@ -107,6 +107,42 @@ The card is in the chat above; **Show the decision** brings it into view.
 Neither your voice nor the spoken reply is stored. Your words are kept as the
 chat message they became, and the reply as the chat message it already is.
 
+## Privacy
+
+ElevenLabs is a cloud service. Voice sends it audio and text directly, not
+through the model gateway (voice mode's microphone goes from your browser
+straight to ElevenLabs), so the
+[privacy router](PRIVACY-ROUTER.md) does not redact or reroute any of it. What
+ElevenLabs receives:
+
+| Feature | Sent to ElevenLabs | Not sent |
+| --- | --- | --- |
+| Push-to-talk | The recording, under a generic file name such as `clip.webm`, and the model name. | The chat, the message box, your name, the space. |
+| Voice mode, listening | Your microphone as 16 kHz audio while voice mode is open and not muted, over a single-use token the service asked for. | The key; the chat's other messages. |
+| Voice mode, speaking | Each piece of the reply that is read aloud, as text, up to 2,000 characters a request. | The rest of the chat, memory, tool results that are not in the reply. |
+| Speech (`audio.synthesize`) | The script you approved, and the voice and model settings. | Anything else from the space. |
+| Transcription (`audio.transcribe`) | The file you approved, and the model settings. | Anything else from the space. |
+
+Every request from the service carries its ElevenLabs key; the browser uses
+only the single-use token. Melete keeps no push-to-talk or voice mode audio;
+ElevenLabs' own terms govern what it keeps.
+
+Because none of this can be kept on your own machine, push-to-talk and voice
+mode are off where the privacy router keeps work off cloud models:
+
+- a space marked private in **Settings → Privacy**;
+- a chat with an agent marked private there, including a new chat about to be
+  started with that agent;
+- a conversation the router found to be about therapy, health records or
+  personal finances.
+
+There the microphone and voice mode buttons say why instead of recording, and
+the service refuses the request before it reads any audio or text
+(`voice_private`, 403). If the privacy settings cannot be read, voice is off too.
+Speech and transcription as agent capabilities are not turned off this way:
+each one shows you the exact script or file and waits for your approval before
+anything is sent.
+
 ## If something goes wrong
 
 Every problem is shown in the chat in plain words, for example:
@@ -118,3 +154,5 @@ Every problem is shown in the chat in plain words, for example:
 | You have used today’s allowance… | The person reached a daily limit above. It frees up as the day's use ages past 24 hours. |
 | The speech service could not … just now. | ElevenLabs refused or did not answer. Check the key and your ElevenLabs quota. |
 | The voice connection ended. | The realtime connection closed. Press **Start again**; it opens a new session. |
+| Voice is off here because this space or its agent is marked private. | See [Privacy](#privacy). Voice would send your words to ElevenLabs. |
+| Voice is off in this conversation because it looks like it is about a sensitive topic. | See [Privacy](#privacy). Start a new chat to use voice for something else. |

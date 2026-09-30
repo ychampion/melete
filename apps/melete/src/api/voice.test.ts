@@ -9,6 +9,7 @@ import { ServiceError } from './errors.ts';
 import {
   mountVoice,
   type VoiceAllowance,
+  type VoicePrivacy,
   type VoiceProviders,
   type VoiceUsageKind,
 } from './voice.ts';
@@ -39,7 +40,7 @@ const PERSON = 'prn_01J00000000000000000000000';
 
 function app(
   providers: Partial<VoiceProviders> = {},
-  options: { allowance?: CountingAllowance | null; seconds?: number } = {},
+  options: { allowance?: CountingAllowance | null; seconds?: number; privacy?: VoicePrivacy } = {},
 ) {
   const allowance =
     options.allowance === null ? undefined : (options.allowance ?? new CountingAllowance());
@@ -65,6 +66,7 @@ function app(
     allowance,
     providers: { transcription: null, live: null, ...providers },
     limits: { seconds: options.seconds ?? 1800, characters: 20_000, sessions: 30 },
+    privacy: options.privacy ?? (async () => null),
   });
   return { built, allowance };
 }
@@ -91,6 +93,7 @@ describe('which voice features the service offers', () => {
       voice_mode: false,
       max_recording_seconds: 120,
       max_recording_bytes: VOICE_LIMITS.recording_bytes,
+      off_reason: null,
     });
   });
 
@@ -271,5 +274,90 @@ describe('push-to-talk transcription', () => {
     expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
       'voice_unavailable',
     );
+  });
+});
+
+describe('voice stays off where the privacy router keeps work off cloud models', () => {
+  const counting = (): TranscriptionAdapter & { calls: number } => {
+    const adapter = {
+      model: 'counting',
+      calls: 0,
+      async transcribe(...args: Parameters<TranscriptionAdapter['transcribe']>) {
+        adapter.calls += 1;
+        return fakeTranscriptionAdapter.transcribe(...args);
+      },
+    };
+    return adapter;
+  };
+  const wav = () => silentWav({ script: 'My test results came back.', durationMs: 1000 });
+
+  test('a private space or agent refuses push-to-talk before the audio is read or counted', async () => {
+    const asked: unknown[] = [];
+    const adapter = counting();
+    const allowance = new CountingAllowance();
+    const { built } = app(
+      { transcription: adapter },
+      {
+        allowance,
+        privacy: async (scope) => {
+          asked.push(scope);
+          return scope.agentId === 'agt_private' ? 'private' : null;
+        },
+      },
+    );
+    const refused = await built.request(
+      new Request('http://melete.test/voice/transcriptions?duration_ms=1000&agent_id=agt_private', {
+        method: 'POST',
+        headers: { 'content-type': 'audio/wav' },
+        body: wav(),
+      }),
+    );
+    expect(refused.status).toBe(403);
+    const body = (await refused.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('voice_private');
+    expect(body.error.message).toContain('marked private');
+    expect(body.error.message).toContain('ElevenLabs');
+    expect(adapter.calls).toBe(0);
+    expect(allowance.used('transcribe')).toBe(0);
+    expect(asked).toEqual([
+      { spaceId: 'sp_01J00000000000000000000000', agentId: 'agt_private', conversationId: null },
+    ]);
+    // Another agent in the same space is not private, and is heard.
+    const allowed = await built.request(
+      new Request('http://melete.test/voice/transcriptions?duration_ms=1000&agent_id=agt_open', {
+        method: 'POST',
+        headers: { 'content-type': 'audio/wav' },
+        body: wav(),
+      }),
+    );
+    expect(allowed.status).toBe(200);
+    expect(adapter.calls).toBe(1);
+  });
+
+  test('the status gives the reason to show, and says nothing when voice is off anyway', async () => {
+    const privateHere: VoicePrivacy = async () => 'sensitive';
+    const on = await app(
+      { transcription: fakeTranscriptionAdapter },
+      { privacy: privateHere },
+    ).built.request('/voice?agent_id=agt_any');
+    const status = voiceStatus.parse(await on.json());
+    expect(status.off_reason).toContain('sensitive topic');
+    const none = await app({}, { privacy: privateHere }).built.request('/voice');
+    expect(voiceStatus.parse(await none.json()).off_reason).toBeNull();
+  });
+
+  test('a privacy check that fails keeps voice off', async () => {
+    const adapter = counting();
+    const { built } = app(
+      { transcription: adapter },
+      {
+        privacy: async () => {
+          throw new Error('settings unavailable');
+        },
+      },
+    );
+    const refused = await built.request(clip(wav(), 1000));
+    expect(refused.status).toBe(403);
+    expect(adapter.calls).toBe(0);
   });
 });

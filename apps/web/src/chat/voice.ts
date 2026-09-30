@@ -16,21 +16,26 @@ import type { VoiceStatus } from '../experience/types.ts';
 
 /* ---------- whether voice is here at all ---------- */
 
-let status: Promise<VoiceStatus | null> | null = null;
+/** Where voice would be used: a conversation, or the agent a new chat will have. */
+export type VoicePlace = { conversationId: string | null; agentId: string | null };
 
-/** Read once per page: the installation's voice features do not change under it. */
-export function useVoiceStatus(): VoiceStatus | null {
+/**
+ * The installation's voice features, and whether voice is off at this place.
+ * Read again when the place changes: a private space or agent, or a
+ * conversation about a sensitive topic, has voice off.
+ */
+export function useVoiceStatus(place: VoicePlace): VoiceStatus | null {
   const [value, setValue] = useState<VoiceStatus | null>(null);
+  const { conversationId, agentId } = place;
   useEffect(() => {
-    status ??= adapter.voice().then((result) => result.data);
     let live = true;
-    void status.then((read) => {
-      if (live) setValue(read);
+    void adapter.voice({ conversationId, agentId }).then((result) => {
+      if (live) setValue(result.data);
     });
     return () => {
       live = false;
     };
-  }, []);
+  }, [conversationId, agentId]);
   return value;
 }
 
@@ -94,7 +99,14 @@ export type RecorderState = 'idle' | 'starting' | 'recording' | 'transcribing';
  * Tap to record, tap again to stop. The recorder stops itself at the service's
  * limit, so a clip is never refused for its length.
  */
-export function useRecorder(options: { maxSeconds: number; onText: (text: string) => void }) {
+export function useRecorder(options: {
+  maxSeconds: number;
+  onText: (text: string) => void;
+  /** Where the words will be used, so a private place is refused before audio is sent. */
+  place?: VoicePlace;
+  /** Why voice is off here; a tap then says so instead of recording. */
+  off?: string | null;
+}) {
   const [state, setState] = useState<RecorderState>('idle');
   const [problem, setProblem] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState(0);
@@ -103,11 +115,13 @@ export function useRecorder(options: { maxSeconds: number; onText: (text: string
   const limit = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onText = useRef(options.onText);
   onText.current = options.onText;
+  const place = useRef(options.place);
+  place.current = options.place;
 
   const finish = useCallback(async (chunks: Blob[], type: string, durationMs: number) => {
     setState('transcribing');
     const clip = new Blob(chunks, { type: type.split(';')[0] || 'audio/webm' });
-    const result = await adapter.transcribe(clip, durationMs);
+    const result = await adapter.transcribe(clip, durationMs, place.current);
     setState('idle');
     if (result.data === null) {
       setProblem(result.error ?? result.unavailable ?? 'That recording could not be transcribed.');
@@ -175,10 +189,12 @@ export function useRecorder(options: { maxSeconds: number; onText: (text: string
     [],
   );
 
+  const off = options.off ?? null;
   const toggle = useCallback(() => {
     if (state === 'recording') stop();
+    else if (state === 'idle' && off) setProblem(off);
     else if (state === 'idle') void start();
-  }, [state, start, stop]);
+  }, [state, start, stop, off]);
 
   return { state, problem, startedAt, toggle, dismiss: () => setProblem(null) };
 }

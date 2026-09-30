@@ -238,6 +238,7 @@ import {
   spaceRemovalReport,
 } from './spaces.ts';
 import {
+  voiceContextQuery,
   voiceSession,
   voiceSpeechRequest,
   voiceStatus,
@@ -3010,7 +3011,10 @@ export function buildOpenApiDocument() {
             summary: 'Which voice features this installation has',
             description:
               'Both are false until the operator sets a speech provider key. Push-to-talk needs a ' +
-              'provider that transcribes; voice mode needs ElevenLabs.',
+              'provider that transcribes; voice mode needs ElevenLabs. Given a conversation, or the ' +
+              'agent a new chat will have, `off_reason` says why voice is off there: the space or ' +
+              'agent is marked private, or the conversation is about a sensitive topic.',
+            requestParams: { query: voiceContextQuery },
             responses: { '200': jsonResponse('Voice features and their limits', voiceStatus) },
           },
         },
@@ -3035,7 +3039,8 @@ export function buildOpenApiDocument() {
             responses: {
               '200': jsonResponse('What was heard', voiceTranscription),
               '400': problem('Not a recording this service reads'),
-              '404': problem('Voice is not set up on this installation'),
+              '403': problem('Voice is off in a private space, agent or sensitive conversation'),
+              '404': problem('Voice is not set up on this installation, or no such conversation'),
               '413': problem('The recording is longer or larger than the limit'),
               '429': problem('The daily allowance for transcription is used up'),
               '502': problem('The speech provider could not transcribe it'),
@@ -3053,6 +3058,7 @@ export function buildOpenApiDocument() {
             requestParams: idParam('id', 'Conversation id'),
             responses: {
               '201': jsonResponse('Open `url` as a WebSocket', voiceSession),
+              '403': problem('Voice is off in a private space, agent or sensitive conversation'),
               '404': problem('No such conversation, or voice mode is not set up'),
               '429': problem('The daily allowance of voice sessions is used up'),
               '502': problem('The speech provider could not open a session'),
@@ -3074,6 +3080,7 @@ export function buildOpenApiDocument() {
                 content: { 'audio/mpeg': { schema: z.string().meta({ format: 'binary' }) } },
               },
               '400': problem('Invalid request'),
+              '403': problem('Voice is off in a private space, agent or sensitive conversation'),
               '404': problem('No such conversation, or voice mode is not set up'),
               '429': problem('The daily allowance for reading aloud is used up'),
               '502': problem('The speech provider could not speak it'),

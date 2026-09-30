@@ -67,13 +67,23 @@ export function silence(text: string, sampleRate = 8000): Uint8Array {
   return out;
 }
 
+/** What the service says where the space or agent is marked private. */
+const PRIVATE_HERE =
+  'Voice is off here because this space or its agent is marked private. Voice sends what you say, and the replies it reads aloud, to ElevenLabs, a cloud speech service.';
+
 export function mountVoiceMock(
   app: Hono,
-  deps: { experience: ExperienceMock; enabled: boolean },
+  deps: {
+    experience: ExperienceMock;
+    enabled: boolean;
+    /** Behave as a private space: voice is offered but off, with the reason. */
+    private?: boolean;
+  },
 ): void {
   let heard = 0;
-  const fail = (c: Context, status: 400 | 401 | 404 | 413, code: string, message: string) =>
+  const fail = (c: Context, status: 400 | 401 | 403 | 404 | 413, code: string, message: string) =>
     c.json({ error: { code, message } }, status);
+  const kept = (c: Context) => fail(c, 403, 'voice_private', PRIVATE_HERE);
   // Signed out after POST /signout, as every experience route is.
   const signedIn = (_c: Context) => !deps.experience.signedOut;
   const unset = (c: Context) =>
@@ -87,6 +97,7 @@ export function mountVoiceMock(
         voice_mode: deps.enabled,
         max_recording_seconds: VOICE_LIMITS.recording_seconds,
         max_recording_bytes: VOICE_LIMITS.recording_bytes,
+        off_reason: deps.enabled && deps.private ? PRIVATE_HERE : null,
       }),
     );
   });
@@ -96,6 +107,7 @@ export function mountVoiceMock(
     if (!deps.enabled) return unset(c);
     const query = voiceTranscriptionQuery.safeParse(c.req.query());
     if (!query.success) return fail(c, 400, 'invalid_request', 'Say how long the recording is.');
+    if (deps.private) return kept(c);
     if (query.data.duration_ms > VOICE_LIMITS.recording_seconds * 1000 + 1000)
       return fail(
         c,
@@ -131,6 +143,7 @@ export function mountVoiceMock(
   app.post('/conversations/:id/voice/session', (c) => {
     if (!conversation(c)) return fail(c, 404, 'not_found', 'That item is not here.');
     if (!deps.enabled) return unset(c);
+    if (deps.private) return kept(c);
     const url = new URL(c.req.url);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     url.pathname = REALTIME_PATH;
@@ -148,6 +161,7 @@ export function mountVoiceMock(
   app.post('/conversations/:id/voice/speech', async (c) => {
     if (!conversation(c)) return fail(c, 404, 'not_found', 'That item is not here.');
     if (!deps.enabled) return unset(c);
+    if (deps.private) return kept(c);
     const parsed = voiceSpeechRequest.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return fail(c, 400, 'invalid_request', 'Check the request and try again.');
     // The service streams MP3 from the provider; silence as WAV plays the same way here.

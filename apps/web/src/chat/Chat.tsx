@@ -473,7 +473,12 @@ export function ChatScreen({ id }: { id: string | null }) {
   const wide = useMedia('(min-width: 1180px)');
   // The case panel follows the width until the person opens or closes it.
   const [caseChoice, setCaseChoice] = useState<boolean | null>(null);
-  const voice = useVoiceStatus();
+  // The conversation's own agent counts once it exists; before that, the one a new chat gets.
+  const voicePlace = {
+    conversationId,
+    agentId: conversationId ? null : (agentId ?? agents[0]?.id ?? null),
+  };
+  const voice = useVoiceStatus(voicePlace);
   const [voiceOpen, setVoiceOpen] = useState(() => {
     const arriving = conversationId !== null && voiceOnArrival === conversationId;
     if (arriving) voiceOnArrival = null;
@@ -728,6 +733,11 @@ export function ChatScreen({ id }: { id: string | null }) {
   };
 
   const startVoice = async () => {
+    // A private space or agent, or a sensitive conversation: say why rather than open.
+    if (voice?.off_reason) {
+      toast({ kind: 'err', title: 'Voice is off here', sub: voice.off_reason });
+      return;
+    }
     if (conversationId) {
       setVoiceOpen(true);
       return;
@@ -1063,7 +1073,13 @@ export function ChatScreen({ id }: { id: string | null }) {
                     conversationId && void reportFailure(adapter.stop(conversationId), 'stop')
                   }
                   voice={
-                    voice?.push_to_talk ? { maxSeconds: voice.max_recording_seconds } : undefined
+                    voice?.push_to_talk
+                      ? {
+                          maxSeconds: voice.max_recording_seconds,
+                          place: voicePlace,
+                          off: voice.off_reason,
+                        }
+                      : undefined
                   }
                 />
               )}

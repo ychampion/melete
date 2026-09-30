@@ -24,8 +24,8 @@ export type MockOptions = {
   experience?: { seed?: boolean };
   /** Start as a fresh install: no account yet, and signed out until one is made. */
   setupNeeded?: boolean;
-  /** Offer voice; on unless turned off. */
-  voice?: boolean;
+  /** Offer voice; on unless turned off, or kept off as in a private space. */
+  voice?: boolean | 'private';
   /** Off, conversations have no browser or sandbox, as on a fresh install. */
   computer?: boolean;
 };
@@ -57,7 +57,10 @@ if (import.meta.main) {
     experience: { seed: process.env.MOCK_SEED !== 'off' },
     setupNeeded: process.env.MELETE_MOCK_SETUP === 'needed',
     computer: process.env.MELETE_MOCK_COMPUTER !== 'off',
-    voice: process.env.MELETE_MOCK_VOICE !== 'off',
+    voice:
+      process.env.MELETE_MOCK_VOICE === 'private'
+        ? 'private'
+        : process.env.MELETE_MOCK_VOICE !== 'off',
   });
   Bun.serve<RealtimeState>({
     port,

@@ -40,6 +40,7 @@ import {
   PostgresVoiceAllowance,
   type VoiceProviders,
   voiceLimitsFromEnv,
+  voicePrivacyFrom,
   voiceProvidersFromEnv,
 } from './api/voice.ts';
 import { verifyCapability } from './broker/capability.ts';
@@ -277,13 +278,6 @@ export function createApp(deps: AppDeps) {
     mountProviderSignIn(app, { db: deps.db, signIn });
     mountModelSettings(app, { db: deps.db, settings: modelSettings });
   }
-  if (deps.db)
-    mountVoice(app, {
-      db: deps.db,
-      allowance: deps.sql ? new PostgresVoiceAllowance(deps.sql) : undefined,
-      providers: deps.voice ?? voiceProvidersFromEnv(deps.env),
-      limits: voiceLimitsFromEnv(deps.env),
-    });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -328,6 +322,15 @@ export function createApp(deps: AppDeps) {
       : defaultPrivacyRouter());
   // Before the experience routes, which answer every operation they do not implement.
   if (deps.db) mountPrivacy(app, { router: () => privacy, providerUrl: providerAddress(deps.env) });
+  if (deps.db)
+    mountVoice(app, {
+      db: deps.db,
+      allowance: deps.sql ? new PostgresVoiceAllowance(deps.sql) : undefined,
+      providers: deps.voice ?? voiceProvidersFromEnv(deps.env),
+      limits: voiceLimitsFromEnv(deps.env),
+      // Voice goes to its provider directly, so it follows the router's private marks.
+      privacy: voicePrivacyFrom(privacy),
+    });
   if (deps.db) mountPush(app, deps.push ?? new PushService(deps.db, pushConfig(deps.env)));
   if (deps.db)
     mountExperience(app, {
