@@ -3,6 +3,7 @@ import { type Action, type StandingRule, standingRule } from '@melete/contracts'
 import type { StandingGrantResolver } from '../broker/service.ts';
 import { collectOriginFields } from '../broker/trust.ts';
 import { numericDate } from '../dates.ts';
+import { MCP_COMMAND_PREFIX } from '../mcp-server/actor.ts';
 import { plainText } from './projectors.ts';
 
 export const ruleKinds: Record<string, StandingRule['kind']> = {
@@ -51,6 +52,10 @@ export function ruleView(row: Record<string, unknown>): StandingRule {
     created_at: new Date(String(row.created_at)).toISOString(),
   });
 }
+
+/** An owner command an assistant started through Melete's MCP endpoint. */
+export const isAssistantCommand = (key: string | null | undefined): boolean =>
+  typeof key === 'string' && key.startsWith(MCP_COMMAND_PREFIX);
 
 /** Exact trusted selectors prevent one recipient's permission from authorizing another. */
 export const resolveExperienceGrant: StandingGrantResolver = async (tx, input) => {

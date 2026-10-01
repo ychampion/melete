@@ -22,6 +22,7 @@ import { BrokerService } from '../../src/broker/service.ts';
 import { createExecConnector } from '../../src/connectors/exec.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { createSandboxExecConnector } from '../../src/connectors/sandbox-exec.ts';
+import { defaultPrivacyRouter } from '../../src/privacy/index.ts';
 import { resolvePython } from '../../src/runtime/python.ts';
 import { FakeSandboxEngine, FakeSandboxProvider } from '../../src/sandbox/fake.ts';
 import { SandboxSessions } from '../../src/sandbox/sessions.ts';
@@ -94,6 +95,7 @@ async function setup() {
   // The listener the service itself gives the cell: broker routes arrive
   // through the model gateway's server, with its timeouts, not a test server.
   const internal = createInternalServer({
+    privacy: defaultPrivacyRouter(),
     sql: db.sql,
     connectors: registry,
     capabilityKey: CAPABILITY_KEY,

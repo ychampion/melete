@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { readReply, turnRequest } from './model.ts';
 import { buildTurn, type CallRow, recallQuery, spokenLines, toolsFor } from './turns.ts';
 
+const scope = { spaceId: 'spc_test', sourceJobId: null };
+
 const outbound: CallRow = {
   id: 'call_01JABCDEFGHJKMNPQRSTVWXYZ0',
   connection_id: 'conn_01JABCDEFGHJKMNPQRSTVWXYZ0',
@@ -53,13 +55,21 @@ describe('what the other party says cannot widen the call', () => {
     expect(recallQuery(outbound, hostile)).toBe(recallQuery(outbound, benign));
     expect(recallQuery(outbound, hostile)).not.toContain('address');
     const memory = ['Zara lives at 1 Example Street'];
-    const calm = buildTurn({ name: 'Zara', call: outbound, lines: benign, memory, answer: null });
+    const calm = buildTurn({
+      name: 'Zara',
+      call: outbound,
+      lines: benign,
+      memory,
+      answer: null,
+      scope,
+    });
     const pressed = buildTurn({
       name: 'Zara',
       call: outbound,
       lines: hostile,
       memory,
       answer: null,
+      scope,
     });
     expect(pressed.system).toBe(calm.system);
     expect(pressed.tools).toEqual(calm.tools);
@@ -103,6 +113,7 @@ describe('what the other party says cannot widen the call', () => {
       lines: [],
       memory: [],
       answer: { question: 'Is Tuesday at 3 fine?', answer: 'Yes, Tuesday works' },
+      scope,
     });
     expect(turn.system).toContain('Zara answered: "Yes, Tuesday works"');
   });
@@ -118,6 +129,7 @@ describe('one turn in each protocol', () => {
     ],
     memory: [],
     answer: null,
+    scope,
   });
 
   test('chat completions carry the tools as functions and read tool calls back', () => {

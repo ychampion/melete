@@ -23,11 +23,13 @@ import { connectorFactoryFor, connectorOptionsFromEnv } from '../connectors/conf
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Database } from '../db/client.ts';
 import type { Env } from '../env.ts';
+import type { ModelSettingsService } from '../gateway/model-settings.ts';
 import type { JobService } from '../jobs/service.ts';
 import { memoryScopeForSpace } from '../memory/broker-trust.ts';
 import type { MemorySql } from '../memory/db.ts';
 import { recall } from '../memory/recall.ts';
 import { spaceAuthority } from '../principals/authority.ts';
+import type { PrivacyRouter } from '../privacy/index.ts';
 import { callForReport, callNotConnected, finishCall, startInbound } from './calls.ts';
 import { conversationRecord, ElevenLabsClient, type Fetch } from './elevenlabs.ts';
 import { lineKeyMatches, signatureValid } from './keys.ts';
@@ -42,6 +44,10 @@ export type PhoneRouteDeps = {
   env: Env;
   registry: ConnectorRegistry;
   jobs?: JobService;
+  /** The service's privacy router, which every turn's model call goes through. */
+  privacy: PrivacyRouter;
+  /** The model connected in the app, which a turn uses unless MELETE_PHONE_MODEL names one. */
+  modelSettings?: ModelSettingsService;
   /** The model a turn is answered by; left out, the gateway model this deployment configures. */
   model?: () => Promise<CallModel>;
   /** Memory recall for the line's person; left out, memory's own bounded read. */
@@ -81,7 +87,13 @@ export function mountPhone(app: Hono, deps: PhoneRouteDeps) {
     connectorOptionsFromEnv(deps.sql, deps.env),
   );
   const phone = () => factory.options.phone;
-  const model = deps.model ?? configuredCallModel(deps.env);
+  const model =
+    deps.model ??
+    configuredCallModel(deps.env, {
+      privacy: deps.privacy,
+      sql: deps.sql,
+      ...(deps.modelSettings ? { settings: deps.modelSettings } : {}),
+    });
   const turnDeps = { sql: deps.sql, model, recall: deps.recall ?? memoryRecall(deps.sql) };
   const records = { sql: deps.sql, ...(deps.jobs ? { jobs: deps.jobs } : {}) };
 

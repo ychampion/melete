@@ -15,14 +15,26 @@ import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { z } from 'zod';
 import type { Env } from '../env.ts';
-import { configuredProviders } from '../gateway/configured.ts';
+import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
 import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import { type ModelSettingsService, serviceModelSource } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
-import { GatewayError, type GatewayProtocol } from '../gateway/types.ts';
+import { GatewayError, type GatewayPrincipal, type GatewayProtocol } from '../gateway/types.ts';
 
 export type TurnMessage = { role: 'user' | 'assistant'; content: string };
 export type ToolSpec = { name: string; description: string; parameters: Record<string, unknown> };
-export type ModelTurn = { system: string; messages: TurnMessage[]; tools: ToolSpec[] };
+/**
+ * Whose data a turn carries, for the privacy router: the line's space and the
+ * conversation the call belongs to (the job that placed it, or the line's own
+ * conversation for the person's calls), null when there is none yet.
+ */
+export type CallScope = { spaceId: string; sourceJobId: string | null };
+export type ModelTurn = {
+  system: string;
+  messages: TurnMessage[];
+  tools: ToolSpec[];
+  scope: CallScope;
+};
 export type ToolRequest = { name: string; arguments: Record<string, unknown> };
 export type ModelReply = { text: string; calls: ToolRequest[] };
 
@@ -201,6 +213,10 @@ export type CallGatewayOptions = {
   provider: string;
   model: string;
   providers: NonNullable<GatewayOptions['providers']>;
+  /** The service's privacy router; the space's settings and the conversation's marks apply. */
+  privacy: GatewayOptions['privacy'];
+  /** Keys connected in the app, added to `providers` for each turn. */
+  currentProviders?: GatewayOptions['currentProviders'];
   fake?: GatewayOptions['fake'];
   fetch?: GatewayOptions['fetch'];
 };
@@ -210,7 +226,8 @@ export type CallGatewayOptions = {
  * call size; the listener is on loopback and does not keep the process alive.
  */
 export async function openCallGateway(options: CallGatewayOptions) {
-  const tokens = new Set<string>();
+  /** Each turn's token, and whose data that turn carries. */
+  const tokens = new Map<string, CallScope>();
   const server = createModelGateway({
     budget: {
       async reserve(request) {
@@ -226,23 +243,32 @@ export async function openCallGateway(options: CallGatewayOptions) {
       async settle() {},
     },
     providers: options.providers,
+    currentProviders: options.currentProviders,
     fake: options.fake,
     fetch: options.fetch,
+    privacy: options.privacy,
     defaultProvider: options.provider,
     timeoutMs: CALL_LIMITS.timeout_ms,
     maxRequestBytes: 512 * 1024,
     maxResponseBytes: 128 * 1024,
     async authenticate(token) {
-      if (!tokens.has(token)) throw new GatewayError(401, 'call_principal_denied');
+      const scope = tokens.get(token);
+      if (!scope) throw new GatewayError(401, 'call_principal_denied');
       return {
         jobId: 'phone-call',
+        privacy: {
+          kind: 'service',
+          purpose: 'phone',
+          spaceId: scope.spaceId,
+          sourceJobId: scope.sourceJobId,
+        },
         attemptId: `turn:${token.slice(0, 8)}`,
         epoch: 0,
         revision: 0,
         maxRequests: 1,
         maxTokens: CALL_LIMITS.input_tokens + CALL_LIMITS.output_tokens,
         allowedModels: [{ provider: options.provider, model: options.model }],
-      };
+      } satisfies GatewayPrincipal;
     },
   });
   await new Promise<void>((resolve, reject) => {
@@ -255,7 +281,7 @@ export async function openCallGateway(options: CallGatewayOptions) {
   const model: CallModel = {
     async reply(turn, signal) {
       const token = randomUUID();
-      tokens.add(token);
+      tokens.set(token, turn.scope);
       try {
         const response = await fetch(`${base}/providers/${options.provider}/v1/${protocol}`, {
           method: 'POST',
@@ -286,20 +312,55 @@ export async function openCallGateway(options: CallGatewayOptions) {
   };
 }
 
-/** The call model this deployment uses, opened the first time a call needs it. */
-export function configuredCallModel(env: Env): () => Promise<CallModel> {
-  let opened: Promise<CallModel> | undefined;
-  return () => {
-    opened ??= openCallGateway({
-      provider: env.MELETE_PHONE_PROVIDER?.trim() || env.MELETE_DEFAULT_PROVIDER,
-      model: env.MELETE_PHONE_MODEL?.trim() || env.MELETE_DEFAULT_MODEL,
-      providers: configuredProviders(env, () => {}),
-    })
-      .then((gateway) => gateway.model)
-      .catch((error) => {
-        opened = undefined;
-        throw error;
-      });
-    return opened;
+/**
+ * The call model this deployment uses. MELETE_PHONE_PROVIDER and
+ * MELETE_PHONE_MODEL pin one; otherwise a turn uses the model new chats use,
+ * chosen in the app or not, read again for each turn so a key connected in the
+ * app applies to the next call. One gateway is opened per model and kept.
+ */
+export function configuredCallModel(
+  env: Env,
+  options: {
+    privacy: GatewayOptions['privacy'];
+    sql?: Parameters<typeof providerSignIn>[0];
+    settings?: ModelSettingsService;
+  },
+): () => Promise<CallModel> {
+  const source = serviceModelSource({
+    env,
+    ...(options.settings ? { settings: options.settings } : {}),
+    pinned: { provider: env.MELETE_PHONE_PROVIDER?.trim(), model: env.MELETE_PHONE_MODEL?.trim() },
+  });
+  const providers = configuredProviders(
+    env,
+    () => {},
+    options.sql ? providerSignIn(options.sql, env) : undefined,
+  );
+  const opened = new Map<string, Promise<CallModel>>();
+  const open = (provider: string, model: string) => {
+    const key = `${provider}
+${model}`;
+    let gateway = opened.get(key);
+    if (!gateway) {
+      gateway = openCallGateway({
+        provider,
+        model,
+        providers,
+        privacy: options.privacy,
+        currentProviders: source.providers,
+      })
+        .then((call) => call.model)
+        .catch((error) => {
+          opened.delete(key);
+          throw error;
+        });
+      opened.set(key, gateway);
+    }
+    return gateway;
+  };
+  return async () => {
+    const choice = await source.current();
+    const model = await open(choice.provider, choice.model);
+    return { reply: (turn, signal) => model.reply(turn, signal) };
   };
 }

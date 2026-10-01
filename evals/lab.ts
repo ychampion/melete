@@ -12,6 +12,7 @@ import type { MemoryScope } from '../apps/melete/src/memory/db.ts';
 import { FileRestrictionJournal, restoreMemory } from '../apps/melete/src/memory/restore.ts';
 import { buildViews } from '../apps/melete/src/memory/views.ts';
 import { claimWork, MEMORY_EXTRACT_QUEUE } from '../apps/melete/src/memory/work.ts';
+import { defaultPrivacyRouter } from '../apps/melete/src/privacy/index.ts';
 import { fixtureConnector, initializeDestination, SCOPES } from './destination.ts';
 import type { GradeContext, Snapshot } from './grading.ts';
 import { ScriptedModel } from './scripted.ts';
@@ -88,6 +89,7 @@ export async function openLab(
   await restoreMemory(sql, journal);
   let ownerId = '';
   const boundary = createInternalServer({
+    privacy: defaultPrivacyRouter(),
     sql,
     connectors,
     capabilityKey: stack.secrets.capability,

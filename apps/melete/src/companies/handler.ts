@@ -16,8 +16,9 @@
  * write the same transition twice, from two places, for one click.
  */
 
-import type { Company, LedgerItem } from '@melete/contracts';
+import type { AwaitedReply, Company, LedgerItem } from '@melete/contracts';
 import { type HandleDeps, handleLedgerItem } from './handle.ts';
+import { handleAwaitedReply } from './handle-reply.ts';
 
 /** Everything the playbook needs, already checked, with the text its quotes cite. */
 export type HandleRequest = {
@@ -34,6 +35,16 @@ export type HandleRequest = {
 
 export type HandleResult = { job_id: string };
 
+/** A reply the person is waiting on, with the stored text of what they sent. */
+export type ReplyChaseRequest = {
+  reply: AwaitedReply;
+  /** The stored text of their sent message, or null when it is no longer held. */
+  messageText: string | null;
+  principalId: string;
+  spaceId: string;
+  connectionId?: string;
+};
+
 /**
  * What the route calls. One call, one job. It is given an item that has already
  * passed the evidence gate, so it never has to decide whether a figure is real;
@@ -41,6 +52,8 @@ export type HandleResult = { job_id: string };
  */
 export interface LedgerItemHandler {
   handleLedgerItem(request: HandleRequest): Promise<HandleResult>;
+  /** Chase a reply the person is waiting on. Absent, "Chase this" is not connected. */
+  handleAwaitedReply?(request: ReplyChaseRequest): Promise<HandleResult>;
 }
 
 /** A handler is unavailable in a way a route can answer with, not crash on. */
@@ -80,6 +93,17 @@ export function playbookHandler(deps: HandleDeps): LedgerItemHandler {
       return handleLedgerItem(deps, {
         item: request.item,
         company: request.company,
+        messageText: request.messageText,
+        principalId: request.principalId,
+        spaceId: request.spaceId,
+        ...(request.connectionId ? { connectionId: request.connectionId } : {}),
+      });
+    },
+    async handleAwaitedReply(request: ReplyChaseRequest): Promise<HandleResult> {
+      if (request.messageText === null)
+        throw new HandlerUnavailable('The message you sent is no longer held.');
+      return handleAwaitedReply(deps, {
+        reply: request.reply,
         messageText: request.messageText,
         principalId: request.principalId,
         spaceId: request.spaceId,

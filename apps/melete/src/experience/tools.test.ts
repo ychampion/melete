@@ -11,6 +11,7 @@ import {
   actionCall,
   appendMemoryTool,
   appendToolTrace,
+  deviceWaitCall,
   displayUrl,
   memoryCall,
   modelCall,
@@ -527,5 +528,28 @@ describe('scrubbing', () => {
     expect(toolText('see https://example.test/reset/a1b2c3d4e5f6 now')).toBe(
       'see https://example.test/ now',
     );
+  });
+});
+
+describe('work waiting for the person’s computer', () => {
+  test('says what it will do and that it goes by itself', () => {
+    const call = deviceWaitCall({
+      action: row('device.run', { canonicalPayload: { command: 'echo hello', cwd: 'Projects' } }),
+      connection: { id: 'conn_1', label: 'Test laptop', provider: 'device' },
+      key: 'act_1:9',
+      at,
+    });
+    expect(call.title).toBe('Waiting for Test laptop');
+    expect(call.input_summary?.quote?.text).toBe('echo hello');
+    expect(call.output_summary?.text).toBe(
+      'Running a command on your computer as soon as it connects. Stop the conversation to cancel.',
+    );
+    const browser = deviceWaitCall({
+      action: row('device.browser_open', { canonicalPayload: { url: 'https://example.com/bill' } }),
+      connection: { id: 'conn_1', label: 'Test laptop', provider: 'device' },
+      key: 'act_2:9',
+      at,
+    });
+    expect(browser.title).toBe('Waiting for your browser on Test laptop');
   });
 });

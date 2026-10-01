@@ -14,6 +14,8 @@ import {
   createConnectionRequest,
   MCP_CATALOG,
   modalTokenParts,
+  sandboxAdapterHasDesktop,
+  sandboxAdapterTakesKey,
   sandboxCredentialRefusal,
 } from './connections.ts';
 import { connectionView } from './entities.ts';
@@ -607,6 +609,55 @@ describe('the one sandbox credential field', () => {
       ['daytona', 'a:b'],
     ] as const)
       expect(sandboxCredentialRefusal(adapter, key)).toStartWith('credential_invalid:');
+  });
+});
+
+describe('a sandbox on this service Docker engine', () => {
+  const sandbox = (adapter: string, credentials?: Record<string, string>) =>
+    resolve({
+      provider: 'sandbox',
+      label: 'Computer',
+      sandbox: {
+        adapter,
+        image: 'melete-sandbox:local',
+        egress: 'open',
+        persistence: 'pause',
+        lifetime_seconds: 3600,
+      },
+      ...(credentials ? { credentials } : {}),
+    });
+
+  test('takes no key, and is granted the terminal and the desktop', () => {
+    const docker = sandbox('docker');
+    expect(
+      docker.ok && docker.value.kind === 'sandbox' ? docker.value.credentials : 'refused',
+    ).toBeNull();
+    expect(docker.ok && docker.value.kind === 'sandbox' ? docker.value.scopes : []).toEqual([
+      ...CONNECTION_KIND_SCOPES.sandbox,
+    ]);
+    expect(sandboxAdapterTakesKey('docker')).toBe(false);
+    expect(sandboxAdapterHasDesktop('docker')).toBe(true);
+  });
+
+  test('refuses a key it would seal and never read', () => {
+    const keyed = sandbox('docker', { api_key: 'e2b_0123456789' });
+    expect(keyed.ok ? 'accepted' : keyed.error).toStartWith('credential_invalid:');
+    expect(sandboxCredentialRefusal('docker', 'anything')).toContain('takes no key');
+  });
+
+  test('an adapter without a desktop is granted the terminal alone', () => {
+    for (const [adapter, key] of [
+      ['e2b', 'e2b_0123456789'],
+      ['daytona', 'dtn_0123456789'],
+      ['modal', 'ak-token-id:as-token-secret'],
+    ] as const) {
+      const installed = sandbox(adapter, { api_key: key });
+      expect([
+        adapter,
+        installed.ok && installed.value.kind === 'sandbox' ? installed.value.scopes : installed,
+      ]).toEqual([adapter, ['terminal.run']]);
+      expect(sandboxAdapterHasDesktop(adapter)).toBe(false);
+    }
   });
 });
 

@@ -11,6 +11,7 @@ import type { SandboxAdapter } from '@melete/contracts';
 import type { OpenedSandboxProvider, SandboxProviderOptions } from '../connection.ts';
 import type { EgressPolicy, SandboxCapabilities } from '../types.ts';
 import { createDaytonaProvider, daytonaCapabilities, daytonaEgressRefusal } from './daytona.ts';
+import { dockerCapabilities, dockerSandboxHost } from './docker.ts';
 import { createE2bProvider, e2bCapabilities } from './e2b.ts';
 import { createModalProvider, modalCapabilities } from './modal.ts';
 import { createModalSdkTransport } from './modal-sdk.ts';
@@ -86,6 +87,18 @@ export const SANDBOX_ADAPTER_PLUGINS: Record<SandboxAdapter, SandboxAdapterPlugi
           : { snapshotTtlSeconds: options.snapshotTtlSeconds }),
       });
       return { provider, close: async () => provider.close() };
+    },
+  },
+  docker: {
+    capabilities: () => dockerCapabilities(),
+    open(options) {
+      if (!options.docker)
+        throw new Error(
+          'this service has no Docker engine settings for sandboxes; set MELETE_SANDBOX_PROJECT and mount the engine socket',
+        );
+      // One host per engine socket: every docker connection shares its idle
+      // clock and egress guard, and closing one connection stops neither.
+      return { provider: dockerSandboxHost(options.docker), close: async () => {} };
     },
   },
 };

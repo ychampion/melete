@@ -32,6 +32,7 @@ import {
 import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
+import { isDesktopProvider } from '../sandbox/adapters/docker.ts';
 import {
   checkSandboxConfiguration,
   probeSandboxProvider,
@@ -45,8 +46,15 @@ import {
   type SessionRow,
   sessionHandle,
 } from '../sandbox/sessions.ts';
-import type { SandboxProvider } from '../sandbox/types.ts';
+import { SandboxAdapterRefusal, type SandboxProvider } from '../sandbox/types.ts';
 import { readWorkspaceFile, SANDBOX_WORKDIR, syncIn, syncOut } from '../sandbox/workspace.ts';
+import {
+  COMPUTER_TOOL_NAMES,
+  COMPUTER_TOOLS,
+  ComputerPayloadRefusal,
+  HumanControlRefusal,
+  runComputerAction,
+} from './sandbox-computer.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 export type SandboxExecOptions = {
@@ -108,7 +116,8 @@ const runSchema = {
   },
 };
 
-export const sandboxExecManifest: ConnectorManifest = {
+/** A sandbox's terminal alone, for an adapter whose sandboxes have no desktop. */
+export const sandboxTerminalManifest: ConnectorManifest = {
   name: 'terminal',
   version: '0.1.0',
   provider: 'sandbox',
@@ -130,6 +139,20 @@ export const sandboxExecManifest: ConnectorManifest = {
     },
   ],
 };
+
+/** Every grant a sandbox connection offers: the terminal, and the desktop where there is one. */
+export const sandboxExecManifest: ConnectorManifest = {
+  ...sandboxTerminalManifest,
+  description: 'Run commands and use the desktop in a sandbox this service owns.',
+  tools: [...sandboxTerminalManifest.tools, ...COMPUTER_TOOLS],
+};
+
+/** What one provider's sandboxes can do: a desktop only where the adapter has one. */
+export const sandboxManifestFor = (provider: SandboxProvider): ConnectorManifest =>
+  isDesktopProvider(provider) ? sandboxExecManifest : sandboxTerminalManifest;
+
+/** How long one computer action may take, the desktop's own wait for a page included. */
+const COMPUTER_BUDGET_MS = 60_000;
 
 type Payload = { command: string; cwd?: string; timeout_ms?: number; run?: string };
 
@@ -162,7 +185,11 @@ function payloadOf(action: Pick<Action, 'canonical_payload'>): Payload {
 }
 
 /** How long one dispatch of this payload may take before its outcome is unknown. */
-export function sandboxDispatchBudgetMs(action: Pick<Action, 'canonical_payload'>): number {
+export function sandboxDispatchBudgetMs(
+  action: Pick<Action, 'canonical_payload'> & Partial<Pick<Action, 'kind'>>,
+): number {
+  if (action.kind && COMPUTER_TOOL_NAMES.has(action.kind))
+    return COMPUTER_BUDGET_MS + SANDBOX_SYNC_ALLOWANCE_MS;
   let timeout: number = EXEC_LIMITS.max_timeout_ms;
   try {
     timeout = payloadOf(action).timeout_ms ?? timeout;
@@ -387,8 +414,68 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     };
   };
 
+  /** A computer action: the same session as the terminal, the desktop instead of a command. */
+  const computer = async (action: Action, ctx: ConnectorContext, signal: AbortSignal) => {
+    if (!isDesktopProvider(provider))
+      return {
+        outcome: 'failed' as const,
+        reason: `the ${provider.capabilities.adapter} adapter has no desktop`,
+        retryable: false,
+      };
+    let session: SessionRow;
+    try {
+      const opened = await sessionFor(action, ctx, signal);
+      const renewed = await sessions.renew(opened.row.id);
+      if (!renewed) throw new Error('the sandbox session ended before the action was sent');
+      session = renewed;
+    } catch (error) {
+      return {
+        outcome: 'failed' as const,
+        reason:
+          error instanceof SandboxRefusal
+            ? `${error.code}: ${error.message}`
+            : (error as Error).message,
+        retryable: true,
+      };
+    }
+    try {
+      const detail = await runComputerAction({
+        action,
+        jobId: ctx.job_id,
+        workRoot: options.workRoot,
+        session,
+        provider,
+        signal,
+      });
+      return {
+        outcome: 'succeeded' as const,
+        receipt: receiptFor(
+          action,
+          { ...detail, adapter: session.adapter, egress: session.egressPolicy.kind },
+          null,
+          false,
+        ),
+      };
+    } catch (error) {
+      // Refused before anything reached the desktop: a person holds it, or the
+      // arguments or the adapter said no. Anything after that is not known.
+      if (
+        error instanceof HumanControlRefusal ||
+        error instanceof SandboxAdapterRefusal ||
+        error instanceof ComputerPayloadRefusal
+      )
+        return { outcome: 'failed' as const, reason: error.message, retryable: false };
+      return {
+        outcome: 'unknown' as const,
+        reason: `the desktop did not answer: ${(error as Error).message}`,
+      };
+    } finally {
+      await sessions.renew(session.id).catch(() => {});
+    }
+  };
+
   return {
-    manifest: sandboxExecManifest,
+    manifest: sandboxManifestFor(provider),
     catalog: { audience: 'owner' },
 
     dispatchBudgetMs: sandboxDispatchBudgetMs,
@@ -397,6 +484,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       checkIdentity(action, ctx);
       ctx.signal?.throwIfAborted();
       const signal = ctx.signal ?? AbortSignal.timeout(sandboxDispatchBudgetMs(action));
+      if (COMPUTER_TOOL_NAMES.has(action.kind)) return computer(action, ctx, signal);
       let payload: Payload;
       let session: SessionRow;
       try {
@@ -458,6 +546,10 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
 
     async verify(action, ctx) {
       checkIdentity(action, ctx);
+      // Nothing records a click the way a marker records a command: whether it
+      // landed is not something the sandbox can say afterwards.
+      if (COMPUTER_TOOL_NAMES.has(action.kind))
+        return { decision: 'undecided', reason: 'a computer action leaves no record to ask' };
       const signal = ctx.signal ?? AbortSignal.timeout(120_000);
       const [dispatched] = await sql`select session_id from sandbox_command
         where action_id = ${action.id}`;

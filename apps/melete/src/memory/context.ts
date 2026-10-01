@@ -242,8 +242,14 @@ export function withMemoryRuntime(
   runtime: RuntimeAdapter,
   sql: MemorySql,
   scopeForJob: (jobId: string) => Promise<MemoryScope>,
-  options: RecallOptions & {
+  options: Omit<RecallOptions, 'privateOrigin'> & {
     catalog?: (bundle: AttemptBundle) => Promise<AttemptBundle['tools']>;
+    /**
+     * Whether this attempt's requests stay on the person's own model, so what
+     * memory learned in private conversations may be recalled into it. Left
+     * out, it never is.
+     */
+    recallsPrivateMemory?: (jobId: string, attemptId: string) => Promise<boolean>;
   } = {},
 ): RuntimeAdapter {
   return {
@@ -251,6 +257,8 @@ export function withMemoryRuntime(
     async start(bundle, sink, signal) {
       const scope = await scopeForJob(bundle.attempt.job_id);
       let assembled: AttemptBundle | undefined;
+      const privateOrigin =
+        (await options.recallsPrivateMemory?.(bundle.attempt.job_id, bundle.attempt.id)) ?? false;
       const prepare = async () => {
         if (!options.catalog)
           return assembleAttemptKnowledge(
@@ -259,11 +267,16 @@ export function withMemoryRuntime(
             bundle.attempt.id,
             bundle.attempt.job_id,
             attemptRecallQuery(bundle),
-            options,
+            { ...options, privateOrigin },
           );
         for (let retry = 0; retry < 3; retry++) {
           const startedAt = new Date();
-          const built = await buildBundle(bundle, { sql, scope, catalog: options.catalog });
+          const built = await buildBundle(bundle, {
+            sql,
+            scope,
+            catalog: options.catalog,
+            privateOrigin,
+          });
           try {
             const context = await recordAttemptContext(
               sql,

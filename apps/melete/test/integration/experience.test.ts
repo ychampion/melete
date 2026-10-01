@@ -14,6 +14,8 @@ import {
   memoryItemList,
   messageAcceptance,
   planResponse,
+  type RuntimeEvent,
+  type RuntimeEventType,
   taskResponse,
   turnList,
 } from '@melete/contracts';
@@ -470,6 +472,52 @@ withDb('experience rows and authenticated scope', () => {
     );
     expect(after.turns[0]?.status).toBe('done');
     expect(after.turns[0]?.answer).toBe('I drafted the email for you to review.');
+  });
+  test('reasoning reaches the stream as reasoning, through the answer filter, and never the answer', async () => {
+    const chat = await createConversation();
+    await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'hey' }, 'reason-one');
+    const row = await required(jobs).get(chat.id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    const attemptId = claimed.claims.attempt_id;
+    const pieces: [RuntimeEventType, string][] = [
+      ['reasoning_delta', 'The person said hey. '],
+      // Backend vocabulary is held back from reasoning exactly as from an answer.
+      ['reasoning_delta', 'Maybe call email.search first. '],
+      ['reasoning_delta', 'A short greeting back.'],
+      ['text_delta', 'Hey!'],
+    ];
+    for (const [index, [type, text]] of pieces.entries())
+      await required(runner).emit(claimed.claims, {
+        type,
+        attempt_id: attemptId,
+        local_seq: index + 1,
+        dedup_key: dedupKey(attemptId, index + 1),
+        at: new Date().toISOString(),
+        text,
+      } as RuntimeEvent);
+    await required(runner).commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: 'Hey!',
+      evidence: [],
+    });
+    const items = (
+      await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id)
+    ).events.map((event) => event.item);
+    expect(items.flatMap((item) => (item.type === 'reasoning' ? [item.text] : []))).toEqual([
+      'The person said hey. ',
+      'A short greeting back.',
+    ]);
+    const after = turnList.parse(
+      await (await request(`/conversations/${chat.id}/messages`)).json(),
+    );
+    expect(after.turns[0]?.answer).toBe('Hey!');
   });
   test('the stream carries each turn to the status its saved copy ends in', async () => {
     const statuses = async (conversationId: string, turnId: string) =>

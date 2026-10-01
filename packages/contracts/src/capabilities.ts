@@ -14,9 +14,10 @@
  * capability nobody configured is simply not offered, rather than offered and
  * then failing in front of a person.
  *
- * v0.1 implements `audio.synthesize`. The other three are in the enum because
- * the shape is the same and naming them now is cheaper than a migration later;
- * a manifest for one of them is refused until there is an adapter behind it.
+ * `audio.synthesize` and `audio.transcribe` are implemented. The other two are
+ * in the enum because the shape is the same and naming them now is cheaper
+ * than a migration later; a manifest for one of them is refused until there is
+ * an adapter behind it.
  */
 import { z } from 'zod';
 import { effectClass } from './broker.ts';
@@ -33,8 +34,8 @@ export const CAPABILITY_KINDS = [
 export const capabilityKind = z.enum(CAPABILITY_KINDS);
 export type CapabilityKind = z.infer<typeof capabilityKind>;
 
-/** What v0.1 has an adapter for. The rest are named, not shipped. */
-export const IMPLEMENTED_CAPABILITIES = ['audio.synthesize'] as const;
+/** What has an adapter. The rest are named, not shipped. */
+export const IMPLEMENTED_CAPABILITIES = ['audio.synthesize', 'audio.transcribe'] as const;
 export const isImplemented = (kind: CapabilityKind): boolean =>
   (IMPLEMENTED_CAPABILITIES as readonly string[]).includes(kind);
 

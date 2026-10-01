@@ -122,6 +122,12 @@ export type CaptureOptions = {
   journal: RestrictionJournal;
   /** The speaker's memory scope for a job, from server authority; throws when there is none. */
   scopeForJob: (jobId: string) => Promise<MemoryScope>;
+  /**
+   * Why a message said in this job is private, or null: the privacy router's
+   * answer, recorded on the source so what memory learns from it stays out of
+   * cloud requests. Required: capture has no view of its own on privacy.
+   */
+  privacyOrigin: (jobId: string, text: string) => Promise<string | null>;
   onError?: (code: string) => void;
 };
 
@@ -224,8 +230,10 @@ async function captureOne(
   const [settings] =
     await sql`select capture from memory_settings where principal_id = ${row.principal_id}`;
   if (settings && !settings.capture) return { outcome: 'skipped:off', sourceId: null };
-  const evidence = await sql.begin((tx) =>
-    persistEvidence(
+  // Read before anything is kept, so a message is never stored without it.
+  const privateOrigin = await options.privacyOrigin(row.job_id, text);
+  const evidence = await sql.begin(async (tx) => {
+    const saved = await persistEvidence(
       tx,
       scope,
       {
@@ -239,8 +247,12 @@ async function captureOne(
       },
       // "Remember that …" in the person's own words is kept at owner trust.
       intent.explicit,
-    ),
-  );
+    );
+    if (privateOrigin)
+      await tx`update memory_sources set private_origin = ${privateOrigin}
+        where id = ${saved.source.source_id} and private_origin is null`;
+    return saved;
+  });
   if (evidence.source.state !== 'active')
     return { outcome: 'skipped:suppressed', sourceId: evidence.source.source_id };
   if (options.boss) {

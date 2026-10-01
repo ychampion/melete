@@ -1,12 +1,19 @@
 import { readFile } from 'node:fs/promises';
-import { caldavConnectionConfig, mailConnectionConfig } from '@melete/contracts';
+import {
+  caldavConnectionConfig,
+  mailConnectionConfig,
+  sandboxAdapterTakesKey,
+} from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { createDeviceConnector } from '../devices/connector.ts';
+import type { DeviceHub } from '../devices/hub.ts';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { createPhoneConnector, takeDown } from '../phone/connector.ts';
 import type { Fetch } from '../phone/elevenlabs.ts';
 import { readLine, storedPhoneConnection } from '../phone/line.ts';
+import type { DockerSandboxSettings } from '../sandbox/adapters/docker.ts';
 import {
   createSandboxProvider,
   modalEnvironmentRefusal,
@@ -14,6 +21,7 @@ import {
   sandboxTeardownProviders,
   storedSandboxConnection,
 } from '../sandbox/connection.ts';
+import { dockerSandboxSettings } from '../sandbox/docker-default.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
 import type { SandboxProvider } from '../sandbox/types.ts';
 import { browserArtifactSink } from '../workers/browser/artifacts.ts';
@@ -48,9 +56,10 @@ import { createSandboxExecConnector } from './sandbox-exec.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
 import { type AccountClient, signedInAccess } from './signed-in.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
+import { createTranscriptionConnector } from './transcribe.ts';
 import { createCapabilityConnector } from './tts.ts';
 import type { Connector } from './types.ts';
-import { createWebConnector } from './web.ts';
+import { createWebConnector, databasePublicReads, type PrivateContext } from './web.ts';
 
 const endpoint = z
   .object({
@@ -182,6 +191,11 @@ export type ConnectorOptions = {
   browserSessions?: BrowserSessionService;
   /** True when attempts run in a container; a default exec connection is inert without it. */
   cellIsolated?: boolean;
+  /**
+   * Whether a space or agent is private. A private one reads no public web
+   * pages beyond what a job was explicitly given. Without it, none is.
+   */
+  privateContext?: PrivateContext;
   /** Plaintext mail and CalDAV to a loopback protocol fixture. Never set from a request. */
   insecureLocalFixtures?: boolean;
   /** Starts stdio MCP servers in isolation; without one, a stdio installation offers nothing. */
@@ -189,6 +203,8 @@ export type ConnectorOptions = {
   stdioLifecycle?: StdioLifecycleOptions;
   /** Everything a sandbox connection needs besides its own row. */
   sandbox?: SandboxRuntimeOptions;
+  /** Where work for paired computers waits. Left out, the process's shared hub. */
+  devices?: DeviceHub;
   /**
    * The operator's Google OAuth client. Without it, Google sign-in is not
    * offered and a Google connection offers nothing. Only a test replaces the
@@ -224,6 +240,8 @@ export type SandboxRuntimeOptions = {
   modalRefusal: string | null;
   /** Replaces E2B's HTTP transport. Only a test fixture passes one. */
   fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  /** The engine the docker adapter runs sandboxes on, and their limits. */
+  docker?: DockerSandboxSettings;
 };
 
 /** What a connector is built from: the persisted row, never a request payload. */
@@ -285,6 +303,7 @@ export class ConnectorFactory {
       snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
       modalRefusal: sandbox.modalRefusal,
       ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
+      ...(sandbox.docker ? { docker: sandbox.docker } : {}),
     });
   }
 
@@ -318,6 +337,17 @@ export class ConnectorFactory {
       // hold. A second path to the world would be a second place to get those
       // right.
       const configured = capabilitiesFromEnv(options.env ?? process.env);
+      // Speech and transcription are separate default rows, told apart by which default each is.
+      if (row.configuration?.builtin === 'transcription') {
+        if (!configured.transcription) return undefined;
+        return createTranscriptionConnector({
+          workRoot: options.workRoot,
+          spacesRoot: options.spacesRoot,
+          adapter: configured.transcription,
+          provider: configured.provider,
+          unitCostUsd: configured.transcriptionUnitCostUsd,
+        });
+      }
       if (!configured.speech) return undefined;
       return createCapabilityConnector({
         spacesRoot: options.spacesRoot,
@@ -348,10 +378,18 @@ export class ConnectorFactory {
         spaceId: row.spaceId,
       });
     }
-    if (row.provider === 'web') return createWebConnector();
+    if (row.provider === 'web')
+      return createWebConnector({
+        publicReads: databasePublicReads({
+          sql: options.sql,
+          connectionId: row.id,
+          privateContext: options.privateContext,
+        }),
+      });
     if (row.provider === 'sandbox' && stored?.kind === 'sandbox') {
       const sandbox = options.sandbox;
-      if (!sandbox || !row.secretRef) return undefined;
+      const keyed = sandboxAdapterTakesKey(stored.sandbox.adapter);
+      if (!sandbox || (keyed && !row.secretRef)) return undefined;
       if (stored.sandbox.adapter === 'modal' && sandbox.modalRefusal)
         throw new Error(sandbox.modalRefusal);
       const config = stored.sandbox;
@@ -372,25 +410,44 @@ export class ConnectorFactory {
         e2bPlan: sandbox.e2bPlan,
         snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
         ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
+        ...(sandbox.docker ? { docker: sandbox.docker } : {}),
       });
       this.sandboxProviders.set(row.id, {
         adapter: config.adapter,
         provider: opened.provider,
       });
+      const connector = createSandboxExecConnector({
+        sessions: sandbox.sessions,
+        provider: opened.provider,
+        config,
+        connectionId: row.id,
+        spaceId: row.spaceId,
+        project: sandbox.project,
+        workRoot: options.workRoot,
+        sql: options.sql,
+        e2bPlan: sandbox.e2bPlan,
+        maxConcurrent: sandbox.maxConcurrent,
+        maxPerConnection: sandbox.maxPerConnection,
+        close: opened.close,
+      });
+      // A sandbox runs whatever it is asked to, so it is never offered to a public compartment.
+      return ownerOnly(connector);
+    }
+    if (row.provider === 'device') {
+      // The computer's own row says whether it still stands; a revoked one offers nothing.
+      const deviceId = row.configuration?.device_id;
+      if (typeof deviceId !== 'string') return undefined;
+      const [device] = await options.sql`select id, name from paired_device
+        where id = ${deviceId} and connection_id = ${row.id} and revoked_at is null`;
+      if (!device) return undefined;
       return ownerOnly(
-        createSandboxExecConnector({
-          sessions: sandbox.sessions,
-          provider: opened.provider,
-          config,
+        createDeviceConnector({
+          deviceId,
           connectionId: row.id,
-          spaceId: row.spaceId,
-          project: sandbox.project,
-          workRoot: options.workRoot,
+          name: String(device.name),
           sql: options.sql,
-          e2bPlan: sandbox.e2bPlan,
-          maxConcurrent: sandbox.maxConcurrent,
-          maxPerConnection: sandbox.maxPerConnection,
-          close: opened.close,
+          workRoot: options.workRoot,
+          ...(options.devices ? { hub: options.devices } : {}),
         }),
       );
     }
@@ -701,6 +758,7 @@ type ConnectorExtras = {
   browserSessions?: BrowserSessionService;
   stdioLauncher?: StdioLauncher;
   stdioLifecycle?: StdioLifecycleOptions;
+  privateContext?: PrivateContext;
 };
 
 export function connectorOptionsFromEnv(
@@ -718,6 +776,7 @@ export function connectorOptionsFromEnv(
     browserSessions: extra.browserSessions,
     stdioLauncher: extra.stdioLauncher,
     stdioLifecycle: { idleMs: env.MELETE_MCP_IDLE_MS },
+    privateContext: extra.privateContext,
     cellIsolated: builtinEnvironment(env).cellIsolated,
     phone: { publicUrl: env.MELETE_PUBLIC_URL, apiBase: env.MELETE_ELEVENLABS_API_URL },
     ...(env.MICROSOFT_OAUTH_CLIENT_ID && env.MICROSOFT_OAUTH_CLIENT_SECRET
@@ -758,6 +817,7 @@ export function connectorOptionsFromEnv(
               process.env,
               env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT,
             ),
+            docker: dockerSandboxSettings(env),
           },
         }
       : {}),

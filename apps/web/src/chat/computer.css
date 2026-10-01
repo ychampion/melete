@@ -1,0 +1,283 @@
+/*
+ * The agent's computer beside a conversation. On a wide screen it takes the
+ * larger half, since the page is the thing to read; below that it is the
+ * shell's usual docked or full-screen panel.
+ */
+.side-panel.computer-panel {
+  width: min(600px, 48%);
+}
+@media (max-width: 1279px) {
+  .side-panel.computer-panel {
+    width: 440px;
+  }
+}
+@media (max-width: 1023px) {
+  .side-panel.computer-panel {
+    width: min(520px, 100%);
+  }
+}
+@media (max-width: 767px) {
+  .side-panel.computer-panel {
+    width: 100%;
+  }
+}
+
+.computer-head {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 12px 0 20px;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.computer-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.computer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0 16px 16px;
+}
+
+.computer-window {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-block);
+  background: var(--soft);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.computer-bar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  margin: 8px 8px 0;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.computer-address {
+  min-width: 0;
+  color: var(--text);
+}
+.computer-title {
+  padding: 8px 14px 0;
+  font-size: 12.5px;
+  color: var(--secondary);
+}
+.computer-screen,
+.computer-surface {
+  position: relative;
+  margin: 8px;
+  aspect-ratio: 4 / 3;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  display: grid;
+  place-items: center;
+}
+.computer-screen img,
+.computer-surface img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.computer-surface {
+  cursor: default;
+  touch-action: none;
+  outline: none;
+}
+.computer-surface:focus-visible {
+  box-shadow: 0 0 0 3px var(--ring);
+  border-color: var(--primary);
+}
+.computer-live-badge {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.computer-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 16px;
+}
+.computer-live {
+  display: flex;
+  flex-direction: column;
+}
+.computer-notice {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin: 0 8px 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-button);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--text);
+  flex-wrap: wrap;
+}
+
+/* The terminal keeps its dark ink in both appearances, as the studio panels do. */
+.computer-terminal {
+  border-radius: var(--radius-block);
+  background: var(--studio);
+  color: var(--studio-text);
+  border: 1px solid var(--studio-line);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.computer-terminal-head {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--studio-muted);
+  border-bottom: 1px solid var(--studio-line);
+}
+.computer-log {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+}
+.computer-command {
+  padding: 6px 12px 8px;
+}
+.computer-command + .computer-command {
+  border-top: 1px solid var(--studio-line);
+}
+.computer-cmd,
+.computer-out {
+  margin: 0;
+  font:
+    12px / 1.55 ui-monospace,
+    "SFMono-Regular",
+    Menlo,
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.computer-cmd {
+  color: #f0f1f3;
+}
+.computer-cmd span {
+  color: #7fd4a0;
+}
+.computer-out {
+  color: var(--studio-muted);
+  margin-top: 2px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.computer-exit {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--studio-muted);
+}
+.computer-command[data-status="failed"] .computer-exit,
+.computer-command[data-status="unknown"] .computer-exit {
+  color: #f0a3a3;
+}
+
+.computer-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  padding: 48px 12px 24px;
+}
+.computer-empty h2 {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.computer-empty p {
+  margin: 0;
+  max-width: 380px;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+.computer-empty-mark {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: var(--chip-bg);
+  color: var(--secondary);
+}
+
+.computer-foot {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+}
+.computer-holder {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.computer-holder-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.computer-holder-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+.computer-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+}
+.computer-foot[data-control="you"] .computer-dot {
+  background: var(--primary);
+}

@@ -46,6 +46,8 @@ export const ID_PREFIXES = {
   company_message: 'msg',
   /** One phone call, placed or taken through a phone line. */
   phone_call: 'call',
+  /** A message the person sent that is still waiting on a reply. */
+  awaited_reply: 'awr',
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];

@@ -161,7 +161,8 @@ export const filesManifest: ConnectorManifest = {
     },
     {
       name: 'files.write',
-      description: 'Write a UTF-8 file. Declare expect to make it a checked deliverable.',
+      description:
+        'Write a UTF-8 file, only when the owner asks for a file or the work is a document to keep. Answers, drafts, tables and plans go in the reply instead. Declare expect to make it a checked deliverable.',
       input_schema: inputSchema(
         {
           path: pathSchema,
@@ -295,7 +296,13 @@ export function createFilesConnector(options: FilesOptions): Connector {
         const relative = requiredString(payload, 'path');
         const target = await resolveFile(ctx, area, relative, action.kind === 'files.write');
         if (action.kind === 'files.list') {
-          const entries = await readdir(target, { withFileTypes: true });
+          // An area is made on its first write, so a new job or space has none
+          // yet: its root lists as empty. A folder that was never made is named.
+          const entries = await readdir(target, { withFileTypes: true }).catch((error: unknown) => {
+            if (!missing(error)) throw error;
+            if (segmentsFor(relative).length === 0) return [];
+            throw new Error(`there is no folder ${JSON.stringify(relative)} in ${area}`);
+          });
           detail = {
             path: relative,
             area,
@@ -308,7 +315,10 @@ export function createFilesConnector(options: FilesOptions): Connector {
               .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
           };
         } else if (action.kind === 'files.read') {
-          const content = await read(target);
+          const content = await read(target).catch((error: unknown) => {
+            if (!missing(error)) throw error;
+            throw new Error(`there is no file ${JSON.stringify(relative)} in ${area}`);
+          });
           hash = digest(content);
           detail = { path: relative, area, content: content.toString('utf8'), content_hash: hash };
         } else if (action.kind === 'files.write') {

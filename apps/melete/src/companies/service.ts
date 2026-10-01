@@ -19,6 +19,11 @@ import { job } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
 import type { GatewayOptions } from '../gateway/index.ts';
+import {
+  type ModelSettingsService,
+  type ServiceModel,
+  serviceModelSource,
+} from '../gateway/model-settings.ts';
 import { providerKeyVariables } from '../gateway/providers.ts';
 import type { GatewayProvider } from '../gateway/types.ts';
 import type { JobService } from '../jobs/service.ts';
@@ -44,14 +49,18 @@ export function gatewayExtractor(options: {
   provider: string;
   model: string;
   providers: GatewayProvider[];
+  currentProviders?: GatewayOptions['currentProviders'];
   fetch?: GatewayOptions['fetch'];
+  privacy: GatewayOptions['privacy'];
 }): CompanyExtractor {
   const open = async (): Promise<ScanExtractor> => {
     const gateway = await openExtractionGateway({
       provider: options.provider,
       model: options.model,
       providers: options.providers,
+      ...(options.currentProviders ? { currentProviders: options.currentProviders } : {}),
       ...(options.fetch ? { fetch: options.fetch } : {}),
+      privacy: options.privacy,
       maxCalls: SCAN_CALL_CEILING,
     });
     return {
@@ -110,6 +119,11 @@ export function companiesExtraction(
  */
 export function configuredDailyCalls(env: Env): number | undefined {
   if (!companiesExtraction(env)) return undefined;
+  return dailyCallsSetting();
+}
+
+/** The allowance `MELETE_COMPANIES_DAILY_CALLS` sets, for a model that reads scans. */
+function dailyCallsSetting(): number {
   // An empty value is an unset one: `Number('')` is 0, which would stop every scan.
   const written = process.env.MELETE_COMPANIES_DAILY_CALLS?.trim();
   if (!written) return DEFAULT_DAILY_SCAN_CALLS;
@@ -117,14 +131,65 @@ export function configuredDailyCalls(env: Env): number | undefined {
   return Number.isInteger(raw) && raw >= 0 ? raw : DEFAULT_DAILY_SCAN_CALLS;
 }
 
-/** Which extractor this deployment runs, as `companiesExtraction` decides. */
-export function configuredExtractor(env: Env, sql?: Sql): CompanyExtractor {
-  const extraction = companiesExtraction(env);
-  if (!extraction) return scriptedExtractor();
-  return gatewayExtractor({
-    ...extraction,
-    providers: configuredProviders(env, () => {}, sql ? providerSignIn(sql, env) : undefined),
-  });
+/**
+ * Which extractor this deployment runs, as `companiesExtraction` decides.
+ *
+ * With the model settings, a scan that no MELETE_COMPANIES_MODEL names reads
+ * with the model new chats use, chosen in the app or not, as soon as it has a
+ * key: each scan looks again when it starts, so a key connected in the app
+ * applies to the next scan without a restart.
+ */
+export function configuredExtractor(
+  env: Env,
+  privacy: GatewayOptions['privacy'],
+  sql?: Sql,
+  settings?: ModelSettingsService,
+  fetch?: GatewayOptions['fetch'],
+): CompanyExtractor {
+  const providers = () =>
+    configuredProviders(env, () => {}, sql ? providerSignIn(sql, env) : undefined);
+  const named = process.env.MELETE_COMPANIES_MODEL?.trim();
+  if (!settings || named) {
+    const extraction = companiesExtraction(env);
+    if (!extraction) return scriptedExtractor();
+    return gatewayExtractor({
+      ...extraction,
+      privacy,
+      providers: providers(),
+      ...(settings ? { currentProviders: (configured) => settings.providers(configured) } : {}),
+      ...(fetch ? { fetch } : {}),
+    });
+  }
+  const source = serviceModelSource({ env, settings });
+  const scripted = scriptedExtractor();
+  const configured = providers();
+  const live = async (): Promise<ServiceModel | null> => {
+    const choice = await source.current();
+    if (choice.provider === 'fake' || !(await source.connected(choice.provider))) return null;
+    return choice;
+  };
+  const extractorFor = (choice: ServiceModel) =>
+    gatewayExtractor({
+      ...choice,
+      privacy,
+      providers: configured,
+      currentProviders: source.providers,
+      ...(fetch ? { fetch } : {}),
+    });
+  return {
+    async extract(request) {
+      const choice = await live();
+      return choice ? extractorFor(choice).extract(request) : scripted.extract(request);
+    },
+    async forScan() {
+      const choice = await live();
+      if (choice) {
+        const scan = extractorFor(choice).forScan;
+        if (scan) return scan();
+      }
+      return { extract: (request) => scripted.extract(request), close: async () => {} };
+    },
+  };
 }
 
 /**
@@ -170,10 +235,21 @@ export function companiesDeps(options: {
   sql?: Sql;
   registry?: ConnectorRegistry;
   env: Env;
+  /** The service's privacy router, for the scan's model calls. */
+  privacy: GatewayOptions['privacy'];
   jobs?: JobService;
   triggers?: TriggerService;
+  /** The model and keys connected in the app. */
+  modelSettings?: ModelSettingsService;
 }): CompaniesDeps {
   const { jobs, triggers } = options;
+  // A model connected in the app may read any scan, so its allowance applies
+  // unless the installation only ever runs the demonstration.
+  const dailyCalls =
+    configuredDailyCalls(options.env) ??
+    (options.modelSettings && options.env.MELETE_DEFAULT_PROVIDER !== 'fake'
+      ? dailyCallsSetting()
+      : undefined);
   return {
     db: options.db,
     store: new PostgresCompanyStore(options.db),
@@ -181,10 +257,13 @@ export function companiesDeps(options: {
       options.sql && options.registry
         ? spaceMailbox({ sql: options.sql, registry: options.registry })
         : () => null,
-    extractor: configuredExtractor(options.env, options.sql),
-    ...(configuredDailyCalls(options.env) === undefined
-      ? {}
-      : { dailyCalls: configuredDailyCalls(options.env) }),
+    extractor: configuredExtractor(
+      options.env,
+      options.privacy,
+      options.sql,
+      options.modelSettings,
+    ),
+    ...(dailyCalls === undefined ? {} : { dailyCalls }),
     // Without a job service there is nothing to create a job on, and the route's
     // stub refuses. The route records `job_id` and `handling` itself once this
     // returns an id, so the handler is given no `onStatusChange` of its own.

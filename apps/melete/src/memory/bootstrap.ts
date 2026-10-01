@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { prefixedId } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
 import { SESSION_COOKIE } from '../api/auth.ts';
-import { startChatCapture } from './capture.ts';
+import { type CaptureOptions, startChatCapture } from './capture.ts';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import type { ExtractionGateway } from './extract.ts';
 import { applyRestriction } from './forget.ts';
@@ -23,6 +23,8 @@ type DeploymentMemoryOptions = {
   onJobRecompute?: (jobId: string) => Promise<void>;
   /** Reads what people say in chat; without one, structured observations only. */
   gateway?: ExtractionGateway;
+  /** Why a chat message is private, recorded on what memory learns from it. */
+  privacyOrigin: CaptureOptions['privacyOrigin'];
 };
 
 const spaceId = prefixedId('sp');
@@ -173,6 +175,7 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
       sql: options.sql,
       boss: options.boss,
       journal,
+      privacyOrigin: options.privacyOrigin,
       scopeForJob,
       onError,
     });

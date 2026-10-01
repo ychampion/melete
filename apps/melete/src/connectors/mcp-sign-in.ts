@@ -148,6 +148,10 @@ export class McpSignIns {
     authorize_url: string;
     redirect_uri: string;
     expires_at: string;
+    /** The authorization server the MCP server named, where the person signs in. */
+    issuer: string;
+    /** What the sign-in asks for; empty when the server names no scopes. */
+    scopes: string[];
   }> {
     this.sweep();
     const existing =
@@ -204,6 +208,8 @@ export class McpSignIns {
       }),
       redirect_uri: redirectUri,
       expires_at: new Date(expiresAt).toISOString(),
+      issuer: server.issuer,
+      scopes: scope ? scope.split(/\s+/).filter(Boolean) : [],
     };
   }
 

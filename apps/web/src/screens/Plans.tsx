@@ -7,6 +7,7 @@
 import { useMemo, useState } from 'react';
 import { AgentFace } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import {
   Badge,
   type BadgeTone,
@@ -660,8 +661,11 @@ export function PlansScreen({ selected }: { selected: string | null }) {
               ]}
             />
           </div>
-          {data.error ? <p style={{ color: 'var(--danger)', fontSize: 13 }}>{data.error}</p> : null}
-          {view === 'table' ? (
+          {data.error ? (
+            <LoadError what="your plans" error={data.error} onRetry={data.reload} />
+          ) : null}
+          {/* Until the plans are read there is nothing to show, not "no plans". */}
+          {!data.data ? null : view === 'table' ? (
             <PlanTable plans={visible} selected={selected} compact={Boolean(current)} />
           ) : (
             <div

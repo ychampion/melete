@@ -1,4 +1,5 @@
 import {
+  CONTINUABLE_STATES,
   type CreateResponsibilityRequest,
   createResponsibilityRequest,
   type JobBudget,
@@ -43,6 +44,32 @@ export const DEFAULT_BUDGET: JobBudget = {
   max_attempts: 5,
   max_usd_est: 1,
 };
+
+/**
+ * What one conversation turn may use. A person is waiting on the answer and
+ * can stop it at any time, so nothing here is meant to be reached by real
+ * work: the wall time covers a long piece of work, and the call and output
+ * limits only stop a runaway loop. Spending money keeps the job default.
+ */
+export const CONVERSATION_BUDGET: JobBudget = {
+  ...DEFAULT_BUDGET,
+  max_turns: 200,
+  max_output_tokens: 400_000,
+  max_wall_ms: 30 * 60_000,
+  max_actions: 100,
+};
+
+const BUDGET_FIELDS = Object.keys(DEFAULT_BUDGET) as (keyof JobBudget)[];
+
+/** A conversation that still carries the job default, from before it had its own. */
+function isLegacyChatBudget(budget: unknown): boolean {
+  const parsed = jobBudget.safeParse(budget);
+  return (
+    parsed.success &&
+    Object.keys(parsed.data).length === BUDGET_FIELDS.length &&
+    BUDGET_FIELDS.every((field) => parsed.data[field] === DEFAULT_BUDGET[field])
+  );
+}
 
 /** The longest delay a timer holds; a longer one fires at once. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
@@ -180,7 +207,10 @@ export class JobService {
       .where(eq(space.id, value.space_id));
     if (!parent) throw new ServiceError('not_found', 'Space not found.', 404);
     const access = await spaceAuthority(tx, value.space_id, requestPrincipal(), true);
-    const budget = jobBudget.parse({ ...DEFAULT_BUDGET, ...value.budget });
+    const budget = jobBudget.parse({
+      ...(experience?.kind === 'chat' ? CONVERSATION_BUDGET : DEFAULT_BUDGET),
+      ...value.budget,
+    });
     const impossible = impossibleBudget(budget);
     if (impossible) throw new ServiceError('invalid_budget', impossible, 400);
     const [row] = await tx
@@ -353,9 +383,35 @@ export class JobService {
     if (speaker) await requireJobAccess(tx, id, speaker);
     if (row.kind === 'chat' && (row.state === 'running' || row.state === 'queued' || row.paused))
       throw new ServiceError('turn_in_progress', 'Wait for this turn to finish.', 409);
+    // A conversation goes on after a turn that failed, finished or left an
+    // effect to reconcile. A turn the broker parked may still have its attempt
+    // open, and that turn is still in progress.
+    const continuing =
+      row.kind === 'chat' && (CONTINUABLE_STATES as readonly string[]).includes(row.state);
+    if (continuing) {
+      const [open] = await tx
+        .select({ id: attempt.id })
+        .from(attempt)
+        .where(and(eq(attempt.jobId, row.id), isNull(attempt.endedAt)))
+        .limit(1);
+      if (open) throw new ServiceError('turn_in_progress', 'Wait for this turn to finish.', 409);
+    }
     // A new conversation turn has its own attempt allowance. Earlier receipts remain durable.
-    if (row.kind === 'chat') row.currentTurnId = null;
-    const updated = await this.move(tx, row, { kind: 'user_input_received' }, { reason: 'input' });
+    if (row.kind === 'chat') {
+      row.currentTurnId = null;
+      // A conversation started before conversations had their own limits still
+      // carries the job default; its next turn gets the conversation's.
+      if (isLegacyChatBudget(row.budget)) {
+        await tx.update(job).set({ budget: CONVERSATION_BUDGET }).where(eq(job.id, row.id));
+        row.budget = CONVERSATION_BUDGET;
+      }
+    }
+    const updated = await this.move(
+      tx,
+      row,
+      { kind: continuing ? 'conversation_continued' : 'user_input_received' },
+      { reason: 'input' },
+    );
     await appendEvent(tx, {
       jobId: id,
       type: 'notice',

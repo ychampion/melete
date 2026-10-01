@@ -214,6 +214,10 @@ databaseTest(
     const catalog = await s.broker.catalog(s.claims);
     expect(catalog.some((tool) => tool.name === 'email.send')).toBe(false);
     expect(catalog.some((tool) => tool.name === 'say')).toBe(true);
+    // The model is told where the person sends a draft, so it never offers to send one itself.
+    expect(catalog.find((tool) => tool.name === 'email.draft')?.description).toContain(
+      'the person sends it from its draft card',
+    );
     expect(
       await rejectionOf(
         s.broker.propose(s.claims, {
@@ -222,7 +226,10 @@ databaseTest(
           payload: { to: 'alex@example.test', subject: 'No', body: 'No' },
         }),
       ),
-    ).toMatchObject({ code: 'scope_denied' });
+    ).toMatchObject({
+      code: 'scope_denied',
+      message: 'In a chat the person sends a draft from its draft card. Say the draft is ready.',
+    });
     const id = await s.draft();
     const proposed = await s.permissions.send(s.claims.space_id, id);
     if ('reason' in proposed || !proposed.permission) throw new Error('Expected permission');
@@ -570,6 +577,87 @@ databaseTest(
 );
 
 databaseTest(
+  'stop withdraws a waiting permission; a later allow says so and a new request still works',
+  async () => {
+    if (!fixture) throw new Error('Postgres unavailable');
+    const s = await setup('calendar');
+    const jobId = s.claims.job_id;
+    const spaceId = s.claims.space_id;
+    const startTurn = async () => {
+      const turnId = recordId('turn');
+      await s.sql`insert into experience_turn (id, job_id, agent_id, submission_id, text, status)
+        values (${turnId}, ${jobId}, ${s.persona}, ${`sub_${turnId}`}, 'Add dinner', 'working')`;
+      await s.sql`update job set current_turn_id = ${turnId} where id = ${jobId}`;
+    };
+    await startTurn();
+    const request = {
+      connection_id: s.connectionId,
+      kind: 'calendar.create',
+      payload: { summary: 'Dinner', start: '2026-09-13T18:00:00Z', end: '2026-09-13T19:00:00Z' },
+    };
+    const proposed = await s.broker.propose(s.claims, request);
+    const card = await s.permissions.card(spaceId, proposed.approval_id ?? '');
+    const queue = await startQueue(fixture.url);
+    const runner = new AttemptRunner(
+      new JobService(fixture.db, queue.boss),
+      new StubRuntimeAdapter(),
+      { key: 'experience-fixture-signing-key-32-bytes' },
+    );
+    try {
+      await runner.stopConversation(jobId);
+    } finally {
+      await runner.stop();
+      await queue.stop();
+    }
+    expect((await s.permissions.list(spaceId)).permissions).toEqual([]);
+    const settled = async () =>
+      (
+        await s.sql`select p.decision, p.decided_by, a.status from approval p
+          join action a on a.id = p.action_id where p.id = ${card.id}`
+      )[0];
+    expect(await settled()).toMatchObject({
+      decision: 'denied',
+      decided_by: 'stopped',
+      status: 'denied',
+    });
+    // The conversation's stream carries the decision, so the card closes as withdrawn.
+    const decisions = await s.sql`select payload from event
+      where job_id = ${jobId} and type = 'approval_decided'`;
+    expect(decisions.map((row) => row.payload)).toEqual([
+      expect.objectContaining({ approval_id: card.id, decision: 'denied', note: 'stopped' }),
+    ]);
+    // A stale Allow is refused with the reason, never accepted and left doing nothing.
+    for (const option of ['allow_once', 'deny'] as const)
+      expect(
+        await rejectionOf(
+          s.permissions.decide(spaceId, card.id, { option, version: card.version }),
+        ),
+      ).toMatchObject({
+        code: 'permission_withdrawn',
+        message: 'This was withdrawn when you stopped.',
+        status: 409,
+      });
+    expect(await settled()).toMatchObject({ decided_by: 'stopped', status: 'denied' });
+    expect(s.calls).toHaveLength(0);
+    // The next message starts a new turn and attempt, and the same request is asked for afresh.
+    await startTurn();
+    const [running] = await s.sql`update job set state = 'running' where id = ${jobId}
+      returning lease_epoch`;
+    const attemptId = recordId('att');
+    await s.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+      values (${attemptId}, ${jobId}, ${running?.lease_epoch}, 'fake', 'fake', 'scripted')`;
+    const claims = { ...s.claims, attempt_id: attemptId, epoch: Number(running?.lease_epoch) };
+    const again = await s.broker.propose(claims, request);
+    expect(again.action_id).not.toBe(proposed.action_id);
+    const fresh = await s.permissions.card(spaceId, again.approval_id ?? '');
+    await s.permissions.decide(spaceId, fresh.id, { option: 'allow_once', version: fresh.version });
+    await s.broker.admit(claims, again.action_id, again.payload_hash);
+    await s.broker.dispatch(again.action_id);
+    expect(s.calls.map((call) => call.kind)).toEqual(['calendar.create']);
+  },
+);
+
+databaseTest(
   'identical requests deduplicate within a turn and remain distinct across turns',
   async () => {
     const s = await setup();
@@ -587,5 +675,48 @@ databaseTest(
     expect(second.action_id).not.toBe(first.action_id);
     expect((await s.broker.propose(s.claims, request)).action_id).toBe(second.action_id);
     expect(s.calls).toHaveLength(2);
+  },
+);
+
+databaseTest(
+  'an effect whose outcome is unknown is not asked for or sent again from a later turn',
+  async () => {
+    const s = await setup('calendar');
+    const connector = s.registry.get(s.connectionId);
+    if (!connector) throw new Error('fixture connector missing');
+    const answer = connector.execute.bind(connector);
+    let lost = true;
+    connector.execute = async (action, context) => {
+      if (!lost) return answer(action, context);
+      lost = false;
+      s.calls.push(action);
+      throw new Error('socket hang up');
+    };
+    const request = {
+      connection_id: s.connectionId,
+      kind: 'calendar.create',
+      payload: { summary: 'Dinner', start: '2026-09-13T18:00:00Z', end: '2026-09-13T19:00:00Z' },
+    };
+    await s.sql`update job set current_turn_id = 'first-turn' where id = ${s.claims.job_id}`;
+    const first = await s.broker.propose(s.claims, request);
+    const card = await s.permissions.card(s.claims.space_id, first.approval_id ?? '');
+    await s.permissions.decide(s.claims.space_id, card.id, {
+      option: 'allow_once',
+      version: card.version,
+    });
+    await s.broker.admit(s.claims, first.action_id, first.payload_hash);
+    expect((await s.broker.dispatch(first.action_id)).status).toBe('unknown');
+    // The person writes again and the conversation goes on in a new turn.
+    await s.sql`update job set current_turn_id = 'second-turn', state = 'running'
+      where id = ${s.claims.job_id}`;
+    const again = await s.broker.propose(s.claims, request);
+    expect(again.action_id).toBe(first.action_id);
+    expect(again.status).toBe('unknown');
+    expect(again.requires_approval).toBe(false);
+    expect(again.message).toContain('was not sent again');
+    expect(s.calls).toHaveLength(1);
+    const [row] = await s.sql`select count(*)::int as count from action
+      where job_id = ${s.claims.job_id}`;
+    expect(row?.count).toBe(1);
   },
 );

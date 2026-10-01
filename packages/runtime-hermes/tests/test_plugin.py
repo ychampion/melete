@@ -219,6 +219,37 @@ def test_registration_is_refused_without_an_attempt_token(broker):
     assert register(RecordingContext(), BrokerClient(base_url=broker.base_url, token="")) == []
 
 
+def test_an_engine_loaded_before_its_attempt_registers_the_tools_once_it_has_one(broker, monkeypatch):
+    import melete_runtime_hooks
+
+    monkeypatch.setenv("MELETE_RUNTIME_SPARE", "1")
+    monkeypatch.setenv("MELETE_BROKER_URL", broker.base_url)
+    monkeypatch.delenv("MELETE_ATTEMPT_TOKEN", raising=False)
+    ctx = RecordingContext()
+    # Loaded ahead of the attempt: the observers are in place, nothing is fetched.
+    assert register(ctx) == []
+    assert ctx.hooks
+    assert ctx.tools == []
+    assert broker.requests == []
+    # Handed its attempt, the engine registers that attempt's tools under its capability.
+    monkeypatch.delenv("MELETE_RUNTIME_SPARE")
+    monkeypatch.setenv("MELETE_ATTEMPT_TOKEN", "cap-token")
+    melete_runtime_hooks.attempt_arrived()
+    assert [tool["name"] for tool in ctx.tools] == ["email.send", "email.search"]
+    assert broker.requests[0]["auth"] == "Bearer cap-token"
+    # Nothing is held twice.
+    melete_runtime_hooks.attempt_arrived()
+    assert len(ctx.tools) == 2
+
+
+def test_an_engine_started_with_its_attempt_registers_at_once(broker, monkeypatch):
+    monkeypatch.delenv("MELETE_RUNTIME_SPARE", raising=False)
+    monkeypatch.setenv("MELETE_BROKER_URL", broker.base_url)
+    monkeypatch.setenv("MELETE_ATTEMPT_TOKEN", "cap-token")
+    ctx = RecordingContext()
+    assert register(ctx) == ["email.send", "email.search"]
+
+
 def test_an_empty_catalog_registers_nothing_but_does_not_raise(client, broker):
     broker.catalog = []
     assert register(RecordingContext(), client) == []

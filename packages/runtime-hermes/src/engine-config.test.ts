@@ -74,6 +74,7 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
     max_turns: DEFAULT_ENGINE_MAX_TURNS,
     environment_probe: false,
     host_prompt: false,
+    image_input_mode: 'text',
   });
   // platform_hints is read at the top level (agent/agent_init.py:1352).
   expect(config.platform_hints).toEqual({ api_server: { replace: API_SERVER_HINT } });

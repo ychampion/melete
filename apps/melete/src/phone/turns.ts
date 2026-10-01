@@ -13,7 +13,14 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { appendEvent, lockJob, recordId } from '../broker/records.ts';
 import type { Line } from './line.ts';
-import type { CallModel, ModelReply, ModelTurn, ToolSpec, TurnMessage } from './model.ts';
+import type {
+  CallModel,
+  CallScope,
+  ModelReply,
+  ModelTurn,
+  ToolSpec,
+  TurnMessage,
+} from './model.ts';
 import { CALL_LIMITS } from './model.ts';
 import type { CallContext } from './schema.ts';
 
@@ -228,12 +235,28 @@ export function buildTurn(input: {
   lines: TurnMessage[];
   memory: string[];
   answer: { question: string; answer: string | null } | null;
+  scope: CallScope;
 }): ModelTurn {
   return {
     system: callInstructions(input),
     messages: input.lines,
     tools: toolsFor(input.call),
+    scope: input.scope,
   };
+}
+
+/**
+ * The conversation a call's words belong to, for the privacy router: the job
+ * that placed it, or the line's own conversation for the person's calls.
+ */
+export async function callConversation(
+  sql: Sql,
+  call: Pick<CallRow, 'job_id' | 'connection_id'>,
+): Promise<string | null> {
+  if (call.job_id) return call.job_id;
+  const [row] =
+    await sql`select job_id from phone_line where connection_id = ${call.connection_id}`;
+  return row?.job_id ? String(row.job_id) : null;
 }
 
 const outcomeArgs = z.object({
@@ -308,8 +331,9 @@ export async function answerTurn(
   let reply: ModelReply;
   try {
     const model = await deps.model();
+    const scope = { spaceId: line.spaceId, sourceJobId: await callConversation(deps.sql, call) };
     reply = await model.reply(
-      buildTurn({ name, call, lines, memory, answer }),
+      buildTurn({ name, call, lines, memory, answer, scope }),
       AbortSignal.timeout(CALL_LIMITS.timeout_ms),
     );
   } catch {

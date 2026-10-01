@@ -80,6 +80,19 @@ export function forwardedAddress(header: string | null): string | null {
   return plainAddress(header);
 }
 
+/**
+ * The OAuth discovery documents for the API's MCP endpoint. RFC 8414 and RFC
+ * 9728 place them at the root of the public origin, not under `/api`, so they
+ * are forwarded to the API with their paths unchanged.
+ */
+export function discoveryPath(pathname: string): boolean {
+  return (
+    pathname === '/.well-known/oauth-authorization-server' ||
+    pathname === '/.well-known/oauth-protected-resource' ||
+    pathname === '/.well-known/oauth-protected-resource/api/mcp'
+  );
+}
+
 /** `setting` names where the value came from, so a refusal says what to change. */
 function parseOrigin(value: string, setting: string): string {
   const refused = new Error(
@@ -142,7 +155,9 @@ async function proxyApi(
   // Set only the path and query. Resolving a caller path against the origin
   // would let a leading // choose another host and expose the session cookie.
   const target = new URL(apiOrigin);
-  target.pathname = url.pathname.slice('/api'.length) || '/';
+  target.pathname = discoveryPath(url.pathname)
+    ? url.pathname
+    : url.pathname.slice('/api'.length) || '/';
   target.search = url.search;
 
   // One question about the socket, asked before the forwarding headers are
@@ -257,7 +272,11 @@ export function createStaticServer(options: StaticServerOptions) {
     idleTimeout: 60,
     async fetch(request, server) {
       const url = new URL(request.url);
-      if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
+      if (
+        url.pathname === '/api' ||
+        url.pathname.startsWith('/api/') ||
+        discoveryPath(url.pathname)
+      ) {
         // A job event stream can be quiet for longer than the static timeout.
         server.timeout(request, 0);
         return proxyApi(

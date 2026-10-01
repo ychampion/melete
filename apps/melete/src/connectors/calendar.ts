@@ -478,6 +478,27 @@ export class CalendarConnector implements Connector {
     }
   }
 
+  /** The attendees of the event an update rewrites, across every instance stored under its UID. */
+  async existingGuests(action: Action, ctx: ConnectorContext): Promise<number> {
+    this.assertContext(action, ctx);
+    if (action.kind !== 'calendar.update') throw new Error('Only an update changes an event');
+    const { uid } = updatePayload.parse(action.canonical_payload);
+    const response = await this.request('GET', uid, null, ctx);
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error('Calendar event unavailable');
+    }
+    const calendar = new ICAL.Component(ICAL.parse(await boundedText(response)));
+    const events = calendar
+      .getAllSubcomponents('vevent')
+      .filter((component) => new ICAL.Event(component).uid === uid);
+    if (events.length === 0) throw new Error('Calendar event unavailable');
+    return events.reduce(
+      (count, component) => count + component.getAllProperties('attendee').length,
+      0,
+    );
+  }
+
   async verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult> {
     if (this.config.mode === 'caldav' && action.kind === 'calendar.delete') {
       try {

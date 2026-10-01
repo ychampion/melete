@@ -308,26 +308,57 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     const completedTools: string[] = [];
     let outputTokens = 0;
     let budgetStopped = false;
+    // The stream is read as it arrives and handled as fast as each frame can be
+    // recorded. Whatever arrived while the last one was being recorded is taken
+    // together, so a burst of text is recorded as one piece rather than one
+    // write per token, and the text reaches the person as soon as it can.
+    const arrived: Uint8Array[] = [];
+    let ended = false;
+    let failure: unknown;
+    let wake: (() => void) | undefined;
+    void (async () => {
+      try {
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          arrived.push(chunk.value);
+          wake?.();
+        }
+      } catch (error) {
+        failure = error ?? new Error('the event stream failed');
+      } finally {
+        ended = true;
+        wake?.();
+      }
+    })();
 
     try {
       for (;;) {
-        const chunk = await withTimeout(
-          reader.read(),
-          Math.max(
-            1,
-            Math.min(
-              this.options.streamIdleMs ?? DEFAULT_STREAM_IDLE_MS,
-              budget.deadline - Date.now(),
+        if (!arrived.length && !ended)
+          await withTimeout(
+            new Promise<void>((resolve) => {
+              wake = resolve;
+            }),
+            Math.max(
+              1,
+              Math.min(
+                this.options.streamIdleMs ?? DEFAULT_STREAM_IDLE_MS,
+                budget.deadline - Date.now(),
+              ),
             ),
-          ),
-        );
-        if (chunk.done) break;
-        buffer += decoder.decode(chunk.value, { stream: true });
+          );
+        wake = undefined;
+        if (!arrived.length) {
+          if (failure !== undefined) throw failure;
+          break;
+        }
+        for (const value of arrived.splice(0)) buffer += decoder.decode(value, { stream: true });
         const { messages, rest } = parseSse(buffer);
         buffer = rest;
-        for (const sse of messages) {
-          const event = safeParseEvent(sse.data);
-          if (!event) continue;
+        const events = messages
+          .map((sse) => safeParseEvent(sse.data))
+          .filter((event): event is Record<string, unknown> => event !== null);
+        for (const event of coalesceDeltas(events)) {
           const mapped = await this.handle(runId, event, emitter, calls);
           if (mapped) outcome = mapped;
           if (event.event === 'message.delta') text += String(event.delta ?? '');
@@ -411,6 +442,12 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
 
     if (name === 'message.delta') {
       await emitter.emit({ type: 'text_delta', text: String(event.delta ?? '') });
+      return null;
+    }
+
+    if (name === 'reasoning.delta') {
+      const delta = String(event.delta ?? '');
+      if (delta) await emitter.emit({ type: 'reasoning_delta', text: delta });
       return null;
     }
 
@@ -667,6 +704,29 @@ function safeParseEvent(data: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Consecutive text frames taken as one, and consecutive reasoning frames as
+ * one; every other frame keeps its place, so nothing is reordered around a
+ * tool call or the end of the run.
+ */
+export function coalesceDeltas(frames: Record<string, unknown>[]): Record<string, unknown>[] {
+  const merged: Record<string, unknown>[] = [];
+  for (const frame of frames) {
+    const last = merged.at(-1);
+    if (
+      last &&
+      last.event === frame.event &&
+      (frame.event === 'message.delta' || frame.event === 'reasoning.delta')
+    )
+      merged[merged.length - 1] = {
+        ...last,
+        delta: String(last.delta ?? '') + String(frame.delta ?? ''),
+      };
+    else merged.push(frame);
+  }
+  return merged;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {

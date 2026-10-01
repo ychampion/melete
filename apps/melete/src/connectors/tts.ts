@@ -1,13 +1,13 @@
 /**
  * Text to speech, as a capability.
  *
- * Two adapters behind one manifest. The fake one writes a valid silent WAV with
+ * Adapters behind one manifest. The fake one writes a valid silent WAV with
  * the script in its metadata, so the whole path — propose, approve, reserve
  * budget, dispatch, receipt, artifact, verify — is exercised by the test suite
- * with no key and no network. The real one posts to an OpenAI-compatible speech
- * endpoint and is only advertised when a key is configured, because a
- * capability that is advertised and then refused is worse than one that was
- * never offered.
+ * with no key and no network. The real ones post to ElevenLabs (elevenlabs.ts)
+ * or to an OpenAI-compatible speech endpoint, and are only advertised when a
+ * key is configured, because a capability that is advertised and then refused
+ * is worse than one that was never offered.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
@@ -33,7 +33,7 @@ import { z } from 'zod';
 import type { Connector, ConnectorContext } from './types.ts';
 import { silentWav, WAV_MIME } from './wav.ts';
 
-const digest = (value: Uint8Array): string =>
+export const digest = (value: Uint8Array): string =>
   createHash('sha256').update(Buffer.from(value)).digest('hex');
 
 const speechEvidence = z.object({
@@ -44,7 +44,8 @@ const speechEvidence = z.object({
   receipt,
 });
 
-async function atomicWrite(file: string, bytes: Uint8Array): Promise<void> {
+/** Write to a temporary name and rename, so a reader sees the whole file or none. */
+export async function atomicWrite(file: string, bytes: Uint8Array): Promise<void> {
   const temporary = `${file}.${randomUUID()}.part`;
   const handle = await open(
     temporary,
@@ -58,6 +59,46 @@ async function atomicWrite(file: string, bytes: Uint8Array): Promise<void> {
     await handle.close();
   }
   await rename(temporary, file);
+}
+
+/**
+ * The directory a capability writes into: the space artifacts root, or, for
+ * evidence, a directory of its own outside both areas the runtime can write.
+ * Every component is created if missing and refused if it is a link.
+ */
+export async function capabilityDirectory(
+  spacesRoot: string,
+  ctx: ConnectorContext,
+  evidence: string | null,
+): Promise<string> {
+  if (!/^sp_[A-Za-z0-9]+$/.test(ctx.space_id)) throw new Error('invalid trusted file scope');
+  let current = await realpath(spacesRoot);
+  for (const segment of evidence ? [evidence, ctx.space_id] : [ctx.space_id, 'artifacts']) {
+    current = path.join(current, segment);
+    try {
+      await mkdir(current);
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+    }
+    const stat = await lstat(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink())
+      throw new Error('unsafe capability directory');
+  }
+  return current;
+}
+
+/** A file's bytes, or null when it is missing, a link, or unreadable. */
+export async function readBytes(file: string): Promise<Uint8Array | null> {
+  try {
+    const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      return new Uint8Array(await handle.readFile());
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
 }
 
 export type SpeechRequest = { script: string; voice: string };
@@ -180,42 +221,14 @@ export function createCapabilityConnector(options: CapabilityConnectorOptions): 
     tools: [capabilityTool(capability)],
   };
 
-  const directory = async (ctx: ConnectorContext, evidence = false) => {
-    if (!/^sp_[A-Za-z0-9]+$/.test(ctx.space_id)) throw new Error('invalid trusted file scope');
-    let current = await realpath(options.spacesRoot);
-    for (const segment of evidence
-      ? ['.speech-receipts', ctx.space_id]
-      : [ctx.space_id, 'artifacts']) {
-      current = path.join(current, segment);
-      try {
-        await mkdir(current);
-      } catch (error) {
-        if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
-      }
-      const stat = await lstat(current);
-      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('unsafe speech directory');
-    }
-    return current;
-  };
+  const directory = (ctx: ConnectorContext, evidence = false) =>
+    capabilityDirectory(options.spacesRoot, ctx, evidence ? '.speech-receipts' : null);
   const target = async (ctx: ConnectorContext, name: string) =>
     path.join(await directory(ctx), safeName(name));
   const evidenceFile = async (action: Action, ctx: ConnectorContext) => {
     if (!/^act_[A-Za-z0-9]+$/.test(action.id)) throw new Error('invalid action identity');
     // Evidence is outside both runtime-writable areas: work and space artifacts.
     return path.join(await directory(ctx, true), `${action.id}.json`);
-  };
-
-  const readBytes = async (file: string): Promise<Uint8Array | null> => {
-    try {
-      const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-      try {
-        return new Uint8Array(await handle.readFile());
-      } finally {
-        await handle.close();
-      }
-    } catch {
-      return null;
-    }
   };
 
   return {
