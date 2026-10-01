@@ -195,7 +195,7 @@ describe('setting a phone line up at ElevenLabs', () => {
       'refused the API key',
     );
     expect(provisioningProblem(new ElevenLabsError('number', 403), 'sip_trunk')).toContain(
-      'Enterprise',
+      'allow phone numbers',
     );
     expect(provisioningProblem(new ElevenLabsError('agent', null), 'twilio')).toContain(
       'could not be reached',

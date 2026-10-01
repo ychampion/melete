@@ -304,7 +304,10 @@ withDb('a phone line through ElevenLabs', () => {
       .parse(await (await h.unreachable.request('/connection-kinds', h.as(h.cookie))).json())
       .catalog?.find((entry) => entry.id === 'phone');
     expect(unreachable?.available).toBe(false);
-    expect(unreachable?.unavailable_reason).toContain('MELETE_PUBLIC_URL');
+    // Everyone reads why in plain words; the owner also reads what to set.
+    expect(unreachable?.unavailable_reason).toContain('not set up');
+    expect(unreachable?.unavailable_reason).not.toContain('MELETE_PUBLIC_URL');
+    expect(unreachable?.setup_hint).toContain('MELETE_PUBLIC_URL');
     const before = seen.length;
     const refused = await h.unreachable.request(
       '/connections',

@@ -866,10 +866,12 @@ A `phone` connection gives Melete a phone number. The voice is
 number comes from Twilio or from any SIP trunk, such as Telnyx. Melete is the
 agent's language model: ElevenLabs asks Melete for every reply on a call.
 
-The catalog lists the line as a form. It is offered only when
-`MELETE_PUBLIC_URL` is an `https://` address ElevenLabs can reach. Otherwise
-the entry's `unavailable_reason` says so, and installing is refused with the
-same sentence.
+Calls are off until a person installs a line: with no `phone` connection there
+is no `phone.call` tool and every `/phone/` address refuses. The catalog lists
+the line as a form. It is offered only when `MELETE_PUBLIC_URL` is an `https://`
+address ElevenLabs can reach. Otherwise the entry's `unavailable_reason` says
+so in plain words, the owner's `setup_hint` names the setting, and installing
+is refused. A computer with no public address needs a tunnel to offer a line.
 
 ### What the person gives
 
@@ -900,7 +902,7 @@ four things. If any step fails, it removes what it made:
    - a conversation-initiation webhook at `/phone/{connection}/inbound`;
 4. the imported number, assigned to that agent (`POST /v1/convai/phone-numbers`,
    with provider `twilio` or `sip_trunk`). ElevenLabs configures a Twilio number
-   for calls itself. SIP trunking needs an ElevenLabs Enterprise plan.
+   for calls itself, which needs a paid Twilio account.
 
 The row keeps the four ids and a SHA-256 digest of the line key. The key itself
 goes only to ElevenLabs. The ElevenLabs key, the telephony credentials and the

@@ -201,7 +201,7 @@ export function provisioningProblem(error: unknown, telephony: 'twilio' | 'sip_t
     return 'ElevenLabs refused the API key. Check it, and that it may use Agents, then try again.';
   if (error.status === 403)
     return error.step === 'number' && telephony === 'sip_trunk'
-      ? 'ElevenLabs would not import the SIP trunk number. SIP trunking needs an ElevenLabs Enterprise plan.'
+      ? 'ElevenLabs would not import the SIP trunk number. Check that the plan and the API key allow phone numbers.'
       : 'The ElevenLabs API key does not have access to Agents. Give it that access and try again.';
   if (error.step === 'number')
     return telephony === 'twilio'

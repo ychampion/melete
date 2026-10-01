@@ -377,9 +377,9 @@ withDb('installing each kind of connection through the API', () => {
     expect(forms.map((entry) => entry.id)).toEqual(served.kinds.map((kind) => kind.id));
     // A phone line needs an address ElevenLabs can reach; every other form is offered as it is.
     expect(forms.filter((entry) => !entry.available).map((entry) => entry.id)).toEqual(['phone']);
-    expect(catalog.find((entry) => entry.id === 'phone')?.unavailable_reason).toContain(
-      'MELETE_PUBLIC_URL',
-    );
+    const phone = catalog.find((entry) => entry.id === 'phone');
+    expect(phone?.unavailable_reason).toContain('not set up');
+    expect(phone?.setup_hint).toContain('MELETE_PUBLIC_URL');
   });
 
   test('mail: validated, sealed, tested, offered to a new attempt, and gone after revocation', async () => {

@@ -1282,7 +1282,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
     kind: 'phone',
     title: 'Phone line (ElevenLabs)',
     description:
-      'Give Melete a phone number through ElevenLabs Agents, with a Twilio number or a SIP trunk. You can call Melete from your own numbers, and Melete places a call only after you approve who it calls and why.',
+      'Give Melete a phone number through ElevenLabs Agents, with a Twilio number or a SIP trunk. You can call Melete from your own numbers, and Melete places a call only after you approve who it calls and why. ElevenLabs hears and transcribes every call, so calls stay off in spaces, agents and conversations marked private unless you choose otherwise for one call.',
     fixed: [{ path: 'provider', value: 'phone' }],
     fields: [
       text('phone.on_behalf_of', 'Your name', {
@@ -1292,7 +1292,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
       text('credentials.api_key', 'ElevenLabs API key', {
         input: 'password',
         secret: true,
-        help: 'Create one in ElevenLabs under Developers, then API keys, with access to Agents.',
+        help: 'Create one in ElevenLabs under Developers, then API keys, with read and write access to Agents and access to webhooks.',
       }),
       text('phone.telephony', 'Where the number comes from', {
         input: 'select',
@@ -1311,7 +1311,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         input: 'password',
         secret: true,
         required: false,
-        help: 'Twilio only. Starts with AC.',
+        help: 'Twilio only, from a paid account: a trial account cannot carry these calls. Starts with AC.',
       }),
       text('credentials.twilio_auth_token', 'Twilio auth token', {
         input: 'password',
@@ -1322,7 +1322,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
       text('phone.sip_address', 'SIP trunk address', {
         required: false,
         placeholder: 'sip.telnyx.com',
-        help: 'SIP trunk only. SIP trunking needs an ElevenLabs Enterprise plan.',
+        help: 'SIP trunk only.',
       }),
       text('credentials.sip_username', 'SIP username', {
         input: 'password',

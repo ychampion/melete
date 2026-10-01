@@ -281,15 +281,15 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       }),
     );
     const forms = kinds.map((kind): ConnectionCatalogEntry => {
-      const reason = kind.kind === 'phone' ? phoneUnavailable(deps.env) : undefined;
+      const hint = kind.kind === 'phone' ? phoneUnavailable(deps.env) : undefined;
       return {
         id: kind.id,
         title: kind.title,
         description: kind.description,
         covers: [KIND_COVERS[kind.kind]],
         connect: { method: 'form', kind_id: kind.id },
-        available: !reason,
-        ...(reason ? { unavailable_reason: reason } : {}),
+        available: !hint,
+        ...unavailable(PHONE_NOT_SET_UP, hint),
       };
     });
     return [...accounts, ...servers, ...forms];
@@ -1365,7 +1365,10 @@ async function requestedShape(
 }
 
 const PHONE_ADDRESS_NEEDED =
-  'Calls need the https:// address ElevenLabs reaches this service at. Set MELETE_PUBLIC_URL to it.';
+  'Calls need the https:// address ElevenLabs reaches this service at. Set MELETE_PUBLIC_URL to it; on a computer with no public address, that is a tunnel such as ngrok.';
+/** What anyone is told while no phone line can be offered here. */
+const PHONE_NOT_SET_UP =
+  'Phone calls are not set up on this Melete yet: it must be reachable from the internet over https.';
 
 /** Why this installation cannot offer a phone line yet, or nothing when it can. */
 function phoneUnavailable(env: Env): string | undefined {
