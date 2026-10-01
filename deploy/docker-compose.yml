@@ -168,6 +168,9 @@ services:
       MELETE_MCP_IDLE_MS: ${MELETE_MCP_IDLE_MS:-}
       # How long an attempt's container may take to start (default 120000 ms).
       MELETE_RUNTIME_START_TIMEOUT_MS: ${MELETE_RUNTIME_START_TIMEOUT_MS:-}
+      # Engines kept loaded ahead of the next attempts (default 1), and attempts run at once (default 4).
+      MELETE_ENGINE_PREWARM: ${MELETE_ENGINE_PREWARM:-}
+      MELETE_ATTEMPT_CONCURRENCY: ${MELETE_ATTEMPT_CONCURRENCY:-}
       # The text-to-speech model, when an OpenAI or OpenAI-compatible key is set.
       MELETE_SPEECH_MODEL: ${MELETE_SPEECH_MODEL:-}
       MELETE_ENABLE_FAKE_PROVIDER: ${MELETE_ENABLE_FAKE_PROVIDER:-false}

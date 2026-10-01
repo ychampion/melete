@@ -70,8 +70,15 @@ COPY config/SOUL.md /opt/melete-runtime/SOUL.md
 COPY entrypoint.sh /usr/local/bin/melete-runtime-entrypoint
 COPY build-metadata.py /opt/melete-runtime/build-metadata.py
 COPY healthcheck.py /opt/melete-runtime/healthcheck.py
+# Starts a spare engine: one loaded ahead of its attempt and handed it later.
+COPY process_launcher.py /opt/melete-runtime/process_launcher.py
 RUN python /opt/melete-runtime/build-metadata.py "${HERMES_COMMIT}" "${MELETE_PLUGIN_SHA}"
 RUN chmod +x /usr/local/bin/melete-runtime-entrypoint
+# The root is read-only and PYTHONDONTWRITEBYTECODE is set, so without this
+# every engine compiles the whole engine and its dependencies from source on
+# each start. Compiled here, after the bridge patch, from the sources it runs.
+# A file that does not compile (a template, a fixture) is left to its source.
+RUN python -m compileall -q -j 0 /opt/hermes /opt/melete-runtime > /dev/null || true
 
 # Approvals for the shell-command guard must surface over HTTP rather than
 # hard-denying with nobody asked. Melete's own tool approvals never come through

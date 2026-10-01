@@ -167,6 +167,18 @@ jobs:
         run: docker build -t melete-web:ci -f deploy/Dockerfile.web .
       - name: Build the runtime image
         run: docker build -t melete-runtime:ci -f packages/runtime-hermes/Dockerfile packages/runtime-hermes
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      # The image just built: a spare engine loads without its attempt, takes it over its
+      # port and serves with its capability, sooner than an engine started with it.
+      - name: Hand a spare engine its attempt
+        env:
+          MELETE_RUNTIME_LIVE: docker
+          MELETE_RUNTIME_LIVE_IMAGE: melete-runtime:ci
+        run: bun test apps/melete/src/runtime/docker-spare.live.test.ts --timeout=400000
 
   docker-sandbox:
     name: Docker sandboxes on a real engine
