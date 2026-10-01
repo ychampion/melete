@@ -470,6 +470,13 @@
       "when": 1789232400046,
       "tag": "0066_connection_key_change",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1789232400047,
+      "tag": "0067_proposal_retry",
+      "breakpoints": true
     }
   ]
 }

@@ -17,7 +17,7 @@ import { captureChat, chatIntent } from '../../src/memory/capture.ts';
 import { MemoryError, type MemoryScope } from '../../src/memory/db.ts';
 import { ingest } from '../../src/memory/evidence.ts';
 import type { ExtractionGateway } from '../../src/memory/extract.ts';
-import { cleanupMemory } from '../../src/memory/forget.ts';
+import { cleanupMemory, deleteMemorySource } from '../../src/memory/forget.ts';
 import { failureCode, openMemoryGateway } from '../../src/memory/gateway.ts';
 import { memoryHealth } from '../../src/memory/health.ts';
 import { attemptRecallQuery, recall } from '../../src/memory/recall.ts';
@@ -28,7 +28,7 @@ import { principalContext } from '../../src/principals/authority.ts';
 import { PostgresPrivacyStore, PrivacyRouter } from '../../src/privacy/index.ts';
 import { createJournal } from './lifecycle-fixtures.ts';
 import { createScope, createTestDatabase, type TestDatabase } from './postgres.ts';
-import { record } from './properties-fixtures.ts';
+import { head, record } from './properties-fixtures.ts';
 
 const db = await createTestDatabase();
 const handle = db ? openDatabase(db.url, 2) : null;
@@ -801,6 +801,175 @@ withDb('asking to forget in plain words', () => {
         'forgot:none',
         'forgot',
       ]);
+    } finally {
+      await journal.close();
+    }
+  });
+
+  test('"forget my ..." finds a detail about the person that was learned with no "me" in its name', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const owner: MemoryScope = { ...scope, principalId: scope.ownerId };
+    const journal = await createJournal();
+    try {
+      await record(
+        db,
+        scope,
+        {
+          identity: 'locker',
+          text: 'My gym locker number is 88.',
+          eventAt: '2026-08-02T09:00:00Z',
+        },
+        [
+          {
+            key: 'gym.equinox.locker_number',
+            content: '88',
+            quote: '88',
+            kind: 'user_statement',
+            unkeyed: true,
+          },
+        ],
+      );
+      await record(
+        db,
+        scope,
+        {
+          identity: 'bob',
+          text: "Bob's number is +351 910 000 002.",
+          eventAt: '2026-08-02T09:00:00Z',
+        },
+        [
+          {
+            key: 'contact.bob.phone',
+            content: '+351 910 000 002',
+            quote: '+351 910 000 002',
+            kind: 'user_statement',
+          },
+        ],
+      );
+      const capture = {
+        privacyOrigin: async () => null,
+        sql: db.sql,
+        journal: journal.journal,
+        scopeForJob: scopeFor(db, owner),
+      };
+      const chat = await conversation(db, scope);
+      await say(db, chat, 'Forget my gym locker number.');
+      await captureChat(capture);
+      const left = await db.sql`select domain_key from memory_claims
+        where space_id = ${scope.spaceId} and not hidden order by domain_key`;
+      expect(left.map((row) => row.domain_key)).toEqual(['contact.bob.phone']);
+    } finally {
+      await journal.close();
+    }
+  });
+
+  test('removing an outside source keeps the value the person gave on the same detail', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const journal = await createJournal();
+    try {
+      await record(
+        db,
+        scope,
+        {
+          identity: 'mine',
+          text: 'The library number is +351 910 000 010.',
+          eventAt: '2026-08-02T09:00:00Z',
+        },
+        [
+          {
+            key: 'contact.library.phone',
+            content: '+351 910 000 010',
+            quote: '+351 910 000 010',
+            kind: 'user_statement',
+          },
+        ],
+      );
+      const outside = await record(
+        db,
+        scope,
+        {
+          identity: 'letter',
+          text: 'Our number is now +351 910 000 099.',
+          eventAt: '2026-08-03T09:00:00Z',
+          author: 'external',
+          stream: 'mail',
+        },
+        [
+          {
+            key: 'contact.library.phone',
+            content: '+351 910 000 099',
+            quote: '+351 910 000 099',
+            kind: 'document_assertion',
+          },
+        ],
+      );
+      const revisions = async () =>
+        db.sql`select r.revision, r.status, b.content from memory_claims c
+          join memory_revisions r on r.claim_id = c.id
+          left join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
+          where c.space_id = ${scope.spaceId} and c.key = 'contact.library.phone' order by r.revision`;
+      expect((await revisions()).map((r) => [r.status, r.content])).toEqual([
+        ['active', '+351 910 000 010'],
+        ['historical', '+351 910 000 099'],
+      ]);
+      await deleteMemorySource(db.sql, scope, outside.sourceId, journal.journal);
+      // The person's value stays current; only what the outside source said goes, text and all.
+      expect((await head(db, scope, 'contact.library.phone'))?.content).toBe('+351 910 000 010');
+      expect((await revisions()).map((r) => [r.status, r.content])).toEqual([
+        ['active', '+351 910 000 010'],
+        ['retracted', null],
+      ]);
+
+      // The other way round: when the value that won is removed, the one it beat
+      // becomes the current value, active and with its own (outside) trust.
+      const mine = await record(
+        db,
+        scope,
+        {
+          identity: 'gym-mine',
+          text: 'The gym number is +351 910 000 020.',
+          eventAt: '2026-08-02T09:00:00Z',
+        },
+        [
+          {
+            key: 'contact.gym.phone',
+            content: '+351 910 000 020',
+            quote: '+351 910 000 020',
+            kind: 'user_statement',
+          },
+        ],
+      );
+      await record(
+        db,
+        scope,
+        {
+          identity: 'gym-letter',
+          text: 'Reach us on +351 910 000 021.',
+          eventAt: '2026-08-03T09:00:00Z',
+          author: 'external',
+          stream: 'mail',
+        },
+        [
+          {
+            key: 'contact.gym.phone',
+            content: '+351 910 000 021',
+            quote: '+351 910 000 021',
+            kind: 'document_assertion',
+          },
+        ],
+      );
+      await deleteMemorySource(db.sql, scope, mine.sourceId, journal.journal);
+      const promoted = await head(db, scope, 'contact.gym.phone');
+      expect([promoted?.content, promoted?.status, promoted?.origin_trust]).toEqual([
+        '+351 910 000 021',
+        'active',
+        'external_content',
+      ]);
+      await buildViews(db.sql, scope);
+      const recalled = await recall(db.sql, scope, { query: 'gym phone' });
+      expect(recalled.items.map((item) => item.content)).toContain('+351 910 000 021');
     } finally {
       await journal.close();
     }

@@ -248,6 +248,13 @@ message is blanked in place, and repair briefs and owner questions that quote a
 forgotten value go with it (`forgetting a detail erases its text and keeps what
 was said beside it` in
 [memory-forget-quality.test.ts](../apps/melete/test/integration/memory-forget-quality.test.ts)).
+Removing a source takes only the revisions that rest on it: a detail whose
+current value came from elsewhere keeps it, and when the removed value was the
+current one, the latest remaining value still in force becomes current, or the
+detail is hidden when none is. In the same transaction, rewind snapshots and
+weekly digests drop the removed values, and undoing a rewind never brings one
+back. The knowledge files in a space's Git repository are rewritten from what
+remains, but a value committed there earlier stays in that repository's history.
 Old Git commits, backups, the external source account and copies
 already delivered elsewhere keep what they hold, and Postgres's data files and
 write-ahead log keep deleted rows until that space is reused. Rolling the

@@ -131,9 +131,12 @@ withDb('deployment memory startup', () => {
           })
         ).status,
       ).toBe(200);
-      expect(
-        (await f.app.request('/memory/claims', { headers: { cookie: owner.cookie } })).status,
-      ).toBe(401);
+      // Two personal spaces and no choice: the answer asks for one, not for a sign-in.
+      const unchosen = await f.app.request('/memory/claims', { headers: { cookie: owner.cookie } });
+      expect(unchosen.status).toBe(400);
+      expect(((await unchosen.json()) as { error: { code: string } }).error.code).toBe(
+        'space_required',
+      );
       await f.sql`update memory_spaces set restore_ready = false where space_id = ${owner.spaceId}`;
       const gated = await f.app.request('/memory/recall', {
         method: 'POST',
@@ -251,6 +254,24 @@ withDb('deployment memory startup', () => {
       expect((await stat(join(f.directory, 'spaces', owner.spaceId, '.git'))).isDirectory()).toBe(
         true,
       );
+    } finally {
+      await f.close();
+    }
+  });
+
+  test('with a second space, memory answers for the personal space unless another is chosen', async () => {
+    const f = await fixture();
+    try {
+      const owner = await f.setup();
+      const family = newId('sp');
+      await f.sql`insert into space (id, name, kind, git_path) values (${family}, 'Family', 'shared', ${join(f.directory, family)})`;
+      const { 'x-melete-space': _chosen, ...session } = owner.headers;
+      const unchosen = await f.app.request('/memory/claims', { headers: session });
+      expect(unchosen.status).toBe(200);
+      const scope = await f.memory.routes.resolveScope?.(
+        new Request('http://localhost/memory/claims', { headers: session }),
+      );
+      expect(scope?.spaceId).toBe(owner.spaceId);
     } finally {
       await f.close();
     }
