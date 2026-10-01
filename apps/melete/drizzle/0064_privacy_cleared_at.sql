@@ -1,0 +1,1 @@
+ALTER TABLE "privacy_conversation" ADD COLUMN "cleared_at" timestamp with time zone;

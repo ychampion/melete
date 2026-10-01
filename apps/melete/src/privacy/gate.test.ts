@@ -7,7 +7,7 @@ import type {
 } from '@melete/contracts';
 import { signCapability } from '../broker/capability.ts';
 import { withPlaceholderResolution } from './broker.ts';
-import { withPrivacyGate } from './gate.ts';
+import { CHECK_FAILED, withPrivacyGate } from './gate.ts';
 import { KEEP_PRIVATE, PrivacyRouter, SEND_REDACTED } from './router.ts';
 import { MemoryPrivacyStore } from './store.ts';
 import { Vault } from './vault.ts';
@@ -16,7 +16,7 @@ const JOB = 'job_01J00000000000000000000000';
 const SPACE = 'sp_01J00000000000000000000000';
 const attemptId = (n: number) => `att_01J0000000000000000000000${n}`;
 
-function bundle(n: number, text: string): AttemptBundle {
+function bundle(n: number, text: string, at = new Date().toISOString()): AttemptBundle {
   return {
     attempt: { id: attemptId(n), job_id: JOB, epoch: n, revision: 0, token: 't' },
     job: {
@@ -28,7 +28,7 @@ function bundle(n: number, text: string): AttemptBundle {
       deliverable: {},
     },
     inputs: {
-      new_user_messages: [{ role: 'user', content: text, at: new Date().toISOString() }],
+      new_user_messages: [{ role: 'user', content: text, at }],
       approval_results: [],
       trigger_events: [],
     },
@@ -129,6 +129,47 @@ describe('asking before a private conversation leaves the machine', () => {
     });
     await local.run(bundle(1, 'hello'));
     expect(local.started).toEqual([attemptId(1)]);
+  });
+
+  test('a check that fails holds the request and says nothing was sent', async () => {
+    const { run, started, events, router } = harness({});
+    router.beforeAttempt = async () => {
+      throw new Error('the privacy store is unavailable');
+    };
+    const result = await run(bundle(1, 'My therapist said I should write this down'));
+    expect(started).toEqual([]);
+    expect(result).toEqual({
+      outcome: { kind: 'waiting_for_input', question: CHECK_FAILED },
+      questions: [],
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'text_delta', text: CHECK_FAILED });
+    expect(CHECK_FAILED).toContain('has not sent anything');
+  });
+
+  test('after "It isn\'t", only a phrase the person writes later about themselves asks again', async () => {
+    const { run, started, store } = harness({});
+    const before = new Date(Date.now() - 60_000).toISOString();
+    const held = 'My therapist says I should write down how the week went';
+    await run(bundle(1, held, before));
+    expect((await store.conversation(JOB)).sensitive).toBe('therapy');
+    // The person says it is not sensitive; the message that was held goes on.
+    await store.markConversation(JOB, SPACE, null);
+    await run(bundle(2, held, before));
+    expect(started).toEqual([attemptId(2)]);
+    // What a page or a file said, carried forward, and passing topic words are not enough.
+    const carried = bundle(3, 'Thanks, what about anxiety, mood and coping at work?');
+    (carried.job as { progress_summary: string }).progress_summary =
+      'A page said: my therapist and my bank statements are not involved.';
+    await run(carried);
+    expect(started).toEqual([attemptId(2), attemptId(3)]);
+    expect(await store.conversation(JOB)).toMatchObject({ sensitive: null, cleared: true });
+    // A phrase about themselves, written after they cleared it, marks it again and asks.
+    const after = new Date(Date.now() + 1_000).toISOString();
+    const later = await run(bundle(4, 'I was diagnosed with diabetes last month', after));
+    expect(started).toEqual([attemptId(2), attemptId(3)]);
+    expect((later as { questions: unknown[] }).questions).toHaveLength(1);
+    expect(await store.conversation(JOB)).toMatchObject({ sensitive: 'health', cleared: false });
   });
 
   test('other runtime methods pass through the gate', async () => {
