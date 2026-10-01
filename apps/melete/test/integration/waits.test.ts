@@ -434,6 +434,35 @@ withDb('durable waits, triggers and approval inputs', () => {
       expect((await jobs.get(row.id)).state).toBe('queued');
     });
 
+    test('a finished turn is never run again by a correction, nor a question or an approval', async () => {
+      const { jobs, handle } = fixture();
+      const chat = await jobs.transaction((tx) =>
+        jobs.createInTransaction(
+          tx,
+          { space_id: spaceId, title: 'Freeze test', objective: 'Talk' },
+          { kind: 'chat' },
+        ),
+      );
+      const asked = await jobs.input(chat.id, 'Run echo once.');
+      const answered = await completed(await claim(asked));
+      expect(answered.state).toBe('waiting_for_input');
+      const waiting = await create();
+      await runner.commitOutcome((await claim(waiting)).claims, {
+        kind: 'waiting_for_input',
+        question: 'Which address?',
+      });
+      const attempts = async () =>
+        (await handle.sql`select id from attempt where job_id in (${chat.id}, ${waiting.id})`)
+          .length;
+      const before = await attempts();
+      const after = await correct(answered);
+      expect(after.state).toBe('waiting_for_input');
+      expect(after.stateVersion).toBe(answered.stateVersion);
+      expect(after.nextWakeAt).toBeNull();
+      expect((await jobs.get(waiting.id)).state).toBe('waiting_for_input');
+      expect(await attempts()).toBe(before);
+    });
+
     test('a routine mid-run on a wait of its own is woken by a correction like any job', async () => {
       const row = await routine();
       const own = { kind: 'timer' as const, wake_at: new Date(Date.now() + 120_000).toISOString() };

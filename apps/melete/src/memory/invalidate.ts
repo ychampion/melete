@@ -68,14 +68,17 @@ export async function invalidateDependencies(
         .filter((id): id is string => typeof id === 'string'),
     ),
   ];
+  // Only work still under way is replanned: a running or queued attempt, or a
+  // wait the job set itself mid-task. A job whose turn is over and waits for
+  // the person (a finished conversation turn, a question, an approval or a
+  // reconciliation) is left alone: its next turn reads fresh memory, and
+  // replanning it would repeat a turn that finished, side effects included.
+  // A routine resting on its own schedule is over in the same way.
   // A job that has never run an attempt was handed no memory, and an owner
   // command is never claimed by a runtime; waking either would start work
-  // nobody asked for, or strand the command in a queue nothing reads. A
-  // routine resting on its own schedule until its next run has nothing in flight: that
-  // run starts from fresh memory, and waking it now would repeat the last run
-  // with no schedule asking for it.
-  const jobs =
-    await tx`select j.id from job j where j.space_id = ${scope.spaceId} and j.state not in ('completed','failed','cancelled')
+  // nobody asked for, or strand the command in a queue nothing reads.
+  const jobs = await tx`select j.id from job j where j.space_id = ${scope.spaceId}
+    and j.state in ('running','queued','waiting_for_event_or_time')
     and j.kind <> 'command' and not (j.kind = 'routine' and j.state = 'waiting_for_event_or_time'
       and exists (select 1 from trigger t where t.job_id = j.id and t.kind = 'schedule'
         and t.id = j.wait->>'trigger_id'))
