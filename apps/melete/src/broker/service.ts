@@ -242,6 +242,12 @@ const ownerAnswered = (action: Action) =>
 const ENDED_JOB_STATES = new Set(['cancelled', 'failed', 'completed']);
 /** The longest classification waits for a calendar to say who an event's guests are. */
 const EXISTING_GUESTS_TIMEOUT_MS = 5_000;
+/** Guest counts of the events calendar changes rewrite, taken before a job lock; see `guestsAhead`. */
+type GuestCounts = ReadonlyMap<string, number>;
+const NO_GUESTS: GuestCounts = new Map();
+/** One event of one calendar connection: the change's connection and the uid it rewrites. */
+const guestKey = (connectionId: string, payload: unknown) =>
+  `${connectionId}:${JSON.stringify((payload as { uid?: unknown } | null)?.uid ?? null)}`;
 /** The longest a connector may ask one dispatch to take. */
 const MAX_DISPATCH_BUDGET_MS = 10 * 60_000;
 /** The limits a caller set, so an unset one keeps its default. */
@@ -569,6 +575,7 @@ export class BrokerService implements BrokerOperations {
     action: Action,
     tool: ConnectorTool,
     phase: StandingGrantInput['phase'] = 'proposal',
+    guests: GuestCounts = NO_GUESTS,
   ): Promise<Admissibility> {
     const access = await agentAccess(tx, job.id);
     const settings = this.options.autoReview ? await loadApprovalSettings(tx, job.space_id) : null;
@@ -642,9 +649,11 @@ export class BrokerService implements BrokerOperations {
       );
       // A change to an existing event is the person's own only if the event has
       // no guests now. Asked only when the answer could let it be reviewed.
+      // Counted before the job lock was taken (see `guestsAhead`); a count
+      // that was not taken leaves the change with the person.
       const existingGuests =
         CHANGES_EXISTING_EVENT.has(tool.name) && settings.classes.calendar && !agentAsks
-          ? await this.existingGuests(job, action)
+          ? (guests.get(guestKey(action.connection_id, action.canonical_payload)) ?? null)
           : null;
       const tier = reviewTier({
         tool,
@@ -682,21 +691,53 @@ export class BrokerService implements BrokerOperations {
   }
 
   /**
-   * How many guests the event this action changes has now, or null when the
-   * connector cannot say. It is read at every classification, so guests added
-   * after a review still send the change to the person at admission.
+   * How many guests the event a calendar change rewrites has now, keyed by
+   * `guestKey`, or nothing when the connector cannot say. Asked of the
+   * calendar before the job lock is taken, at every classification, so guests
+   * added after a review still send the change to the person at admission.
+   * Never under the lock: the connector reaches the provider and its sign-in
+   * and secret stores on connections of its own, and a holder of the event
+   * order lock must never wait for one.
    */
-  private async existingGuests(job: LockedJob, action: Action): Promise<number | null> {
+  private async guestsAhead(
+    jobId: string,
+    change:
+      | string
+      | (Pick<Action, 'connection_id' | 'kind' | 'canonical_payload'> & { id?: string }),
+  ): Promise<GuestCounts> {
+    if (!this.options.autoReview) return NO_GUESTS;
+    // An action not found here is refused under the lock, in its usual order.
+    const [row] =
+      typeof change === 'string' ? await this.sql`select * from action where id = ${change}` : [];
+    const action = typeof change === 'string' ? (row ? actionFromRow(row) : null) : change;
+    if (!action) return NO_GUESTS;
     const connector = this.options.connectors.get(action.connection_id);
-    if (!connector?.existingGuests) return null;
+    const tool = connector && findTool(connector.manifest, action.kind);
+    if (!connector?.existingGuests || !tool || !CHANGES_EXISTING_EVENT.has(tool.name))
+      return NO_GUESTS;
+    const [job] = await this.sql<LockedJob[]>`select * from job where id = ${jobId}`;
+    if (!job) return NO_GUESTS;
+    const settings = await loadApprovalSettings(this.sql, job.space_id);
+    if (settings.mode !== 'auto_review' || !settings.classes.calendar) return NO_GUESTS;
+    // A proposal has no id yet; the connector only checks that the two agree.
+    const id = action.id ?? 'proposed';
+    const asked = {
+      ...action,
+      kind: tool.name,
+      id,
+      job_id: job.id,
+      idempotency_key: id,
+    } as Action;
     try {
-      const count = await connector.existingGuests(action, {
-        ...this.context(job, action),
+      const count = await connector.existingGuests(asked, {
+        ...this.context(job, asked),
         signal: AbortSignal.timeout(EXISTING_GUESTS_TIMEOUT_MS),
       });
-      return Number.isInteger(count) && count >= 0 ? count : null;
+      return Number.isInteger(count) && count >= 0
+        ? new Map([[guestKey(action.connection_id, action.canonical_payload), count]])
+        : NO_GUESTS;
     } catch {
-      return null;
+      return NO_GUESTS;
     }
   }
 
@@ -904,6 +945,7 @@ export class BrokerService implements BrokerOperations {
         )
       : ({ verdict: 'none', failure: 'unavailable', reason: 'No reviewer is set up.' } as const);
     const latency = Date.now() - started;
+    const guests = await this.guestsAhead(pending.job_id, pending.action_id);
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, pending.job_id);
       const action = await loadAction(tx, pending.action_id, true);
@@ -911,7 +953,7 @@ export class BrokerService implements BrokerOperations {
       if (action.status !== 'proposed' || asked) return action;
       await checkAttempt(tx, job, claims);
       const { tool } = await this.tool(tx, job, claims, action.connection_id, action.kind);
-      const classified = await this.classify(tx, job, action, tool, 'proposal');
+      const classified = await this.classify(tx, job, action, tool, 'proposal', guests);
       if (!classified.requires_approval) return action;
       const approved = reviewerApproves(verdict) && classified.auto?.outcome === 'review';
       const reason = approved
@@ -1027,6 +1069,11 @@ export class BrokerService implements BrokerOperations {
     request: ProposeActionRequest,
     readOnly = false,
   ): Promise<EffectProposalResponse> {
+    const guests = await this.guestsAhead(claims.job_id, {
+      connection_id: request.connection_id,
+      kind: request.kind,
+      canonical_payload: request.payload as Action['canonical_payload'],
+    });
     const proposal = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
@@ -1158,7 +1205,7 @@ export class BrokerService implements BrokerOperations {
           ${tool.effect_class}, ${canonical.json}::jsonb, ${canonical.hash}, ${id}, ${key}) returning *`;
       if (!row) throw new Error('Action insert returned no record');
       const created = actionFromRow(row);
-      const classified = await this.classify(tx, job, created, tool);
+      const classified = await this.classify(tx, job, created, tool, 'proposal', guests);
       // What the person approves is shown to them whole: a command too long
       // for its card is refused here, and nothing of it is recorded.
       const hidden = classified.requires_approval
@@ -1369,6 +1416,7 @@ export class BrokerService implements BrokerOperations {
   }
 
   async admit(claims: CapabilityClaims, id: string, expectedHash: string): Promise<Action> {
+    const guests = await this.guestsAhead(claims.job_id, id);
     const result = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       try {
@@ -1392,7 +1440,7 @@ export class BrokerService implements BrokerOperations {
         }
         this.validatePayload(tool, action.canonical_payload);
         if (action.status === 'denied') throw new BrokerFault('approval_denied');
-        const classified = await this.classify(tx, job, action, tool, 'admission');
+        const classified = await this.classify(tx, job, action, tool, 'admission', guests);
         let authorization: string | null = null;
         let expiresAt: string | null = null;
         if (classified.requires_approval) {
@@ -1511,7 +1559,12 @@ export class BrokerService implements BrokerOperations {
       );
   }
 
-  private async checkAuthority(tx: Query, job: LockedJob, action: Action): Promise<string | null> {
+  private async checkAuthority(
+    tx: Query,
+    job: LockedJob,
+    action: Action,
+    guests: GuestCounts,
+  ): Promise<string | null> {
     // The agent binding: a paused conversation, a persona
     // whose allowed connections exclude this one, a missing persona, or a chat
     // turn without an agent sends nothing; a chat never sends directly.
@@ -1562,7 +1615,7 @@ export class BrokerService implements BrokerOperations {
     );
     // Admission authorized these origins. If the world has since learned that
     // one of them came from somewhere else, nothing leaves.
-    const classified = await this.classify(tx, job, action, tool, 'execution');
+    const classified = await this.classify(tx, job, action, tool, 'execution', guests);
     if (classified.requires_approval && !action.authorization_ref)
       throw new BrokerFault(
         'approval_required',
@@ -1601,10 +1654,11 @@ export class BrokerService implements BrokerOperations {
    */
   private async authorityLost(action: Action): Promise<string | null> {
     try {
+      const guests = await this.guestsAhead(action.job_id, action);
       return await this.sql.begin(async (tx) => {
         const job = await lockJob(tx, action.job_id);
         const current = await loadAction(tx, action.id, true);
-        return this.checkAuthority(tx, job, current);
+        return this.checkAuthority(tx, job, current, guests);
       });
     } catch (error) {
       if (error instanceof BrokerFault) return error.message;
@@ -1633,6 +1687,7 @@ export class BrokerService implements BrokerOperations {
     cellClaim?: { claims: CapabilityClaims; claimed: () => void },
   ): Promise<Action> {
     const original = await loadAction(this.sql, id);
+    const guests = await this.guestsAhead(original.job_id, original);
     // Marked before the row can read `dispatched`, so recovery never takes a
     // dispatch this process is about to send, or is still waiting on, for one
     // whose sender is gone. Cleared once the connector has answered, a late
@@ -1695,7 +1750,7 @@ export class BrokerService implements BrokerOperations {
         if (cellClaim && !inCell) throw new BrokerFault('unknown_tool');
         if (inCell && !cellClaim) return { action, context: null };
         try {
-          const fenced = await this.checkAuthority(tx, job, action);
+          const fenced = await this.checkAuthority(tx, job, action, guests);
           if (fenced)
             return {
               action: await this.rejectDispatch(tx, job, action, fenced),

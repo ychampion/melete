@@ -80,7 +80,8 @@ export async function startEffectBoundary(
     (await connectorsFromEnv(handle.sql, env, {
       connections,
       browserSessions: dependencies.browserSessions ?? browser?.sessions,
-      privateContext: ({ spaceId, agentId }) => dependencies.privacy.marksPrivate(spaceId, agentId),
+      privateContext: ({ spaceId, agentId }, query) =>
+        dependencies.privacy.marksPrivate(spaceId, agentId, query),
     }));
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
   let review: Awaited<ReturnType<typeof configuredReviewGateway>> | undefined;

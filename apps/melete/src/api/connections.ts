@@ -427,6 +427,10 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     }
     const id = newId('conn');
     const stored = await storedShape(installation, id, spaceId, factory);
+    // Sealed before the event order lock, as renew and reconnect do: the secret
+    // store writes on its own pool connection, which the lock holder must not
+    // wait for.
+    const secretRef = stored.secret ? await secrets.put(spaceId, stored.secret) : null;
 
     const generation = await serviceTransaction(deps.db, async (tx) => {
       await requireInstaller(tx, spaceId, actor, installation.kind, true);
@@ -478,7 +482,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           provider: installation.provider,
           label,
           scopes: stored.scopes,
-          secretRef: stored.secret ? await secrets.put(spaceId, stored.secret) : null,
+          secretRef,
           configuration: plugin ? { ...stored.configuration, plugin } : stored.configuration,
           status: 'disabled',
           setupState: 'connecting',

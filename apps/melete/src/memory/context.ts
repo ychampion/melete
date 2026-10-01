@@ -16,7 +16,7 @@ import { buildBundle } from '../jobs/bundle.ts';
 import { withStyleCheck } from '../runtime/style.ts';
 import { eligibleRevision } from './claims.ts';
 import { iso, lockSpace, MemoryError, type MemoryScope, type MemorySql, newId } from './db.ts';
-import { notifyInvalidated, registerMemoryAttempt } from './invalidate.ts';
+import { lockEventOrder, notifyInvalidated, registerMemoryAttempt } from './invalidate.ts';
 import { markRepairBriefsDelivered, pendingRepairBriefs } from './outputs.ts';
 import {
   asKnowledge,
@@ -35,11 +35,16 @@ export async function recordAttemptContext(
   startedAt?: Date,
 ): Promise<ContextRecord> {
   const context = await sql.begin(async (tx) => {
+    // The order every event writer and the broker's admissions take their
+    // locks: the event order, the job, its attempt, then the memory space.
+    // Locking the attempt and job after the space deadlocked with an event
+    // insert that held the job and waited for the attempt row.
+    await lockEventOrder(tx);
+    const [attempt] =
+      await tx`select a.epoch, a.ended_at, j.lease_epoch, j.revision from job j join attempt a on a.job_id = j.id
+      where a.id = ${attemptId} and j.id = ${jobId} and j.space_id = ${scope.spaceId} for update of j, a`;
     const space = await lockSpace(tx, scope, false);
     const audience = await effectiveAudience(tx, scope, jobId);
-    const [attempt] =
-      await tx`select a.epoch, a.ended_at, j.lease_epoch, j.revision from attempt a join job j on j.id = a.job_id
-      where a.id = ${attemptId} and j.id = ${jobId} and j.space_id = ${scope.spaceId} for update of a, j`;
     if (!attempt || attempt.ended_at || attempt.epoch !== attempt.lease_epoch)
       throw new MemoryError('stale_attempt');
     if (

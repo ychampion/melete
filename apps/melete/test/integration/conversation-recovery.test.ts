@@ -17,8 +17,11 @@ import {
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
+import { openDatabase } from '../../src/db/client.ts';
 import { action, connection, job, owner, space } from '../../src/db/schema.ts';
+import { serviceTransaction } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
+import { appendEvent } from '../../src/events/store.ts';
 import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
 import { newId } from '../../src/ids.ts';
@@ -318,4 +321,77 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
     expect((await send(other.id, 'Hello')).status).toBe(200);
     expect(jobBudget.parse((await required(jobs).get(other.id)).budget)).toEqual(chosen);
   });
+
+  test('cancelling the job of a conversation mid-turn settles it the way Stop does', async () => {
+    const chat = await createConversation();
+    expect((await send(chat.id, 'Write a long essay on the history of tea.')).status).toBe(200);
+    const row = await required(jobs).get(chat.id);
+    required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    expect((await request(`/jobs/${chat.id}/cancel`, 'POST', {})).status).toBe(200);
+    const view = conversationResponse.parse(
+      await (await request(`/conversations/${chat.id}`)).json(),
+    ).conversation;
+    expect(view.status).toBe('stopped');
+    expect(view.composer).toBe('send');
+    const turns = turnList.parse(
+      await (await request(`/conversations/${chat.id}/messages`)).json(),
+    );
+    expect(turns.turns.at(-1)?.status).toBe('stopped');
+    // A page following the conversation live is told too, not left working.
+    const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
+    expect(
+      page.events.some(
+        (event) =>
+          event.item.type === 'status' &&
+          event.item.status === 'stopped' &&
+          event.item.composer === 'send',
+      ),
+    ).toBe(true);
+    expect((await send(chat.id, 'Something shorter, then.')).status).toBe(200);
+  });
+
+  test('projecting a conversation never waits on a second connection under the event order lock', async () => {
+    const chat = await createConversation();
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    // Two connections: one for the projection, one for a writer that queues on
+    // the lock. A lookup that then needs a third waits for the pool for ever,
+    // while the pool waits for the lock: the whole service froze this way.
+    const small = openDatabase(required(handle).url, 2);
+    let waiter: Promise<unknown> = Promise.resolve();
+    try {
+      await serviceTransaction(small.db, (tx) =>
+        appendEvent(tx, {
+          jobId: chat.id,
+          type: 'notice',
+          payload: { kind: 'question_asked', question_id: 'q_pool_probe' },
+          dedupKey: `pool-probe:${chat.id}`,
+        }),
+      );
+      const events = new ExperienceEvents(small.db, {
+        permission: async () => undefined,
+        question: async () => {
+          waiter = serviceTransaction(small.db, async () => {});
+          await Promise.race([waiter, sleep(500)]);
+          // The question service reads on the pool, as the real one does.
+          await small.sql`select 1`;
+          return undefined;
+        },
+      });
+      const outcome = await Promise.race([
+        events.sync(spaceId, chat.id).then(() => 'projected'),
+        sleep(15_000).then(() => 'stuck'),
+      ]);
+      expect(outcome).toBe('projected');
+      await waiter;
+    } finally {
+      await small.close();
+    }
+  }, 30000);
 });

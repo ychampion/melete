@@ -17,7 +17,7 @@
  * a detail later clears the value from the notices that quoted it.
  */
 import { createHash } from 'node:crypto';
-import { EVENT_ORDER_LOCK } from '../db/transaction.ts';
+import { lockEventOrderIn } from '../db/transaction.ts';
 import { memoryKeyLabel } from '../experience/evidence.ts';
 import type { MemorySql } from './db.ts';
 
@@ -151,7 +151,7 @@ export async function appendMemoryNotices(
 ) {
   if (!notices.length) return;
   await sql.begin(async (tx) => {
-    await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+    await lockEventOrderIn(tx);
     const [job] = await tx`select lease_epoch from job where id = ${jobId} for update`;
     if (!job) return;
     for (const notice of notices) {

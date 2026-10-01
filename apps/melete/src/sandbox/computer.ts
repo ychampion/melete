@@ -40,7 +40,7 @@ import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { appendEvent } from '../broker/records.ts';
-import { EVENT_ORDER_LOCK } from '../db/transaction.ts';
+import { lockEventOrderIn } from '../db/transaction.ts';
 import { liveFrame, requestPeer } from '../workers/browser/live-service.ts';
 import { type DockerSandboxProvider, isDesktopProvider } from './adapters/docker.ts';
 import { type ComputerControls, computerControls } from './computer-control.ts';
@@ -238,7 +238,7 @@ export class SandboxComputerService {
     if (operation === 'takeover') await this.park(binding);
     else
       await this.sql.begin(async (tx) => {
-        await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+        await lockEventOrderIn(tx);
         await appendEvent(tx, binding.jobId, null, 'notice', {
           kind: 'computer_handback',
           session_id: binding.sessionId,
@@ -253,7 +253,7 @@ export class SandboxComputerService {
     const reason = 'human_control';
     const fenced = await this.sql.begin(async (tx) => {
       // Before the job lock, as every event writer does: event order is commit order.
-      await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+      await lockEventOrderIn(tx);
       const [job] =
         await tx`select id, space_id, state, wait from job where id = ${binding.jobId} for update`;
       if (

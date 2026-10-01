@@ -910,12 +910,14 @@ export function runtimeCall(input: {
 export function modelCall(input: {
   reservationId: string;
   requestedAt: Date;
-  receipt?: { status: unknown; latencyMs: unknown; at: Date };
+  receipt?: { status: unknown; latencyMs: unknown; at: Date; stopped?: boolean };
 }): ToolCall {
   const settled = input.receipt;
+  // A call cut off by Stop ended as asked: it is finished, not failed.
+  const stopped = settled?.stopped === true && settled.status !== 'succeeded';
   const status: ToolStatus = !settled
     ? 'running'
-    : settled.status === 'succeeded'
+    : settled.status === 'succeeded' || stopped
       ? 'done'
       : settled.status === 'failed'
         ? 'failed'
@@ -927,13 +929,14 @@ export function modelCall(input: {
   return toolCall.parse({
     id: toolId('model', input.reservationId),
     kind: 'model',
-    title: status === 'done' ? 'Thought it through' : 'Thinking',
+    title: stopped ? 'Stopped' : status === 'done' ? 'Thought it through' : 'Thinking',
     status,
     started_at: input.requestedAt.toISOString(),
     ended_at: settled ? settled.at.toISOString() : null,
     input_summary: null,
-    output_summary:
-      status === 'done'
+    output_summary: stopped
+      ? summary('Stopped when you asked.')
+      : status === 'done'
         ? summary(seconds === null ? 'Answered' : `Answered in ${seconds} s`)
         : status === 'failed'
           ? summary('No answer came back.')

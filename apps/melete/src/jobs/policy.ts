@@ -9,6 +9,7 @@ import {
 } from '@melete/contracts';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import type { Database } from '../db/client.ts';
 import {
   action,
   approval,
@@ -33,10 +34,11 @@ export class PolicyService {
     readonly runner?: AttemptRunner,
     readonly options: {
       /**
-       * Runs inside a revocation, or a switch to another key, after its
-       * authority and generation checks and before the key it replaces is
-       * gone: what that key alone can undo is undone here. It never refuses
-       * the change.
+       * Runs before a revocation, or a switch to another key, commits: after
+       * its authority and generation checks, before the key it replaces is
+       * gone, and outside the transaction, so it may use connections of its
+       * own. What that key alone can undo is undone here. It never refuses the
+       * change.
        */
       beforeKeyChange?: (
         connection: { id: string; provider: string },
@@ -228,22 +230,20 @@ export class PolicyService {
 
   async changeConnection(id: string, input: ConnectionLifecycle) {
     const request = connectionLifecycle.parse(input);
-    const result = await this.jobs.transaction(async (tx) => {
-      const [source] = await tx
-        .select()
-        .from(connection)
-        .where(eq(connection.id, id))
-        .for('update');
+    /** Authority, generation and credential, read without a lock or under the transaction's. */
+    const checked = async (reader: Database | Transaction, lock: boolean) => {
+      const query = reader.select().from(connection).where(eq(connection.id, id));
+      const [source] = lock ? await query.for('update') : await query;
       if (!source) throw new ServiceError('not_found', 'Connection not found.', 404);
       if (
         requestPrincipal() &&
-        (await spaceAuthority(tx, source.spaceId, requestPrincipal(), true)).role !== 'owner'
+        (await spaceAuthority(reader, source.spaceId, requestPrincipal(), lock)).role !== 'owner'
       )
         throw new ServiceError('scope_denied', 'Space owner required.', 403);
       if (source.generation !== request.expected_generation)
         throw new ServiceError('generation_conflict', 'The connection generation changed.');
       if (request.kind === 'switch') {
-        const [credential] = await tx
+        const [credential] = await reader
           .select({ id: secret.id })
           .from(secret)
           .where(and(eq(secret.id, request.secret_ref), eq(secret.spaceId, source.spaceId)));
@@ -253,27 +253,38 @@ export class PolicyService {
             'Choose a credential in the same space.',
             400,
           );
-        const refused = await this.options.checkKeyChange?.(
-          {
-            provider: source.provider,
-            spaceId: source.spaceId,
-            configuration: source.configuration,
-          },
-          request.secret_ref,
-        );
-        if (refused) throw new ServiceError('invalid_credential', refused, 400);
       }
-      if (
-        (request.kind === 'revoke' && source.status !== 'revoked') ||
-        (request.kind === 'switch' && request.secret_ref !== source.secretRef)
-      )
-        await this.options.beforeKeyChange?.(
-          { id: source.id, provider: source.provider },
-          request.kind,
-          request.kind === 'switch'
-            ? { secretRef: request.secret_ref, spaceId: source.spaceId }
-            : undefined,
-        );
+      return source;
+    };
+    // The key check and what the old key alone can undo reach providers and
+    // the secret store, on connections of their own. They run before the
+    // event order lock, which must never wait on another connection; the
+    // locked transaction then checks again that nothing moved meanwhile.
+    const before = await checked(this.jobs.db, false);
+    if (request.kind === 'switch') {
+      const refused = await this.options.checkKeyChange?.(
+        {
+          provider: before.provider,
+          spaceId: before.spaceId,
+          configuration: before.configuration,
+        },
+        request.secret_ref,
+      );
+      if (refused) throw new ServiceError('invalid_credential', refused, 400);
+    }
+    if (
+      (request.kind === 'revoke' && before.status !== 'revoked') ||
+      (request.kind === 'switch' && request.secret_ref !== before.secretRef)
+    )
+      await this.options.beforeKeyChange?.(
+        { id: before.id, provider: before.provider },
+        request.kind,
+        request.kind === 'switch'
+          ? { secretRef: request.secret_ref, spaceId: before.spaceId }
+          : undefined,
+      );
+    const result = await this.jobs.transaction(async (tx) => {
+      const source = await checked(tx, true);
       const [parent] = await tx
         .update(space)
         .set({ policyGeneration: sql`${space.policyGeneration} + 1` })

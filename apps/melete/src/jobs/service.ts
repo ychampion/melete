@@ -135,6 +135,8 @@ export type JobFaults = {
 
 export class JobService {
   onCancelled?: (id: string) => void;
+  /** Ends a conversation's turn in flight as Stop does; see `AttemptRunner.stopTurn`. */
+  stopTurn?: (tx: Transaction, row: JobRow) => Promise<boolean>;
   constructor(
     readonly db: Database,
     readonly boss: PgBoss,
@@ -434,6 +436,14 @@ export class JobService {
     const cancelled = await this.transaction(async (tx) => {
       const row = await this.lock(tx, id);
       if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
+      // Cancelling a conversation mid-turn ends that turn the way Stop does, so
+      // the conversation settles and takes the next message. Ending the job
+      // instead left the turn working and every new message refused.
+      if (row.kind === 'chat' && (await this.stopTurn?.(tx, row))) {
+        const [stopped] = await tx.select().from(job).where(eq(job.id, id));
+        if (!stopped) throw new Error('locked job disappeared');
+        return stopped;
+      }
       const updated = await this.move(
         tx,
         row,

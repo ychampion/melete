@@ -14,6 +14,7 @@ import {
   type ToolCall,
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
+import { appendEvent as appendBrokerEvent, lockJob } from '../../src/broker/records.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import {
   action,
@@ -484,6 +485,65 @@ withDb('tool entries in the conversation', () => {
     expect(during).toBe(0);
     expect((await required(knowledge)).context.items.length).toBeGreaterThan(0);
     expect(await count()).toBe(1);
+  }, 60000);
+
+  // Runs after the recall tests above, which provisioned memory and built its views.
+  test('recording a context takes its locks in the order an event writer does', async () => {
+    const sql = required(handle).sql;
+    const scope: MemoryScope = {
+      ownerId,
+      spaceId,
+      publisher: 'job-worker',
+      audience: 'private',
+      role: 'owner',
+    };
+    const { chat, claims } = await conversationWithAttempt('What should we cook tomorrow?');
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked = () => {};
+    const isLocked = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    // An event writer: the event order, the job row, then an event on the
+    // attempt, which needs the attempt row. Recording the context used to hold
+    // the attempt row and wait for the job: a deadlock that ended the attempt.
+    const writer = sql.begin(async (tx) => {
+      await lockJob(tx, chat.id);
+      locked();
+      await held;
+      await appendBrokerEvent(
+        tx,
+        chat.id,
+        claims.attempt_id,
+        'notice',
+        { kind: 'lock_order_probe' },
+        `lock-order:${claims.attempt_id}`,
+      );
+    });
+    await isLocked;
+    let knowledge: ReturnType<typeof assembleAttemptKnowledge> | undefined;
+    try {
+      knowledge = assembleAttemptKnowledge(
+        sql,
+        scope,
+        claims.attempt_id,
+        chat.id,
+        'cook dinner food',
+      );
+      // Until the context is waiting on a lock the writer holds.
+      for (let tries = 0; tries < 100; tries++) {
+        const [waiting] = await sql`select count(*)::int as n from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'`;
+        if (waiting?.n) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    } finally {
+      release();
+    }
+    await writer;
+    expect((await required(knowledge)).context.attempt_id).toBe(claims.attempt_id);
   }, 60000);
 
   test('the current step is the one under way, the approval while waiting, and none once ended', async () => {
