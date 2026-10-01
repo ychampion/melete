@@ -146,6 +146,68 @@ describe('the provider the configuration is written for', () => {
   });
 });
 
+describe('--connect-in-app, for a key pasted into the app', () => {
+  const example = {
+    MELETE_DEFAULT_PROVIDER: 'fireworks',
+    MELETE_DEFAULT_MODEL: 'accounts/fireworks/models/deepseek-v4p1-flash',
+  };
+
+  test('it is read, and refused beside --fake', () => {
+    expect(configureOptions(['--connect-in-app'])).toEqual({
+      fake: false,
+      nodeName: null,
+      inApp: true,
+    });
+    expect(() => configureOptions(['--fake', '--connect-in-app'])).toThrow(
+      '--connect-in-app has nothing to do',
+    );
+  });
+
+  test('it writes the real provider with no key, and no demonstration', () => {
+    const settings = providerSettings({ fake: false, inApp: true }, example, {});
+    expect(settings).toEqual({
+      MELETE_DEFAULT_PROVIDER: 'fireworks',
+      MELETE_DEFAULT_MODEL: 'accounts/fireworks/models/deepseek-v4p1-flash',
+      MELETE_ENABLE_FAKE_PROVIDER: 'false',
+      MELETE_ENABLE_TEST_CONNECTOR: 'false',
+    });
+  });
+
+  test('a key already in the environment is left out, so the app can manage it', () => {
+    const settings = providerSettings({ fake: false, inApp: true }, example, {
+      FIREWORKS_API_KEY: 'fw-secret',
+    });
+    expect(Object.values(settings)).not.toContain('fw-secret');
+    expect(settings).not.toHaveProperty('FIREWORKS_API_KEY');
+  });
+
+  test('another provider still needs its model, and an OpenAI-compatible one its address', () => {
+    expect(() =>
+      providerSettings({ fake: false, inApp: true, provider: 'anthropic' }, example, {}),
+    ).toThrow('Name the model with --model');
+    expect(() =>
+      providerSettings(
+        { fake: false, inApp: true, provider: 'openai-compatible', model: 'm' },
+        example,
+        {},
+      ),
+    ).toThrow('Set OPENAI_COMPAT_BASE_URL');
+    expect(
+      providerSettings(
+        { fake: false, inApp: true, provider: 'openai-compatible', model: 'm' },
+        example,
+        { OPENAI_COMPAT_BASE_URL: 'http://192.168.1.20:11434/v1', OPENAI_COMPAT_API_KEY: 'k' },
+      ),
+    ).toEqual({
+      MELETE_DEFAULT_PROVIDER: 'openai-compatible',
+      MELETE_DEFAULT_MODEL: 'm',
+      MELETE_ENABLE_FAKE_PROVIDER: 'false',
+      MELETE_ENABLE_TEST_CONNECTOR: 'false',
+      OPENAI_COMPAT_BASE_URL: 'http://192.168.1.20:11434/v1',
+    });
+  });
+});
+
 describe('the Docker socket group written as DOCKER_GID', () => {
   const GIB = 1024 ** 3;
   const host = (platform: NodeJS.Platform, operatingSystem: string): DockerHostFacts => ({

@@ -100,65 +100,19 @@ servers, HTTPS, Tailscale, backups and removal.
 
 ## Set it up with your coding agent
 
-Paste one of these into Claude Code, Codex or Cursor.
-
-To run it on a small cloud server:
-
-```text
-Create a small Linux VM on my cloud provider (Ubuntu 24.04, 2 vCPU, 4 GB RAM,
-30 GB disk) and connect to it over SSH. Install Docker Engine 28 or newer with
-the Compose plugin, following Docker's official instructions for Ubuntu. Then
-install Melete from https://github.com/ychampion/melete by following the
-"Install on a Linux Docker host" section of its docs/DEPLOYMENT.md, which also
-installs Bun. Configure it for my model provider with the key I give you,
-exporting the key before running configure.ts as the Providers section of
-docs/DEPLOYMENT.md shows, so the key is never printed. Melete listens only on
-the VM's own loopback address, so keep ports 3100 and 3101 closed to the
-internet. When it's running, give me the SSH tunnel command from
-docs/DEPLOYMENT.md so I can open http://localhost:3101, and summarise what that
-file says about HTTPS and Tailscale for reaching it from my phone.
-```
-
-To run it on this computer:
+Claude Code, Codex, Cursor or another coding agent can install Melete for you,
+on this computer or on a server. It checks the machine, starts Melete, and tells
+you when to create your account. You type your own passwords and keys, into
+Melete or your own terminal, and the agent does the rest. Paste this:
 
 ```text
-Clone https://github.com/ychampion/melete and run it on this machine with
-Docker, following the "Run it yourself" section of its README. First check that
-Docker Engine is 28 or newer and Docker Compose is 2.33.1 or newer. If this
-machine runs Windows, follow the "Windows (Docker Desktop)" section of
-docs/DEPLOYMENT.md instead. The API key for my model provider is already in my
-environment, so run configure.ts with --provider and --model for that provider
-as the README shows, and it reads the key from there without printing it. When
-`docker compose -f deploy/docker-compose.yml ps` shows the services running and
-healthy, tell me to open http://localhost:3101.
+Set up Melete on this machine using https://github.com/ychampion/melete/blob/main/SETUP-WITH-AN-AGENT.md
 ```
 
-To connect your email and calendar:
-
-```text
-Help me connect my email and calendar to Melete at http://localhost:3101.
-For Gmail, walk me through turning on 2-Step Verification and creating an app
-password named Melete at https://myaccount.google.com/apppasswords. For iCloud,
-walk me through creating an app-specific password at https://account.apple.com
-under Sign-In and Security. Then tell me to open Settings, then Connections, and
-add Gmail, iCloud Mail or Other mail (IMAP) for my email, and iCloud Calendar,
-Other calendar (CalDAV) or Google Calendar (read only) for my calendar. Don't ask
-me to paste any password into this chat.
-```
-
-To connect your model:
-
-```text
-Switch my Melete install to my own model. My API key is in my environment as
-ANTHROPIC_API_KEY. In deploy/.env, set MELETE_DEFAULT_PROVIDER=anthropic, set
-MELETE_DEFAULT_MODEL to the model I name, and copy the key into
-ANTHROPIC_API_KEY without printing it. If MELETE_ENABLE_FAKE_PROVIDER or
-MELETE_ENABLE_TEST_CONNECTOR is true, set it to false. Then run
-`docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete runtime`
-and check `docker compose -f deploy/docker-compose.yml logs --tail=50 melete`
-for a warning about the provider key. If my key is for another provider, use
-the matching name and key from the Providers section of docs/DEPLOYMENT.md.
-```
+The [guide](SETUP-WITH-AN-AGENT.md) also covers the optional parts: a computer
+for the agent, voice, mail and calendar, and a public address for other
+assistants. For Claude Code there is a [skill](skills/README.md) you can install
+once.
 
 ## Connect your model
 

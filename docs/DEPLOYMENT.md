@@ -109,7 +109,12 @@ docker compose -f deploy/docker-compose.yml ps
 
 All four services — `postgres`, `melete`, `runtime` and `web` — come up healthy.
 If startup fails, `docker compose -f deploy/docker-compose.yml logs --tail=100`
-names the reason. To pull the published images instead of building them, set
+names the reason. `bun run deploy/scripts/status.ts` prints a readable report of
+the whole installation, from Docker and free space to the owner account, with
+what to do next for anything that is not ready; it changes nothing and prints no
+secret. `bun run deploy/scripts/set-env.ts NAME=value` changes a setting in
+`deploy/.env` in place on any platform, and `--from-env NAME` takes a key from
+the environment instead of the command line. To pull the published images instead of building them, set
 `MELETE_IMAGE_TAG` before starting, as
 [Using prebuilt images](#using-prebuilt-images) shows.
 
@@ -786,6 +791,12 @@ with `ANTHROPIC_API_KEY` exported. An OpenAI-compatible endpoint needs
 needs no key: the owner signs in once the stack is running, through the
 [sign-in routes](#signing-in-to-a-provider). A run whose key is missing is
 refused, and nothing is written.
+
+`--connect-in-app` writes the same production configuration with no key at all,
+for a key the owner pastes into Settings › Models once the stack is running
+([Connecting a model in the app](#connecting-a-model-in-the-app)). The key then
+never passes through a shell, which suits a setup run by a coding agent
+([SETUP-WITH-AN-AGENT.md](../SETUP-WITH-AN-AGENT.md)).
 
 The `--fake` configuration is the reproducible local demonstration, and only it
 turns on the scripted provider and the test connector: no provider key is
