@@ -328,7 +328,14 @@ describe('runtime tools, the model and traces', () => {
     expect(text?.length).toBe(TOOL_QUOTE_LIMIT);
     expect(text).not.toContain('\n');
     expect(toolText('{"to":"x"}')).toBeNull();
-    expect(toolText(`${'A'.repeat(48)}`)).toBeNull();
+    expect(toolText('Q7vLm2Xr9TbW4kZp8NcY3dHsQ7vLm2Xr9TbW4kZp8NcY3dHs')).toBeNull();
+    // A model id, a long path and a title that starts with a bracket are ordinary text.
+    for (const plain of [
+      'accounts/fireworks/models/deepseek-v4p1-flash',
+      'home/sam/projects/melete-notes/archive/2026/september/plans.md',
+      '[PDF] Quarterly report',
+    ])
+      expect(toolText(plain)).toBe(plain);
   });
 });
 

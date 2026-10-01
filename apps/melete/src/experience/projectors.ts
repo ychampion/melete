@@ -17,6 +17,7 @@ import {
 } from '@melete/contracts';
 import type { action, artifact, connection } from '../db/schema.ts';
 import { namesLocalNetwork } from '../devices/paths.ts';
+import { answerText, hideSecrets, isInternalRecord } from './answer-filter.ts';
 
 export type ActionRow = Pick<
   typeof action.$inferSelect,
@@ -40,62 +41,42 @@ export const object = (input: unknown): Record<string, unknown> =>
 const array = (input: unknown): unknown[] => (Array.isArray(input) ? input : []);
 /**
  * Words only an internal record carries: a tool's name, a field of an action
- * record or a credential, or a model's id. A tool name counts only as one, a
- * known verb after the app's name standing on its own, so an address at
- * email.com, a site like web.dev or a file called test.txt stays ordinary text.
+ * record or a credential, or a model's id. Projections the service writes
+ * itself are checked against it; text a person or a model wrote is filtered
+ * by `answerText`, where these words are ordinary prose.
  */
 export const BACKEND_VOCABULARY =
   /(?<![\w@.-])(?:email|calendar|files|web|test)\.(?:search|read|draft|send|discard|list|create|update|delete|write|move|restore|share|fetch|echo|inspect)(?:_[a-z]+)*(?![\w-]|\.[a-z])|\b(?:canonical_payload|payload_hash|tool_call|model_actual|access_token|refresh_token|chain.of.thought)\b|(?<![@.])\b(?:gpt-|claude-|deepseek-)[\w.-]*/i;
 
-/** Titles and labels are content, never a channel for an internal record or credential. */
+/**
+ * Titles and labels are content, never a channel for an internal record or
+ * credential: a whole record gives the fallback, a credential is hidden where
+ * it stands, and everything else is kept.
+ */
 export function plainText(value: unknown, fallback: string, limit = 4000): string {
-  if (
-    typeof value !== 'string' ||
-    !value.trim() ||
-    BACKEND_VOCABULARY.test(value) ||
-    /^[\s]*[[{]/.test(value) ||
-    /\b(?:Bearer\s+|sk-[A-Za-z0-9]{12})/.test(value)
-  )
-    return fallback;
-  return value
+  if (typeof value !== 'string' || !value.trim() || isInternalRecord(value)) return fallback;
+  const text = hideSecrets(value)
     .replace(/\p{Cc}/gu, (character) => (['\n', '\r', '\t'].includes(character) ? character : ''))
     .trim()
     .slice(0, limit);
+  return text || fallback;
 }
-/** A whole JSON object or array: an internal record, not something the agent said. */
-function isRecord(value: string): boolean {
-  const text = value.trim();
-  if (!/^[[{]/.test(text)) return false;
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return typeof parsed === 'object' && parsed !== null;
-  } catch {
-    return false;
-  }
-}
-
+export { answerText };
 /**
- * Answer text, whole or one streamed piece of it. A piece that merely starts
- * with a bracket ("[your name]", a Markdown link) is prose and is kept.
+ * A link that may be shown: web only, query and fragment cut, and none at all
+ * when its address carries a credential or it is a sign-in callback carrying
+ * an access token.
  */
-export function answerText(value: unknown): string {
-  if (
-    typeof value !== 'string' ||
-    BACKEND_VOCABULARY.test(value) ||
-    isRecord(value) ||
-    /\b(?:Bearer\s+|sk-[A-Za-z0-9]{12})/.test(value)
-  )
-    return '';
-  return value;
-}
 export function safeUrl(value: unknown): string | undefined {
-  if (typeof value !== 'string' || BACKEND_VOCABULARY.test(value)) return undefined;
+  if (typeof value !== 'string' || /[?&#](?:access|refresh|id)_token=/i.test(value))
+    return undefined;
   try {
     const parsed = new URL(value);
     if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password)
       return undefined;
     parsed.search = '';
     parsed.hash = '';
+    if (hideSecrets(parsed.href) !== parsed.href) return undefined;
     return parsed.href;
   } catch {
     return undefined;

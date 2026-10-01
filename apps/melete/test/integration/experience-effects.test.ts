@@ -509,7 +509,11 @@ databaseTest(
       cc: ['jules@example.test'],
       bcc: ['pat@example.test'],
     });
-    const unsafe = await s.draft('alex@example.test', 'The private access_token is hidden.');
+    // A body whose preview would hide a key cannot be approved as shown.
+    const unsafe = await s.draft(
+      'alex@example.test',
+      'The key sk-proj-Q7vLm2Xr9TbW4kZp8NcY3dHs is in here.',
+    );
     expect(await s.permissions.send(s.claims.space_id, unsafe)).toMatchObject({
       status: 'not_available',
     });
