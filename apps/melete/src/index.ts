@@ -874,17 +874,11 @@ export async function bootstrap(
         },
       });
       // An attempt that ends leaves no sandbox running: its workspace is
-      // suspended, and an ephemeral session is closed. Off the outcome
-      // transaction, since both are provider calls.
-      if (sandboxes) {
-        runner.onFinished.push(async (_tx, _row, _outcome, attemptId) => {
-          sandboxes?.afterAttempt(attemptId);
-        });
-        // An attempt that is stopped, fenced, lost or cut short by shutdown
-        // never reaches the outcome above, and its workspace must not stay
-        // held until its lease runs out.
-        runner.onSettled.push((attemptId) => sandboxes?.afterAttempt(attemptId));
-      }
+      // suspended, and an ephemeral session is closed. Settled after the
+      // attempt has ended however it ended, finished, stopped, fenced, lost or
+      // cut short by shutdown, and never inside the outcome transaction: both
+      // are provider calls, and that transaction holds the event order lock.
+      if (sandboxes) runner.onSettled.push((attemptId) => sandboxes?.afterAttempt(attemptId));
       if (browser)
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);

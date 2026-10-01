@@ -19,20 +19,15 @@ export const EVENT_ORDER_LOCK = 31003103;
 export const EVENT_ORDER_LOCK_TIMEOUT = '30s';
 
 /**
- * Say why a locked transaction failed when a limit ended it: Postgres reports
- * `lock_not_available` when `lock_timeout` ends a wait, and
- * `idle_in_transaction_session_timeout` (see `db/client.ts`) when it ended a
- * session that held a transaction open and did nothing.
+ * Say why a locked transaction failed when its wait limit ended it: Postgres
+ * reports `lock_not_available` when `lock_timeout` ends a wait. A transaction
+ * ended for sitting idle is reported where every transaction begins (see
+ * `reportClosedTransaction` in `db/client.ts`).
  */
 function reportLimit(error: unknown): void {
-  const code = (error as { code?: unknown } | null)?.code;
-  if (code === '55P03')
+  if ((error as { code?: unknown } | null)?.code === '55P03')
     console.error(
       `event order lock: gave up after waiting ${EVENT_ORDER_LOCK_TIMEOUT}; a transaction holding it is stuck`,
-    );
-  else if (code === '25P03')
-    console.error(
-      'event order lock: Postgres ended a transaction that sat idle while open; it was rolled back',
     );
 }
 

@@ -15,6 +15,7 @@ import { BrokerFault } from '../broker/errors.ts';
 import { appendEvent, loadAction, recordId } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
+import { lockEventOrderIn } from '../db/transaction.ts';
 import { DEFAULT_BUDGET } from '../jobs/service.ts';
 import { MCP_COMMAND_PREFIX } from '../mcp-server/actor.ts';
 import { actionBecause } from '../memory/basis.ts';
@@ -133,6 +134,9 @@ export class ExperienceEffects {
       | { kind: 'failed'; reason: string; retryable: boolean },
   ) {
     await this.sql.begin(async (tx) => {
+      // It appends an event, so it takes the event order first like every
+      // other event writer, or a live stream could read past it.
+      await lockEventOrderIn(tx);
       const [row] = await tx`select * from job where id = ${jobId} for update`;
       if (row?.state !== 'running') return;
       const [execution] = await tx`update attempt set outcome = ${outcome.kind},

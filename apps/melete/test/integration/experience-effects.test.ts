@@ -7,6 +7,7 @@ import { calendarManifest } from '../../src/connectors/calendar.ts';
 import { emailManifest } from '../../src/connectors/email.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
+import { EVENT_ORDER_LOCK } from '../../src/db/transaction.ts';
 import { ExperienceEffects } from '../../src/experience/effects.ts';
 import { ExperiencePermissions } from '../../src/experience/permissions.ts';
 import { BACKEND_VOCABULARY } from '../../src/experience/projectors.ts';
@@ -133,6 +134,33 @@ databaseTest('home calendar reads use a scoped private command and reject writes
   expect(await s.effects.read('foreign', s.connectionId, 'calendar.list', {})).toMatchObject({
     status: 'not_available',
   });
+});
+
+databaseTest('a home read writes every event under the event order lock', async () => {
+  const s = await setup('calendar');
+  // Any event this read writes without holding the lock is refused outright,
+  // because a live stream could read past it.
+  await s.sql.unsafe(`create or replace function require_event_order() returns trigger as $$
+    begin
+      if not exists (select 1 from pg_locks where locktype = 'advisory' and pid = pg_backend_pid()
+        and granted and classid = 0 and objid = ${EVENT_ORDER_LOCK} and objsubid = 1) then
+        raise exception 'event % written without the event order lock', new.type;
+      end if;
+      return new;
+    end $$ language plpgsql`);
+  await s.sql.unsafe(`create trigger require_event_order before insert on event
+    for each row execute function require_event_order()`);
+  try {
+    const read = await s.effects.read(s.claims.space_id, s.connectionId, 'calendar.list', {
+      limit: 5,
+    });
+    expect(read).toMatchObject({ status: 'succeeded' });
+    const ended = await s.sql`select count(*)::int as n from event e join job j on j.id = e.job_id
+      where j.kind = 'command' and j.space_id = ${s.claims.space_id} and e.type = 'attempt_ended'`;
+    expect(ended[0]?.n).toBeGreaterThan(0);
+  } finally {
+    await s.sql.unsafe('drop trigger require_event_order on event');
+  }
 });
 
 databaseTest('home refreshes across minutes leave no running read attempts', async () => {

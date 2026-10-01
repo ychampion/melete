@@ -26,14 +26,42 @@ export type DatabaseHandle = {
 export const IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000;
 
 /**
+ * Say so when a transaction ended because its connection did. Postgres ends
+ * a session left idle in a transaction (see above) while nothing is waiting
+ * on it, so postgres.js never sees its reason: the transaction's next
+ * statement fails with `CONNECTION_CLOSED`. A dropped connection reads the
+ * same, and both mean the transaction was rolled back.
+ */
+export function reportClosedTransaction(error: unknown): void {
+  if ((error as { code?: unknown } | null)?.code === 'CONNECTION_CLOSED')
+    console.error(
+      `database: a transaction lost its connection and was rolled back; Postgres ends one left idle for ${IDLE_IN_TRANSACTION_TIMEOUT_MS / 1000} s, which means it was stuck`,
+    );
+}
+
+/**
  * Open a connection pool. `max` is deliberately small: the service is one
  * process on one machine, and a large pool only hides a slow query.
+ * `idleInTransactionMs` is for tests that need the limit to arrive sooner.
  */
-export function openDatabase(url: string, max = 10): DatabaseHandle {
+export function openDatabase(
+  url: string,
+  max = 10,
+  idleInTransactionMs = IDLE_IN_TRANSACTION_TIMEOUT_MS,
+): DatabaseHandle {
   const sql = postgres(url, {
     max,
     onnotice: () => {},
-    connection: { idle_in_transaction_session_timeout: IDLE_IN_TRANSACTION_TIMEOUT_MS },
+    connection: { idle_in_transaction_session_timeout: idleInTransactionMs },
+  });
+  // Every transaction, the Drizzle service's included, begins here.
+  const begin = sql.begin.bind(sql) as (...args: unknown[]) => Promise<unknown>;
+  Object.assign(sql, {
+    begin: (...args: unknown[]) =>
+      begin(...args).catch((error: unknown) => {
+        reportClosedTransaction(error);
+        throw error;
+      }),
   });
   const db = drizzle(sql, { schema });
   return { db, sql, close: () => sql.end({ timeout: 5 }) };

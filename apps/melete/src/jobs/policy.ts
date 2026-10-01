@@ -273,7 +273,8 @@ export class PolicyService {
       if (refused) throw new ServiceError('invalid_credential', refused, 400);
     }
     // While the old key's work is undone nothing new may start through this
-    // connection, so it reads as inactive until the change commits. That is a
+    // connection, so it reads as inactive until the change commits; a restart
+    // part way puts it back (see `configuredConnectors`). That is a
     // short write of its own: the teardown reaches providers for up to two
     // minutes, which no transaction is held open for.
     let paused = false;

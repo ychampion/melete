@@ -518,6 +518,9 @@ withDb('installing each kind of connection through the API', () => {
     expect(offered.bundle).toEqual(expect.arrayContaining(tools));
     expect(offered.brokered).toEqual(expect.arrayContaining(tools));
 
+    // A process that stopped while a key change paused this connection left it
+    // disabled; a restart puts it back rather than leaving it unserved.
+    await h.sql`update connection set status = 'disabled' where id = ${id}`;
     // The same stored row is enough after a restart: no connections file is involved.
     const reopened = await configuredConnectors({
       sql: h.sql,
@@ -528,6 +531,8 @@ withDb('installing each kind of connection through the API', () => {
     });
     try {
       expect(reopened.get(id)?.manifest.provider).toBe('caldav');
+      const [resumed] = await h.sql`select status from connection where id = ${id}`;
+      expect(resumed?.status).toBe('active');
       expect((await reopened.get(id)?.health())?.status).toBe('ok');
     } finally {
       await reopened.close();

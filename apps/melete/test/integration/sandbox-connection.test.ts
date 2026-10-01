@@ -310,9 +310,12 @@ withDb('the sandbox connection kind', () => {
     const first = await h.install(body());
     expect(first.status).toBe(201);
     const id = connectionResponse.parse(first.json).connection.id;
+    const before = await h.counts();
     const second = await h.install({ ...body(), label: 'Another sandbox' });
     expect(second.status).toBe(409);
     expect(JSON.parse(second.text).error.code).toBe('conflict');
+    // The key sealed for the refused installation is not left behind.
+    expect(await h.counts()).toEqual(before);
     expect(
       await h.sql`select id from connection where provider = 'sandbox' and status <> 'revoked'`,
     ).toHaveLength(1);

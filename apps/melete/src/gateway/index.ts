@@ -167,6 +167,9 @@ export function createModelGateway(options: GatewayOptions): Server {
     let reservation: GatewayReservation | undefined;
     let settlement: GatewaySettlement | undefined;
     let settled = false;
+    // Kept here so a call that is stopped part way can still be charged for what it streamed.
+    let collector: UsageCollector | undefined;
+    let charged: { input: number; output: number } | undefined;
     const started = performance.now();
     const abort = new AbortController();
     // A limit on silence, not on length: each chunk from the provider restarts
@@ -371,7 +374,8 @@ export function createModelGateway(options: GatewayOptions): Server {
         await result.body.cancel();
         throw new GatewayError(502, 'unexpected_provider_response');
       }
-      const collector = new UsageCollector(streaming, options.maxResponseBytes);
+      collector = new UsageCollector(streaming, options.maxResponseBytes);
+      charged = { input: inputTokens, output: requested };
       const redactor = new SecretRedactor(
         [...secrets, signedIn?.token, local?.apiKey].filter((key): key is string => !!key),
       );
@@ -428,6 +432,12 @@ export function createModelGateway(options: GatewayOptions): Server {
       await drainRequest(request, maxRequestBytes);
       if (reservation && settlement && !settled) {
         settlement.latencyMs = Math.round(performance.now() - started);
+        // A call stopped part way is charged what it streamed, estimated,
+        // rather than its whole output allowance.
+        if (stopped && !settlement.usage && collector && charged) {
+          settlement.usage = collector.estimate(charged.input, charged.output);
+          settlement.usageEstimated = true;
+        }
         try {
           await options.budget.settle(reservation, settlement);
         } catch (ledgerError) {
