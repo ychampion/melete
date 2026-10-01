@@ -99,7 +99,7 @@ describe('titles say what was done with what', () => {
       [done('computer.type', { text: 'hunter2' }), 'Typed in its computer'],
       [done('computer.key', { keys: ['Control', 'L'] }), 'Pressed Control+L in its computer'],
       [done('device.run', { command: 'ls ~' }), 'Ran `ls ~` on your computer'],
-      [done('device.read_file', { path: 'C:/Users/x/todo.txt' }), 'Read todo.txt on your computer'],
+      [done('device.read_file', { path: 'notes/todo.txt' }), 'Read todo.txt on your computer'],
       [done('artifact.publish', { path: 'report.pdf' }), 'Published report.pdf'],
     ];
     for (const [call, title] of cases) {
