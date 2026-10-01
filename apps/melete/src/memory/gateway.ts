@@ -42,6 +42,16 @@ const chatReply = z.object({
   choices: z.array(z.object({ message: z.object({ content: z.string() }) })).min(1),
 });
 
+/**
+ * What asks a provider's chat models to answer without reasoning first.
+ * Reading a message into memory needs no reasoning, and a model that reasons by
+ * default can spend the whole output budget thinking and return nothing. A
+ * model that cannot stop thinking refuses the field, and is asked again as it is.
+ */
+const ANSWER_DIRECTLY: Record<string, Record<string, unknown>> = {
+  fireworks: { reasoning_effort: 'none' },
+};
+
 export type MemoryGatewayOptions = {
   sql: MemorySql;
   provider: string;
@@ -154,8 +164,6 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
         ? await options.source.current()
         : { provider: options.provider, model: options.model };
       const protocol = protocolForApiMode(modelApiMode(target.provider, target.model));
-      const token = randomUUID();
-      tokens.set(token, { ...call, ...target });
       const system = messages.find((message) => message.role === 'system')?.content ?? '';
       const body =
         protocol === 'responses'
@@ -168,43 +176,55 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
                 max_tokens,
               }
             : { model: target.model, messages, max_tokens };
-      try {
-        const response = await fetch(`${base}/providers/${target.provider}/v1/${protocol}`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-melete-capability': token,
-            ...(protocol === 'messages'
-              ? { 'x-api-key': 'melete-surrogate-memory' }
-              : { authorization: 'Bearer melete-surrogate-memory' }),
-          },
-          body: JSON.stringify(body),
-          redirect: 'error',
-          signal,
-        });
-        if (!response.ok)
-          throw new MemoryError(
-            failureCode(response.status, await response.text(), upstream.get(token)),
-          );
-        const result = await response.json();
-        return protocol === 'responses'
-          ? responsesReply
+      const direct = protocol === 'chat/completions' ? ANSWER_DIRECTLY[target.provider] : undefined;
+      // Each request is its own capability, so a second ask is a second read.
+      const ask = async (extra: Record<string, unknown> | undefined) => {
+        const token = randomUUID();
+        tokens.set(token, { ...call, ...target });
+        try {
+          const response = await fetch(`${base}/providers/${target.provider}/v1/${protocol}`, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-melete-capability': token,
+              ...(protocol === 'messages'
+                ? { 'x-api-key': 'melete-surrogate-memory' }
+                : { authorization: 'Bearer melete-surrogate-memory' }),
+            },
+            body: JSON.stringify({ ...body, ...extra }),
+            redirect: 'error',
+            signal,
+          });
+          if (response.ok) return { ok: true as const, result: await response.json() };
+          return {
+            ok: false as const,
+            status: response.status,
+            text: await response.text(),
+            provider: upstream.get(token),
+          };
+        } finally {
+          tokens.delete(token);
+          upstream.delete(token);
+        }
+      };
+      let reply = await ask(direct);
+      if (!reply.ok && direct && reply.provider === 400) reply = await ask(undefined);
+      if (!reply.ok) throw new MemoryError(failureCode(reply.status, reply.text, reply.provider));
+      const result = reply.result;
+      return protocol === 'responses'
+        ? responsesReply
+            .parse(result)
+            .output.flatMap((item) => item.content ?? [])
+            .filter((item) => item.type === 'output_text')
+            .map((item) => item.text)
+            .join('')
+        : protocol === 'messages'
+          ? messagesReply
               .parse(result)
-              .output.flatMap((item) => item.content ?? [])
-              .filter((item) => item.type === 'output_text')
-              .map((item) => item.text)
+              .content.filter((item) => item.type === 'text')
+              .map((item) => item.text ?? '')
               .join('')
-          : protocol === 'messages'
-            ? messagesReply
-                .parse(result)
-                .content.filter((item) => item.type === 'text')
-                .map((item) => item.text ?? '')
-                .join('')
-            : (chatReply.parse(result).choices[0]?.message.content ?? '');
-      } finally {
-        tokens.delete(token);
-        upstream.delete(token);
-      }
+          : (chatReply.parse(result).choices[0]?.message.content ?? '');
     },
   };
   return {
