@@ -7,7 +7,9 @@ import {
   composeEnabled,
   createStackJob,
   docker,
+  jobContainers,
   serviceId,
+  sql,
   waitFor,
   waitForJob,
   waitForStack,
@@ -46,6 +48,7 @@ describe.skipIf(!composeEnabled)('conformance 6: Linux runtime has no route out'
   let melete: Inspection;
   let source: string;
   let hostControl: ReturnType<typeof Bun.serve> | undefined;
+  let database: Awaited<ReturnType<typeof sql>> | undefined;
   const sibling = newId('job');
 
   const probe = async (input: Record<string, unknown>, container = runtime.Id): Promise<Probe> => {
@@ -84,6 +87,7 @@ describe.skipIf(!composeEnabled)('conformance 6: Linux runtime has no route out'
     ) as Inspection[];
     [runtime, postgres, melete] = values as [Inspection, Inspection, Inspection];
     source = await readFile(new URL('../helpers/cell-probe.py', import.meta.url), 'utf8');
+    database = await sql();
     const result = await compose(
       'exec',
       '-T',
@@ -98,6 +102,7 @@ describe.skipIf(!composeEnabled)('conformance 6: Linux runtime has no route out'
 
   afterAll(async () => {
     hostControl?.stop(true);
+    await database?.end();
     if (melete)
       await compose(
         'exec',
@@ -204,21 +209,10 @@ describe.skipIf(!composeEnabled)('conformance 6: Linux runtime has no route out'
 
   test('a claimed attempt cannot reach the owner control plane and retains its job boundary', async () => {
     const { jobId } = await createStackJob({ title: 'Probe an actual isolated attempt' });
+    if (!database) throw new Error('The database connection is absent');
+    const live = database;
     const childId = await waitFor(
-      async () => {
-        const id = (
-          await docker(
-            'ps',
-            '-q',
-            '--no-trunc',
-            '--filter',
-            'label=com.melete.attempt-supervisor=v1',
-            '--filter',
-            `label=com.melete.job=${jobId}`,
-          )
-        ).trim();
-        return id || false;
-      },
+      async () => (await jobContainers(live, jobId))[0],
       30_000,
       'the claimed attempt container',
     );
@@ -229,9 +223,36 @@ describe.skipIf(!composeEnabled)('conformance 6: Linux runtime has no route out'
     try {
       controlPlane = await probe({ mode: 'control-plane' }, childId);
       const child = JSON.parse(await docker('inspect', childId))[0] as Inspection;
+      // An engine started for its attempt mounts the job's directory by name. A
+      // spare engine mounted its own directory, which became the job's when the
+      // attempt took it. Either way, what the attempt writes at /work is in the
+      // job's directory and nowhere else.
+      const subpath =
+        child.HostConfig.Mounts.find((mount) => mount.Target === '/work')?.VolumeOptions?.Subpath ??
+        '';
+      expect(subpath === jobId || /^\.spare-[a-f0-9]{24}$/.test(subpath)).toBe(true);
+      const marker = `boundary-${newId('job')}`;
+      await docker(
+        'exec',
+        childId,
+        'python',
+        '-c',
+        'import sys; open("/work/" + sys.argv[1], "w").write(sys.argv[1])',
+        marker,
+      );
       expect(
-        child.HostConfig.Mounts.find((mount) => mount.Target === '/work')?.VolumeOptions?.Subpath,
-      ).toBe(jobId);
+        await compose(
+          'exec',
+          '-T',
+          'melete',
+          'bun',
+          '-e',
+          "const fs=await import('node:fs/promises');const [job,marker,subpath]=process.argv.slice(1);const file='/work/'+job+'/'+marker;const kept=await fs.readFile(file,'utf8');await fs.unlink(file);const spare=subpath===job?false:await fs.lstat('/work/'+subpath).then(()=>true,()=>false);process.stdout.write(JSON.stringify({kept,spare}))",
+          jobId,
+          marker,
+          subpath,
+        ),
+      ).toBe(JSON.stringify({ kept: marker, spare: false }));
       expect((await probe({ mode: 'route' }, childId)).default_routes).toEqual([]);
       const pgIp = Object.values(postgres.NetworkSettings.Networks)[0]?.IPAddress;
       const edge = Object.entries(melete.NetworkSettings.Networks).find(([name]) =>

@@ -6,6 +6,7 @@ import {
   createStackJob,
   docker,
   job,
+  jobContainers,
   requireCompose,
   sql,
   waitFor,
@@ -20,20 +21,7 @@ const { jobId } = await createStackJob({ title: 'Restart a running responsibilit
 const database = await sql();
 try {
   const child = await waitFor(
-    async () => {
-      const id = (
-        await docker(
-          'ps',
-          '-q',
-          '--no-trunc',
-          '--filter',
-          'label=com.melete.attempt-supervisor=v1',
-          '--filter',
-          `label=com.melete.job=${jobId}`,
-        )
-      ).trim();
-      return id || false;
-    },
+    async () => (await jobContainers(database, jobId))[0],
     30_000,
     'the live job cell',
   );
