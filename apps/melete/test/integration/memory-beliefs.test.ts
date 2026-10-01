@@ -19,7 +19,7 @@ import { type MemoryScope, provisionMemorySpace } from '../../src/memory/db.ts';
 import { latestDigest, writeDueDigest } from '../../src/memory/digest.ts';
 import { ingest } from '../../src/memory/evidence.ts';
 import type { ExtractionGateway } from '../../src/memory/extract.ts';
-import { deleteMemorySource } from '../../src/memory/forget.ts';
+import { cleanupMemory, deleteMemorySource } from '../../src/memory/forget.ts';
 import { recordOutput } from '../../src/memory/outputs.ts';
 import {
   beliefMarkdown,
@@ -280,7 +280,7 @@ withDb('rewinding a day', () => {
     await setRecordedAt(db, coffee, on(dayOne, '09:05'));
     const belief = (await listBeliefs(db.sql, scope, zone)).find((b) => b.id === coffee);
     await new ExperienceMemory(db.sql).edit(scope.spaceId, scope.ownerId, coffee, {
-      value: 'oat flat white',
+      value: 'iced oat cortado',
       version: belief?.version,
     });
     await setRecordedAt(db, coffee, on(dayTwo, '10:00'));
@@ -291,11 +291,28 @@ withDb('rewinding a day', () => {
     const window = await resolveTarget(db.sql, scope, { day: dayTwo }, zone);
     const rewind = await applyRewind(db.sql, scope, window, { day: dayTwo });
     expect(rewind.steps.map((step) => [step.from, step.to])).toEqual([
-      ['oat flat white', 'flat white'],
+      ['iced oat cortado', 'flat white'],
     ]);
+    // A digest that reported the corrected value.
+    await db.sql`insert into memory_digests (id, space_id, week_of, time_zone, window_start, window_end, items)
+      values (${`dgs_${crypto.randomUUID()}`}, ${scope.spaceId}, ${dayTwo}, ${zone}, ${on(dayTwo, '00:00').toISOString()},
+        ${on(dayTwo, '23:00').toISOString()}, ${JSON.stringify([
+          {
+            belief_id: coffee,
+            label: 'Coffee: order',
+            change: 'corrected',
+            value: 'iced oat cortado',
+            previous: 'flat white',
+          },
+        ])}::text::jsonb)`;
     // The correction's source is removed: its value goes with it, text and all.
     const journal = await journalFor('rewind-removed');
     await deleteMemorySource(db.sql, scope, String(corrected?.source_id), journal);
+    // The rewind's snapshot and the digest lose it in the same transaction.
+    const [copies] = await db.sql`select
+      (select count(*)::int from memory_rewinds where space_id = ${scope.spaceId} and steps::text like '%iced oat cortado%')
+      + (select count(*)::int from memory_digests where space_id = ${scope.spaceId} and items::text like '%iced oat cortado%') as n`;
+    expect(copies?.n).toBe(0);
 
     const undone = await undoRewind(db.sql, scope, rewind.id);
     expect(undone.skipped).toEqual([
@@ -303,10 +320,18 @@ withDb('rewinding a day', () => {
     ]);
     const values = (await listBeliefs(db.sql, scope, zone)).map((b) => b.value);
     expect(values).toEqual(['flat white']);
-    const [text] = await db.sql`select count(*)::int as n from memory_revision_content b
-      join memory_claims c on c.id = b.claim_id
-      where c.id = ${coffee} and b.content = 'oat flat white'`;
-    expect(text?.n).toBe(0);
+    // Once the physical cleanup has run, no memory table holds the removed text anywhere.
+    await cleanupMemory(db.sql, scope.spaceId);
+    const tables = await db.sql`select table_name from information_schema.tables
+      where table_schema = current_schema() and table_name like 'memory%'`;
+    const holding: string[] = [];
+    for (const { table_name } of tables) {
+      const [row] = await db.sql.unsafe(
+        `select count(*)::int as n from "${table_name}" t where t::text like '%iced oat cortado%'`,
+      );
+      if (Number(row?.n) > 0) holding.push(String(table_name));
+    }
+    expect(holding).toEqual([]);
   });
 
   test('undoing a day keeps a belief the person changed on a later day', async () => {

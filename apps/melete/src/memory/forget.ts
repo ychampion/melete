@@ -115,10 +115,15 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
     await tx`update memory_sources set state = ${record.operation === 'revoke' ? 'revoked' : 'suppressed'} where space_id = ${record.space_id} and eligibility_generation <= ${record.eligibility_cutoff}`;
   }
   const kept = new Set<string>();
+  /** For each kept claim, the revisions removed from it. */
+  const removedRevisions = new Map<string, number[]>();
   for (const id of citing) {
     if (affected.has(id)) continue;
-    if (await keepWhatRemains(tx, record.space_id, id)) kept.add(id);
-    else affected.add(id);
+    const removed = await keepWhatRemains(tx, record.space_id, id);
+    if (removed) {
+      kept.add(id);
+      removedRevisions.set(id, removed);
+    } else affected.add(id);
   }
   // Exact-version derivations identify transitive descendants; UNION terminates supersession cycles.
   const descendants = await tx`with recursive affected(id) as (
@@ -128,6 +133,7 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
   ) select id from affected`;
   for (const descendant of descendants) if (!kept.has(descendant.id)) affected.add(descendant.id);
   await tx`update memory_claims set hidden = true where space_id = ${record.space_id} and id = any(${[...affected]})`;
+  await scrubCopies(tx, record.space_id, record.all, affected, removedRevisions);
   // A kept claim lost a value: what quoted or depended on the claim is cleared as for a removed one.
   for (const id of kept) affected.add(id);
   // Anything else that quotes a removed value goes with it: a repair brief would
@@ -181,10 +187,14 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
  * is gone; one whose validity has ended is not a current value. Returns false
  * when nothing usable remains, and the claim is hidden.
  */
-async function keepWhatRemains(tx: MemoryTx, spaceId: string, claimId: string) {
+async function keepWhatRemains(
+  tx: MemoryTx,
+  spaceId: string,
+  claimId: string,
+): Promise<number[] | null> {
   const [claim] =
     await tx`select head_revision from memory_claims where id = ${claimId} and space_id = ${spaceId} and not hidden`;
-  if (!claim) return false;
+  if (!claim) return null;
   const revisions = await tx`select r.revision, r.status,
       (r.valid_until is null or r.valid_until > clock_timestamp()) as in_force,
       exists (select 1 from memory_references ref where ref.claim_id = r.claim_id and ref.revision = r.revision) as cited,
@@ -197,10 +207,10 @@ async function keepWhatRemains(tx: MemoryTx, spaceId: string, claimId: string) {
     from memory_revisions r where r.claim_id = ${claimId} order by r.revision`;
   const removed = revisions.filter((r) => r.removed).map((r) => Number(r.revision));
   const remaining = revisions.filter((r) => !r.removed && r.cited && r.status !== 'retracted');
-  if (!remaining.length) return false;
+  if (!remaining.length) return null;
   const headRemoved = removed.includes(Number(claim.head_revision));
   const next = headRemoved ? remaining.filter((r) => r.in_force).at(-1) : undefined;
-  if (headRemoved && !next) return false;
+  if (headRemoved && !next) return null;
   await tx`update memory_revisions set status = 'retracted', superseded_at = coalesce(superseded_at, clock_timestamp())
     where claim_id = ${claimId} and revision = any(${removed})`;
   await tx`delete from memory_revision_content where claim_id = ${claimId} and revision = any(${removed})`;
@@ -212,7 +222,64 @@ async function keepWhatRemains(tx: MemoryTx, spaceId: string, claimId: string) {
       where claim_id = ${claimId} and revision = ${next.revision} and status in ('superseded', 'historical')`;
     await tx`update memory_claims set head_revision = ${next.revision} where id = ${claimId}`;
   }
-  return true;
+  return removed;
+}
+
+type Snapshot = { revision: number; content: string | null } | undefined;
+type Step = { claim_id: string; produced?: number; from?: Snapshot; to?: Snapshot };
+type DigestItem = { belief_id: string; value: string | null; previous: string | null };
+
+/**
+ * A rewind keeps a snapshot of each value it moved, and a weekly digest names
+ * the values it reported. When a value's evidence is removed, those copies go
+ * too, in the same transaction: a hidden claim loses every copy, and a kept one
+ * loses the copies of the revisions removed from it.
+ */
+async function scrubCopies(
+  tx: MemoryTx,
+  spaceId: string,
+  all: boolean,
+  hidden: Set<string>,
+  removed: Map<string, number[]>,
+) {
+  if (!all && !hidden.size && !removed.size) return;
+  const gone = (claimId: string, revision: number | undefined) =>
+    all ||
+    hidden.has(claimId) ||
+    (revision !== undefined && (removed.get(claimId) ?? []).includes(revision));
+  const rewinds = await tx`select id, steps from memory_rewinds where space_id = ${spaceId}`;
+  for (const rewind of rewinds) {
+    let changed = false;
+    const steps = ((rewind.steps as Step[]) ?? []).map((step) => {
+      const next = { ...step };
+      // A restore's published copy cites the same evidence as the value it restored.
+      for (const side of ['from', 'to'] as const) {
+        const snapshot = next[side];
+        if (!snapshot || snapshot.content === null) continue;
+        const copied = side === 'to' ? step.produced : undefined;
+        if (gone(step.claim_id, snapshot.revision) || gone(step.claim_id, copied)) {
+          next[side] = { ...snapshot, content: null };
+          changed = true;
+        }
+      }
+      return next;
+    });
+    if (changed)
+      await tx`update memory_rewinds set steps = ${JSON.stringify(steps)}::text::jsonb where id = ${rewind.id}`;
+  }
+  // A digest item names a belief, not a revision, so any removal from it clears the item's values.
+  const digests = await tx`select id, items from memory_digests where space_id = ${spaceId}`;
+  for (const digest of digests) {
+    let changed = false;
+    const items = ((digest.items as DigestItem[]) ?? []).map((item) => {
+      if (!(all || hidden.has(item.belief_id) || removed.has(item.belief_id))) return item;
+      if (item.value === null && item.previous === null) return item;
+      changed = true;
+      return { ...item, value: null, previous: null };
+    });
+    if (changed)
+      await tx`update memory_digests set items = ${JSON.stringify(items)}::text::jsonb where id = ${digest.id}`;
+  }
 }
 async function restrict(
   sql: MemorySql,
