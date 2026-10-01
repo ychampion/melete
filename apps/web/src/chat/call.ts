@@ -79,14 +79,29 @@ export type AsideAction =
   | { kind: 'stop'; say: string };
 
 /**
+ * Whether the person's own words ask for the work to stop. The companion's
+ * answer is model text, and the model reads what the work brought back from
+ * pages and tools, so its `stop` is believed only when this agrees.
+ */
+export function asksToStop(heard: string): boolean {
+  return /\b(stop|stopping|cancel|halt|abort|quit|never mind|forget (it|that|about it|the whole thing))\b/i.test(
+    heard,
+  );
+}
+
+/**
  * What to do with something heard while the work runs, given the companion's
  * answer. There is no way to reach a step already under way, so an instruction
  * for the work becomes the next message, and that is said out loud. With no
- * answer at all, the words are kept the same way: never dropped.
+ * answer at all, the words are kept the same way: never dropped. A stop the
+ * person did not ask for in their own words is kept as their words instead.
  */
 export function routeAside(heard: string, answer: VoiceAside | null): AsideAction {
   if (!answer || answer.intent === 'steer') return { kind: 'queue', text: heard, say: QUEUED };
-  if (answer.intent === 'stop') return { kind: 'stop', say: answer.say || STOPPING };
+  if (answer.intent === 'stop')
+    return asksToStop(heard)
+      ? { kind: 'stop', say: STOPPING }
+      : { kind: 'queue', text: heard, say: QUEUED };
   if (answer.intent === 'talk' && answer.say) return { kind: 'say', say: answer.say };
   return { kind: 'say', say: STILL_ON_IT };
 }

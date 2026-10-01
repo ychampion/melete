@@ -12,6 +12,7 @@ import { MemoryPrivacyStore, PrivacyRouter } from '../privacy/index.ts';
 import { ServiceError } from './errors.ts';
 import { mountVoice, type VoicePrivacy } from './voice.ts';
 import {
+  CANNOT_FROM_HERE,
   type CompanionContext,
   companionBody,
   companionInput,
@@ -19,6 +20,7 @@ import {
   parseCompanionReply,
   replyText,
   type VoiceCompanion,
+  withoutClaims,
 } from './voice-companion.ts';
 
 const SPACE = 'spc_1';
@@ -126,7 +128,7 @@ describe('the companion has no way to act', () => {
       }),
       (companion) => companion.answer(call()),
     );
-    expect(answer).toEqual({ intent: 'talk', say: 'Two pages down, one to go.' });
+    expect(answer).toEqual({ answer: { intent: 'talk', say: 'Two pages down, one to go.' } });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.body).not.toHaveProperty('tools');
     expect(seen[0]?.body).not.toHaveProperty('tool_choice');
@@ -192,6 +194,24 @@ describe('what the companion is shown and what it says', () => {
       say: 'I am on the last page now.',
     });
     expect(parseCompanionReply('')).toEqual({ intent: 'quiet', say: null });
+  });
+
+  test('it never says out loud that something was done or approved', () => {
+    expect(
+      parseCompanionReply(
+        '{"intent":"talk","say":"I read both pages. I have sent the email to Sam and paid the deposit. Nearly done."}',
+      ),
+    ).toEqual({
+      intent: 'talk',
+      say: `I read both pages. ${CANNOT_FROM_HERE} Nearly done.`,
+    });
+    expect(parseCompanionReply('Your refund was approved.')).toEqual({
+      intent: 'talk',
+      say: CANNOT_FROM_HERE,
+    });
+    expect(withoutClaims('I am drafting the email to Sam now.')).toBe(
+      'I am drafting the email to Sam now.',
+    );
     const long = parseCompanionReply(`${'This is a sentence. '.repeat(40)}`);
     expect(long.say?.length).toBeLessThanOrEqual(400);
     expect(long.say?.endsWith('.')).toBe(true);
@@ -206,7 +226,7 @@ describe('the companion obeys the privacy router as chat does', () => {
     const answer = await withCompanion(store, upstream('{"intent":"talk","say":"x"}', seen), (c) =>
       c.answer(call()),
     );
-    expect(answer).toBeNull();
+    expect(answer).toEqual({ failed: 'refused' });
     expect(seen).toHaveLength(0);
   });
 
@@ -217,7 +237,7 @@ describe('the companion obeys the privacy router as chat does', () => {
     const answer = await withCompanion(store, upstream('{"intent":"talk","say":"x"}', seen), (c) =>
       c.answer(call()),
     );
-    expect(answer).toBeNull();
+    expect(answer).toEqual({ failed: 'refused' });
     expect(seen).toHaveLength(0);
   });
 
@@ -243,7 +263,7 @@ describe('the companion obeys the privacy router as chat does', () => {
         ),
     );
     expect(JSON.stringify(seen[0]?.body)).not.toContain('sam.taylor@example.com');
-    expect(answer?.say).toBe('I am writing to sam.taylor@example.com.');
+    expect('answer' in answer && answer.answer.say).toBe('I am writing to sam.taylor@example.com.');
   });
 });
 
@@ -255,6 +275,10 @@ function route(options: {
   companion?: VoiceCompanion | null;
   privacy?: VoicePrivacy;
   now?: () => number;
+  /** What the allowance holds, so a test can see each aside counted. */
+  taken?: string[];
+  givenBack?: string[];
+  asides?: number;
 }) {
   const built = new Hono();
   built.onError((error, c) =>
@@ -267,6 +291,7 @@ function route(options: {
     c.set('experienceSpaceId', SPACE);
     await next();
   });
+  const taken = options.taken ?? [];
   // The conversation lookup finds the caller's own conversation.
   const db = {
     select: () => ({
@@ -275,7 +300,16 @@ function route(options: {
   } as unknown as Database;
   mountVoice(built, {
     db,
-    allowance: { take: async () => 'r1', giveBack: async () => {} },
+    allowance: {
+      take: async (_principal, kind, amount, limit) => {
+        if (taken.length + amount > limit) return null;
+        taken.push(kind);
+        return `r${taken.length}`;
+      },
+      giveBack: async (id) => {
+        options.givenBack?.push(id);
+      },
+    },
     providers: {
       transcription: null,
       live: {
@@ -283,7 +317,7 @@ function route(options: {
         session: async () => ({ url: 'wss://x', expires_at: new Date().toISOString() }),
       },
     },
-    limits: { seconds: 1800, characters: 20_000, sessions: 30 },
+    limits: { seconds: 1800, characters: 20_000, sessions: 30, asides: options.asides ?? 600 },
     privacy: options.privacy ?? (async () => null),
     companion: options.companion === undefined ? null : options.companion,
     context: async () => context,
@@ -302,16 +336,43 @@ describe('the aside route', () => {
   const answering = (calls: unknown[]): VoiceCompanion => ({
     answer: async (asked) => {
       calls.push(asked);
-      return { intent: 'talk', say: 'Two of three pages read.' };
+      return { answer: { intent: 'talk', say: 'Two of three pages read.' } };
     },
   });
 
-  test('answers with what to say', async () => {
+  test('answers with what to say, and counts it against the day', async () => {
     const calls: unknown[] = [];
-    const response = await route({ companion: answering(calls) }).post(progress);
+    const taken: string[] = [];
+    const response = await route({ companion: answering(calls), taken }).post(progress);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ intent: 'talk', say: 'Two of three pages read.' });
     expect(calls).toHaveLength(1);
+    expect(taken).toEqual(['aside']);
+  });
+
+  test('past the daily allowance it says so and the companion is not asked', async () => {
+    const calls: unknown[] = [];
+    const limited = route({ companion: answering(calls), asides: 1 });
+    expect((await limited.post(progress)).status).toBe(200);
+    const refused = await limited.post(progress);
+    expect(refused.status).toBe(429);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe(
+      'voice_daily_limit',
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  test('a refused call is given back; one that never came back stays counted', async () => {
+    const givenBack: string[] = [];
+    const refused: VoiceCompanion = { answer: async () => ({ failed: 'refused' }) };
+    expect((await route({ companion: refused, givenBack }).post(progress)).status).toBe(502);
+    expect(givenBack).toEqual(['r1']);
+    const lost: string[] = [];
+    const unanswered: VoiceCompanion = { answer: async () => ({ failed: 'unanswered' }) };
+    expect((await route({ companion: unanswered, givenBack: lost }).post(progress)).status).toBe(
+      502,
+    );
+    expect(lost).toEqual([]);
   });
 
   test('a private or sensitive place is refused before the companion is asked', async () => {
@@ -343,7 +404,7 @@ describe('the aside route', () => {
 
   test('no companion, no answer, a bad body, or too many asides each say so plainly', async () => {
     expect((await route({}).post(progress)).status).toBe(404);
-    const failing: VoiceCompanion = { answer: async () => null };
+    const failing: VoiceCompanion = { answer: async () => ({ failed: 'unanswered' }) };
     expect((await route({ companion: failing }).post(progress)).status).toBe(502);
     expect(
       (await route({ companion: answering([]) }).post({ kind: 'heard', activity: {} })).status,

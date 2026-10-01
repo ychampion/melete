@@ -122,7 +122,11 @@ The talking while it works is a separate, light model call alongside the
 work. It sees the conversation, what the work has done and is doing, and the
 agent's name. It has no tools: it cannot do anything, approve anything or
 change the work itself. A stop, pause or next message goes through the same
-controls and message box you use.
+controls and message box you use, and the work is stopped only when your own
+words ask for it. What it says never claims that something was sent,
+approved, booked, paid or deleted; it points you to the screen instead.
+One person may have 600 of these a day, counted like the other voice
+allowances.
 
 Decisions are never made by voice. When a reply needs your decision, voice
 mode says "This needs your decision. It is on the screen." and stops reading.
@@ -132,8 +136,12 @@ the decision is made.
 
 Neither your voice nor the spoken reply is stored. Your words are kept as the
 chat message they became, and the reply as the chat message it already is.
-What you say to the agent while it works, and what it says back, is not kept
-anywhere; only a next message it passed on becomes a chat message.
+What you say to the agent while it works, and what it says back, is not
+kept as text; only a next message it passed on becomes a chat message. Like
+every model call, each one leaves a privacy log entry (where it went and how
+many details were swapped out, never the details), and any details swapped
+out are kept in the conversation's own vault, the same one its chat uses. The
+daily allowance counts each one, with no words.
 
 ## Privacy
 

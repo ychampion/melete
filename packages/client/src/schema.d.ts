@@ -3239,7 +3239,7 @@ export interface paths {
         put?: never;
         /**
          * Talk with Melete while the conversation’s turn runs
-         * @description A light model call alongside the running turn. It sees the conversation, the activity sent with the request and the agent’s name, and goes through the privacy router like every model call. It has no tools and acts on nothing: it answers, says how the work is going, or says that what was heard is an instruction for the work (`steer`) or a request to stop it (`stop`), which the caller carries out through the ordinary routes. Nothing is kept.
+         * @description A light model call alongside the running turn. It sees the conversation, the activity sent with the request and the agent’s name, and goes through the privacy router like every model call. It has no tools and acts on nothing: it answers, says how the work is going, or says that what was heard is an instruction for the work (`steer`) or a request to stop it (`stop`), which the caller carries out through the ordinary routes. The words are not kept; like every model call it leaves a privacy log entry and adds any redacted details to the conversation’s vault. Each aside counts against the person’s daily voice allowance.
          */
         post: {
             parameters: {
@@ -3306,7 +3306,7 @@ export interface paths {
                         "application/json": components["schemas"]["__schema152"];
                     };
                 };
-                /** @description Too many asides in a short time */
+                /** @description Too many asides in a short time, or the daily allowance is used up */
                 429: {
                     headers: {
                         [name: string]: unknown;

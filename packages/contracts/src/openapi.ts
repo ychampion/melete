@@ -3089,7 +3089,10 @@ export function buildOpenApiDocument() {
               'router like every model call. It has no tools and acts on nothing: it answers, ' +
               'says how the work is going, or says that what was heard is an instruction for ' +
               'the work (`steer`) or a request to stop it (`stop`), which the caller carries ' +
-              'out through the ordinary routes. Nothing is kept.',
+              'out through the ordinary routes. The words are not kept; like every model call ' +
+              'it leaves a privacy log entry and adds any redacted details to the ' +
+              'conversation’s vault. Each aside counts against the person’s daily voice ' +
+              'allowance.',
             requestParams: idParam('id', 'Conversation id'),
             requestBody: json(voiceAsideRequest),
             responses: {
@@ -3097,7 +3100,7 @@ export function buildOpenApiDocument() {
               '400': problem('Invalid request'),
               '403': problem('Voice is off in a private space, agent or sensitive conversation'),
               '404': problem('No such conversation, or voice mode is not set up'),
-              '429': problem('Too many asides in a short time'),
+              '429': problem('Too many asides in a short time, or the daily allowance is used up'),
             },
           },
         },

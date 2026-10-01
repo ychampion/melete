@@ -50,7 +50,7 @@ import type { PrivacyRouter } from '../privacy/router.ts';
 import { ServiceError } from './errors.ts';
 import { COMPANION_LIMITS, type CompanionContext, type VoiceCompanion } from './voice-companion.ts';
 
-export type VoiceUsageKind = 'transcribe' | 'speech' | 'session';
+export type VoiceUsageKind = 'transcribe' | 'speech' | 'session' | 'aside';
 
 /** A person's daily voice allowance: taken before a provider call, given back if it failed. */
 export interface VoiceAllowance {
@@ -98,7 +98,16 @@ export type VoiceProviders = {
   live: LiveVoice | null;
 };
 
-export type VoiceLimits = { seconds: number; characters: number; sessions: number };
+export type VoiceLimits = {
+  seconds: number;
+  characters: number;
+  sessions: number;
+  /** Words with the agent while it works, each one short model call. */
+  asides: number;
+};
+
+/** Asides one person may have in a day: a long working day of calls, never an open tap. */
+export const DAILY_ASIDES = 600;
 
 /** Why voice may not be used here, or null when it may. */
 export type VoicePrivacyReason = 'private' | 'sensitive' | null;
@@ -153,6 +162,7 @@ export const voiceLimitsFromEnv = (env: Env): VoiceLimits => ({
   seconds: env.MELETE_VOICE_DAILY_SECONDS,
   characters: env.MELETE_VOICE_DAILY_CHARACTERS,
   sessions: env.MELETE_VOICE_DAILY_SESSIONS,
+  asides: DAILY_ASIDES,
 });
 
 /** The recording types push-to-talk reads, and the file name the provider is given. */
@@ -176,6 +186,8 @@ const DAILY: Record<VoiceUsageKind, string> = {
   transcribe: 'You have used today’s allowance for voice messages. It frees up over the next day.',
   speech: 'You have used today’s allowance for replies read aloud. It frees up over the next day.',
   session: 'You have used today’s allowance of voice conversations. It frees up over the next day.',
+  aside:
+    'You have used today’s allowance for talking while Melete works. It frees up over the next day.',
 };
 
 const providerFailed = (what: string) =>
@@ -406,16 +418,23 @@ export function mountVoice(
       );
     recent.push(at);
     asides.set(principalId, recent);
-    const answer = await companion.answer({
-      spaceId: scope.spaceId,
-      conversationId: scope.conversationId,
-      request: parsed.data,
-      context: await context(scope.conversationId, scope.agentId),
-      signal: c.req.raw.signal,
-    });
-    if (!answer)
+    // Counted against the day like every voice call; a refusal that generated nothing is given back.
+    const reservation = await allowance.take(principalId, 'aside', 1, limits.asides);
+    if (!reservation) throw new ServiceError('voice_daily_limit', DAILY.aside, 429);
+    const result = await companion
+      .answer({
+        spaceId: scope.spaceId,
+        conversationId: scope.conversationId,
+        request: parsed.data,
+        context: await context(scope.conversationId, scope.agentId),
+        signal: c.req.raw.signal,
+      })
+      .catch(() => ({ failed: 'unanswered' as const }));
+    if ('failed' in result) {
+      if (result.failed === 'refused') await allowance.giveBack(reservation).catch(() => undefined);
       throw new ServiceError('voice_aside_failed', 'Melete could not answer that just now.', 502);
-    return c.json(voiceAside.parse(answer));
+    }
+    return c.json(voiceAside.parse(result.answer));
   });
 
   app.post('/conversations/:id/voice/speech', async (c) => {
