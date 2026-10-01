@@ -29,7 +29,11 @@ payload/revision binding and cancellation fencing. `resume_action` carries only
 an action id: an attempt can carry out an action the owner approved for its own
 job and current revision, with the stored bytes, under its own live capability,
 and nothing else (`resume refuses whatever the owner has not approved for this
-job and revision`). The memory/broker test `an address read off a page is
+job and revision`). An approval that can no longer be spent (its binding,
+generation or revision moved on, or it expired) ends its action as failed
+rather than leaving it approved, and an unanswered question whose request
+changed is withdrawn: Deny closes it, Allow is refused, and the next attempt is
+told nothing was refused. The memory/broker test `an address read off a page is
 refused as untrusted_recipient_origin` checks a planted address at admission.
 Origin is checked on the recognised
 recipient, destination, amount and resource fields; free prose, and a

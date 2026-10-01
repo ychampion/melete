@@ -171,6 +171,28 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
     'Looked at a page in your browser',
   ],
 };
+/** The past-tense verbs of the labels above, as a permission card asks for them. */
+const ASKED: Record<string, string> = {
+  Added: 'Add',
+  Chose: 'Choose',
+  Clicked: 'Click',
+  Created: 'Create',
+  Discarded: 'Discard',
+  Drafted: 'Draft',
+  'Filled in': 'Fill in',
+  Made: 'Make',
+  Moved: 'Move',
+  Opened: 'Open',
+  Published: 'Publish',
+  Ran: 'Run',
+  Removed: 'Remove',
+  Restored: 'Restore',
+  Saved: 'Save',
+  Sent: 'Send',
+  Submitted: 'Submit',
+  Transcribed: 'Transcribe',
+  Updated: 'Update',
+};
 /** What a permission card asks for a command or code in the agent's own computer. */
 const SANDBOX_ASKS: Record<string, string> = {
   'terminal.run': "Run a command on the agent's computer",
@@ -682,13 +704,10 @@ export function projectPermission(input: {
   const draft = isSend ? draftForReview(input.action) : null;
   const file = input.action.kind === 'files.write' ? proposedFile(payload) : null;
   const canApprove = !isSend || Boolean(draft);
-  const base = actionLabel(input.action)
-    .replace(/^Sent /, 'Send ')
-    .replace(/^Created /, 'Create ')
-    .replace(/^Updated /, 'Update ')
-    .replace(/^Removed /, 'Remove ')
-    .replace(/^Saved /, 'Save ')
-    .replace(/^Moved /, 'Move ');
+  // A card asks before anything has happened, so it never reads in the past tense.
+  const label = actionLabel(input.action);
+  const past = Object.keys(ASKED).find((verb) => label.startsWith(`${verb} `));
+  const base = past ? `${ASKED[past]}${label.slice(past.length)}` : label;
   const what = isSend
     ? `${base} to ${recipientText(payload)}`
     : file

@@ -51,6 +51,7 @@ import {
 import { agentAccess, directSend } from '../experience/access.ts';
 import { plainText, tooLongToAsk } from '../experience/projectors.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
+import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
 import {
@@ -240,6 +241,17 @@ const ownerAnswered = (action: Action) =>
 
 /** Job states after which none of the job's actions can run. */
 const ENDED_JOB_STATES = new Set(['cancelled', 'failed', 'completed']);
+/**
+ * Refusals that leave an approved action unable ever to run: the binding, the
+ * policy or account generation, or the job revision moved, or the approval
+ * expired. Each needs a newly reviewed action.
+ */
+const SPENT_APPROVAL_FAULTS: ReadonlySet<string> = new Set([
+  'approval_hash_mismatch',
+  'approval_required',
+  'revision_mismatch',
+  'scope_denied',
+]);
 /** The longest classification waits for a calendar to say who an event's guests are. */
 const EXISTING_GUESTS_TIMEOUT_MS = 5_000;
 /** Guest counts of the events calendar changes rewrite, taken before a job lock; see `guestsAhead`. */
@@ -1351,7 +1363,7 @@ export class BrokerService implements BrokerOperations {
     ) => Promise<void>,
   ) {
     const original = await loadAction(this.sql, id);
-    return this.sql.begin(async (tx) => {
+    const result = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, original.job_id);
       const action = await loadAction(tx, id, true);
       const [approval] = await tx`select * from approval where action_id = ${id}
@@ -1362,6 +1374,25 @@ export class BrokerService implements BrokerOperations {
         canonicalizePayload(action.canonical_payload).hash !== request.payload_hash
       ) {
         throw new BrokerFault('approval_hash_mismatch');
+      }
+      // The request changed before this was answered. The question is withdrawn
+      // rather than left open forever: a Deny agrees with that, and an Allow
+      // is refused, since the person never saw what the work asks for now.
+      const changed =
+        approval.decided_by === OUTDATED_NOTE ||
+        (!approval.decision &&
+          (approval.job_revision !== job.revision || action.status !== 'needs_approval'));
+      if (changed) {
+        await this.withdrawOutdated(tx, job, action);
+        const [closed] = await tx`select decided_at from approval where id = ${approval.id}`;
+        return {
+          approval_id: approval.id as string,
+          action_id: id,
+          decision: 'denied' as const,
+          payload_hash: approval.payload_hash as string,
+          decided_at: new Date(closed?.decided_at ?? Date.now()).toISOString(),
+          withdrawn: true,
+        };
       }
       if (approval.job_revision !== job.revision) throw new BrokerFault('revision_mismatch');
       if (approval.expires_at && new Date(approval.expires_at).getTime() <= Date.now())
@@ -1413,12 +1444,22 @@ export class BrokerService implements BrokerOperations {
         decided_at: decidedAt,
       };
     });
+    // Thrown once the withdrawal is committed, so the card still closes.
+    if ('withdrawn' in result && request.decision !== 'denied')
+      throw new BrokerFault(
+        'revision_mismatch',
+        'The request changed before it was answered, so it was withdrawn.',
+      );
+    return result;
   }
 
   async admit(claims: CapabilityClaims, id: string, expectedHash: string): Promise<Action> {
     const guests = await this.guestsAhead(claims.job_id, id);
     const result = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
+      // Set once the caller and the stored bytes are known good: a refusal
+      // after that is about the approval itself, not about who asked.
+      let judgingApproval = false;
       try {
         await checkAttempt(tx, job, claims);
         const action = await loadAction(tx, id, true);
@@ -1440,6 +1481,7 @@ export class BrokerService implements BrokerOperations {
         }
         this.validatePayload(tool, action.canonical_payload);
         if (action.status === 'denied') throw new BrokerFault('approval_denied');
+        judgingApproval = true;
         const classified = await this.classify(tx, job, action, tool, 'admission', guests);
         let authorization: string | null = null;
         let expiresAt: string | null = null;
@@ -1475,7 +1517,14 @@ export class BrokerService implements BrokerOperations {
             throw new BrokerFault('approval_required', 'Approval expired');
           authorization = approval.id;
           expiresAt = approval.expires_at ? new Date(approval.expires_at).toISOString() : null;
-        } else authorization = classified.authorized_by;
+        } else {
+          authorization = classified.authorized_by;
+          // The expiry was bound when the action was proposed. A setting that
+          // stopped asking since then changes nothing the binding covers: the
+          // payload, destination and revision are still the ones that were shown.
+          const stored = await loadBinding(tx, action);
+          expiresAt = (stored.tuple.expires_at ?? null) as string | null;
+        }
         if (!['proposed', 'approved'].includes(action.status))
           throw new BrokerFault('action_not_admissible');
         const authority = await resolveEffectAuthority(
@@ -1521,6 +1570,12 @@ export class BrokerService implements BrokerOperations {
           code: error.code,
           reason: error.message,
         });
+        // An approval that can no longer be spent ends its action. Left
+        // `approved`, it could never run and never settle, and every later
+        // attempt of the job would end on an action still in flight.
+        const current = judgingApproval ? await loadAction(tx, id) : null;
+        if (current?.status === 'approved' && SPENT_APPROVAL_FAULTS.has(error.code))
+          await this.rejectDispatch(tx, job, current, `approval_no_longer_applies:${error.code}`);
         return { action: null, error };
       }
     });
@@ -2544,7 +2599,40 @@ export class BrokerService implements BrokerOperations {
       outcome: 'fenced',
       reason,
     });
+    // A question nobody answered goes with it, so no card is left asking about
+    // an action that can no longer run.
+    await this.withdrawOutdated(tx, job, { ...action, status: 'failed' });
     return loadAction(tx, action.id);
+  }
+
+  /**
+   * Withdraw the unanswered approval on an action whose request changed
+   * before anyone answered: the job's revision moved on, or the action ended.
+   * It is closed with a note that says why, so the card closes, the approval
+   * lists drop it and the next attempt is told nothing was refused. An action
+   * still waiting is denied with it, so it can never be allowed afterwards.
+   */
+  private async withdrawOutdated(tx: Query, job: LockedJob, action: Action) {
+    const closed = await tx`update approval set decision = 'denied', decided_at = now(),
+      decided_by = ${OUTDATED_NOTE}
+      where action_id = ${action.id} and decision is null returning id`;
+    if (closed.length === 0) return;
+    if (action.status === 'needs_approval') await this.setStatus(tx, action, 'denied');
+    for (const row of closed)
+      await appendEvent(
+        tx,
+        job.id,
+        action.attempt_id,
+        'approval_decided',
+        {
+          approval_id: row.id,
+          action_id: action.id,
+          decision: 'denied',
+          note: OUTDATED_NOTE,
+          payload_hash: action.payload_hash,
+        },
+        `${row.id}:decision`,
+      );
   }
 
   private async moveJob(tx: Query, job: LockedJob, state: string, wait: Record<string, unknown>) {

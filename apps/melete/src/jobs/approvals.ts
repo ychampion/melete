@@ -7,12 +7,13 @@ import {
 } from '@melete/contracts';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
-import { action, approval } from '../db/schema.ts';
+import { action, approval, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { requireJobAccess, visibleJob } from '../principals/authority.ts';
 import type { AttemptRunner } from './runner.ts';
 import type { JobRow, JobService } from './service.ts';
+import { OUTDATED_NOTE, withdrawOutdatedPermissions } from './withdraw.ts';
 
 /** Persisted owner decisions are inputs to a new attempt, never a suspended runtime call. */
 export class ApprovalService {
@@ -59,7 +60,7 @@ export class ApprovalService {
 
   async decide(id: string, input: ApprovalDecisionRequest, ownerId: string) {
     const request = approvalDecisionRequest.parse(input);
-    return this.jobs.transaction(async (tx) => {
+    const result = await this.jobs.transaction(async (tx) => {
       const [lookup] = await tx
         .select({ jobId: action.jobId })
         .from(approval)
@@ -83,6 +84,19 @@ export class ApprovalService {
         canonicalizePayload(jsonObject.parse(effect.canonicalPayload)).hash !== effect.payloadHash
       )
         throw new ServiceError('approval_hash_mismatch', 'The action content changed.');
+      // The request changed before this was answered. The approval is
+      // withdrawn rather than left open forever: a Deny agrees with that, and
+      // an Allow is refused once the withdrawal is committed.
+      if (
+        decision.decidedBy === OUTDATED_NOTE ||
+        (decision.decision === null &&
+          (row.revision !== decision.jobRevision || effect.status !== 'needs_approval'))
+      ) {
+        await withdrawOutdatedPermissions(tx, row.id);
+        const [closed] = await tx.select().from(approval).where(eq(approval.id, id));
+        if (!closed) throw new Error('locked approval disappeared');
+        return { approval: closed, withdrawn: true };
+      }
       if (row.revision !== decision.jobRevision)
         throw new ServiceError(
           'revision_mismatch',
@@ -96,7 +110,7 @@ export class ApprovalService {
             'already_decided',
             'This approval already has a different decision.',
           );
-        return decision;
+        return { approval: decision, withdrawn: false };
       }
       if (decision.expiresAt && decision.expiresAt.getTime() <= Date.now())
         throw new ServiceError('approval_expired', 'This approval has expired.');
@@ -126,8 +140,15 @@ export class ApprovalService {
         dedupKey: `${id}:decision`,
       });
       await this.registerWait(tx, row);
-      return updated;
+      return { approval: updated, withdrawn: false };
     });
+    if (result.withdrawn && request.decision !== 'denied')
+      throw new ServiceError(
+        'approval_withdrawn',
+        'The request changed before this was answered, so it was withdrawn.',
+        409,
+      );
+    return result.approval;
   }
 
   list() {
@@ -135,6 +156,15 @@ export class ApprovalService {
       .select({ action, approval })
       .from(approval)
       .innerJoin(action, eq(approval.actionId, action.id))
-      .where(and(isNull(approval.decision), visibleJob(action.jobId)));
+      .innerJoin(job, eq(job.id, action.jobId))
+      .where(
+        and(
+          isNull(approval.decision),
+          // Only what can still be answered: a request that changed has moved on.
+          eq(action.status, 'needs_approval'),
+          eq(approval.jobRevision, job.revision),
+          visibleJob(action.jobId),
+        ),
+      );
   }
 }

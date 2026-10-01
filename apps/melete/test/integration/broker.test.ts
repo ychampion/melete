@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import {
+  APPROVAL_OUTDATED_NOTE,
   type ConnectorManifest,
   canonicalizePayload,
   type DispatchResult,
@@ -253,6 +254,98 @@ describe('durable action lifecycle', () => {
     const [event] =
       await s.sql`select payload from event where job_id = ${s.claims.job_id} and payload->>'phase' = 'admission_rejected'`;
     expect(event?.payload.code).toBe('approval_required');
+  });
+
+  databaseTest('an expired approval ends its action rather than leaving it in flight', async () => {
+    const s = await setup();
+    const proposal = await s.broker.propose(s.claims, {
+      kind: 'test.send',
+      connection_id: s.connectionId,
+      payload: {},
+    });
+    await s.broker.decide(proposal.action_id, {
+      decision: 'approved',
+      payload_hash: proposal.payload_hash,
+    });
+    await s.sql`update approval set expires_at = now() - interval '1 second' where id = ${proposal.approval_id}`;
+    await rejectionOf(s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash));
+    const action = await loadAction(s.sql, proposal.action_id);
+    expect(action.status).toBe('failed');
+    expect(action.reconciliation).toMatchObject({
+      reason: 'approval_no_longer_applies:approval_required',
+    });
+    expect(s.calls()).toBe(0);
+  });
+
+  databaseTest(
+    'a question whose request changed is withdrawn: Deny closes it, Allow is refused',
+    async () => {
+      const s = await setup();
+      const ask = (body: string) =>
+        s.broker.propose(s.claims, {
+          kind: 'test.send',
+          connection_id: s.connectionId,
+          payload: { body },
+        });
+      const denied = await ask('one');
+      const allowed = await ask('two');
+      // A memory the work depended on changed: the job's revision moved on.
+      await s.sql`update job set revision = revision + 1 where id = ${s.claims.job_id}`;
+      expect(
+        await s.broker.decide(denied.action_id, {
+          decision: 'denied',
+          payload_hash: denied.payload_hash,
+        }),
+      ).toMatchObject({ decision: 'denied', withdrawn: true });
+      expect(
+        await rejectionOf(
+          s.broker.decide(allowed.action_id, {
+            decision: 'approved',
+            payload_hash: allowed.payload_hash,
+          }),
+        ),
+      ).toMatchObject({ code: 'revision_mismatch' });
+      for (const proposal of [denied, allowed]) {
+        const [approval] = await s.sql`select decision, decided_by from approval
+          where id = ${proposal.approval_id}`;
+        expect(approval).toEqual({ decision: 'denied', decided_by: APPROVAL_OUTDATED_NOTE });
+        expect((await loadAction(s.sql, proposal.action_id)).status).toBe('denied');
+      }
+      // A second press on a withdrawn card agrees with a Deny and refuses an Allow.
+      expect(
+        await s.broker.decide(denied.action_id, {
+          decision: 'denied',
+          payload_hash: denied.payload_hash,
+        }),
+      ).toMatchObject({ decision: 'denied' });
+      const notes = await s.sql`select payload from event where job_id = ${s.claims.job_id}
+        and type = 'approval_decided' order by seq`;
+      expect(notes.map((row) => row.payload.note)).toEqual([
+        APPROVAL_OUTDATED_NOTE,
+        APPROVAL_OUTDATED_NOTE,
+      ]);
+      expect(s.calls()).toBe(0);
+    },
+  );
+
+  databaseTest('an action fenced before anyone answered takes its question with it', async () => {
+    const s = await setup();
+    const request = {
+      kind: 'test.send',
+      connection_id: s.connectionId,
+      payload: { body: 'hello' },
+      client_ref: 'ask-once',
+    };
+    const first = await s.broker.propose(s.claims, request);
+    expect(first.status).toBe('needs_approval');
+    await s.sql`update job set revision = revision + 1 where id = ${s.claims.job_id}`;
+    const again = await s.broker.propose({ ...s.claims, revision: s.claims.revision + 1 }, request);
+    expect(again.action_id).not.toBe(first.action_id);
+    expect(again.status).toBe('needs_approval');
+    expect((await loadAction(s.sql, first.action_id)).status).toBe('failed');
+    const open = await s.sql`select p.action_id from approval p join action a on a.id = p.action_id
+        where a.job_id = ${s.claims.job_id} and p.decision is null`;
+    expect(open.map((row) => row.action_id)).toEqual([again.action_id]);
   });
 
   databaseTest('late receipt after cancellation is stored without reopening work', async () => {

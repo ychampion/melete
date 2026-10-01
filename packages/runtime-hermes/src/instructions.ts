@@ -17,6 +17,7 @@
  * last, so the longest stable prefix is as long as it can be.
  */
 import {
+  APPROVAL_OUTDATED_NOTE,
   type AttemptBundle,
   CONTEXT_LIMITS,
   renderSinceLast,
@@ -222,6 +223,9 @@ const DECISION_PAYLOAD_CHARACTERS = 2000;
  */
 function renderDecision(approval: AttemptBundle['inputs']['approval_results'][number]): string {
   const what = approval.kind ? `${approval.action_id} (${approval.kind})` : approval.action_id;
+  // Withdrawn by Melete, not refused by anyone: the request moved on first.
+  if (approval.note === APPROVAL_OUTDATED_NOTE)
+    return `${what} was withdrawn before the owner answered, because the request changed. It was not carried out, and nobody refused it. If it is still needed, propose it again with the current details and the owner will be asked again; do not say an approval is still pending.`;
   const note = approval.note ? ` The owner said: ${approval.note}` : '';
   if (approval.decision === 'denied')
     return `${what} was denied. It was not carried out and it will not be.${note}`;

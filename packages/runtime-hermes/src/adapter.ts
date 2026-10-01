@@ -9,6 +9,7 @@
  * job survives in Postgres so the next wake starts a fresh attempt.
  */
 import {
+  APPROVAL_OUTDATED_NOTE,
   type AttemptBundle,
   type AttemptOutcome,
   BROKER_TIMEOUT_MS,
@@ -159,7 +160,9 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     // refused: the ledger would stop the same bytes, but a variation of them is
     // a fresh question the owner never invited. The reply is still treated as a
     // question rather than a completion.
-    const refused = bundle.inputs.approval_results.some((entry) => entry.decision === 'denied');
+    const refused = bundle.inputs.approval_results.some(
+      (entry) => entry.decision === 'denied' && entry.note !== APPROVAL_OUTDATED_NOTE,
+    );
     const stop = () => {
       if (runId) void this.send(this.client.stop(runId)).catch(() => undefined);
     };

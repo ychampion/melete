@@ -396,7 +396,9 @@ export async function buildSinceLast(
     })
     .from(approval)
     .innerJoin(action, eq(action.id, approval.actionId))
-    .where(and(eq(action.jobId, jobId), isNull(approval.decidedAt)))
+    .where(
+      and(eq(action.jobId, jobId), isNull(approval.decidedAt), eq(action.status, 'needs_approval')),
+    )
     .orderBy(asc(approval.requestedAt));
 
   // A receipt is what makes "it was sent" a fact. Say the connector's own

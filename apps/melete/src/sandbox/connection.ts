@@ -121,12 +121,41 @@ export function sandboxSpecFor(
 }
 
 /**
+ * Old zone names that browsers still report, by the name the sandbox's own
+ * time zone files use. Recent images ship only the current names, and a TZ
+ * they cannot find makes the clock print the first part of it ("Asia")
+ * as the zone, at UTC.
+ */
+const CURRENT_ZONE_NAMES: Record<string, string> = {
+  'Africa/Asmera': 'Africa/Asmara',
+  'America/Buenos_Aires': 'America/Argentina/Buenos_Aires',
+  'America/Catamarca': 'America/Argentina/Catamarca',
+  'America/Coral_Harbour': 'America/Atikokan',
+  'America/Cordoba': 'America/Argentina/Cordoba',
+  'America/Godthab': 'America/Nuuk',
+  'America/Indianapolis': 'America/Indiana/Indianapolis',
+  'America/Jujuy': 'America/Argentina/Jujuy',
+  'America/Louisville': 'America/Kentucky/Louisville',
+  'America/Mendoza': 'America/Argentina/Mendoza',
+  'Asia/Calcutta': 'Asia/Kolkata',
+  'Asia/Katmandu': 'Asia/Kathmandu',
+  'Asia/Rangoon': 'Asia/Yangon',
+  'Asia/Saigon': 'Asia/Ho_Chi_Minh',
+  'Atlantic/Faeroe': 'Atlantic/Faroe',
+  'Europe/Kiev': 'Europe/Kyiv',
+  'Pacific/Enderbury': 'Pacific/Kanton',
+  'Pacific/Ponape': 'Pacific/Pohnpei',
+  'Pacific/Truk': 'Pacific/Chuuk',
+};
+
+/**
  * A time zone a sandbox may be given: an IANA name the runtime knows, in its
- * canonical spelling. Anything else is left out, and the sandbox reads UTC.
+ * current spelling. Anything else is left out, and the sandbox reads UTC.
  */
 export function sandboxTimeZone(zone: string | null | undefined): string | null {
   if (!zone) return null;
-  const canonical = canonicalTimeZone(zone);
+  const known = canonicalTimeZone(zone);
+  const canonical = CURRENT_ZONE_NAMES[known] ?? known;
   return /^[A-Za-z][A-Za-z0-9_+/-]{0,63}$/.test(canonical) ? canonical : null;
 }
 

@@ -67,6 +67,7 @@ import {
 } from './queue.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
+import { withdrawOutdatedPermissions } from './withdraw.ts';
 
 export const HEARTBEAT_MS = 15_000;
 export const LEASE_MS = 45_000;
@@ -183,6 +184,9 @@ export class AttemptRunner {
         row = await this.jobs.move(tx, row, { kind: 'timer_fired' }, { reason: 'timer' });
       }
       if (row.state !== 'queued') return null;
+      // A question left from before the request changed is closed first, so
+      // this attempt is told it was withdrawn rather than that it is pending.
+      await withdrawOutdatedPermissions(tx, row.id);
       const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
       const chosen = (await this.options.resolveModel?.(tx)) ?? {
         provider: this.options.provider ?? 'stub',

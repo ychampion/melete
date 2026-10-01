@@ -6,6 +6,7 @@ import {
   loadApprovalSettings,
   saveApprovalSettings,
 } from '../broker/auto-review.ts';
+import { BrokerFault } from '../broker/errors.ts';
 import { appendEvent, loadAction, lockJob } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import { ENDED_NOTE, ENDED_STATES } from '../jobs/withdraw.ts';
@@ -33,6 +34,9 @@ import { experienceMissing } from './service.ts';
 
 /** What the person is told when they answer a permission whose work has ended. */
 const ENDED_MESSAGE = 'This was withdrawn because the work it was for has ended.';
+/** What the person is told when they allow a permission whose request has since changed. */
+const CHANGED_MESSAGE =
+  'This request changed before you answered, so it was withdrawn. You are asked again if it is still needed.';
 
 /**
  * Withdraw the permissions still waiting in jobs of this space that have
@@ -112,8 +116,9 @@ export class ExperiencePermissions {
     const row = await this.find(spaceId, id);
     const action = await loadAction(this.sql, String(row.action_id));
     const warnings = Array.isArray(row.origin_warnings) ? row.origin_warnings : [];
+    // One line per kind of doubt: two warnings of the same kind say it once.
     const reasons = warnings.length
-      ? warnings.map(() => 'This destination has not been confirmed by you or the connected app.')
+      ? ['This destination has not been confirmed by you or the connected app.']
       : ['This change needs your permission before it happens.'];
     reasons.push(
       ...(await explainHandles(
@@ -169,7 +174,7 @@ export class ExperiencePermissions {
     await withdrawEndedPermissions(this.sql, spaceId);
     const rows = await this.sql`select p.id from approval p join action a on a.id = p.action_id
       join job j on j.id = a.job_id where j.space_id = ${spaceId} ${ownJobClause(this.sql, 'j')}
-      and p.decision is null and a.status = 'needs_approval'
+      and p.decision is null and a.status = 'needs_approval' and p.job_revision = j.revision
       and not (j.state = any(${[...ENDED_STATES]}::text[]))
       and (p.expires_at is null or p.expires_at > now()) order by p.requested_at limit 200`;
     return {
@@ -188,7 +193,7 @@ export class ExperiencePermissions {
       if (input.option === 'deny') return { status: 'ok', option: input.option, rule: null };
       throw new ServiceError('permission_withdrawn', ENDED_MESSAGE, 409);
     }
-    await this.broker.decide(
+    const decided = this.broker.decide(
       String(row.action_id),
       {
         decision: input.option === 'deny' ? 'denied' : 'approved',
@@ -251,6 +256,14 @@ export class ExperiencePermissions {
         ${label}, 'connector_verified', ${input.bounds.count_cap}, ${input.bounds.expires_at}, ${input.bounds.reconsent_after_days})`;
       },
     );
+    // The request changed before this was answered: it is withdrawn, a Deny
+    // agrees with that, and an Allow is told why it cannot.
+    const outcome = await decided.catch((error: unknown) => {
+      if (error instanceof BrokerFault && error.code === 'revision_mismatch')
+        throw new ServiceError('permission_withdrawn', CHANGED_MESSAGE, 409);
+      throw error;
+    });
+    if ('withdrawn' in outcome) return { status: 'ok', option: input.option, rule: null };
     await this.effects.continueCommand(await loadAction(this.sql, String(row.action_id)));
     const [rule] =
       input.option === 'always'

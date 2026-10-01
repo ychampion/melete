@@ -785,6 +785,44 @@ databaseTest(
 );
 
 databaseTest(
+  'a permission whose request changed is not listed, Deny closes it, Allow says why not',
+  async () => {
+    const s = await setup('calendar');
+    const spaceId = s.claims.space_id;
+    const ask = (summary: string) =>
+      s.broker.propose(s.claims, {
+        connection_id: s.connectionId,
+        kind: 'calendar.create',
+        payload: { summary, start: '2026-09-13T18:00:00Z', end: '2026-09-13T19:00:00Z' },
+      });
+    const first = await s.permissions.card(spaceId, (await ask('Dinner')).approval_id ?? '');
+    const second = await s.permissions.card(spaceId, (await ask('Lunch')).approval_id ?? '');
+    expect((await s.permissions.list(spaceId)).permissions).toHaveLength(2);
+    // Someone edited a memory these depended on: the job's revision moved on.
+    await s.sql`update job set revision = revision + 1 where id = ${s.claims.job_id}`;
+    expect((await s.permissions.list(spaceId)).permissions).toEqual([]);
+    expect(
+      await s.permissions.decide(spaceId, first.id, { option: 'deny', version: first.version }),
+    ).toMatchObject({ status: 'ok', option: 'deny' });
+    expect(
+      await rejectionOf(
+        s.permissions.decide(spaceId, second.id, {
+          option: 'allow_once',
+          version: second.version,
+        }),
+      ),
+    ).toMatchObject({ code: 'permission_withdrawn', status: 409 });
+    const closed = await s.sql`select p.decision, p.decided_by, a.status from approval p
+      join action a on a.id = p.action_id where p.id in ${s.sql([first.id, second.id])}`;
+    expect([...closed]).toEqual([
+      { decision: 'denied', decided_by: 'outdated', status: 'denied' },
+      { decision: 'denied', decided_by: 'outdated', status: 'denied' },
+    ]);
+    expect(s.calls).toHaveLength(0);
+  },
+);
+
+databaseTest(
   'a permission left by a job that ended is withdrawn, never listed, and Deny is a no-op',
   async () => {
     if (!fixture) throw new Error('Postgres unavailable');
