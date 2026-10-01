@@ -662,7 +662,30 @@ describe('private conversations', () => {
     expect(captured).toHaveLength(0);
   });
 
-  test('a conversation about therapy is found sensitive, and stays so', async () => {
+  test('a conversation found sensitive from what the person wrote stays so', async () => {
+    const store = new MemoryPrivacyStore();
+    store.scopes.set('job_chat', {
+      spaceId: 'spc_1',
+      conversationId: 'job_chat',
+      agentId: null,
+      turnId: 'trn_1',
+    });
+    const { captured, post, router } = await start({ store });
+    // The person's own message is read when it arrives, before any request.
+    expect(await router.captureOrigin('job_chat', 'Summarise my therapy session notes.')).toBe(
+      'therapy',
+    );
+    expect((await store.conversation('job_chat')).sensitive).toBe('therapy');
+    // A later, harmless-looking request in the same conversation is still held back.
+    const later = await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: [{ role: 'user', content: 'thanks' }],
+    });
+    expect(later.status).toBe(409);
+    expect(captured).toHaveLength(0);
+  });
+
+  test('what a tool brought back never makes a conversation sensitive', async () => {
     const store = new MemoryPrivacyStore();
     store.scopes.set('job_chat', {
       spaceId: 'spc_1',
@@ -671,19 +694,76 @@ describe('private conversations', () => {
       turnId: 'trn_1',
     });
     const { captured, post } = await start({ store });
-    const first = await post('/providers/fireworks/v1/chat/completions', {
+    // From a public page a research chat read (a heat pump trade body's press
+    // release about gas), and other pages that name conditions or finances.
+    const page = [
+      'Heat pump sales climb 11% as Europe is ending its addiction to a toxic, costly drug from dodgy suppliers.',
+      'A relapse into gas dependence would hurt households; my therapist and my bank statements are not involved.',
+    ].join(' ');
+    const asTool = await post('/providers/fireworks/v1/chat/completions', {
       stream: true,
-      messages: [{ role: 'user', content: 'Summarise my therapy session notes from Tuesday.' }],
+      messages: [
+        { role: 'user', content: 'Research residential heat pump adoption in Europe.' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'web_fetch', arguments: '{}' },
+            },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'call_1', content: page },
+      ],
     });
-    expect(first.status).toBe(409);
-    expect((await store.conversation('job_chat')).sensitive).toBe('therapy');
-    // A later, harmless-looking request in the same conversation is still held back.
-    const second = await post('/providers/fireworks/v1/chat/completions', {
+    expect(asTool.status).toBe(200);
+    // An engine re-sends earlier tool results inside its user turn; still not the person's words.
+    const resent = await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: [
+        {
+          role: 'user',
+          content: `## Prior conversation and tool results\n\n${JSON.stringify([{ role: 'tool', content: page }])}`,
+        },
+      ],
+    });
+    expect(resent.status).toBe(200);
+    expect(captured).toHaveLength(2);
+    expect((await store.conversation('job_chat')).sensitive).toBeNull();
+  });
+
+  test('the person clears a wrong verdict, and it is not judged again', async () => {
+    const store = new MemoryPrivacyStore();
+    store.scopes.set('job_chat', {
+      spaceId: 'spc_1',
+      conversationId: 'job_chat',
+      agentId: null,
+      turnId: 'trn_1',
+    });
+    const { captured, post, router } = await start({ store });
+    expect(await router.captureOrigin('job_chat', 'I have been struggling with addiction')).toBe(
+      'therapy',
+    );
+    await store.markConversation('job_chat', 'spc_1', null);
+    expect(await store.conversation('job_chat')).toMatchObject({ sensitive: null, cleared: true });
+    const response = await post('/providers/fireworks/v1/chat/completions', {
       stream: true,
       messages: [{ role: 'user', content: 'thanks' }],
     });
-    expect(second.status).toBe(409);
-    expect(captured).toHaveLength(0);
+    expect(response.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    // A later message is not read for a topic, and a router write cannot set one.
+    expect(await router.captureOrigin('job_chat', 'My therapist says I should rest')).toBeNull();
+    await store.updateConversation('job_chat', 'spc_1', { sensitive: 'therapy' });
+    expect((await store.conversation('job_chat')).sensitive).toBeNull();
+    // The person can still mark it themselves.
+    await store.markConversation('job_chat', 'spc_1', 'health');
+    expect(await store.conversation('job_chat')).toMatchObject({
+      sensitive: 'health',
+      cleared: false,
+    });
   });
 
   test('once the person agrees, the conversation goes to the cloud redacted', async () => {

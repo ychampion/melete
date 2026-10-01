@@ -457,12 +457,31 @@ withDb('why an action was taken', () => {
     };
     await pref(db, scope, 'pref.dinner.time', 'seven', '2026-09-20T09:00:00Z');
     const dinner = await keyed(db, scope, 'pref.dinner.time');
-    // Memory handed the attempt this belief.
+    await pref(db, scope, 'pref.drink.kind', 'tea', '2026-09-20T09:30:00Z');
+    const drink = await keyed(db, scope, 'pref.drink.kind');
+    // Memory handed the attempt both beliefs; only one has anything to do with the message.
     await db.sql`insert into memory_contexts (id, space_id, job_id, attempt_id, job_revision, policy_generation,
         data_revision, access_generation, audience, purpose, items, recipe, token_budget, recall_status)
       values ('ctx_basis', ${spaceId}, ${seed.claims.job_id}, ${seed.claims.attempt_id}, 0, 1, 1, 1,
         '["private"]'::jsonb, 'chat',
-        ${JSON.stringify([{ claim_id: dinner, revision: 1, handle: claimHandleOf(dinner, 1), key: 'pref.dinner.time', origin_trust: 'owner', sources: [] }])}::text::jsonb,
+        ${JSON.stringify([
+          {
+            claim_id: dinner,
+            revision: 1,
+            handle: claimHandleOf(dinner, 1),
+            key: 'pref.dinner.time',
+            origin_trust: 'owner',
+            sources: [],
+          },
+          {
+            claim_id: drink,
+            revision: 1,
+            handle: claimHandleOf(drink, 1),
+            key: 'pref.drink.kind',
+            origin_trust: 'owner',
+            sources: [],
+          },
+        ])}::text::jsonb,
         'simple-lexical-v1', '{}'::jsonb, 'complete')`;
     const connector = {
       manifest: {
@@ -511,6 +530,13 @@ withDb('why an action was taken', () => {
     expect(recalled).toEqual([
       { kind: 'belief', id: dinner, label: 'Dinner: time: seven', basis: 'recalled' },
     ]);
+    // An action that bears on none of what was recalled names none of it.
+    const unrelated = await broker.propose(seed.claims, {
+      kind: 'test.send',
+      connection_id: seed.connectionId,
+      payload: { to: 'maya@example.com', body: 'The approval test file is saved.' },
+    });
+    expect(await actionBecause(db.sql, spaceId, unrelated.action_id)).toEqual([]);
     // When the runtime declares what the action used, that is what is named.
     await pref(db, scope, 'pref.wine.kind', 'red', '2026-09-20T10:00:00Z');
     const wine = await keyed(db, scope, 'pref.wine.kind');

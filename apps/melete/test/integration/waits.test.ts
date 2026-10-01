@@ -593,13 +593,24 @@ withDb('durable waits, triggers and approval inputs', () => {
           ),
         expected,
       );
-      expect(
-        (await handle.db.select().from(approval).where(eq(approval.id, proposal.approvalId)))[0]
-          ?.decision,
-      ).toBeNull();
-      expect(
-        await handle.db.select().from(event).where(eq(event.type, 'approval_decided')),
-      ).toHaveLength(0);
+      const [stored] = await handle.db
+        .select()
+        .from(approval)
+        .where(eq(approval.id, proposal.approvalId));
+      const decided = await handle.db
+        .select()
+        .from(event)
+        .where(eq(event.type, 'approval_decided'));
+      if (fault === 'cancelled') {
+        // Cancelling withdrew it; the person's late approval is not what was recorded.
+        expect(stored).toMatchObject({ decision: 'denied', decidedBy: 'ended' });
+        expect(decided.map((row) => row.payload)).toEqual([
+          expect.objectContaining({ decision: 'denied', note: 'ended' }),
+        ]);
+      } else {
+        expect(stored?.decision).toBeNull();
+        expect(decided).toHaveLength(0);
+      }
     },
   );
 

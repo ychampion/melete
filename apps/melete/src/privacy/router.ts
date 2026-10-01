@@ -3,8 +3,9 @@
  * carry, at the one place every request passes (the model gateway).
  *
  * - A request in a space or agent the person marked private, or in a
- *   conversation found sensitive (health, therapy, finances), goes to their
- *   local model unredacted, because it does not leave their machine.
+ *   conversation found sensitive (health, therapy, finances) from what the
+ *   person wrote there, goes to their local model unredacted, because it does
+ *   not leave their machine. What tools brought back never decides that.
  * - With no local model, it does not go anywhere until the person agrees to a
  *   redacted cloud request: the attempt asks first, and the gateway refuses as
  *   the backstop. There is no silent fallback.
@@ -228,13 +229,17 @@ export class PrivacyRouter {
       await this.log(scope, receipt);
       return { body, route: 'on_device', local: null, rehydrator: null, receipt };
     }
+    // A job's request is not read for a topic. The engine re-sends earlier
+    // tool results (web pages, files, mail) inside its user turn, and none of
+    // that is the person's own words; their messages were read before the
+    // attempt started. A service call is read for itself and never sets the
+    // conversation's topic: what it carries (a memory snapshot, say) is not
+    // what the person said there.
     const decision = await this.privateDecision(
       scope,
       settings,
-      authoredParts(body, protocol),
-      // A service call reads the conversation's topic but never sets it: what it
-      // carries (a memory snapshot, say) is not what the person said there.
-      principal.privacy.kind === 'job',
+      principal.privacy.kind === 'job' ? [] : authoredParts(body, protocol).person,
+      false,
     );
     if (decision.private) {
       const local = await this.readyLocal(settings, protocol);
@@ -288,12 +293,15 @@ export class PrivacyRouter {
     };
   }
 
-  /** Whether this conversation must stay private, and what the person said about it. */
+  /**
+   * Whether this conversation must stay private, and what the person said
+   * about it. `person` is only ever what the person wrote.
+   */
   private async privateDecision(
     scope: Scope,
     settings: ResolvedSettings,
-    authored: { person: string[]; tools: string[] },
-    remember = true,
+    person: readonly string[],
+    remember: boolean,
   ): Promise<{
     private: boolean;
     sensitive: SensitiveTopic | null;
@@ -303,8 +311,8 @@ export class PrivacyRouter {
       ? await this.store.conversation(scope.conversationId)
       : null;
     let sensitive = conversation?.sensitive ?? null;
-    if (!sensitive) {
-      sensitive = classifyParts(authored, settings.topics, this.topics);
+    if (!sensitive && !conversation?.cleared) {
+      sensitive = classifyParts(person, settings.topics, this.topics);
       if (remember && sensitive && scope.conversationId && scope.spaceId)
         await this.store.updateConversation(scope.conversationId, scope.spaceId, { sensitive });
     }
@@ -375,6 +383,7 @@ export class PrivacyRouter {
       ? await this.store.conversation(scope.conversationId)
       : null;
     if (conversation?.sensitive) return conversation.sensitive;
+    if (conversation?.cleared) return null;
     const sensitive = classify(text, settings.topics);
     if (sensitive && scope.conversationId)
       await this.store.updateConversation(scope.conversationId, scope.spaceId, { sensitive });
@@ -428,7 +437,7 @@ export class PrivacyRouter {
         .filter((message) => message.role === 'user')
         .map((message) => message.content),
     ];
-    const decision = await this.privateDecision(scope, settings, { person, tools: [] });
+    const decision = await this.privateDecision(scope, settings, person, true);
     if (!decision.private) return { proceed: true };
     const local = settings.local;
     const localReady =

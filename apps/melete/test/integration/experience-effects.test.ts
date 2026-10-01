@@ -724,3 +724,83 @@ databaseTest(
     expect(row?.count).toBe(1);
   },
 );
+
+databaseTest(
+  'a permission left by a job that ended is withdrawn, never listed, and Deny is a no-op',
+  async () => {
+    if (!fixture) throw new Error('Postgres unavailable');
+    const s = await setup('calendar');
+    const jobId = s.claims.job_id;
+    const spaceId = s.claims.space_id;
+    const request = (summary: string) => ({
+      connection_id: s.connectionId,
+      kind: 'calendar.create',
+      payload: { summary, start: '2026-09-13T18:00:00Z', end: '2026-09-13T19:00:00Z' },
+    });
+    const settled = async (approvalId: string) =>
+      (
+        await s.sql`select p.decision, p.decided_by, a.status from approval p
+          join action a on a.id = p.action_id where p.id = ${approvalId}`
+      )[0];
+    // One left behind before jobs withdrew their own: the job failed and the
+    // permission still waits. Reading the list clears it.
+    const stuck = await s.broker.propose(s.claims, request('Dinner'));
+    await s.sql`update job set state = 'failed' where id = ${jobId}`;
+    expect((await s.permissions.list(spaceId)).permissions).toEqual([]);
+    expect(await settled(stuck.approval_id ?? '')).toMatchObject({
+      decision: 'denied',
+      decided_by: 'ended',
+      status: 'denied',
+    });
+    const decisions = await s.sql`select payload from event
+      where job_id = ${jobId} and type = 'approval_decided'`;
+    expect(decisions.map((row) => row.payload)).toEqual([
+      expect.objectContaining({
+        approval_id: stuck.approval_id,
+        decision: 'denied',
+        note: 'ended',
+      }),
+    ]);
+
+    // A job that fails now withdraws what it waits on in the same transaction.
+    const [running] = await s.sql`update job set state = 'running', lease_epoch = lease_epoch + 1
+      where id = ${jobId} returning lease_epoch`;
+    const attemptId = recordId('att');
+    await s.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+      values (${attemptId}, ${jobId}, ${running?.lease_epoch}, 'fake', 'fake', 'scripted')`;
+    const claims = { ...s.claims, attempt_id: attemptId, epoch: Number(running?.lease_epoch) };
+    const waiting = await s.broker.propose(claims, request('Lunch'));
+    const card = await s.permissions.card(spaceId, waiting.approval_id ?? '');
+    expect((await s.permissions.list(spaceId)).permissions.map((item) => item.id)).toEqual([
+      card.id,
+    ]);
+    await s.sql`update job set state = 'running' where id = ${jobId}`;
+    const queue = await startQueue(fixture.url);
+    try {
+      const jobs = new JobService(fixture.db, queue.boss);
+      await jobs.transaction(async (tx) => {
+        const row = await jobs.lock(tx, jobId);
+        if (!row) throw new Error('job missing');
+        await jobs.move(tx, row, {
+          kind: 'attempt_failed',
+          retryable: false,
+          attempts_remaining: 0,
+        });
+      });
+    } finally {
+      await queue.stop();
+    }
+    expect(await settled(card.id)).toMatchObject({ decided_by: 'ended', status: 'denied' });
+    expect((await s.permissions.list(spaceId)).permissions).toEqual([]);
+    // Deny agrees with what already happened; Allow says why it cannot.
+    expect(
+      await s.permissions.decide(spaceId, card.id, { option: 'deny', version: card.version }),
+    ).toMatchObject({ status: 'ok', option: 'deny' });
+    expect(
+      await rejectionOf(
+        s.permissions.decide(spaceId, card.id, { option: 'allow_once', version: card.version }),
+      ),
+    ).toMatchObject({ code: 'permission_withdrawn', status: 409 });
+    expect(s.calls).toHaveLength(0);
+  },
+);
