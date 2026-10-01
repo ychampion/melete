@@ -771,7 +771,7 @@ withDb('durable waits, triggers and approval inputs', () => {
           { decision: 'approved', payload_hash: allowed.hash },
           ownerId,
         ),
-      'approval_withdrawn',
+      'revision_mismatch',
     );
   });
 
@@ -795,7 +795,7 @@ withDb('durable waits, triggers and approval inputs', () => {
       const expected = {
         request_hash: 'approval_hash_mismatch',
         stored_payload: 'approval_hash_mismatch',
-        revision: 'approval_withdrawn',
+        revision: 'revision_mismatch',
         expired: 'approval_expired',
         cancelled: 'already_terminal',
       }[fault];

@@ -96,7 +96,7 @@ afterAll(async () => {
     // action can never be allowed, and the new one is asked afresh.
     const [old] = await handle.sql`select a.status, p.decision, p.decided_by from action a
       join approval p on p.action_id = a.id where a.id = ${proposed.action_id}`;
-    expect(old).toEqual({ status: 'denied', decision: 'denied', decided_by: 'changed' });
+    expect(old).toEqual({ status: 'denied', decision: 'denied', decided_by: 'outdated' });
     expect(fresh.status).toBe('needs_approval');
     expect(
       (

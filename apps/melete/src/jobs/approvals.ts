@@ -144,7 +144,7 @@ export class ApprovalService {
     });
     if (result.withdrawn && request.decision !== 'denied')
       throw new ServiceError(
-        'approval_withdrawn',
+        'revision_mismatch',
         'The request changed before this was answered, so it was withdrawn.',
         409,
       );
