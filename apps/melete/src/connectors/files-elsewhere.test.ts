@@ -41,10 +41,10 @@ withDb('files saved in other conversations', () => {
     const connectionId = recordId('conn');
     await sql`insert into connection (id, space_id, provider, label)
       values (${connectionId}, ${spaceId}, 'files', 'Files')`;
-    const chat = async (title: string, principal: string | null) => {
+    const chat = async (title: string, principal: string | null, agentId: string | null = null) => {
       const id = recordId('job');
-      await sql`insert into job (id, space_id, title, objective, principal_id)
-        values (${id}, ${spaceId}, ${title}, 'Chat', ${principal})`;
+      await sql`insert into job (id, space_id, title, objective, principal_id, agent_id)
+        values (${id}, ${spaceId}, ${title}, 'Chat', ${principal}, ${agentId})`;
       await mkdir(path.join(workRoot, id), { recursive: true });
       return id;
     };
@@ -73,7 +73,14 @@ withDb('files saved in other conversations', () => {
           ${digest(content)}, 'text/markdown', ${Buffer.byteLength(content)})`;
       return id;
     };
-    const connector = createFilesConnector({ workRoot, spacesRoot, sql });
+    /** The agents the person marked private, as the privacy settings say. */
+    const privateAgents = new Set<string>();
+    const connector = createFilesConnector({
+      workRoot,
+      spacesRoot,
+      sql,
+      privateContext: async ({ agentId }) => agentId !== null && privateAgents.has(agentId),
+    });
     const call = async (jobId: string, kind: string, payload: Record<string, unknown>) => {
       const action = { ...connectorAction(kind, payload, recordId('act')), job_id: jobId };
       const result = await connector.execute(action, {
@@ -85,7 +92,33 @@ withDb('files saved in other conversations', () => {
       if (result.outcome !== 'succeeded') throw new Error(JSON.stringify(result));
       return result.receipt.detail as Record<string, unknown>;
     };
-    return { chat, written, produced, call, ownerId, strangerId };
+    const agent = async (name: string) => {
+      const id = recordId('agt');
+      await sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone,
+          standing_instruction)
+        values (${id}, ${spaceId}, ${name}, 'Helper', 'blue', 'plain', 'dark', 'warm', '')`;
+      return id;
+    };
+    /** A conversation the privacy check found to be about a sensitive topic. */
+    const sensitive = async (jobId: string) => {
+      await sql`insert into privacy_conversation (conversation_id, space_id, sensitive)
+        values (${jobId}, ${spaceId}, 'health')`;
+    };
+    return {
+      chat,
+      written,
+      produced,
+      call,
+      ownerId,
+      strangerId,
+      agent,
+      sensitive,
+      privateAgents,
+      sql,
+      spaceId,
+      workRoot,
+      spacesRoot,
+    };
   };
 
   test('a new conversation lists and reads what earlier conversations saved', async () => {
@@ -134,5 +167,63 @@ withDb('files saved in other conversations', () => {
       said = String(error);
     }
     expect(said).toContain('there is no file');
+  });
+
+  test('a file saved in a private or sensitive conversation stays out of an ordinary one', async () => {
+    const { chat, written, produced, call, ownerId, agent, sensitive, privateAgents } =
+      await setup();
+    const diary = await agent('Diary');
+    privateAgents.add(diary);
+    const health = await chat('Test results', ownerId);
+    await sensitive(health);
+    const journal = await chat('Journal', ownerId, diary);
+    const open = await chat('Heat pump research', ownerId);
+    const now = await chat('List my files', ownerId);
+    const results = await written(health, 'results.txt', 'biopsy results');
+    const entry = await produced(journal, 'entry.md', '# Dear diary\n');
+    const report = await written(open, 'report.txt', 'heat pumps');
+
+    const listed = await call(now, 'files.list', { path: FROM_CHATS, area: 'artifacts' });
+    const names = (listed.entries as Array<{ name: string }>).map((item) => item.name);
+    expect(names).toEqual([`${report}/report.txt`]);
+    for (const [id, file] of [
+      [results, 'results.txt'],
+      [entry, 'entry.md'],
+    ]) {
+      let said = 'resolved';
+      try {
+        await call(now, 'files.read', { path: `${FROM_CHATS}/${id}/${file}`, area: 'artifacts' });
+      } catch (error) {
+        said = String(error);
+      }
+      expect(said).toContain('there is no file');
+    }
+
+    // A private conversation already keeps to the person's own model: it may read them.
+    const quiet = await chat('Private follow-up', ownerId, diary);
+    const fromPrivate = await call(quiet, 'files.list', { path: FROM_CHATS, area: 'artifacts' });
+    expect(
+      (fromPrivate.entries as Array<{ name: string }>).map((item) => item.name).sort(),
+    ).toEqual([`${entry}/entry.md`, `${report}/report.txt`, `${results}/results.txt`].sort());
+  });
+
+  test('without a privacy check no other conversation is offered', async () => {
+    const { chat, written, ownerId, sql, spaceId, workRoot, spacesRoot } = await setup();
+    const earlier = await chat('Earlier', ownerId);
+    const now = await chat('Now', ownerId);
+    await written(earlier, 'note.txt', 'hello');
+    const unchecked = createFilesConnector({ workRoot, spacesRoot, sql });
+    const action = {
+      ...connectorAction('files.list', { path: '.', area: 'artifacts' }, recordId('act')),
+      job_id: now,
+    };
+    const result = await unchecked.execute(action, {
+      job_id: now,
+      space_id: spaceId,
+      idempotency_key: action.id,
+      constraints: jobConstraints.parse({}),
+    });
+    expect(result.outcome).toBe('succeeded');
+    expect(JSON.stringify(result)).not.toContain(FROM_CHATS);
   });
 });

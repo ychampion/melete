@@ -16,6 +16,7 @@ import { validateArtifact } from '../artifact/validate.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import { ConnectorFaultError } from './faults.ts';
 import type { Connector, ConnectorContext } from './types.ts';
+import type { PrivateContext } from './web.ts';
 
 type Area = 'work' | 'artifacts';
 type FilesOptions = {
@@ -24,6 +25,12 @@ type FilesOptions = {
   maxBytes?: number;
   /** Where saved files are recorded, so other conversations' files can be found. */
   sql?: Sql;
+  /**
+   * Whether a space or agent is private. A file saved where the person spoke
+   * privately is offered to no other conversation unless that one is private
+   * too; without this check, no other conversation's file is offered.
+   */
+  privateContext?: PrivateContext;
 };
 
 /**
@@ -350,7 +357,45 @@ export function createFilesConnector(options: FilesOptions): Connector {
         path: payload.path,
       });
     }
-    return found;
+    return withoutPrivate(ctx, found);
+  };
+
+  /**
+   * What was said in a private space or agent, or in a sensitive conversation,
+   * stays there: its files are offered to another conversation only when that
+   * one is private as well, so they never reach a model the private one would
+   * not use. A check that cannot answer counts as private.
+   */
+  const withoutPrivate = async (
+    ctx: ConnectorContext,
+    found: SavedElsewhere[],
+  ): Promise<SavedElsewhere[]> => {
+    const sql = options.sql;
+    const privateContext = options.privateContext;
+    if (!sql || !privateContext) return [];
+    const ids = [...new Set([ctx.job_id, ...found.flatMap((entry) => entry.jobId ?? [])])];
+    const rows = await sql`select j.id, j.space_id, coalesce(j.agent_id, p.agent_id) as agent_id,
+        c.sensitive is not null as sensitive
+      from job j
+      left join job p on p.id = j.experience_parent_id
+      left join privacy_conversation c on c.conversation_id = coalesce(j.experience_parent_id, j.id)
+      where j.id in ${sql(ids)}`;
+    const facts = new Map(rows.map((row) => [String(row.id), row]));
+    const isPrivate = async (jobId: string): Promise<boolean> => {
+      const row = facts.get(jobId);
+      if (!row) return true;
+      if (row.sensitive === true) return true;
+      return privateContext({
+        spaceId: String(row.space_id),
+        agentId: row.agent_id ? String(row.agent_id) : null,
+        jobId,
+      }).catch(() => true);
+    };
+    if (await isPrivate(ctx.job_id)) return found;
+    const kept: SavedElsewhere[] = [];
+    for (const entry of found)
+      if (entry.jobId === null || !(await isPrivate(entry.jobId))) kept.push(entry);
+    return kept;
   };
 
   /** The bytes of a file saved in another conversation, through the same path rules. */
