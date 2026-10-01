@@ -22,6 +22,7 @@ import {
 import { adapter } from '../experience/adapter.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
 import { lookOf } from '../experience/hooks.ts';
+import { plainTitle } from '../experience/plain.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
 import { OPEN_TEXT_LIMIT_BYTES } from '../experience/text-prefix.ts';
 import { toolOf } from '../experience/trace.ts';
@@ -49,12 +50,14 @@ import { ActivityRow, ThinkingBlock } from './activity.tsx';
 export const timeOf = (iso: string) =>
   new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
-/** The logo for an app the contract names in plain words. */
+/**
+ * The logo for an app the contract names in plain words. Only a named product
+ * wears its logo: a mailbox, calendar or file store of no particular brand is
+ * drawn with its own icon (see `appIcon`).
+ */
 const LOGO_BY_APP: Record<string, LogoName> = {
   'google calendar': 'gcal',
-  calendar: 'gcal',
   gmail: 'gmail',
-  mail: 'gmail',
   'google maps': 'gmaps',
   whatsapp: 'whatsapp',
   messages: 'imessage',
@@ -63,7 +66,6 @@ const LOGO_BY_APP: Record<string, LogoName> = {
   notion: 'notion',
   spotify: 'spotify',
   'google drive': 'gdrive',
-  files: 'gdrive',
   uber: 'uber',
   zoom: 'zoom',
   linear: 'linear',
@@ -76,6 +78,31 @@ const LOGO_BY_APP: Record<string, LogoName> = {
   tripadvisor: 'tripadvisor',
 };
 export const logoFor = (app: string): LogoName | null => LOGO_BY_APP[app.toLowerCase()] ?? null;
+
+/** The icon for a connection of no particular brand, by the kind of thing it reaches. */
+const ICON_BY_APP: Record<string, IconName> = {
+  mail: 'mail',
+  calendar: 'calendar',
+  files: 'files',
+  'saved results': 'bookmark',
+  'finished work': 'bookmark',
+  web: 'globe',
+  browser: 'globe',
+  computer: 'monitor',
+  'code runner': 'terminal',
+  'code in the workspace': 'terminal',
+  voice: 'voice',
+  speech: 'voice',
+  'voice to text': 'mic',
+  transcription: 'mic',
+  phone: 'messages',
+  messages: 'messages',
+  device: 'laptop',
+  devices: 'laptop',
+  mcp: 'connectors',
+};
+export const appIcon = (app: string, label?: string): IconName =>
+  ICON_BY_APP[(label ?? '').toLowerCase()] ?? ICON_BY_APP[app.toLowerCase()] ?? 'connectors';
 
 const KIND_ICON: Record<Source['kind'], IconName> = {
   event: 'calendar',
@@ -635,7 +662,17 @@ export function ResultCard({
           ) : (
             <>
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>{card.meta}</span>
-              <h3 style={{ fontSize: 20, fontWeight: 600, lineHeight: '26px' }}>{card.title}</h3>
+              <h3
+                style={{
+                  fontSize: 15,
+                  fontWeight: 600,
+                  lineHeight: '22px',
+                  color: 'var(--heading)',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {plainTitle(card.title)}
+              </h3>
             </>
           )}
           {isDraft ? (
@@ -699,17 +736,18 @@ export function ResultCard({
 /* ---------- why an action was taken ---------- */
 
 /**
- * "Because: …" under a receipt or a permission card, linking each belief to its
- * place in Memory. When the agent did not say which belief it used, the links
- * are what memory handed that turn, and the line says so.
+ * "Because: …" under a receipt or a permission card, linking each belief the
+ * action relied on to its place in Memory. Only beliefs the agent named and
+ * rules the person set are listed: what memory merely offered the turn is not
+ * a reason, so it is left out rather than shown as one.
  */
 export function BecauseLine({ because }: { because?: BecauseLink[] }) {
-  if (!because?.length) return null;
-  const recalled = because.some((link) => link.basis === 'recalled');
+  const cited = (because ?? []).filter((link) => link.basis !== 'recalled');
+  if (!cited.length) return null;
   return (
     <span className="because">
       <span>Because:</span>
-      {because.map((link) => (
+      {cited.map((link) => (
         <a
           key={`${link.kind}:${link.id}`}
           href={href(
@@ -719,9 +757,6 @@ export function BecauseLine({ because }: { because?: BecauseLink[] }) {
           {link.label}
         </a>
       ))}
-      {recalled ? (
-        <span>(what I remembered for this; the agent didn’t say which it used)</span>
-      ) : null}
     </span>
   );
 }
@@ -877,6 +912,19 @@ export function permissionOutcome(
               : null;
 }
 
+/** The tile at the head of a permission card: a lock while it waits, then what came of it. */
+export function permissionTile(
+  decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null,
+): { icon: IconName; outcome: 'pending' | 'allowed' | 'denied' | 'withdrawn' | 'decided' } {
+  if (decided === null) return { icon: 'lock', outcome: 'pending' };
+  if (decided === 'allow_once' || decided === 'always')
+    return { icon: 'check', outcome: 'allowed' };
+  if (decided === 'deny') return { icon: 'x', outcome: 'denied' };
+  if (decided === 'replaced' || decided === 'withdrawn')
+    return { icon: 'clock', outcome: 'withdrawn' };
+  return { icon: 'circleCheck', outcome: 'decided' };
+}
+
 export function PermissionCard({
   permission,
   decided,
@@ -900,6 +948,7 @@ export function PermissionCard({
   const [reconsent, setReconsent] = useState('7');
   const pending = decided === null;
   const outcome = permissionOutcome(decided);
+  const tile = permissionTile(decided);
   const can = (option: PermissionOption) => permission.options.includes(option);
   // When a decision made here collapses the card, focus stays on it rather
   // than falling to the page with the buttons that were pressed.
@@ -959,23 +1008,27 @@ export function PermissionCard({
       onKeyDown={onKey}
     >
       <div className="permission-head">
-        <span className="permission-lock" data-done={pending ? undefined : 'true'}>
-          <Icon name={pending ? 'lock' : 'check'} size={16} />
+        <span className="permission-lock" data-outcome={tile.outcome}>
+          <Icon name={tile.icon} size={16} stroke={tile.outcome === 'denied' ? 2.25 : undefined} />
         </span>
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
           <span className="permission-what">{permission.what}</span>
-          <span className="permission-why">{permission.why[0]}</span>
-          {notes.map((note) => (
-            <span key={note} className="permission-why">
-              {note}
-            </span>
-          ))}
+          {/* Once decided the card is its head and the outcome: the request's
+              reasons were for the decision, which has been made. */}
+          {pending ? (
+            <>
+              <span className="permission-why">{permission.why[0]}</span>
+              {notes.map((note) => (
+                <span key={note} className="permission-why">
+                  {note}
+                </span>
+              ))}
+            </>
+          ) : null}
           <BecauseLine because={permission.because} />
         </div>
         {outcome ? (
-          <Status tone={decided === 'allow_once' || decided === 'always' ? 'settled' : 'kind'}>
-            {outcome}
-          </Status>
+          <Status tone={tile.outcome === 'allowed' ? 'settled' : 'kind'}>{outcome}</Status>
         ) : null}
       </div>
       {pending ? (
@@ -1257,8 +1310,20 @@ export function describeAction(action: LedgerAction): string {
   if (Array.isArray(to) && to.length) return `a message to ${to.map(String).join(', ')}`;
   if (typeof to === 'string' && to) return `a message to ${to}`;
   if (typeof payload.title === 'string' && payload.title) return `“${payload.title}”`;
-  return 'the change';
+  if (typeof payload.summary === 'string' && payload.summary) return `“${payload.summary}”`;
+  const kind = typeof action.kind === 'string' ? action.kind : '';
+  const path = typeof payload.path === 'string' ? payload.path : null;
+  if (path && /^files\./.test(kind)) return `saving “${plainTitle(path.split('/').pop() ?? path)}”`;
+  if (typeof payload.command === 'string' || /^(?:exec|sandbox|device)\./.test(kind))
+    return 'a command on its computer';
+  return 'one step of this task';
 }
+
+/** Whether a step that went unconfirmed was a message to someone, which "arrives". */
+const isMessage = (action: LedgerAction): boolean => {
+  const to = (action.canonical_payload as Record<string, unknown>).to;
+  return (Array.isArray(to) && to.length > 0) || (typeof to === 'string' && to.length > 0);
+};
 
 /** What "It did not" leads to: the effect is open to another attempt. */
 export const RETRY_HINT = 'Melete may try again, and asks you first.';
@@ -1274,6 +1339,9 @@ export function UnknownCard({
     action.status === 'succeeded' || action.status === 'failed' ? action.status : null;
   const unsure = action.status === 'unresolved';
   const retryHint = useId();
+  const message = isMessage(action);
+  const yes = message ? 'It arrived' : 'It worked';
+  const no = message ? 'It did not' : 'It didn’t';
   return (
     <div className="card-pad">
       <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
@@ -1293,11 +1361,15 @@ export function UnknownCard({
         </span>
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
           <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-            I sent this once and never heard back.
+            {message
+              ? 'I sent this once and never heard back.'
+              : 'I tried this once and couldn’t confirm it finished.'}
           </span>
           <span style={{ fontSize: 13, color: 'var(--secondary)' }}>
-            It may or may not have arrived. I have not sent it again. What I tried:{' '}
-            {describeAction(action)}.
+            {message
+              ? 'It may or may not have arrived. I have not sent it again.'
+              : 'I haven’t tried it again.'}{' '}
+            What I tried: {describeAction(action)}.
           </span>
           {settled === 'failed' ? (
             <span style={{ fontSize: 13, color: 'var(--secondary)' }}>{RETRY_HINT}</span>
@@ -1305,7 +1377,7 @@ export function UnknownCard({
         </div>
         {settled ? (
           <Badge tone={settled === 'succeeded' ? 'success' : 'neutral'}>
-            {settled === 'succeeded' ? 'It arrived' : 'It did not'}
+            {settled === 'succeeded' ? yes : no}
           </Badge>
         ) : unsure ? (
           <Badge tone="neutral">Still unsure</Badge>
@@ -1314,7 +1386,7 @@ export function UnknownCard({
       {!settled ? (
         <div className="card-actions">
           <Button size="sm" onClick={() => onResolve('succeeded')}>
-            It arrived
+            {yes}
           </Button>
           <Button
             size="sm"
@@ -1322,7 +1394,7 @@ export function UnknownCard({
             aria-describedby={retryHint}
             onClick={() => onResolve('failed')}
           >
-            It did not
+            {no}
           </Button>
           {unsure ? null : (
             <Button size="sm" variant="ghost" onClick={() => onResolve('unresolved')}>
@@ -1330,7 +1402,7 @@ export function UnknownCard({
             </Button>
           )}
           <span id={retryHint} style={{ fontSize: 12, color: 'var(--muted)' }}>
-            If it did not, Melete may try again, and asks you first.
+            If {message ? 'it did not' : 'it didn’t'}, Melete may try again, and asks you first.
           </span>
         </div>
       ) : null}

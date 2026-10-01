@@ -37,6 +37,7 @@ import {
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { agentById, lookOf, useApp, useDecisions, useLoad, useMedia } from '../experience/hooks.ts';
+import { zoneName } from '../experience/plain.ts';
 import { givenName } from '../experience/profile.ts';
 import type { CalendarEvent, Conversation } from '../experience/types.ts';
 import { FeedbackHost, openFeedback } from '../feedback/FeedbackPanel.tsx';
@@ -123,6 +124,21 @@ const NAV: { icon: IconName; label: string; path: string; match: (path: string) 
 
 const LIVE = new Set<Conversation['status']>(['queued', 'working', 'streaming']);
 
+/** How many chats the sidebar lists; the rest are a click away under "All chats". */
+const RECENT_CHATS = 8;
+
+/**
+ * The chats the sidebar lists: those waiting for the person first, then the
+ * latest, and the open one wherever it falls, so it is always in view.
+ */
+export function sidebarChats(chats: Conversation[], active: string | null): Conversation[] {
+  const needs = chats.filter((chat) => chat.status === 'needs_you');
+  const rest = chats.filter((chat) => chat.status !== 'needs_you');
+  const shown = [...needs, ...rest.slice(0, Math.max(0, RECENT_CHATS - needs.length))];
+  const open = active ? chats.find((chat) => chat.id === active) : undefined;
+  return open && !shown.includes(open) ? [...shown, open] : shown;
+}
+
 function SpaceSwitcher() {
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
@@ -187,7 +203,7 @@ function AccountMenu({ address }: { address: string | null }) {
           <Menu label="Account" width={232}>
             <Overline style={{ padding: '6px 8px 2px' }}>{name}</Overline>
             <div style={{ padding: '0 8px 6px', fontSize: 12, color: 'var(--muted)' }}>
-              {profile?.time_zone ?? ''}
+              {profile?.time_zone ? zoneName(profile.time_zone) : ''}
             </div>
             <MenuSep />
             <MenuItem
@@ -243,6 +259,7 @@ function Sidebar({
   const decisions = useDecisions();
   const activeChat = route.parts[0] === 'chat' ? (route.parts[1] ?? null) : null;
   const chats = [...conversations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  const recent = sidebarChats(chats, activeChat);
   // The address the person sends from: the space's mail connection that can send.
   const address = profile?.sending_address ?? null;
   return (
@@ -299,7 +316,7 @@ function Sidebar({
       </nav>
       <div className="sidebar-recent">
         <div className="recent-label">Chats</div>
-        {chats.map((chat) => {
+        {recent.map((chat) => {
           const agent = agentById(agents, chat.agent_id);
           const live = LIVE.has(chat.status);
           return (
@@ -328,6 +345,13 @@ function Sidebar({
             </a>
           );
         })}
+        {chats.length > recent.length ? (
+          <a className="chat-row chat-all" href={href('/chats')} onClick={onClose}>
+            <span className="grow">All chats</span>
+            <span className="chat-all-count">{chats.length}</span>
+            <Icon name="chevronRight" size={14} />
+          </a>
+        ) : null}
         {conversationsError && conversations.length === 0 ? (
           <LoadError
             compact
@@ -733,6 +757,14 @@ export function Shell({
   return (
     <RailContext.Provider value={railState}>
       <div className="shell">
+        {/* The first stop for the keyboard: past the sidebar, straight to the page. */}
+        <button
+          type="button"
+          className="skip-link"
+          onClick={() => document.getElementById('main')?.focus()}
+        >
+          Skip to content
+        </button>
         {phone && drawer ? (
           // biome-ignore lint/a11y/noStaticElementInteractions: the scrim closes the drawer; the close button does the same for the keyboard
           <div className="drawer-scrim" onMouseDown={closeDrawer} />
@@ -796,7 +828,9 @@ export function Shell({
             </header>
           ) : null}
           <div className="shell-body">
-            <main className="shell-content">{children}</main>
+            <main id="main" className="shell-content" tabIndex={-1}>
+              {children}
+            </main>
             {panel}
             {railVisible ? <Rail sheet={narrow} onClose={closeRail} panelRef={railRef} /> : null}
           </div>

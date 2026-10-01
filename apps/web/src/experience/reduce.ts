@@ -127,11 +127,23 @@ function patchTurn(
   return { ...transcript, turns };
 }
 
-/** The saved answer plus what streamed after it was read, never doubled. */
-export const answerOf = (turn: TranscriptTurn): string =>
-  turn.streamed && turn.turn.answer.endsWith(turn.streamed)
-    ? turn.turn.answer
-    : turn.turn.answer + turn.streamed;
+/**
+ * The saved answer plus what streamed after it was read, never doubled. The
+ * stream can carry the whole answer again, or more than the saved copy around
+ * it, so when one holds the other only the longer one is shown.
+ */
+export function answerOf(turn: TranscriptTurn): string {
+  const answer = turn.turn.answer;
+  const streamed = turn.streamed;
+  if (!streamed) return answer;
+  if (!answer) return streamed;
+  if (streamed.includes(answer)) return streamed;
+  if (answer.includes(streamed)) return answer;
+  return answer + streamed;
+}
+
+/** A turn the service has finished: its saved answer is the whole of it. */
+const FINAL = new Set<TurnStatus>(['done', 'failed', 'stopped']);
 
 /** A card, receipt, permission or question already drawn is not drawn twice. */
 const blockId = (block: TurnBlock): string =>
@@ -195,6 +207,10 @@ export function fillTurns(transcript: Transcript, saved: Turn[]): Transcript {
 }
 
 export function applyEvent(transcript: Transcript, event: ExperienceEvent): Transcript {
+  // An event already applied is not applied again: a stream reopened after
+  // the history was read, or read twice, replays events this page has, and
+  // their text would be added a second time.
+  if (transcript.lastSeq > 0 && event.seq <= transcript.lastSeq) return transcript;
   transcript = ensureTurn(transcript, event);
   const lastSeq = Math.max(transcript.lastSeq, event.seq);
   const item = event.item;
@@ -339,11 +355,13 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         };
       });
     case 'text_delta':
-      return patchTurn(base, event.turn_id, (turn) => ({
-        ...turn,
-        streamed: turn.streamed + item.text,
-        streaming: true,
-      }));
+      return patchTurn(base, event.turn_id, (turn) =>
+        // A finished turn read with its saved answer already holds this text,
+        // and it is not working again.
+        FINAL.has(turn.status) && turn.turn.answer
+          ? turn
+          : { ...turn, streamed: turn.streamed + item.text, streaming: true },
+      );
     case 'card':
       return patchTurn(base, event.turn_id, (turn) => ({
         ...turn,

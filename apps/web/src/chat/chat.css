@@ -729,9 +729,15 @@ button.act-line:focus-visible,
   color: var(--sand-ink);
   flex-shrink: 0;
 }
-.permission-lock[data-done="true"] {
+.permission-lock[data-outcome="allowed"] {
   background: var(--success-soft);
   color: var(--success);
+}
+.permission-lock[data-outcome="denied"],
+.permission-lock[data-outcome="withdrawn"],
+.permission-lock[data-outcome="decided"] {
+  background: var(--chip-bg);
+  color: var(--secondary);
 }
 .permission-what {
   font-size: 14px;
@@ -1707,11 +1713,204 @@ button.act-line:focus-visible,
   text-decoration: underline;
 }
 .answer-code {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.86em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82em;
   padding: 1px 5px;
   border-radius: 5px;
-  background: var(--line);
+  background: var(--chip-bg);
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- answer Markdown: prose in the voice face, structure in the UI face ---------- */
+.answer-link {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.answer-link:hover {
+  text-decoration-thickness: 2px;
+}
+.answer-heading {
+  font-family: var(--font-body);
+  font-weight: 600;
+  color: var(--heading);
+  letter-spacing: -0.01em;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.answer-heading[data-level="1"] {
+  font-size: 17px;
+  line-height: 24px;
+}
+.answer-heading[data-level="2"] {
+  font-size: 15px;
+  line-height: 22px;
+}
+.answer-heading[data-level="3"] {
+  font-size: 14px;
+  line-height: 20px;
+}
+.answer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 22px;
+  font-family: var(--font-voice);
+  font-size: 17px;
+  line-height: 28px;
+  letter-spacing: -0.012em;
+  color: var(--heading);
+}
+ul.answer-list {
+  list-style: disc;
+}
+ol.answer-list {
+  list-style: decimal;
+}
+.answer-list .answer-list {
+  margin-top: 6px;
+}
+.answer-list li {
+  padding-left: 2px;
+  overflow-wrap: anywhere;
+}
+.answer-list li::marker {
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+.answer-list li[data-task="true"] {
+  list-style: none;
+  margin-left: -20px;
+}
+.answer-list li > p {
+  margin-top: 6px;
+}
+.answer-task {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  color: var(--surface);
+}
+.answer-task[data-done="true"] {
+  background: var(--primary);
+  box-shadow: none;
+}
+.answer-quote {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--line-strong);
+}
+.turn-text .answer-quote p {
+  color: var(--secondary);
+}
+.answer-pre {
+  border-radius: 10px;
+  background: var(--soft);
+  box-shadow: inset 0 0 0 1px var(--line);
+  min-width: 0;
+  overflow: hidden;
+}
+.answer-pre-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 0 14px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 28px;
+  color: var(--muted);
+}
+.answer-pre-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.answer-pre-copy:hover {
+  background: var(--chip-bg);
+  color: var(--heading);
+}
+.answer-pre pre {
+  margin: 0;
+  padding: 6px 14px 12px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--heading);
+  white-space: pre;
+  tab-size: 4;
+}
+.answer-pre pre:focus-visible,
+.answer-table:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ring);
+}
+.answer-pre[data-terminal="true"] {
+  background: #17181b;
+  box-shadow: inset 0 0 0 1px #2b2e33;
+}
+.answer-pre[data-terminal="true"] pre {
+  color: #e6e7ea;
+}
+.answer-pre[data-terminal="true"] .answer-pre-head,
+.answer-pre[data-terminal="true"] .answer-pre-copy {
+  color: #a4a9b2;
+}
+.answer-pre[data-terminal="true"] .answer-pre-copy:hover {
+  background: #2b2e33;
+  color: #f3f4f6;
+}
+.answer-table {
+  overflow-x: auto;
+  min-width: 0;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.answer-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text);
+}
+.answer-table th,
+.answer-table td {
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+.answer-table th {
+  font-weight: 600;
+  color: var(--heading);
+  background: var(--soft);
+  white-space: nowrap;
+}
+.answer-table tr:last-child td {
+  border-bottom: 0;
 }
 
 /* Under the header: this chat is kept private because of what was said in it. */

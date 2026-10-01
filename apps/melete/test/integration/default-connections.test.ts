@@ -109,7 +109,7 @@ const journey = late ? await database() : null;
       ).json()) as { connections: Array<{ label: string; builtin?: boolean }> };
       expect(shown.connections.map((row) => [row.label, row.builtin])).toEqual([
         ['Files', true],
-        ['Finished work', true],
+        ['Saved results', true],
         ['Web', true],
       ]);
 
@@ -310,7 +310,7 @@ const journey = late ? await database() : null;
       ).json()) as { connections: Array<{ id: string; label: string; builtin?: boolean }> };
       expect(shown.connections.map((row) => [row.label, row.builtin])).toEqual([
         ['Files', true],
-        ['Finished work', true],
+        ['Saved results', true],
         ['Web', true],
       ]);
       // Settings reads the space the session speaks for, never another account's.

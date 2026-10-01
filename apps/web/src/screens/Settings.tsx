@@ -6,7 +6,7 @@
  * with their limits and revoke.
  */
 import { type ReactNode, useState } from 'react';
-import { logoFor } from '../chat/parts.tsx';
+import { appIcon, logoFor } from '../chat/parts.tsx';
 import { Icon } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
@@ -90,7 +90,7 @@ export function ConnectionCard({
               color: 'var(--blue-ink)',
             }}
           >
-            <Icon name="connectors" size={20} />
+            <Icon name={appIcon(connection.app, connection.label)} size={20} />
           </span>
         )}
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
