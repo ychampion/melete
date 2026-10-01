@@ -94,7 +94,7 @@ describe('setting a phone line up at ElevenLabs', () => {
       settings: {
         auth_type: 'hmac',
         name: `Melete ${input.connectionId}`,
-        webhook_url: `https://melete.example.com/phone/${input.connectionId}/events`,
+        webhook_url: `https://melete.example.com/api/phone/${input.connectionId}/events`,
       },
     });
     expect(agent).toMatchObject({
@@ -103,7 +103,7 @@ describe('setting a phone line up at ElevenLabs', () => {
           prompt: {
             llm: 'custom-llm',
             custom_llm: {
-              url: `https://melete.example.com/phone/${input.connectionId}/llm/v1`,
+              url: `https://melete.example.com/api/phone/${input.connectionId}/llm/v1`,
               api_key: { secret_id: 'sec_el' },
               request_headers: { 'x-melete-key': { secret_id: 'sec_el' } },
             },
@@ -121,7 +121,7 @@ describe('setting a phone line up at ElevenLabs', () => {
         },
         workspace_overrides: {
           conversation_initiation_client_data_webhook: {
-            url: `https://melete.example.com/phone/${input.connectionId}/inbound`,
+            url: `https://melete.example.com/api/phone/${input.connectionId}/inbound`,
             request_headers: { 'x-melete-key': { secret_id: 'sec_el' } },
           },
           webhooks: { post_call_webhook_id: 'wh_el' },

@@ -27,9 +27,13 @@ export const LINE_KEY_HEADER = 'x-melete-key';
 /** A call may run this long before ElevenLabs ends it. */
 export const MAX_CALL_SECONDS = 900;
 
-/** The three addresses ElevenLabs calls for one line. */
+/**
+ * The three addresses ElevenLabs calls for one line. `MELETE_PUBLIC_URL` is the
+ * web address, whose server passes only `/api` on to this service, as it does
+ * for sign-in callbacks.
+ */
 export function lineAddresses(publicUrl: string, connectionId: string) {
-  const base = `${publicUrl.replace(/\/+$/, '')}/phone/${connectionId}`;
+  const base = `${publicUrl.replace(/\/+$/, '')}/api/phone/${connectionId}`;
   return { llm: `${base}/llm/v1`, inbound: `${base}/inbound`, events: `${base}/events` };
 }
 

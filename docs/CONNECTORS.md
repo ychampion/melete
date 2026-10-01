@@ -887,6 +887,10 @@ is refused. A computer with no public address needs a tunnel to offer a line.
 
 ### What installing does at ElevenLabs
 
+ElevenLabs reaches the line's routes below at `MELETE_PUBLIC_URL` followed by
+`/api`, which the web server passes on to the service, as it does sign-in
+callbacks.
+
 Before anything is written here, the service uses the person's key to create
 four things. If any step fails, it removes what it made:
 
