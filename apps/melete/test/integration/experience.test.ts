@@ -560,7 +560,8 @@ withDb('experience rows and authenticated scope', () => {
     );
     await required(runner).commitOutcome(claimed.claims, {
       kind: 'completed',
-      summary: 'Named the model.',
+      // A finished turn saves its outcome's summary as the answer, as a runtime sends it.
+      summary: pieces.join(''),
       evidence: [],
     });
     const expected =
