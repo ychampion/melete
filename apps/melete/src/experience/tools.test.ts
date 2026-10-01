@@ -291,6 +291,18 @@ describe('runtime tools, the model and traces', () => {
         receipt: { status: 'unknown', latencyMs: 1, at: later },
       }).status,
     ).toBe('unknown');
+    // A call cut off by Stop has ended as asked: no spinner, and no failure.
+    expect(
+      modelCall({
+        reservationId: 'bl_1',
+        requestedAt: at,
+        receipt: { status: 'unknown', latencyMs: 1, at: later, stopped: true },
+      }),
+    ).toMatchObject({
+      status: 'done',
+      title: 'Stopped',
+      output_summary: { text: 'Stopped when you asked.' },
+    });
   });
 
   test('a trace is scrubbed again, whatever its writer put in it', () => {

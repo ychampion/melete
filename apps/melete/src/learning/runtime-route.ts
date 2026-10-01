@@ -145,7 +145,6 @@ export function learningRuntimeFetch(options: {
           else {
             // Preserve the delivered catalog and record the omission once per attempt.
             await options.sql.begin(async (tx) => {
-              await tx`select pg_advisory_xact_lock(31003103)`;
               await checkAttempt(tx, await lockJob(tx, claims.job_id), claims);
               await appendEvent(
                 tx,

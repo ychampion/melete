@@ -45,6 +45,7 @@ import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { STOPPED_NOTE } from '../experience/projectors.ts';
 import { withdrawPendingPermissions } from '../experience/service.ts';
+import { stopModelCalls } from '../gateway/inflight.ts';
 import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { spaceAuthority } from '../principals/authority.ts';
@@ -150,6 +151,7 @@ export class AttemptRunner {
       throw new Error('MELETE_CAPABILITY_KEY must be at least 32 bytes');
     this.scheduler = new FairScheduler(this.concurrency);
     jobs.onCancelled = (id) => this.interrupt(id);
+    jobs.stopTurn = (tx, row) => this.stopTurn(tx, row);
   }
 
   private get concurrency() {
@@ -791,96 +793,107 @@ export class AttemptRunner {
     await this.jobs.transaction(async (tx) => {
       const row = await this.jobs.lock(tx, jobId);
       if (row?.kind !== 'chat') throw new ServiceError('not_found', 'Conversation not found.', 404);
-      if (!row.currentTurnId) return;
-      const [turn] = await tx
-        .select()
-        .from(experienceTurn)
-        .where(eq(experienceTurn.id, row.currentTurnId));
-      if (!turn || ['done', 'stopped', 'failed'].includes(turn.status)) return;
-      // An action parked until its destination is back (a computer that was off,
-      // a rate limit) would otherwise go later by itself. Stopping ends it here,
-      // recorded as the broker records a dispatch it refuses.
-      const parked = await tx
-        .select()
-        .from(action)
-        .where(
-          and(
-            eq(action.jobId, row.id),
-            eq(action.status, 'admitted'),
-            isNotNull(action.retryAfterAt),
-          ),
-        )
-        .for('update');
-      for (const effect of parked) {
-        const reason = 'the conversation was stopped';
-        await tx
-          .update(action)
-          .set({
-            status: 'failed',
-            resolvedAt: new Date(),
-            reconciliation: { reason, retryable: false },
-          })
-          .where(eq(action.id, effect.id));
-        await tx
-          .update(budgetLedger)
-          .set({ settled: 0 })
-          .where(and(eq(budgetLedger.actionId, effect.id), isNull(budgetLedger.settled)));
-        await appendEvent(tx, {
-          jobId: row.id,
-          attemptId: effect.attemptId,
-          type: 'action_status_changed',
-          payload: { action_id: effect.id, from: 'admitted', to: 'failed' },
-          dedupKey: `${effect.id}:stopped:status`,
-        });
-        await appendEvent(tx, {
-          jobId: row.id,
-          attemptId: effect.attemptId,
-          type: 'notice',
-          payload: {
-            action_id: effect.id,
-            phase: 'dispatch_rejected',
-            outcome: 'fenced',
-            reason,
-          },
-          dedupKey: `${effect.id}:stopped`,
-        });
-      }
-      await tx
-        .update(job)
-        .set({
-          state: 'waiting_for_input',
-          wait: { kind: 'user_input', question: 'What would you like to do next?' },
-          leaseEpoch: row.leaseEpoch + 1,
-          stateVersion: row.stateVersion + 1,
-          nextWakeAt: null,
-          paused: false,
-          pauseRequested: false,
-        })
-        .where(eq(job.id, row.id));
-      await tx
-        .update(experienceTurn)
-        .set({ status: 'stopped', finishedAt: new Date() })
-        .where(eq(experienceTurn.id, turn.id));
-      // Nothing the stopped turn asked for may still be allowed afterwards.
-      await withdrawPendingPermissions(tx, jobId, STOPPED_NOTE);
-      await tx
-        .update(attempt)
-        .set({
-          outcome: 'fenced',
-          outcomeDetail: { kind: 'cancelled' },
-          endedAt: new Date(),
-          leaseExpiresAt: null,
-          leaseStatus: 'ended',
-        })
-        .where(and(eq(attempt.jobId, jobId), isNull(attempt.endedAt)));
-      await appendEvent(tx, {
-        jobId,
-        type: 'notice',
-        payload: { kind: 'experience_stopped', turn_id: turn.id },
-        dedupKey: `${turn.id}:stopped`,
-      });
+      await this.stopTurn(tx, row);
     });
     this.interrupt(jobId);
+  }
+
+  /**
+   * End the conversation's turn in flight, under the job lock the caller holds:
+   * the conversation waits for its next message. False when no turn was in
+   * flight. Stop and a cancelled conversation both end a turn this way.
+   */
+  async stopTurn(tx: Transaction, row: JobRow): Promise<boolean> {
+    const jobId = row.id;
+    if (!row.currentTurnId) return false;
+    const [turn] = await tx
+      .select()
+      .from(experienceTurn)
+      .where(eq(experienceTurn.id, row.currentTurnId));
+    if (!turn || ['done', 'stopped', 'failed'].includes(turn.status)) return false;
+    // An action parked until its destination is back (a computer that was off,
+    // a rate limit) would otherwise go later by itself. Stopping ends it here,
+    // recorded as the broker records a dispatch it refuses.
+    const parked = await tx
+      .select()
+      .from(action)
+      .where(
+        and(
+          eq(action.jobId, row.id),
+          eq(action.status, 'admitted'),
+          isNotNull(action.retryAfterAt),
+        ),
+      )
+      .for('update');
+    for (const effect of parked) {
+      const reason = 'the conversation was stopped';
+      await tx
+        .update(action)
+        .set({
+          status: 'failed',
+          resolvedAt: new Date(),
+          reconciliation: { reason, retryable: false },
+        })
+        .where(eq(action.id, effect.id));
+      await tx
+        .update(budgetLedger)
+        .set({ settled: 0 })
+        .where(and(eq(budgetLedger.actionId, effect.id), isNull(budgetLedger.settled)));
+      await appendEvent(tx, {
+        jobId: row.id,
+        attemptId: effect.attemptId,
+        type: 'action_status_changed',
+        payload: { action_id: effect.id, from: 'admitted', to: 'failed' },
+        dedupKey: `${effect.id}:stopped:status`,
+      });
+      await appendEvent(tx, {
+        jobId: row.id,
+        attemptId: effect.attemptId,
+        type: 'notice',
+        payload: {
+          action_id: effect.id,
+          phase: 'dispatch_rejected',
+          outcome: 'fenced',
+          reason,
+        },
+        dedupKey: `${effect.id}:stopped`,
+      });
+    }
+    await tx
+      .update(job)
+      .set({
+        state: 'waiting_for_input',
+        wait: { kind: 'user_input', question: 'What would you like to do next?' },
+        leaseEpoch: row.leaseEpoch + 1,
+        stateVersion: row.stateVersion + 1,
+        nextWakeAt: null,
+        paused: false,
+        pauseRequested: false,
+      })
+      .where(eq(job.id, row.id));
+    await tx
+      .update(experienceTurn)
+      .set({ status: 'stopped', finishedAt: new Date() })
+      .where(eq(experienceTurn.id, turn.id));
+    // Nothing the stopped turn asked for may still be allowed afterwards.
+    await withdrawPendingPermissions(tx, jobId, STOPPED_NOTE);
+    await tx
+      .update(attempt)
+      .set({
+        outcome: 'fenced',
+        outcomeDetail: { kind: 'cancelled' },
+        endedAt: new Date(),
+        leaseExpiresAt: null,
+        leaseStatus: 'ended',
+      })
+      .where(and(eq(attempt.jobId, jobId), isNull(attempt.endedAt)));
+    await appendEvent(tx, {
+      jobId,
+      type: 'notice',
+      payload: { kind: 'experience_stopped', turn_id: turn.id },
+      dedupKey: `${turn.id}:stopped`,
+    });
+    return true;
   }
 
   async pauseConversation(jobId: string, resume: boolean) {
@@ -1130,6 +1143,9 @@ export class AttemptRunner {
     for (const active of this.active.values())
       if (active.jobId === jobId && (!attemptId || active.attemptId === attemptId))
         active.controller.abort(new Error('Attempt interrupted'));
+    // A model call the engine already made goes on until the provider finishes
+    // unless the gateway ends it; ending the engine's run does not.
+    stopModelCalls(jobId, attemptId);
   }
 
   /**

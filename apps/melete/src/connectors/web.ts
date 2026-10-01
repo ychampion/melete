@@ -266,11 +266,15 @@ export const webManifest: ConnectorManifest = {
  * Whether a space or an agent keeps everything on this machine. A private one
  * reads nothing from the web beyond what a job was explicitly given.
  */
-export type PrivateContext = (scope: {
-  spaceId: string;
-  agentId: string | null;
-  jobId: string;
-}) => Promise<boolean>;
+export type PrivateContext = (
+  scope: {
+    spaceId: string;
+    agentId: string | null;
+    jobId: string;
+  },
+  /** The transaction the caller holds, to read through rather than take another connection. */
+  query?: Query,
+) => Promise<boolean>;
 
 /**
  * Why a job may not read a public page it was not explicitly given, or null
@@ -314,7 +318,7 @@ export function databasePublicReads(options: {
       const agentId = row.agent_id ? String(row.agent_id) : null;
       // A check that cannot answer keeps the space offline rather than guessing.
       const offline = await options
-        .privateContext({ spaceId: scope.spaceId, agentId, jobId: scope.jobId })
+        .privateContext({ spaceId: scope.spaceId, agentId, jobId: scope.jobId }, query)
         .catch(() => true);
       if (offline) return PUBLIC_READS_PRIVATE;
     }

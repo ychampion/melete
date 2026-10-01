@@ -1,4 +1,4 @@
-import { EVENT_ORDER_LOCK } from '../db/transaction.ts';
+import { EVENT_ORDER_LOCK, lockEventOrderIn } from '../db/transaction.ts';
 import {
   enqueue,
   MemoryError,
@@ -37,7 +37,7 @@ export async function notifyInvalidated(sql: MemorySql, spaceId: string) {
  * any memory lock: the broker holds it while it reads memory for an admission.
  */
 export async function lockEventOrder(tx: MemoryTx) {
-  await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+  await lockEventOrderIn(tx);
 }
 
 /** Exact delivered dependencies, or conservative invalidation where a job has no dependency record. */

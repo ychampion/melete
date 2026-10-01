@@ -7,7 +7,7 @@ import {
   type JobConstraints,
 } from '@melete/contracts';
 import type { Sql, TransactionSql } from 'postgres';
-import { EVENT_ORDER_LOCK } from '../db/transaction.ts';
+import { lockEventOrderIn } from '../db/transaction.ts';
 import { BrokerFault } from './errors.ts';
 
 export type Query = Sql | TransactionSql;
@@ -41,7 +41,7 @@ export function recordId(prefix: string): string {
 export async function lockJob(tx: TransactionSql, id: string): Promise<LockedJob> {
   // Acquire before the row lock, just as serviceTransaction does. Otherwise a
   // later committed event can advance an SSE cursor past this transaction.
-  await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+  await lockEventOrderIn(tx);
   const [job] = await tx<LockedJob[]>`select * from job where id = ${id} for update`;
   if (!job) throw new BrokerFault('stale_epoch', 'Job is not available');
   return job;

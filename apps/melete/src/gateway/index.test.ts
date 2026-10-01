@@ -16,6 +16,7 @@ import {
   type GatewaySettlement,
   providersFromEnv,
 } from './index.ts';
+import { stopModelCalls } from './inflight.ts';
 import { SecretRedactor, UsageCollector } from './metering.ts';
 
 const principal: GatewayPrincipal = {
@@ -577,6 +578,47 @@ describe('model gateway effect boundary', () => {
       .catch(() => 'connection closed');
     expect(cut).not.toContain('part 11');
     expect(quiet.budget.settlements[0]).toMatchObject({ status: 'unknown' });
+  });
+
+  test('stopping an attempt ends its model call at once, and its receipt says it was stopped', async () => {
+    const encoder = new TextEncoder();
+    let sent = 0;
+    // A provider that would go on for about eight seconds.
+    const endless = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        for (let piece = 0; piece < 200; piece++) {
+          await Bun.sleep(40);
+          sent++;
+          controller.enqueue(
+            encoder.encode(
+              `data: {"model":"served","choices":[{"delta":{"content":"part ${piece} "}}]}\n\n`,
+            ),
+          );
+        }
+        controller.close();
+      },
+    });
+    const gateway = await start({
+      fetch: async () =>
+        new Response(endless, { headers: { 'content-type': 'text/event-stream' } }),
+    });
+    const response = await gateway.post('/providers/openai/v1/chat/completions', {
+      model: 'fixture-chat',
+      stream: true,
+    });
+    if (!response.body) throw new Error('expected a streamed answer');
+    const reader = response.body.getReader();
+    await reader.read();
+    // Another job's stop leaves this call alone.
+    expect(stopModelCalls('job-other')).toBe(0);
+    const stoppedAt = performance.now();
+    expect(stopModelCalls(principal.jobId, principal.attemptId)).toBe(1);
+    while (!(await reader.read().catch(() => ({ done: true }))).done);
+    expect(performance.now() - stoppedAt).toBeLessThan(2_000);
+    expect(sent).toBeLessThan(100);
+    expect(gateway.budget.settlements[0]).toMatchObject({ status: 'unknown', stopped: true });
+    // Nothing is left to stop.
+    expect(stopModelCalls(principal.jobId)).toBe(0);
   });
 
   test('absolute-form proxy requests only admit configured inference endpoints', async () => {

@@ -12,6 +12,7 @@ import {
 } from '@melete/contracts';
 import { localEndpoint, PrivacyRouter } from '../privacy/index.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
+import { trackModelCall } from './inflight.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import {
   checkConnectTarget,
@@ -181,9 +182,21 @@ export function createModelGateway(options: GatewayOptions): Server {
       if (!response.writableFinished) abort.abort();
     };
     response.once('close', cancelled);
+    // Set when the attempt this call is for was stopped, so its receipt says so.
+    let stopped = false;
+    let untrack = () => {};
     try {
       if (request.method !== 'POST') throw new GatewayError(405, 'method_denied');
       const principal = inherited?.principal ?? (await options.authenticate(capability(request)));
+      untrack = trackModelCall({
+        jobId: principal.jobId,
+        attemptId: principal.attemptId,
+        stop: () => {
+          stopped = true;
+          if (settlement) settlement.stopped = true;
+          abort.abort();
+        },
+      });
       let target = request.url ?? '';
       if (inherited) {
         if (!target.startsWith('/') || target.startsWith('//')) {
@@ -311,6 +324,7 @@ export function createModelGateway(options: GatewayOptions): Server {
         status: 'unknown',
         httpStatus: null,
         ...(prepared ? { privacy: prepared.receipt } : {}),
+        ...(stopped ? { stopped } : {}),
       };
       if (abort.signal.aborted) throw new GatewayError(504, 'request_aborted');
       const headers = new Headers({
@@ -422,6 +436,7 @@ export function createModelGateway(options: GatewayOptions): Server {
       }
       fail(response, error);
     } finally {
+      untrack();
       clearTimeout(timer);
       response.removeListener('close', cancelled);
     }

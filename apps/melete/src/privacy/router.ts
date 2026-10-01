@@ -121,11 +121,14 @@ export class PrivacyRouter {
     this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
   }
 
-  async settingsFor(spaceId: string | null): Promise<ResolvedSettings> {
+  async settingsFor(
+    spaceId: string | null,
+    query?: Parameters<PrivacyStore['settings']>[1],
+  ): Promise<ResolvedSettings> {
     const key = spaceId ?? '';
     const cached = this.settingsCache.get(key);
     if (cached && Date.now() - cached.at < this.cacheMs) return cached.value;
-    const stored = await this.store.settings(spaceId);
+    const stored = await this.store.settings(spaceId, query);
     const value = resolveSettings(
       stored.plain,
       stored.sealed,
@@ -136,9 +139,16 @@ export class PrivacyRouter {
     return value;
   }
 
-  /** Whether the person marked this space, or this agent in it, private. */
-  async marksPrivate(spaceId: string, agentId: string | null): Promise<boolean> {
-    const settings = await this.settingsFor(spaceId);
+  /**
+   * Whether the person marked this space, or this agent in it, private. Read
+   * through `query` when the caller holds a transaction.
+   */
+  async marksPrivate(
+    spaceId: string,
+    agentId: string | null,
+    query?: Parameters<PrivacyStore['settings']>[1],
+  ): Promise<boolean> {
+    const settings = await this.settingsFor(spaceId, query);
     return settings.privateSpace || (agentId !== null && settings.privateAgents.has(agentId));
   }
 

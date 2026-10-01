@@ -4,7 +4,7 @@ import type { Sql } from 'postgres';
 import { ServiceError } from '../../api/errors.ts';
 import { appendEvent } from '../../broker/records.ts';
 import type { ConnectorContext } from '../../connectors/types.ts';
-import { EVENT_ORDER_LOCK } from '../../db/transaction.ts';
+import { lockEventOrderIn } from '../../db/transaction.ts';
 import type { BrowserWorkerClient } from './client.ts';
 import { BrowserLiveService, type BrowserLiveServiceOptions } from './live-service.ts';
 import { BrowserFault, type BrowserSession } from './sessions.ts';
@@ -92,7 +92,7 @@ export class BrowserSessionService {
     await this.authorize(sessionId, scope);
     const fenced = await this.sql.begin(async (tx) => {
       // Before the job lock, as every event writer does: event order is commit order.
-      await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+      await lockEventOrderIn(tx);
       const [job] =
         await tx`select id, space_id, state, lease_epoch, wait from job where id = ${scope.job_id} for update`;
       if (
@@ -209,7 +209,7 @@ export class BrowserSessionService {
     if (operation === 'takeover') await this.park(scope, sessionId, 'human_control');
     else {
       await this.sql.begin(async (tx) => {
-        await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+        await lockEventOrderIn(tx);
         await appendEvent(tx, scope.job_id, null, 'notice', {
           kind: 'browser_handback',
           session_id: sessionId,

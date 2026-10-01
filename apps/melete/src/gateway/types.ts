@@ -83,6 +83,8 @@ export interface GatewaySettlement {
   httpStatus: number | null;
   /** Where the request went and what was swapped out of it, never the values. */
   privacy?: GatewayPrivacyReceipt;
+  /** The call was cut off because its attempt was stopped or cancelled. */
+  stopped?: boolean;
 }
 
 export interface GatewayBudget {

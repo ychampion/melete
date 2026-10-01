@@ -16,7 +16,7 @@ import {
   SENSITIVE_TOPICS,
   type SensitiveTopic,
 } from '@melete/contracts';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { SealedSecretStore, type SecretRepository } from '../connectors/secrets.ts';
 import type { LocalModel } from './local.ts';
 import { type KnownValue, Vault, type VaultData } from './vault.ts';
@@ -132,8 +132,14 @@ export type RequestLog = {
 export interface PrivacyStore {
   readonly sealing: boolean;
   scope(jobId: string, attemptId: string): Promise<Scope>;
+  /**
+   * `query` is the transaction a caller holds, read through instead of a
+   * connection of the store's own: a caller holding the event order lock must
+   * not wait for another connection.
+   */
   settings(
     spaceId: string | null,
+    query?: Sql | TransactionSql,
   ): Promise<{ plain: PlainSettings; sealed: SealedSettings | null; version: number }>;
   saveSettings(
     spaceId: string,
@@ -269,10 +275,10 @@ export class PostgresPrivacyStore implements PrivacyStore {
     return { jobId, attemptId, spaceId: null, conversationId: null, agentId: null, turnId: null };
   }
 
-  async settings(spaceId: string | null) {
+  async settings(spaceId: string | null, query?: Sql | TransactionSql) {
     if (!spaceId) return { plain: {}, sealed: null, version: 0 };
-    const [row] = await this
-      .sql`select settings, sealed, version from privacy_settings where space_id = ${spaceId}`;
+    const [row] = await (query ??
+      this.sql)`select settings, sealed, version from privacy_settings where space_id = ${spaceId}`;
     if (!row) return { plain: {}, sealed: null, version: 0 };
     let sealed: SealedSettings | null = null;
     if (row.sealed && this.sealing) {

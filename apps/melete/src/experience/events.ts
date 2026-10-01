@@ -10,7 +10,7 @@ import {
   type TrailStep,
   toolCall,
 } from '@melete/contracts';
-import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, lte, sql } from 'drizzle-orm';
 import { reviewView } from '../broker/auto-review.ts';
 import type { Database } from '../db/client.ts';
 import {
@@ -54,6 +54,33 @@ import {
 type EventRow = typeof event.$inferSelect;
 /** Resolves privacy placeholders in a value against its conversation's vault. */
 export type Rehydrate = (jobId: string, attemptId: string, value: unknown) => Promise<unknown>;
+
+/** Where a tool call's resolved arguments are kept: one call of one attempt. */
+const callKey = (attemptId: string, callId: string) => `${attemptId}:${callId}`;
+
+const hasPlaceholder = (value: unknown) => JSON.stringify(value ?? null).includes('⟦');
+
+/**
+ * What a projection pass looks up through other services, resolved before the
+ * event order lock is taken. Those services read on their own pool connections;
+ * awaiting one while holding the lock let every other connection queue on the
+ * lock while the holder waited for a free connection, which froze the service.
+ */
+type Lookups = {
+  /** The last event the lookups cover; the locked pass reads no further. */
+  upTo: number;
+  permissions: Map<
+    string,
+    Extract<ExperienceEvent['item'], { type: 'permission' }>['permission'] | undefined
+  >;
+  questions: Map<
+    string,
+    Extract<ExperienceEvent['item'], { type: 'question' }>['question'] | undefined
+  >;
+  because: Map<string, BecauseLink[]>;
+  /** Tool arguments with their privacy placeholders resolved, by `callKey`. */
+  arguments: Map<string, unknown>;
+};
 
 /** An attempt's answer and reasoning, as streamed so far. */
 type AttemptText = { answer: AnswerStream; reasoning: AnswerStream };
@@ -104,20 +131,16 @@ async function toolCalls(
   source: EventRow,
   jobs: string[],
   spaceId: string,
-  rehydrate?: Rehydrate,
+  arguments_: ReadonlyMap<string, unknown>,
 ): Promise<ToolCall[]> {
   const payload = object(source.payload);
   // What the model gave a tool can still carry a privacy placeholder; the
-  // conversation's own stream shows its real value, and only that stream.
-  const real = async (value: unknown) => {
-    if (!rehydrate || !source.jobId || !source.attemptId) return value;
-    if (!JSON.stringify(value ?? null).includes('⟦')) return value;
-    try {
-      return await rehydrate(source.jobId, source.attemptId, value);
-    } catch {
-      return value;
-    }
-  };
+  // conversation's own stream shows its real value, and only that stream. The
+  // real values were looked up before the event order lock was taken.
+  const real = (callId: string, value: unknown) =>
+    source.attemptId && arguments_.has(callKey(source.attemptId, callId))
+      ? arguments_.get(callKey(source.attemptId, callId))
+      : value;
   const effect = async (actionId: unknown) => {
     if (typeof actionId !== 'string') return undefined;
     const [row] = await tx
@@ -183,7 +206,7 @@ async function toolCalls(
       attemptId: source.attemptId,
       callId: String(payload.call_id ?? ''),
       tool: String(payload.tool ?? ''),
-      arguments: await real(payload.arguments),
+      arguments: real(String(payload.call_id ?? ''), payload.arguments),
       proposedAt: source.createdAt,
     });
     return call ? [call] : [];
@@ -207,7 +230,7 @@ async function toolCalls(
       attemptId: source.attemptId,
       callId: payload.call_id,
       tool: String(proposed.tool ?? ''),
-      arguments: await real(proposed.arguments),
+      arguments: real(payload.call_id, proposed.arguments),
       proposedAt: proposal.createdAt,
       result: { ok: payload.ok === true, at: source.createdAt },
     });
@@ -234,7 +257,12 @@ async function toolCalls(
       modelCall({
         reservationId: payload.reservation_id,
         requestedAt: request?.createdAt ?? source.createdAt,
-        receipt: { status: payload.status, latencyMs: payload.latency_ms, at: source.createdAt },
+        receipt: {
+          status: payload.status,
+          latencyMs: payload.latency_ms,
+          at: source.createdAt,
+          stopped: payload.stopped === true,
+        },
       }),
     ];
   }
@@ -320,8 +348,12 @@ export class ExperienceEvents {
       );
     // Projection appends events, so it takes the event order first like every
     // other writer; otherwise a slow commit here lands behind a later sequence
-    // number that a live stream has already read past.
-    for (const { id } of ids)
+    // number that a live stream has already read past. Everything it asks
+    // other services is looked up first, so nothing under the lock needs a
+    // second connection, and a job with nothing new never takes the lock.
+    for (const { id } of ids) {
+      const lookups = await this.lookups(spaceId, id);
+      if (!lookups) continue;
       await serviceTransaction(this.db, async (tx) => {
         const [row] = await tx
           .select()
@@ -341,6 +373,7 @@ export class ExperienceEvents {
             and(
               inArray(event.jobId, jobs),
               gt(event.seq, row.experienceCursor),
+              lte(event.seq, lookups.upTo),
               sql`coalesce(${event.payload}->>'kind', '') <> 'experience'`,
             ),
           )
@@ -410,13 +443,7 @@ export class ExperienceEvents {
         };
         for (const source of raw) {
           const payload = object(source.payload);
-          for (const tool of await toolCalls(
-            tx,
-            source,
-            jobs,
-            spaceId,
-            this.projections?.rehydrate,
-          )) {
+          for (const tool of await toolCalls(tx, source, jobs, spaceId, lookups.arguments)) {
             const shown = await shownTool(tx, id, tool.id, 'tool');
             if (JSON.stringify(shown) !== JSON.stringify(tool))
               await emit(source, { type: 'tool', tool }, `tool:${tool.id}`);
@@ -457,7 +484,7 @@ export class ExperienceEvents {
             source.type === 'approval_requested' &&
             typeof payload.approval_id === 'string'
           ) {
-            const permission = await this.projections?.permission(spaceId, payload.approval_id);
+            const permission = lookups.permissions.get(payload.approval_id);
             if (permission) await emit(source, { type: 'permission', permission });
           } else if (
             source.type === 'approval_decided' &&
@@ -482,7 +509,7 @@ export class ExperienceEvents {
             });
             await emit(source, { type: 'decision', decision }, `decision:${decision.id}`);
           } else if (payload.kind === 'question_asked' && typeof payload.question_id === 'string') {
-            const question = await this.projections?.question(spaceId, payload.question_id);
+            const question = lookups.questions.get(payload.question_id);
             if (question) await emit(source, { type: 'question', question });
           } else if (
             payload.kind === 'question_closed' &&
@@ -552,7 +579,7 @@ export class ExperienceEvents {
                       created_at: review.createdAt,
                     })
                   : null,
-                await this.projections?.because?.(spaceId, effect.action.id),
+                lookups.because.get(effect.action.id),
               );
               if (receipt) await emit(source, { type: 'receipt', receipt });
               // A card is projected once, when its draft is freshly prepared; its
@@ -685,6 +712,108 @@ export class ExperienceEvents {
           })
           .where(eq(job.id, id));
       });
+    }
+  }
+
+  /**
+   * Read, without the lock, what the next projection pass of this job will
+   * cover and look up what it needs from other services. Null when there is
+   * nothing new. Events at or below `upTo` are already committed in sequence
+   * order (every event writer takes the event order lock), so the locked pass
+   * sees no event in this window that was not looked up here.
+   */
+  private async lookups(spaceId: string, id: string): Promise<Lookups | null> {
+    const [row] = await this.db
+      .select({ cursor: job.experienceCursor })
+      .from(job)
+      .where(and(eq(job.id, id), eq(job.spaceId, spaceId)));
+    if (!row) return null;
+    const linked = await this.db
+      .select({ id: job.id })
+      .from(job)
+      .where(and(eq(job.experienceParentId, id), eq(job.spaceId, spaceId)));
+    const raw = await this.db
+      .select()
+      .from(event)
+      .where(
+        and(
+          inArray(event.jobId, [id, ...linked.map((item) => item.id)]),
+          gt(event.seq, row.cursor),
+          sql`coalesce(${event.payload}->>'kind', '') <> 'experience'`,
+        ),
+      )
+      .orderBy(asc(event.seq))
+      .limit(1000);
+    const last = raw.at(-1);
+    if (!last) return null;
+    const lookups: Lookups = {
+      upTo: last.seq,
+      permissions: new Map(),
+      questions: new Map(),
+      because: new Map(),
+      arguments: new Map(),
+    };
+    const projections = this.projections;
+    const rehydrate = projections?.rehydrate;
+    const resolve = async (source: EventRow, callId: string, value: unknown) => {
+      if (!rehydrate || !source.jobId || !source.attemptId || !hasPlaceholder(value)) return;
+      try {
+        lookups.arguments.set(
+          callKey(source.attemptId, callId),
+          await rehydrate(source.jobId, source.attemptId, value),
+        );
+      } catch {
+        // The placeholder stays as it is, as it would if nothing could resolve it.
+      }
+    };
+    for (const source of raw) {
+      const payload = object(source.payload);
+      if (source.type === 'approval_requested' && typeof payload.approval_id === 'string') {
+        if (projections && !lookups.permissions.has(payload.approval_id))
+          lookups.permissions.set(
+            payload.approval_id,
+            await projections.permission(spaceId, payload.approval_id),
+          );
+      } else if (payload.kind === 'question_asked' && typeof payload.question_id === 'string') {
+        if (projections && !lookups.questions.has(payload.question_id))
+          lookups.questions.set(
+            payload.question_id,
+            await projections.question(spaceId, payload.question_id),
+          );
+      } else if (
+        source.type === 'action_status_changed' &&
+        payload.to === 'succeeded' &&
+        typeof payload.action_id === 'string'
+      ) {
+        if (projections?.because && !lookups.because.has(payload.action_id))
+          lookups.because.set(
+            payload.action_id,
+            await projections.because(spaceId, payload.action_id),
+          );
+      } else if (source.type === 'tool_call_proposed' && source.attemptId) {
+        await resolve(source, String(payload.call_id ?? ''), payload.arguments);
+      } else if (
+        rehydrate &&
+        source.type === 'tool_result' &&
+        source.attemptId &&
+        typeof payload.call_id === 'string'
+      ) {
+        const [proposal] = await this.db
+          .select({ payload: event.payload })
+          .from(event)
+          .where(
+            and(
+              eq(event.attemptId, source.attemptId),
+              eq(event.type, 'tool_call_proposed'),
+              sql`${event.payload}->>'call_id' = ${payload.call_id}`,
+            ),
+          )
+          .orderBy(asc(event.seq))
+          .limit(1);
+        if (proposal) await resolve(source, payload.call_id, object(proposal.payload).arguments);
+      }
+    }
+    return lookups;
   }
 
   /**
