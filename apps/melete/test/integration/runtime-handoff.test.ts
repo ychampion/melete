@@ -92,10 +92,12 @@ afterAll(async () => {
       client_ref: 'handoff',
     });
     expect(fresh.action_id).not.toBe(proposed.action_id);
-    const [old] =
-      await handle.sql`select status, reconciliation from action where id = ${proposed.action_id}`;
-    expect(old?.status).toBe('failed');
-    expect(old?.reconciliation.reason).toBe('job_revision_changed');
+    // The new attempt found the question unanswered and withdrew it: the old
+    // action can never be allowed, and the new one is asked afresh.
+    const [old] = await handle.sql`select a.status, p.decision, p.decided_by from action a
+      join approval p on p.action_id = a.id where a.id = ${proposed.action_id}`;
+    expect(old).toEqual({ status: 'denied', decision: 'denied', decided_by: 'changed' });
+    expect(fresh.status).toBe('needs_approval');
     expect(
       (
         await runner.commitOutcome(replacement.claims, {
