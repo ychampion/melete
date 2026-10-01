@@ -724,7 +724,7 @@ withDb('durable waits, triggers and approval inputs', () => {
     expect((await jobs.get(admitted.claims.job_id)).state).toBe('queued');
   });
 
-  test('an approval whose request changed is withdrawn: Deny closes it, the next attempt is told', async () => {
+  test('an approval whose request changed: a Deny is recorded as a refusal, the rest is withdrawn and the next attempt is told', async () => {
     const { jobs, handle } = fixture();
     const admitted = await claim(await create());
     const denied = await proposed(admitted);
@@ -745,20 +745,20 @@ withDb('durable waits, triggers and approval inputs', () => {
         { decision: 'denied', payload_hash: denied.hash },
         ownerId,
       ),
-    ).toMatchObject({ decision: 'denied', decidedBy: 'outdated' });
-    // The other one is closed when the job next runs, and the attempt is told.
+    ).toMatchObject({ decision: 'denied', decidedBy: ownerId });
+    // The other one is closed when the job next runs, and the attempt is told
+    // which was the person's refusal and which was only withdrawn.
     await handle.sql`update job set state = 'queued', next_wake_at = now()
       where id = ${admitted.claims.job_id}`;
     const next = await claim(await jobs.get(admitted.claims.job_id));
-    expect(next.bundle.inputs.approval_results).toEqual(
-      [denied, allowed].map((proposal) =>
-        expect.objectContaining({
-          action_id: proposal.actionId,
-          decision: 'denied',
-          note: 'outdated',
-        }),
-      ),
-    );
+    expect(next.bundle.inputs.approval_results).toEqual([
+      expect.objectContaining({ action_id: denied.actionId, decision: 'denied', note: null }),
+      expect.objectContaining({
+        action_id: allowed.actionId,
+        decision: 'denied',
+        note: 'outdated',
+      }),
+    ]);
     const [closed] = await handle.db
       .select()
       .from(approval)

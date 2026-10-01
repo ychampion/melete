@@ -84,14 +84,45 @@ export class ApprovalService {
         canonicalizePayload(jsonObject.parse(effect.canonicalPayload)).hash !== effect.payloadHash
       )
         throw new ServiceError('approval_hash_mismatch', 'The action content changed.');
-      // The request changed before this was answered. The approval is
-      // withdrawn rather than left open forever: a Deny agrees with that, and
-      // an Allow is refused once the withdrawal is committed.
-      if (
+      // The request changed before this was answered. A Deny is still the
+      // person's refusal and is recorded as theirs; an Allow is refused once
+      // the question is withdrawn, rather than leaving it open forever.
+      const outdated =
         decision.decidedBy === OUTDATED_NOTE ||
         (decision.decision === null &&
-          (row.revision !== decision.jobRevision || effect.status !== 'needs_approval'))
-      ) {
+          (row.revision !== decision.jobRevision || effect.status !== 'needs_approval'));
+      // The person's own Deny, pressed again.
+      if (
+        request.decision === 'denied' &&
+        decision.decision === 'denied' &&
+        decision.decidedBy === ownerId
+      )
+        return { approval: decision, withdrawn: false };
+      if (outdated && decision.decision === null && request.decision === 'denied') {
+        const [denied] = await tx
+          .update(approval)
+          .set({ decision: 'denied', decidedAt: new Date(), decidedBy: ownerId })
+          .where(eq(approval.id, id))
+          .returning();
+        if (!denied) throw new Error('locked approval disappeared');
+        if (effect.status === 'needs_approval')
+          await tx.update(action).set({ status: 'denied' }).where(eq(action.id, effect.id));
+        await appendEvent(tx, {
+          jobId: row.id,
+          attemptId: effect.attemptId,
+          type: 'approval_decided',
+          payload: {
+            approval_id: id,
+            action_id: effect.id,
+            decision: 'denied',
+            note: request.note ?? null,
+            payload_hash: effect.payloadHash,
+          },
+          dedupKey: `${id}:decision`,
+        });
+        return { approval: denied, withdrawn: false };
+      }
+      if (outdated) {
         await withdrawOutdatedPermissions(tx, row.id);
         const [closed] = await tx.select().from(approval).where(eq(approval.id, id));
         if (!closed) throw new Error('locked approval disappeared');

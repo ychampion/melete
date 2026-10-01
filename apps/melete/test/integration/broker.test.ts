@@ -296,7 +296,7 @@ describe('durable action lifecycle', () => {
           decision: 'denied',
           payload_hash: denied.payload_hash,
         }),
-      ).toMatchObject({ decision: 'denied', withdrawn: true });
+      ).toMatchObject({ decision: 'denied' });
       expect(
         await rejectionOf(
           s.broker.decide(allowed.action_id, {
@@ -305,13 +305,16 @@ describe('durable action lifecycle', () => {
           }),
         ),
       ).toMatchObject({ code: 'revision_mismatch' });
-      for (const proposal of [denied, allowed]) {
+      for (const [proposal, by] of [
+        [denied, 'owner'],
+        [allowed, APPROVAL_OUTDATED_NOTE],
+      ] as const) {
         const [approval] = await s.sql`select decision, decided_by from approval
           where id = ${proposal.approval_id}`;
-        expect(approval).toEqual({ decision: 'denied', decided_by: APPROVAL_OUTDATED_NOTE });
+        expect(approval).toEqual({ decision: 'denied', decided_by: by });
         expect((await loadAction(s.sql, proposal.action_id)).status).toBe('denied');
       }
-      // A second press on a withdrawn card agrees with a Deny and refuses an Allow.
+      // A second press agrees with a Deny.
       expect(
         await s.broker.decide(denied.action_id, {
           decision: 'denied',
@@ -320,10 +323,8 @@ describe('durable action lifecycle', () => {
       ).toMatchObject({ decision: 'denied' });
       const notes = await s.sql`select payload from event where job_id = ${s.claims.job_id}
         and type = 'approval_decided' order by seq`;
-      expect(notes.map((row) => row.payload.note)).toEqual([
-        APPROVAL_OUTDATED_NOTE,
-        APPROVAL_OUTDATED_NOTE,
-      ]);
+      // The person's Deny is theirs, with no withdrawal note; the Allow withdrew its card.
+      expect(notes.map((row) => row.payload.note)).toEqual([null, APPROVAL_OUTDATED_NOTE]);
       expect(s.calls()).toBe(0);
     },
   );

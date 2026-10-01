@@ -242,15 +242,14 @@ const ownerAnswered = (action: Action) =>
 /** Job states after which none of the job's actions can run. */
 const ENDED_JOB_STATES = new Set(['cancelled', 'failed', 'completed']);
 /**
- * Refusals that leave an approved action unable ever to run: the binding, the
- * policy or account generation, or the job revision moved, or the approval
- * expired. Each needs a newly reviewed action.
+ * Refusals that leave an approved action unable ever to run: the binding or
+ * the job revision moved, or the approval expired. Each needs a newly reviewed
+ * action. A scope refusal is left out: access can come back.
  */
 const SPENT_APPROVAL_FAULTS: ReadonlySet<string> = new Set([
   'approval_hash_mismatch',
   'approval_required',
   'revision_mismatch',
-  'scope_denied',
 ]);
 /** The longest classification waits for a calendar to say who an event's guests are. */
 const EXISTING_GUESTS_TIMEOUT_MS = 5_000;
@@ -1375,13 +1374,46 @@ export class BrokerService implements BrokerOperations {
       ) {
         throw new BrokerFault('approval_hash_mismatch');
       }
-      // The request changed before this was answered. The question is withdrawn
-      // rather than left open forever: a Deny agrees with that, and an Allow
-      // is refused, since the person never saw what the work asks for now.
+      // The request changed before this was answered. A Deny is still the
+      // person's refusal and is recorded as theirs. An Allow is refused, since
+      // the person never saw what the work asks for now, and the question is
+      // withdrawn rather than left open forever.
       const changed =
         approval.decided_by === OUTDATED_NOTE ||
         (!approval.decision &&
           (approval.job_revision !== job.revision || action.status !== 'needs_approval'));
+      // The person's own Deny, pressed again.
+      if (
+        request.decision === 'denied' &&
+        approval.decision === 'denied' &&
+        approval.decided_by === 'owner'
+      )
+        return {
+          approval_id: approval.id as string,
+          action_id: id,
+          decision: 'denied' as const,
+          payload_hash: approval.payload_hash as string,
+          decided_at: new Date(approval.decided_at).toISOString(),
+        };
+      if (changed && !approval.decision && request.decision === 'denied') {
+        const decidedAt = new Date().toISOString();
+        await tx`update approval set decision = 'denied', decided_at = ${decidedAt},
+          decided_by = 'owner' where id = ${approval.id}`;
+        if (action.status === 'needs_approval') await this.setStatus(tx, action, 'denied');
+        await appendEvent(tx, job.id, action.attempt_id, 'approval_decided', {
+          action_id: id,
+          approval_id: approval.id,
+          decision: 'denied',
+          note: request.note ?? null,
+        });
+        return {
+          approval_id: approval.id as string,
+          action_id: id,
+          decision: 'denied' as const,
+          payload_hash: approval.payload_hash as string,
+          decided_at: decidedAt,
+        };
+      }
       if (changed) {
         await this.withdrawOutdated(tx, job, action);
         const [closed] = await tx`select decided_at from approval where id = ${approval.id}`;

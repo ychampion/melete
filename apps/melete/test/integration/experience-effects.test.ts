@@ -815,7 +815,7 @@ databaseTest(
     const closed = await s.sql`select p.decision, p.decided_by, a.status from approval p
       join action a on a.id = p.action_id where p.id in ${s.sql([first.id, second.id])}`;
     expect([...closed]).toEqual([
-      { decision: 'denied', decided_by: 'outdated', status: 'denied' },
+      { decision: 'denied', decided_by: 'owner', status: 'denied' },
       { decision: 'denied', decided_by: 'outdated', status: 'denied' },
     ]);
     expect(s.calls).toHaveLength(0);
