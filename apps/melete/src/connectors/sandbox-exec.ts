@@ -356,6 +356,24 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
   };
 
   /**
+   * Whether the conversation holding the computer may be named to this one:
+   * only one of the same person's that was not found sensitive. Anyone else's,
+   * or one about a sensitive topic, is "another conversation".
+   */
+  const nameable = async (holderJobId: string | null, self: string): Promise<boolean> => {
+    if (!holderJobId) return false;
+    if (holderJobId === self) return true;
+    const [row] = await sql`select
+        coalesce(h.principal_id, (select id from owner limit 1)) is not distinct from
+          coalesce(c.principal_id, (select id from owner limit 1)) as same_person,
+        exists (select 1 from privacy_conversation p
+          where p.conversation_id = coalesce(h.experience_parent_id, h.id)
+            and p.sensitive is not null) as sensitive
+      from job h, job c where h.id = ${holderJobId} and c.id = ${self}`;
+    return row?.same_person === true && row?.sensitive === false;
+  };
+
+  /**
    * Open the agent's workspace, waiting a bounded time while another
    * conversation of the same agent holds it. A holder whose attempt is gone (a
    * restart, a stop) is released at once rather than when its lease runs out.
@@ -386,7 +404,9 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         )
       )
         continue;
-      const holder = await sessions.workspaceHolder(ctx.space_id, agentId);
+      const found = await sessions.workspaceHolder(ctx.space_id, agentId);
+      const holder =
+        found && !(await nameable(found.jobId, ctx.job_id)) ? { ...found, title: null } : found;
       const by = holderName(holder, ctx.job_id);
       if (Date.now() >= deadline)
         throw new SandboxRefusal(

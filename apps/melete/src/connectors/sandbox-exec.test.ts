@@ -599,6 +599,32 @@ withDb('a command in a remote sandbox', () => {
     expect(refused.result.retryable).toBe(true);
   }, 60_000);
 
+  test("another person's or a sensitive conversation holding the computer is not named", async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const sql = handle.sql;
+    const s = await setup({ persistence: 'pause', workspaceWaitMs: 500 });
+    await sql`update job set agent_id = ${s.scope.agentId} where id = ${s.scope.jobId}`;
+    const someone = `own_SOMEONE${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+    await sql`insert into principal (id, email) values (${someone}, ${`${someone}@example.test`})`;
+    const theirs = await otherConversation(s, 'My divorce lawyer');
+    await sql`update job set principal_id = ${someone} where id = ${theirs.jobId}`;
+    const refused = await s.run({ command: 'printf mine' });
+    if (refused.result.outcome !== 'failed') throw new Error(JSON.stringify(refused.result));
+    expect(refused.result.reason).toContain('in use by another conversation, and');
+    expect(refused.result.reason).not.toContain('divorce');
+    const [notice] = await sql`select payload from event
+      where job_id = ${s.scope.jobId} and payload->>'kind' = 'computer_busy'`;
+    expect(notice?.payload).toMatchObject({ kind: 'computer_busy', held_by: null });
+
+    // The person's own conversation, found sensitive, is not named either.
+    await sql`update job set principal_id = null where id = ${theirs.jobId}`;
+    await sql`insert into privacy_conversation (conversation_id, space_id, sensitive)
+      values (${theirs.jobId}, ${s.scope.spaceId}, 'health')`;
+    const again = await s.run({ command: 'printf mine' });
+    if (again.result.outcome !== 'failed') throw new Error(JSON.stringify(again.result));
+    expect(again.result.reason).not.toContain('divorce');
+  }, 60_000);
+
   test("commands read the person's time zone", async () => {
     if (!handle) throw new Error('Postgres is unavailable');
     const s = await setup();
