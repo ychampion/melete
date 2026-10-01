@@ -7,7 +7,8 @@ person types their own passwords and keys; you do everything else.
 Every step says what to run, how to tell that it worked, what to do when it
 did not, and when to stop and ask. Every step is safe to run again: each one
 checks what is already there first, so after an interruption, start again from
-the top.
+the top. The repository's checks run steps 2 to 5 on a clean machine, from the
+commands on this page.
 
 ## Rules for the whole setup
 
@@ -48,7 +49,7 @@ server?**
 
 ## 2. Check the machine
 
-```bash
+```bash setup
 docker version --format '{{.Server.Version}}'
 docker compose version --short
 docker info --format '{{.Architecture}} {{.OperatingSystem}}'
@@ -82,7 +83,7 @@ Melete needs:
   tell the person how much is free.
 - **Ports 3100 and 3101 free** on the machine:
 
-  ```bash
+  ```bash setup
   bun -e "for (const port of [3100, 3101]) { try { Bun.serve({ port, hostname: '127.0.0.1', fetch: () => new Response() }).stop(true); console.log(port, 'free'); } catch { console.log(port, 'in use'); } }"
   ```
 
@@ -104,6 +105,11 @@ Windows path-length limit.
 ```bash
 if [ -d melete/.git ]; then git -C melete pull --ff-only; else git clone https://github.com/ychampion/melete.git melete; fi
 cd melete
+```
+
+Then, inside `melete`:
+
+```bash setup
 bun install --frozen-lockfile
 bun run doctor --docker
 ```
@@ -121,7 +127,7 @@ ask: someone edited it, and those edits are theirs.
 Skip this step if `deploy/.env` already exists: it is written once, and running
 `configure.ts` again is refused rather than replacing it.
 
-```bash
+```bash setup
 test -f deploy/.env || bun run deploy/scripts/configure.ts --connect-in-app
 ```
 
@@ -161,7 +167,7 @@ The rest of this page writes `3101`; use your `WEB_PORT` instead.
 
 With published images (on `x86_64`):
 
-```bash
+```bash setup
 bun run deploy/scripts/set-env.ts MELETE_IMAGE_TAG=main
 bun run compose:check
 docker compose -f deploy/docker-compose.yml pull
@@ -178,7 +184,7 @@ docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 
 
 Then check:
 
-```bash
+```bash setup
 bun run deploy/scripts/status.ts
 ```
 
