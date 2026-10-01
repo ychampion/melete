@@ -263,7 +263,7 @@ const untrustedOrigin = (warnings: OriginWarning[]) =>
  * proposal of a send that already happened names the receipt, and a second
  * proposal of a send nobody can confirm says exactly that instead of retrying.
  */
-function dispositionMessage(action: Action, repeated: boolean): string {
+export function dispositionMessage(action: Action, repeated: boolean): string {
   const receiptRef = (action.receipt?.external_ref as string | null | undefined) ?? action.id;
   const already = repeated ? 'already ' : '';
   switch (action.status) {
@@ -282,11 +282,15 @@ function dispositionMessage(action: Action, repeated: boolean): string {
     case 'succeeded':
       return `This effect ${already}succeeded at ${action.resolved_at ?? action.created_at}, receipt ${receiptRef}. Nothing was sent again.`;
     case 'failed': {
-      if (action.effect_class === 'read') {
-        const reason = (action.reconciliation as { reason?: unknown } | null)?.reason;
-        return `This read ${already}failed${typeof reason === 'string' && reason ? `: ${reason}` : ''}. It changed nothing, so it can be tried again or done another way.`;
-      }
-      return `This effect ${already}failed at ${action.resolved_at ?? action.created_at}. Nothing was sent again.`;
+      // The reason is written by the broker or the connector, never by the model,
+      // and without it a model can only guess why and retry blind.
+      const { reason, retryable } =
+        (action.reconciliation as { reason?: unknown; retryable?: unknown } | null) ?? {};
+      const why = typeof reason === 'string' && reason ? `: ${reason}` : '';
+      if (action.effect_class === 'read')
+        return `This read ${already}failed${why}. It changed nothing, so it can be tried again or done another way.`;
+      const again = retryable === true ? ' It did not take effect, so it can be tried again.' : '';
+      return `This effect ${already}failed at ${action.resolved_at ?? action.created_at}${why}. Nothing was sent again.${again}`;
     }
     case 'unknown':
       return `${question} It was ${already}attempted at ${action.dispatched_at ?? action.created_at} and was not sent again.`;
