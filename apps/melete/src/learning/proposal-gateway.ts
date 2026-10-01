@@ -13,9 +13,11 @@ import { learningModelCall, type ProposalTruncation } from './proposal-schema.ts
 import { episode } from './schema.ts';
 
 export const PROPOSAL_LIMITS = {
-  calls: 1,
-  total_tokens: 4096,
-  output_tokens: 1024,
+  /** The first call, and one more when its answer held no JSON. */
+  calls: 2,
+  total_tokens: 6144,
+  /** A model that writes out its working first spent all of 1,024 and left no JSON. */
+  output_tokens: 2048,
   timeout_ms: 15000,
 } as const;
 /** The records vocabulary answer is a few ids; it keeps the budget it was reviewed with. */
@@ -27,7 +29,8 @@ const FIT_MARGIN_BYTES = 64;
 /** An objective is kept whole up to this length before the correction gives anything up. */
 const OBJECTIVE_FLOOR_CHARS = 300;
 
-export const GENERAL_PROPOSAL_INSTRUCTIONS = `Return only JSON: {"target":"skill_body","steps":[{"text":"","evidence":{}}],"triggers":[{"phrase":"","evidence":{}}],"checks":[],"variant_objectives":[]}.
+export const GENERAL_PROPOSAL_INSTRUCTIONS = `Answer at once with one compact JSON object on a single line and nothing else: no reasoning, no prose, no Markdown. Keep it short.
+Return only JSON: {"target":"skill_body","steps":[{"text":"","evidence":{}}],"triggers":[{"phrase":"","evidence":{}}],"checks":[],"variant_objectives":[]}.
 Each evidence is {"source","start","end","quote"}: quote is copied exactly from that source's text, start and end are its offsets there plus the source offset.
 Write steps in the owner's own words and simple procedural words (keep, use, sort, list, bullet, short, first). A step using any other word is replaced by its quote; a step with links, addresses, paths, code or permission language refuses the whole proposal.
 Each trigger phrase appears word for word in the objective; when no objective source is supplied, quote triggers from the correction. Checks use only the listed kinds, and may be empty.
@@ -39,6 +42,8 @@ type Admission = {
   jobId: string;
   spaceId: string;
   truncation?: ProposalTruncation | null;
+  /** Which call this is for the episode: 1, or 2 for the retry. */
+  attempt?: number;
 };
 export type ProposalGateway = Awaited<ReturnType<typeof openProposalGateway>>;
 
@@ -144,6 +149,7 @@ export async function openProposalGateway(options: {
             episodeId: source.id,
             provider: admission.provider,
             model: admission.model,
+            attempt: admission.attempt ?? 1,
             reservedTokens: request.estimatedTokens,
             maxOutputTokens: request.maxOutputTokens,
             truncation: admission.truncation ?? null,
@@ -367,16 +373,28 @@ export async function openProposalGateway(options: {
         const total = whole[source.id]?.length ?? 0;
         if (source.text.length < total) truncation[source.id] = { sent: source.text.length, total };
       }
-      const raw = await send(
-        { ...admission, truncation: Object.keys(truncation).length ? truncation : null },
+      const body = bodyFor(
         target,
-        bodyFor(
-          target,
-          GENERAL_PROPOSAL_INSTRUCTIONS,
-          JSON.stringify({ ...request, sources: sent }),
-          maxTokens,
-        ),
+        GENERAL_PROPOSAL_INSTRUCTIONS,
+        JSON.stringify({ ...request, sources: sent }),
+        maxTokens,
       );
+      const call = (attempt: number) =>
+        send(
+          {
+            ...admission,
+            attempt,
+            truncation: Object.keys(truncation).length ? truncation : null,
+          },
+          target,
+          body,
+        );
+      // An answer with no JSON in it (the model ran out of room thinking aloud)
+      // is asked once more, as its own reserved call. Anything else stands.
+      const raw = await call(1).catch((error: unknown) => {
+        if (error instanceof Error && error.message === 'answer_not_json') return call(2);
+        throw error;
+      });
       return { raw, sources: sent };
     },
 

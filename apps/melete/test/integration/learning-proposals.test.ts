@@ -37,6 +37,8 @@ let output: unknown = {
 };
 /** When set, the model answers with these exact bytes instead of the serialised output. */
 let answer: string | null = null;
+/** Answers given in turn, one per call, before `answer` and `output` apply. */
+const answers: string[] = [];
 const gateway = fixture
   ? await openProposalGateway({
       privacy: new PrivacyRouter({ store: new PostgresPrivacyStore(fixture.handle.sql) }),
@@ -46,11 +48,9 @@ const gateway = fixture
       providers: [fakeProvider],
       fake: async (body, attemptId, protocol) => {
         requests.push(body);
-        return createScriptedProvider([{ text: answer ?? JSON.stringify(output) }])(
-          body,
-          attemptId,
-          protocol,
-        );
+        return createScriptedProvider([
+          { text: answers.shift() ?? answer ?? JSON.stringify(output) },
+        ])(body, attemptId, protocol);
       },
     })
   : null;
@@ -393,7 +393,7 @@ async function asAutomation(jobId: string) {
     .where(eq(job.id, jobId));
 }
 
-async function rejectedWithoutCandidate(episodeId: string, detail: string) {
+async function rejectedWithoutCandidate(episodeId: string, detail: string, attempts = 1) {
   if (!fixture) return;
   expect(
     await fixture.handle.db
@@ -407,7 +407,7 @@ async function rejectedWithoutCandidate(episodeId: string, detail: string) {
     .select()
     .from(learningModelCall)
     .where(eq(learningModelCall.episodeId, episodeId));
-  expect(calls).toHaveLength(1);
+  expect(calls).toHaveLength(attempts);
   expect(calls[0]?.errorCode).toBe('proposal_rejected');
   // The reason is a code from a closed set, never the text that was refused.
   expect(calls[0]?.errorDetail).toBe(detail);
@@ -486,8 +486,8 @@ async function rejectedWithoutCandidate(episodeId: string, detail: string) {
       .select()
       .from(learningModelCall)
       .where(eq(learningModelCall.episodeId, source.id));
-    expect(call?.maxOutputTokens).toBe(1024);
-    expect(call?.reservedTokens).toBeLessThanOrEqual(4096);
+    expect(call?.maxOutputTokens).toBe(2048);
+    expect(call?.reservedTokens).toBeLessThanOrEqual(6144);
     expect(call?.truncation).toBeNull();
     const history = await fixture.handle.db
       .select()
@@ -516,7 +516,7 @@ async function rejectedWithoutCandidate(episodeId: string, detail: string) {
     expect(longCall?.truncation).toEqual({
       intervention: { sent: sentText.length, total: long.length },
     });
-    expect(longCall?.reservedTokens).toBeLessThanOrEqual(4096);
+    expect(longCall?.reservedTokens).toBeLessThanOrEqual(6144);
   }, 30000);
 
   test('a proposal quoting a receipt or tool result is rejected', async () => {
@@ -804,6 +804,27 @@ async function rejectedWithoutCandidate(episodeId: string, detail: string) {
     expect(corrective.objectiveOrigin).toBe('derived');
   }, 40000);
 
+  test('an answer with no JSON is asked once more, and the second answer is used', async () => {
+    if (!fixture || !proposer) return;
+    const { source } = await generalCorrection('second-attempt');
+    output = generalProposal(CORRECTION);
+    answers.push('Let me think about the steps first. The person wants');
+    const before = requests.length;
+    try {
+      const candidate = await proposer.generate(fixture.ownerId, fixture.spaceId, source.id);
+      expect(candidate.body).toBe(`${PROCEDURE_PREAMBLE}
+1. Use bullet points.`);
+      expect(requests).toHaveLength(before + 2);
+      const calls = await fixture.handle.db
+        .select()
+        .from(learningModelCall)
+        .where(eq(learningModelCall.episodeId, source.id));
+      expect(calls.map((call) => call.attempt).sort()).toEqual([1, 2]);
+    } finally {
+      answers.length = 0;
+    }
+  }, 30000);
+
   test('an answer in one code fence is read, and a chattier one is refused', async () => {
     if (!fixture || !proposer) return;
     const fenced = await generalCorrection('fenced-answer');
@@ -817,13 +838,14 @@ async function rejectedWithoutCandidate(episodeId: string, detail: string) {
         () => proposer.generate(fixture.ownerId, fixture.spaceId, chatty.source.id),
         'proposal_rejected',
       );
-      await rejectedWithoutCandidate(chatty.source.id, 'answer_not_json');
+      // Asked twice, chatty both times.
+      await rejectedWithoutCandidate(chatty.source.id, 'answer_not_json', 2);
     } finally {
       answer = null;
     }
   }, 30000);
 
-  test('one call per episode is still enforced and a failure is recorded', async () => {
+  test('a refused proposal is not asked again, and the failure is recorded', async () => {
     if (!fixture || !proposer || !gateway) return;
     const { source, jobId } = await generalCorrection('general-one-call');
     output = { target: 'skill_body', steps: [] };
@@ -838,7 +860,7 @@ async function rejectedWithoutCandidate(episodeId: string, detail: string) {
       .select()
       .from(learningModelCall)
       .where(eq(learningModelCall.episodeId, source.id));
-    expect(call?.maxOutputTokens).toBe(1024);
+    expect(call?.maxOutputTokens).toBe(2048);
     // Neither asking again nor the background drain spends a second call.
     await rejectsWith(
       () => proposer.generate(fixture.ownerId, fixture.spaceId, source.id),

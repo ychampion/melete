@@ -18,7 +18,14 @@ export type Said = {
   author?: 'owner' | 'external';
   stream?: string;
 };
-export type Claimed = { key: string; content: string; quote: string; kind: string };
+export type Claimed = {
+  key: string;
+  content: string;
+  quote: string;
+  kind: string;
+  /** Filed under `key` as a domain only, as extraction files what fits no registered key. */
+  unkeyed?: boolean;
+};
 
 /** Ingest one piece of evidence and commit the keyed claims it supports. */
 export async function record(
@@ -47,7 +54,7 @@ export async function record(
       op: 'add',
       expected_revision: null,
       domain_key: claim.key,
-      key: claim.key,
+      ...(claim.unkeyed ? {} : { key: claim.key }),
       content: claim.content,
       kind: claim.kind,
       factual_status: claim.kind === 'checked_fact' ? 'checked' : 'attributed',

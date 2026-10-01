@@ -114,15 +114,25 @@ function resolveOwnerScope(sql: MemorySql, journal: FileRestrictionJournal) {
     if (selected !== null && !spaceId.safeParse(selected).success) return null;
     const hash = createHash('sha256').update(token).digest('hex');
     const rows = await sql`select o.id as owner_id, s.id as space_id,
-      m.owner_id as memory_owner_id, m.revoked
+      m.owner_id as memory_owner_id, m.revoked,
+      s.id = auth.space_id as session_space,
+      s.kind = 'personal' and coalesce(s.owner_principal_id, o.id) = coalesce(auth.principal_id, o.id) as personal
       from session auth join owner o on o.id = auth.owner_id cross join space s
       left join memory_spaces m on m.space_id = s.id
       where auth.token_hash = ${hash} and auth.expires_at > clock_timestamp()
         and (${selected}::text is null or s.id = ${selected})
-      order by s.id limit 2`;
-    // A sole space is unambiguous; callers with more than one must select one.
-    if (rows.length !== 1) return null;
-    const row = rows[0];
+      order by s.id limit 500`;
+    // A selected space is used as selected. Without one, memory follows the rest
+    // of the API: the session's space, else the person's personal space.
+    const personal = rows.filter((r) => r.personal);
+    const row =
+      rows.length <= 1
+        ? rows[0]
+        : (rows.find((r) => r.session_space) ?? (personal.length === 1 ? personal[0] : undefined));
+    if (!row) {
+      if (rows.length > 1) throw new MemoryError('space_required');
+      return null;
+    }
     if (!row || row.revoked || (row.memory_owner_id && row.memory_owner_id !== row.owner_id))
       return null;
     const scope: MemoryScope = {

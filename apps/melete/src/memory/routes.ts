@@ -51,7 +51,12 @@ export function createMemoryRouter(options: MemoryRouteOptions) {
         : error instanceof ZodError || error instanceof SyntaxError
           ? 'invalid_request'
           : 'memory_unavailable';
-    const status = ['invalid_request', 'invalid_forget_target', 'invalid_validity'].includes(code)
+    const status = [
+      'invalid_request',
+      'invalid_forget_target',
+      'invalid_validity',
+      'space_required',
+    ].includes(code)
       ? 400
       : code === 'scope_denied'
         ? 403
@@ -66,15 +71,17 @@ export function createMemoryRouter(options: MemoryRouteOptions) {
             ? 409
             : 503;
     const message =
-      status === 400
-        ? 'The memory request is invalid.'
-        : status === 403
-          ? 'This operation is outside your memory access scope.'
-          : status === 404
-            ? 'The requested memory is not accessible.'
-            : status === 409
-              ? 'Memory changed. Inspect the current record before retrying.'
-              : 'Memory is temporarily unavailable.';
+      code === 'space_required'
+        ? 'Choose a space with the x-melete-space header.'
+        : status === 400
+          ? 'The memory request is invalid.'
+          : status === 403
+            ? 'This operation is outside your memory access scope.'
+            : status === 404
+              ? 'The requested memory is not accessible.'
+              : status === 409
+                ? 'Memory changed. Inspect the current record before retrying.'
+                : 'Memory is temporarily unavailable.';
     return c.json({ error: { code, message } }, status);
   });
   const body = async (request: Request) => {

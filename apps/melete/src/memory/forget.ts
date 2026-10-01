@@ -79,6 +79,8 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
   await tx`insert into memory_suppressions (id, space_id, eligibility_cutoff, operation, recorded_at)
     values (${record.id}, ${record.space_id}, ${record.eligibility_cutoff}, ${record.operation}, ${record.recorded_at})`;
   const affected = new Set(record.claim_ids);
+  // Claims that cite a removed span. Each keeps whatever rests on other sources.
+  const citing = new Set<string>();
   for (const target of record.targets) {
     await tx`insert into memory_suppressions (id, space_id, source_id, publisher, stream, source_identity, start, "end", eligibility_cutoff, operation, recorded_at)
       values (${target.suppression_id}, ${record.space_id}, ${target.source_id}, ${target.publisher}, ${target.stream}, ${target.source_identity}, ${target.start}, ${target.end}, ${record.eligibility_cutoff}, ${record.operation}, ${record.recorded_at}) on conflict do nothing`;
@@ -104,7 +106,7 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
       const refs =
         await tx`select distinct claim_id from memory_references where source_id = ${identity.id}
         and (${entire} or (start < ${target.end} and "end" > ${target.start}))`;
-      for (const ref of refs) affected.add(ref.claim_id);
+      for (const ref of refs) citing.add(ref.claim_id);
     }
   }
   if (record.all) {
@@ -112,14 +114,22 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
     for (const claim of claims) affected.add(claim.id);
     await tx`update memory_sources set state = ${record.operation === 'revoke' ? 'revoked' : 'suppressed'} where space_id = ${record.space_id} and eligibility_generation <= ${record.eligibility_cutoff}`;
   }
+  const kept = new Set<string>();
+  for (const id of citing) {
+    if (affected.has(id)) continue;
+    if (await keepWhatRemains(tx, record.space_id, id)) kept.add(id);
+    else affected.add(id);
+  }
   // Exact-version derivations identify transitive descendants; UNION terminates supersession cycles.
   const descendants = await tx`with recursive affected(id) as (
-    select unnest(${[...affected]}::text[]) union
+    select unnest(${[...affected, ...kept]}::text[]) union
     select d.output_id from memory_derivations d join affected a on d.input_id = a.id
       where d.space_id = ${record.space_id} and d.input_kind = 'claim' and d.output_kind = 'claim'
   ) select id from affected`;
-  for (const descendant of descendants) affected.add(descendant.id);
+  for (const descendant of descendants) if (!kept.has(descendant.id)) affected.add(descendant.id);
   await tx`update memory_claims set hidden = true where space_id = ${record.space_id} and id = any(${[...affected]})`;
+  // A kept claim lost a value: what quoted or depended on the claim is cleared as for a removed one.
+  for (const id of kept) affected.add(id);
   // Anything else that quotes a removed value goes with it: a repair brief would
   // hand the old and new values to the next attempt, and a dispute's question
   // names both alternatives in the owner's queue.
@@ -160,6 +170,42 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
   await enqueue(tx, record.space_id, 'cleanup', record.id);
   await enqueue(tx, record.space_id, 'index', String(dataRevision));
   return generation(next ?? {});
+}
+/**
+ * A claim citing a removed span loses only the revisions that rest on removed
+ * evidence. When another revision still rests wholly on what remains, the
+ * claim stays: the removed revisions are set aside and their text deleted, and
+ * if the current value was one of them, the latest remaining revision becomes
+ * current again. Returns false when nothing remains, and the claim is hidden.
+ */
+async function keepWhatRemains(tx: MemoryTx, spaceId: string, claimId: string) {
+  const [claim] =
+    await tx`select head_revision from memory_claims where id = ${claimId} and space_id = ${spaceId} and not hidden`;
+  if (!claim) return false;
+  const revisions = await tx`select r.revision, r.status,
+      exists (select 1 from memory_references ref where ref.claim_id = r.claim_id and ref.revision = r.revision) as cited,
+      exists (select 1 from memory_references ref left join memory_sources s on s.id = ref.source_id
+        where ref.claim_id = r.claim_id and ref.revision = r.revision and (
+          s.id is null or s.space_id <> ${spaceId} or s.state <> 'active' or s.source_version <> ref.source_version
+          or exists (select 1 from memory_suppressions sup where sup.space_id = ${spaceId} and
+            ((sup.source_id = s.id and (sup.start is null or (sup.start < ref."end" and sup."end" > ref.start)))
+             or (sup.operation = 'clear' and s.eligibility_generation <= sup.eligibility_cutoff))))) as removed
+    from memory_revisions r where r.claim_id = ${claimId} order by r.revision`;
+  const removed = revisions.filter((r) => r.removed).map((r) => Number(r.revision));
+  const remaining = revisions.filter((r) => !r.removed && r.cited && r.status !== 'retracted');
+  if (!remaining.length) return false;
+  await tx`update memory_revisions set status = 'retracted', superseded_at = coalesce(superseded_at, clock_timestamp())
+    where claim_id = ${claimId} and revision = any(${removed})`;
+  await tx`delete from memory_revision_content where claim_id = ${claimId} and revision = any(${removed})`;
+  await tx`delete from memory_index_entries where space_id = ${spaceId} and claim_id = ${claimId} and revision = any(${removed})`;
+  await tx`delete from memory_dense_entries where space_id = ${spaceId} and claim_id = ${claimId} and revision = any(${removed})`;
+  if (removed.includes(Number(claim.head_revision))) {
+    const latest = remaining.at(-1);
+    await tx`update memory_revisions set status = 'active', superseded_at = null
+      where claim_id = ${claimId} and revision = ${latest?.revision} and status = 'superseded'`;
+    await tx`update memory_claims set head_revision = ${latest?.revision} where id = ${claimId}`;
+  }
+  return true;
 }
 async function restrict(
   sql: MemorySql,

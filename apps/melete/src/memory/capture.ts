@@ -269,7 +269,10 @@ async function captureOne(
 const OWN_SUBJECTS = ['me', 'my', 'self', 'mine', 'owner'];
 /**
  * The saved details a "forget …" names. A named subject ("Maya's number") means
- * that subject only; "my …" means the person's own details only; and when a
+ * that subject only; "my …" means the person's own details only, which is
+ * everything saved except what is about another person (a contact other than
+ * the person themselves): "my gym locker number" is a detail learned as
+ * `gym.equinox.locker_number`, with no "me" in it; and when a
  * field is named ("number", "email") the detail must be that field. A request
  * that names neither a subject nor "my" names nothing, and null says so.
  */
@@ -287,7 +290,8 @@ async function namedDetails(sql: MemorySql, scope: MemoryScope, target: string) 
     join memory_revisions r on r.claim_id = c.id and r.revision = c.head_revision
     join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
     where c.space_id = ${scope.spaceId} and not c.hidden
-      and (${!own} or split_part(c.domain_key, '.', 2) = any(${OWN_SUBJECTS}))
+      and (${!own} or split_part(c.domain_key, '.', 1) <> 'contact'
+        or split_part(c.domain_key, '.', 2) = any(${OWN_SUBJECTS}))
       and (${query === ''} or to_tsvector('simple', replace(replace(c.domain_key, '.', ' '), ':', ' ') || ' ' || b.content)
         @@ to_tsquery('simple', ${query || "'x'"}))
     order by r.data_revision desc limit ${ASK_LIMIT + 1}`;
