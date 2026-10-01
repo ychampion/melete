@@ -281,3 +281,9 @@
 .computer-foot[data-control="you"] .computer-dot {
   background: var(--primary);
 }
+
+/* The desktop's own control bar sits inside its window, under the live view. */
+.computer-window .computer-foot {
+  padding: 10px 12px;
+  flex-wrap: wrap;
+}

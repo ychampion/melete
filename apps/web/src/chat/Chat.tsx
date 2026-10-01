@@ -854,6 +854,7 @@ export function ChatScreen({ id }: { id: string | null }) {
           <ComputerPanel
             agent={agent}
             computer={computer.computer}
+            desktop={computer.desktop}
             error={computer.error}
             onClose={() => setComputerOpen(false)}
             onChanged={() => void computer.refresh()}

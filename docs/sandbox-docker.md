@@ -144,9 +144,18 @@ A suspended workspace nobody resumes is removed after
   refused.
 
 Commands and desktop actions change only the sandbox, like a command in any
-other sandbox, and run without asking. What leaves it is bounded by the egress
-setting above. Actions through connectors that hold your accounts keep their
-approvals.
+other sandbox. They run without asking unless the agent is set to ask before
+acting (new agents are) or your approval settings ask for every change; then
+each one waits for you like any other change. What leaves the sandbox is
+bounded by the egress setting above. Actions through connectors that hold your
+accounts keep their approvals.
+
+The engine also refuses, before the command reaches Melete, a shell command
+that matches its dangerous-command rules (writing under `/etc`, piping a
+download into a shell, and the like). Nothing runs and there is no approval to
+give. The conversation shows a short note that a command was blocked, and the
+agent is told plainly that it was refused by a safety rule, so it does not ask
+you to approve it.
 
 ## Watching and taking over
 

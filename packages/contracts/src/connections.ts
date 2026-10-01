@@ -399,6 +399,7 @@ export const CONNECTION_CHECK_CODES = [
   'unavailable',
   'credential_refused',
   'sign_in_required',
+  'needs_sign_in',
   'not_running',
   'revoked',
 ] as const;
@@ -414,6 +415,8 @@ export const CONNECTION_CHECK_DETAIL: Record<ConnectionCheckCode, string> = {
     'The server refused the account name or password. Use an app password where the provider offers one, then test again. Outlook.com accepts only its own sign-in, so no password works there.',
   sign_in_required:
     "The account's sign-in has ended or its access was removed. Sign in again to reconnect it.",
+  needs_sign_in:
+    'This server asks you to sign in to it. Choose Sign in on this connection. Signing in needs the address people open this service at (MELETE_PUBLIC_URL).',
   not_running:
     'This connection has no running connector. Check the master key and the service log, then test again.',
   revoked: 'This connection was removed and can no longer be used.',

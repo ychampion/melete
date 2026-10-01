@@ -34,7 +34,8 @@ export type ActionRow = Pick<
   | 'createdAt'
   | 'resolvedAt'
 >;
-export type ConnectionRow = Pick<typeof connection.$inferSelect, 'id' | 'label' | 'provider'>;
+export type ConnectionRow = Pick<typeof connection.$inferSelect, 'id' | 'label' | 'provider'> &
+  Partial<Pick<typeof connection.$inferSelect, 'configuration'>>;
 export const object = (input: unknown): Record<string, unknown> =>
   input && typeof input === 'object' && !Array.isArray(input)
     ? (input as Record<string, unknown>)
@@ -91,7 +92,10 @@ export function appName(row: ConnectionRow): string {
     web: 'Web',
     test: 'Test connection',
     device: 'Computer',
+    sandbox: 'Computer',
   };
+  if (row.provider === 'generation')
+    return row.configuration?.builtin === 'transcription' ? 'Transcription' : 'Speech';
   return names[row.provider] ?? 'Connected app';
 }
 const LABELS: Record<string, string> = {

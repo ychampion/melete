@@ -268,6 +268,14 @@ attempt, and running attempts are fenced as before. The `switch` lifecycle still
 expects a secret reference that no public route creates; replacing a credential
 means removing the connection and installing it again.
 
+Every calendar's `calendar.list` (CalDAV, a feed, an imported file, Google or
+Microsoft) covers a window, `from` to `to`. Without `from` it starts yesterday;
+without `to` it ends 90 days after `from`. Events are listed earliest first, a
+series is listed when one of its occurrences falls in the window, and the
+receipt names the window it covered. When more events fall in it than `limit`
+(at most 100), the receipt says `truncated: true` with a note, so a short list
+is never mistaken for a complete one.
+
 A calendar feed is fetched again on every `calendar.list`, with redirects
 refused and the same size limit as CalDAV. A feed address must be HTTPS and
 public: the service applies the address checks of `web.fetch`, so a loopback,

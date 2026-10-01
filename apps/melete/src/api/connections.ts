@@ -49,6 +49,7 @@ import {
   connectorFactoryFor,
   connectorOptionsFromEnv,
 } from '../connectors/configured.ts';
+import { asConnectorFault } from '../connectors/faults.ts';
 import { googleProvider } from '../connectors/google.ts';
 import { icsFeedTarget } from '../connectors/ics-feed.ts';
 import { mcpServerConfig } from '../connectors/mcp.ts';
@@ -135,6 +136,20 @@ const source = (row: typeof connection.$inferSelect): ConnectionSource => ({
 
 const factoryFor = (deps: ConnectionDeps): ConnectorFactory =>
   connectorFactoryFor(deps.registry, () => connectorOptionsFromEnv(deps.sql, deps.env));
+
+/**
+ * Why a connector could not be opened, as a check code. A remote MCP server
+ * that answers its first request with 401 or 403 is asking for a sign-in, not
+ * reporting a broken service, so it is told apart from a destination that did
+ * not answer at all.
+ */
+function openFailure(error: unknown, provider: string): ConnectionCheck['code'] {
+  const fault = asConnectorFault(error);
+  return provider === 'mcp' &&
+    (fault?.kind === 'expired_credential' || fault?.kind === 'revoked_credential')
+    ? 'needs_sign_in'
+    : 'unavailable';
+}
 
 /** A check is a code and the sentence that belongs to it, nothing else. */
 const result = (state: ConnectionCheck['status'], code: ConnectionCheck['code']): ConnectionCheck =>
@@ -331,12 +346,17 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     const id = row.id;
     let connector = deps.registry.get(id);
     let opened: Connector | undefined;
+    let refused: ConnectionCheck['code'] | undefined;
     // An installation whose first test failed has no connector yet; a test is how it gets one.
     if (!connector && row.status === 'error') {
-      opened = await factory.open(source(row)).catch(() => undefined);
+      opened = await factory.open(source(row)).catch((error: unknown) => {
+        refused = openFailure(error, row.provider);
+        return undefined;
+      });
       connector = opened;
     }
-    const outcome = await check(connector, row.status);
+    // A connector that could not be opened says why, rather than that none is running.
+    const outcome = refused ? result('failing', refused) : await check(connector, row.status);
     const unchanged = and(eq(connection.id, id), eq(connection.generation, row.generation));
     if (row.status !== 'revoked')
       await deps.db
@@ -500,10 +520,14 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     );
     let worker: Connector | undefined;
     let outcome: ConnectionCheck | undefined;
+    let refused: ConnectionCheck['code'] = 'unavailable';
     try {
       const [installed] = await deps.db.select().from(connection).where(eq(connection.id, id));
       if (!installed) throw new Error('Connection was removed during installation');
-      worker = await factory.open(source(installed));
+      worker = await factory.open(source(installed)).catch((error: unknown) => {
+        refused = openFailure(error, installed.provider);
+        throw error;
+      });
       // An MCP worker proved itself by completing its handshake; every other kind is asked once.
       outcome =
         (installation.kind === 'mcp' || installation.kind === 'mcp_stdio') && worker
@@ -535,7 +559,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       factory.mailers.delete(id);
       // Opening failed: the destination did not answer. Opened but never published: nothing is running.
       if (outcome?.status !== 'failing')
-        outcome = result('failing', worker ? 'not_running' : 'unavailable');
+        outcome = result('failing', worker ? 'not_running' : refused);
       await deps.db
         .update(connection)
         .set({ status: 'error', setupState: 'error', health: 'failing', lastCheckedAt: new Date() })

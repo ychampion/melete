@@ -139,6 +139,8 @@ export type ConnectionKind = Ok<paths['/connection-kinds'], 'get'>['kinds'][numb
 export type CatalogEntry = NonNullable<Ok<paths['/connection-kinds'], 'get'>['catalog']>[number];
 export type AccountSignInStart = Ok<paths['/google-sign-ins'], 'post'>;
 export type AccountSignInStatus = Ok<paths['/google-sign-ins/{id}'], 'get'>;
+/** Signing in to a remote MCP server, for a connection that is already installed. */
+export type McpSignInStart = Ok<paths['/mcp-sign-ins'], 'post'>;
 export type ConnectionField = ConnectionKind['fields'][number];
 export type ConnectionItemField = NonNullable<ConnectionField['item_fields']>[number];
 export type ConnectionCreate = Body<paths['/connections'], 'post'>;
@@ -153,6 +155,9 @@ export type BrowserControl = Ok<paths['/browser/sessions/{id}/takeover'], 'post'
 export type LiveOpen = Ok<paths['/browser/sessions/{id}/live'], 'post'>;
 export type LiveUp = Body<paths['/browser/sessions/{id}/live/input'], 'post'>;
 export type LiveInput = LiveUp['events'][number];
+/** The desktop in a job's sandbox, with who is driving it. */
+export type SandboxComputer = Ok<paths['/sandbox/computers'], 'get'>['computers'][number];
+export type SandboxControl = Ok<paths['/sandbox/sessions/{id}/takeover'], 'post'>;
 export type SearchResult = Success<Ok<paths['/search'], 'get'>>['results'][number];
 /**
  * An entry in the broker's action ledger. The interface reads it only for

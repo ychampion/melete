@@ -393,6 +393,25 @@ export type DeviceConnectorOptions = {
   hub?: DeviceHub;
 };
 
+/**
+ * A companion answer that does not have the shape its tool promises. The
+ * reason names the first field that was wrong, in words a person can read.
+ * A reading tool changed nothing, so it simply failed; for any other tool the
+ * computer may already have done the work, so the outcome is unknown.
+ */
+export function unreadableReply(
+  tool: DeviceTool,
+  device: string,
+  error: z.ZodError,
+): DispatchResult {
+  const issue = error.issues[0];
+  const field = issue?.path.length ? issue.path.join('.') : 'the answer';
+  const reason = `${device} answered in a form Melete could not read: ${field.slice(0, 80)} was not what this tool returns.`;
+  return DEVICE_TOOL_SHAPES[tool].effect_class === 'read'
+    ? { outcome: 'failed', reason, retryable: false }
+    : { outcome: 'unknown', reason: `${reason} It may have happened on the computer.` };
+}
+
 export function createDeviceConnector(options: DeviceConnectorOptions): Connector {
   const hub = options.hub ?? sharedDeviceHub;
   const manifest = deviceManifest(options.name);
@@ -864,8 +883,14 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         };
       if (!outcome.reply.ok)
         return refused(`${device.name} refused: ${cap(outcome.reply.error.message, 300)}`);
-      const { detail, ref } = await detailFor(tool, sent, outcome.reply.result, ctx, action);
-      return { outcome: 'succeeded', receipt: receiptFor(action, detail, ref) };
+      let answered: Awaited<ReturnType<typeof detailFor>>;
+      try {
+        answered = await detailFor(tool, sent, outcome.reply.result, ctx, action);
+      } catch (error) {
+        if (error instanceof z.ZodError) return unreadableReply(tool, device.name, error);
+        throw error;
+      }
+      return { outcome: 'succeeded', receipt: receiptFor(action, answered.detail, answered.ref) };
     },
 
     async verify(action, ctx) {

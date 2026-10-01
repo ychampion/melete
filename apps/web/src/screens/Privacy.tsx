@@ -321,7 +321,7 @@ export function PrivacyTab() {
           <SwitchRow
             key={topic.value}
             label={topic.label}
-            hint="Found from what you write and what your agents read."
+            hint="Found only from what you write. Pages, files and emails an agent reads never decide it."
             on={topics.has(topic.value)}
             onChange={(next) =>
               flip({

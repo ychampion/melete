@@ -1,8 +1,9 @@
 /**
- * The agent's computer, beside the conversation: the page its browser is on
- * and the commands it ran, read from the service and refreshed while the
- * panel is open. The person can take the browser over, steer it through a
- * live view of the page, and hand it back.
+ * The agent's computer, beside the conversation: the page its browser is on,
+ * the desktop in its sandbox and the commands it ran, read from the service and
+ * refreshed while the panel is open. The person can watch the desktop live,
+ * take the browser or the desktop over, steer it through a live view, and hand
+ * it back. Both live views use the same wire shapes, so one screen draws both.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AgentFace } from '../design/face.tsx';
@@ -16,6 +17,7 @@ import type {
   ComputerBrowser,
   ComputerCommand,
   LiveInput,
+  SandboxComputer,
 } from '../experience/types.ts';
 import { href } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
@@ -39,18 +41,25 @@ const POLL_MS = 3000;
  */
 export function useComputer(conversationId: string | null, open: boolean, pulse: string) {
   const [computer, setComputer] = useState<AgentComputer | null>(null);
+  const [desktop, setDesktop] = useState<SandboxComputer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const read = useRef(0);
   const refresh = useCallback(async () => {
     if (!conversationId) return;
     const ticket = ++read.current;
-    const result = await adapter.computer(conversationId);
+    // A conversation is its job, so the job's sandbox desktop is asked for by the same id.
+    const [result, desktops] = await Promise.all([
+      adapter.computer(conversationId),
+      adapter.sandboxComputers(conversationId),
+    ]);
     // An older read that lands after a newer one is dropped.
     if (ticket !== read.current) return;
     if (result.data) {
       setComputer(result.data);
       setError(null);
     } else setError(result.error ?? result.unavailable);
+    // No desktop is the common case (no sandbox, or one without a desktop), not an error.
+    setDesktop(desktops.data?.computers[0] ?? null);
   }, [conversationId]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: pulse is the reload trigger
   useEffect(() => {
@@ -67,16 +76,30 @@ export function useComputer(conversationId: string | null, open: boolean, pulse:
   // biome-ignore lint/correctness/useExhaustiveDependencies: another conversation starts from nothing
   useEffect(() => {
     setComputer(null);
+    setDesktop(null);
     setError(null);
   }, [conversationId]);
-  return { computer, error, refresh };
+  return { computer, desktop, error, refresh };
 }
+
+type LiveSurface = 'browser' | 'sandbox';
+
+/** The routes behind each live view; their requests and answers have the same shapes. */
+const LIVE_ROUTES = {
+  browser: { open: adapter.liveOpen, input: adapter.liveInput, close: adapter.liveClose },
+  sandbox: {
+    open: adapter.sandboxLiveOpen,
+    input: adapter.sandboxLiveInput,
+    close: adapter.sandboxLiveClose,
+  },
+} as const;
 
 /**
  * Per browser session, the last open or close of its live view. Each waits for the one before,
  * so a view is let go before the next opens, and before the browser is handed back.
  */
 const liveTurns = new Map<string, Promise<unknown>>();
+const turnKey = (surface: LiveSurface, sessionId: string) => `${surface}:${sessionId}`;
 
 type Notice = { code: string; host?: string } | null;
 const ENDED_WORDS: Record<string, string> = {
@@ -89,21 +112,33 @@ const ENDED_WORDS: Record<string, string> = {
   closed: 'The live view closed. You still have control.',
 };
 
+/** Ended-view words for a person who is only watching: they never had control to keep. */
+const watchingWords = (words: string) => words.replace(' You still have control.', '');
+
 /**
- * A live view of the page while the person holds the browser. Frames come
+ * A live view of the page while the person holds the browser, or of the
+ * desktop, which may also be watched while the agent drives it. Frames come
  * down one stream and are painted as they arrive; pointer, wheel, keys and
  * paste go up in small batches with the last frame painted, which is what
- * lets the next frame through.
+ * lets the next frame through. While only watching, nothing but that
+ * acknowledgement goes up.
  */
 function LiveScreen({
   sessionId,
   title,
   onWhere,
+  surface: kind = 'browser',
+  interactive = true,
 }: {
   sessionId: string;
   title: string;
   onWhere: (where: { url: string; title: string }) => void;
+  surface?: LiveSurface;
+  /** False while the agent drives the desktop and the person watches. */
+  interactive?: boolean;
 }) {
+  const routes = LIVE_ROUTES[kind];
+  const turns = turnKey(kind, sessionId);
   const [frame, setFrame] = useState<{ seq: number; src: string } | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [ended, setEnded] = useState<string | null>(null);
@@ -126,25 +161,25 @@ function LiveScreen({
     const events = queue.current.splice(0, 200);
     const ack = painted.current;
     sending.current = sending.current.then(async () => {
-      const result = await adapter.liveInput(sessionId, {
+      const result = await routes.input(sessionId, {
         live_id: liveId,
         ack_through: ack,
         events,
       });
-      if (result.error) setNotice({ code: 'input_refused' });
+      if (result.error && events.length) setNotice({ code: 'input_refused' });
     });
-  }, [sessionId]);
+  }, [sessionId, routes]);
   const schedule = useCallback(() => {
     if (timer.current === null) timer.current = setTimeout(flush, 30);
   }, [flush]);
   const send = useCallback(
     (event: LiveInput | null) => {
-      if (!event || !liveRef.current) return;
+      if (!event || !liveRef.current || !interactive) return;
       queue.current.push(event);
       if (notice?.code === 'still_there') setNotice(null);
       schedule();
     },
-    [schedule, notice],
+    [schedule, notice, interactive],
   );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: attempt reopens the view
@@ -161,15 +196,15 @@ function LiveScreen({
       else if (event.type === 'ended') {
         liveRef.current = null;
         liveId = null;
-        setEnded(ENDED_WORDS[event.code] ?? ENDED_WORDS.closed ?? null);
+        setEnded(endedWords(event.code));
       }
     };
-    const opening = (liveTurns.get(sessionId) ?? Promise.resolve()).then(async () => {
+    const opening = (liveTurns.get(turns) ?? Promise.resolve()).then(async () => {
       // A view another tab still holds is let go shortly, so a refusal is tried again.
       for (let tries = 0; tries < 4 && !abort.signal.aborted; tries++) {
-        const opened = await adapter.liveOpen(sessionId);
+        const opened = await routes.open(sessionId);
         if (abort.signal.aborted) {
-          if (opened.data) await adapter.liveClose(sessionId, opened.data.live_id);
+          if (opened.data) await routes.close(sessionId, opened.data.live_id);
           return;
         }
         if (opened.data) {
@@ -183,20 +218,20 @@ function LiveScreen({
         await new Promise((resolve) => setTimeout(resolve, 1200));
       }
     });
-    liveTurns.set(sessionId, opening);
+    liveTurns.set(turns, opening);
     void (async () => {
       await opening;
       if (!liveId || abort.signal.aborted) return;
       liveRef.current = liveId;
       painted.current = 0;
       try {
-        for await (const event of followLive(sessionId, liveId, abort.signal)) {
+        for await (const event of followLive(sessionId, liveId, abort.signal, kind)) {
           handle(event);
           if (event.type === 'ended') return;
         }
-        if (!abort.signal.aborted) setEnded(ENDED_WORDS.closed ?? null);
+        if (!abort.signal.aborted) setEnded(endedWords('closed'));
       } catch {
-        if (!abort.signal.aborted) setEnded(ENDED_WORDS.closed ?? null);
+        if (!abort.signal.aborted) setEnded(endedWords('closed'));
       }
     })();
     return () => {
@@ -207,16 +242,16 @@ function LiveScreen({
       liveRef.current = null;
       // Closed on its turn: after the open under way, if any, has settled.
       liveTurns.set(
-        sessionId,
-        opening.then(() => (liveId ? adapter.liveClose(sessionId, liveId) : undefined)),
+        turns,
+        opening.then(() => (liveId ? routes.close(sessionId, liveId) : undefined)),
       );
     };
-  }, [sessionId, attempt]);
+  }, [sessionId, attempt, kind]);
 
   // The wheel is taken from the page around it, which a passive React listener cannot do.
   useEffect(() => {
     const node = surface.current;
-    if (!node) return;
+    if (!node || !interactive) return;
     const wheel = (event: WheelEvent) => {
       event.preventDefault();
       const { x, y } = pagePoint(node.getBoundingClientRect(), event.clientX, event.clientY);
@@ -232,7 +267,12 @@ function LiveScreen({
     };
     node.addEventListener('wheel', wheel, { passive: false });
     return () => node.removeEventListener('wheel', wheel);
-  }, [send]);
+  }, [send, interactive]);
+
+  function endedWords(code: string): string {
+    const words = ENDED_WORDS[code] ?? ENDED_WORDS.closed ?? 'The live view closed.';
+    return interactive ? words : watchingWords(words);
+  }
 
   const pointer = (kind: 'down' | 'up' | 'move') => (event: React.PointerEvent<HTMLDivElement>) => {
     const node = surface.current;
@@ -263,9 +303,13 @@ function LiveScreen({
       if (now - lastEscape.current < ESCAPE_TWICE_MS) {
         lastEscape.current = 0;
         // Out of the page and on to the control bar below it.
-        const next = surface.current
-          ?.closest('.computer-panel')
-          ?.querySelector<HTMLElement>('.computer-foot button');
+        const next =
+          surface.current
+            ?.closest('.computer-window')
+            ?.querySelector<HTMLElement>('.computer-foot button') ??
+          surface.current
+            ?.closest('.computer-panel')
+            ?.querySelector<HTMLElement>('.computer-foot button');
         next?.focus();
         return;
       }
@@ -288,10 +332,45 @@ function LiveScreen({
     else toast({ kind: 'err', title: result.error ?? 'That site could not be allowed' });
   };
 
+  const picture = frame ? (
+    <img
+      src={frame.src}
+      alt=""
+      draggable={false}
+      onLoad={() => {
+        if (frame.seq > painted.current) {
+          painted.current = frame.seq;
+          schedule();
+        }
+      }}
+    />
+  ) : (
+    <span className="computer-wait">
+      <Icon name="loader" size={16} />
+      Opening the live view…
+    </span>
+  );
+  const badge = (
+    <span className="computer-live-badge" aria-hidden="true">
+      Live
+    </span>
+  );
+
   return (
     <div className="computer-live">
+      {interactive ? null : (
+        <div
+          className="computer-surface"
+          role="img"
+          aria-label={`${title || 'The desktop'}, live. Take over to use it yourself.`}
+        >
+          {picture}
+          {badge}
+        </div>
+      )}
       <div
         ref={surface}
+        hidden={!interactive}
         className="computer-surface"
         role="application"
         aria-roledescription="live page"
@@ -309,27 +388,8 @@ function LiveScreen({
           send(pasteInput(event.clipboardData.getData('text/plain')));
         }}
       >
-        {frame ? (
-          <img
-            src={frame.src}
-            alt=""
-            draggable={false}
-            onLoad={() => {
-              if (frame.seq > painted.current) {
-                painted.current = frame.seq;
-                schedule();
-              }
-            }}
-          />
-        ) : (
-          <span className="computer-wait">
-            <Icon name="loader" size={16} />
-            Opening the live view…
-          </span>
-        )}
-        <span className="computer-live-badge" aria-hidden="true">
-          Live
-        </span>
+        {interactive ? picture : null}
+        {interactive ? badge : null}
       </div>
       {notice?.code === 'off_scope' && notice.host ? (
         <div className="computer-notice" role="status">
@@ -413,6 +473,131 @@ function BrowserView({
   );
 }
 
+/**
+ * The desktop in the agent's sandbox. While the agent drives it the person
+ * may watch it live; taking over parks the job until it is handed back, and
+ * only then do pointer and keys reach the desktop.
+ */
+function DesktopView({
+  desktop,
+  agentName,
+  onChanged,
+}: {
+  desktop: SandboxComputer;
+  agentName: string;
+  onChanged: () => void;
+}) {
+  const yours = desktop.control === 'human';
+  const [watching, setWatching] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [releasing, setReleasing] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a change of hands starts from what the service says
+  useEffect(() => {
+    setReleasing(false);
+  }, [desktop.session_id, desktop.control_epoch]);
+  const change = async (to: 'take' | 'give') => {
+    setBusy(true);
+    if (to === 'give') {
+      // The live view closes first; a hand-back ends it anyway, and a late close would be refused.
+      setReleasing(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await liveTurns.get(turnKey('sandbox', desktop.session_id));
+    }
+    const result =
+      to === 'take'
+        ? await adapter.sandboxTakeOver(desktop.session_id)
+        : await adapter.sandboxHandBack(desktop.session_id);
+    setBusy(false);
+    if (result.data === null) {
+      setReleasing(false);
+      toast({
+        kind: 'err',
+        title:
+          result.error ??
+          result.unavailable ??
+          (to === 'take' ? 'Couldn’t take over' : 'Couldn’t hand back'),
+      });
+      return;
+    }
+    toast({
+      kind: 'ok',
+      title: to === 'take' ? 'You have the computer' : `${agentName} has the computer again`,
+    });
+    // The desktop stays on screen after a hand-back, now watched.
+    setWatching(to === 'give' || watching);
+    onChanged();
+  };
+  return (
+    <section className="computer-window" aria-label="Desktop">
+      <div className="computer-bar">
+        <Icon name="monitor" size={14} />
+        <span className="computer-address clamp1">
+          {desktop.running ? 'Desktop' : 'Desktop · stopped until it is used'}
+        </span>
+      </div>
+      {yours && releasing ? (
+        <div className="computer-screen">
+          <span className="computer-wait">Handing the computer back…</span>
+        </div>
+      ) : yours || watching ? (
+        <LiveScreen
+          // Control moving changes the epoch, which ends a view; a new one opens.
+          key={`${desktop.session_id}:${desktop.control_epoch}`}
+          surface="sandbox"
+          sessionId={desktop.session_id}
+          title={`${agentName}’s desktop`}
+          interactive={yours}
+          onWhere={() => {}}
+        />
+      ) : (
+        <div className="computer-screen">
+          <span className="computer-wait">
+            {desktop.running
+              ? `Watch to see ${agentName}’s desktop live.`
+              : `The computer is stopped. It starts again when ${agentName} uses it.`}
+          </span>
+        </div>
+      )}
+      <div className="computer-foot" data-control={yours ? 'you' : 'agent'}>
+        <span className="computer-holder">
+          <span className="computer-dot" aria-hidden="true" />
+          <span className="col" style={{ gap: 0, minWidth: 0 }}>
+            <span className="computer-holder-name">
+              {yours ? 'You have control' : `${agentName} has control`}
+            </span>
+            <span className="computer-holder-sub">
+              {yours
+                ? `${agentName} waits until you hand it back.`
+                : 'Take over to use the desktop yourself.'}
+            </span>
+          </span>
+        </span>
+        {yours ? (
+          <Button icon="arrowUpRight" disabled={busy} onClick={() => void change('give')}>
+            Hand back
+          </Button>
+        ) : (
+          <>
+            {desktop.running ? (
+              <Button
+                variant="ghost"
+                disabled={busy}
+                aria-pressed={watching}
+                onClick={() => setWatching((now) => !now)}
+              >
+                {watching ? 'Stop watching' : 'Watch'}
+              </Button>
+            ) : null}
+            <Button icon="hand" variant="ghost" disabled={busy} onClick={() => void change('take')}>
+              Take over
+            </Button>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function Terminal({ commands }: { commands: ComputerCommand[] }) {
   return (
     <section className="computer-terminal" aria-label="Terminal">
@@ -471,12 +656,15 @@ export function computerEmptyWords(
 export function ComputerPanel({
   agent,
   computer,
+  desktop = null,
   error,
   onClose,
   onChanged,
 }: {
   agent: Agent | null;
   computer: AgentComputer | null;
+  /** The desktop in the job's sandbox, when it has one. */
+  desktop?: SandboxComputer | null;
   error: string | null;
   onClose: () => void;
   /** Control changed; the computer is read again. */
@@ -524,7 +712,7 @@ export function ComputerPanel({
     });
     onChanged();
   };
-  const empty = computer && !browser && computer.terminal.length === 0;
+  const empty = computer && !browser && !desktop && computer.terminal.length === 0;
   const words = computer ? computerEmptyWords(agentName, computer.available) : null;
   return (
     <aside className="side-panel computer-panel" aria-label={`${agentName}’s computer`}>
@@ -570,6 +758,9 @@ export function ComputerPanel({
             releasing={releasing}
             onWhere={setLive}
           />
+        ) : null}
+        {desktop ? (
+          <DesktopView desktop={desktop} agentName={agentName} onChanged={onChanged} />
         ) : null}
         {computer && computer.terminal.length > 0 ? (
           <Terminal commands={computer.terminal} />

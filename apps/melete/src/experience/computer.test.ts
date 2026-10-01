@@ -106,3 +106,26 @@ test('a quoted secret key and a password in a connection string hide their lines
     ].join('\n'),
   );
 });
+
+test('file paths built from record ids are shown, and keys that contain slashes are still hidden', () => {
+  const text = terminalText(
+    [
+      "python3 - <<'EOF'",
+      "open('/home/agent/screens/act_01M3W8C7DPW288T2ZC2Z1JCYN8.png', 'rb').read()",
+      'ls work/notes/act_01M3W8C7DPW288T2ZC2Z1JCYN8',
+      'EOF',
+      'aws configure set x wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY9',
+      'cat /srv/keys/Zx8kQ2mPq9Lw4Rt7Yv3Bn6Hc1Jd5Fs0Ga',
+    ].join('\n'),
+    4000,
+    'first',
+  );
+  expect(text.split('\n')).toEqual([
+    "python3 - <<'EOF'",
+    "open('/home/agent/screens/act_01M3W8C7DPW288T2ZC2Z1JCYN8.png', 'rb').read()",
+    'ls work/notes/act_01M3W8C7DPW288T2ZC2Z1JCYN8',
+    'EOF',
+    '[hidden]',
+    '[hidden]',
+  ]);
+});

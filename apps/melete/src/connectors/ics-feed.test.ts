@@ -192,7 +192,7 @@ describe('reading a calendar feed', () => {
     });
     expect((await connector.health()).status).toBe('ok');
     const listed = await connector.execute(
-      mailAction('calendar.list', { limit: 5 }),
+      mailAction('calendar.list', { limit: 5, from: '2026-01-01', to: '2026-02-01' }),
       mailContext(),
     );
     expect(listed.outcome).toBe('succeeded');

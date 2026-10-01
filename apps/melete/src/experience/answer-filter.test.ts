@@ -199,3 +199,15 @@ test('a long answer streams in time that grows with its length, not its square',
   expect(performance.now() - started).toBeLessThan(5_000);
   expect(shown.join('')).toBe(answerText(answer));
 });
+
+test('a file named after a record id is a file name, while a bare record id stays hidden', () => {
+  expect(answerText('Saved act_01M3W8C7DPW288T2ZC2Z1JCYN8.png to the desktop.')).toBe(
+    'Saved act_01M3W8C7DPW288T2ZC2Z1JCYN8.png to the desktop.',
+  );
+  expect(answerText('It is at /work/shots/act_01M3W8C7DPW288T2ZC2Z1JCYN8 now.')).toBe(
+    'It is at /work/shots/act_01M3W8C7DPW288T2ZC2Z1JCYN8 now.',
+  );
+  // A record id that ends a sentence is still a record id.
+  expect(answerText('I queued act_01K6Z8Q4M2N7P3R5S9T1V6W8XY.')).toBe(`I queued ${HIDDEN}.`);
+  expect(answerText(`Use ${OPENAI_KEY}.png as the key.`)).toBe(`Use ${HIDDEN}.png as the key.`);
+});

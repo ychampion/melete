@@ -59,6 +59,7 @@ import type {
   LiveUp,
   LocalModelCheck,
   LocalModelCheckRequest,
+  McpSignInStart,
   MemoryDigestResponse,
   MemoryExplanation,
   MemoryItem,
@@ -88,6 +89,8 @@ import type {
   RewindTarget,
   Rule,
   RuleBounds,
+  SandboxComputer,
+  SandboxControl,
   SearchResult,
   SendOutcome,
   SensitiveTopic,
@@ -544,6 +547,11 @@ export const adapter = {
         ? api.GET('/google-sign-ins/{id}', path(id))
         : api.GET('/microsoft-sign-ins/{id}', path(id)),
     ),
+  /** Starts signing in to the MCP server behind an installed connection. */
+  startMcpSignIn: (connectionId: string) =>
+    guard<McpSignInStart>(() =>
+      api.POST('/mcp-sign-ins', { body: { connection_id: connectionId } }),
+    ),
   /** The body is built from a kind's descriptor; the service validates it per kind. */
   installConnection: (body: Record<string, unknown>) =>
     guard<ConnectionInstalled>(() =>
@@ -597,6 +605,28 @@ export const adapter = {
   liveClose: (sessionId: string, liveId: string) =>
     guard<{ closed: true }>(() =>
       api.POST('/browser/sessions/{id}/live/close', {
+        ...path(sessionId),
+        body: { live_id: liveId },
+      }),
+    ),
+  /* ---------- the desktop in the agent's sandbox: the same live wire shapes ---------- */
+  sandboxComputers: (jobId: string) =>
+    guard<{ computers: SandboxComputer[] }>(() =>
+      api.GET('/sandbox/computers', { params: { query: { job_id: jobId } } }),
+    ),
+  sandboxTakeOver: (sessionId: string) =>
+    guard<SandboxControl>(() => api.POST('/sandbox/sessions/{id}/takeover', path(sessionId))),
+  sandboxHandBack: (sessionId: string) =>
+    guard<SandboxControl>(() => api.POST('/sandbox/sessions/{id}/handback', path(sessionId))),
+  sandboxLiveOpen: (sessionId: string) =>
+    guard<LiveOpen>(() => api.POST('/sandbox/sessions/{id}/live', path(sessionId))),
+  sandboxLiveInput: (sessionId: string, body: LiveUp) =>
+    guard<{ accepted: number }>(() =>
+      api.POST('/sandbox/sessions/{id}/live/input', { ...path(sessionId), body }),
+    ),
+  sandboxLiveClose: (sessionId: string, liveId: string) =>
+    guard<{ closed: true }>(() =>
+      api.POST('/sandbox/sessions/{id}/live/close', {
         ...path(sessionId),
         body: { live_id: liveId },
       }),
@@ -773,17 +803,18 @@ export type LiveDown =
   | { type: 'ended'; code: string };
 
 /**
- * Follow a live browser view. It ends when the service ends it or the stream
- * drops; the view is then opened again rather than resumed, since nothing is
- * replayed.
+ * Follow a live view of the browser or of the sandbox desktop, which share
+ * their wire shapes. It ends when the service ends it or the stream drops; the
+ * view is then opened again rather than resumed, since nothing is replayed.
  */
 export async function* followLive(
   sessionId: string,
   liveId: string,
   signal: AbortSignal,
+  surface: 'browser' | 'sandbox' = 'browser',
 ): AsyncGenerator<LiveDown, void, void> {
   const response = await client.options.fetch(
-    `${client.options.baseUrl}/browser/sessions/${encodeURIComponent(sessionId)}/live/frames?live_id=${encodeURIComponent(liveId)}`,
+    `${client.options.baseUrl}/${surface}/sessions/${encodeURIComponent(sessionId)}/live/frames?live_id=${encodeURIComponent(liveId)}`,
     {
       headers: { ...client.options.headers, Accept: 'text/event-stream' },
       credentials: client.options.credentials,
