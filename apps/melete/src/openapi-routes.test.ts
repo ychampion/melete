@@ -24,7 +24,6 @@ const DOCUMENTED_ELSEWHERE = [
   'POST /actions/{}/execution/settle',
   'GET /attempts/{}',
   'GET /jobs/{}/attempts',
-  'POST /spaces',
 ];
 
 /** Every route is mounted when its dependency exists; none is called here. */
