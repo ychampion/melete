@@ -633,7 +633,13 @@ export const milestoneInput = z.strictObject({
   ]),
   schedule_at: date.optional(),
 });
-export const planMilestone = milestoneInput.extend({ id, done: z.boolean(), status: turnStatus });
+export const planMilestone = milestoneInput.extend({
+  id,
+  done: z.boolean(),
+  status: turnStatus,
+  /** What the assistant doing this step last said: its result, or what it asked. */
+  output: z.string().max(2000).nullable().optional(),
+});
 export const experiencePlan = z.strictObject({
   id,
   title: text,
@@ -756,6 +762,8 @@ export const experienceAutomation = z.strictObject({
   title: text,
   schedule: text,
   enabled: z.boolean(),
+  /** Stopped for good: it cannot be resumed, only deleted. */
+  ended: z.boolean(),
   /** The thread every run of this routine writes into. */
   conversation_id: id,
   runs: z.array(automationRun),
@@ -960,6 +968,11 @@ export const experienceOperations = {
   'GET /automations': { response: automationList },
   'POST /automations': { request: automationCreate, response: automationResponse },
   'POST /automations/{id}/test': { response: experienceOk },
+  /** Stops the schedule; nothing runs until it is resumed. */
+  'POST /automations/{id}/pause': { response: automationResponse },
+  'POST /automations/{id}/resume': { response: automationResponse },
+  /** Stops the routine for good and takes it off the list. */
+  'DELETE /automations/{id}': { response: experienceOk },
   'POST /automations/morning-brief': {
     request: z.strictObject({ agent_id: id, at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/) }),
     response: automationResponse,

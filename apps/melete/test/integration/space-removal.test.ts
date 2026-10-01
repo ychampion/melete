@@ -464,6 +464,17 @@ describe.if(handle !== null)('removing a space', () => {
     expect(memory?.restore_ready).toBe(false);
   });
 
+  test('fence_leaves_finished_jobs_alone — a completed job does not stop the removal', async () => {
+    const seeded = await seed('shared');
+    await sql`update job set state = 'completed' where id = ${seeded.jobId}`;
+    const removals = await service();
+    await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    const [row] = await sql<{ state: string }[]>`select state from job where id = ${seeded.jobId}`;
+    expect(row?.state).toBe('completed');
+    const [parent] = await db.select().from(space).where(eq(space.id, seeded.spaceId));
+    expect(parent?.removedAt).not.toBeNull();
+  });
+
   test('fence_bumps_lease_epoch — a stalled attempt that wakes meets a fence', async () => {
     const seeded = await seed('shared');
     const [before] = await sql<{ lease_epoch: number }[]>`select lease_epoch from job

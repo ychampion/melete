@@ -31,7 +31,6 @@ import {
   connectionResponse,
   createConnectionRequest,
   createJobRequest,
-  createSpaceRequest,
   credentialsRequest,
   type EventType,
   type errorResponse,
@@ -303,21 +302,6 @@ export function createMockApp(deps: AppDeps) {
         'x-content-type-options': 'nosniff',
       },
     });
-  });
-
-  app.post('/spaces', async (c) => {
-    const parsed = await parseBody(c.req.raw, createSpaceRequest);
-    if (!parsed.ok) return parsed.response;
-    const id = newId(ID_PREFIXES.space);
-    store.spaces.set(id, {
-      id,
-      name: parsed.value.name,
-      kind: 'personal',
-      audience: 'owner',
-      git_path: `/data/spaces/${parsed.value.name}`,
-      created_at: store.now().toISOString(),
-    });
-    return send(spaceListResponse, { spaces: [...store.spaces.values()] }, 201);
   });
 
   // ------------------------------------------------------------------

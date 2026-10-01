@@ -110,13 +110,11 @@ export function PlanTable({
   selected?: string | null;
   compact?: boolean;
 }) {
-  const columns = compact ? 'minmax(0, 1fr) 140px 40px' : 'minmax(0, 1fr) 128px 168px 40px';
+  // The columns live in the stylesheet, where a narrow screen can replace them.
+  const grid = compact ? 'plan-grid compact' : 'plan-grid';
   return (
     <div className="card-12" style={{ overflow: 'hidden' }}>
-      <div
-        className="plan-grid"
-        style={{ gridTemplateColumns: columns, height: 36, background: 'var(--soft)' }}
-      >
+      <div className={grid} style={{ height: 36, background: 'var(--soft)' }}>
         <Overline>Plan</Overline>
         {compact ? null : <Overline>Category</Overline>}
         <Overline>Progress</Overline>
@@ -164,10 +162,9 @@ export function PlanTable({
         return (
           <a
             key={plan.id}
-            className="plan-grid hoverable"
+            className={`${grid} hoverable`}
             href={href(`/plans/${plan.id}`)}
             style={{
-              gridTemplateColumns: columns,
               height: 56,
               borderTop: '1px solid var(--line)',
               background: on ? 'var(--soft)' : undefined,
@@ -348,58 +345,71 @@ function PlanSheet({
                 : null;
             const byAgent = milestone.assignee.kind === 'agent';
             return (
-              <div
-                key={milestone.id}
-                className="row"
-                style={{ gap: 10, minHeight: 36, padding: '4px 0' }}
-              >
-                <Checkbox
-                  checked={milestone.done}
-                  disabled={byAgent}
-                  label={milestone.title}
-                  onChange={(next) =>
-                    void adapter.setMilestone(plan.id, milestone.id, next).then((r) => {
-                      if (r.data) onChange(r.data.plan);
-                      else
-                        toast({
-                          kind: 'info',
-                          title: r.unavailable ?? r.error ?? 'Couldn’t change that',
-                        });
-                    })
-                  }
-                />
-                <span
-                  style={{
-                    flex: 1,
-                    fontSize: 14,
-                    color: milestone.done ? 'var(--muted)' : 'var(--text)',
-                    textDecoration: milestone.done ? 'line-through' : 'none',
-                  }}
-                >
-                  {milestone.title}
-                </span>
-                {agent ? (
+              <div key={milestone.id} className="col">
+                <div className="row" style={{ gap: 10, minHeight: 36, padding: '4px 0' }}>
+                  <Checkbox
+                    checked={milestone.done}
+                    disabled={byAgent}
+                    label={milestone.title}
+                    onChange={(next) =>
+                      void adapter.setMilestone(plan.id, milestone.id, next).then((r) => {
+                        if (r.data) onChange(r.data.plan);
+                        else
+                          toast({
+                            kind: 'info',
+                            title: r.unavailable ?? r.error ?? 'Couldn’t change that',
+                          });
+                      })
+                    }
+                  />
                   <span
-                    className="row"
-                    style={{ gap: 6, fontSize: 12, color: 'var(--muted)' }}
-                    title={`${agent.name} does this step`}
+                    style={{
+                      flex: 1,
+                      fontSize: 14,
+                      color: milestone.done ? 'var(--muted)' : 'var(--text)',
+                      textDecoration: milestone.done ? 'line-through' : 'none',
+                    }}
                   >
-                    <AgentFace
-                      look={lookOf(agent)}
-                      size={20}
-                      state={
-                        milestone.done
-                          ? 'done'
-                          : milestone.status === 'working'
-                            ? 'working'
-                            : 'idle'
-                      }
-                    />
-                    {agent.name}
+                    {milestone.title}
                   </span>
-                ) : (
-                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>you</span>
-                )}
+                  {agent ? (
+                    <span
+                      className="row"
+                      style={{ gap: 6, fontSize: 12, color: 'var(--muted)' }}
+                      title={`${agent.name} does this step`}
+                    >
+                      <AgentFace
+                        look={lookOf(agent)}
+                        size={20}
+                        state={
+                          milestone.done
+                            ? 'done'
+                            : milestone.status === 'working'
+                              ? 'working'
+                              : 'idle'
+                        }
+                      />
+                      {agent.name}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 12, color: 'var(--muted)' }}>you</span>
+                  )}
+                </div>
+                {milestone.output ? (
+                  <p
+                    style={{
+                      fontSize: 13,
+                      lineHeight: '19px',
+                      color: 'var(--secondary)',
+                      paddingLeft: 30,
+                      paddingBottom: 6,
+                      whiteSpace: 'pre-wrap',
+                      overflowWrap: 'anywhere',
+                    }}
+                  >
+                    {milestone.output}
+                  </p>
+                ) : null}
               </div>
             );
           })}

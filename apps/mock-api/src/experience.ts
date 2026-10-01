@@ -483,6 +483,7 @@ export class ExperienceMock {
         title,
         schedule: scheduleSentence(cron, this.profile.time_zone),
         enabled,
+        ended: false,
         conversation_id: newId('job'),
         runs: [
           {
@@ -1474,6 +1475,7 @@ export class ExperienceMock {
       id: newId('routine'),
       title: input.title,
       enabled: true,
+      ended: false,
       schedule: scheduleSentence(
         `${Number(minute)} ${Number(hour)} * * ${[...new Set(input.weekdays)].sort().join(',')}`,
         this.profile.time_zone,
@@ -1835,6 +1837,16 @@ export class ExperienceMock {
           finished_at: this.now(),
           summary: 'Nothing new since the last run.',
         });
+        return { status: 'ok' };
+      case 'POST /automations/{id}/pause':
+      case 'POST /automations/{id}/resume': {
+        const routine = required(this.automations, id);
+        routine.enabled = key.endsWith('/resume');
+        return { automation: routine };
+      }
+      case 'DELETE /automations/{id}':
+        required(this.automations, id);
+        this.automations.delete(id);
         return { status: 'ok' };
       case 'GET /experience/connections':
         return { connections: this.connections() };

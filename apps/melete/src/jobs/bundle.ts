@@ -41,8 +41,11 @@ import {
   event,
   experienceProfile,
   experienceTurn,
+  job,
   knowledgeRecord,
+  planMilestone,
   question,
+  task,
   trigger,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -445,6 +448,61 @@ export async function buildSinceLast(
 }
 
 /** Reserve the durable attempt first; its capability is usable only after commit. */
+/** How many of the person's open tasks a routine is shown. */
+const ROUTINE_TASK_LIMIT = 50;
+
+const day = (at: Date | null) => (at ? ` (due ${at.toISOString().slice(0, 10)})` : '');
+
+/**
+ * What the person keeps in Melete that the work is about, written into the
+ * objective: a routine sees their open tasks, and a conversation or step that
+ * belongs to a plan sees the plan, its steps and which are done.
+ */
+async function situation(tx: Transaction, row: JobRow): Promise<string> {
+  const parts: string[] = [];
+  if (row.kind === 'routine') {
+    const open = await tx
+      .select({ title: task.title, dueAt: task.dueAt })
+      .from(task)
+      .where(and(eq(task.spaceId, row.spaceId), eq(task.done, false)))
+      .orderBy(asc(task.dueAt), asc(task.createdAt))
+      .limit(ROUTINE_TASK_LIMIT);
+    parts.push(
+      open.length
+        ? [
+            'The person’s open tasks:',
+            ...open.map((item) => `- ${item.title}${day(item.dueAt)}`),
+          ].join('\n')
+        : 'The person has no open tasks.',
+    );
+  }
+  if (row.planId) {
+    const [plan] = await tx
+      .select({ title: job.title })
+      .from(job)
+      .where(and(eq(job.id, row.planId), eq(job.spaceId, row.spaceId), eq(job.kind, 'plan')));
+    if (plan) {
+      const steps = await tx
+        .select({ milestone: planMilestone, state: job.state })
+        .from(planMilestone)
+        .leftJoin(job, eq(job.id, planMilestone.childJobId))
+        .where(eq(planMilestone.planId, row.planId))
+        .orderBy(planMilestone.ordinal);
+      parts.push(
+        [
+          `This belongs to the plan "${plan.title}". Its steps, in order:`,
+          ...steps.map(({ milestone, state }) => {
+            const done = state ? state === 'completed' : milestone.done;
+            const who = milestone.agentId ? ', assigned to an assistant' : '';
+            return `- [${done ? 'done' : 'not done'}] ${milestone.title}${day(milestone.scheduleAt)}${who}`;
+          }),
+        ].join('\n'),
+      );
+    }
+  }
+  return parts.join('\n\n');
+}
+
 export async function buildAttemptSkeleton(
   tx: Transaction,
   row: JobRow,
@@ -663,7 +721,7 @@ export async function buildAttemptSkeleton(
     attempt: { ...attemptIdentity, job_id: row.id },
     job: {
       title: row.title,
-      objective: row.objective,
+      objective: [row.objective, await situation(tx, row)].filter(Boolean).join('\n\n'),
       constraints,
       progress_summary: [history.progressSummary, earlierWork].filter(Boolean).join('\n\n'),
       unresolved_questions: wait.kind === 'user_input' ? [wait.question] : [],

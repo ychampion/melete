@@ -8,6 +8,7 @@ import {
 import type { Context, Hono } from 'hono';
 import { getCookie } from 'hono/cookie';
 import type { Sql, TransactionSql } from 'postgres';
+import type { z } from 'zod';
 import type { ExperienceSignIn } from '../experience/signin.ts';
 import { ServiceError } from './errors.ts';
 import type { RequestSource } from './listener.ts';
@@ -149,8 +150,25 @@ export function mountPassword(
     const source = clientAddress(c);
     const retryAfter = consumes.admit(source);
     if (retryAfter > 0) return limited(c, retryAfter);
-    const input = passwordResetConsume.parse(await c.req.json());
-    const done = await sql.begin(async (tx) => {
+    const body = await c.req.json();
+    const shaped = passwordResetConsume.safeParse(body);
+    // A code typed wrong is the same news as one that expired, not a form error.
+    const done =
+      !shaped.success && shaped.error.issues.some((issue) => issue.path[0] === 'token')
+        ? false
+        : await consume(passwordResetConsume.parse(body));
+    if (!done)
+      throw new ServiceError(
+        'invalid_reset_link',
+        'This reset link has expired or was already used. Ask for a new one.',
+        400,
+      );
+    consumes.succeeded(source);
+    return c.json({ status: 'ok' as const });
+  });
+
+  const consume = (input: z.infer<typeof passwordResetConsume>) =>
+    sql.begin(async (tx) => {
       const [reset] = await tx`select principal_id from password_reset
         where token_hash = ${digest(input.token)} and used_at is null and expires_at > now()
         for update`;
@@ -162,13 +180,4 @@ export function mountPassword(
         where principal_id = ${reset.principal_id} and used_at is null`;
       return true;
     });
-    if (!done)
-      throw new ServiceError(
-        'invalid_reset_link',
-        'This reset link has expired or was already used. Ask for a new one.',
-        400,
-      );
-    consumes.succeeded(source);
-    return c.json({ status: 'ok' as const });
-  });
 }

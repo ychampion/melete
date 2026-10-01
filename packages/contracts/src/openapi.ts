@@ -14,7 +14,6 @@ import {
   attemptListResponse,
   attemptResponse,
   cancelJobRequest,
-  createSpaceRequest,
   credentialsRequest,
   errorResponse,
   eventDeliveryRequest,
@@ -1671,15 +1670,6 @@ export function buildOpenApiDocument() {
             tags: ['spaces'],
             summary: 'List spaces',
             responses: { '200': jsonResponse('Spaces', spaceListResponse) },
-          },
-          post: {
-            tags: ['spaces'],
-            summary: 'Create a space',
-            requestBody: json(createSpaceRequest),
-            responses: {
-              '201': jsonResponse('Created', spaceListResponse),
-              '400': problem('Invalid request'),
-            },
           },
         },
 

@@ -145,8 +145,10 @@ const MCP_SERVER_PATHS = [
 export function mountMcpServer(app: Hono, deps: McpServerDeps) {
   const addresses = mcpServerAddresses(deps.env.MELETE_PUBLIC_URL);
   // Without a public address no assistant could reach the endpoint or return
-  // from consent, so the server stays off and its paths say so.
+  // from consent, so the server stays off and its paths say so. The person's
+  // own list of assistants still answers, empty: none can be connected.
   if (!addresses) {
+    app.get('/mcp/clients', (c) => c.json({ clients: [] }));
     for (const path of MCP_SERVER_PATHS)
       app.all(path, (c) =>
         c.json({ error: { code: 'not_enabled', message: MCP_SERVER_OFF } }, 404),

@@ -12,6 +12,9 @@ import { appendEvent } from '../events/store.ts';
 /** The note on a permission withdrawn because the job it waited in ended. */
 export const ENDED_NOTE = 'ended';
 
+/** The note on a permission withdrawn because a fact it was asked on changed. */
+export const OUTDATED_NOTE = 'outdated';
+
 /** Job states after which none of the job's actions can run, so none can be approved. */
 export const ENDED_STATES: readonly string[] = ['cancelled', 'failed', 'completed'];
 

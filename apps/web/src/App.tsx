@@ -58,7 +58,7 @@ function Unreachable({ error, onRetry }: { error: string; onRetry: () => void })
         <h1 style={{ fontSize: 22, fontWeight: 700 }}>Couldn’t reach Melete</h1>
         <p style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 420 }}>{error}</p>
         <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 420 }}>
-          Start the service, or point <code>VITE_MELETE_API</code> at one that is running.
+          It may be starting up or restarting. Try again in a moment.
         </p>
         <Button variant="outline" onClick={onRetry}>
           Try again

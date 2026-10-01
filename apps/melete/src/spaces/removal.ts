@@ -18,6 +18,8 @@ import { realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
   EMPTY_COUNTS,
+  isTerminal,
+  jobState,
   type RemovalCounts,
   type RemovalPhase,
   removalCounts,
@@ -1022,15 +1024,13 @@ async function cancelEveryJob(
   const cancelled: string[] = [];
   for (const row of rows) {
     await tx.update(trigger).set({ enabled: false }).where(eq(trigger.jobId, row.id));
-    if (TERMINAL.has(row.state)) continue;
+    if (isTerminal(jobState.parse(row.state))) continue;
     // The bumped lease epoch is the fence a stalled attempt meets when it wakes.
     await jobs.move(tx, row, { kind: 'cancelled' }, { payload: { reason: 'space_removed' } });
     cancelled.push(row.id);
   }
   return cancelled;
 }
-
-const TERMINAL = new Set(['done', 'cancelled', 'failed']);
 
 function omit(
   counts: RemovalCounts,

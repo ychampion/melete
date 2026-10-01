@@ -122,19 +122,9 @@ describe('every route answers with a body the contract describes', () => {
     expect(healthResponse.parse(json).status).toBe('ok');
   });
 
-  test('GET and POST /spaces', async () => {
+  test('GET /spaces', async () => {
     const listed = await call(mock.app, 'GET', '/spaces');
     expect(spaceListResponse.parse(listed.json).spaces).toHaveLength(1);
-
-    const created = await call(mock.app, 'POST', '/spaces', { name: 'work' });
-    expect(created.status).toBe(201);
-    expect(spaceListResponse.parse(created.json).spaces).toHaveLength(2);
-  });
-
-  test('POST /spaces refuses an empty name', async () => {
-    const { status, json } = await call(mock.app, 'POST', '/spaces', { name: '' });
-    expect(status).toBe(400);
-    expect(errorResponse.parse(json).error.code).toBe('invalid_request');
   });
 
   test('GET and POST /jobs', async () => {

@@ -65,7 +65,7 @@ import {
   QUEUES,
   RECOVERY_SCAN_SECONDS,
 } from './queue.ts';
-import type { JobRow, JobService } from './service.ts';
+import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
 
 export const HEARTBEAT_MS = 15_000;
@@ -669,18 +669,17 @@ export class AttemptRunner {
       input = { kind: 'attempt_waiting_for_input' };
       wait = { kind: 'user_input', question: 'What would you like to do next?' };
     }
-    if (row.kind === 'routine' && completionVerified) {
-      const [schedule] = await tx
-        .select()
-        .from(trigger)
-        .where(
-          and(eq(trigger.jobId, row.id), eq(trigger.kind, 'schedule'), eq(trigger.enabled, true)),
-        )
-        .limit(1);
-      if (schedule) {
-        input = { kind: 'attempt_waiting_for_event_or_time' };
-        wait = { kind: 'event', trigger_id: schedule.id, deadline_at: null };
-      }
+    // A routine rests until its next scheduled run once this one is over,
+    // whether it finished or failed: one bad run does not end the routine. A
+    // paused routine rests the same way until it is resumed.
+    const runOver =
+      completionVerified ||
+      input.kind === 'attempt_budget_exhausted' ||
+      (input.kind === 'attempt_failed' && !(input.retryable && input.attempts_remaining > 0));
+    const rest = runOver ? await routineRest(tx, row) : null;
+    if (rest) {
+      input = { kind: 'attempt_waiting_for_event_or_time' };
+      wait = rest;
     }
     if (
       outcome.kind === 'completed' &&
@@ -986,25 +985,32 @@ export class AttemptRunner {
       })
       .where(eq(attempt.id, attemptId));
     await this.gap(tx, attemptId, row.id, 'lost');
+    const remaining = Math.max(
+      0,
+      jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0),
+    );
+    // A routine whose run is lost for good goes back to its schedule.
+    const rest = row.state === 'running' && remaining === 0 ? await routineRest(tx, row) : null;
     const moved =
-      row.state === 'running'
-        ? await this.jobs.move(
-            tx,
-            row,
-            {
-              kind: 'attempt_failed',
-              retryable: true,
-              attempts_remaining: Math.max(
-                0,
-                jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0),
-              ),
-            },
-            { attemptId, reason: 'recovery' },
-          )
-        : row;
+      row.state !== 'running'
+        ? row
+        : rest
+          ? await this.jobs.move(
+              tx,
+              row,
+              { kind: 'attempt_waiting_for_event_or_time' },
+              { attemptId, wait: rest, reason: 'recovery' },
+            )
+          : await this.jobs.move(
+              tx,
+              row,
+              { kind: 'attempt_failed', retryable: true, attempts_remaining: remaining },
+              { attemptId, reason: 'recovery' },
+            );
     // A conversation whose last attempt was lost has ended: its turn says so,
     // in the saved copy and on the stream, instead of looking busy for ever.
-    const turnFailed = Boolean(row.currentTurnId) && moved.state === 'failed';
+    // So has a routine's run that went back to its schedule.
+    const turnFailed = Boolean(row.currentTurnId) && (moved.state === 'failed' || rest !== null);
     await appendEvent(tx, {
       jobId: row.id,
       attemptId,
@@ -1036,6 +1042,7 @@ export class AttemptRunner {
             inArray(experienceTurn.status, ['queued', 'working', 'streaming']),
           ),
         );
+    if (moved.state === 'waiting_for_event_or_time') await this.onWait?.(tx, moved);
     return true;
   }
 
