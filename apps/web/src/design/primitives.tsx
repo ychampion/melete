@@ -15,6 +15,7 @@ import {
   useId,
   useRef,
 } from 'react';
+import { modKey } from '../experience/plain.ts';
 import { Icon, type IconName } from './icons.tsx';
 
 export type ButtonVariant =
@@ -239,7 +240,9 @@ export function Count({ n, active = false }: { n: number | string; active?: bool
 }
 
 export function Kbd({ children }: { children: ReactNode }) {
-  return <span className="kbd">{children}</span>;
+  // Written with the Mac's ⌘; elsewhere the same keys read Ctrl.
+  const keys = typeof children === 'string' ? children.replace('⌘', modKey()) : children;
+  return <span className="kbd">{keys}</span>;
 }
 
 export function Avatar({

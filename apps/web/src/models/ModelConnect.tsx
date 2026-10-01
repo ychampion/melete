@@ -72,11 +72,13 @@ export function ModelLine({ settings }: { settings: ModelSettings }) {
       <Icon name="sparkles" size={13} />
       <span className="col" style={{ gap: 1, minWidth: 0 }}>
         <span>
-          Model: <span className="models-name">{modelDisplayName(active.model)}</span> ·{' '}
-          {providerLabel(settings, active.provider)}
+          Model:{' '}
+          <span className="models-name" title={active.model}>
+            {modelDisplayName(active.model)}
+          </span>{' '}
+          · {providerLabel(settings, active.provider)}
           {active.connected ? '' : ' (not connected)'}
         </span>
-        <span className="models-id models-id-raw">{active.model}</span>
       </span>
     </span>
   );
@@ -96,8 +98,9 @@ export function ActiveModel({
     <div className="card-12 models-active">
       <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
         <span className="models-overline">Agents answer with</span>
-        <span className="models-active-name">{modelDisplayName(active.model)}</span>
-        <span className="models-id models-id-raw">{active.model}</span>
+        <span className="models-active-name" title={active.model}>
+          {modelDisplayName(active.model)}
+        </span>
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>
           {providerLabel(settings, active.provider)} ·{' '}
           {active.source === 'app' ? 'chosen here' : 'the server’s default'}

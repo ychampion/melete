@@ -402,7 +402,7 @@ export function actionSources(row: ActionRow, connection: ConnectionRow): Experi
     case 'files.list':
       return array(detail.entries)
         .filter((item) => object(item).kind === 'file')
-        .map((item) => source('file', object(item).name, 'File'));
+        .map((item) => source('file', filename(object(item).name), 'File'));
     case 'files.read':
     case 'files.write':
     case 'files.move':
@@ -412,7 +412,7 @@ export function actionSources(row: ActionRow, connection: ConnectionRow): Experi
       return [
         source(
           'page',
-          pageTitle(detail) ?? safeUrl(detail.final_url ?? detail.url),
+          pageTitle(detail) ?? hostname(safeUrl(detail.final_url ?? detail.url)),
           'Web page',
           detail.final_url ?? detail.url,
         ),
@@ -423,6 +423,20 @@ export function actionSources(row: ActionRow, connection: ConnectionRow): Experi
 }
 const filename = (value: unknown) =>
   typeof value === 'string' ? value.replaceAll('\\', '/').split('/').pop() : undefined;
+/** A page with no title is named by its site: "open-meteo.com", not the whole address. */
+const hostname = (url: string | undefined) => {
+  if (!url) return undefined;
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return undefined;
+  }
+};
+/**
+ * Looking through files or reading one makes nothing new: what was looked at
+ * stays in the turn's activity, and only what an action made becomes a card.
+ */
+const LOOKED_AT = new Set(['files.list', 'files.read']);
 /** A read page names its title; a receipt from before that carries the page itself. */
 const pageTitle = (detail: Record<string, unknown>) =>
   typeof detail.title === 'string' && detail.title.trim()
@@ -491,6 +505,7 @@ export function projectCards(
   connection: ConnectionRow,
   draft?: ExperienceDraft['status'],
 ): ResultCard[] {
+  if (LOOKED_AT.has(row.kind)) return [];
   const send = sendAction(row, draft);
   const sources = actionSources(row, connection);
   const payload = object(row.canonicalPayload);

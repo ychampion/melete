@@ -118,6 +118,14 @@
   background: var(--surface);
   box-shadow: var(--shadow-pill);
 }
+/* The current item keeps its pill and still shows the focus ring over it. */
+.nav-item[aria-current="page"]:focus-visible,
+.chat-row[aria-current="page"]:focus-visible {
+  box-shadow:
+    var(--shadow-pill),
+    0 0 0 2px var(--surface),
+    0 0 0 5px var(--ring);
+}
 .nav-item[aria-current="page"] > svg {
   color: var(--primary);
 }
@@ -183,6 +191,41 @@
   background: var(--hover);
   text-decoration: none;
   color: var(--secondary);
+}
+.chat-all {
+  color: var(--muted);
+}
+.chat-all-count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 1000;
+  padding: 8px 14px;
+  border-radius: var(--radius-button);
+  background: var(--surface);
+  color: var(--heading);
+  font-size: 14px;
+  font-weight: 600;
+  border: 0;
+  cursor: pointer;
+  box-shadow: var(--shadow-lift);
+  transform: translateY(-200%);
+}
+.skip-link:focus-visible,
+.skip-link:focus {
+  transform: none;
+}
+.shell-content:focus {
+  outline: none;
+}
+.shell-content:focus-visible {
+  box-shadow:
+    var(--shadow-sheet),
+    0 0 0 2px var(--ring);
 }
 .chat-face {
   display: inline-flex;

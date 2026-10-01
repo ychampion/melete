@@ -19,6 +19,7 @@ import {
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
+import { plainRunReason, plainSchedule } from '../experience/plain.ts';
 import type { Automation, AutomationRun } from '../experience/types.ts';
 import { href } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
@@ -114,7 +115,7 @@ export function RunRow({ run }: { run: AutomationRun }) {
             overflowWrap: 'anywhere',
           }}
         >
-          {run.reason}
+          {plainRunReason(run.reason)}
         </p>
       ) : null}
     </div>
@@ -182,7 +183,9 @@ function RoutineCard({
           <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
             {automation.title}
           </span>
-          <span style={{ fontSize: 13, color: 'var(--secondary)' }}>{automation.schedule}</span>
+          <span style={{ fontSize: 13, color: 'var(--secondary)' }}>
+            {plainSchedule(automation.schedule)}
+          </span>
         </div>
         <Badge tone={automation.enabled ? 'success' : 'neutral'} dot={automation.enabled}>
           {automation.ended ? 'Stopped' : automation.enabled ? 'On' : 'Paused'}
