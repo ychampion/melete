@@ -13,7 +13,15 @@ import { err, ID_PREFIXES, ok, prefixedId, type Result, timestamp } from './comm
 import { connectionProvider, connectionView } from './entities.ts';
 import { MCP_STDIO_RUNNERS, mcpConnectionConfig, mcpStdioConnectionConfig } from './mcp.ts';
 
-export const CONNECTION_KINDS = ['mail', 'caldav', 'ics', 'mcp', 'mcp_stdio', 'sandbox'] as const;
+export const CONNECTION_KINDS = [
+  'mail',
+  'caldav',
+  'ics',
+  'mcp',
+  'mcp_stdio',
+  'sandbox',
+  'phone',
+] as const;
 export const connectionKind = z.enum(CONNECTION_KINDS);
 export type ConnectionKind = z.infer<typeof connectionKind>;
 
@@ -118,9 +126,18 @@ export const icsConnectionConfig = z
   .strict();
 export type IcsConnectionConfig = z.infer<typeof icsConnectionConfig>;
 
-export const SANDBOX_ADAPTERS = ['e2b', 'daytona', 'modal'] as const;
+export const SANDBOX_ADAPTERS = ['e2b', 'daytona', 'modal', 'docker'] as const;
 export const sandboxAdapter = z.enum(SANDBOX_ADAPTERS);
 export type SandboxAdapter = z.infer<typeof sandboxAdapter>;
+
+/**
+ * The adapters that reach a provider account with a key. `docker` runs on the
+ * Docker engine this service already supervises attempts on, so it has none.
+ */
+export const sandboxAdapterTakesKey = (adapter: SandboxAdapter): boolean => adapter !== 'docker';
+
+/** The adapters whose sandboxes have a desktop for the `computer.*` tools. */
+export const sandboxAdapterHasDesktop = (adapter: SandboxAdapter): boolean => adapter === 'docker';
 
 export const SANDBOX_EGRESS_KINDS = ['deny_all', 'cidr_allowlist', 'open'] as const;
 export const SANDBOX_PERSISTENCE = ['ephemeral', 'pause', 'snapshot'] as const;
@@ -140,7 +157,10 @@ const allowedRange = singleLine(49);
 export const sandboxConnectionConfig = z
   .object({
     adapter: sandboxAdapter,
-    /** A registry reference for Modal, a template name for E2B, a snapshot name for Daytona. */
+    /**
+     * A registry reference for Modal, a template name for E2B, a snapshot name for
+     * Daytona, and an image already on this service's Docker engine for docker.
+     */
     image: singleLine(200),
     egress: z.enum(SANDBOX_EGRESS_KINDS),
     /** Used only with a CIDR allow-list, which needs at least one. */
@@ -179,6 +199,7 @@ export const SANDBOX_CREDENTIAL_FORMAT: Record<SandboxAdapter, string> = {
   e2b: 'the API key on its own, which has no colon in it',
   daytona: 'the API key on its own, which has no colon in it',
   modal: 'the token id and the token secret as one value, `token_id:token_secret`',
+  docker: "nothing: it runs on this service's own Docker engine and takes no key",
 };
 
 /** The one code a credential of the wrong shape is refused with. */
@@ -190,6 +211,8 @@ export const SANDBOX_CREDENTIAL_CODE = 'credential_invalid';
  * still only a request: before it is sealed, split or sent to a provider.
  */
 export function sandboxCredentialRefusal(adapter: SandboxAdapter, key: string): string | null {
+  if (!sandboxAdapterTakesKey(adapter))
+    return `${SANDBOX_CREDENTIAL_CODE}: a ${adapter} sandbox takes ${SANDBOX_CREDENTIAL_FORMAT[adapter]}.`;
   const wrong =
     adapter === 'modal'
       ? !modalTokenParts(key)
@@ -201,12 +224,84 @@ export function sandboxCredentialRefusal(adapter: SandboxAdapter, key: string): 
     : null;
 }
 
+/** A phone number as dialled internationally: a plus sign and up to fifteen digits. */
+export const e164Number = z
+  .string()
+  .regex(/^\+[1-9][0-9]{6,14}$/, 'Write the number with its country code, such as +14155550100');
+
+const clockTime = z
+  .string()
+  .regex(/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/, 'Use a 24-hour time such as 09:00');
+
+/**
+ * A phone line: one number, imported into ElevenLabs Agents from Twilio or a
+ * SIP trunk, with Melete as the language model on every call. Everything here
+ * is safe to read back; the ElevenLabs key and the telephony credentials are
+ * sealed.
+ */
+export const phoneConnectionConfig = z
+  .object({
+    telephony: z.enum(['twilio', 'sip_trunk']),
+    number: e164Number,
+    /** The name the assistant says it is calling for. */
+    on_behalf_of: singleLine(80),
+    /** The SIP trunk's host or address, for a SIP trunk only. */
+    sip_address: z
+      .string()
+      .min(1)
+      .max(253)
+      .regex(/^[A-Za-z0-9._:-]+$/)
+      .optional(),
+    sip_transport: z.enum(['auto', 'udp', 'tcp', 'tls']).optional(),
+    /** The person's own numbers. A call from one of them reaches Melete as the person. */
+    allowed_callers: z.array(e164Number).max(10).default([]),
+    /** Outbound calls in any 24 hours. */
+    daily_call_limit: z.number().int().min(1).max(100).default(10),
+    /** The hours Melete may call, in the callee's local time. */
+    calling_hours_start: clockTime.default('09:00'),
+    calling_hours_end: clockTime.default('20:00'),
+  })
+  .strict()
+  .refine((value) => value.telephony !== 'sip_trunk' || value.sip_address !== undefined, {
+    message: 'A SIP trunk needs its address.',
+    path: ['sip_address'],
+  })
+  .refine((value) => value.calling_hours_start < value.calling_hours_end, {
+    message: 'The earliest call time must come before the latest.',
+    path: ['calling_hours_end'],
+  });
+export type PhoneConnectionConfig = z.infer<typeof phoneConnectionConfig>;
+
+/** Sealed on arrival and never returned. Twilio or SIP fields, as the line uses. */
+export const phoneCredentials = z
+  .object({
+    api_key: z.string().min(1).max(512),
+    twilio_account_sid: z
+      .string()
+      .regex(/^(?:AC|SK)[0-9a-fA-F]{32}$/, 'A Twilio SID is AC or SK and 32 hexadecimal digits')
+      .optional(),
+    twilio_auth_token: z.string().min(1).max(512).optional(),
+    sip_username: z.string().min(1).max(256).optional(),
+    sip_password: z.string().min(1).max(512).optional(),
+  })
+  .strict();
+export type PhoneCredentials = z.infer<typeof phoneCredentials>;
+
 /** The grants each kind may receive. MCP grants are declared in its own operator policy. */
 export const CONNECTION_KIND_SCOPES = {
   mail: ['email.search', 'email.read', 'email.draft', 'email.discard', 'email.send'],
   caldav: ['calendar.list', 'calendar.create', 'calendar.update', 'calendar.delete'],
   ics: ['calendar.list'],
-  sandbox: ['terminal.run'],
+  sandbox: [
+    'terminal.run',
+    'computer.screenshot',
+    'computer.open',
+    'computer.click',
+    'computer.type',
+    'computer.key',
+    'computer.scroll',
+  ],
+  phone: ['phone.call'],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
 export const createConnectionRequest = z.object({
@@ -227,6 +322,7 @@ export const createConnectionRequest = z.object({
   mcp_stdio: mcpStdioConnectionConfig.optional(),
   ics: icsConnectionConfig.optional(),
   sandbox: sandboxConnectionConfig.optional(),
+  phone: phoneConnectionConfig.optional(),
 });
 export type CreateConnectionRequest = z.infer<typeof createConnectionRequest>;
 
@@ -262,7 +358,15 @@ export type ConnectionInstallation =
       kind: 'sandbox';
       provider: 'sandbox';
       config: SandboxConnectionConfig;
-      credentials: SandboxCredentials;
+      /** Null for an adapter that takes no key. */
+      credentials: SandboxCredentials | null;
+      scopes: string[];
+    }
+  | {
+      kind: 'phone';
+      provider: 'phone';
+      config: PhoneConnectionConfig;
+      credentials: PhoneCredentials;
       scopes: string[];
     };
 
@@ -273,8 +377,9 @@ const KIND_PROVIDER = {
   mcp: 'mcp',
   mcp_stdio: 'mcp',
   sandbox: 'sandbox',
+  phone: 'phone',
 } as const;
-const EXACTLY_ONE = 'Supply exactly one of mail, caldav, ics, mcp, mcp_stdio or sandbox.';
+const EXACTLY_ONE = 'Supply exactly one of mail, caldav, ics, mcp, mcp_stdio, sandbox or phone.';
 
 /** Decide which kind a parsed request installs, or say in plain words why it installs none. */
 export function connectionInstallation(
@@ -303,6 +408,40 @@ export function connectionInstallation(
   )
     return err(`A ${kind} connection grants only: ${allowed.join(', ')}.`);
   const scopes = request.scopes.length ? request.scopes : [...allowed];
+  if (kind === 'phone') {
+    if (!request.phone) return err('Supply the phone line in phone.');
+    // Only the credentials of the kind of line chosen are read; a form may send the others too.
+    const wanted =
+      request.phone.telephony === 'twilio'
+        ? ['api_key', 'twilio_account_sid', 'twilio_auth_token']
+        : ['api_key', 'sip_username', 'sip_password'];
+    const offered = request.credentials ?? {};
+    if (Object.keys(offered).some((key) => !(key in phoneCredentials.shape)))
+      return err('A phone line takes the ElevenLabs API key and its telephony credentials only.');
+    const credentials = phoneCredentials.safeParse(
+      Object.fromEntries(Object.entries(offered).filter(([key]) => wanted.includes(key))),
+    );
+    if (!credentials.success)
+      return err(
+        credentials.error.issues[0]?.path[0] === 'twilio_account_sid'
+          ? 'A Twilio account SID is AC and 32 hexadecimal digits.'
+          : 'A phone line needs the ElevenLabs API key.',
+      );
+    const given = credentials.data;
+    if (
+      request.phone.telephony === 'twilio' &&
+      (!given.twilio_account_sid || !given.twilio_auth_token)
+    )
+      return err('A Twilio number needs the Twilio account SID and auth token.');
+    if (request.phone.telephony === 'sip_trunk' && (!given.sip_username || !given.sip_password))
+      return err('A SIP trunk needs its username and password.');
+    // Credentials for the other kind of line are dropped, never sealed unused.
+    const kept: PhoneCredentials = given;
+    const { sip_address, sip_transport, ...line } = request.phone;
+    const config: PhoneConnectionConfig =
+      line.telephony === 'sip_trunk' ? { ...line, sip_address, sip_transport } : line;
+    return ok({ kind, provider: 'phone', config, credentials: kept, scopes });
+  }
   if (kind === 'sandbox') {
     if (!request.sandbox) return err('Supply the sandbox configuration in sandbox.');
     const { cidrs, ...rest } = request.sandbox;
@@ -312,11 +451,27 @@ export function connectionInstallation(
       return err('A CIDR allow-list needs at least one range.');
     const config: SandboxConnectionConfig =
       rest.egress === 'cidr_allowlist' ? { ...rest, cidrs: cidrs ?? [] } : rest;
+    // A desktop grant is kept only where the adapter's sandboxes have a desktop.
+    const granted = sandboxAdapterHasDesktop(config.adapter)
+      ? scopes
+      : scopes.filter((scope) => !scope.startsWith('computer.'));
+    if (!sandboxAdapterTakesKey(config.adapter)) {
+      // A key sent to an adapter that has no account would be sealed and never read.
+      if (request.credentials && Object.keys(request.credentials).length)
+        return err(sandboxCredentialRefusal(config.adapter, '') ?? EXACTLY_ONE);
+      return ok({ kind, provider: 'sandbox', config, credentials: null, scopes: granted });
+    }
     const credentials = sandboxCredentials.safeParse(request.credentials);
     if (!credentials.success) return err('A sandbox needs credentials.api_key only.');
     const malformed = sandboxCredentialRefusal(config.adapter, credentials.data.api_key);
     if (malformed) return err(malformed);
-    return ok({ kind, provider: 'sandbox', config, credentials: credentials.data, scopes });
+    return ok({
+      kind,
+      provider: 'sandbox',
+      config,
+      credentials: credentials.data,
+      scopes: granted,
+    });
   }
   if (kind === 'ics') {
     if (!request.ics || request.credentials)
@@ -586,7 +741,7 @@ export const connectionCatalogEntry = z
     title: z.string(),
     description: z.string(),
     /** What a connection made from this entry can do. */
-    covers: z.array(z.enum(['mail', 'calendar', 'tools', 'execution'])),
+    covers: z.array(z.enum(['mail', 'calendar', 'tools', 'execution', 'calls'])),
     connect: z.discriminatedUnion('method', [
       z.object({
         method: z.literal('sign_in'),
@@ -1042,17 +1197,19 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
           { value: 'e2b', label: 'E2B' },
           { value: 'daytona', label: 'Daytona' },
           { value: 'modal', label: 'Modal' },
+          { value: 'docker', label: 'This server (Docker)' },
         ],
         default: 'e2b',
       }),
       text('sandbox.image', 'Image or template', {
         placeholder: 'base',
-        help: 'A template name on E2B, a snapshot name on Daytona, a registry reference on Modal.',
+        help: 'A template name on E2B, a snapshot name on Daytona, a registry reference on Modal, an image on this server for Docker.',
       }),
       text('credentials.api_key', 'Provider key', {
         input: 'password',
         secret: true,
-        help: `E2B: ${SANDBOX_CREDENTIAL_FORMAT.e2b}. Daytona: ${SANDBOX_CREDENTIAL_FORMAT.daytona}. Modal: ${SANDBOX_CREDENTIAL_FORMAT.modal}.`,
+        required: false,
+        help: `E2B or Daytona: ${SANDBOX_CREDENTIAL_FORMAT.e2b}. Modal: ${SANDBOX_CREDENTIAL_FORMAT.modal}. Docker: leave it empty.`,
       }),
       text('sandbox.egress', 'What the sandbox may reach', {
         input: 'select',
@@ -1094,6 +1251,119 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         label: 'Run a command in the sandbox',
         effect_class: 'write_reversible',
         asks_first: false,
+        default: true,
+      },
+      {
+        scope: 'computer.screenshot',
+        label: "Look at the sandbox's screen",
+        effect_class: 'read',
+        asks_first: false,
+        default: true,
+      },
+      ...(
+        [
+          ['computer.open', 'Open a page in the sandbox browser'],
+          ['computer.click', "Click on the sandbox's screen"],
+          ['computer.type', 'Type into the sandbox'],
+          ['computer.key', 'Press keys in the sandbox'],
+          ['computer.scroll', "Scroll the sandbox's screen"],
+        ] as const
+      ).map(([scope, label]) => ({
+        scope,
+        label,
+        effect_class: 'write_reversible' as const,
+        asks_first: false,
+        default: true,
+      })),
+    ],
+  },
+  {
+    id: 'phone',
+    kind: 'phone',
+    title: 'Phone line (ElevenLabs)',
+    description:
+      'Give Melete a phone number through ElevenLabs Agents, with a Twilio number or a SIP trunk. You can call Melete from your own numbers, and Melete places a call only after you approve who it calls and why. ElevenLabs hears and transcribes every call, so calls stay off in spaces, agents and conversations marked private unless you choose otherwise for one call.',
+    fixed: [{ path: 'provider', value: 'phone' }],
+    fields: [
+      text('phone.on_behalf_of', 'Your name', {
+        placeholder: 'Zara',
+        help: 'On every call Melete places, it says it is an AI assistant calling for this name.',
+      }),
+      text('credentials.api_key', 'ElevenLabs API key', {
+        input: 'password',
+        secret: true,
+        help: 'Create one in ElevenLabs under Developers, then API keys, with read and write access to Agents and access to webhooks.',
+      }),
+      text('phone.telephony', 'Where the number comes from', {
+        input: 'select',
+        options: [
+          { value: 'twilio', label: 'Twilio' },
+          { value: 'sip_trunk', label: 'A SIP trunk, such as Telnyx' },
+        ],
+        default: 'twilio',
+      }),
+      text('phone.number', 'Phone number', {
+        input: 'text',
+        placeholder: '+14155550100',
+        help: 'With its country code. ElevenLabs sets the number up for calls itself.',
+      }),
+      text('credentials.twilio_account_sid', 'Twilio account SID', {
+        input: 'password',
+        secret: true,
+        required: false,
+        help: 'Twilio only, from a paid account: a trial account cannot carry these calls. Starts with AC.',
+      }),
+      text('credentials.twilio_auth_token', 'Twilio auth token', {
+        input: 'password',
+        secret: true,
+        required: false,
+        help: 'Twilio only.',
+      }),
+      text('phone.sip_address', 'SIP trunk address', {
+        required: false,
+        placeholder: 'sip.telnyx.com',
+        help: 'SIP trunk only.',
+      }),
+      text('credentials.sip_username', 'SIP username', {
+        input: 'password',
+        secret: true,
+        required: false,
+        help: 'SIP trunk only.',
+      }),
+      text('credentials.sip_password', 'SIP password', {
+        input: 'password',
+        secret: true,
+        required: false,
+        help: 'SIP trunk only.',
+      }),
+      text('phone.allowed_callers', 'Your own numbers', {
+        input: 'string_list',
+        required: false,
+        placeholder: '+14155550199',
+        help: 'A call from one of these reaches Melete as you. Anyone else hears a short message, and you get a note.',
+      }),
+      text('phone.daily_call_limit', 'Calls Melete may place in a day', {
+        input: 'number',
+        required: false,
+        default: 10,
+      }),
+      text('phone.calling_hours_start', 'Earliest time to call', {
+        required: false,
+        default: '09:00',
+        help: 'In the local time of the person being called.',
+      }),
+      text('phone.calling_hours_end', 'Latest time to call', {
+        required: false,
+        default: '20:00',
+        help: 'In the local time of the person being called.',
+      }),
+    ],
+    scopes: [
+      {
+        scope: 'phone.call',
+        label: 'Place a call',
+        effect_class: 'write_external',
+        asks_first: true,
         default: true,
       },
     ],

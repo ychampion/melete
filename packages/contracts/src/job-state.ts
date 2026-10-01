@@ -40,6 +40,13 @@ export const isTerminal = (state: JobState): boolean =>
 export const isWaiting = (state: JobState): boolean =>
   (WAITING_STATES as readonly JobState[]).includes(state);
 
+/** Where a conversation's next message starts a new turn instead of answering a wait. */
+export const CONTINUABLE_STATES: readonly JobState[] = [
+  'failed',
+  'completed',
+  'needs_reconciliation',
+];
+
 /**
  * Inputs are the only things that move a job. Each one names an authorized fact
  * that has already been persisted: a lease taken, an attempt's committed
@@ -78,6 +85,10 @@ export const transitionInput = z.discriminatedUnion('kind', [
   // human decides what really happened.
   z.object({ kind: z.literal('action_unknown') }),
   z.object({ kind: z.literal('user_input_received') }),
+  // The person wrote again in a conversation whose last turn ended without a
+  // clean finish. A conversation is not over because one turn failed: this
+  // starts the next turn. Only conversations send it.
+  z.object({ kind: z.literal('conversation_continued') }),
   z.object({
     kind: z.literal('approval_decided'),
     decision: z.enum(['approved', 'denied']),
@@ -130,6 +141,21 @@ export function transition(
     return isTerminal(state)
       ? fail('already_terminal', `job is already ${state}`, state, input)
       : ok('cancelled');
+  }
+
+  // A failed or finished turn, or one whose effect is still being reconciled,
+  // does not end a conversation. Anything unresolved stays recorded and in the
+  // person's queue; the next turn starts beside it. A cancelled conversation
+  // was ended on purpose and stays ended.
+  if (input.kind === 'conversation_continued') {
+    return CONTINUABLE_STATES.includes(state)
+      ? ok('queued')
+      : fail(
+          state === 'cancelled' ? 'already_terminal' : 'illegal_transition',
+          `a ${state} conversation does not continue this way`,
+          state,
+          input,
+        );
   }
 
   if (isTerminal(state)) {
@@ -255,6 +281,9 @@ export const LEGAL_EDGES: ReadonlyArray<{
   { from: 'waiting_for_event_or_time', input: 'event_fired', to: 'queued' },
   { from: 'waiting_for_event_or_time', input: 'timer_fired', to: 'queued' },
   { from: 'needs_reconciliation', input: 'reconciled', to: 'queued' },
+  { from: 'failed', input: 'conversation_continued', to: 'queued' },
+  { from: 'completed', input: 'conversation_continued', to: 'queued' },
+  { from: 'needs_reconciliation', input: 'conversation_continued', to: 'queued' },
   { from: 'queued', input: 'cancelled', to: 'cancelled' },
   { from: 'running', input: 'cancelled', to: 'cancelled' },
   { from: 'waiting_for_input', input: 'cancelled', to: 'cancelled' },

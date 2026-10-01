@@ -1,168 +1,35 @@
 /**
- * Settings: the only place the technology shows. Saved details in plain
- * language with edit, forget and why; what Melete learned, with its state and
- * what can be done with it; connections with their state and what
- * each may do; standing rules with their limits and revoke.
+ * Settings: the only place the technology shows. Memory is what Melete
+ * believes about the person, grouped, sourced and correctable, with its
+ * timeline and the lessons and skills it learned; then connections with their
+ * state and what each may do, the person's own computers, and standing rules
+ * with their limits and revoke.
  */
 import { type ReactNode, useState } from 'react';
 import { logoFor } from '../chat/parts.tsx';
 import { Icon } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
-import { Badge, Button, IconButton, Input, TabsUnderline } from '../design/primitives.tsx';
+import { Badge, Button, TabsUnderline, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import { givenName } from '../experience/profile.ts';
-import type { Connection, MemoryItem, Rule } from '../experience/types.ts';
+import type { Connection, Rule } from '../experience/types.ts';
+import { FeedbackTab } from '../feedback/FeedbackTab.tsx';
+import { models } from '../models/api.ts';
+import { ModelLine, ModelsTab } from '../models/ModelConnect.tsx';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { AccountSettings } from './AccountSettings.tsx';
+import { ApprovalsTab } from './Approvals.tsx';
+import { MemoryPanel } from './Beliefs.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
-import { LearnedTab } from './Learned.tsx';
-
-const SOURCE_LABEL: Record<MemoryItem['source'], string> = {
-  onboarding: 'You told Melete during setup',
-  conversation: 'Learned in a conversation',
-  inferred: 'Melete worked this out',
-};
+import { DevicesTab } from './Devices.tsx';
+import { NotificationsTab } from './Notifications.tsx';
+import { PrivacyTab } from './Privacy.tsx';
 
 const dateOf = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
-
-function MemoryRow({
-  item,
-  onChange,
-  onDelete,
-}: {
-  item: MemoryItem;
-  onChange: (next: MemoryItem) => void;
-  onDelete: () => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(item.value);
-  const [why, setWhy] = useState<string[] | null>(null);
-  const [whyOpen, setWhyOpen] = useState(false);
-  const explain = () => {
-    if (whyOpen) {
-      setWhyOpen(false);
-      return;
-    }
-    void adapter.memoryWhy(item.id).then((r) => {
-      setWhy(
-        r.data
-          ? r.data.reasons.length
-            ? r.data.reasons
-            : ['No recent use of this detail is recorded.']
-          : [r.error ?? r.unavailable ?? 'No explanation is available.'],
-      );
-      setWhyOpen(true);
-    });
-  };
-  return (
-    <div
-      className="col"
-      style={{ gap: 8, padding: '12px 14px', borderTop: '1px solid var(--line)' }}
-    >
-      <div className="row" style={{ gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        <span
-          className="row"
-          style={{
-            justifyContent: 'center',
-            width: 28,
-            height: 28,
-            borderRadius: 8,
-            background: 'var(--blue-soft)',
-            color: 'var(--blue-ink)',
-            flexShrink: 0,
-          }}
-        >
-          <Icon name="bookmark" size={14} />
-        </span>
-        <div className="col grow" style={{ gap: 4, minWidth: 200 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--heading)' }}>{item.key}</span>
-          {editing ? (
-            <form
-              className="row"
-              style={{ gap: 8 }}
-              onSubmit={(event) => {
-                event.preventDefault();
-                const next = value.trim();
-                if (!next) return;
-                void adapter.editMemory(item.id, next, item.version).then(async (r) => {
-                  if (r.data === null) {
-                    toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t save' });
-                    return;
-                  }
-                  const fresh = await adapter.memory();
-                  const updated = fresh.data?.items.find((i) => i.id === item.id);
-                  if (updated) onChange(updated);
-                  setEditing(false);
-                });
-              }}
-            >
-              <Input
-                value={value}
-                onChange={(event) => setValue(event.target.value)}
-                width="100%"
-                height={32}
-                aria-label={item.key}
-                autoFocus
-              />
-              <Button size="sm" type="submit">
-                Save
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-                Cancel
-              </Button>
-            </form>
-          ) : (
-            <span style={{ fontSize: 14, color: 'var(--text)' }}>{item.value}</span>
-          )}
-          <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {SOURCE_LABEL[item.source]} · {dateOf(item.created)}
-            {item.last_used ? ` · used ${dateOf(item.last_used)}` : ''}
-          </span>
-          {whyOpen && why ? (
-            <div
-              className="col"
-              style={{
-                gap: 4,
-                fontSize: 13,
-                color: 'var(--secondary)',
-                padding: '8px 12px',
-                borderRadius: 10,
-                background: 'var(--soft)',
-              }}
-            >
-              {why.map((line) => (
-                <span key={line}>{line}</span>
-              ))}
-            </div>
-          ) : null}
-        </div>
-        <div className="row" style={{ gap: 2 }}>
-          <Button size="sm" variant="ghost" onClick={explain} aria-expanded={whyOpen}>
-            Why
-          </Button>
-          {item.editable ? (
-            <IconButton
-              name="pencil"
-              label={`Edit ${item.key}`}
-              size={28}
-              iconSize={14}
-              onClick={() => setEditing(true)}
-            />
-          ) : null}
-          <IconButton
-            name="trash"
-            label={`Forget ${item.key}`}
-            size={28}
-            iconSize={14}
-            onClick={onDelete}
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
 
 const ACCESS_LABEL: Record<Connection['access'], string> = {
   read_only: 'Read only',
@@ -241,6 +108,136 @@ export function ConnectionCard({
   );
 }
 
+/**
+ * Other assistants the person let use Melete, each with a way to disconnect it.
+ * An installation that does not offer the MCP endpoint answers with an error,
+ * and then there is nothing here to list or disconnect.
+ */
+function ConnectedAssistants() {
+  const assistants = useLoad(() => adapter.assistants(), []);
+  const [ending, setEnding] = useState<string | null>(null);
+  if (!assistants.data) return null;
+  const clients = assistants.data.clients;
+  return (
+    <section className="col" style={{ gap: 8, marginTop: 12 }} aria-labelledby="assistants-head">
+      <h2
+        id="assistants-head"
+        style={{ fontSize: 15, fontWeight: 600, color: 'var(--heading)', margin: 0 }}
+      >
+        Connected assistants
+      </h2>
+      <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560, margin: 0 }}>
+        Other assistants you let use Melete as you. Disconnecting one ends its access at once.
+      </p>
+      {clients.length === 0 ? (
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>No assistant is connected.</span>
+      ) : (
+        <div className="card-12" style={{ overflow: 'hidden' }}>
+          <div style={{ height: 1 }} />
+          {clients.map((client) => (
+            <div key={client.client_id} className="list-row" style={{ minHeight: 60 }}>
+              <Icon name="connectors" size={18} />
+              <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
+                <span
+                  className="clamp1"
+                  style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
+                >
+                  {client.name}
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                  Connected since {dateOf(client.since)}
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                loading={ending === client.client_id}
+                disabled={ending !== null}
+                aria-label={`Disconnect ${client.name}`}
+                onClick={() => {
+                  setEnding(client.client_id);
+                  void adapter.disconnectAssistant(client.client_id).then((r) => {
+                    setEnding(null);
+                    if (r.data === null) {
+                      toast({ kind: 'err', title: r.error ?? 'Couldn’t disconnect' });
+                      return;
+                    }
+                    assistants.set({
+                      clients: clients.filter((c) => c.client_id !== client.client_id),
+                    });
+                    toast({ kind: 'ok', title: `Disconnected ${client.name}` });
+                  });
+                }}
+              >
+                Disconnect
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Reading public web pages in conversations, for this space. On by default;
+ * an installation without the setting draws nothing here.
+ */
+function WebReads() {
+  const setting = useLoad(() => adapter.webReads(), []);
+  const [saving, setSaving] = useState(false);
+  if (!setting.data?.available) return null;
+  const enabled = setting.data.enabled;
+  return (
+    <div className="card-12 row" style={{ gap: 12, padding: '12px 16px', flexWrap: 'wrap' }}>
+      <span
+        className="row"
+        style={{
+          justifyContent: 'center',
+          width: 40,
+          height: 40,
+          borderRadius: 10,
+          background: 'var(--blue-soft)',
+          color: 'var(--blue-ink)',
+          flexShrink: 0,
+        }}
+      >
+        <Icon name="globe" size={20} />
+      </span>
+      <div className="col grow" style={{ gap: 2, minWidth: 200 }}>
+        <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
+          Read public web pages
+        </span>
+        <span style={{ fontSize: 12, color: 'var(--muted)', maxWidth: 520 }}>
+          {enabled ? 'On' : 'Off'} · on by default. Conversations can open public pages to answer
+          you. They never sign in, fill in forms or post, and private spaces and agents stay
+          offline.
+        </span>
+      </div>
+      <Toggle
+        on={enabled}
+        disabled={saving}
+        label="Read public web pages"
+        onChange={(next) => {
+          setSaving(true);
+          void adapter.saveWebReads(next).then((r) => {
+            setSaving(false);
+            if (r.data === null) {
+              toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t save' });
+              return;
+            }
+            setting.set(r.data);
+            toast({
+              kind: 'ok',
+              title: r.data.enabled ? 'Public web pages on' : 'Public web pages off',
+            });
+          });
+        }}
+      />
+    </div>
+  );
+}
+
 const ruleWhen = (rule: Rule) => {
   const expires = new Date(rule.bounds.expires_at).toLocaleDateString('en-US', {
     month: 'short',
@@ -249,15 +246,25 @@ const ruleWhen = (rule: Rule) => {
   return `${rule.used} of ${rule.bounds.count_cap} used · until ${expires} · asks again after ${rule.bounds.reconsent_after_days} day${rule.bounds.reconsent_after_days === 1 ? '' : 's'}`;
 };
 
-export function SettingsScreen({ tab }: { tab: string }) {
+export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: string | null }) {
   const { profile, signOut } = useApp();
   const [leaving, setLeaving] = useState(false);
-  const memory = useLoad(() => adapter.memory(), []);
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
-  const current = tab === 'connections' || tab === 'rules' || tab === 'learned' ? tab : 'memory';
-  const [learnedCount, setLearnedCount] = useState<number | undefined>(undefined);
-  const items = memory.data?.items ?? [];
+  const model = useLoad(() => models.settings(), []);
+  const current =
+    tab === 'connections' ||
+    tab === 'devices' ||
+    tab === 'rules' ||
+    tab === 'notifications' ||
+    tab === 'feedback' ||
+    tab === 'models' ||
+    tab === 'approvals' ||
+    tab === 'privacy' ||
+    tab === 'account'
+      ? tab
+      : 'memory';
+  const [deviceCount, setDeviceCount] = useState<number | undefined>(undefined);
   const list = connections.data?.connections ?? [];
   const byId = new Map(list.map((c) => [c.id, c]));
 
@@ -281,6 +288,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>
               Signing out ends this session on every open tab; nothing saved here is lost.
             </span>
+            {model.data ? <ModelLine settings={model.data} /> : null}
           </div>
           <Button
             variant="outline"
@@ -300,86 +308,56 @@ export function SettingsScreen({ tab }: { tab: string }) {
           value={current}
           onChange={(next) => navigate(`/settings/${next}`)}
           tabs={[
-            { value: 'memory', label: 'Memory', count: items.length },
-            { value: 'learned', label: 'What I’ve learned', count: learnedCount },
+            { value: 'memory', label: 'Memory' },
+            { value: 'notifications', label: 'Notifications' },
             {
               value: 'connections',
               label: 'Connections',
-              count: list.filter((c) => c.status === 'connected').length,
+              count: connections.error
+                ? undefined
+                : list.filter((c) => c.status === 'connected').length,
             },
-            { value: 'rules', label: 'Rules', count: rules.data?.rules.length ?? 0 },
+            { value: 'devices', label: 'Devices', count: deviceCount },
+            { value: 'approvals', label: 'Approvals' },
+            {
+              value: 'rules',
+              label: 'Rules',
+              count: rules.error ? undefined : rules.data?.rules.length,
+            },
+            { value: 'feedback', label: 'Feedback' },
+            { value: 'models', label: 'Models' },
+            { value: 'privacy', label: 'Privacy' },
+            { value: 'account', label: 'Account' },
           ]}
         />
+        {current === 'privacy' ? <PrivacyTab /> : null}
         {current === 'memory' ? (
-          <div className="col" style={{ gap: 12 }}>
-            <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-              Agents use these quietly. Anything here can be changed or forgotten, and Melete can
-              say why it used one.
-            </p>
-            {memory.error ? (
-              <p style={{ color: 'var(--danger)', fontSize: 13 }}>{memory.error}</p>
-            ) : null}
-            <div className="card-12" style={{ overflow: 'hidden' }}>
-              <div style={{ height: 1 }} />
-              {items.map((item) => (
-                <MemoryRow
-                  key={item.id}
-                  item={item}
-                  onChange={(next) =>
-                    memory.set({ items: items.map((i) => (i.id === next.id ? next : i)) })
-                  }
-                  onDelete={() =>
-                    void adapter.deleteMemory(item.id).then((r) => {
-                      if (r.data === null) {
-                        toast({
-                          kind: 'err',
-                          title: r.error ?? r.unavailable ?? 'Couldn’t forget that',
-                        });
-                        return;
-                      }
-                      memory.set({ items: items.filter((i) => i.id !== item.id) });
-                      toast({ kind: 'ok', title: `Forgot “${item.key}”` });
-                    })
-                  }
-                />
-              ))}
-              {memory.data && items.length === 0 ? (
-                <div
-                  className="col"
-                  style={{
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '32px 24px',
-                    textAlign: 'center',
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-head)',
-                      fontSize: 16,
-                      fontWeight: 600,
-                      color: 'var(--heading)',
-                    }}
-                  >
-                    Nothing remembered yet
-                  </span>
-                  <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-                    Melete adds to this list as you talk, and tells you when it does.
-                  </span>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        ) : current === 'learned' ? (
-          <LearnedTab onCount={setLearnedCount} />
+          <MemoryPanel />
+        ) : current === 'approvals' ? (
+          <ApprovalsTab />
+        ) : current === 'notifications' ? (
+          <NotificationsTab />
+        ) : current === 'devices' ? (
+          <DevicesTab onCount={setDeviceCount} />
+        ) : current === 'feedback' ? (
+          <FeedbackTab selected={detail} />
+        ) : current === 'models' ? (
+          <ModelsTab loaded={model} />
+        ) : current === 'account' ? (
+          <AccountSettings />
         ) : current === 'connections' ? (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
               Melete reads what you connect and asks before it writes anywhere. Access is per agent;
               set it on each agent’s Access tab.
             </p>
+            <WebReads />
             {connections.error ? (
-              <p style={{ color: 'var(--danger)', fontSize: 13 }}>{connections.error}</p>
+              <LoadError
+                what="your connections"
+                error={connections.error}
+                onRetry={connections.reload}
+              />
             ) : null}
             <div className="col" style={{ gap: 8 }}>
               {list.map((connection) => (
@@ -397,19 +375,20 @@ export function SettingsScreen({ tab }: { tab: string }) {
                 />
               ))}
             </div>
-            {connections.data && list.length === 0 ? (
+            {connections.data && !connections.error && list.length === 0 ? (
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>Nothing is connected yet.</span>
             ) : null}
             <AddConnection onInstalled={connections.reload} />
+            <ConnectedAssistants />
           </div>
-        ) : (
+        ) : current === 'privacy' ? null : (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
               Each rule came from an “Always allow” you chose. It has a limit and an expiry; revoke
               it and the agent asks again next time.
             </p>
             {rules.error ? (
-              <p style={{ color: 'var(--danger)', fontSize: 13 }}>{rules.error}</p>
+              <LoadError what="your rules" error={rules.error} onRetry={rules.reload} />
             ) : null}
             <div className="card-12" style={{ overflow: 'hidden' }}>
               <div style={{ height: 1 }} />
@@ -455,7 +434,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
                   </div>
                 );
               })}
-              {rules.data && rules.data.rules.length === 0 ? (
+              {rules.data && !rules.error && rules.data.rules.length === 0 ? (
                 <div
                   className="col"
                   style={{

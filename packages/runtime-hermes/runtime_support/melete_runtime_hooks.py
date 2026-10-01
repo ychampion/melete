@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import re
+import sys
 import threading
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -163,6 +164,28 @@ def register_observers(ctx, *, build: Callable = observation) -> None:
             return None
         callback.__name__ = f"melete_observe_{name}"
         ctx.register_hook(name, callback)
+
+
+# What waits for the attempt in an engine started before it existed. The
+# launcher hands the attempt over and then calls these, in the order they were
+# asked for, before the engine starts serving; an engine started with its
+# attempt never has any.
+_on_attempt: list[Callable[[], Any]] = []
+
+
+def when_attempt_arrives(callback: Callable[[], Any]) -> None:
+    _on_attempt.append(callback)
+
+
+def attempt_arrived() -> None:
+    # A failure is the plugin's to report, as it would be had it loaded with the
+    # attempt; the engine starts either way, as the plugin loader lets it.
+    while _on_attempt:
+        callback = _on_attempt.pop(0)
+        try:
+            callback()
+        except Exception as error:  # noqa: BLE001
+            sys.stderr.write(f"melete: a step held for the attempt failed: {error!r}\n")
 
 
 def failure_frame(attempt_id: str) -> dict:

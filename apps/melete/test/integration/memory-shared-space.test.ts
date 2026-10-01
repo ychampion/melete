@@ -51,7 +51,12 @@ withDb('automatic memory in a shared space', () => {
       await say(ownersChat, owner, 'Our bins go out on Tuesdays.');
       await say(membersChat, memberId, 'My passport number is X1234567.');
       await say(ownersChat, memberId, 'My bank PIN is 4921.');
-      await captureChat({ sql: db.sql, journal: memory.journal, scopeForJob: memory.scopeForJob });
+      await captureChat({
+        privacyOrigin: async () => null,
+        sql: db.sql,
+        journal: memory.journal,
+        scopeForJob: memory.scopeForJob,
+      });
       const kept = await db.sql`select b.content from memory_sources s
         join memory_source_content b on b.source_id = s.id where s.space_id = ${spaceId}`;
       expect(kept.map((row) => row.content)).toEqual(['Our bins go out on Tuesdays.']);

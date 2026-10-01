@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { unavailable } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
+import { issuePasswordReset, RESET_MINUTES, resetUrl } from '../api/password.ts';
 import { EmailConnector } from '../connectors/email.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 
@@ -14,14 +15,24 @@ export class ExperienceSignIn {
     readonly registry: ConnectorRegistry,
     readonly publicUrl?: string,
   ) {}
-  async request(email: string) {
-    if (!this.publicUrl) return unavailable('Set your public address before using email sign-in.');
+  /**
+   * The owner's own connected mailbox, the only one account mail leaves from,
+   * or the plain reason there is none.
+   */
+  private async ownMailbox() {
+    const url = this.publicUrl;
+    if (!url)
+      return { ok: false, reason: 'Set your public address before using email sign-in.' } as const;
     const [owner] = await this.sql`select id, email from owner order by created_at limit 1`;
-    if (!owner) return unavailable('Set up your personal account before using email sign-in.');
+    if (!owner)
+      return {
+        ok: false,
+        reason: 'Set up your personal account before using email sign-in.',
+      } as const;
     // The link signs the setup owner into their own personal space, never the oldest one around.
     const [space] = await this.sql`select id from space where kind = 'personal'
       and coalesce(owner_principal_id, ${owner.id}) = ${owner.id} order by created_at, id limit 1`;
-    if (!space) return unavailable('Your personal space is not ready yet.');
+    if (!space) return { ok: false, reason: 'Your personal space is not ready yet.' } as const;
     const active = await this
       .sql`select id, generation from connection where space_id = ${space.id} and status = 'active' and scopes ? 'email.send'`;
     const selected = active
@@ -32,7 +43,74 @@ export class ExperienceSignIn {
           entry.connector.canSendSignIn(String(space.id), String(owner.email)),
       );
     if (!selected || !(selected.connector instanceof EmailConnector))
-      return unavailable('Connect your own mailbox to use email sign-in.');
+      return { ok: false, reason: 'Connect your own mailbox to use email sign-in.' } as const;
+    return {
+      ok: true,
+      owner,
+      space,
+      row: selected.row,
+      connector: selected.connector,
+      url,
+    } as const;
+  }
+
+  /**
+   * Mails a one-time password reset link to the owner from their own mailbox.
+   * Without one, the answer says so; an unrelated address gets the same
+   * accepted answer as the owner's, and no mail. The link is made and mailed
+   * after the answer, so how long the answer takes says nothing about whose
+   * address was asked for.
+   */
+  async requestPasswordReset(email: string) {
+    const mailbox = await this.ownMailbox();
+    if (!mailbox.ok)
+      return unavailable(
+        'This Melete cannot send you email yet. Ask the person who runs it to print you a reset link.',
+      );
+    if (String(mailbox.owner.email).toLowerCase() === email.toLowerCase())
+      void this.mailPasswordReset(mailbox).catch((error) =>
+        console.error('password reset mail', String(error)),
+      );
+    return { status: 'ok' as const };
+  }
+
+  private async mailPasswordReset(
+    mailbox: Extract<Awaited<ReturnType<ExperienceSignIn['ownMailbox']>>, { ok: true }>,
+  ) {
+    const { owner, space, connector } = mailbox;
+    const issued = await this.sql.begin(async (tx) => {
+      await tx`select id from owner where id = ${owner.id} for update`;
+      const [count] = await tx`select count(*)::int as n, max(created_at) as latest
+        from password_reset where principal_id = ${owner.id} and via = 'email'
+        and created_at > now() - interval '1 hour'`;
+      if (
+        Number(count?.n ?? 0) >= 3 ||
+        (count?.latest && Date.parse(String(count.latest)) > Date.now() - 60000)
+      )
+        return null;
+      return issuePasswordReset(tx, String(owner.id), 'email');
+    });
+    if (!issued) return;
+    try {
+      await connector.sendPasswordResetLink(
+        String(space.id),
+        String(owner.email),
+        resetUrl(mailbox.url, issued.token),
+        RESET_MINUTES.email,
+      );
+    } catch (error) {
+      // Only the link that did not go out stops working.
+      await this.sql`update password_reset set used_at = now()
+        where token_hash = ${hash(issued.token)} and used_at is null`;
+      throw error;
+    }
+  }
+
+  async request(email: string) {
+    const mailbox = await this.ownMailbox();
+    if (!mailbox.ok) return unavailable(mailbox.reason);
+    const { owner, space } = mailbox;
+    const selected = { row: mailbox.row, connector: mailbox.connector };
     // Availability is global; an unrelated address receives the same accepted response without mail.
     if (String(owner.email).toLowerCase() !== email.toLowerCase()) return { status: 'ok' as const };
     const token = randomBytes(32).toString('base64url');
@@ -51,7 +129,7 @@ export class ExperienceSignIn {
       return true;
     });
     if (saved) {
-      const url = new URL('/signin', this.publicUrl);
+      const url = new URL('/signin', mailbox.url);
       url.hash = new URLSearchParams({ token }).toString();
       try {
         await selected.connector.sendSignInLink(String(space.id), String(owner.email), url.href);

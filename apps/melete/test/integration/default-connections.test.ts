@@ -213,9 +213,11 @@ const journey = late ? await database() : null;
     const upgraded = await service(fixture.url, { MELETE_ENABLE_FAKE_PROVIDER: 'true' });
     let webId = '';
     try {
-      expect(await providers(personal)).toEqual(['artifacts', 'files', 'generation', 'web']);
+      // Speech and transcription are two rows of the generation provider.
+      const expected = ['artifacts', 'files', 'generation', 'generation', 'web'];
+      expect(await providers(personal)).toEqual(expected);
       // A grant the owner already made is kept as it is, never doubled.
-      expect(await providers(seeded)).toEqual(['artifacts', 'files', 'generation', 'web']);
+      expect(await providers(seeded)).toEqual(expected);
       const seededFiles =
         await fixture.sql`select id, scopes from connection where space_id = ${seeded} and provider = 'files'`;
       expect(seededFiles.map((row) => [row.id, row.scopes])).toEqual([[handmade, ['files.read']]]);
@@ -223,7 +225,7 @@ const journey = late ? await database() : null;
 
       const claimed = await claimIn(upgraded, personal);
       expect(names(claimed.bundle.tools)).toEqual(
-        expect.arrayContaining([...DEFAULT_TOOLS, 'audio.synthesize']),
+        expect.arrayContaining([...DEFAULT_TOOLS, 'audio.synthesize', 'audio.transcribe']),
       );
 
       const login = await upgraded.app.request('/login', {

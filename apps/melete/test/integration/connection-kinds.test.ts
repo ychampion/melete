@@ -314,6 +314,7 @@ withDb('installing each kind of connection through the API', () => {
       'ics',
       'mail',
       'mcp',
+      'phone',
       'sandbox',
     ]);
     expect(kinds.map((kind) => kind.id)).toContain('gmail');
@@ -374,7 +375,11 @@ withDb('installing each kind of connection through the API', () => {
     // Every form a person can fill in is in the catalog, and nothing else is a form.
     const forms = catalog.filter((entry) => entry.connect.method === 'form');
     expect(forms.map((entry) => entry.id)).toEqual(served.kinds.map((kind) => kind.id));
-    expect(forms.every((entry) => entry.available)).toBe(true);
+    // A phone line needs an address ElevenLabs can reach; every other form is offered as it is.
+    expect(forms.filter((entry) => !entry.available).map((entry) => entry.id)).toEqual(['phone']);
+    const phone = catalog.find((entry) => entry.id === 'phone');
+    expect(phone?.unavailable_reason).toContain('not set up');
+    expect(phone?.setup_hint).toContain('MELETE_PUBLIC_URL');
   });
 
   test('mail: validated, sealed, tested, offered to a new attempt, and gone after revocation', async () => {

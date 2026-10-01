@@ -3,7 +3,7 @@
  * templates, and an editor with Look, Behaviour and Access, all on the
  * contract's agent record. The nine face states derive from turn status.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { logoFor } from '../chat/parts.tsx';
 import {
   AgentFace,
@@ -13,6 +13,7 @@ import {
   type FaceShape,
 } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
 import {
   Badge,
@@ -31,6 +32,7 @@ import { lookOf, useApp, useLoad } from '../experience/hooks.ts';
 import type { Agent, AgentInput, AgentTemplate, Connection } from '../experience/types.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
+import { draftKey, followSaved } from './agent-draft.ts';
 
 const ROLES = [
   'Concierge',
@@ -84,6 +86,16 @@ const shuffle = (): Pick<AgentInput, 'colour' | 'surface' | 'eye_colour'> => ({
   eye_colour: Math.random() > 0.5 ? WHITE : BLACK,
 });
 
+/** Ink that reads on a swatch: dark on light colours, white on deep ones. */
+const inkOn = (hex: string) => {
+  const value = hex.replace('#', '');
+  const luminance =
+    Number.parseInt(value.slice(0, 2), 16) * 0.299 +
+    Number.parseInt(value.slice(2, 4), 16) * 0.587 +
+    Number.parseInt(value.slice(4, 6), 16) * 0.114;
+  return luminance > 150 ? BLACK : WHITE;
+};
+
 export function LookFields({
   draft,
   onChange,
@@ -93,105 +105,99 @@ export function LookFields({
   onChange: (next: AgentInput) => void;
   compact?: boolean;
 }) {
+  const shapeOf = (surface: AgentInput['surface']): FaceShape =>
+    surface === 'rounded' ? 'square' : surface;
+  // A colour set elsewhere still shows, first and selected, so the picker never hides it.
+  const current = draft.colour.toLowerCase();
+  const colours: string[] = FACE_PALETTE.some((color) => color === current)
+    ? [...FACE_PALETTE]
+    : [current, ...FACE_PALETTE];
+  const white = draft.eye_colour.toLowerCase() === WHITE;
   return (
     <>
-      <div className="col" style={{ gap: 8 }}>
-        <Overline>Colour</Overline>
+      <fieldset className="field-group col" style={{ gap: 8 }}>
+        <legend className="overline">Colour</legend>
         <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: `repeat(${compact ? 12 : 6}, minmax(0, 1fr))`,
-            gap: 8,
-          }}
+          className="look-swatches"
+          style={{ gridTemplateColumns: `repeat(${compact ? 12 : 6}, minmax(0, 1fr))` }}
         >
-          {FACE_PALETTE.map((color) => {
-            const on = color.toLowerCase() === draft.colour.toLowerCase();
+          {colours.map((color) => {
+            const on = color === current;
             return (
               <button
                 key={color}
                 type="button"
                 aria-label={`Colour ${color}`}
                 aria-pressed={on}
-                className="row"
-                style={{
-                  justifyContent: 'center',
-                  height: compact ? 34 : 40,
-                  borderRadius: 10,
-                  background: color,
-                  boxShadow: on ? '0 0 0 2px var(--surface), 0 0 0 4px var(--heading)' : 'none',
-                }}
+                className="look-swatch"
+                data-compact={compact ? 'true' : undefined}
+                style={{ background: color, color: inkOn(color) }}
                 onClick={() => onChange({ ...draft, colour: color })}
               >
-                {on ? (
-                  <span
-                    style={{ width: 8, height: 8, borderRadius: 999, background: 'var(--danger)' }}
-                  />
-                ) : null}
+                {on ? <Icon name="check" size={compact ? 12 : 14} stroke={2.5} /> : null}
               </button>
             );
           })}
         </div>
-      </div>
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 1fr) auto',
-          gap: 12,
-          alignItems: 'end',
-        }}
-      >
-        <div className="col" style={{ gap: 8 }}>
-          <Overline>Surface</Overline>
-          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            {FACE_SHAPES.map(([key, label]) => {
-              const on = toSurface(key) === draft.surface;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  title={label}
-                  aria-label={label}
-                  aria-pressed={on}
-                  className="row"
-                  style={{
-                    justifyContent: 'center',
-                    width: 48,
-                    height: 44,
-                    borderRadius: 10,
-                    background: 'var(--soft)',
-                    border: `1px solid ${on ? 'var(--primary)' : 'var(--line)'}`,
-                    boxShadow: on ? 'inset 0 0 0 1px var(--primary)' : 'none',
+      </fieldset>
+      <fieldset className="field-group col" style={{ gap: 8 }}>
+        <legend className="overline">Surface</legend>
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          {FACE_SHAPES.map(([key, label]) => {
+            const on = shapeOf(draft.surface) === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                title={label}
+                aria-label={label}
+                aria-pressed={on}
+                className="look-tile"
+                onClick={() => onChange({ ...draft, surface: toSurface(key) })}
+              >
+                <AgentFace
+                  look={{ color: draft.colour, eyes: 'none', shape: key }}
+                  size={compact ? 22 : 26}
+                />
+              </button>
+            );
+          })}
+        </div>
+      </fieldset>
+      <fieldset className="field-group col" style={{ gap: 8 }}>
+        <legend className="overline">Eyes</legend>
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          {(
+            [
+              ['white', 'White', WHITE],
+              ['black', 'Black', BLACK],
+            ] as const
+          ).map(([key, label, ink]) => {
+            const on = (key === 'white') === white;
+            return (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={on}
+                className="look-tile"
+                data-wide="true"
+                onClick={() => onChange({ ...draft, eye_colour: ink })}
+              >
+                <AgentFace
+                  look={{
+                    color: draft.colour,
+                    eyes: key,
+                    eyeColor: ink,
+                    shape: shapeOf(draft.surface),
                   }}
-                  onClick={() => onChange({ ...draft, surface: toSurface(key) })}
-                >
-                  <AgentFace
-                    look={{
-                      color: on ? 'var(--heading)' : 'var(--control)',
-                      eyes: 'none',
-                      shape: key,
-                    }}
-                    size={22}
-                  />
-                </button>
-              );
-            })}
-          </div>
+                  size={compact ? 22 : 26}
+                />
+                <span>{label}</span>
+              </button>
+            );
+          })}
         </div>
-        <div className="col" style={{ gap: 8 }}>
-          <Overline>Eyes</Overline>
-          <Segmented
-            label="Eyes"
-            value={draft.eye_colour.toLowerCase() === WHITE ? 'white' : 'black'}
-            onChange={(eyes) =>
-              onChange({ ...draft, eye_colour: eyes === 'white' ? WHITE : BLACK })
-            }
-            options={[
-              { value: 'white', label: 'White' },
-              { value: 'black', label: 'Black' },
-            ]}
-          />
-        </div>
-      </div>
+      </fieldset>
     </>
   );
 }
@@ -200,12 +206,17 @@ function AgentEditor({
   agentId,
   initial,
   connections,
+  connectionsError = null,
+  onRetryConnections,
   onSaved,
   onClose,
 }: {
   agentId: string | null;
   initial: AgentInput;
   connections: Connection[];
+  /** Why the connections could not be read; the Access tab says so instead of "none". */
+  connectionsError?: string | null;
+  onRetryConnections?: () => void;
   onSaved: (agent: Agent) => void;
   onClose: () => void;
 }) {
@@ -213,7 +224,14 @@ function AgentEditor({
   const [tab, setTab] = useState<'look' | 'behaviour' | 'access'>('look');
   const [state, setState] = useState<(typeof FACE_STATES)[number][0]>('idle');
   const [busy, setBusy] = useState(false);
-  useEffect(() => setDraft(initial), [initial]);
+  // A background refresh hands a new copy of the same agent; only a real change
+  // to the saved agent moves the draft, and never over a field being edited.
+  const saved = useRef(initial);
+  useEffect(() => {
+    const previous = saved.current;
+    saved.current = initial;
+    if (previous !== initial) setDraft((current) => followSaved(current, previous, initial));
+  }, [initial]);
   const look = lookOf(draft);
 
   const save = () => {
@@ -236,7 +254,7 @@ function AgentEditor({
   return (
     <aside
       className="side-panel"
-      style={{ width: 420 }}
+      style={{ width: 420, maxWidth: '100%' }}
       aria-label={agentId ? `Edit ${draft.name}` : 'New agent'}
     >
       <div
@@ -300,17 +318,17 @@ function AgentEditor({
                   height: 28,
                   padding: '0 12px',
                   borderRadius: 999,
-                  background: '#1b1e22',
-                  border: '1px solid #2a2e33',
+                  background: 'var(--studio-panel)',
+                  border: '1px solid var(--studio-line)',
                   fontSize: 12,
-                  color: '#d3d5da',
+                  color: 'var(--studio-text)',
                   gap: 6,
                 }}
               >
                 <span style={{ fontWeight: 600 }}>
                   {FACE_STATES.find((s) => s[0] === state)?.[1]}
                 </span>
-                <span style={{ color: '#8a8f98' }}>· looping</span>
+                <span style={{ color: 'var(--studio-muted)' }}>· looping</span>
               </div>
               <div style={{ position: 'absolute', right: 12, bottom: 10 }}>
                 <Button
@@ -365,19 +383,12 @@ function AgentEditor({
                   <button
                     key={key}
                     type="button"
-                    className="row"
+                    className="look-tile"
+                    data-state="true"
                     aria-pressed={state === key}
-                    style={{
-                      gap: 10,
-                      height: 46,
-                      padding: '0 10px',
-                      borderRadius: 10,
-                      background: state === key ? 'var(--blue-soft)' : 'var(--soft)',
-                      border: `1px solid ${state === key ? 'var(--blue-line)' : 'var(--line)'}`,
-                    }}
                     onClick={() => setState(key)}
                   >
-                    <AgentFace look={look} size={24} state={key} />
+                    <AgentFace look={look} size={26} state={key} />
                     <span className="col" style={{ minWidth: 0, alignItems: 'flex-start' }}>
                       <span
                         className="clamp1"
@@ -515,7 +526,13 @@ function AgentEditor({
                   </div>
                 );
               })}
-              {connections.length === 0 ? (
+              {connectionsError && connections.length === 0 ? (
+                <LoadError
+                  what="your connections"
+                  error={connectionsError}
+                  onRetry={() => onRetryConnections?.()}
+                />
+              ) : connections.length === 0 ? (
                 <span style={{ fontSize: 13, color: 'var(--muted)' }}>
                   Nothing is connected yet.
                 </span>
@@ -601,14 +618,23 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
 
   const current =
     selected === 'new' ? null : (agents.find((agent) => agent.id === selected) ?? null);
-  const initial: AgentInput | null =
-    selected === 'new' ? { ...blankAgent(), ...(picked ?? {}) } : current ? inputOf(current) : null;
+  const key = draftKey(
+    selected,
+    selected === 'new' ? { ...blankAgent(), ...(picked ?? {}) } : current ? inputOf(current) : null,
+  );
+  const initial = useMemo(
+    () => (key === null ? null : (JSON.parse(key) as [string, AgentInput])[1]),
+    [key],
+  );
 
   const panel = initial ? (
     <AgentEditor
+      key={current?.id ?? 'new'}
       agentId={current?.id ?? null}
       initial={initial}
       connections={connections.data?.connections.filter((c) => c.status === 'connected') ?? []}
+      connectionsError={connections.error}
+      onRetryConnections={connections.reload}
       onSaved={(agent) => {
         refreshAgents();
         toast({ kind: 'ok', title: `${agent.name} is ready.` });

@@ -121,4 +121,53 @@ export function scriptFromWav(bytes: Uint8Array): string | null {
   return null;
 }
 
+/**
+ * A playable file around raw 16-bit little-endian mono samples, which is what
+ * a speech provider sends when asked for plain PCM.
+ */
+export function pcmWav(pcm: Uint8Array, sampleRate: number): Uint8Array {
+  const bytesPerFrame = (CHANNELS * BITS_PER_SAMPLE) / 8;
+  const fmt = new Uint8Array(16);
+  const view = new DataView(fmt.buffer);
+  view.setUint16(0, 1, true); // PCM
+  view.setUint16(2, CHANNELS, true);
+  view.setUint32(4, sampleRate, true);
+  view.setUint32(8, sampleRate * bytesPerFrame, true);
+  view.setUint16(12, bytesPerFrame, true);
+  view.setUint16(14, BITS_PER_SAMPLE, true);
+  // An odd trailing byte is half a sample; it is dropped rather than padded into noise.
+  const samples = pcm.subarray(0, pcm.length - (pcm.length % bytesPerFrame));
+  const body = concat([ascii('WAVE'), chunk('fmt ', fmt), chunk('data', samples)]);
+  const file = new Uint8Array(8 + body.length);
+  file.set(ascii('RIFF'), 0);
+  new DataView(file.buffer).setUint32(4, body.length, true);
+  file.set(body, 8);
+  return file;
+}
+
+/**
+ * How long a PCM WAV plays, from its own header. Null for anything else, since
+ * a compressed recording's length cannot be read without decoding it.
+ */
+export function wavDurationMs(bytes: Uint8Array): number | null {
+  const text = new TextDecoder('utf-8', { fatal: false });
+  if (bytes.length < 12 || text.decode(bytes.subarray(0, 4)) !== 'RIFF') return null;
+  if (text.decode(bytes.subarray(8, 12)) !== 'WAVE') return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let byteRate: number | null = null;
+  let at = 12;
+  while (at + 8 <= bytes.length) {
+    const id = text.decode(bytes.subarray(at, at + 4));
+    const size = view.getUint32(at + 4, true);
+    if (id === 'fmt ' && at + 20 <= bytes.length) byteRate = view.getUint32(at + 16, true);
+    if (id === 'data') {
+      if (!byteRate) return null;
+      const present = Math.min(size, bytes.length - (at + 8));
+      return Math.round((present / byteRate) * 1000);
+    }
+    at += 8 + size + (size % 2);
+  }
+  return null;
+}
+
 export const WAV_MIME = 'audio/wav';

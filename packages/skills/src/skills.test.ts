@@ -49,6 +49,12 @@ describe('the skills that ship with the release', () => {
     expect(estimateTokens(identity)).toBeLessThanOrEqual(IDENTITY_MAX_TOKENS);
     expect(identity).toContain('receipt');
   });
+
+  test('the identity asks for plain words about prior work, not its record', () => {
+    const identity = loadIdentity().replace(/\s+/g, ' ');
+    expect(identity).toContain('Refer to prior work in one plain clause, never an id or a hash.');
+    expect(identity).not.toContain('and its receipt');
+  });
 });
 
 describe('choosing a skill for an objective', () => {

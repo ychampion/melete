@@ -120,6 +120,34 @@ const variables = z.object({
       'must be a postgres:// address, for example postgres://melete:password@postgres:5432/melete',
     )
     .optional(),
+  /**
+   * Web Push: this installation's VAPID key pair, base64url, written once by
+   * configure.ts. Unset, the web app does not offer push.
+   */
+  MELETE_VAPID_PUBLIC_KEY: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{86,88}$/)
+      .optional(),
+  ),
+  MELETE_VAPID_PRIVATE_KEY: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{42,44}$/)
+      .optional(),
+  ),
+  /** Who push services contact about this installation; defaults to mailto: the owner. */
+  MELETE_VAPID_SUBJECT: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^(mailto:|https:\/\/)/)
+      .optional(),
+  ),
+  /**
+   * Push endpoints on origins other than the browser push services, comma separated:
+   * a self-hosted push server, or a test's stand-in.
+   */
+  MELETE_PUSH_EXTRA_ORIGINS: unsetWhenBlank(z.string().optional()),
   MELETE_PUBLIC_URL: unsetWhenBlank(
     z
       .url()
@@ -173,6 +201,15 @@ const variables = z.object({
    */
   MELETE_RUNTIME_ADAPTER: z.enum(['hermes', 'stub', 'external', 'docker']).default('hermes'),
   MELETE_RUNTIME_SUPERVISOR: z.enum(['process', 'docker']).default('process'),
+  /**
+   * The process supervisor keeps one engine loaded ahead of the next attempt, so
+   * a reply does not wait for the engine to start. It holds an idle engine's
+   * memory while nothing runs.
+   */
+  MELETE_ENGINE_PREWARM: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   MELETE_HERMES_ROOT: z.string().default(join(root, '.hermes-src')),
   MELETE_HERMES_PYTHON: z
     .string()
@@ -226,23 +263,29 @@ const variables = z.object({
     .string()
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/)
     .default('melete_work'),
-  MELETE_RUNTIME_START_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  MELETE_RUNTIME_START_TIMEOUT_MS: unsetWhenBlank(
+    z.coerce.number().int().positive().default(120_000),
+  ),
   /** Stdio MCP servers run in containers beside the attempts; these are the runners' images. */
-  MELETE_MCP_NODE_IMAGE: z
-    .string()
-    .min(1)
-    .default(
-      'node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85',
-    ),
-  MELETE_MCP_PYTHON_IMAGE: z
-    .string()
-    .min(1)
-    .default(
-      'ghcr.io/astral-sh/uv:0.12.17-python3.12-alpine@sha256:4c7eb663267624fa1f5b0316b3a51b427578bcb1d93459e1b6dfb5e9875beb0f',
-    ),
+  MELETE_MCP_NODE_IMAGE: unsetWhenBlank(
+    z
+      .string()
+      .min(1)
+      .default(
+        'node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85',
+      ),
+  ),
+  MELETE_MCP_PYTHON_IMAGE: unsetWhenBlank(
+    z
+      .string()
+      .min(1)
+      .default(
+        'ghcr.io/astral-sh/uv:0.12.17-python3.12-alpine@sha256:4c7eb663267624fa1f5b0316b3a51b427578bcb1d93459e1b6dfb5e9875beb0f',
+      ),
+  ),
   /** The port a server with named destinations uses as its proxy, inside the service container. */
-  MELETE_MCP_EGRESS_PORT: z.coerce.number().int().min(1).max(65535).default(8789),
-  MELETE_MCP_IDLE_MS: z.coerce.number().int().positive().default(600_000),
+  MELETE_MCP_EGRESS_PORT: unsetWhenBlank(z.coerce.number().int().min(1).max(65535).default(8789)),
+  MELETE_MCP_IDLE_MS: unsetWhenBlank(z.coerce.number().int().positive().default(600_000)),
   /** Browser credentials and endpoint are service-owned; neither is sent to the runtime cell. */
   MELETE_BROWSER_URL: z.url().optional(),
   MELETE_BROWSER_SPACE: z
@@ -259,6 +302,14 @@ const variables = z.object({
   GOOGLE_API_KEY: z.string().optional(),
   OPENAI_COMPAT_BASE_URL: z.string().optional(),
   OPENAI_COMPAT_API_KEY: z.string().optional(),
+  /**
+   * A model server on this machine or network (OpenAI-compatible, for example
+   * Ollama at http://127.0.0.1:11434/v1) that private conversations use until
+   * the owner sets one in Settings → Privacy.
+   */
+  MELETE_LOCAL_MODEL_URL: unsetWhenBlank(z.string().url().optional()),
+  MELETE_LOCAL_MODEL: unsetWhenBlank(z.string().max(200).optional()),
+  MELETE_LOCAL_MODEL_KEY: unsetWhenBlank(z.string().max(500).optional()),
   /**
    * The OAuth client ChatGPT sign-in presents. Left empty, the Codex CLI's
    * public client, the only one OpenAI has registered for this sign-in.
@@ -287,7 +338,36 @@ const variables = z.object({
    * engine names none by default, so this is the usual ceiling on one reply.
    */
   MELETE_DEFAULT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
-  MELETE_SPEECH_MODEL: z.string().optional(),
+  MELETE_SPEECH_MODEL: unsetWhenBlank(z.string().optional()),
+  /**
+   * ElevenLabs, for everything voice (docs/VOICE.md). The key alone turns on
+   * speech, transcription, push-to-talk and voice mode, and speech prefers it
+   * over an OpenAI key. Each model and voice left empty uses the default there.
+   */
+  ELEVENLABS_API_KEY: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  ELEVENLABS_VOICE_ID: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9]{1,64}$/, 'use a voice id from your ElevenLabs voice library')
+      .optional(),
+  ),
+  ELEVENLABS_SECOND_VOICE_ID: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9]{1,64}$/, 'use a voice id from your ElevenLabs voice library')
+      .optional(),
+  ),
+  ELEVENLABS_SPEECH_MODEL: unsetWhenBlank(z.string().min(1).max(120).optional()),
+  ELEVENLABS_STREAMING_MODEL: unsetWhenBlank(z.string().min(1).max(120).optional()),
+  ELEVENLABS_TRANSCRIPTION_MODEL: unsetWhenBlank(z.string().min(1).max(120).optional()),
+  /** Seconds of push-to-talk recording one person may have transcribed in a day. */
+  MELETE_VOICE_DAILY_SECONDS: unsetWhenBlank(z.coerce.number().int().nonnegative().default(1800)),
+  /** Characters of replies one person may have read aloud in a day. */
+  MELETE_VOICE_DAILY_CHARACTERS: unsetWhenBlank(
+    z.coerce.number().int().nonnegative().default(20_000),
+  ),
+  /** Voice mode sessions one person may start in a day. */
+  MELETE_VOICE_DAILY_SESSIONS: unsetWhenBlank(z.coerce.number().int().nonnegative().default(30)),
   /**
    * Automatic memory reads what a person says in chat with this model, through
    * the model gateway. Unset, it uses the default provider and model; `off`
@@ -297,6 +377,31 @@ const variables = z.object({
   MELETE_MEMORY_PROVIDER: z.string().optional(),
   /** Extraction calls one person's memory may make in a day. */
   MELETE_MEMORY_DAILY_CALLS: z.coerce.number().int().nonnegative().default(200),
+  /**
+   * Auto-review asks this model whether a reversible action may go ahead
+   * without the person. Unset, it uses the default provider and model; `off`
+   * runs no reviewer, and every action it would have reviewed asks the person.
+   */
+  MELETE_REVIEW_MODEL: z.string().optional(),
+  MELETE_REVIEW_PROVIDER: z.string().optional(),
+  /** How long one review may take before the action goes to the person. */
+  MELETE_REVIEW_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(20_000).default(12_000),
+  /** Reviews one space may ask for in an hour; past it, the person is asked. */
+  MELETE_REVIEW_HOURLY_LIMIT: z.coerce.number().int().nonnegative().default(60),
+
+  /**
+   * The model a phone call is answered with, turn by turn, through the service's
+   * own gateway. Left unset, the default provider and model.
+   */
+  MELETE_PHONE_PROVIDER: unsetWhenBlank(z.string().optional()),
+  MELETE_PHONE_MODEL: unsetWhenBlank(z.string().optional()),
+  /** ElevenLabs' API base, for a phone line. A regional residency server can stand in. */
+  MELETE_ELEVENLABS_API_URL: unsetWhenBlank(
+    z
+      .url()
+      .refine((value) => new URL(value).protocol === 'https:', 'Use an https:// address.')
+      .default('https://api.elevenlabs.io'),
+  ),
 
   /**
    * What the engine in an attempt's cell is bounded by. Each is read again from
@@ -379,6 +484,41 @@ const variables = z.object({
       .default('false')
       .transform((v) => v === 'true'),
   ),
+  /**
+   * The sandbox every space gets without anyone installing one. `docker` runs
+   * one container per agent on this service's own Docker engine, reached through
+   * MELETE_DOCKER_SOCKET; it needs MELETE_SANDBOX_PROJECT. Left unset, a space
+   * has a sandbox only when a person installs a connection for one.
+   */
+  MELETE_SANDBOX_PROVIDER: unsetWhenBlank(z.enum(['docker']).optional()),
+  /** The image a docker sandbox starts from; it must already be on the engine. */
+  MELETE_SANDBOX_DOCKER_IMAGE: unsetWhenBlank(
+    z.string().min(1).max(200).default('melete-sandbox:local'),
+  ),
+  MELETE_SANDBOX_DOCKER_CPUS: unsetWhenBlank(z.coerce.number().positive().max(64).default(1)),
+  MELETE_SANDBOX_DOCKER_MEMORY_MB: unsetWhenBlank(
+    z.coerce.number().int().min(512).max(262_144).default(2048),
+  ),
+  MELETE_SANDBOX_DOCKER_PIDS: unsetWhenBlank(
+    z.coerce.number().int().min(64).max(65_536).default(512),
+  ),
+  /** What the agent's two volumes may hold together, and the largest one file may grow. */
+  MELETE_SANDBOX_DOCKER_DISK_MB: unsetWhenBlank(
+    z.coerce.number().int().min(256).max(1_048_576).default(4096),
+  ),
+  /**
+   * What the default sandbox may reach: `open` is public HTTPS sites through the
+   * service's egress guard, `deny_all` is nothing at all.
+   */
+  MELETE_SANDBOX_DOCKER_EGRESS: unsetWhenBlank(z.enum(['open', 'deny_all']).default('open')),
+  /** A container nothing has used for this long is stopped; it starts again when it is used. */
+  MELETE_SANDBOX_DOCKER_IDLE_SECONDS: unsetWhenBlank(
+    z.coerce.number().int().min(60).max(86_400).default(900),
+  ),
+  /** The port the egress guard listens on inside the service's container. */
+  MELETE_SANDBOX_EGRESS_PORT: unsetWhenBlank(
+    z.coerce.number().int().min(1024).max(65_535).default(8791),
+  ),
 });
 
 /**
@@ -408,6 +548,12 @@ export const envSchema = variables.transform((value, context) => {
           : 'MICROSOFT_OAUTH_CLIENT_ID',
       ],
       message: 'set both MICROSOFT_OAUTH_CLIENT_ID and MICROSOFT_OAUTH_CLIENT_SECRET, or neither',
+    });
+  if (value.MELETE_SANDBOX_PROVIDER && !value.MELETE_SANDBOX_PROJECT)
+    context.addIssue({
+      code: 'custom',
+      path: ['MELETE_SANDBOX_PROJECT'],
+      message: `MELETE_SANDBOX_PROVIDER=${value.MELETE_SANDBOX_PROVIDER} needs MELETE_SANDBOX_PROJECT, the label that says which sandboxes are this installation's`,
     });
   if (Boolean(value.GOOGLE_OAUTH_CLIENT_ID) !== Boolean(value.GOOGLE_OAUTH_CLIENT_SECRET))
     context.addIssue({

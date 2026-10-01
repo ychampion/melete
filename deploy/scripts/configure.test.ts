@@ -5,10 +5,12 @@ import {
   ConfigureRefusal,
   configureOptions,
   createdMessage,
+  databaseUrl,
   dockerSocketGroup,
   failureReport,
   providerSettings,
   sandboxProject,
+  voiceSettings,
 } from './configure.ts';
 import { DEFAULT_NODE_NAME } from './tailscale-origin.ts';
 
@@ -67,6 +69,15 @@ describe('the provider the configuration is written for', () => {
       MELETE_ENABLE_TEST_CONNECTOR: 'false',
       FIREWORKS_API_KEY: 'fw-secret',
     });
+  });
+
+  test('an ElevenLabs key in the environment is written; none leaves voice off', () => {
+    expect(voiceSettings({ ELEVENLABS_API_KEY: ' el-key ' })).toEqual({
+      ELEVENLABS_API_KEY: 'el-key',
+    });
+    expect(voiceSettings({})).toEqual({});
+    expect(voiceSettings({ ELEVENLABS_API_KEY: '  ' })).toEqual({});
+    expect(() => voiceSettings({ ELEVENLABS_API_KEY: 'el key' })).toThrow(ConfigureRefusal);
   });
 
   test('a production run without its key is refused, naming the variable to set', () => {
@@ -278,5 +289,23 @@ describe('the sandbox label configure writes', () => {
     expect(first).toMatch(/^melete-[0-9a-f]{8}$/);
     expect(loadEnv({ MELETE_SANDBOX_PROJECT: first }).MELETE_SANDBOX_PROJECT).toBe(first);
     expect(sandboxProject()).not.toBe(first);
+  });
+});
+
+describe('the database address configure writes', () => {
+  test('names the user and database Postgres is created with', () => {
+    expect(databaseUrl({ POSTGRES_USER: 'melete', POSTGRES_DB: 'melete' }, 'a1b2')).toBe(
+      'postgres://melete:a1b2@postgres:5432/melete',
+    );
+    const url = new URL(databaseUrl({ POSTGRES_USER: 'assistant', POSTGRES_DB: 'home' }, 'c3d4'));
+    expect(url.username).toBe('assistant');
+    expect(url.pathname).toBe('/home');
+    expect(loadEnv({ DATABASE_URL: url.href }).DATABASE_URL).toBe(url.href);
+  });
+
+  test('falls back to the Compose defaults when the template leaves them empty', () => {
+    expect(databaseUrl({ POSTGRES_USER: '', POSTGRES_DB: ' ' }, 'e5f6')).toBe(
+      'postgres://melete:e5f6@postgres:5432/melete',
+    );
   });
 });

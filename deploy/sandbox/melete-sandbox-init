@@ -1,0 +1,20 @@
+#!/bin/sh
+# The first process of a docker sandbox, under the engine's init: a virtual
+# display the size of the live view, and a light window manager on it. Commands
+# arrive as execs; nothing here listens on a network.
+set -u
+
+Xvfb :0 -screen 0 1024x768x24 -nolisten tcp -nolisten local -noreset >/tmp/xvfb.log 2>&1 &
+display=$!
+
+tries=0
+while [ ! -S /tmp/.X11-unix/X0 ] && [ "$tries" -lt 100 ]; do
+  sleep 0.1
+  tries=$((tries + 1))
+done
+
+DISPLAY=:0 openbox --sm-disable >/tmp/openbox.log 2>&1 &
+
+# The sandbox lives as long as its display; a display that dies stops it, and
+# the next use starts it again.
+wait "$display"

@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, realpath } from 'node:fs/promises';
-import { join } from 'node:path';
+import { open, realpath } from 'node:fs/promises';
 import { ID_PREFIXES, prefixedId } from '@melete/contracts';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import type { Hono } from 'hono';
+import type { ArtifactRoots } from '../artifact/content.ts';
+import { noLinks, segmentsFor } from '../connectors/files.ts';
 import type { Database } from '../db/client.ts';
 import { artifact, job } from '../db/schema.ts';
 import { ownJob } from '../principals/authority.ts';
@@ -13,26 +14,50 @@ import type { SpaceResolver } from './reactions.ts';
 
 const notFound = () => new ServiceError('not_found', 'No such artifact.', 404);
 
-async function readArtifact(root: string, spaceId: string, relative: string): Promise<Uint8Array> {
-  const parts = relative.replace(/^artifacts\//, '').split('/');
-  if (
-    relative.length > 2048 ||
-    parts.some(
-      (part) =>
-        !part ||
-        part === '.' ||
-        part === '..' ||
-        /[<>:"\\|?*\p{Cc}]/u.test(part) ||
-        /[. ]$/.test(part) ||
-        /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part),
-    )
-  )
+type Stored = Pick<typeof artifact.$inferSelect, 'area' | 'path' | 'jobId' | 'sourceJobId'>;
+
+/**
+ * Where a recorded file is, inside one of the space's own areas and nowhere
+ * else. A declared write names its area and the job whose workspace holds it:
+ * `work` is that job's folder, `artifacts` the space's folder. A file recorded
+ * without a job (generated audio, a browser capture) is in the space's
+ * artifacts folder, and some of those name the folder in their path.
+ */
+export function artifactLocation(
+  roots: ArtifactRoots,
+  spaceId: string,
+  row: Stored,
+): { root: string; segments: string[] } {
+  if (!/^sp_[A-Za-z0-9]+$/.test(spaceId) || (row.area !== 'work' && row.area !== 'artifacts'))
     throw notFound();
-  let file = await realpath(root);
-  for (const part of [spaceId, 'artifacts', ...parts]) {
-    file = join(file, part);
-    if ((await lstat(file)).isSymbolicLink()) throw notFound();
+  const work = row.area === 'work' && row.sourceJobId !== null;
+  // Only the job the route checked against this space and person: never
+  // another job's workspace, and nothing once the job itself is gone.
+  if (work && (row.jobId !== row.sourceJobId || !/^job_[A-Za-z0-9]+$/.test(row.jobId ?? '')))
+    throw notFound();
+  const relative = row.sourceJobId === null ? row.path.replace(/^artifacts\//, '') : row.path;
+  if (relative.length > 2048 || /[<>"|?*\p{Cc}]/u.test(relative)) throw notFound();
+  let segments: string[];
+  try {
+    // The files connector's own rule: relative, no dot segments, no device names.
+    segments = segmentsFor(relative);
+  } catch {
+    throw notFound();
   }
+  if (!segments.length) throw notFound();
+  return work
+    ? { root: roots.workRoot, segments: [row.sourceJobId as string, ...segments] }
+    : { root: roots.spacesRoot, segments: [spaceId, 'artifacts', ...segments] };
+}
+
+async function readArtifact(
+  roots: ArtifactRoots,
+  spaceId: string,
+  row: Stored,
+): Promise<Uint8Array> {
+  const location = artifactLocation(roots, spaceId, row);
+  // Every component is checked, so a link anywhere on the way is refused.
+  const file = await noLinks(await realpath(location.root), location.segments, false);
   const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     if (!(await handle.stat()).isFile()) throw notFound();
@@ -60,7 +85,7 @@ function rangeFor(value: string, size: number): { start: number; end: number } |
 export function mountArtifacts(
   app: Hono,
   db: Database,
-  spacesRoot: string,
+  roots: ArtifactRoots,
   resolveSpace: SpaceResolver,
 ): void {
   app.get('/artifacts/:id/content', async (c) => {
@@ -89,7 +114,7 @@ export function mountArtifacts(
     if (!row) throw notFound();
     let bytes: Uint8Array;
     try {
-      bytes = await readArtifact(spacesRoot, scope.spaceId, row.artifact.path);
+      bytes = await readArtifact(roots, scope.spaceId, row.artifact);
     } catch {
       throw notFound();
     }

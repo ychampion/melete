@@ -102,6 +102,9 @@ test('the sender is every address in the From header, not the last one that look
   // What the poller delivers names the one company the message is from.
   expect(replyPayload(message('billing@acme.test (Acme)')).sender_domain).toBe('acme.test');
   expect(replyPayload(message('x@evil.test, b@acme.test')).sender_domain).toBeNull();
+  // And the one address, so a chase waiting on one person can watch for them alone.
+  expect(replyPayload(message('Jo <Jo@Mail.test>')).sender).toBe('jo@mail.test');
+  expect(replyPayload(message('x@evil.test, b@acme.test')).sender).toBeNull();
 });
 
 test('a reply that could not be delivered is logged by a fixed reason, never by its text', () => {

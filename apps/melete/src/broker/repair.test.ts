@@ -668,3 +668,81 @@ describe('drift mappings are proposals with a test, not live changes', () => {
     expect(destination.effects.length).toBe(0);
   });
 });
+
+describe('a read that fails is a failed read, never an effect that may have landed', () => {
+  const readPorts = (execute: RepairPorts['execute']): RepairPorts => ({
+    execute,
+    verify: async () => ({ decision: 'unsupported', reason: 'reads have no effect to verify' }),
+  });
+  const readRun = (execute: RepairPorts['execute']) =>
+    runRepair({ path: 'memory' }, readPorts(execute), {
+      classify: (error) => asConnectorFault(error) ?? unclassifiedFault(error, 'read'),
+      readOnly: true,
+      operation: 'files.list',
+      sleep: async () => {},
+      random: () => 0.5,
+    });
+
+  test('an untyped throw from a read fails with its reason and asks nobody', async () => {
+    const missing = Object.assign(
+      new Error("ENOENT: no such file or directory, scandir 'C:dataspacessp_1artifacts'"),
+      { code: 'ENOENT' },
+    );
+    const run = await readRun(async () => {
+      throw missing;
+    });
+    expect(run.disposition).toBe('repair_exhausted');
+    expect(run.result).toEqual({ outcome: 'failed', reason: 'not found', retryable: false });
+    // Nobody is asked: a lookup that changed nothing is the model's to work around.
+    expect(run.question).toBeNull();
+  });
+
+  test('the reason keeps what the model can act on and drops host paths', async () => {
+    const run = await readRun(async () => {
+      throw new Error('private-context job cannot fetch this domain');
+    });
+    expect(run.result).toMatchObject({ reason: 'private-context job cannot fetch this domain' });
+    const pathy = await readRun(async () => {
+      throw new Error('cannot open /srv/melete/work/job_1/secret.txt for reading');
+    });
+    expect(pathy.result).toMatchObject({ reason: 'cannot open <path> for reading' });
+    const keyed = await readRun(async () => {
+      throw new Error('GET https://api.example.com/v1/price?key=s3cr3t returned 401');
+    });
+    expect(keyed.result).toMatchObject({
+      reason: 'GET https://api.example.com/v1/price returned 401',
+    });
+  });
+
+  test('a read that answers unknown, or whose answer was lost, fails and is not sent again', async () => {
+    const unknown = await readRun(async () => ({ outcome: 'unknown', reason: 'no answer' }));
+    expect(unknown.disposition).toBe('repair_exhausted');
+    expect(unknown.result).toMatchObject({ outcome: 'failed', reason: 'no answer' });
+    expect(unknown.question).toBeNull();
+    let calls = 0;
+    const lost = await readRun(async () => {
+      calls++;
+      throw new ConnectorFaultError({
+        kind: 'uncertain_outcome',
+        detail: 'the response was cut off',
+        may_have_committed: true,
+      });
+    });
+    // Nobody reconciles a lookup, and a tool called a read by mistake is still
+    // never sent twice on a lost answer.
+    expect(lost.disposition).toBe('repair_exhausted');
+    expect(lost.result).toMatchObject({ outcome: 'failed', reason: 'the response was cut off' });
+    expect(lost.question).toBeNull();
+    expect(calls).toBe(1);
+  });
+
+  test('a write that throws untyped still rests unknown for a person to settle', () => {
+    expect(unclassifiedFault(new Error('socket hang up'), 'write_external')).toMatchObject({
+      kind: 'unclassified',
+      may_have_committed: true,
+    });
+    expect(unclassifiedFault(new Error('socket hang up'))).toMatchObject({
+      may_have_committed: true,
+    });
+  });
+});

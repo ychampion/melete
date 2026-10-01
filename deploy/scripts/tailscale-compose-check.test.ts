@@ -55,6 +55,7 @@ describe('the Tailscale deployment', () => {
       'postgres',
       'runtime',
       'runtime-image',
+      'sandbox-image',
       'tailscale',
       'web',
     ]);

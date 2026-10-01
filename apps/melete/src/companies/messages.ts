@@ -26,6 +26,14 @@ export type ScanMessage = {
   receivedAt: string;
   /** Present when the message carried List-Unsubscribe; a marketing signal, not content. */
   unsubscribe?: boolean;
+  /** The recipients' addresses as the mail parser read them, To and Cc together. */
+  toAddresses?: string[];
+  /** The Message-ID this one answers, from In-Reply-To. */
+  inReplyTo?: string | null;
+  /** The thread's Message-IDs, from References. */
+  references?: string[];
+  /** A list, bulk or auto-submitted message: nobody wrote it to this person. */
+  automated?: boolean;
 };
 
 /**
@@ -160,5 +168,9 @@ export function fromMailMessage(
     text: message.text,
     receivedAt,
     ...(unsubscribe === undefined ? {} : { unsubscribe }),
+    ...(message.to_addresses ? { toAddresses: message.to_addresses } : {}),
+    ...(message.in_reply_to !== undefined ? { inReplyTo: message.in_reply_to } : {}),
+    ...(message.references ? { references: message.references } : {}),
+    ...(message.automated !== undefined ? { automated: message.automated } : {}),
   };
 }

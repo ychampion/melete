@@ -33,6 +33,13 @@ export interface Connector {
   /** Recheck bound resources under the admission/dispatch transaction. */
   validateBinding?(action: Action, ctx: ConnectorContext, tx: Query): Promise<void>;
   /**
+   * How many guests the existing item this action changes has now, read from
+   * the destination: the attendees of the event a `calendar.update` rewrites.
+   * Throws when it cannot be read. Auto-review asks it before treating such a
+   * change as one that reaches nobody but the person.
+   */
+  existingGuests?(action: Action, ctx: ConnectorContext): Promise<number>;
+  /**
    * Present when this connector is a generative capability rather than a reach
    * into something that already exists. It carries the cost and the mime type
    * the call produces, both from trusted configuration.
@@ -49,6 +56,13 @@ export interface Connector {
    * never waits less than its own timeout, whatever this says.
    */
   dispatchBudgetMs?(action: Pick<Action, 'kind' | 'canonical_payload'>): number;
+  /**
+   * True when this particular action needs the person's approval although its
+   * tool alone does not, because of what the payload names: opening an
+   * address on the person's own network, for one. It can only add a question,
+   * never remove one.
+   */
+  asksFirst?(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean;
   health(): Promise<ConnectorHealth>;
   /**
    * The shape the destination wants now. Answered after a `schema_drift` fault

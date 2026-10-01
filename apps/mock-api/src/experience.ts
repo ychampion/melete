@@ -12,6 +12,8 @@ import {
   projectCards,
 } from '../../melete/src/experience/projectors.ts';
 import type { AppDeps } from './app.ts';
+import { MockBeliefError, MockBeliefs } from './beliefs.ts';
+import { ComputerMock } from './computer.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { newId } from './store.ts';
 
@@ -46,6 +48,8 @@ type Chat = {
    * ledger item settled when the script completes.
    */
   follow?: { from: string; settle?: () => void };
+  /** A command under way on the agent's computer, finished with its tool entry. */
+  openCommand?: () => void;
 };
 type Proposal = {
   ref: string;
@@ -94,7 +98,11 @@ const PROPOSAL_WORDS: Record<string, { what: string; where: string; reversible: 
     reversible: true,
   },
   'browser.reserve': { what: 'Hold a table through the browser', where: 'Resy', reversible: false },
+  'tasks.create': { what: 'Add a task', where: 'Tasks', reversible: true },
 };
+
+/** A run the mock keeps no thread for. */
+const NO_RESULT = { conversation_id: null, turn_id: null, summary: null, reason: null };
 
 class MockExperienceError extends Error {
   constructor(
@@ -123,11 +131,20 @@ export class ExperienceMock {
   >();
   readonly sentReceipts = new Map<string, C.ExperienceReceipt>();
   readonly rules = new Map<string, C.StandingRule>();
+  /** Conversations read public web pages unless this is turned off. */
+  webReads = true;
+  /** Settings → Approvals, as the person last saved them. */
+  approvalSettings: C.ApprovalSettings = structuredClone(C.DEFAULT_APPROVAL_SETTINGS);
   readonly questions = new Map<string, Question>();
   readonly plans = new Map<string, Plan>();
   readonly tasks = new Map<string, ReturnType<typeof C.experienceTask.parse>>();
   readonly automations = new Map<string, ReturnType<typeof C.experienceAutomation.parse>>();
   readonly memories = new Map<string, ReturnType<typeof C.memoryItem.parse>>();
+  /** What the mock believes about the person, with its history and rewinds. */
+  readonly beliefs = new MockBeliefs(
+    () => this.deps.store.now(),
+    () => this.profile.time_zone,
+  );
   /** Answers given during setup, by key, so the first message can refer to one. */
   readonly answers = new Map<string, string>();
   /** Set once the welcome scenario has played; every later message picks by text. */
@@ -145,7 +162,16 @@ export class ExperienceMock {
   });
   /** The address messages leave from, when a mailbox that can send is connected. */
   sendingAddress: string | null = null;
+  readonly computer: ComputerMock;
+  /** Setup finished or skipped, and a time zone chosen, as the service records them. */
+  onboarded = false;
+  timeZoneConfirmed = false;
+  /** Checks and replaces the account's password; set by the account routes. */
+  changePassword: ((current: string, next: string) => boolean) | null = null;
   constructor(readonly deps: AppDeps & { experienceSpeed?: number }) {
+    this.computer = new ComputerMock(deps.store, deps.spaceId, deps.computer ?? true, () =>
+      this.now(),
+    );
     for (const template of AGENT_TEMPLATES.templates) {
       const agent = C.experienceAgent.parse({
         ...template.agent,
@@ -335,6 +361,8 @@ export class ExperienceMock {
       time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       day_hours: { start: '08:00', end: '22:00' },
     });
+    this.onboarded = true;
+    this.timeZoneConfirmed = true;
     for (const [title, done] of [
       ['Send Priya the Kyoto list', false],
       ['Renew passport before Oct 3', false],
@@ -455,24 +483,32 @@ export class ExperienceMock {
         title,
         schedule: scheduleSentence(cron, this.profile.time_zone),
         enabled,
+        conversation_id: newId('job'),
         runs: [
           {
+            ...NO_RESULT,
             id: newId('run'),
             status: 'done',
             started_at: iso(at(0, 8, 30)),
             finished_at: iso(at(0, 8, 31)),
+            summary:
+              'Three things today: the dentist at 10, lunch with Priya, and the passport form.',
           },
           {
+            ...NO_RESULT,
             id: newId('run'),
             status: 'done',
             started_at: iso(at(-1, 8, 30)),
             finished_at: iso(at(-1, 8, 31)),
+            summary: 'A quiet day: no meetings, and two tasks still open.',
           },
           {
+            ...NO_RESULT,
             id: newId('run'),
             status: 'failed',
             started_at: iso(at(-3, 8, 30)),
             finished_at: iso(at(-3, 8, 32)),
+            reason: 'It failed: the calendar could not be reached.',
           },
         ],
       });
@@ -486,6 +522,7 @@ export class ExperienceMock {
     );
     japan.conversation_ids = [kyoto.id];
     this.start('Passport renewal', atlas.id, 'Which documents do I need to renew in person?');
+    this.beliefs.seed(kyoto.id);
   }
   /**
    * Every experience event is also a store event on the conversation's job, so
@@ -613,6 +650,8 @@ export class ExperienceMock {
   }
   /** Finish the entry under way: its done copy, its trail step, and one more step done. */
   settleTool(chat: Chat) {
+    chat.openCommand?.();
+    chat.openCommand = undefined;
     const open = chat.openTool;
     if (!open) return;
     chat.openTool = undefined;
@@ -670,6 +709,8 @@ export class ExperienceMock {
       return;
     }
     if (step.step === 'tool') {
+      const command = this.computer.command(chat.view.id, step, 'running');
+      if (command) chat.openCommand = () => this.computer.finish(chat.view.id, command, step);
       const kind: C.ToolKind = step.name.startsWith('skills.')
         ? 'skill'
         : step.name.startsWith('browser')
@@ -697,7 +738,10 @@ export class ExperienceMock {
         kind !== 'connector' && kind !== 'web' && !step.sources.length,
       );
     }
-    if (step.step === 'say') {
+    if (step.step === 'reason') {
+      const text = answerText(this.fill(step.text));
+      if (text) this.event(chat, { type: 'reasoning', text });
+    } else if (step.step === 'say') {
       this.flush(chat);
       this.event(chat, {
         type: 'say',
@@ -795,7 +839,8 @@ export class ExperienceMock {
       this.state(chat, 'needs_you');
       return;
     } else if (step.step === 'browser') {
-      // The contract has no way to announce a browser session yet; nothing is drawn.
+      // The page is shown on the conversation's computer, not in the transcript.
+      this.computer.browser(chat.view.id, step);
     } else if (step.step === 'propose' && !this.isDraftKind(step.kind, step.payload)) {
       this.flush(chat);
       const words = PROPOSAL_WORDS[step.kind] ?? {
@@ -838,7 +883,11 @@ export class ExperienceMock {
           options: ['allow_once', 'always', 'deny'],
           version: newId('v'),
           preview: chat.lastCard,
+          ...(step.auto_review
+            ? { review: { ...step.auto_review, outcome: 'escalated', reviewed_at: this.now() } }
+            : {}),
           created_at: this.now(),
+          because: this.beliefs.becauseFor(`${proposal.what} ${proposal.where}`),
         });
         proposal.permissionId = permission.id;
         this.permissions.set(permission.id, permission);
@@ -855,9 +904,11 @@ export class ExperienceMock {
           id: newId('receipt'),
           what: proposal.what
             .replace(/^Add an event to your calendar/, 'Added to your calendar')
-            .replace(/^Hold a table/, 'Held a table'),
+            .replace(/^Hold a table/, 'Held a table')
+            .replace(/^Add a task/, 'Added a task'),
           where: proposal.where,
           when: this.now(),
+          because: this.beliefs.becauseFor(`${proposal.what} ${proposal.where}`),
           ...(words?.reversible
             ? {
                 undo: {
@@ -865,6 +916,9 @@ export class ExperienceMock {
                   valid_until: new Date(Date.now() + 10 * 60_000).toISOString(),
                 },
               }
+            : {}),
+          ...(step.auto_review
+            ? { review: { ...step.auto_review, outcome: 'auto_approved', reviewed_at: this.now() } }
             : {}),
         });
         chat.receipts.push(receipt);
@@ -1012,16 +1066,7 @@ export class ExperienceMock {
       throw new MockExperienceError(409, 'Finish the current request first.');
     // A new message makes every permission still waiting in this conversation
     // stale, as the service does: it is replaced, and can never be allowed.
-    for (const permission of [...this.permissions.values()]) {
-      if (permission.conversation_id !== chat.view.id) continue;
-      this.permissions.delete(permission.id);
-      this.replaced.add(permission.id);
-      if (permission.draft) {
-        const { draft } = this.findDraft(required(this.permissionDrafts, permission.id));
-        draft.status = 'draft';
-      }
-      this.decided(chat, 'permission', permission.id, 'replaced');
-    }
+    this.closePending(chat, 'replaced');
     const turn = C.conversationTurn.parse({
       id: newId('turn'),
       conversation_id: chat.view.id,
@@ -1257,15 +1302,38 @@ export class ExperienceMock {
     this.event(chat, { type: 'permission', permission });
     return { draft, permission, receipt: null };
   }
-  /** Permissions a later message made stale; none of them can be decided again. */
-  readonly replaced = new Set<string>();
+  /**
+   * Permissions a later message made stale or a stop withdrew; none of them can
+   * be decided again.
+   */
+  readonly closed = new Map<string, 'replaced' | 'withdrawn'>();
+  /** Close every permission still waiting in a conversation, as the service does. */
+  closePending(chat: Parameters<typeof this.event>[0], outcome: 'replaced' | 'withdrawn') {
+    for (const permission of [...this.permissions.values()]) {
+      if (permission.conversation_id !== chat.view.id) continue;
+      this.permissions.delete(permission.id);
+      this.closed.set(permission.id, outcome);
+      if (permission.draft) {
+        const { draft } = this.findDraft(required(this.permissionDrafts, permission.id));
+        draft.status = 'draft';
+      }
+      this.decided(chat, 'permission', permission.id, outcome);
+    }
+  }
   decide(id: string, raw: unknown) {
     const input = C.permissionDecision.parse(raw);
-    if (this.replaced.has(id))
+    const closed = this.closed.get(id);
+    if (closed === 'replaced')
       throw new MockExperienceError(
         409,
         'Your new message replaced this request.',
         'permission_replaced',
+      );
+    if (closed === 'withdrawn')
+      throw new MockExperienceError(
+        409,
+        'This was withdrawn when you stopped.',
+        'permission_withdrawn',
       );
     if (this.permissionProposals.has(id)) {
       const permission = this.permissions.get(id);
@@ -1392,6 +1460,7 @@ export class ExperienceMock {
         `${Number(minute)} ${Number(hour)} * * ${[...new Set(input.weekdays)].sort().join(',')}`,
         this.profile.time_zone,
       ),
+      conversation_id: newId('job'),
       runs: [],
     });
     this.automations.set(value.id, value);
@@ -1407,6 +1476,14 @@ export class ExperienceMock {
     return `${name}: ${leaf}`;
   }
   /** Placeholders the welcome scenario fills from setup. */
+  profileView() {
+    return {
+      ...this.profile,
+      onboarded: this.onboarded || this.agents.size > 0,
+      time_zone_confirmed: this.timeZoneConfirmed,
+      sending_address: this.sendingAddress,
+    };
+  }
   fill(text: string) {
     return text
       .replaceAll('{{melete_calls_you}}', this.profile.name.split(' ')[0] ?? this.profile.name)
@@ -1416,6 +1493,14 @@ export class ExperienceMock {
     if (this.signedOut && !key.startsWith('POST /signin'))
       throw new MockExperienceError(401, 'A session is required.');
     const id = c.req.param('id') ?? '';
+    try {
+      const answered = this.beliefs.handle(key, id, input, c.req.query());
+      if (answered !== undefined) return answered;
+    } catch (error) {
+      if (error instanceof MockBeliefError)
+        throw new MockExperienceError(error.status, error.message);
+      throw error;
+    }
     switch (key) {
       case 'GET /agents/templates':
         return AGENT_TEMPLATES;
@@ -1489,6 +1574,8 @@ export class ExperienceMock {
         return { cards: required(this.chats, id).cards };
       case 'GET /conversations/{id}/receipts':
         return { receipts: required(this.chats, id).receipts };
+      case 'GET /conversations/{id}/computer':
+        return this.computer.view(required(this.chats, id).view.id);
       case 'GET /conversations/{id}/drafts':
         return { drafts: required(this.chats, id).drafts };
       case 'POST /conversations/{id}/pause':
@@ -1506,6 +1593,7 @@ export class ExperienceMock {
         } else {
           chat.stopped = true;
           this.state(chat, 'stopped');
+          this.closePending(chat, 'withdrawn');
         }
         return { conversation: chat.view };
       }
@@ -1515,6 +1603,11 @@ export class ExperienceMock {
         return this.decide(id, input);
       case 'GET /rules':
         return { rules: [...this.rules.values()] };
+      case 'GET /approval-settings':
+        return { settings: this.approvalSettings, reviewer_available: true };
+      case 'PUT /approval-settings':
+        this.approvalSettings = C.approvalSettings.parse(input);
+        return { settings: this.approvalSettings, reviewer_available: true };
       case 'DELETE /rules/{id}':
         required(this.rules, id);
         this.rules.delete(id);
@@ -1577,6 +1670,8 @@ export class ExperienceMock {
       case 'POST /signin/magic-link/consume':
         this.signedOut = false;
         return { status: 'ok' };
+      case 'POST /signin/chatgpt':
+        return C.unavailable('This installation hasn’t set up ChatGPT sign-in yet.');
       case 'PATCH /memory/items/{id}': {
         const item = required(this.memories, id);
         if (input.version !== item.version)
@@ -1594,10 +1689,34 @@ export class ExperienceMock {
         return { reasons: [`You saved this detail: ${item.value}`], output: null, used_at: null };
       }
       case 'GET /profile':
-        return { profile: { ...this.profile, sending_address: this.sendingAddress } };
-      case 'PATCH /profile':
-        this.profile = C.profileInput.parse(input);
-        return { profile: { ...this.profile, sending_address: this.sendingAddress } };
+        return { profile: this.profileView() };
+      case 'PATCH /profile': {
+        const next = C.profileInput.parse(input);
+        this.onboarded ||= Boolean(next.onboarded);
+        this.timeZoneConfirmed ||=
+          Boolean(next.time_zone_confirmed) || next.time_zone !== this.profile.time_zone;
+        this.profile = C.profileInput.parse({
+          name: next.name,
+          time_zone: next.time_zone,
+          day_hours: next.day_hours,
+        });
+        return { profile: this.profileView() };
+      }
+      case 'POST /account/password': {
+        const value = C.passwordChange.parse(input);
+        if (!this.changePassword) return C.unavailable('Passwords are not kept in this scenario.');
+        if (!this.changePassword(value.current_password, value.new_password))
+          throw new MockExperienceError(
+            400,
+            'Your current password is not right.',
+            'wrong_password',
+          );
+        return { status: 'ok' };
+      }
+      case 'POST /password-reset':
+        return C.unavailable(
+          'This Melete cannot send you email yet. Ask the person who runs it to print you a reset link.',
+        );
       case 'GET /home': {
         const tasks = [...this.tasks.values()].filter((task) => !task.done);
         return {
@@ -1607,6 +1726,7 @@ export class ExperienceMock {
             : C.unavailable('No calendar is connected in this scenario.'),
           tasks,
           open_task_count: tasks.length,
+          routine_results: [],
         };
       }
       case 'GET /tasks':
@@ -1690,14 +1810,21 @@ export class ExperienceMock {
         });
       case 'POST /automations/{id}/test':
         required(this.automations, id).runs.unshift({
+          ...NO_RESULT,
           id: newId('run'),
           status: 'done',
           started_at: this.now(),
           finished_at: this.now(),
+          summary: 'Nothing new since the last run.',
         });
         return { status: 'ok' };
       case 'GET /experience/connections':
         return { connections: this.connections() };
+      case 'GET /web/settings':
+        return { enabled: this.webReads, available: true };
+      case 'PUT /web/settings':
+        this.webReads = input.enabled === true;
+        return { enabled: this.webReads, available: true };
       case 'GET /search': {
         const q = (c.req.query('q') ?? '').toLowerCase();
         const results = [

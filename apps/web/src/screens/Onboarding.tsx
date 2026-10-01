@@ -1,5 +1,5 @@
 /**
- * Sign-in and the guided setup on the contract: a magic link (OAuth buttons
+ * Sign-in and the guided setup on the contract: a magic link (Google and Apple
  * only when the service says they work), the tour (only stages this instance
  * can do), plugging in apps, meeting the first agent, and saving four answers
  * as memory before opening a conversation that refers to one of them.
@@ -12,8 +12,12 @@ import { MeleteMark } from '../design/mark.tsx';
 import { Button, Chip, Field, Input, Segmented, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { lookOf, messageKey, useApp, useLoad, useMedia } from '../experience/hooks.ts';
-import { givenName } from '../experience/profile.ts';
+import { givenName, onboardedProfile } from '../experience/profile.ts';
+import { keptAnswer, SETUP_QUESTIONS, SKIP_REPLY } from '../experience/setup-answers.ts';
+import { browserTimeZone, setupTimeZone } from '../experience/timezone.ts';
 import type { AgentInput, MemoryItem, TourStage } from '../experience/types.ts';
+import { models } from '../models/api.ts';
+import { ActiveModel, ModelConnect } from '../models/ModelConnect.tsx';
 import { navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
 import { blankAgent, LookFields, reaches, toggleReach } from './Agents.tsx';
@@ -48,16 +52,25 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [google, setGoogle] = useState<boolean | null>(null);
   const [apple, setApple] = useState<boolean | null>(null);
+  // ChatGPT is always offered; its panel says when this installation has no client.
+  const [chatgpt, setChatgpt] = useState<{ ready: boolean; reason: string | null } | null>(null);
+  const [chatgptOpen, setChatgptOpen] = useState(false);
   const phone = useMedia('(max-width: 900px)');
 
   useEffect(() => {
     void adapter.setupStatus().then((r) => setCreating(r.data?.needed === true));
   }, []);
 
-  // The OAuth buttons are drawn only when the service says they work.
+  // Google and Apple are drawn only when the service says they work.
   useEffect(() => {
     void adapter.signInGoogle().then((r) => setGoogle(r.unavailable === null && r.error === null));
     void adapter.signInApple().then((r) => setApple(r.unavailable === null && r.error === null));
+    void adapter.signInChatGPT().then((r) =>
+      setChatgpt({
+        ready: r.unavailable === null && r.error === null,
+        reason: r.unavailable ?? r.error,
+      }),
+    );
   }, []);
 
   // A magic link lands here with its token in the fragment; consume it once.
@@ -129,9 +142,12 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
     } else setNotice(result.error ?? result.unavailable ?? 'Couldn’t sign in.');
   };
 
-  const kcard = (inner: ReactNode, width = 320, extra?: React.CSSProperties) => (
+  // The hero's cards sit in named slots; base.css places them and drops the
+  // ones the panel has no room for, so nothing overlaps at any size.
+  const kcard = (inner: ReactNode, slot: 1 | 2 | 3, width: number, delay: string) => (
     <div
-      className="col pop"
+      className="col pop signin-card"
+      data-slot={slot}
       style={{
         gap: 8,
         width,
@@ -141,8 +157,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
         border: '1px solid var(--studio-line)',
         boxShadow: '0 24px 60px #00000080',
         color: 'var(--studio-text)',
-        position: 'absolute',
-        ...extra,
+        animationDelay: delay,
       }}
     >
       {inner}
@@ -183,31 +198,22 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
     >
       {!phone ? (
         <div
+          className="signin-hero"
           style={{
             ...studio,
-            position: 'relative',
             width: '55%',
             flexShrink: 0,
             border: 0,
             overflow: 'hidden',
           }}
         >
-          <div className="row" style={{ gap: 10, position: 'absolute', left: 44, top: 32 }}>
+          <div className="row" style={{ gap: 10 }}>
             <MeleteMark width={46} />
             <span style={{ fontFamily: 'var(--font-head)', fontSize: 18, fontWeight: 700 }}>
               Melete
             </span>
           </div>
-          <div
-            className="col"
-            style={{
-              gap: 12,
-              position: 'absolute',
-              left: 44,
-              top: 104,
-              width: 'min(540px, calc(100% - 88px))',
-            }}
-          >
+          <div className="col" style={{ gap: 12, maxWidth: 540, marginTop: 40, flexShrink: 0 }}>
             <span
               style={{
                 fontFamily: 'var(--font-head)',
@@ -218,7 +224,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 textWrap: 'balance',
               }}
             >
-              The assistant that actually does it.
+              Your agent, with a computer of its own.
             </span>
             <span
               style={{
@@ -229,105 +235,104 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 textWrap: 'pretty',
               }}
             >
-              Dinner with friends or the pricing launch. Melete takes the task end to end and comes
-              back only for the moments that need you.
+              Melete runs on your machine with any model, keeps working while you’re away, follows
+              up for you, and comes back when something needs your approval.
             </span>
           </div>
-          <div
-            className="row"
-            style={{ position: 'absolute', left: 44, top: 318, gap: 22, alignItems: 'flex-end' }}
-          >
-            <AgentFace look={SAGE} size={64} glow />
-            <AgentFace look={NOVA} size={108} state="working" glow />
-            <AgentFace look={ATLAS} size={64} glow />
-          </div>
-          {kcard(
-            <>
-              <div className="col" style={{ alignItems: 'flex-end' }}>
-                <span
-                  style={{
-                    padding: '7px 12px',
-                    borderRadius: '14px 14px 4px 14px',
-                    background: '#2f5fd6',
-                    color: '#fff',
-                    fontSize: 13,
-                    lineHeight: '18px',
-                  }}
-                >
-                  Move my 3 PM to tomorrow and tell Sam.
-                </span>
-              </div>
-              <div className="row" style={{ gap: 8, fontSize: 12, color: 'var(--studio-muted)' }}>
-                <span style={{ color: '#4ade80', display: 'flex' }}>
-                  <Icon name="circleCheck" size={14} />
-                </span>
-                Moved to Tuesday 3:00 PM · message to Sam drafted, not sent
-              </div>
-              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                {kchip('gcal', 'Pricing sync · Tue 3:00 PM')}
-                {kchip('slack', 'Sam · draft')}
-              </div>
-            </>,
-            320,
-            { left: '52%', top: 290, animationDelay: '.4s' },
-          )}
-          {kcard(
-            <>
-              <div className="row" style={{ gap: 10 }}>
-                <span
-                  className="row"
-                  style={{
-                    justifyContent: 'center',
-                    width: 32,
-                    height: 32,
-                    borderRadius: 8,
-                    background: 'var(--studio-panel-2)',
-                    color: '#f5b342',
-                  }}
-                >
-                  <Icon name="star" size={16} />
-                </span>
-                <div className="col grow" style={{ minWidth: 0 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600 }}>
-                    Luna Trattoria · 7:30, table for 3
-                  </span>
-                  <span style={{ fontSize: 11, color: 'var(--studio-muted)' }}>
-                    On your calendar · a note to Alex ready for you to send
+          <div className="signin-art">
+            <div className="row signin-faces" style={{ gap: 22, alignItems: 'flex-end' }}>
+              <AgentFace look={SAGE} size={64} glow />
+              <AgentFace look={NOVA} size={108} state="working" glow />
+              <AgentFace look={ATLAS} size={64} glow />
+            </div>
+            {kcard(
+              <>
+                <div className="col" style={{ alignItems: 'flex-end' }}>
+                  <span
+                    style={{
+                      padding: '7px 12px',
+                      borderRadius: '14px 14px 4px 14px',
+                      background: '#2f5fd6',
+                      color: '#fff',
+                      fontSize: 13,
+                      lineHeight: '18px',
+                    }}
+                  >
+                    Move my 3 PM to tomorrow and tell Sam.
                   </span>
                 </div>
-              </div>
-              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                {kchip('gcal', 'Tonight 7:30 PM')}
-                {kchip('imessage', 'Alex · not sent')}
-                {kchip('gmaps', '12 min walk')}
-              </div>
-            </>,
-            320,
-            { left: '50%', top: 470, animationDelay: '.9s' },
-          )}
-          {kcard(
-            <>
-              <div className="row" style={{ gap: 8, fontSize: 12, color: 'var(--studio-muted)' }}>
-                <span className="spin" style={{ display: 'flex', color: '#8db6f7' }}>
-                  <Icon name="loader" size={12} stroke={2} />
+                <div className="row" style={{ gap: 8, fontSize: 12, color: 'var(--studio-muted)' }}>
+                  <span style={{ color: '#4ade80', display: 'flex' }}>
+                    <Icon name="circleCheck" size={14} />
+                  </span>
+                  Moved to Tuesday 3:00 PM · note to Sam ready to approve
+                </div>
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  {kchip('gcal', 'Pricing sync · Tue 3:00 PM')}
+                  {kchip('slack', 'Sam · to approve')}
+                </div>
+              </>,
+              1,
+              320,
+              '.4s',
+            )}
+            {kcard(
+              <>
+                <div className="row" style={{ gap: 10 }}>
+                  <span
+                    className="row"
+                    style={{
+                      justifyContent: 'center',
+                      width: 32,
+                      height: 32,
+                      borderRadius: 8,
+                      background: 'var(--studio-panel-2)',
+                      color: '#f5b342',
+                    }}
+                  >
+                    <Icon name="star" size={16} />
+                  </span>
+                  <div className="col grow" style={{ minWidth: 0 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>
+                      Luna Trattoria · 7:30, table for 3
+                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--studio-muted)' }}>
+                      Booked while you were out · a note to Alex to approve
+                    </span>
+                  </div>
+                </div>
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  {kchip('gcal', 'Tonight 7:30 PM')}
+                  {kchip('imessage', 'Alex · to approve')}
+                  {kchip('gmaps', '12 min walk')}
+                </div>
+              </>,
+              2,
+              320,
+              '.9s',
+            )}
+            {kcard(
+              <>
+                <div className="row" style={{ gap: 8, fontSize: 12, color: 'var(--studio-muted)' }}>
+                  <span className="spin" style={{ display: 'flex', color: '#8db6f7' }}>
+                    <Icon name="loader" size={12} stroke={2} />
+                  </span>
+                  Working · 6s
+                </div>
+                <span style={{ fontSize: 13, lineHeight: '18px' }}>
+                  Following up with legal on the pricing page review, as Sam asked.
                 </span>
-                Working · 6s
-              </div>
-              <span style={{ fontSize: 13, lineHeight: '18px' }}>
-                Reading the brief first so the timeline matches what Sam already agreed.
-              </span>
-              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                {kchip('notion', 'Pricing page launch · brief')}
-                {kchip('linear', 'PRC-114 · Legal review')}
-              </div>
-            </>,
-            300,
-            { left: 44, top: 586, animationDelay: '1.4s' },
-          )}
-          <div
-            className="col"
-            style={{ gap: 10, position: 'absolute', left: 44, right: 44, bottom: 36 }}
-          >
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  {kchip('notion', 'Pricing page launch · brief')}
+                  {kchip('linear', 'PRC-114 · Legal review')}
+                </div>
+              </>,
+              3,
+              300,
+              '1.4s',
+            )}
+          </div>
+          <div className="col signin-apps" style={{ gap: 10, flexShrink: 0 }}>
             <span
               style={{
                 fontSize: 11,
@@ -410,7 +415,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
             </div>
           ) : (
             <>
-              {!creating && (google || apple) ? (
+              {!creating ? (
                 <div className="col" style={{ gap: 10 }}>
                   {google ? (
                     <button
@@ -445,6 +450,81 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                       <Icon name="apple" size={18} />
                       <span>Continue with Apple</span>
                     </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="btn btn-xl btn-outline"
+                    style={{ width: '100%', gap: 10, fontSize: 14 }}
+                    aria-expanded={chatgptOpen}
+                    aria-controls="signin-chatgpt"
+                    onClick={() => setChatgptOpen((open) => !open)}
+                  >
+                    <Icon name="chat" size={18} />
+                    <span>Sign in with ChatGPT</span>
+                  </button>
+                  {chatgptOpen ? (
+                    <section
+                      id="signin-chatgpt"
+                      aria-label="Sign in with ChatGPT"
+                      className="col card"
+                      style={{ gap: 10, padding: 16 }}
+                    >
+                      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
+                        Sign in with your ChatGPT account
+                      </span>
+                      {chatgpt?.ready ? (
+                        <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
+                          OpenAI confirms who you are and shares your name, email address and
+                          profile picture with this installation. Your ChatGPT password stays with
+                          OpenAI.
+                        </span>
+                      ) : null}
+                      {chatgpt?.ready ? (
+                        <Button
+                          icon="arrowUpRight"
+                          block
+                          onClick={() =>
+                            void adapter
+                              .signInChatGPT()
+                              .then((r) =>
+                                r.data
+                                  ? refreshProfile()
+                                  : setNotice(r.error ?? r.unavailable ?? ''),
+                              )
+                          }
+                        >
+                          Continue to ChatGPT
+                        </Button>
+                      ) : (
+                        <div
+                          className="row"
+                          style={{
+                            gap: 8,
+                            alignItems: 'flex-start',
+                            padding: '10px 12px',
+                            borderRadius: 10,
+                            background: 'var(--sand)',
+                            color: 'var(--sand-ink)',
+                            fontSize: 13,
+                            lineHeight: '19px',
+                          }}
+                        >
+                          <span style={{ display: 'flex', paddingTop: 2 }}>
+                            <Icon name="info" size={14} />
+                          </span>
+                          <span>
+                            {chatgpt?.reason ??
+                              'This installation hasn’t set up ChatGPT sign-in yet.'}
+                          </span>
+                        </div>
+                      )}
+                      {chatgpt?.ready ? null : (
+                        <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
+                          When it’s set up, OpenAI shares your name and email with Melete. Your
+                          ChatGPT password stays with OpenAI.
+                        </span>
+                      )}
+                    </section>
                   ) : null}
                   <div className="row" style={{ gap: 12 }}>
                     <span className="grow hairline" />
@@ -499,6 +579,11 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                     Email me a link instead
                   </Button>
                 )}
+                {creating ? null : (
+                  <Button variant="ghost" size="sm" onClick={() => navigate('/reset')}>
+                    Forgot your password?
+                  </Button>
+                )}
               </form>
               {notice ? (
                 <div
@@ -521,7 +606,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
           <div className="col" style={{ gap: 10, alignItems: 'center', textAlign: 'center' }}>
             <span className="row" style={{ gap: 6, fontSize: 12, color: 'var(--muted)' }}>
               <Icon name="lock" size={13} />
-              Your data stays yours. Agents ask before they act.
+              Your data stays yours.
             </span>
           </div>
         </div>
@@ -956,45 +1041,8 @@ function Card({
   );
 }
 
-/**
- * Four quick questions. Each answer is a detail the person states outright,
- * saved on its own key the moment it is chosen, so setup never pretends and
- * Settings › Memory shows exactly what was kept.
- */
-const QUESTIONS = [
-  {
-    key: 'pref.home.city',
-    ask: 'Where are you based? I use it for time zones, weather and how far things are.',
-    choices: ['New York', 'London', 'Somewhere else'],
-    reply: (answer: string) =>
-      answer === 'Somewhere else'
-        ? 'No problem, I’ll pick it up from your calendar.'
-        : `${answer}. Noted, and I’ll assume that time zone unless you travel.`,
-  },
-  {
-    key: 'pref.people.names',
-    ask: 'Who should I know by name?',
-    choices: ['Alex and Priya', 'My family', 'My team at work'],
-    reply: (answer: string) =>
-      `Got it. When you say “${answer.split(' ')[0]}”, I’ll know who you mean.`,
-  },
-  {
-    key: 'pref.focus.this-month',
-    ask: 'What eats your week right now?',
-    choices: ['Meetings and follow-ups', 'Email and admin', 'A launch at work', 'Family logistics'],
-    reply: (answer: string) =>
-      answer === 'A launch at work'
-        ? 'A launch. I’ll offer to set it up as a plan when you’re ready.'
-        : 'That’s the kind of thing I take off your plate first. I’ll start there.',
-  },
-  {
-    key: 'pref.checkins.style',
-    ask: 'How should I check in?',
-    choices: ['Morning brief at 8:30', 'Only when it matters', 'Never first'],
-    reply: () =>
-      'Perfect, that’s plenty to start. I’ll remember these and learn the rest as we go.',
-  },
-] as const;
+/** Four quick questions; see experience/setup-answers.ts for what is kept. */
+const QUESTIONS = SETUP_QUESTIONS;
 
 type Exchange = { id: number; who: 'agent' | 'you'; text: string };
 let exchangeId = 0;
@@ -1015,6 +1063,13 @@ export function OnboardingScreen() {
           : true,
   );
   const connections = useLoad(() => adapter.connections(), []);
+  const model = useLoad(() => models.settings(), []);
+  // Asked once, before the tour, when the owner has no model that can answer.
+  const [modelStep, setModelStep] = useState<'unknown' | 'ask' | 'done'>('unknown');
+  useEffect(() => {
+    if (modelStep !== 'unknown' || model.loading) return;
+    setModelStep(model.data?.can_edit && !model.data.active.connected ? 'ask' : 'done');
+  }, [modelStep, model.loading, model.data]);
   const [step, setStep] = useState(1);
   const [stage, setStage] = useState(0);
   const [name, setName] = useState(givenName(profile));
@@ -1028,7 +1083,7 @@ export function OnboardingScreen() {
   });
   const [busy, setBusy] = useState(false);
   const [asked, setAsked] = useState(0);
-  const [log, setLog] = useState<Exchange[]>(() => [exchange('agent', QUESTIONS[0].ask)]);
+  const [log, setLog] = useState<Exchange[]>(() => [exchange('agent', QUESTIONS[0]?.ask ?? '')]);
   const [kept, setKept] = useState<MemoryItem[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -1039,9 +1094,26 @@ export function OnboardingScreen() {
   const completed = useRef({ agentId: '', chatId: '', messageKey: messageKey(), brief: false });
   const total = 5;
 
-  const answer = async (choice: string) => {
+  const [typed, setTyped] = useState('');
+  const skip = () => {
     const question = QUESTIONS[asked];
     if (!question || saving) return;
+    setUnsaved(null);
+    setTyped('');
+    const next = QUESTIONS[asked + 1];
+    setLog((previous) => [
+      ...previous,
+      exchange('agent', SKIP_REPLY),
+      ...(next ? [exchange('agent', next.ask)] : []),
+    ]);
+    setAsked(asked + 1);
+  };
+  const answer = async (raw: string) => {
+    const question = QUESTIONS[asked];
+    if (!question || saving) return;
+    // Only what the person said is kept; a stand-in answer is a skip.
+    const choice = keptAnswer(raw);
+    if (!choice) return skip();
     setSaving(true);
     setUnsaved(null);
     setLog((previous) => [...previous, exchange('you', choice)]);
@@ -1059,6 +1131,7 @@ export function OnboardingScreen() {
       return;
     }
     const item = saved.data.item;
+    setTyped('');
     setKept((previous) => [...previous.filter((entry) => entry.id !== item.id), item]);
     setAnswers((previous) => ({ ...previous, [question.key]: choice }));
     const next = QUESTIONS[asked + 1];
@@ -1077,11 +1150,13 @@ export function OnboardingScreen() {
       toast({ kind: 'err', title });
       setBusy(false);
     };
-    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    // The zone the person chose before, or this browser's: never the account's default.
     const savedProfile = await adapter.saveProfile({
       name: name.trim() || profile?.name || 'You',
-      time_zone: profile?.time_zone ?? timeZone,
+      time_zone: setupTimeZone(profile, browserTimeZone()),
       day_hours: profile?.day_hours ?? { start: '08:00', end: '22:00' },
+      time_zone_confirmed: true,
+      onboarded: true,
     });
     if (!savedProfile.data)
       return fail(savedProfile.error ?? savedProfile.unavailable ?? 'Couldn’t save your profile');
@@ -1156,7 +1231,35 @@ export function OnboardingScreen() {
   );
 
   let card: ReactNode;
-  if (step === 1) {
+  if (modelStep === 'ask' && model.data) {
+    const connected = model.data.active.connected;
+    card = (
+      <Card
+        title="Connect a model"
+        sub="Choose the model your agents answer with: paste an API key from your provider, or sign in to ChatGPT. You can change it any time in Settings › Models."
+        footer={
+          <>
+            <div className="grow" />
+            {connected ? null : (
+              <Button variant="ghost" onClick={() => setModelStep('done')}>
+                Skip for now
+              </Button>
+            )}
+            <Button
+              iconRight="chevronRight"
+              disabled={!connected}
+              onClick={() => setModelStep('done')}
+            >
+              Continue
+            </Button>
+          </>
+        }
+      >
+        <ActiveModel settings={model.data} onChanged={model.set} />
+        <ModelConnect settings={model.data} onChanged={model.set} />
+      </Card>
+    );
+  } else if (step === 1) {
     card = (
       <Card
         title="Welcome to Melete"
@@ -1380,7 +1483,7 @@ export function OnboardingScreen() {
     card = (
       <Card
         title={`Let ${agent.name || 'your agent'} get to know you`}
-        sub="Four quick questions, so it can help from day one. Each answer is kept under Settings › Memory and can be changed there."
+        sub="Four quick questions, so it can help from day one. Answer in your own words or skip any of them. What you say is kept under Settings › Memory and can be changed there."
         footer={
           <>
             {back}
@@ -1461,12 +1564,39 @@ export function OnboardingScreen() {
               </div>
             ) : null}
             {question ? (
-              <div className="row" style={{ gap: 6, flexWrap: 'wrap', paddingLeft: 34 }}>
-                {question.choices.map((choice) => (
-                  <Chip key={choice} disabled={saving} onClick={() => void answer(choice)}>
-                    {choice}
-                  </Chip>
-                ))}
+              <div className="col" style={{ gap: 8, paddingLeft: 34 }}>
+                {question.suggestions.length ? (
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                    {question.suggestions.map((choice) => (
+                      <Chip key={choice} disabled={saving} onClick={() => void answer(choice)}>
+                        {choice}
+                      </Chip>
+                    ))}
+                  </div>
+                ) : null}
+                <form
+                  className="row"
+                  style={{ gap: 6, flexWrap: 'wrap' }}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void answer(typed);
+                  }}
+                >
+                  <Input
+                    value={typed}
+                    onChange={(event) => setTyped(event.target.value)}
+                    placeholder={question.placeholder}
+                    aria-label={question.ask}
+                    width="min(100%, 280px)"
+                    maxLength={500}
+                  />
+                  <Button size="sm" type="submit" disabled={saving || !typed.trim()}>
+                    Save
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={saving} onClick={skip}>
+                    Skip
+                  </Button>
+                </form>
               </div>
             ) : null}
           </div>
@@ -1676,6 +1806,9 @@ export function OnboardingScreen() {
           variant="ghost"
           onClick={() => {
             setOnboarded(true);
+            // Skipping is recorded too, so setup is not offered again on another device.
+            if (profile && !profile.onboarded)
+              void adapter.saveProfile(onboardedProfile(profile)).then(() => refreshProfile());
             navigate('/');
           }}
         >

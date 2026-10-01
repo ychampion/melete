@@ -19,10 +19,12 @@ import { amountWords, matches, money } from '../companies/format.ts';
 import { statusOf } from '../companies/Ledger.tsx';
 import { AgentFace } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import { Button, Checkbox, Input, Status } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { decisionKey, pressOf, useInFlight } from '../experience/decide.ts';
+import { agentForFirstMessage } from '../experience/first-agent.ts';
 import {
   agentById,
   faceOf,
@@ -33,6 +35,7 @@ import {
   useLoad,
   useNow,
 } from '../experience/hooks.ts';
+import { shortTitle } from '../experience/title.ts';
 import { progressOf } from '../experience/trace.ts';
 import type {
   Agent,
@@ -46,7 +49,11 @@ import type {
 import { isWaiting, waitingOn } from '../experience/waiting.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
+import { blankAgent } from './Agents.tsx';
+import { PushOffer } from './Notifications.tsx';
+import { RoutineResults } from './RoutineResults.tsx';
 import './home.css';
+import { WaitingOnSection } from './WaitingOnSection.tsx';
 
 const PROMPTS: { label: string; icon: IconName; text: string }[] = [
   {
@@ -273,6 +280,12 @@ function DecisionCard({
       .trim();
   const from = field('From');
   const to = field('To') ?? permission?.draft?.recipient;
+  /** What will run or change on a connected computer, exactly as it will be sent. */
+  const onComputer = (permission?.preview?.facts ?? []).filter((fact) =>
+    ['Command', 'Runs in', 'File', 'Page', 'Network', 'Title', 'Element', 'Text', 'Then'].includes(
+      fact.label,
+    ),
+  );
   const amount = linked ? amountWords(linked.item) : null;
   const state = linked ? statusOf(linked.item, now) : null;
 
@@ -301,10 +314,15 @@ function DecisionCard({
         ) : null}
       </div>
       <p className="decision-title voice">{title}</p>
-      {permission && (permission.draft || from || to) ? (
+      {permission && (permission.draft || permission.file || from || to) ? (
         <div className="decision-preview">
           {permission.draft ? (
             <div className="clamp2 decision-draft">{permission.draft.body}</div>
+          ) : null}
+          {permission.file && !permission.draft ? (
+            <div className="clamp2 decision-draft">
+              {permission.file.content || 'This file is empty.'}
+            </div>
           ) : null}
           {from || to ? (
             <span className="decision-meta">
@@ -314,6 +332,25 @@ function DecisionCard({
               {to ?? ''}
             </span>
           ) : null}
+        </div>
+      ) : null}
+      {onComputer.length ? (
+        <div className="decision-preview">
+          {onComputer.map((fact) => (
+            <span key={fact.label} className="decision-meta">
+              {fact.label}:{' '}
+              <code
+                style={{
+                  fontSize: 12,
+                  color: 'var(--text)',
+                  overflowWrap: 'anywhere',
+                  whiteSpace: 'pre-wrap',
+                }}
+              >
+                {fact.value}
+              </code>
+            </span>
+          ))}
         </div>
       ) : null}
       {permission && !permission.draft && permission.why.length > 0 && !from && !to ? (
@@ -737,6 +774,9 @@ function DayColumn({ now }: { now: number }) {
           ) : null}
         </section>
       ) : null}
+      {tasks.error && !tasks.data ? (
+        <LoadError compact what="your tasks" error={tasks.error} onRetry={tasks.reload} />
+      ) : null}
       {tasks.data ? (
         <section className="home-section" aria-labelledby="home-tasks">
           <div className="home-section-head">
@@ -809,7 +849,7 @@ function DayColumn({ now }: { now: number }) {
 /* ---------- the screen ---------- */
 
 export function HomeScreen() {
-  const { agents, refreshConversations } = useApp();
+  const { agents, refreshAgents, refreshConversations } = useApp();
   const home = useLoad(() => adapter.home(), []);
   const decisions = useDecisions();
   const [map, setMap] = useState<CompanyMap | null>(null);
@@ -833,14 +873,22 @@ export function HomeScreen() {
 
   const start = async (body: string) => {
     const clean = body.trim();
-    const agent = agents[0];
-    if (!clean || busy || !agent) return;
+    if (!clean || busy) return;
     setBusy(true);
-    const title =
-      clean
-        .replace(/[.!?].*$/, '')
-        .trim()
-        .slice(0, 60) || 'New chat';
+    // Skipping setup leaves no agent yet: make the default one so the first
+    // message still goes somewhere.
+    const agent = await agentForFirstMessage(
+      agents[0]?.id,
+      { ...blankAgent(), name: 'Nova', role: 'Concierge' },
+      adapter,
+    );
+    if ('error' in agent) {
+      setBusy(false);
+      toast({ kind: 'err', title: 'Couldn’t set up your agent', sub: agent.error });
+      return;
+    }
+    if (agent.created) refreshAgents();
+    const title = shortTitle(clean, 60) || 'New chat';
     const created = await adapter.createConversation({ title, agent_id: agent.id });
     if (created.data === null) {
       setBusy(false);
@@ -898,7 +946,9 @@ export function HomeScreen() {
             <h1 className="brief-greeting voice">{data?.greeting ?? 'Hello'}</h1>
             {line ? <p className="brief-line voice">{line}</p> : null}
           </header>
-          {home.error ? <p className="home-error">{home.error}</p> : null}
+          {home.error ? (
+            <LoadError what="your day" error={home.error} onRetry={home.reload} />
+          ) : null}
           <div className="home-compose">
             <Composer
               value={text}
@@ -934,7 +984,10 @@ export function HomeScreen() {
               ))}
             </div>
           </div>
+          <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
+          <WaitingOnSection now={now} />
+          <RoutineResults results={data?.routine_results ?? []} now={now} />
           <InMotion now={now} />
         </div>
         <DayColumn now={now} />

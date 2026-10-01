@@ -9,6 +9,10 @@ support. `ConnectorRegistry` validates manifests and refuses duplicate entries
 The tests use temporary files, fake destinations and local protocol servers, so
 they establish each connector's own behaviour against those fixtures.
 
+Connectors are how Melete reaches other services. The other direction, other
+assistants using Melete as their connector over MCP, is described in
+[MCP-SERVER](MCP-SERVER.md).
+
 ## Contract and policy
 
 Implement `Connector` from
@@ -60,6 +64,7 @@ succeeded and the job continues`.
 | Generation (speech) | `audio.synthesize` as a `spend` capability with approval, reservation, receipt and an authenticated artifact endpoint | `is a real RIFF/WAVE file, not a placeholder string`; `speech-broker.test.ts` |
 | MCP | HTTP servers, and stdio servers in containers of their own, behind the broker, with the effect classes, scopes and audience the installation declares | `MCP config is strict, operator scoped, and defaults unclassified tools to external writes`; `MCP worker and server claims cannot make an ungranted tool callable` |
 | Browser | Semantic observe, open, fill, click, select, read and an approved `browser.submit`, carried out by a worker process outside the cell with epoch-fenced takeover; a person signs in to a site themselves through a live view of the worker's page, and signs the space out of a site again | `approval binds the exact browser intent and repeated proposals dispatch one effect`; `an unapproved submit has no external effects and its warning identifies the observed destination`; `no persisted event contains the typed secret or the identity-provider host`; `forgetting a site removes its cookies and the profile row`; see [the browser worker](browser-worker.md) |
+| Your computer | `device.status`, `device.list_files`, `device.read_file`, `device.write_file`, `device.run`, `device.open_url` and `device.screenshot` on a computer the person paired, carried out by the companion there over its own outbound connection; commands and file writes need approval, paths stay inside the folders shared on the computer | `a command waits for approval, then runs on the computer with a receipt`; `paths outside the shared folders are refused before anything is sent`; see [connecting your computer](DEVICES.md) |
 
 The code paths are in [the connector directory](../apps/melete/src/connectors).
 `configuredConnectors` builds one connector for each active connection row. A
@@ -155,6 +160,7 @@ waits for approval.
 | iCloud Calendar, Fastmail Calendar | `caldav` | email address, app password |
 | Google Calendar (read only) | `ics` | the calendar's secret address in iCal format |
 | Other mail, other calendar, calendar feed, MCP server | each kind | every field the kind takes |
+| Phone line (ElevenLabs) | `phone` | name, ElevenLabs API key, number, Twilio SID and token or SIP trunk address and credentials, own numbers |
 
 Each provider entry's password field says where that provider issues app
 passwords. `POST /connections` takes exactly one configuration block:
@@ -166,6 +172,7 @@ passwords. `POST /connections` takes exactly one configuration block:
 | Calendar feed (ICS address) | `caldav` | `ics`: one HTTPS or `webcal` address | the address itself | `calendar.list` |
 | MCP over HTTP | `mcp` | `mcp`: see [Installed MCP servers](#installed-mcp-servers) | optional token fields | declared in the block |
 | MCP from a package or image | `mcp` | `mcp_stdio`: see [the advanced path](#the-advanced-path) | `mcp_stdio.secret_env` | declared in the block |
+| Phone line | `phone` | `phone`: see [Phone calls](#phone-calls-through-elevenlabs) | `credentials.api_key` and the Twilio or SIP fields | `phone.call` |
 
 `scopes` may narrow the grants of the first three kinds; left empty it means all
 of them, and a scope outside the kind is refused. `space_id` may be left out, in
@@ -851,6 +858,195 @@ adapter cannot enforce is refused when the connection is installed.
   [daytona.live.test.ts](../apps/melete/src/sandbox/adapters/daytona.live.test.ts)
   runs the same suites against Daytona with `MELETE_SANDBOX_LIVE=daytona` and
   `DAYTONA_API_KEY`.
+
+## Phone calls through ElevenLabs
+
+A `phone` connection gives Melete a phone number. The voice is
+[ElevenLabs Agents](https://elevenlabs.io/docs/eleven-agents/overview), and the
+number comes from Twilio or from any SIP trunk, such as Telnyx. Melete is the
+agent's language model: ElevenLabs asks Melete for every reply on a call.
+
+Calls are off until a person installs a line: with no `phone` connection there
+is no `phone.call` tool and every `/phone/` address refuses. The catalog lists
+the line as a form. It is offered only when `MELETE_PUBLIC_URL` is an `https://`
+address ElevenLabs can reach. Otherwise the entry's `unavailable_reason` says
+so in plain words, the owner's `setup_hint` names the setting, and installing
+is refused. A computer with no public address needs a tunnel to offer a line.
+
+### What the person gives
+
+| Field | Where it goes |
+| --- | --- |
+| Their name | said on every call Melete places |
+| ElevenLabs API key | sealed |
+| Number, and Twilio or SIP trunk | stored; the number with its country code |
+| Twilio account SID and auth token, or SIP username and password | sealed |
+| SIP trunk address and transport | stored |
+| Their own numbers | stored; a call from one reaches Melete as them |
+| Calls a day (10) and calling hours (09:00 to 20:00) | stored |
+
+### What installing does at ElevenLabs
+
+ElevenLabs reaches the line's routes below at `MELETE_PUBLIC_URL` followed by
+`/api`, which the web server passes on to the service, as it does sign-in
+callbacks.
+
+Before anything is written here, the service uses the person's key to create
+four things. If any step fails, it removes what it made:
+
+1. a workspace secret holding a random key for this line
+   (`POST /v1/convai/secrets`);
+2. a workspace webhook, signed with HMAC, that reports the end of each call to
+   `/phone/{connection}/events` (`POST /v1/workspace/webhooks`);
+3. an agent (`POST /v1/convai/agents/create`) with:
+   - a custom LLM at `/phone/{connection}/llm/v1` as its language model, which
+     presents the line key as its API key and in `x-melete-key`;
+   - ElevenLabs' `end_call` tool;
+   - the webhook above;
+   - a conversation-initiation webhook at `/phone/{connection}/inbound`;
+4. the imported number, assigned to that agent (`POST /v1/convai/phone-numbers`,
+   with provider `twilio` or `sip_trunk`). ElevenLabs configures a Twilio number
+   for calls itself, which needs a paid Twilio account.
+
+The row keeps the four ids and a SHA-256 digest of the line key. The key itself
+goes only to ElevenLabs. The ElevenLabs key, the telephony credentials and the
+webhook secret are sealed together.
+
+A failure is described in plain words: a refused key, a number Twilio would not
+import, or ElevenLabs out of reach. Nothing ElevenLabs wrote is repeated.
+Revoking the connection removes the number, the agent, the webhook and the
+secret, in that order.
+
+### A turn on a call
+
+ElevenLabs posts each turn to `/phone/{connection}/llm/v1/chat/completions` as
+an OpenAI chat-completions request, and reads back a stream of
+`chat.completion.chunk` events. The route needs no session. It accepts only
+this line's key, comparing digests in constant time, so another line's key is
+refused. The call id travels in the conversation's `custom_llm_extra_body`,
+which is set when the call starts.
+
+During a call, Melete answers with the gateway model, not with a job. A job
+attempt is too slow for a phone turn, so each turn is a single request through
+the service's own gateway to the model set by `MELETE_PHONE_PROVIDER` and
+`MELETE_PHONE_MODEL`. When these are unset it is the model new chats use, as
+chosen in the app. The privacy router handles each turn as a service call for
+the line's space and the call's conversation, as it does memory's. The request
+carries:
+
+- the call's context, as the person approved it: why the call exists, what may
+  be shared, and what must not be agreed to;
+- memory recall for the person;
+- four call tools: end the call, record the outcome and any follow-ups, put a
+  question to the person in Melete, and ask the other party to hold. If the
+  person answers while the call is on, the answer reaches the next turn.
+
+Nothing that acts on the world happens during a call. Sending, paying and
+booking are recorded as follow-ups. After the call they are put to the person
+as the job's question. Answering it is an ordinary message, and whatever it
+leads to is proposed and approved like any other action.
+
+What the other party says only ever arrives as a `user` message. It never
+reaches the instructions. On a call Melete placed, it also never chooses what
+memory is recalled: the recall query is the approved purpose and what may be
+shared. No call tool can change the call's context.
+
+### What ElevenLabs and the telephony provider receive
+
+| Who | What |
+| --- | --- |
+| ElevenLabs | The audio of the whole call, both sides. It transcribes what is said, speaks every reply Melete writes, and keeps the conversation (transcript, length and its own summary) under the person's ElevenLabs account. |
+| ElevenLabs | Each turn's request and reply: the conversation so far, and the text Melete answers with. The call's instructions, what memory recalled and the approved context stay in Melete; only what is said aloud reaches ElevenLabs. |
+| ElevenLabs | For a call Melete places: the number called, the fixed opening line (with the person's name, and the callee's name if given), and the call id. |
+| ElevenLabs | At installation: the line's key (as a workspace secret), the three addresses on this service, the line's label, and the Twilio account SID and auth token or the SIP credentials, which it uses to set up the number. |
+| Twilio or the SIP trunk | The call itself: both numbers and the audio, as for any phone call. |
+
+### Private spaces and sensitive conversations
+
+A call carries a conversation to ElevenLabs, so it follows the marks voice and
+the model gateway follow:
+
+- **Proposing a call** from a space or agent marked private, or from a
+  conversation that looks like it is about a sensitive topic, is refused before
+  the person is asked. The refusal tells the model to ask the person. Only if
+  they agree may it propose the call again with `allow_from_private: true`. The
+  approval card then says the conversation is private or sensitive and that
+  approving lets this one call go ahead. The flag is part of the approved
+  payload.
+- **Dispatching** checks again. A space marked private after the approval stops
+  the call before anything is dialled, unless the approved payload carries the
+  flag.
+- **The person's own call** to a line whose space is marked private, or whose
+  conversation looks sensitive, is not taken. The caller hears one sentence that
+  names nobody ("calls are off on this line for now"), and no model call or
+  memory recall is made. Calls in have no override.
+- A check that cannot answer counts as private, and the flag does not cover
+  it.
+
+### Placing a call
+
+`phone.call` takes `phone_number`, `purpose`, `may_share` and
+`must_not_agree_to`, plus an optional `callee_name`, `callee_time_zone` and
+`allow_from_private`. It is `write_external` and always needs the person's
+approval: auto-review sends it to the person, and no standing rule covers it.
+The approval card shows the number, the callee's name, the purpose, what may
+be shared, what must not be agreed to, and that ElevenLabs hears the call. The
+approval is bound to the whole payload, so a changed number or purpose is a new
+action that needs its own approval. When the approved action is dispatched:
+
+- The callee's local time must be inside the line's calling hours.
+  - The zone is the one named in the request. If none is named, it is the zone
+    the country code implies.
+  - If a country spans several zones, the hour must suit all of them.
+  - If the country code is not in the table, the zone must be named.
+- The line may place at most its daily number of calls in any 24 hours.
+- The call is written down under the action, so one action places one call.
+- The call is placed with `POST /v1/convai/twilio/outbound-call` or
+  `POST /v1/convai/sip-trunk/outbound-call`. The opening line is fixed: "this is
+  Melete, an AI assistant calling on behalf of" the person's name.
+
+A refused call places nothing and says why. If ElevenLabs never answers a
+request, the call is marked `unknown` and the request is not sent again.
+
+### Calls in
+
+When an inbound call starts, ElevenLabs asks `/phone/{connection}/inbound` who
+is calling, presenting the line key.
+
+- **One of the person's own numbers:** the caller reaches Melete as the person,
+  and their words choose what memory recalls.
+- **Anyone else:** the caller hears one sentence that names nobody ("an
+  automated assistant that only takes calls from its owner"), and the call ends
+  without a model call. The person gets a note in the line's conversation, at
+  most one an hour for the same number.
+
+### After a call
+
+ElevenLabs posts the transcript to `/phone/{connection}/events` with a
+signature in the `ElevenLabs-Signature` header:
+
+- **Signature:** `t=<seconds>,v0=<HMAC-SHA256 of "<t>.<body>">`, computed with
+  the line's webhook secret and at most thirty minutes old. An unsigned or
+  altered report is refused.
+- **Missing transcript:** a report that arrives without one is completed from
+  `GET /v1/convai/conversations/{id}`.
+
+The transcript, outcome and length are kept, and `GET /phone-calls/{id}` returns
+them to the owner. Where the call then appears depends on its kind:
+
+- **A call Melete placed:** it appears in its job's trail as "Called" the
+  number, with the outcome, and the call as its receipt. What the other party
+  says is never written to memory as the person's words.
+- **A call from the person:** it appears in the line's conversation. What they
+  said is recorded as their message, which is how everything they type reaches
+  memory.
+- **A call that never connected:** it is kept as failed ("Nobody answered.").
+
+Evidence: `provision.test.ts`, `keys.test.ts`, `hours.test.ts` and
+`turns.test.ts` in [`phone/`](../apps/melete/src/phone/), and
+[phone.test.ts](../apps/melete/test/integration/phone.test.ts), which installs,
+calls and revokes a line against a stand-in for ElevenLabs, and checks the
+private and sensitive refusals. No test reaches ElevenLabs or Twilio.
 
 ## Composing read results
 

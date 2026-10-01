@@ -11,6 +11,7 @@ import { loadEnv } from '../../src/env.ts';
 import { fakeProvider } from '../../src/gateway/fake.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
 import { spaceIdFor } from '../../src/knowledge/spaces.ts';
+import { defaultPrivacyRouter } from '../../src/privacy/index.ts';
 import { seedJob } from '../helpers/broker.ts';
 import { unusedTestPort } from '../helpers/database.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
@@ -35,6 +36,7 @@ async function setup(maxTurns = 10, maxOutputTokens?: number) {
   });
   const connector = createTestConnector(fixture.sql);
   const internal = createInternalServer({
+    privacy: defaultPrivacyRouter(),
     sql: fixture.sql,
     connectors: { get: (id) => (id === seed.connectionId ? connector : undefined) },
     capabilityKey,
@@ -324,9 +326,13 @@ Use the scoped receipt procedure.
     });
     // A provider name the gateway does not have stops start-up before anything listens.
     await expect(
-      startEffectBoundary(fixture, { ...env, MELETE_DEFAULT_PROVIDER: 'openai-compat' }),
+      startEffectBoundary(
+        fixture,
+        { ...env, MELETE_DEFAULT_PROVIDER: 'openai-compat' },
+        { privacy: defaultPrivacyRouter() },
+      ),
     ).rejects.toThrow('"openai-compatible"');
-    const internal = await startEffectBoundary(fixture, env);
+    const internal = await startEffectBoundary(fixture, env, { privacy: defaultPrivacyRouter() });
     try {
       const token = signCapability(seed.claims, capabilityKey);
       const address = internal.server.address();

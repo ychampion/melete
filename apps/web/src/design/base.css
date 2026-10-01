@@ -565,9 +565,11 @@ img {
 .input[data-icon="true"] {
   padding-left: 10px;
 }
+/* A focused field changes its border and gains a faint halo; the halo stays
+   subtle in both themes so the field reads as active, not lit up. */
 .input:focus-within {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 16%, transparent);
 }
 .input[data-error="true"] {
   border-color: var(--danger);
@@ -614,7 +616,7 @@ img {
 }
 .textarea:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 16%, transparent);
 }
 .textarea::placeholder {
   color: var(--placeholder);
@@ -1144,6 +1146,92 @@ img {
   }
 }
 
+/* The face editor's pickers: colour swatches and shape, eye and state tiles.
+   One selected treatment for all of them: a heading-coloured ring. */
+.look-swatches {
+  display: grid;
+  gap: 8px;
+}
+.look-swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px #0000001a;
+  transition:
+    box-shadow 0.15s,
+    transform 0.15s;
+}
+.look-swatch[data-compact="true"] {
+  height: 30px;
+  border-radius: 8px;
+}
+.look-swatch:hover {
+  transform: translateY(-1px);
+}
+.look-swatch[aria-pressed="true"] {
+  box-shadow:
+    inset 0 0 0 1px #0000001a,
+    0 0 0 2px var(--surface),
+    0 0 0 3.5px var(--heading);
+}
+.look-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 48px;
+  height: 44px;
+  padding: 0 10px;
+  border-radius: 10px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--secondary);
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+.look-tile[data-wide="true"] {
+  padding: 0 14px 0 10px;
+}
+.look-tile[data-state="true"] {
+  justify-content: flex-start;
+  gap: 10px;
+  height: 48px;
+}
+.look-tile:hover {
+  border-color: var(--line-strong);
+}
+.look-tile[aria-pressed="true"] {
+  background: var(--surface);
+  border-color: var(--heading);
+  box-shadow: inset 0 0 0 0.5px var(--heading);
+  color: var(--heading);
+}
+.look-swatch:focus-visible {
+  border-radius: 10px;
+  box-shadow:
+    inset 0 0 0 1px #0000001a,
+    0 0 0 2px var(--surface),
+    0 0 0 5px var(--ring);
+}
+.look-swatch[aria-pressed="true"]:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px #0000001a,
+    0 0 0 2px var(--surface),
+    0 0 0 3.5px var(--heading),
+    0 0 0 6.5px var(--ring);
+}
+.look-tile:focus-visible {
+  border-radius: 10px;
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 5px var(--ring);
+}
+
 /* A grouped field: the fieldset carries no chrome, the legend sits like a label. */
 .field-group {
   border: 0;
@@ -1154,4 +1242,97 @@ img {
 .field-group > legend {
   padding: 0;
   margin-bottom: 6px;
+}
+
+/* ---------- sign-in hero ---------- */
+
+/* Text, the illustration and the apps row stack in flow. The illustration takes
+   what height is left and places its cards in slots; a card that would not fit
+   is left out rather than drawn over its neighbours or the apps row. */
+.signin-hero {
+  display: flex;
+  flex-direction: column;
+  padding: 32px 44px 36px;
+}
+.signin-art {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin: 24px 0;
+  container-type: size;
+}
+.signin-faces {
+  position: absolute;
+  left: 0;
+  top: 28px;
+}
+.signin-card {
+  position: absolute;
+}
+.signin-card[data-slot="1"] {
+  right: 0;
+  top: 0;
+}
+.signin-card[data-slot="2"] {
+  right: 24px;
+  top: 184px;
+}
+.signin-card[data-slot="3"] {
+  left: 0;
+  top: 300px;
+}
+@container (max-height: 460px) {
+  .signin-card[data-slot="3"] {
+    display: none;
+  }
+}
+@container (max-height: 340px) {
+  .signin-card[data-slot="2"] {
+    display: none;
+  }
+}
+@container (max-height: 176px) {
+  .signin-card[data-slot="1"] {
+    display: none;
+  }
+}
+@container (max-height: 144px) {
+  .signin-faces {
+    display: none;
+  }
+}
+/* Too narrow for the faces and a card side by side: the cards stack below. */
+@container (max-width: 659px) {
+  .signin-card[data-slot="1"] {
+    left: 0;
+    right: auto;
+    top: 156px;
+  }
+  .signin-card[data-slot="2"] {
+    right: 0;
+    top: 340px;
+  }
+  .signin-card[data-slot="3"] {
+    top: 504px;
+  }
+}
+@container (max-width: 659px) and (max-height: 664px) {
+  .signin-card[data-slot="3"] {
+    display: none;
+  }
+}
+@container (max-width: 659px) and (max-height: 496px) {
+  .signin-card[data-slot="2"] {
+    display: none;
+  }
+}
+@container (max-width: 659px) and (max-height: 332px) {
+  .signin-card[data-slot="1"] {
+    display: none;
+  }
+}
+@media (max-height: 560px) {
+  .signin-apps {
+    display: none;
+  }
 }

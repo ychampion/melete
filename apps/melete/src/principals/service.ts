@@ -140,6 +140,13 @@ export class PrincipalService {
         .set({ revokedAt: new Date(), generation: existing.generation + 1 })
         .where(and(eq(spaceMembership.spaceId, spaceId), eq(spaceMembership.principalId, memberId)))
         .returning();
+      // An assistant the member connected from this space loses it with them.
+      await tx.execute(
+        sql`delete from mcp_authorization where space_id = ${spaceId} and principal_id = ${memberId}`,
+      );
+      await tx.execute(
+        sql`delete from mcp_token where space_id = ${spaceId} and principal_id = ${memberId}`,
+      );
       const generation = access.space.policyGeneration + 1;
       await tx.update(space).set({ policyGeneration: generation }).where(eq(space.id, spaceId));
       // Memory caches and prepared outputs carry the same revoked access fence.
@@ -148,6 +155,12 @@ export class PrincipalService {
       );
       await tx.execute(
         sql`update memory_contexts set invalidated_at = now(), items = '[]'::jsonb where space_id = ${spaceId} and invalidated_at is null`,
+      );
+      // So do the copies of what memory handed the member's own actions, kept to
+      // say why each was taken.
+      await tx.execute(
+        sql`update memory_action_basis b set items = '[]'::jsonb from job j
+          where b.space_id = ${spaceId} and j.id = b.job_id and j.principal_id = ${memberId}`,
       );
       await tx.execute(
         sql`update memory_prepared set stale = true, content = null where space_id = ${spaceId}`,

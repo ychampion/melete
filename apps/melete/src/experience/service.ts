@@ -16,7 +16,16 @@ import {
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { action, agent, approval, connection, event, experienceTurn, job } from '../db/schema.ts';
+import {
+  action,
+  agent,
+  approval,
+  connection,
+  event,
+  experienceTurn,
+  job,
+  trigger,
+} from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -25,13 +34,14 @@ import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { ownJob } from '../principals/authority.ts';
 import { agentValues, agentView } from './agents.ts';
-import { answerText, plainText, SUPERSEDED_NOTE } from './projectors.ts';
+import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
 
 export const experienceMissing = () => new ServiceError('not_found', 'That item is not here.', 404);
 export function conversationView(
   row: JobRow,
   turn?: typeof experienceTurn.$inferSelect | null,
   progress?: ConversationProgress,
+  automationId?: string,
 ): Conversation {
   const status = row.paused
     ? 'paused'
@@ -53,18 +63,25 @@ export function conversationView(
     updated_at: row.updatedAt.toISOString(),
     plan_id: row.planId,
     ...(progress ? { progress } : {}),
+    ...(automationId ? { automation_id: automationId } : {}),
   });
 }
 
 /**
  * A new message in a conversation changes what was asked for, so every
  * permission still waiting in it is stale: the draft it would send was written
- * for the request before this one. Each is decided as denied by `replaced`, in
- * the same transaction that accepts the message, so it can never be allowed
- * afterwards and nothing it covered is sent. That includes the
+ * for the request before this one. Stopping the turn withdraws them the same
+ * way: the person said to stop, so nothing the turn asked for goes ahead. Each
+ * is decided as denied with the note that says why (`replaced` or `stopped`),
+ * in the same transaction that accepts the message or stops the turn, so it can
+ * never be allowed afterwards and nothing it covered is sent. That includes the
  * send of a reviewed draft, which runs as a command job under the conversation.
  */
-export async function supersedePendingPermissions(tx: Transaction, conversationId: string) {
+export async function withdrawPendingPermissions(
+  tx: Transaction,
+  conversationId: string,
+  note: typeof SUPERSEDED_NOTE | typeof STOPPED_NOTE,
+) {
   const pending = await tx
     .select({ approval, action })
     .from(approval)
@@ -81,7 +98,7 @@ export async function supersedePendingPermissions(tx: Transaction, conversationI
   for (const { approval: stale, action: effect } of pending) {
     await tx
       .update(approval)
-      .set({ decision: 'denied', decidedAt: new Date(), decidedBy: SUPERSEDED_NOTE })
+      .set({ decision: 'denied', decidedAt: new Date(), decidedBy: note })
       .where(eq(approval.id, stale.id));
     await tx.update(action).set({ status: 'denied' }).where(eq(action.id, effect.id));
     // The same record the broker keeps for every status an action moves through.
@@ -90,7 +107,7 @@ export async function supersedePendingPermissions(tx: Transaction, conversationI
       attemptId: effect.attemptId,
       type: 'action_status_changed',
       payload: { action_id: effect.id, from: effect.status, to: 'denied' },
-      dedupKey: `${stale.id}:${SUPERSEDED_NOTE}:status`,
+      dedupKey: `${stale.id}:${note}:status`,
     });
     await appendEvent(tx, {
       jobId: effect.jobId,
@@ -100,7 +117,7 @@ export async function supersedePendingPermissions(tx: Transaction, conversationI
         approval_id: stale.id,
         action_id: effect.id,
         decision: 'denied',
-        note: SUPERSEDED_NOTE,
+        note,
         payload_hash: effect.payloadHash,
       },
       dedupKey: `${stale.id}:decision`,
@@ -142,7 +159,7 @@ export class ExperienceService {
           text,
         });
         await tx.update(job).set({ currentTurnId: turnId }).where(eq(job.id, row.id));
-        await supersedePendingPermissions(tx, row.id);
+        await withdrawPendingPermissions(tx, row.id, SUPERSEDED_NOTE);
       };
     }
   }
@@ -214,6 +231,26 @@ export class ExperienceService {
     return row;
   }
 
+  /**
+   * A thread the person can read: one of their chats, or the thread one of
+   * their routines writes each run into.
+   */
+  async requireThread(spaceId: string, id: string) {
+    const [row] = await this.db
+      .select()
+      .from(job)
+      .where(
+        and(
+          eq(job.id, id),
+          eq(job.spaceId, spaceId),
+          inArray(job.kind, ['chat', 'routine']),
+          ownJob(),
+        ),
+      );
+    if (!row) throw experienceMissing();
+    return row;
+  }
+
   async view(row: JobRow) {
     const [turn] = row.currentTurnId
       ? await this.db
@@ -235,10 +272,19 @@ export class ExperienceService {
       recent && this.progress
         ? await this.progress(row.spaceId, row.id, turn.id, stage)
         : undefined;
+    const [schedule] =
+      row.kind === 'routine'
+        ? await this.db
+            .select({ id: trigger.id })
+            .from(trigger)
+            .where(and(eq(trigger.jobId, row.id), eq(trigger.kind, 'schedule')))
+            .limit(1)
+        : [];
     return conversationView(
       row,
       turn,
       progress && (progress.steps_done > 0 || progress.current) ? progress : undefined,
+      schedule?.id,
     );
   }
 
@@ -316,7 +362,7 @@ export class ExperienceService {
   }
 
   async messages(spaceId: string, id: string) {
-    await this.requireConversation(spaceId, id);
+    await this.requireThread(spaceId, id);
     const rows = await this.db
       .select()
       .from(experienceTurn)
@@ -339,7 +385,13 @@ export class ExperienceService {
   }
 
   async message(spaceId: string, id: string, raw: unknown, key?: string) {
-    await this.requireConversation(spaceId, id);
+    const thread = await this.requireThread(spaceId, id);
+    if (thread.kind === 'routine')
+      throw new ServiceError(
+        'routine_thread',
+        'This is where a routine writes its runs. Start a chat to ask about a result.',
+        409,
+      );
     const value = conversationMessage.parse(raw);
     if (!this.submissions) return unavailable('Conversations are not ready yet.');
     // Prefixing an opaque submission key prevents a collision with another space or API caller.

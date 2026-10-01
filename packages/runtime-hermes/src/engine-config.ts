@@ -239,6 +239,9 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
     memory: { memory_enabled: false, user_profile_enabled: false, provider: '' },
     curator: { enabled: false },
     checkpoints: { enabled: false },
+    // The engine is updated by pinning a new release. Its own check runs git
+    // against the source checkout, in the background of every start.
+    updates: { check: false },
     agent: {
       max_turns: options.maxTurns ?? DEFAULT_ENGINE_MAX_TURNS,
       // Read under `agent:` (agent/agent_init.py:1336). The probe describes the
@@ -247,6 +250,9 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
       // The prompt seam in patches/observer_bridge.py: leaves out the engine's
       // product pointer, its profile line and its host runtime block.
       host_prompt: false,
+      // An attempt's input is text. Deciding how to pass images otherwise
+      // probes the model endpoint, here the broker, for a local model server.
+      image_input_mode: 'text',
     },
     // Read at the top level, not under `agent:` (agent/agent_init.py:1352).
     // Replaces the engine's api_server hint, which describes MEDIA: file tags

@@ -32,6 +32,9 @@ from .terminal_backend import TERMINAL_TOOL, register_terminal_backend
 
 logger = logging.getLogger("melete.plugin")
 
+#: Set in an engine started before its attempt; see `register`.
+SPARE_ENV = "MELETE_RUNTIME_SPARE"
+
 #: Every broker tool lands in this one toolset. `platform_toolsets.api_server`
 #: names it and nothing else, which is how the built-ins stay off: the model's
 #: entire catalog is what the broker served for this job.
@@ -317,9 +320,19 @@ def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
     """
     # The pinned HTTP bridge supplies a per-run queue; these observers never
     # veto tools or return modified arguments. Enforcement stays in the broker.
-    from melete_runtime_hooks import register_observers
+    from melete_runtime_hooks import register_observers, when_attempt_arrives
     register_observers(ctx)
-    client = client or BrokerClient()
+    if client is None and os.environ.get(SPARE_ENV) == "1":
+        # An engine started ahead of its attempt loads this plugin before the
+        # attempt, and so its capability, exists. The attempt's tools are
+        # fetched and registered once it is handed one, before it serves.
+        when_attempt_arrives(lambda: register_tools(ctx, BrokerClient()))
+        return []
+    return register_tools(ctx, client or BrokerClient())
+
+
+def register_tools(ctx: Any, client: BrokerClient) -> List[str]:
+    """Fetch this attempt's catalog from the broker and register each tool."""
     if not client.base_url:
         logger.error("melete: %s is not set; no tools will be registered", BROKER_URL_ENV)
         return []

@@ -275,12 +275,15 @@ const SWEEP_ORDER: readonly RemovalPhase[] = [
 ];
 
 const MEMORY: readonly string[] = [
+  'memory_action_basis',
+  'memory_blocks',
   'memory_capture',
   'memory_claims',
   'memory_contexts',
   'memory_contradictions',
   'memory_dense_entries',
   'memory_derivations',
+  'memory_digests',
   'memory_index_entries',
   'memory_index_manifest',
   'memory_invalidations',
@@ -293,6 +296,7 @@ const MEMORY: readonly string[] = [
   'memory_questions',
   'memory_rejections',
   'memory_repair_briefs',
+  'memory_rewinds',
   'memory_sources',
   'memory_spaces',
   'memory_streams',
@@ -309,6 +313,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   // Access ends first: the session loses its selection, the link is deleted.
   session: 'sessions',
   magic_link: 'sessions',
+  mcp_authorization: 'sessions',
+  mcp_token: 'sessions',
   // Jobs and everything below them, the rows that outlive a job, and what the
   // space holds apart from its jobs.
   job: 'operational',
@@ -321,9 +327,12 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   company: 'operational',
   company_message: 'operational',
   company_scan: 'operational',
+  awaited_reply: 'operational',
   episode: 'operational',
   experience_profile: 'operational',
   experience_rule: 'operational',
+  approval_review_policy: 'operational',
+  action_review: 'operational',
   knowledge_record: 'operational',
   learning_evaluation_lease: 'operational',
   learning_job: 'operational',
@@ -333,8 +342,15 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   engine_skill_prohibition: 'operational',
   ledger_item: 'operational',
   procedure_candidate: 'operational',
+  paired_device: 'operational',
+  phone_call: 'operational',
+  device_pairing: 'operational',
   question: 'operational',
   sandbox_session: 'operational',
+  privacy_conversation: 'operational',
+  privacy_request: 'operational',
+  privacy_settings: 'operational',
+  privacy_vault: 'operational',
   skill: 'operational',
   task: 'operational',
   // After the jobs and actions that `restrict` them.
@@ -619,6 +635,19 @@ describe.if(handle !== null)('removing a space', () => {
       values (${`sbx_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'fake',
         ${`sbx_provider_${seeded.spaceId}`}, 'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'closed',
         now(), now())`;
+    // The privacy router's rows: settings, a sealed vault, a conversation's state, an audit row.
+    const conversation = `job_privacy_${seeded.spaceId}`;
+    await sql`insert into privacy_settings (space_id, settings) values (${seeded.spaceId}, '{}'::jsonb)`;
+    await sql`insert into privacy_vault (conversation_id, space_id, sealed)
+      values (${conversation}, ${seeded.spaceId}, 'sealed-box-v1:x')`;
+    await sql`insert into privacy_conversation (conversation_id, space_id, sensitive)
+      values (${conversation}, ${seeded.spaceId}, 'finance')`;
+    await sql`insert into privacy_request (space_id, conversation_id, job_id, attempt_id, route)
+      values (${seeded.spaceId}, ${conversation}, ${conversation}, 'att_privacy', 'cloud')`;
+    // A call the person made to their line, with no job behind it.
+    await sql`insert into phone_call (id, connection_id, space_id, direction, party, remote_number, status)
+      values (${`call_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'inbound',
+        'person', '+14155550199', 'ended')`;
     const sandboxes = sandboxRemovalTeardown(
       new SandboxSessions(sql, { leaseSeconds: 300, workspaceRetentionSeconds: 3_600 }),
       () => new FakeSandboxProvider(),
@@ -1813,7 +1842,8 @@ describe.if(handle !== null)('removing a space', () => {
       const shown = (await preview.json()) as { preview: Record<string, unknown> };
       expect(shown.preview.counts).toMatchObject({
         jobs: 2,
-        connections: 1,
+        // The mailbox and the paired computer.
+        connections: 2,
         memory_claims: 1,
         companies: 1,
         ledger_items: 1,

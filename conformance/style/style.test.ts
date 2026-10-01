@@ -116,7 +116,7 @@ describe('the identity file', () => {
   });
 
   test('tells the model to name prior work in one clause', () => {
-    expect(flat).toContain('Refer to prior work in one clause');
+    expect(flat).toContain('Refer to prior work in one plain clause, never an id or a hash.');
   });
 
   test('keeps a social reply short, drops disclaimers and offers, and reports only what changed', () => {

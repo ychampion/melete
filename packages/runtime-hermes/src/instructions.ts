@@ -102,6 +102,7 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
     '# This attempt',
     '',
     `Workspace: ${workspace}. It is the only path you can write to.`,
+    'Answer in your reply. Save a file only when the owner asks for one.',
     `Budget: at most ${bundle.budget.max_turns} turns and ${bundle.budget.max_actions} actions.`,
     'Every tool call is proposed to the broker, which records it and may need the',
     "owner's approval. A tool that answers `needs_approval` has NOT happened: stop,",

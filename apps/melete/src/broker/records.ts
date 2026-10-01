@@ -22,6 +22,8 @@ export type LockedJob = {
   lease_epoch: number;
   budget: JobBudget;
   constraints: JobConstraints;
+  /** The owner command this job is, when it is one; see `MCP_COMMAND_PREFIX`. */
+  experience_command_key?: string | null;
 };
 
 /** ULID bytes keep every generated record inside the frozen prefixed-id schemas. */

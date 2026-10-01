@@ -9,44 +9,83 @@
  * that gets one is not drawn.
  */
 import { createMeleteClient, errorMessage, readSse, subscribeEvents } from '@melete/client';
+import { recordingFetch } from '../feedback/diagnostics.ts';
+import { markValueMoment } from './push.ts';
+import { readTextPrefix } from './text-prefix.ts';
 import type {
   AccountSignInStart,
   AccountSignInStatus,
   ActionResolution,
   Agent,
+  AgentComputer,
   AgentInput,
   AgentTemplate,
+  ApprovalSettings,
+  ApprovalSettingsView,
   Automation,
   AutomationCreate,
+  Belief,
+  BeliefBlock,
+  BeliefExport,
+  BeliefHistory,
+  BeliefImport,
+  BeliefImportResult,
+  BrowserControl,
   BrowserSession,
   CatalogEntry,
+  ConnectedAssistant,
   ConnectionChecked,
   ConnectionCreate,
   ConnectionInstalled,
   ConnectionKind,
   Conversation,
   ConversationCreate,
+  ConversationPrivacy,
+  Device,
+  DeviceCapabilities,
+  DevicePairing,
   Draft,
   EngineSkill,
   ExperienceEvent,
+  FeedbackCreate,
+  FeedbackList,
+  FeedbackReport,
+  FeedbackStatus,
   Home,
   LearnedItemResult,
   LearnedList,
   LedgerAction,
+  LiveOpen,
+  LiveUp,
+  LocalModelCheck,
+  LocalModelCheckRequest,
+  MemoryDigestResponse,
   MemoryExplanation,
   MemoryItem,
   MemoryItemCreate,
+  MemoryRewind,
+  MemoryTimeline,
   MessageAcceptance,
   Permission,
   PermissionOutcome,
   Plan,
   PlanCreate,
+  PrivacyPreview,
+  PrivacyReveal,
+  PrivacySettings,
+  PrivacySettingsUpdate,
   Profile,
   ProfileInput,
+  PushDevice,
+  PushSettings,
+  PushSettingsUpdate,
+  PushSubscriptionInput,
   Question,
   Reaction,
   Receipt,
   ResultCard,
+  RewindPreview,
+  RewindTarget,
   Rule,
   RuleBounds,
   SearchResult,
@@ -55,6 +94,9 @@ import type {
   Task,
   TaskInput,
   Turn,
+  VoiceSession,
+  VoiceStatus,
+  VoiceTranscription,
 } from './types.ts';
 import { isNotAvailable } from './types.ts';
 
@@ -82,9 +124,16 @@ export const API_BASE_URL: string = new URL(
   .toString()
   .replace(/\/+$/, '');
 
-export const client = createMeleteClient({ baseUrl: API_BASE_URL });
+// Failed requests are remembered, without their bodies, for a problem report.
+export const client = createMeleteClient({
+  baseUrl: API_BASE_URL,
+  fetch: recordingFetch(globalThis.fetch.bind(globalThis)),
+});
 
 const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
+
+const artifactUrl = (id: string): string =>
+  `${client.options.baseUrl}/artifacts/${encodeURIComponent(id)}/content`;
 
 /** Turn an openapi-fetch result into a Result, reading not_available as a reason. */
 function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Response }): Result<T> {
@@ -112,6 +161,12 @@ async function guard<T>(
 }
 
 const api = client.api;
+
+/** A decision made is the first moment Melete was worth hearing from. */
+function worthHearing<T>(result: Result<T>): Result<T> {
+  if (result.data !== null) markValueMoment();
+  return result;
+}
 const path = (id: string) => ({ params: { path: { id } } });
 
 export const adapter = {
@@ -132,8 +187,21 @@ export const adapter = {
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link/consume', { body: { token } })),
   signInGoogle: () => guard<{ status: 'ok' }>(() => api.POST('/signin/google')),
   signInApple: () => guard<{ status: 'ok' }>(() => api.POST('/signin/apple')),
+  signInChatGPT: () => guard<{ status: 'ok' }>(() => api.POST('/signin/chatgpt')),
   /** Ends the session; the next request needs a new sign-in. */
   signOut: () => guard<{ status: 'ok' }>(() => api.POST('/signout')),
+  /** Sets a new password; every other session and connected app is signed out. */
+  changePassword: (current_password: string, new_password: string) =>
+    guard<{ status: 'ok' }>(() =>
+      api.POST('/account/password', { body: { current_password, new_password } }),
+    ),
+  /** Mails a reset link when this install can send mail; otherwise says why not. */
+  requestPasswordReset: (email: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/password-reset', { body: { email } })),
+  consumePasswordReset: (token: string, new_password: string) =>
+    guard<{ status: 'ok' }>(() =>
+      api.POST('/password-reset/consume', { body: { token, new_password } }),
+    ),
 
   /* ---------- home, tasks ---------- */
   home: () => guard<Home>(() => api.GET('/home')),
@@ -199,21 +267,54 @@ export const adapter = {
   decide: (id: string, option: 'allow_once' | 'deny', version: string) =>
     guard<PermissionOutcome>(() =>
       api.POST('/permissions/{id}', { ...path(id), body: { option, version } }),
-    ),
+    ).then(worthHearing),
   decideAlways: (id: string, version: string, bounds: RuleBounds) =>
     guard<PermissionOutcome>(() =>
       api.POST('/permissions/{id}', { ...path(id), body: { option: 'always', version, bounds } }),
-    ),
+    ).then(worthHearing),
   permissions: () => guard<{ permissions: Permission[] }>(() => api.GET('/permissions')),
   undo: (id: string) =>
     guard<{ receipt: Receipt }>(() => api.POST('/receipts/{id}/undo', path(id))),
   sendDraft: (id: string) => guard<SendOutcome>(() => api.POST('/drafts/{id}/send', path(id))),
+
+  /** A saved file read as text, for showing it in the app: its start, when it is very large. */
+  artifactText: async (id: string): Promise<Result<{ text: string; truncated: boolean }>> => {
+    try {
+      const response = await client.options.fetch(artifactUrl(id), {
+        headers: client.options.headers,
+        credentials: client.options.credentials,
+      });
+      if (!response.ok)
+        return {
+          data: null,
+          error: response.status === 404 ? 'This file is no longer where it was saved.' : OFFLINE,
+          unavailable: null,
+        };
+      return { data: await readTextPrefix(response), error: null, unavailable: null };
+    } catch {
+      return { data: null, error: OFFLINE, unavailable: null };
+    }
+  },
   questions: () => guard<{ questions: Question[] }>(() => api.GET('/quick-answers')),
   answer: (id: string, option_id: string) =>
     guard<{ status: 'ok' }>(() =>
       api.POST('/quick-answers/{id}', { ...path(id), body: { option_id } }),
-    ),
+    ).then(worthHearing),
+
+  /* ---------- phone presence ---------- */
+  pushPublicKey: () => guard<{ public_key: string | null }>(() => api.GET('/push/public-key')),
+  pushDevices: () => guard<{ subscriptions: PushDevice[] }>(() => api.GET('/push/subscriptions')),
+  subscribePush: (input: PushSubscriptionInput) =>
+    guard<{ subscription: PushDevice }>(() => api.POST('/push/subscriptions', { body: input })),
+  removePushDevice: (id: string) =>
+    guard<{ subscription: PushDevice }>(() => api.DELETE('/push/subscriptions/{id}', path(id))),
+  pushSettings: () => guard<{ settings: PushSettings }>(() => api.GET('/push/settings')),
+  savePushSettings: (patch: PushSettingsUpdate) =>
+    guard<{ settings: PushSettings }>(() => api.PATCH('/push/settings', { body: patch })),
   rules: () => guard<{ rules: Rule[] }>(() => api.GET('/rules')),
+  approvalSettings: () => guard<ApprovalSettingsView>(() => api.GET('/approval-settings')),
+  saveApprovalSettings: (body: ApprovalSettings) =>
+    guard<ApprovalSettingsView>(() => api.PUT('/approval-settings', { body })),
   /* ---------- reactions: a glyph on a message, either direction ---------- */
   messageEvents: (conversationId: string, signal: AbortSignal) =>
     subscribeEvents(client, { jobId: conversationId, signal }),
@@ -242,6 +343,32 @@ export const adapter = {
       }),
     ),
   revokeRule: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/rules/{id}', path(id))),
+
+  /* ---------- the person's own computers ---------- */
+  devices: () => guard<{ devices: Device[] }>(() => api.GET('/devices')),
+  pairDevice: (capabilities: DeviceCapabilities) =>
+    guard<DevicePairing>(() => api.POST('/devices/pairings', { body: { capabilities } })),
+  changeDevice: (id: string, capabilities: Partial<DeviceCapabilities>) =>
+    guard<{ device: Device }>(() =>
+      api.PATCH('/devices/{id}', { ...path(id), body: { capabilities } }),
+    ),
+  revokeDevice: (id: string) =>
+    guard<{ device: Device }>(() => api.POST('/devices/{id}/revoke', path(id))),
+  /* ---------- other assistants connected over MCP ---------- */
+  assistants: () => guard<{ clients: ConnectedAssistant[] }>(() => api.GET('/mcp/clients')),
+  /** Ends every token the assistant holds for this person; answered with 204 and no body. */
+  disconnectAssistant: async (clientId: string): Promise<Result<{ status: 'ok' }>> => {
+    try {
+      const outcome = await api.DELETE('/mcp/clients/{clientId}', {
+        params: { path: { clientId } },
+      });
+      return outcome.response.ok
+        ? { data: { status: 'ok' }, error: null, unavailable: null }
+        : settle(outcome);
+    } catch {
+      return { data: null, error: OFFLINE, unavailable: null };
+    }
+  },
 
   /* ---------- what Melete learned ---------- */
   learned: (spaceId: string) =>
@@ -313,6 +440,48 @@ export const adapter = {
     guard<{ status: 'ok' }>(() => api.DELETE('/memory/items/{id}', path(id))),
   memoryWhy: (id: string) =>
     guard<MemoryExplanation>(() => api.GET('/memory/items/{id}/why', path(id))),
+  beliefs: () => guard<{ beliefs: Belief[]; time_zone: string }>(() => api.GET('/memory/beliefs')),
+  beliefHistory: (id: string) =>
+    guard<BeliefHistory>(() => api.GET('/memory/beliefs/{id}/history', path(id))),
+  /** Forget a belief and never learn its subject again. */
+  blockBelief: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/memory/beliefs/{id}/block', path(id))),
+  beliefBlocks: () => guard<{ blocks: BeliefBlock[] }>(() => api.GET('/memory/blocks')),
+  unblockBelief: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.DELETE('/memory/blocks/{id}', path(id))),
+  memoryTimeline: (days = 30) =>
+    guard<MemoryTimeline>(() =>
+      api.GET('/memory/timeline', { params: { query: { days: String(days) } } }),
+    ),
+  previewRewind: (body: RewindTarget) =>
+    guard<RewindPreview>(() => api.POST('/memory/rewind/preview', { body })),
+  rewind: (body: RewindTarget) =>
+    guard<{ rewind: MemoryRewind }>(() => api.POST('/memory/rewind', { body })),
+  undoRewind: (id: string) =>
+    guard<{ rewind: MemoryRewind }>(() => api.POST('/memory/rewinds/{id}/undo', path(id))),
+  memoryDigest: () => guard<MemoryDigestResponse>(() => api.GET('/memory/digest')),
+  digestSeen: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/memory/digest/{id}/seen', path(id))),
+  exportBeliefs: (format: 'json' | 'markdown') =>
+    guard<BeliefExport>(() => api.GET('/memory/export', { params: { query: { format } } })),
+  importBeliefs: (body: BeliefImport) =>
+    guard<BeliefImportResult>(() => api.POST('/memory/import', { body })),
+
+  /* ---------- privacy ---------- */
+  privacySettings: () => guard<PrivacySettings>(() => api.GET('/privacy/settings')),
+  savePrivacy: (body: PrivacySettingsUpdate) =>
+    guard<PrivacySettings>(() => api.PUT('/privacy/settings', { body })),
+  previewPrivacy: (text: string) =>
+    guard<PrivacyPreview>(() => api.POST('/privacy/preview', { body: { text } })),
+  checkLocalModel: (body: LocalModelCheckRequest) =>
+    guard<LocalModelCheck>(() => api.POST('/privacy/local-model/check', { body })),
+  conversationPrivacy: (id: string) =>
+    guard<ConversationPrivacy>(() => api.GET('/conversations/{id}/privacy', path(id))),
+  /** The real values behind one answer's placeholders, for this screen only. */
+  revealPrivacy: (id: string, turnId: string) =>
+    guard<PrivacyReveal>(() =>
+      api.POST('/conversations/{id}/privacy/reveal', { ...path(id), body: { turn_id: turnId } }),
+    ),
 
   /* ---------- plans ---------- */
   plans: () => guard<{ plans: Plan[] }>(() => api.GET('/plans')),
@@ -344,6 +513,12 @@ export const adapter = {
   connections: () =>
     guard<{ connections: import('./types.ts').Connection[] }>(() =>
       api.GET('/experience/connections'),
+    ),
+  /** Whether conversations in this space read public web pages; on unless turned off. */
+  webReads: () => guard<{ enabled: boolean; available: boolean }>(() => api.GET('/web/settings')),
+  saveWebReads: (enabled: boolean) =>
+    guard<{ enabled: boolean; available: boolean }>(() =>
+      api.PUT('/web/settings', { body: { enabled } }),
     ),
   /** The kinds that can be installed, each with the fields its form needs. */
   connectionKinds: () =>
@@ -393,9 +568,127 @@ export const adapter = {
     guard<{ session: BrowserSession }>(() =>
       api.POST('/browser/sessions/{id}/control', { ...path(id), body: { control } }),
     ),
+  /* ---------- the agent's computer ---------- */
+  computer: (id: string) =>
+    guard<AgentComputer>(() => api.GET('/conversations/{id}/computer', path(id))),
+  takeOver: (sessionId: string) =>
+    guard<BrowserControl>(() => api.POST('/browser/sessions/{id}/takeover', path(sessionId))),
+  handBack: (sessionId: string) =>
+    guard<BrowserControl>(() => api.POST('/browser/sessions/{id}/handback', path(sessionId))),
+  liveOpen: (sessionId: string) =>
+    guard<LiveOpen>(() => api.POST('/browser/sessions/{id}/live', path(sessionId))),
+  liveInput: (sessionId: string, body: LiveUp) =>
+    guard<{ accepted: number }>(() =>
+      api.POST('/browser/sessions/{id}/live/input', { ...path(sessionId), body }),
+    ),
+  liveScope: (sessionId: string, liveId: string, host: string) =>
+    guard<{ site_scope: string[] }>(() =>
+      api.POST('/browser/sessions/{id}/live/scope', {
+        ...path(sessionId),
+        body: { live_id: liveId, host },
+      }),
+    ),
+  liveClose: (sessionId: string, liveId: string) =>
+    guard<{ closed: true }>(() =>
+      api.POST('/browser/sessions/{id}/live/close', {
+        ...path(sessionId),
+        body: { live_id: liveId },
+      }),
+    ),
+  /** Where a file or picture the service keeps is served, with the session's cookie. */
+  artifactUrl,
   search: (q: string) =>
     guard<{ results: SearchResult[] }>(() => api.GET('/search', { params: { query: { q } } })),
+
+  /* ---------- voice: push-to-talk and voice mode ---------- */
+  /** Which voice features the installation has. The mic and voice mode appear only when true. */
+  voice: (place?: { conversationId: string | null; agentId: string | null }) =>
+    guard<VoiceStatus>(() => api.GET('/voice', { params: { query: voicePlace(place) } })),
+  /** A recorded clip in, the words out. Nothing is sent to the conversation. */
+  transcribe: (
+    clip: Blob,
+    durationMs: number,
+    place?: { conversationId: string | null; agentId: string | null },
+  ) =>
+    binary(
+      `/voice/transcriptions?${new URLSearchParams({
+        duration_ms: String(Math.max(1, Math.round(durationMs))),
+        ...voicePlace(place),
+      })}`,
+      { method: 'POST', headers: { 'Content-Type': clip.type || 'audio/webm' }, body: clip },
+      async (response) => (await response.json()) as VoiceTranscription,
+    ),
+  /** A realtime transcription address with a single-use token, for voice mode. */
+  voiceSession: (id: string) =>
+    guard<VoiceSession>(() => api.POST('/conversations/{id}/voice/session', path(id))),
+  /** Part of a reply, read aloud. The audio arrives whole and is played from memory. */
+  speak: (id: string, text: string, signal?: AbortSignal) =>
+    binary(
+      `/conversations/${encodeURIComponent(id)}/voice/speech`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+        ...(signal ? { signal } : {}),
+      },
+      (response) => response.blob(),
+    ),
+  /* ---------- problem reports ---------- */
+  sendFeedback: (report: FeedbackCreate) =>
+    guard<{ report: FeedbackReport }>(() => api.POST('/feedback', { body: report })),
+  feedback: (status?: FeedbackStatus) =>
+    guard<FeedbackList>(() =>
+      api.GET('/feedback', { params: { query: status ? { status } : {} } }),
+    ),
+  feedbackReport: (id: string) =>
+    guard<{ report: FeedbackReport }>(() => api.GET('/feedback/{id}', path(id))),
+  setFeedbackStatus: (id: string, status: FeedbackStatus, note?: string | null) =>
+    guard<{ report: FeedbackReport }>(() =>
+      api.PATCH('/feedback/{id}', {
+        ...path(id),
+        body: { status, ...(note !== undefined ? { note } : {}) },
+      }),
+    ),
 };
+
+/** The conversation, or the agent a new chat will have, as the voice routes read it. */
+function voicePlace(place?: { conversationId: string | null; agentId: string | null }): {
+  conversation_id?: string;
+  agent_id?: string;
+} {
+  if (place?.conversationId) return { conversation_id: place.conversationId };
+  if (place?.agentId) return { agent_id: place.agentId };
+  return {};
+}
+
+/**
+ * A request whose body or answer is not JSON: a recording going up, or speech
+ * coming down. It settles to a Result like every other call.
+ */
+async function binary<T>(
+  route: string,
+  init: RequestInit,
+  read: (response: Response) => Promise<T>,
+): Promise<Result<T>> {
+  try {
+    const response = await client.options.fetch(`${client.options.baseUrl}${route}`, {
+      ...init,
+      headers: { ...client.options.headers, ...(init.headers as Record<string, string>) },
+      credentials: client.options.credentials,
+    });
+    if (!response.ok)
+      return {
+        data: null,
+        error: errorMessage(await response.json().catch(() => null), OFFLINE),
+        unavailable: null,
+        unauthorized: response.status === 401,
+      };
+    return { data: await read(response), error: null, unavailable: null };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    return { data: null, error: OFFLINE, unavailable: null };
+  }
+}
 
 export type Adapter = typeof adapter;
 
@@ -463,5 +756,41 @@ export async function* subscribeConversation(
         return;
     }
     if (options.signal?.aborted) return;
+  }
+}
+
+/** One event of a live browser view. Frames are painted and dropped, never kept. */
+export type LiveDown =
+  | { type: 'frame'; seq: number; data: string }
+  | { type: 'where'; url: string; title: string; in_scope: boolean }
+  | { type: 'notice'; code: string; host?: string }
+  | { type: 'ended'; code: string };
+
+/**
+ * Follow a live browser view. It ends when the service ends it or the stream
+ * drops; the view is then opened again rather than resumed, since nothing is
+ * replayed.
+ */
+export async function* followLive(
+  sessionId: string,
+  liveId: string,
+  signal: AbortSignal,
+): AsyncGenerator<LiveDown, void, void> {
+  const response = await client.options.fetch(
+    `${client.options.baseUrl}/browser/sessions/${encodeURIComponent(sessionId)}/live/frames?live_id=${encodeURIComponent(liveId)}`,
+    {
+      headers: { ...client.options.headers, Accept: 'text/event-stream' },
+      credentials: client.options.credentials,
+      signal,
+    },
+  );
+  if (!response.ok || !response.body) return;
+  for await (const frame of readSse(response.body)) {
+    if (frame.comment) continue;
+    try {
+      yield JSON.parse(frame.data) as LiveDown;
+    } catch {
+      // A frame that does not parse is skipped; the next one repaints.
+    }
   }
 }

@@ -14,7 +14,10 @@ import {
   type ConnectorFault,
   type ConnectorFaultKind,
   connectorFault,
+  type EffectClass,
   type JsonObject,
+  REDACTED,
+  redactText,
 } from '@melete/contracts';
 
 export class ConnectorFaultError extends Error {
@@ -58,13 +61,86 @@ export function asConnectorFault(error: unknown): ConnectorFault | null {
  */
 export const UNCLASSIFIED_DETAIL = 'The destination did not return a confirmed acknowledgement';
 
-export function unclassifiedFault(_error: unknown): ConnectorFault {
+/**
+ * A read changes nothing, so "it may have landed" is never true of one. An
+ * untyped throw from a read is a failed read with its reason, which the model
+ * can act on; only an effect that changes something can be left uncertain.
+ */
+export function unclassifiedFault(error: unknown, effectClass?: EffectClass): ConnectorFault {
+  if (effectClass === 'read')
+    return connectorFault.parse({
+      kind: 'unclassified',
+      detail: describeFailure(error),
+      may_have_committed: false,
+      retry_after: null,
+    });
   return connectorFault.parse({
     kind: 'unclassified',
     detail: UNCLASSIFIED_DETAIL,
     may_have_committed: true,
     retry_after: null,
   });
+}
+
+const SYSTEM_FAILURES: Record<string, string> = {
+  ENOENT: 'not found',
+  ENOTDIR: 'not a folder',
+  EISDIR: 'a folder, not a file',
+  EACCES: 'permission denied',
+  EPERM: 'permission denied',
+  ETIMEDOUT: 'timed out',
+  ECONNREFUSED: 'the destination refused the connection',
+  ECONNRESET: 'the connection was reset',
+  ENOTFOUND: 'the address could not be found',
+  EAI_AGAIN: 'the address could not be looked up',
+};
+
+/**
+ * One short line saying why a read failed, safe to show the model and to keep
+ * on the record: system errors by their code, anything else by the first line
+ * of its message with host paths and address query strings taken out.
+ */
+export function describeFailure(error: unknown): string {
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? String((error as { code: unknown }).code)
+      : '';
+  const known = SYSTEM_FAILURES[code];
+  if (known) return known;
+  if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError'))
+    return 'timed out';
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const first = (message.split(/\r?\n/, 1)[0] ?? '').slice(0, 1000);
+  const line = redactSecrets(
+    first
+      .replace(/\bfile:\/\/[^\s'"]*/gi, '<path>')
+      .replace(/(?<=^|[\s'"(=])(?:[A-Za-z]:)?[\\/][^\s'"]*/g, '<path>')
+      .replace(/(?<=\w:)\/(?!\/)[^\s'"]*/g, '<path>')
+      .replace(/(https?:\/\/[^\s'"?#]+)[?#][^\s'"]*/g, '$1'),
+  )
+    .trim()
+    .slice(0, 200);
+  return line || 'the read failed';
+}
+
+/** Keys that announce themselves by prefix, whatever their length. */
+const PREFIXED_KEY =
+  /\b(?:(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|glpat-[A-Za-z0-9_-]{8,}|(?:AKIA|ASIA)[A-Z0-9]{12,}|AIza[A-Za-z0-9_-]{16,})/g;
+
+/**
+ * Credentials an error message may quote, taken out wherever the message goes
+ * next: the user and password in an address, authorization schemes, tokens,
+ * `name=value` secrets, prefixed keys of any length, and a run of letters and
+ * digits long enough to be a key.
+ */
+export function redactSecrets(text: string, max = 4000): string {
+  const cleared = text
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@'"]+@/gi, `$1${REDACTED}@`)
+    .replace(PREFIXED_KEY, REDACTED)
+    .replace(/[A-Za-z0-9_-]{20,}/g, (run) =>
+      /\d/.test(run) && /[A-Za-z]/.test(run) ? REDACTED : run,
+    );
+  return redactText(cleared, max);
 }
 
 /**

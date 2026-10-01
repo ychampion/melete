@@ -18,6 +18,7 @@ import {
 } from 'react';
 import { AgentFace } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
+import { LoadError } from '../design/LoadError.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import {
   Avatar,
@@ -38,6 +39,7 @@ import { adapter } from '../experience/adapter.ts';
 import { agentById, lookOf, useApp, useDecisions, useLoad, useMedia } from '../experience/hooks.ts';
 import { givenName } from '../experience/profile.ts';
 import type { CalendarEvent, Conversation } from '../experience/types.ts';
+import { FeedbackHost, openFeedback } from '../feedback/FeedbackPanel.tsx';
 import { href, navigate, useRoute } from '../router.ts';
 import { useTheme } from '../theme.ts';
 import { CommandPalette } from './CommandPalette.tsx';
@@ -105,6 +107,12 @@ const NAV: { icon: IconName; label: string; path: string; match: (path: string) 
   },
   { icon: 'plans', label: 'Plans', path: '/plans', match: (p) => p.startsWith('/plans') },
   { icon: 'smile', label: 'Agents', path: '/agents', match: (p) => p.startsWith('/agents') },
+  {
+    icon: 'bookmark',
+    label: 'Memory',
+    path: '/settings/memory',
+    match: (p) => p.startsWith('/settings/memory'),
+  },
   {
     icon: 'automations',
     label: 'Automations',
@@ -209,6 +217,7 @@ function AccountMenu({ address }: { address: string | null }) {
           </Menu>
         </Popover>
       </div>
+      <IconButton name="bug" label="Report a problem" onClick={() => openFeedback()} />
       <IconButton
         name="sliders"
         label="Settings"
@@ -230,7 +239,7 @@ function Sidebar({
   onPalette: () => void;
 }) {
   const route = useRoute();
-  const { conversations, agents, profile } = useApp();
+  const { conversations, conversationsError, agents, profile, refreshConversations } = useApp();
   const decisions = useDecisions();
   const activeChat = route.parts[0] === 'chat' ? (route.parts[1] ?? null) : null;
   const chats = [...conversations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
@@ -319,7 +328,17 @@ function Sidebar({
             </a>
           );
         })}
-        {conversations.length === 0 ? <div className="recent-empty">Nothing yet</div> : null}
+        {conversationsError && conversations.length === 0 ? (
+          <LoadError
+            compact
+            what="your chats"
+            error={conversationsError}
+            onRetry={refreshConversations}
+          />
+        ) : conversations.length === 0 && decisions.loaded ? (
+          // Said only once the list was read: before that there is nothing to say.
+          <div className="recent-empty">Nothing yet</div>
+        ) : null}
       </div>
       <AccountMenu address={address} />
     </aside>
@@ -552,6 +571,9 @@ export function Rail({
           </span>
         </div>
         <div className="col">
+          {tasks.error ? (
+            <LoadError compact what="your tasks" error={tasks.error} onRetry={tasks.reload} />
+          ) : null}
           {list.map((task) => (
             <div key={task.id} className="task-row" data-done={task.done ? 'true' : undefined}>
               <Checkbox
@@ -780,6 +802,7 @@ export function Shell({
           </div>
         </div>
         <CommandPalette open={palette} onClose={() => setPalette(false)} />
+        <FeedbackHost />
         <ToastStack />
       </div>
     </RailContext.Provider>

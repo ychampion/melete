@@ -52,6 +52,11 @@ export type RepairLimits = {
   maxExecutions: number;
   /** How long to park when a destination rate-limits without saying how long. */
   defaultRetryAfterSeconds: number;
+  /**
+   * How long an action for a disconnected computer waits before it is looked
+   * at again. The computer reconnecting wakes it sooner; this is the fallback.
+   */
+  offlineRecheckSeconds: number;
 };
 
 export const DEFAULT_REPAIR_LIMITS: RepairLimits = {
@@ -60,6 +65,7 @@ export const DEFAULT_REPAIR_LIMITS: RepairLimits = {
   maxBackoffMs: 5_000,
   maxExecutions: 8,
   defaultRetryAfterSeconds: 60,
+  offlineRecheckSeconds: 6 * 60 * 60,
 };
 
 /** What the policy knows about this action's repair history so far. */
@@ -84,7 +90,12 @@ export type RepairState = {
 
 export type RepairChoice =
   | { act: 'retry'; decision: RepairDecision; delay_ms: number; detail: string }
-  | { act: 'park'; decision: 'park_until_retry_after'; retry_after_ms: number; detail: string }
+  | {
+      act: 'park';
+      decision: 'park_until_retry_after' | 'park_until_reconnect';
+      retry_after_ms: number;
+      detail: string;
+    }
   | { act: 'refresh'; decision: 'refresh_credential_once'; detail: string }
   | { act: 'rediscover'; decision: 'rediscover_schema'; detail: string }
   | { act: 'reroute'; decision: 'change_route'; detail: string }
@@ -178,6 +189,19 @@ export function decideRepair(
         decision: 'park_until_retry_after',
         retry_after_ms: seconds * 1000,
         detail: `the destination asked for ${seconds}s, so the worker was released rather than held`,
+      };
+    }
+
+    case 'destination_offline': {
+      // Nothing left, so nothing is at risk. The worker is released and the
+      // action waits; the destination's own reconnection brings it back early,
+      // and this long clock is only the fallback check.
+      const seconds = fault.retry_after ?? limits.offlineRecheckSeconds;
+      return {
+        act: 'park',
+        decision: 'park_until_reconnect',
+        retry_after_ms: seconds * 1000,
+        detail: 'the computer this needs is not connected, so it waits for it to come back',
       };
     }
 
@@ -584,6 +608,12 @@ export type RepairOptions = {
   trustGated?: boolean;
   /** The tool being repaired. A mapping is never allowed to change it. */
   operation: string;
+  /**
+   * True for a `read`. A read that could not be done is a failed read with its
+   * reason for the model to act on: never an uncertain effect, and never a
+   * question for a person unless a person has to reconnect something.
+   */
+  readOnly?: boolean;
   classify(error: unknown): ConnectorFault;
 };
 
@@ -735,11 +765,39 @@ export async function runRepair(
       // A connector that answered rather than threw has already decided. The
       // policy does not second-guess a plain failed or a plain unknown, which
       // is exactly what the broker did before typed faults existed.
-      if (outcome.outcome === 'unknown') return finish('needs_reconciliation', outcome, null);
+      if (outcome.outcome === 'unknown')
+        return options.readOnly
+          ? finish(
+              'repair_exhausted',
+              { outcome: 'failed', reason: outcome.reason, retryable: true },
+              null,
+            )
+          : finish('needs_reconciliation', outcome, null);
       return finish('repair_exhausted', outcome, null);
     }
 
     count(fault.kind);
+
+    // A read whose answer was lost is not sent again: the connector said it may
+    // have landed, and a tool can be called a read by mistake. It changed
+    // nothing the person has to settle either, so it fails with its reason.
+    if (options.readOnly && (fault.may_have_committed || fault.kind === 'uncertain_outcome')) {
+      note({
+        attempt: state.attempt,
+        fault_kind: fault.kind,
+        decision: 'escalate_diagnosis',
+        detail: 'a read whose answer was lost is reported as failed and not sent again',
+        delay_ms: null,
+        retry_after: null,
+        candidate_id: candidateId,
+        route,
+      });
+      return finish(
+        'repair_exhausted',
+        { outcome: 'failed', reason: fault.detail, retryable: false },
+        null,
+      );
+    }
 
     // One fault, as many decisions as it takes to know what to do about it.
     for (;;) {
@@ -851,6 +909,15 @@ export async function runRepair(
             'needs_reconciliation',
             { outcome: 'unknown', reason: fault.detail },
             UNCERTAIN_QUESTION,
+          );
+        }
+        // A read that could not be done is the model's to work around, with the
+        // reason in hand. Nobody is asked about a lookup that changed nothing.
+        if (options.readOnly && choice.disposition === 'repair_exhausted') {
+          return finish(
+            'repair_exhausted',
+            { outcome: 'failed', reason: fault.detail, retryable: false },
+            null,
           );
         }
         return finish(

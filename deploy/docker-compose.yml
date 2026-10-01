@@ -107,6 +107,14 @@ services:
       MELETE_MEMORY_MODEL: ${MELETE_MEMORY_MODEL:-}
       MELETE_MEMORY_PROVIDER: ${MELETE_MEMORY_PROVIDER:-}
       MELETE_MEMORY_DAILY_CALLS: ${MELETE_MEMORY_DAILY_CALLS:-200}
+      MELETE_PHONE_MODEL: ${MELETE_PHONE_MODEL:-}
+      MELETE_PHONE_PROVIDER: ${MELETE_PHONE_PROVIDER:-}
+      MELETE_ELEVENLABS_API_URL: ${MELETE_ELEVENLABS_API_URL:-}
+      # Auto-review of reversible actions (docs/DEPLOYMENT.md, "Auto-review"). Empty uses the default model.
+      MELETE_REVIEW_MODEL: ${MELETE_REVIEW_MODEL:-}
+      MELETE_REVIEW_PROVIDER: ${MELETE_REVIEW_PROVIDER:-}
+      MELETE_REVIEW_TIMEOUT_MS: ${MELETE_REVIEW_TIMEOUT_MS:-12000}
+      MELETE_REVIEW_HOURLY_LIMIT: ${MELETE_REVIEW_HOURLY_LIMIT:-60}
       MELETE_PUBLIC_URL: ${MELETE_PUBLIC_URL:-}
       MELETE_OAUTH_CLIENT_METADATA: ${MELETE_OAUTH_CLIENT_METADATA:-}
       # Signing in with Google for Gmail and Google Calendar (docs/mail-calendar.md).
@@ -116,6 +124,11 @@ services:
       MICROSOFT_OAUTH_CLIENT_ID: ${MICROSOFT_OAUTH_CLIENT_ID:-}
       MICROSOFT_OAUTH_CLIENT_SECRET: ${MICROSOFT_OAUTH_CLIENT_SECRET:-}
       MICROSOFT_OAUTH_TENANT: ${MICROSOFT_OAUTH_TENANT:-}
+      # Web Push to phones and browsers (docs/DEPLOYMENT.md, "Phone notifications").
+      MELETE_VAPID_PUBLIC_KEY: ${MELETE_VAPID_PUBLIC_KEY:-}
+      MELETE_VAPID_PRIVATE_KEY: ${MELETE_VAPID_PRIVATE_KEY:-}
+      MELETE_VAPID_SUBJECT: ${MELETE_VAPID_SUBJECT:-}
+      MELETE_PUSH_EXTRA_ORIGINS: ${MELETE_PUSH_EXTRA_ORIGINS:-}
       # The company map's model and its daily allowance (docs/DEPLOYMENT.md, "Company map").
       MELETE_COMPANIES_MODEL: ${MELETE_COMPANIES_MODEL:-}
       MELETE_COMPANIES_PROVIDER: ${MELETE_COMPANIES_PROVIDER:-}
@@ -129,6 +142,37 @@ services:
       MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS: ${MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS:-}
       MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT: ${MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT:-}
       MELETE_E2B_PLAN: ${MELETE_E2B_PLAN:-}
+      # Voice (docs/VOICE.md). Empty leaves voice off, and each default in place.
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-}
+      ELEVENLABS_SECOND_VOICE_ID: ${ELEVENLABS_SECOND_VOICE_ID:-}
+      ELEVENLABS_SPEECH_MODEL: ${ELEVENLABS_SPEECH_MODEL:-}
+      ELEVENLABS_STREAMING_MODEL: ${ELEVENLABS_STREAMING_MODEL:-}
+      ELEVENLABS_TRANSCRIPTION_MODEL: ${ELEVENLABS_TRANSCRIPTION_MODEL:-}
+      MELETE_VOICE_DAILY_SECONDS: ${MELETE_VOICE_DAILY_SECONDS:-}
+      MELETE_VOICE_DAILY_CHARACTERS: ${MELETE_VOICE_DAILY_CHARACTERS:-}
+      MELETE_VOICE_DAILY_SESSIONS: ${MELETE_VOICE_DAILY_SESSIONS:-}
+      # A computer for every agent on this engine (docs/sandbox-docker.md). Set
+      # MELETE_SANDBOX_PROVIDER=docker with MELETE_SANDBOX_PROJECT, and build the
+      # image with --profile sandbox.
+      MELETE_SANDBOX_PROVIDER: ${MELETE_SANDBOX_PROVIDER:-}
+      MELETE_SANDBOX_DOCKER_IMAGE: ${MELETE_SANDBOX_DOCKER_IMAGE:-}
+      MELETE_SANDBOX_DOCKER_CPUS: ${MELETE_SANDBOX_DOCKER_CPUS:-}
+      MELETE_SANDBOX_DOCKER_MEMORY_MB: ${MELETE_SANDBOX_DOCKER_MEMORY_MB:-}
+      MELETE_SANDBOX_DOCKER_PIDS: ${MELETE_SANDBOX_DOCKER_PIDS:-}
+      MELETE_SANDBOX_DOCKER_DISK_MB: ${MELETE_SANDBOX_DOCKER_DISK_MB:-}
+      MELETE_SANDBOX_DOCKER_EGRESS: ${MELETE_SANDBOX_DOCKER_EGRESS:-}
+      MELETE_SANDBOX_DOCKER_IDLE_SECONDS: ${MELETE_SANDBOX_DOCKER_IDLE_SECONDS:-}
+      MELETE_SANDBOX_EGRESS_PORT: ${MELETE_SANDBOX_EGRESS_PORT:-}
+      # Plugin runners (docs/DEPLOYMENT.md, "Isolation and image provenance"). Empty uses each default.
+      MELETE_MCP_NODE_IMAGE: ${MELETE_MCP_NODE_IMAGE:-}
+      MELETE_MCP_PYTHON_IMAGE: ${MELETE_MCP_PYTHON_IMAGE:-}
+      MELETE_MCP_EGRESS_PORT: ${MELETE_MCP_EGRESS_PORT:-}
+      MELETE_MCP_IDLE_MS: ${MELETE_MCP_IDLE_MS:-}
+      # How long an attempt's container may take to start (default 120000 ms).
+      MELETE_RUNTIME_START_TIMEOUT_MS: ${MELETE_RUNTIME_START_TIMEOUT_MS:-}
+      # The text-to-speech model, when an OpenAI or OpenAI-compatible key is set.
+      MELETE_SPEECH_MODEL: ${MELETE_SPEECH_MODEL:-}
       MELETE_ENABLE_FAKE_PROVIDER: ${MELETE_ENABLE_FAKE_PROVIDER:-false}
       MELETE_ENABLE_TEST_CONNECTOR: ${MELETE_ENABLE_TEST_CONNECTOR:-false}
       FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
@@ -173,6 +217,20 @@ services:
     build:
       context: ../packages/runtime-hermes
       dockerfile: Dockerfile
+    entrypoint: ["/bin/true"]
+    network_mode: none
+    restart: "no"
+    logging: *bounded-logs
+
+  # Builds the agents' computer image, only with --profile sandbox: it is large
+  # (a desktop and a browser) and only a docker sandbox provider uses it. The
+  # service starts one container per agent from it; nothing runs here.
+  sandbox-image:
+    image: ${MELETE_SANDBOX_DOCKER_IMAGE:-melete-sandbox:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.sandbox
+    profiles: [sandbox]
     entrypoint: ["/bin/true"]
     network_mode: none
     restart: "no"

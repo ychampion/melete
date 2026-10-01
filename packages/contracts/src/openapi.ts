@@ -66,10 +66,30 @@ import {
   mcpSignInStart,
   mcpSignInStatus,
 } from './connections.ts';
+import {
+  deviceHelloRequest,
+  deviceHelloResponse,
+  deviceListResponse,
+  devicePairingRequest,
+  devicePairingResponse,
+  devicePairRequest,
+  devicePairResponse,
+  devicePollResponse,
+  deviceResponse,
+  deviceResult,
+  deviceUpdateRequest,
+} from './devices.ts';
 import { space, triggerSpec } from './entities.ts';
 import { eventPage, eventQuery } from './events.ts';
 import { executionSettlement, executionStartResponse } from './execution-admission.ts';
 import { experiencePaths } from './experience-openapi.ts';
+import {
+  createFeedbackRequest,
+  feedbackListQuery,
+  feedbackListResponse,
+  feedbackResponse,
+  updateFeedbackRequest,
+} from './feedback.ts';
 import { hookObservation } from './hooks.ts';
 import {
   engineSkillApprovalRequest,
@@ -102,6 +122,20 @@ import {
   procedureTrialRequest,
 } from './learning.ts';
 import {
+  mcpConnectedClientList,
+  mcpRpcMessage,
+  mcpRpcResponse,
+  oauthAuthorizeQuery,
+  oauthClientRegistered,
+  oauthClientRegistration,
+  oauthConsentForm,
+  oauthErrorResponse,
+  oauthProtectedResource,
+  oauthServerMetadata,
+  oauthTokenRequest,
+  oauthTokenResponse,
+} from './mcp-server.ts';
+import {
   claimHistoryResponse,
   claimListResponse,
   claimRevision,
@@ -117,6 +151,21 @@ import {
   recallResult,
   sourceEvidenceResponse,
 } from './memory.ts';
+import {
+  keyedModelProvider,
+  modelSettingsResponse,
+  saveModelKeyRequest,
+  setDefaultModelRequest,
+  testModelConnectionRequest,
+  testModelConnectionResponse,
+} from './model-settings.ts';
+import {
+  phoneCallResponse,
+  phoneEventRequest,
+  phoneInboundRequest,
+  phoneInboundResponse,
+  phoneTurnRequest,
+} from './phone.ts';
 import { installPluginRequest, installPluginResponse, pluginListResponse } from './plugins.ts';
 import {
   createPrincipalRequest,
@@ -146,6 +195,14 @@ import {
   startSignInRequest,
   startSignInResponse,
 } from './provider-signin.ts';
+import {
+  pushPublicKeyResponse,
+  pushSettingsResponse,
+  pushSettingsUpdate,
+  pushSubscriptionList,
+  pushSubscriptionRequest,
+  pushSubscriptionResponse,
+} from './push.ts';
 import { personReactionRequest, reactionListResponse, reactionResponse } from './reactions.ts';
 import { jobRepairsResponse } from './repair.ts';
 import {
@@ -177,11 +234,25 @@ import {
 } from './responsibility.ts';
 import { runtimeEvent } from './runtime.ts';
 import {
+  sandboxComputerList,
+  sandboxComputerQuery,
+  sandboxControlResponse,
+} from './sandbox-computer.ts';
+import {
   deleteSpaceRequest,
   spaceRemoval,
   spaceRemovalPreview,
   spaceRemovalReport,
 } from './spaces.ts';
+import {
+  voiceContextQuery,
+  voiceSession,
+  voiceSpeechRequest,
+  voiceStatus,
+  voiceTranscription,
+  voiceTranscriptionQuery,
+} from './voice.ts';
+import { awaitedReply, waitingOn } from './waiting.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
   content: { 'application/json': { schema } },
@@ -193,6 +264,42 @@ const jsonResponse = <T extends z.ZodType>(description: string, schema: T) => ({
 });
 
 const problem = (description: string) => jsonResponse(description, errorResponse);
+
+/** A phone line's turn endpoint, at the address ElevenLabs is given and with the path it adds. */
+const phoneTurnPaths = () =>
+  Object.fromEntries(
+    ['/phone/{connectionId}/llm/v1/chat/completions', '/phone/{connectionId}/llm/v1'].map(
+      (path) => [
+        path,
+        {
+          post: {
+            tags: ['phone'],
+            summary: 'Answer one turn of a call on a phone line',
+            description:
+              "ElevenLabs' agent for the line calls this for every turn, as a custom language model: an " +
+              'OpenAI chat-completions request, answered as a stream of `chat.completion.chunk` events ' +
+              'ending in `[DONE]` (or one `chat.completion` when `stream` is false). It needs no ' +
+              "session: it carries the line's own key as a bearer token or in `x-melete-key`, compared " +
+              "in constant time with the digest the line keeps; another line's key is refused. The turn " +
+              "is answered by the gateway model with the call's context, memory recall for the person " +
+              'and the call tools; nothing that acts on the world happens during a call. The address ' +
+              'ElevenLabs is given ends in `/llm/v1`; both it and the path with `/chat/completions` ' +
+              'added are served.',
+            requestParams: idParam('connectionId', 'The phone line'),
+            requestBody: json(phoneTurnRequest),
+            responses: {
+              '200': {
+                description: 'The reply, streamed',
+                content: { 'text/event-stream': { schema: z.string() } },
+              },
+              '400': problem('Not a chat completions request'),
+              '401': problem("Not this line's key, or not an active phone line"),
+            },
+          },
+        },
+      ],
+    ),
+  );
 
 /** The four routes of signing in with one account provider. */
 const accountSignInPaths = (
@@ -275,12 +382,313 @@ const idParam = (name: string, description: string) => ({
   path: z.object({ [name]: z.string().meta({ description }) }),
 });
 
+const html = (description: string) => ({
+  description,
+  content: { 'text/html': { schema: z.string() } },
+});
+const oauthProblem = (description: string) => jsonResponse(description, oauthErrorResponse);
+const redirect = (description: string) => ({
+  description,
+  headers: z.object({ Location: z.string() }),
+});
+
+/**
+ * Melete as an MCP server for other assistants, and Melete as the OAuth
+ * authorization server they connect through. Served when the service has a
+ * public address. The discovery documents sit at the root of the public origin.
+ */
+const assistantPaths = {
+  '/.well-known/oauth-authorization-server': {
+    get: {
+      tags: ['assistants'],
+      summary: 'OAuth authorization server metadata (RFC 8414)',
+      description: 'Public, at the root of the web origin. No session is needed.',
+      responses: { '200': jsonResponse('The metadata', oauthServerMetadata) },
+    },
+  },
+  '/.well-known/oauth-protected-resource': {
+    get: {
+      tags: ['assistants'],
+      summary: 'Protected resource metadata for the MCP endpoint (RFC 9728)',
+      responses: { '200': jsonResponse('The metadata', oauthProtectedResource) },
+    },
+  },
+  '/.well-known/oauth-protected-resource/api/mcp': {
+    get: {
+      tags: ['assistants'],
+      summary: 'Protected resource metadata at the path-specific address the endpoint names',
+      responses: { '200': jsonResponse('The metadata', oauthProtectedResource) },
+    },
+  },
+  '/oauth/register': {
+    post: {
+      tags: ['assistants'],
+      summary: 'Register an assistant as a public OAuth client (RFC 7591)',
+      description:
+        'Public clients only, with PKCE. A client may instead use an https:// client ID metadata document.',
+      requestBody: json(oauthClientRegistration),
+      responses: {
+        '201': jsonResponse('Registered', oauthClientRegistered),
+        '400': oauthProblem('The metadata was refused'),
+        '429': oauthProblem(
+          'Too many registrations from this address, or too many waiting for a person to allow them',
+        ),
+      },
+    },
+  },
+  '/oauth/authorize': {
+    get: {
+      tags: ['assistants'],
+      summary: 'The consent page an assistant sends a person to',
+      description:
+        'Shows the signed-in person who is asking (a checked host, or a self-given name marked ' +
+        'unverified), the space the access would act in, and what it could do. An error about ' +
+        'the request goes back with the state and issuer only to a trusted redirect address: ' +
+        'loopback, the metadata document host, or one a person here already allowed. Anywhere ' +
+        'else it is shown on this page.',
+      requestParams: { query: oauthAuthorizeQuery },
+      responses: {
+        '200': html('The consent page, or a prompt to sign in first'),
+        '302': redirect('An error returned to the assistant'),
+        '400': html('The client or its redirect address is unknown, or the request was refused'),
+        '429': html('Too many authorization requests from this address'),
+      },
+    },
+    post: {
+      tags: ['assistants'],
+      summary: "The person's answer on the consent page",
+      description:
+        'Accepted only from the page shown to this session for this exact request. Allowing ' +
+        'returns a single-use code bound to the PKCE challenge.',
+      security: [{ session: [] }],
+      requestBody: {
+        content: { 'application/x-www-form-urlencoded': { schema: oauthConsentForm } },
+      },
+      responses: {
+        '302': redirect('Back to the assistant with a code, or with access_denied'),
+        '400': html('The client or its redirect address is unknown, or the request was refused'),
+        '403': html('The page expired or was not shown to this session'),
+        '429': html('Too many authorization requests from this address'),
+      },
+    },
+  },
+  '/oauth/token': {
+    post: {
+      tags: ['assistants'],
+      summary: 'Exchange a code, or rotate a refresh token',
+      description:
+        'A code is used once, with its PKCE verifier. Each refresh returns a new refresh token; ' +
+        'presenting a used one ends every token of that connection. No token outlives 90 days ' +
+        'from the consent, however often it is refreshed.',
+      requestBody: {
+        content: { 'application/x-www-form-urlencoded': { schema: oauthTokenRequest } },
+      },
+      responses: {
+        '200': jsonResponse('Tokens', oauthTokenResponse),
+        '400': oauthProblem('The grant was refused'),
+        '401': oauthProblem('The client is not registered'),
+        '429': oauthProblem('Too many requests from this address'),
+      },
+    },
+  },
+  '/oauth/revoke': {
+    post: {
+      tags: ['assistants'],
+      summary: 'Revoke a token and every token of its connection (RFC 7009)',
+      requestBody: {
+        content: {
+          'application/x-www-form-urlencoded': { schema: z.object({ token: z.string() }) },
+        },
+      },
+      responses: { '200': { description: 'Revoked, or never valid' } },
+    },
+  },
+  '/mcp': {
+    post: {
+      tags: ['assistants'],
+      summary: 'The MCP endpoint (streamable HTTP, one JSON response per message)',
+      description:
+        'Tools: waiting_on, handle, safe_send, remember, recall and status, each acting as the ' +
+        'person the token names, in the space they agreed from. safe_send only proposes: the ' +
+        'person approves the exact text in Melete. A token whose person can no longer use that ' +
+        'space is refused with 401 and its connection ends. Tool calls are limited per connection.',
+      security: [{ assistant: [] }],
+      requestParams: {
+        header: z.object({ 'MCP-Protocol-Version': z.string().optional() }),
+      },
+      requestBody: json(mcpRpcMessage),
+      responses: {
+        '200': jsonResponse('The JSON-RPC response', mcpRpcResponse),
+        '202': { description: 'A notification was accepted' },
+        '400': jsonResponse('Not one JSON-RPC 2.0 message, or an unknown version', mcpRpcResponse),
+        '429': jsonResponse('Too many tool calls from this connection', mcpRpcResponse),
+        '401': {
+          ...problem('No valid access token'),
+          headers: z.object({
+            'WWW-Authenticate': z.string().meta({
+              description: 'Bearer, with resource_metadata naming the protected resource metadata',
+            }),
+          }),
+        },
+      },
+    },
+    get: {
+      tags: ['assistants'],
+      summary: 'Not offered: the endpoint holds no stream',
+      responses: { '405': jsonResponse('POST only', mcpRpcResponse) },
+    },
+    delete: {
+      tags: ['assistants'],
+      summary: 'Not offered: the endpoint holds no session',
+      responses: { '405': jsonResponse('POST only', mcpRpcResponse) },
+    },
+  },
+  '/mcp/clients': {
+    get: {
+      tags: ['assistants'],
+      summary: 'The assistants this person has connected',
+      responses: { '200': jsonResponse('Connected assistants', mcpConnectedClientList) },
+    },
+  },
+  '/mcp/clients/{clientId}': {
+    delete: {
+      tags: ['assistants'],
+      summary: 'Disconnect an assistant: every token it holds for this person ends',
+      requestParams: idParam('clientId', 'The client ID'),
+      responses: {
+        '204': { description: 'Disconnected' },
+        '404': problem('No connection from that assistant'),
+      },
+    },
+  },
+};
+
 /** A refusal that says when to try again. */
 const rateLimited = (description: string) => ({
   ...problem(description),
   headers: z.object({
     'Retry-After': z.string().meta({ description: 'Seconds to wait before the next attempt' }),
   }),
+});
+
+/** Settings manages computers; the companion on each computer uses the `/device` routes. */
+const devicePaths = () => ({
+  '/devices': {
+    get: {
+      tags: ['devices'],
+      summary: 'The computers connected to this space, with what each may do',
+      responses: { '200': jsonResponse('Devices', deviceListResponse) },
+    },
+  },
+  '/devices/pairings': {
+    post: {
+      tags: ['devices'],
+      summary: 'Make a one-time code that connects a computer',
+      description:
+        'The code works once, for ten minutes. The capabilities chosen here are what the ' +
+        'computer may do once paired; running commands is off unless it is chosen.',
+      requestBody: json(devicePairingRequest),
+      responses: {
+        '201': jsonResponse('Code to type into the companion', devicePairingResponse),
+        '403': problem('Space owner required'),
+      },
+    },
+  },
+  '/devices/{id}': {
+    patch: {
+      tags: ['devices'],
+      summary: 'Change what a connected computer may do',
+      requestParams: idParam('id', 'Device id'),
+      requestBody: json(deviceUpdateRequest),
+      responses: {
+        '200': jsonResponse('Device', deviceResponse),
+        '404': problem('Device not found'),
+        '409': problem('Device revoked'),
+      },
+    },
+  },
+  '/devices/{id}/revoke': {
+    post: {
+      tags: ['devices'],
+      summary: 'Disconnect a computer for good',
+      description:
+        'The computer loses access at once: its token stops working, work waiting for it is ' +
+        'refused, and its connection is revoked. Pair again to reconnect it.',
+      requestParams: idParam('id', 'Device id'),
+      responses: {
+        '200': jsonResponse('Revoked device', deviceResponse),
+        '404': problem('Device not found'),
+      },
+    },
+  },
+  '/device/pair': {
+    post: {
+      tags: ['devices'],
+      summary: 'Pair a computer with a one-time code (companion)',
+      security: [],
+      requestBody: json(devicePairRequest),
+      responses: {
+        '201': jsonResponse('The device token, shown once', devicePairResponse),
+        '400': problem('The code is wrong, used or expired'),
+        '429': rateLimited('Too many wrong codes'),
+      },
+    },
+  },
+  '/device/hello': {
+    post: {
+      tags: ['devices'],
+      summary: 'Say what this computer allows, on start and after a change (companion)',
+      security: [{ device: [] }],
+      requestBody: json(deviceHelloRequest),
+      responses: {
+        '200': jsonResponse('What Settings allows', deviceHelloResponse),
+        '401': problem('Token unknown or revoked'),
+      },
+    },
+  },
+  '/device/requests': {
+    get: {
+      tags: ['devices'],
+      summary: 'Wait for work for this computer (companion)',
+      description:
+        'Answers as soon as there is work, or empty after about 25 seconds. `channel=browser` ' +
+        'is the browser bridge, which collects only browser work.',
+      security: [{ device: [] }],
+      requestParams: {
+        query: z.object({ channel: z.enum(['main', 'browser']).optional() }),
+      },
+      responses: {
+        '200': jsonResponse('Work to do', devicePollResponse),
+        '401': problem('Token unknown or revoked'),
+        '403': problem('Using the browser is turned off for this computer'),
+      },
+    },
+  },
+  '/device/browser/leave': {
+    post: {
+      tags: ['devices'],
+      summary: 'The browser extension was switched off (companion)',
+      security: [{ device: [] }],
+      responses: {
+        '200': jsonResponse('Received', z.strictObject({ status: z.literal('ok') })),
+        '401': problem('Token unknown or revoked'),
+      },
+    },
+  },
+  '/device/requests/{id}/result': {
+    post: {
+      tags: ['devices'],
+      summary: 'Answer one request (companion)',
+      security: [{ device: [] }],
+      requestParams: idParam('id', 'Request id'),
+      requestBody: json(deviceResult),
+      responses: {
+        '200': jsonResponse('Received', z.strictObject({ status: z.literal('ok') })),
+        '401': problem('Token unknown or revoked'),
+        '404': problem('No request by that id is waiting'),
+      },
+    },
+  },
 });
 
 /**
@@ -349,7 +757,15 @@ export function buildOpenApiDocument() {
       },
       servers: [{ url: 'http://localhost:8787', description: 'Default self-hosted address' }],
       components: {
-        securitySchemes: { session: { type: 'apiKey', in: 'cookie', name: 'melete_session' } },
+        securitySchemes: {
+          session: { type: 'apiKey', in: 'cookie', name: 'melete_session' },
+          device: { type: 'http', scheme: 'bearer' },
+          assistant: {
+            type: 'http',
+            scheme: 'bearer',
+            description: 'An access token from the OAuth flow, for the MCP endpoint only.',
+          },
+        },
         schemas: { RuntimeEvent: runtimeEvent, HookObservation: hookObservation },
       },
       tags: [
@@ -364,15 +780,74 @@ export function buildOpenApiDocument() {
         { name: 'artifacts' },
         { name: 'approvals' },
         { name: 'connections' },
+        { name: 'devices' },
+        { name: 'phone' },
         { name: 'model-providers' },
         { name: 'knowledge' },
         { name: 'skills' },
         { name: 'memory' },
         { name: 'browser' },
+        { name: 'sandbox' },
         { name: 'learning' },
         { name: 'companies' },
+        { name: 'voice' },
+        { name: 'push' },
+        { name: 'assistants' },
+        { name: 'feedback' },
       ],
       paths: {
+        '/push/public-key': {
+          get: {
+            tags: ['push'],
+            summary: 'The key a browser subscribes with, or null when push is not configured',
+            responses: { '200': jsonResponse('Public key', pushPublicKeyResponse) },
+          },
+        },
+        '/push/subscriptions': {
+          get: {
+            tags: ['push'],
+            summary: 'This person’s devices that receive pushes',
+            responses: { '200': jsonResponse('Subscriptions', pushSubscriptionList) },
+          },
+          post: {
+            tags: ['push'],
+            summary: 'Subscribe this device; the same endpoint again updates it',
+            description:
+              'Only endpoints on a known browser push service, or an origin the operator added, are accepted, with a P-256 public key and a 16-byte secret.',
+            requestBody: json(pushSubscriptionRequest),
+            responses: {
+              '201': jsonResponse('Subscribed', pushSubscriptionResponse),
+              '400': problem(
+                'Not a push service this installation sends to, or keys a browser does not subscribe with',
+              ),
+              '503': problem('Push is not configured'),
+            },
+          },
+        },
+        '/push/subscriptions/{id}': {
+          delete: {
+            tags: ['push'],
+            summary: 'Stop pushes to one of this person’s devices',
+            requestParams: idParam('id', 'Subscription id'),
+            responses: {
+              '200': jsonResponse('Removed', pushSubscriptionResponse),
+              '404': problem('No such subscription for this person'),
+            },
+          },
+        },
+        '/push/settings': {
+          get: {
+            tags: ['push'],
+            summary: 'What Melete pushes, how often, and the quiet hours read from the profile',
+            responses: { '200': jsonResponse('Settings', pushSettingsResponse) },
+          },
+          patch: {
+            tags: ['push'],
+            summary: 'Change what Melete pushes and how often',
+            requestBody: json(pushSettingsUpdate),
+            responses: { '200': jsonResponse('Settings', pushSettingsResponse) },
+          },
+        },
         '/episodes': {
           get: {
             tags: ['learning'],
@@ -1675,6 +2150,64 @@ export function buildOpenApiDocument() {
           },
         },
 
+        ...assistantPaths,
+
+        ...phoneTurnPaths(),
+
+        '/phone/{connectionId}/inbound': {
+          post: {
+            tags: ['phone'],
+            summary: 'The start of an inbound call to a phone line',
+            description:
+              'ElevenLabs calls this before the first word of an inbound call. It needs no session: it ' +
+              "carries the line's own key, which only ElevenLabs holds. A caller whose number is one of " +
+              "the person's own reaches Melete as the person; anybody else hears one polite sentence, " +
+              'and the person gets a note. The answer sets the opening line and the call id every turn ' +
+              'carries back.',
+            requestParams: idParam('connectionId', 'The phone line'),
+            requestBody: json(phoneInboundRequest),
+            responses: {
+              '200': jsonResponse('How the call starts', phoneInboundResponse),
+              '401': problem("Not this line's key, or not an active phone line"),
+            },
+          },
+        },
+
+        '/phone/{connectionId}/events': {
+          post: {
+            tags: ['phone'],
+            summary: 'The report at the end of a call on a phone line',
+            description:
+              'ElevenLabs posts the transcript when a call ends, or a failure when a call never ' +
+              'connected. It needs no session: the `ElevenLabs-Signature` header must be an ' +
+              "HMAC-SHA256 of `<t>.<body>` with the line's webhook secret, no older than thirty " +
+              'minutes. The transcript, outcome and length are kept, the call appears in the ' +
+              'conversation it belongs to, and what it asked for is put to the person as a question.',
+            requestParams: idParam('connectionId', 'The phone line'),
+            requestBody: json(phoneEventRequest),
+            responses: {
+              '200': jsonResponse('Received', z.object({ received: z.literal(true) })),
+              '400': problem('The report could not be read'),
+              '401': problem('Not signed by this line'),
+            },
+          },
+        },
+
+        '/phone-calls/{callId}': {
+          get: {
+            tags: ['phone'],
+            summary: 'Read one phone call',
+            description:
+              'Who was called or called, why, the transcript, what came of it and how long it ' +
+              "lasted. Only the owner of the line's space can read it.",
+            requestParams: idParam('callId', 'Call id'),
+            responses: {
+              '200': jsonResponse('The call', phoneCallResponse),
+              '404': problem('No such call for this person'),
+            },
+          },
+        },
+
         ...accountSignInPaths('google', {
           title: 'Google',
           what: 'Gmail and Google Calendar',
@@ -2005,6 +2538,136 @@ export function buildOpenApiDocument() {
             },
           },
         },
+        '/sandbox/computers': {
+          get: {
+            tags: ['sandbox'],
+            summary: "Find the computer in a job's sandbox",
+            description:
+              "The desktop of the sandbox the job's agent works in, with who is driving it. Only " +
+              'the person who owns the job may ask. Empty when the job has used no sandbox with a desktop.',
+            requestParams: { query: sandboxComputerQuery },
+            responses: {
+              '200': jsonResponse("The job's computers", sandboxComputerList),
+              '401': problem('Owner authentication required'),
+              '404': problem('No such job'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/takeover': {
+          post: {
+            tags: ['sandbox'],
+            summary: 'Take control of the computer from the agent',
+            description:
+              'Requires the owner session and same-origin protection. The control epoch is ' +
+              'incremented and the job is parked waiting for input before this answers; every ' +
+              'computer action the agent planned before is refused from then on.',
+            requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            responses: {
+              '200': jsonResponse('The person holds control', sandboxControlResponse),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused'),
+              '404': problem('No such computer'),
+              '409': problem('Control could not change'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/handback': {
+          post: {
+            tags: ['sandbox'],
+            summary: 'Give the computer back to the agent',
+            description:
+              'Increments the control epoch again. The job stays parked until the person answers it.',
+            requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            responses: {
+              '200': jsonResponse('The agent holds control', sandboxControlResponse),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused'),
+              '404': problem('No such computer'),
+              '409': problem('Control could not change'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/live': {
+          post: {
+            tags: ['sandbox'],
+            summary: "Open a live view of the sandbox's desktop",
+            description:
+              'Watching is allowed while the agent drives; input only while the person holds ' +
+              'control. The live id is held in memory and bound to this principal, session, ' +
+              'control epoch and address. One view per computer.',
+            requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            responses: {
+              '200': jsonResponse('The live view is open', liveOpen),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused'),
+              '404': problem('No such computer'),
+              '409': problem('The live view could not open'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/live/frames': {
+          get: {
+            tags: ['sandbox'],
+            summary: 'Follow the desktop as Server-Sent Events',
+            description:
+              'JPEG frames of the whole desktop, paced and written through, never stored, and the ' +
+              'end of the view. Only frames carry an id; a reconnect is repainted from the screen as it is now.',
+            requestParams: {
+              ...idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+              query: z.object({
+                live_id: liveId.meta({ description: 'The live id this view was opened with' }),
+                after: z.string().optional().meta({
+                  description: 'Frame sequence to resume after, for clients without Last-Event-ID',
+                }),
+              }),
+            },
+            responses: {
+              '200': {
+                description: 'The live event stream',
+                content: { 'text/event-stream': { schema: z.string() } },
+              },
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused, or another person or address'),
+              '404': problem('No such computer'),
+              '410': problem('The live view is closed'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/live/input': {
+          post: {
+            tags: ['sandbox'],
+            summary: "Send a person's input to the desktop",
+            description:
+              'Pointer, wheel, key and text events at the live viewport, dispatched in order. ' +
+              'Refused unless the person holds control under the epoch the view was opened with.',
+            requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            requestBody: json(liveUp),
+            responses: {
+              '200': jsonResponse('Events accepted in order', liveInputResponse),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused, or another person or address'),
+              '404': problem('No such computer'),
+              '409': problem('The person does not hold control'),
+              '410': problem('The live view is closed'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/live/close': {
+          post: {
+            tags: ['sandbox'],
+            summary: 'Close the live view of the desktop',
+            description: 'Ends the view; control stays where it is.',
+            requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            requestBody: json(liveClose),
+            responses: {
+              '200': jsonResponse('The live view is closed', liveClosed),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused, or another person or address'),
+              '404': problem('No such computer'),
+              '410': problem('The live view was already closed'),
+            },
+          },
+        },
         '/spaces/{spaceId}/companies/scan': {
           post: {
             tags: ['companies'],
@@ -2139,6 +2802,74 @@ export function buildOpenApiDocument() {
           },
         },
 
+        '/waiting-on': {
+          get: {
+            tags: ['companies'],
+            summary: 'What this person is waiting on: money owed to them, and replies',
+            description:
+              'Combines the company map’s owed items with messages the person sent that ' +
+              'asked for something and have not been answered after three days. The owed ' +
+              'figure is the company map’s own. `top` holds up to three nothing is chasing ' +
+              'yet. A reply nothing is chasing that went out more than thirty days ago is ' +
+              'left out. Reads only; a scan is started with ' +
+              '`POST /spaces/{spaceId}/companies/scan` in the space `scan.space_id` names.',
+            requestParams: {
+              query: z.object({
+                space_id: z
+                  .string()
+                  .optional()
+                  .meta({ description: 'One space; every space the person can see if absent' }),
+              }),
+            },
+            responses: {
+              '200': jsonResponse('What is waited on, and the latest scan', waitingOn),
+              '403': problem('This space is not accessible to the signed-in account'),
+            },
+          },
+        },
+        '/waiting-on/replies/{id}/chase': {
+          post: {
+            tags: ['companies'],
+            summary: 'Start the job that chases a reply the person is waiting on',
+            description:
+              'Creates the job that runs the chase-reply playbook for one sent message. The ' +
+              'follow-up goes through the existing approval path, which shows the exact text; ' +
+              'this route starts the work, it does not send.',
+            requestParams: {
+              ...idParam('id', 'Awaited reply id'),
+              query: z.object({ space_id: z.string().optional() }),
+            },
+            responses: {
+              '200': jsonResponse(
+                'Already being chased, by the job named here',
+                z.object({ job_id: z.string() }),
+              ),
+              '201': jsonResponse('The job now chasing it', z.object({ job_id: z.string() })),
+              '404': problem('No such awaited reply for this person'),
+              '409': problem('Already finished, or no longer quotable'),
+              '503': problem('Chasing is not connected yet'),
+            },
+          },
+        },
+        '/waiting-on/replies/{id}/drop': {
+          post: {
+            tags: ['companies'],
+            summary: 'Dismiss a reply the person is no longer waiting on',
+            description:
+              'Marks the awaited reply dropped, so it leaves the list and a later scan does ' +
+              'not bring it back. A chase that has it is stopped first.',
+            requestParams: {
+              ...idParam('id', 'Awaited reply id'),
+              query: z.object({ space_id: z.string().optional() }),
+            },
+            responses: {
+              '200': jsonResponse('The reply, now dropped', awaitedReply),
+              '404': problem('No such awaited reply for this person'),
+              '503': problem('Stopping its chase is not connected yet'),
+            },
+          },
+        },
+
         '/ledger/{id}/stop': {
           post: {
             tags: ['companies'],
@@ -2155,6 +2886,142 @@ export function buildOpenApiDocument() {
               '404': problem('No such item for this person'),
               '409': problem('The item is already settled or dropped'),
               '503': problem('Stopping is not connected yet'),
+            },
+          },
+        },
+
+        '/feedback': {
+          post: {
+            tags: ['feedback'],
+            summary: 'Report a problem with the app',
+            description:
+              'Stores what the person wrote and what the page said about itself, and answers with a ' +
+              'short id such as `FB-7K3Q` to quote when asking for a fix. Console lines, request ' +
+              'addresses and the route are redacted again before they are stored. Each person may ' +
+              'send a few reports in a short time; more are refused until the window passes.',
+            requestBody: json(createFeedbackRequest),
+            responses: {
+              '201': jsonResponse('Stored', feedbackResponse),
+              '400': problem('Invalid request'),
+              '401': problem('A session is required'),
+              '429': rateLimited('Too many reports from this person in a short time'),
+            },
+          },
+          get: {
+            tags: ['feedback'],
+            summary: 'List problem reports, newest first',
+            description:
+              'The person who runs the installation sees every report and `can_manage` is true. ' +
+              'Anyone else sees only the reports they sent.',
+            requestParams: { query: feedbackListQuery },
+            responses: {
+              '200': jsonResponse('Reports', feedbackListResponse),
+              '401': problem('A session is required'),
+            },
+          },
+        },
+
+        '/feedback/{id}': {
+          get: {
+            tags: ['feedback'],
+            summary: 'Read one problem report with its page details',
+            requestParams: idParam('id', 'Report id, such as FB-7K3Q'),
+            responses: {
+              '200': jsonResponse('Report', feedbackResponse),
+              '404': problem('No such report, or not one this person sent'),
+            },
+          },
+          patch: {
+            tags: ['feedback'],
+            summary: 'Change a report’s status, with an optional note',
+            requestParams: idParam('id', 'Report id, such as FB-7K3Q'),
+            requestBody: json(updateFeedbackRequest),
+            responses: {
+              '200': jsonResponse('Updated', feedbackResponse),
+              '400': problem('Invalid request'),
+              '403': problem('Only the person who runs the installation changes a status'),
+              '404': problem('No such report'),
+            },
+          },
+        },
+
+        '/model-settings': {
+          get: {
+            tags: ['model-providers'],
+            summary: 'Which model new attempts use, and how each provider is connected',
+            description:
+              'Any signed-in account may read it; `can_edit` says whether this one may change it. ' +
+              'No key is ever returned, only whether one is set and its last four characters. A key ' +
+              'the server environment names wins over one entered here and is shown as `operator`.',
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '401': problem('Not signed in'),
+            },
+          },
+        },
+
+        '/model-settings/test': {
+          post: {
+            tags: ['model-providers'],
+            summary: 'Try a provider key with one small call, and list the provider’s models',
+            description:
+              'Asks the provider for its model list with the given key, or with the key already set. ' +
+              'A refusal answers 200 with `ok: false` and a plain sentence; nothing is saved.',
+            requestBody: json(testModelConnectionRequest),
+            responses: {
+              '200': jsonResponse('What the provider answered', testModelConnectionResponse),
+              '400': problem('Invalid request'),
+              '403': problem('Only the setup owner changes the model'),
+            },
+          },
+        },
+
+        '/model-settings/keys/{provider}': {
+          put: {
+            tags: ['model-providers'],
+            summary: 'Store a provider key, sealed with the master key',
+            requestParams: { path: z.object({ provider: keyedModelProvider }) },
+            requestBody: json(saveModelKeyRequest),
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '400': problem('Invalid key or endpoint address'),
+              '403': problem('Only the setup owner changes the model'),
+              '409': problem('The server environment already sets this provider’s key'),
+              '503': problem('MELETE_MASTER_KEY is not set, so the key cannot be sealed'),
+            },
+          },
+          delete: {
+            tags: ['model-providers'],
+            summary: 'Remove a key entered in the app',
+            requestParams: { path: z.object({ provider: keyedModelProvider }) },
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '403': problem('Only the setup owner changes the model'),
+            },
+          },
+        },
+
+        '/model-settings/default': {
+          put: {
+            tags: ['model-providers'],
+            summary: 'Choose the model new attempts use',
+            description:
+              'Takes effect for the next attempt, without a restart. The provider must already have ' +
+              'a key or a sign-in.',
+            requestBody: json(setDefaultModelRequest),
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '400': problem('Invalid request'),
+              '403': problem('Only the setup owner changes the model'),
+              '409': problem('The provider has no key or sign-in yet'),
+            },
+          },
+          delete: {
+            tags: ['model-providers'],
+            summary: 'Go back to the server’s default model',
+            responses: {
+              '200': jsonResponse('Model settings', modelSettingsResponse),
+              '403': problem('Only the setup owner changes the model'),
             },
           },
         },
@@ -2237,6 +3104,90 @@ export function buildOpenApiDocument() {
             },
           },
         },
+
+        '/voice': {
+          get: {
+            tags: ['voice'],
+            summary: 'Which voice features this installation has',
+            description:
+              'Both are false until the operator sets a speech provider key. Push-to-talk needs a ' +
+              'provider that transcribes; voice mode needs ElevenLabs. Given a conversation, or the ' +
+              'agent a new chat will have, `off_reason` says why voice is off there: the space or ' +
+              'agent is marked private, or the conversation is about a sensitive topic.',
+            requestParams: { query: voiceContextQuery },
+            responses: { '200': jsonResponse('Voice features and their limits', voiceStatus) },
+          },
+        },
+        '/voice/transcriptions': {
+          post: {
+            tags: ['voice'],
+            summary: 'Transcribe a push-to-talk clip',
+            description:
+              'The body is the recording itself. The words come back for the person to review; ' +
+              'nothing is sent, and the audio is not kept. A clip over two minutes or 5 MB is ' +
+              'refused, and so is one past the person’s daily allowance.',
+            requestParams: { query: voiceTranscriptionQuery },
+            requestBody: {
+              required: true,
+              content: {
+                'audio/webm': { schema: z.string().meta({ format: 'binary' }) },
+                'audio/ogg': { schema: z.string().meta({ format: 'binary' }) },
+                'audio/mp4': { schema: z.string().meta({ format: 'binary' }) },
+                'audio/wav': { schema: z.string().meta({ format: 'binary' }) },
+              },
+            },
+            responses: {
+              '200': jsonResponse('What was heard', voiceTranscription),
+              '400': problem('Not a recording this service reads'),
+              '403': problem('Voice is off in a private space, agent or sensitive conversation'),
+              '404': problem('Voice is not set up on this installation, or no such conversation'),
+              '413': problem('The recording is longer or larger than the limit'),
+              '429': problem('The daily allowance for transcription is used up'),
+              '502': problem('The speech provider could not transcribe it'),
+            },
+          },
+        },
+        '/conversations/{id}/voice/session': {
+          post: {
+            tags: ['voice'],
+            summary: 'Open a realtime transcription session for voice mode',
+            description:
+              'Answers with an address carrying a single-use token; the provider key never ' +
+              'reaches the browser. Each finished utterance is sent as an ordinary message to ' +
+              'this conversation.',
+            requestParams: idParam('id', 'Conversation id'),
+            responses: {
+              '201': jsonResponse('Open `url` as a WebSocket', voiceSession),
+              '403': problem('Voice is off in a private space, agent or sensitive conversation'),
+              '404': problem('No such conversation, or voice mode is not set up'),
+              '429': problem('The daily allowance of voice sessions is used up'),
+              '502': problem('The speech provider could not open a session'),
+            },
+          },
+        },
+        '/conversations/{id}/voice/speech': {
+          post: {
+            tags: ['voice'],
+            summary: 'Read part of a reply aloud',
+            description:
+              'Streams speech for the text as it is made. Nothing is kept. Each request counts ' +
+              'its characters against the person’s daily allowance.',
+            requestParams: idParam('id', 'Conversation id'),
+            requestBody: json(voiceSpeechRequest),
+            responses: {
+              '200': {
+                description: 'Speech, streamed',
+                content: { 'audio/mpeg': { schema: z.string().meta({ format: 'binary' }) } },
+              },
+              '400': problem('Invalid request'),
+              '403': problem('Voice is off in a private space, agent or sensitive conversation'),
+              '404': problem('No such conversation, or voice mode is not set up'),
+              '429': problem('The daily allowance for reading aloud is used up'),
+              '502': problem('The speech provider could not speak it'),
+            },
+          },
+        },
+        ...devicePaths(),
       },
     },
     // Shared shapes such as `job` appear on many paths; emitting them once under

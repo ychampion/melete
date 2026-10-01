@@ -25,6 +25,7 @@ import {
 } from '../../src/learning/schema.ts';
 import { newId } from '../../src/memory/db.ts';
 import { principalContext } from '../../src/principals/authority.ts';
+import { PostgresPrivacyStore, PrivacyRouter } from '../../src/privacy/index.ts';
 import { learningFixture, learningScope, rejectsWith, wake } from './learning-fixtures.ts';
 
 const fixture = await learningFixture();
@@ -38,6 +39,7 @@ let output: unknown = {
 let answer: string | null = null;
 const gateway = fixture
   ? await openProposalGateway({
+      privacy: new PrivacyRouter({ store: new PostgresPrivacyStore(fixture.handle.sql) }),
       db: fixture.handle.db,
       provider: 'fake',
       model: 'scripted-proposer-v1',

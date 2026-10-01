@@ -11,6 +11,9 @@
  * explicit opt-in to the demonstration: the scripted provider and the test
  * connector, and no key at all.
  *
+ * An ElevenLabs key in this command's environment (ELEVENLABS_API_KEY) is
+ * written too, which turns voice on; without one voice stays off.
+ *
  * `--tailscale` settles the node name the tailnet overlay joins under. It
  * writes no credential: the auth key is issued by the Tailscale admin console
  * and is pasted into deploy/.env afterwards.
@@ -34,6 +37,7 @@ import {
   providerSelectionProblem,
   providersFromEnv,
 } from '../../apps/melete/src/gateway/providers.ts';
+import { generateVapidKeys } from '../../apps/melete/src/push/webpush.ts';
 import {
   type CommandOutput,
   readHostDocker,
@@ -167,6 +171,22 @@ export function providerSettings(
   };
 }
 
+/**
+ * The voice key, when this command's environment carries one. It is optional:
+ * without it the file keeps the template's empty value and voice stays off.
+ */
+export function voiceSettings(
+  environment: Record<string, string | undefined>,
+): Record<string, string> {
+  const value = environment.ELEVENLABS_API_KEY?.trim();
+  if (!value) return {};
+  if (/\s/.test(value))
+    throw new ConfigureRefusal(
+      'ELEVENLABS_API_KEY contains a space or a line break, so it is not a key as written. Set it again and run this again.',
+    );
+  return { ELEVENLABS_API_KEY: value };
+}
+
 export type SocketAccess = {
   /** The host's own socket, as `stat` reports it. */
   statHost: () => Promise<{ isSocket(): boolean; gid: number }>;
@@ -201,6 +221,17 @@ export async function dockerSocketGroup(host: DockerHostFacts, access: SocketAcc
 /** A label for this installation's sandboxes, unique enough to share a provider account. */
 export function sandboxProject(): string {
   return `melete-${randomBytes(4).toString('hex')}`;
+}
+
+/**
+ * The service's database address, for the user and database the template
+ * names: Postgres creates both from POSTGRES_USER and POSTGRES_DB, so the
+ * address follows them rather than assuming the defaults.
+ */
+export function databaseUrl(template: Record<string, string>, password: string): string {
+  const user = template.POSTGRES_USER?.trim() || 'melete';
+  const database = template.POSTGRES_DB?.trim() || 'melete';
+  return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@postgres:5432/${encodeURIComponent(database)}`;
 }
 
 /** A reason to stop that the operator acts on; printed as one line, without a stack. */
@@ -243,7 +274,9 @@ async function configure(root: string) {
   if (existsSync(target)) throw new ConfigureRefusal(ENV_EXISTS);
   const template = await readFile(resolve(root, 'deploy/.env.example'), 'utf8');
   // A production run without its key stops here, before Docker is asked anything.
-  const provider = providerSettings(options, parseEnvFile(template), process.env);
+  const defaults = parseEnvFile(template);
+  const provider = providerSettings(options, defaults, process.env);
+  const voice = voiceSettings(process.env);
   // An unsupported engine, Compose or host is named now, not as a failed `up` later.
   const host = readDockerHost(spawnCommand, root);
   const unsupported = judgeDockerMachine(readHostDocker(), host);
@@ -258,7 +291,11 @@ async function configure(root: string) {
     },
   });
   const password = randomBytes(24).toString('hex');
+  // This installation's own Web Push key pair: phones are reached without a third party.
+  const vapid = await generateVapidKeys();
   const values: Record<string, string> = {
+    MELETE_VAPID_PUBLIC_KEY: vapid.publicKey,
+    MELETE_VAPID_PRIVATE_KEY: vapid.privateKey,
     MELETE_MASTER_KEY: randomBytes(32).toString('base64'),
     MELETE_CAPABILITY_KEY: randomBytes(32).toString('hex'),
     // Labels this installation's sandboxes at a provider; written once, kept after.
@@ -266,9 +303,10 @@ async function configure(root: string) {
     MELETE_APPROVAL_KEY: randomBytes(32).toString('hex'),
     MELETE_RUNTIME_KEY: randomBytes(32).toString('hex'),
     POSTGRES_PASSWORD: password,
-    DATABASE_URL: `postgres://melete:${password}@postgres:5432/melete`,
+    DATABASE_URL: databaseUrl(defaults, password),
     DOCKER_GID: String(dockerGid),
     ...provider,
+    ...voice,
     // TS_AUTHKEY stays as the template leaves it, which is empty: it is issued by
     // the Tailscale admin console and nothing here can invent one.
     ...(nodeName === null ? {} : { TS_HOSTNAME: nodeName }),
