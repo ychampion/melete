@@ -11,7 +11,8 @@
  *
  * In the person's words one topic word is not enough either. It takes a phrase
  * about themselves or their own records ("my therapist", "I was diagnosed
- * with", "my bank account number", "my tax returns"), or three different topic
+ * with", "my bank account number", "my tax returns"), a crisis or condition
+ * named in any form ("suicide", "in rehab", "PTSD"), or three different topic
  * words in what they wrote, so a passing "anxiety about the trip" or a
  * question about a news story does not move a conversation off the cloud
  * model. The person can clear a verdict that is wrong.
@@ -56,6 +57,12 @@ const TOPICS: Record<SensitiveTopic, Topic> = {
       phrase(
         `my (?:therapist|psychiatrist|psychologist|counsel(?:l)?or|shrink)|I(?:['’]m| am) (?:feeling )?(?:suicidal|depressed)|(?:kill|hurt|harm) myself|relapse prevention plan`,
       ),
+      // A crisis or a condition the person names is sensitive however they put
+      // it, and whoever it is about ("I think about suicide", "my brother is in
+      // rehab"). A wrong verdict costs one tap to clear; a missed one sends it on.
+      phrase(
+        String.raw`suicid(?:e|al)|self[- ]harm(?:ing|ed)?|end(?:ing)? my (?:own )?life|eating disorders?|anorexi(?:a|c)|bulimi(?:a|c)|PTSD|schizophreni\w*|(?:in|into|to|from|out of) rehab|rehab (?:for|program(?:me)?|centre|center|clinic|facility)|psychiatric (?:hospital|ward|unit|hold|admission)`,
+      ),
       about(
         String.raw`depression|depressive episodes?|anxiety (?:disorder|attacks?)|panic attacks?|PTSD|bipolar|schizophreni\w*|eating disorder|addiction|relapsed?|rehab|OCD|ADHD|self[- ]harm(?:ing)?|suicidal(?: thoughts)?|mental health|trauma|therapy|psychiatric \w+`,
       ),
@@ -68,7 +75,7 @@ const TOPICS: Record<SensitiveTopic, Topic> = {
         String.raw`bank statements?|tax returns?|W-?2s?|W-2 forms?|1099s?|1099-(?:MISC|NEC|INT|DIV|B|K|R)|P60s?|payslips?|pay ?stubs?|credit reports?|mortgage (?:statements?|applications?)|loan applications?|brokerage statements?|401\(?k\)? (?:statements?|balances?)|IRA (?:statements?|balances?)|account statements?|transaction history|card statements?`,
       ),
       phrase(
-        String.raw`my (?:bank account(?: number| details| balance)?|account (?:number|balance)|routing number|sort code|IBAN|card number|credit card(?: number| statement| debt)?|debts?|salary|income|finances|net worth|credit score|savings(?: account)?|investments?|investment portfolio|pension|mortgage|loans?|tax(?:es)?|bankruptcy|401\(?k\)?|IRA)|I(?:['’]m| am)? (?:filing|filed|declaring|declared) (?:for )?bankruptcy|I owe`,
+        String.raw`(?:my|our) (?:bank account(?: number| details| balance)?|account (?:number|balance)|routing number|sort code|IBAN|card number|credit card(?: number| statement| debt)?|debts?|salary|income|finances|net worth|credit score|savings(?: account)?|investments?|investment portfolio|pension|mortgage|loans?|tax(?:es)?|bankruptcy|401\(?k\)?|IRA)|(?:I|we)(?:['’]m|['’]re| am| are)? (?:filing|filed|declaring|declared) (?:for )?bankruptcy|I owe`,
       ),
     ],
     weak: /\b(?:account balance|transactions?|salary|income|tax(?:es)?|IRS|HMRC|mortgage|loan|debts?|credit card|investments?|portfolio|pension|dividends?|brokerage|overdraft|interest rate|bankruptcy|credit score|net worth)\b/i,

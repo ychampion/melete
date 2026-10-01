@@ -114,8 +114,9 @@ A conversation does not go to a cloud model when:
 - it is about therapy or mental health, medical records, or personal finances
   (statements, taxes). This is decided only from what you write: a phrase about
   yourself or your own records ("my therapist", "I was diagnosed with", "my bank
-  statements"), or several different topic words together. One word on its own
-  is not enough, and nothing a tool brings back (a web page, a file, an email)
+  statements"), a crisis or condition named in any form ("suicide", "in
+  rehab", "PTSD"), or several different topic words together. Other single
+  words are not enough, and nothing a tool brings back (a web page, a file, an email)
   ever decides it, though its details are still swapped for placeholders. Once
   a conversation is found sensitive it stays that way until you say it isn't:
   the chat shows why it is kept private, with **It isn't** to clear it.

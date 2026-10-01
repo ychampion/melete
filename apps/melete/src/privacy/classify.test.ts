@@ -45,6 +45,26 @@ describe('only a phrase about the person makes a conversation sensitive', () => 
     expect(classify(text, all)).toBeNull();
   });
 
+  test.each([
+    ['I attempted suicide last year and my new job asks about it', 'therapy'],
+    ['My daughter tried suicide on Friday, what do I tell her school', 'therapy'],
+    ['I think about suicide every day', 'therapy'],
+    ['I self-harm when I am stressed', 'therapy'],
+    ['Since the accident I struggle with PTSD', 'therapy'],
+    ['I struggle with an eating disorder', 'therapy'],
+    ['My brother is in rehab for alcohol addiction', 'therapy'],
+    ['Rehab for my sister starts Monday, book the train', 'therapy'],
+    ['Finding a psychiatric hospital for my dad', 'therapy'],
+    ['We are declaring bankruptcy', 'finance'],
+    ['Our net worth is 2.3 million, how should we split it in the divorce', 'finance'],
+  ] as const)(
+    "a crisis, a condition or a household in the person's own words counts: %s",
+    (text, topic) => {
+      expect(classify(text, all)).toBe(topic);
+      expect(classifyParts([text], all, new Map())).toBe(topic);
+    },
+  );
+
   test('three different topic words in what the person wrote still count', () => {
     expect(classify('I feel anxious, my mood is low and journaling my feelings helps', all)).toBe(
       'therapy',
