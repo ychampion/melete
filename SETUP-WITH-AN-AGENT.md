@@ -64,6 +64,9 @@ Melete needs:
     [Docker's instructions](https://docs.docker.com/engine/install/) for the
     distribution, with the Compose plugin. On Windows or macOS, the person
     installs [Docker Desktop](https://docs.docker.com/desktop/) and starts it.
+  - If `docker version` answers `permission denied` on Linux, this account
+    cannot reach the Docker socket. Stop and ask: the fix, adding the account
+    to the `docker` group or running as root, is the person's choice.
   - On Windows, Docker Desktop needs the WSL 2 backend, Linux containers and at
     least 4 GB of memory for its VM. The
     [Windows section](docs/DEPLOYMENT.md#windows-docker-desktop) shows how to
