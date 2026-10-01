@@ -75,6 +75,7 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
   let timer: ReturnType<typeof setInterval> | undefined;
   let reconcileTimer: ReturnType<typeof setInterval> | undefined;
   const pending = new Set<Promise<void>>();
+  const settling = new Set<string>();
 
   const wiring: SandboxWiring = {
     async reconcile(signal) {
@@ -121,10 +122,17 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
     },
 
     afterAttempt(attemptId) {
+      // An attempt can be reported ended twice (its outcome, then its return);
+      // one settlement at a time, so its workspace is not suspended twice.
+      if (settling.has(attemptId)) return;
+      settling.add(attemptId);
       const work = wiring
         .settleAttempt(attemptId, AbortSignal.timeout(120_000))
         .catch(() => {})
-        .finally(() => pending.delete(work));
+        .finally(() => {
+          pending.delete(work);
+          settling.delete(attemptId);
+        });
       pending.add(work);
     },
 

@@ -626,6 +626,17 @@ export class ExperienceEvents {
               type: 'note',
               text: 'Part of the answer was interrupted. The saved progress is still here.',
             });
+          } else if (source.type === 'notice' && payload.kind === 'computer_busy') {
+            const holder =
+              typeof payload.held_by === 'string' && payload.held_by.trim()
+                ? plainText(payload.held_by, 'another conversation', 120)
+                : null;
+            await emit(source, {
+              type: 'note',
+              text: holder
+                ? `Waiting for the agent's computer: it is in use by "${holder}".`
+                : "Waiting for the agent's computer: another conversation is using it.",
+            });
           }
         }
         await tx

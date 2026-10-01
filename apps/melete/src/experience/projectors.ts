@@ -166,6 +166,13 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
     'Looked at a page in your browser',
   ],
 };
+/** What a permission card asks for a command or code in the agent's own computer. */
+const SANDBOX_ASKS: Record<string, string> = {
+  'terminal.run': "Run a command on the agent's computer",
+  'exec.run': "Run a command in the agent's workspace",
+  'exec.python': "Run code in the agent's workspace",
+};
+
 /** What a permission card asks for a connected computer, before anything has run. */
 const DEVICE_ASKS: Record<string, string> = {
   'device.run': 'Run a command on your computer',
@@ -244,6 +251,52 @@ function deviceFacts(kind: string, payload: Record<string, unknown>) {
     ...(namesLocalNetwork(payload.url)
       ? [{ label: 'Network', value: 'This page is on your computer or your local network' }]
       : []),
+  ];
+}
+
+/**
+ * The exact command or code a sandbox action will run, and where, as a
+ * computer card shows it. A command runs from the agent's workspace, `/work`,
+ * unless it names a folder inside it.
+ */
+function sandboxFacts(kind: string, payload: Record<string, unknown>) {
+  if (!(kind in SANDBOX_ASKS)) return [];
+  const intent =
+    kind === 'terminal.run'
+      ? payload
+      : payload.intent && typeof payload.intent === 'object'
+        ? (payload.intent as Record<string, unknown>)
+        : {};
+  const shown = (value: unknown) =>
+    typeof value === 'string' && value.length
+      ? showInvisible(
+          value.length > DEVICE_LIMITS.max_command_chars
+            ? `${value.slice(0, DEVICE_LIMITS.max_command_chars)}…`
+            : value,
+        )
+      : null;
+  const command = shown(intent.command);
+  const code = shown(intent.code);
+  const cwd = typeof intent.cwd === 'string' && intent.cwd && intent.cwd !== '.' ? intent.cwd : '';
+  const whole = [intent.command, intent.code].find((value) => typeof value === 'string');
+  const cut =
+    typeof whole === 'string' && whole.length > DEVICE_LIMITS.max_command_chars
+      ? [
+          {
+            label: 'Length',
+            value: `${whole.length} characters; the first ${DEVICE_LIMITS.max_command_chars} are shown. Read it all before allowing it.`,
+          },
+        ]
+      : [];
+  return [
+    ...(command ? [{ label: 'Command', value: command }] : []),
+    ...(code ? [{ label: 'Code', value: code }] : []),
+    ...cut,
+    { label: 'Runs in', value: showInvisible(cwd ? `/work/${cwd}` : '/work') },
+    {
+      label: 'Computer',
+      value: "The agent's own computer, not yours",
+    },
   ];
 }
 
@@ -611,7 +664,7 @@ export function projectPermission(input: {
     ? `${base} to ${recipientText(payload)}`
     : file
       ? `Save ${file.path}`
-      : (DEVICE_ASKS[input.action.kind] ?? base);
+      : (DEVICE_ASKS[input.action.kind] ?? SANDBOX_ASKS[input.action.kind] ?? base);
   const facts = [
     ...(file
       ? [
@@ -620,6 +673,7 @@ export function projectPermission(input: {
         ]
       : []),
     ...deviceFacts(input.action.kind, payload),
+    ...sandboxFacts(input.action.kind, payload),
     ...(draft
       ? [
           ...(input.connection.sender ? [{ label: 'From', value: input.connection.sender }] : []),

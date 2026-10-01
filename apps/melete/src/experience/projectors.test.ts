@@ -148,6 +148,50 @@ test('a permission to send shows the mailbox it leaves from above the recipient'
   expect(JSON.stringify(shown)).not.toMatch(BACKEND_VOCABULARY);
 });
 
+test("a permission to run a command in the agent's computer shows the command and where it runs", () => {
+  const command: ActionRow = {
+    ...base,
+    kind: 'terminal.run',
+    effectClass: 'write_reversible',
+    connectionId: 'sandbox-connection',
+    canonicalPayload: { command: 'date -u', cwd: 'reports' },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const computer = { id: 'sandbox-connection', label: 'Computer', provider: 'sandbox' };
+  const shown = projectPermission({
+    id: 'apr_cmd',
+    version: 'v1',
+    action: command,
+    connection: computer,
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: true,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+  });
+  // Asked for in the present tense, before anything has run.
+  expect(shown.what).toBe("Run a command on the agent's computer");
+  expect(shown.preview?.title).toBe("Run a command on the agent's computer");
+  expect(shown.preview?.facts).toEqual([
+    { label: 'Command', value: 'date -u' },
+    { label: 'Runs in', value: '/work/reports' },
+    { label: 'Computer', value: "The agent's own computer, not yours" },
+  ]);
+  // A long command says it was cut, and anything invisible in it is written out.
+  const long = projectPermission({
+    id: 'apr_long',
+    version: 'v1',
+    action: { ...command, canonicalPayload: { command: `echo ‮${'x'.repeat(5000)}` } },
+    connection: computer,
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: false,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+  });
+  const facts = long.preview?.facts ?? [];
+  expect(facts[0]?.value.startsWith('echo <U+202E>x')).toBe(true);
+  expect(facts.find((fact) => fact.label === 'Length')?.value).toContain('5006 characters');
+  expect(facts.find((fact) => fact.label === 'Runs in')?.value).toBe('/work');
+});
+
 test('a decided permission says which of the three choices was taken', () => {
   const at = new Date('2026-09-24T09:00:00.000Z');
   const decided = (decision: string, ruleSaved: boolean) =>

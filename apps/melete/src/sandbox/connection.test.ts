@@ -1,5 +1,30 @@
 import { expect, test } from 'bun:test';
-import { NOT_A_SANDBOX_KEY, sandboxCredentialValue } from './connection.ts';
+import {
+  NOT_A_SANDBOX_KEY,
+  sandboxCredentialValue,
+  sandboxSpecFor,
+  sandboxTimeZone,
+} from './connection.ts';
+
+test("a sandbox is made in the person's time zone, and a zone that is not one is left out", () => {
+  const spec = (timeZone?: string | null) =>
+    sandboxSpecFor(
+      {
+        adapter: 'e2b',
+        image: 'base',
+        egress: 'deny_all',
+        persistence: 'ephemeral',
+        lifetime_seconds: 600,
+      },
+      { project: 'p', connectionId: 'conn_1', spaceId: 'sp_1', session: 'sbx_1', timeZone },
+    ).env;
+  expect(spec('Europe/Paris')).toEqual({ LANG: 'C.UTF-8', TZ: 'Europe/Paris' });
+  expect(spec(null)).toEqual({ LANG: 'C.UTF-8' });
+  // An unknown zone or anything that is not a zone name reads as UTC, not as text in the shell.
+  expect(sandboxTimeZone('Not/AZone')).toBe('UTC');
+  expect(sandboxTimeZone('$(reboot)')).toBe('UTC');
+  expect(sandboxTimeZone(undefined)).toBeNull();
+});
 
 test("a secret that is not the adapter's key is refused in one sentence that never quotes it", () => {
   // A mail password is sealed as its raw text; the rest are JSON of the wrong shape.

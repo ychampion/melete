@@ -69,6 +69,9 @@ import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
 
 export const HEARTBEAT_MS = 15_000;
 export const LEASE_MS = 45_000;
+/** What a conversation's turn ends with when its work was cut off and could not be resumed. */
+export const LOST_NOTE =
+  'This was interrupted before it could finish, for example because Melete restarted while it was working. Nothing more will happen here until you send another message.';
 
 export type RunnerOptions = {
   key: string;
@@ -117,6 +120,12 @@ export class AttemptRunner {
   onWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
   onApprovalWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
   afterRecovery?: () => Promise<void>;
+  /**
+   * Called once an attempt this process ran has ended, however it ended:
+   * finished, stopped, fenced, lost or cut short by shutdown. Outside any
+   * transaction; a handler must not throw.
+   */
+  readonly onSettled: Array<(attemptId: string) => void> = [];
   readonly onFinished: Array<
     (
       tx: Transaction,
@@ -954,27 +963,56 @@ export class AttemptRunner {
       })
       .where(eq(attempt.id, attemptId));
     await this.gap(tx, attemptId, row.id, 'lost');
+    const moved =
+      row.state === 'running'
+        ? await this.jobs.move(
+            tx,
+            row,
+            {
+              kind: 'attempt_failed',
+              retryable: true,
+              attempts_remaining: Math.max(
+                0,
+                jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0),
+              ),
+            },
+            { attemptId, reason: 'recovery' },
+          )
+        : row;
+    // A conversation whose last attempt was lost has ended: its turn says so,
+    // in the saved copy and on the stream, instead of looking busy for ever.
+    const turnFailed = Boolean(row.currentTurnId) && moved.state === 'failed';
     await appendEvent(tx, {
       jobId: row.id,
       attemptId,
       type: 'attempt_ended',
-      payload: { kind: 'lost', reason },
+      payload: {
+        kind: 'lost',
+        reason,
+        ...(turnFailed
+          ? {
+              outcome: { kind: 'failed', reason: LOST_NOTE, retryable: false },
+              turn_status: 'failed',
+            }
+          : {}),
+      },
       dedupKey: `${attemptId}:ended`,
     });
-    if (row.state === 'running')
-      await this.jobs.move(
-        tx,
-        row,
-        {
-          kind: 'attempt_failed',
-          retryable: true,
-          attempts_remaining: Math.max(
-            0,
-            jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0),
+    if (turnFailed && row.currentTurnId)
+      await tx
+        .update(experienceTurn)
+        .set({
+          status: 'failed',
+          answer: sql`case when ${experienceTurn.answer} = '' then ${LOST_NOTE}
+            else ${experienceTurn.answer} || ${`\n\n${LOST_NOTE}`} end`,
+          finishedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(experienceTurn.id, row.currentTurnId),
+            inArray(experienceTurn.status, ['queued', 'working', 'streaming']),
           ),
-        },
-        { attemptId, reason: 'recovery' },
-      );
+        );
     return true;
   }
 
@@ -1210,6 +1248,13 @@ export class AttemptRunner {
       controller.signal.removeEventListener('abort', abortListener);
       if (this.active.get(claims.attempt_id)?.controller === controller)
         this.active.delete(claims.attempt_id);
+      for (const settled of this.onSettled) {
+        try {
+          settled(claims.attempt_id);
+        } catch {
+          // A handler's failure is its own; the attempt has ended regardless.
+        }
+      }
       finished();
     }
   }

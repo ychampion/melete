@@ -25,7 +25,7 @@ import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { LIMIT_REACHED_NOTE } from '../../src/jobs/limits.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
-import { AttemptRunner } from '../../src/jobs/runner.ts';
+import { AttemptRunner, LOST_NOTE } from '../../src/jobs/runner.ts';
 import { CONVERSATION_BUDGET, DEFAULT_BUDGET, JobService } from '../../src/jobs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -122,6 +122,43 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
     await queue?.stop();
     await handle?.close();
   }, 30000);
+
+  test('a turn whose last attempt was lost to a restart ends failed, not working', async () => {
+    const chat = await createConversation();
+    const sent = await send(chat.id, 'Run the long command on your computer.');
+    expect(sent.status).toBe(200);
+    const sql = required(handle).sql;
+    // The last attempt this turn may have.
+    await sql`update job set budget = jsonb_set(budget, '{max_attempts}', '1'::jsonb)
+      where id = ${chat.id}`;
+    const row = await required(jobs).get(chat.id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    // The service stopped while it ran.
+    expect(await required(runner).loseAttempt(claimed.claims.attempt_id, 'Service stopping')).toBe(
+      true,
+    );
+    expect((await required(jobs).get(chat.id)).state).toBe('failed');
+    const view = conversationResponse.parse(
+      await (await request(`/conversations/${chat.id}`)).json(),
+    ).conversation;
+    expect(view.status).toBe('failed');
+    expect(view.composer).toBe('send');
+    const turns = turnList.parse(
+      await (await request(`/conversations/${chat.id}/messages`)).json(),
+    );
+    expect(turns.turns.at(-1)?.status).toBe('failed');
+    expect(turns.turns.at(-1)?.answer).toBe(LOST_NOTE);
+    const [ended] = await sql`select payload from event
+      where attempt_id = ${claimed.claims.attempt_id} and type = 'attempt_ended'`;
+    expect(ended?.payload).toMatchObject({ kind: 'lost', turn_status: 'failed' });
+  });
 
   test('after a failed turn the next message starts a new turn', async () => {
     const chat = await createConversation();
