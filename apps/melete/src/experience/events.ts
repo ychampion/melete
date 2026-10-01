@@ -29,8 +29,8 @@ import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { LIMIT_REACHED_NOTE } from '../jobs/limits.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
+import { AnswerStream, answerText } from './answer-filter.ts';
 import {
-  answerText,
   object,
   plainText,
   projectActionGroup,
@@ -52,6 +52,40 @@ import {
 } from './tools.ts';
 
 type EventRow = typeof event.$inferSelect;
+
+/** An attempt's answer and reasoning, as streamed so far. */
+type AttemptText = { answer: AnswerStream; reasoning: AnswerStream };
+
+/**
+ * Where an attempt's streamed text stood before `seq`: its answer whole, and
+ * its reasoning since the answer last moved, which is where reasoning is
+ * flushed. Read from the saved events, so a later page of the stream filters
+ * exactly as one long page would have.
+ */
+async function attemptText(tx: Transaction, attemptId: string, seq: number): Promise<AttemptText> {
+  const rows = await tx
+    .select({ type: event.type, payload: event.payload })
+    .from(event)
+    .where(
+      and(
+        eq(event.attemptId, attemptId),
+        inArray(event.type, ['text_delta', 'reasoning_delta']),
+        sql`${event.seq} < ${seq}`,
+      ),
+    )
+    .orderBy(asc(event.seq));
+  let answer = '';
+  let reasoning = '';
+  for (const row of rows) {
+    const text = object(row.payload).text;
+    if (typeof text !== 'string') continue;
+    if (row.type === 'text_delta') {
+      answer += text;
+      reasoning = '';
+    } else reasoning += text;
+  }
+  return { answer: new AnswerStream(answer), reasoning: new AnswerStream(reasoning) };
+}
 /** The statuses the runner can leave a turn in when an attempt ends. */
 const TURN_ENDINGS = new Set(['done', 'failed', 'needs_you']);
 /** The trail already tells broker actions, grouped; the model itself and retries stay off it. */
@@ -289,6 +323,18 @@ export class ExperienceEvents {
           .limit(1000);
         if (!raw.length) return;
         let group = [...row.experienceGroup];
+        const streams = new Map<string, AttemptText>();
+        const streamed = async (source: EventRow): Promise<AttemptText> => {
+          // Text with no attempt is filtered piece by piece; it has nothing to join.
+          if (!source.attemptId)
+            return { answer: new AnswerStream(), reasoning: new AnswerStream() };
+          let found = streams.get(source.attemptId);
+          if (!found) {
+            found = await attemptText(tx, source.attemptId, source.seq);
+            streams.set(source.attemptId, found);
+          }
+          return found;
+        };
         const emit = async (
           source: typeof event.$inferSelect,
           item: ExperienceEvent['item'],
@@ -425,11 +471,22 @@ export class ExperienceEvents {
               await emit(source, { type: 'decision', decision }, `decision:${decision.id}`);
             }
           } else if (source.type === 'text_delta') {
-            await emit(source, { type: 'text_delta', text: answerText(payload.text) });
+            // The last word of each piece waits for the next one, so a key cut across
+            // two pieces is still seen whole; the attempt's end shows what is left.
+            const text = await streamed(source);
+            const reasoning = text.reasoning.end();
+            if (reasoning) await emit(source, { type: 'reasoning', text: reasoning });
+            const piece = typeof payload.text === 'string' ? payload.text : '';
+            await emit(source, {
+              type: 'text_delta',
+              text: source.attemptId ? text.answer.push(piece) : answerText(piece),
+            });
           } else if (source.type === 'reasoning_delta') {
             // The same filter as the answer: reasoning is shown, so it is content.
-            const text = answerText(payload.text);
-            if (text) await emit(source, { type: 'reasoning', text });
+            const text = await streamed(source);
+            const piece = typeof payload.text === 'string' ? payload.text : '';
+            const shown = source.attemptId ? text.reasoning.push(piece) : answerText(piece);
+            if (shown) await emit(source, { type: 'reasoning', text: shown });
           } else if (
             source.type === 'action_status_changed' &&
             payload.to === 'succeeded' &&
@@ -474,6 +531,13 @@ export class ExperienceEvents {
               if (source.jobId !== id) await flush(source);
             }
           } else if (source.type === 'attempt_ended') {
+            if (source.attemptId) {
+              const text = await streamed(source);
+              const reasoning = text.reasoning.end();
+              if (reasoning) await emit(source, { type: 'reasoning', text: reasoning });
+              const rest = text.answer.end();
+              if (rest) await emit(source, { type: 'text_delta', text: rest });
+            }
             const [execution] = source.attemptId
               ? await tx.select().from(attempt).where(eq(attempt.id, source.attemptId))
               : [];

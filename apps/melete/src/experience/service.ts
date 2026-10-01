@@ -34,8 +34,11 @@ import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { ownJob } from '../principals/authority.ts';
 import { agentValues, agentView } from './agents.ts';
+import { answerStream } from './answer-filter.ts';
 import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
 
+/** Turn statuses whose answer may still grow. */
+const STILL_WRITING = new Set(['queued', 'working', 'streaming']);
 export const experienceMissing = () => new ServiceError('not_found', 'That item is not here.', 404);
 export function conversationView(
   row: JobRow,
@@ -375,7 +378,12 @@ export class ExperienceService {
           conversation_id: row.jobId,
           agent_id: row.agentId,
           text: row.text,
-          answer: answerText(row.answer).trimStart(),
+          // A turn still being written shows what its stream has shown so far, so
+          // the pieces that follow join it without repeating a held word.
+          answer: (STILL_WRITING.has(row.status)
+            ? answerStream(row.answer)
+            : answerText(row.answer)
+          ).trimStart(),
           status: row.status,
           delivery: row.status === 'queued' ? 'sending' : null,
           created_at: row.createdAt.toISOString(),

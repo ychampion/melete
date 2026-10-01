@@ -6,8 +6,9 @@
  *
  * Summaries are held to one rule: the service's own words go in `text`, and
  * anything read from outside (a page, a message, a file name, what the model
- * asked a tool) goes in `quote`, scrubbed and clipped. A value that looks like
- * a credential is dropped rather than shortened.
+ * asked a tool) goes in `quote`, scrubbed and clipped. A quote that looks like
+ * it carries a credential is left out rather than shortened; the step's own
+ * words still show.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -38,8 +39,14 @@ import {
   safeUrl,
 } from './projectors.ts';
 
-export const CREDENTIAL =
-  /\bBearer\s+\S|\bsk-[A-Za-z0-9_-]{8,}|\bgh[opsu]_[A-Za-z0-9]{8,}|\bgithub_pat_|\bxox[abprs]-|\bAKIA[0-9A-Z]{12}|\bAIza[0-9A-Za-z_-]{20}|\beyJ[A-Za-z0-9_-]{8,}\.|sealed-box-v1:|-----BEGIN|(?:^|[^A-Za-z])[A-Za-z_]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie|credential)[A-Za-z_]*\s*[:=]|[A-Za-z0-9+/_-]{40,}/i;
+const CREDENTIAL_SHAPES =
+  /\bBearer\s+\S|\bsk-[A-Za-z0-9_-]{8,}|\bgh[opsu]_[A-Za-z0-9]{8,}|\bgithub_pat_|\bxox[abprs]-|\bAKIA[0-9A-Z]{12}|\bAIza[0-9A-Za-z_-]{20}|\beyJ[A-Za-z0-9_-]{8,}\.|sealed-box-v1:|-----BEGIN|(?:^|[^A-Za-z])[A-Za-z_]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie|credential)[A-Za-z_]*\s*[:=]/i;
+/** A long random run mixing cases and digits; a lowercase path, slug or model id is not one. */
+const RANDOM_RUN =
+  /(?<![A-Za-z0-9+/_-])(?=[A-Za-z0-9+/_-]*[A-Z])(?=[A-Za-z0-9+/_-]*[a-z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{40,}/;
+export const CREDENTIAL = {
+  test: (text: string): boolean => CREDENTIAL_SHAPES.test(text) || RANDOM_RUN.test(text),
+};
 /** A path segment that reads like a key rather than a word: long, and mixing letters and digits. */
 const TOKEN_SEGMENT = /^(?=[^/]*\d)(?=[^/]*[A-Za-z])[A-Za-z0-9_.~-]{12,}$/;
 
@@ -62,10 +69,21 @@ const MEMORY_LABEL_COUNT = 20;
 const clip = (value: string, limit: number) =>
   value.length <= limit ? value : `${value.slice(0, limit - 1).trimEnd()}…`;
 
+/** A whole JSON object or array: a tool's arguments, not something to quote. */
+function isJson(text: string): boolean {
+  if (!/^[[{]/.test(text)) return false;
+  try {
+    return typeof JSON.parse(text) === 'object';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * One line of outside text, safe to show its owner, or nothing. Links keep only
- * their scheme, host and path; anything shaped like a credential or an internal
- * record discards the whole value.
+ * their scheme, host and path; a value shaped like a credential or a whole JSON
+ * record gives nothing. Model ids, tool names, paths and titles that start with
+ * a bracket are ordinary text.
  */
 export function toolText(value: unknown, limit: number = TOOL_QUOTE_LIMIT): string | null {
   if (typeof value !== 'string') return null;
@@ -73,8 +91,7 @@ export function toolText(value: unknown, limit: number = TOOL_QUOTE_LIMIT): stri
     .replace(/\p{Cc}+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  if (!flat || /^[[{]/.test(flat) || CREDENTIAL.test(flat) || BACKEND_VOCABULARY.test(flat))
-    return null;
+  if (!flat || isJson(flat) || CREDENTIAL.test(flat)) return null;
   const linked = flat.replace(/\bhttps?:\/\/\S+/gi, (match) => displayUrl(match) ?? 'a link');
   return clip(linked, limit);
 }

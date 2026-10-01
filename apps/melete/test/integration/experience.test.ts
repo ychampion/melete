@@ -488,8 +488,9 @@ withDb('experience rows and authenticated scope', () => {
     const attemptId = claimed.claims.attempt_id;
     const pieces: [RuntimeEventType, string][] = [
       ['reasoning_delta', 'The person said hey. '],
-      // Backend vocabulary is held back from reasoning exactly as from an answer.
-      ['reasoning_delta', 'Maybe call email.search first. '],
+      // A key is hidden from reasoning exactly as from an answer; a tool name is prose.
+      ['reasoning_delta', 'Maybe call email.search with sk-proj-Q7vLm2Xr9T'],
+      ['reasoning_delta', 'bW4kZp8NcY3dHs first. '],
       ['reasoning_delta', 'A short greeting back.'],
       ['text_delta', 'Hey!'],
     ];
@@ -510,14 +511,73 @@ withDb('experience rows and authenticated scope', () => {
     const items = (
       await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id)
     ).events.map((event) => event.item);
+    // Each piece's last word waits for the next, and the answer starting shows the rest.
     expect(items.flatMap((item) => (item.type === 'reasoning' ? [item.text] : []))).toEqual([
       'The person said hey. ',
-      'A short greeting back.',
+      'Maybe call email.search with ',
+      '[hidden] first. ',
+      'A short greeting ',
+      'back.',
     ]);
     const after = turnList.parse(
       await (await request(`/conversations/${chat.id}/messages`)).json(),
     );
     expect(after.turns[0]?.answer).toBe('Hey!');
+  });
+  test('an answer naming its model streams whole and is saved whole; only a key is hidden', async () => {
+    const chat = await createConversation();
+    await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'name?' }, 'model-id');
+    const row = await required(jobs).get(chat.id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    const attemptId = claimed.claims.attempt_id;
+    const pieces = [
+      "I'm Nova. Running on `accounts",
+      '/fireworks/models/deepseek-v4p1-flash`. Mail me at someone@email.com',
+      ' and keep the key sk-proj-Q7vLm2Xr9T',
+      'bW4kZp8NcY3dHs out of chats.',
+    ];
+    for (const [index, text] of pieces.entries()) {
+      await required(runner).emit(claimed.claims, {
+        type: 'text_delta',
+        attempt_id: attemptId,
+        local_seq: index + 1,
+        dedup_key: dedupKey(attemptId, index + 1),
+        at: new Date().toISOString(),
+        text,
+      });
+      // Read the stream between pieces, as a live conversation does.
+      await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
+    }
+    const during = turnList.parse(
+      await (await request(`/conversations/${chat.id}/messages`)).json(),
+    );
+    await required(runner).commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: 'Named the model.',
+      evidence: [],
+    });
+    const expected =
+      "I'm Nova. Running on `accounts/fireworks/models/deepseek-v4p1-flash`. Mail me at someone@email.com and keep the key [hidden] out of chats.";
+    const streamed = (
+      await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id)
+    ).events.flatMap((event) => (event.item.type === 'text_delta' ? [event.item.text] : []));
+    expect(streamed.join('')).toBe(expected);
+    expect(streamed.some((text) => text.includes('fireworks/models/deepseek-v4p1-flash'))).toBe(
+      true,
+    );
+    // Mid-answer, the saved copy shows what the stream had shown, so the rest joins it.
+    expect(expected.startsWith(during.turns[0]?.answer ?? 'missing')).toBe(true);
+    const after = turnList.parse(
+      await (await request(`/conversations/${chat.id}/messages`)).json(),
+    );
+    expect(after.turns[0]?.answer).toBe(expected);
   });
   test('the stream carries each turn to the status its saved copy ends in', async () => {
     const statuses = async (conversationId: string, turnId: string) =>
