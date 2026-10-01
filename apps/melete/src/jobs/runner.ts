@@ -77,6 +77,27 @@ export const LOST_NOTE =
 /** How many attempts run at once unless the service is told otherwise. */
 export const DEFAULT_ATTEMPT_CONCURRENCY = 4;
 
+/** The kinds of job whose final question is put to the person and waited on. */
+const ASKING_KINDS = new Set(['responsibility', 'milestone']);
+/** A question is the 4,000 characters a queue entry holds, so a long answer keeps its end. */
+const QUESTION_LIMIT = 4000;
+
+/** Whether a reply ends by asking something: its last sentence is a question. */
+export function endsWithQuestion(reply: string): boolean {
+  return /\?[\s"'”’)\]*_]*$/.test(reply.trim());
+}
+
+function questionFrom(reply: string): string {
+  const text = reply.trim();
+  if (text.length <= QUESTION_LIMIT) return text;
+  const last =
+    text
+      .split(/\n\s*\n/)
+      .at(-1)
+      ?.trim() ?? '';
+  return (last.length <= QUESTION_LIMIT ? last : last.slice(-QUESTION_LIMIT)).trim();
+}
+
 export type RunnerOptions = {
   key: string;
   provider?: string;
@@ -602,13 +623,25 @@ export class AttemptRunner {
         payload: { kind: 'wait_restored', wait: cancelled },
         dedupKey: `${attemptId}:wait-restored`,
       });
+    // A responsibility whose last words ask the person something has not
+    // finished: it waits for the answer, and the question reaches their queue.
+    // A conversation's reply is read where it was said, and a routine keeps its
+    // schedule. The last budgeted attempt keeps its answer rather than failing.
+    const settled: AttemptOutcome =
+      restored.kind === 'completed' &&
+      carried.length === 0 &&
+      remaining > 0 &&
+      ASKING_KINDS.has(row.kind) &&
+      endsWithQuestion(restored.summary)
+        ? { kind: 'waiting_for_input', question: questionFrom(restored.summary) }
+        : restored;
     // A runtime's final prose cannot withdraw the broker's unanswered revocation
     // question, even on the last budgeted attempt. Only owner input resolves it.
     const outcome: AttemptOutcome = reconnect
       ? { kind: 'waiting_for_input', question: reconnect.text }
-      : remaining === 0 && restored.kind.startsWith('waiting_')
+      : remaining === 0 && settled.kind.startsWith('waiting_')
         ? { kind: 'budget_exhausted', summary: 'The job has used its attempt budget.' }
-        : restored;
+        : settled;
     let input: TransitionInput;
     let wait: WaitSpec = { kind: 'none' };
     let artifactFailures: string[] = [];
@@ -669,13 +702,18 @@ export class AttemptRunner {
       input = { kind: 'attempt_waiting_for_input' };
       wait = { kind: 'user_input', question: 'What would you like to do next?' };
     }
-    if (row.kind === 'routine' && completionVerified) {
+    // A routine rests until its next scheduled run once this one is over,
+    // whether it finished or failed: one bad run does not end the routine. A
+    // paused routine rests the same way until it is resumed.
+    const runOver =
+      completionVerified ||
+      input.kind === 'attempt_budget_exhausted' ||
+      (input.kind === 'attempt_failed' && !(input.retryable && input.attempts_remaining > 0));
+    if (row.kind === 'routine' && runOver) {
       const [schedule] = await tx
         .select()
         .from(trigger)
-        .where(
-          and(eq(trigger.jobId, row.id), eq(trigger.kind, 'schedule'), eq(trigger.enabled, true)),
-        )
+        .where(and(eq(trigger.jobId, row.id), eq(trigger.kind, 'schedule')))
         .limit(1);
       if (schedule) {
         input = { kind: 'attempt_waiting_for_event_or_time' };

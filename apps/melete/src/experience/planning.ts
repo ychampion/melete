@@ -2,6 +2,8 @@ import {
   automationCreate,
   experienceAutomation,
   experiencePlan,
+  isTerminal,
+  jobState,
   planCreate,
   triggerSpec,
   unavailable,
@@ -104,6 +106,23 @@ export class ExperiencePlanning {
       .leftJoin(job, and(eq(job.id, planMilestone.childJobId), eq(job.spaceId, row.spaceId)))
       .where(eq(planMilestone.planId, row.id))
       .orderBy(planMilestone.ordinal);
+    // A step an assistant does keeps what it last said, so the plan can show it.
+    const children = milestones.flatMap(({ child }) => (child ? [child.id] : []));
+    const ended = children.length
+      ? await this.db
+          .select({ jobId: attempt.jobId, detail: attempt.outcomeDetail })
+          .from(attempt)
+          .where(and(inArray(attempt.jobId, children), isNotNull(attempt.endedAt)))
+          .orderBy(desc(attempt.endedAt))
+      : [];
+    const said = new Map<string, string>();
+    for (const entry of ended) {
+      const detail = object(entry.detail);
+      const words = detail.summary ?? detail.question;
+      const text = typeof words === 'string' ? answerText(words).trim() : '';
+      if (text && !said.has(entry.jobId))
+        said.set(entry.jobId, text.length > 2000 ? `${text.slice(0, 1999).trimEnd()}…` : text);
+    }
     const values = milestones.map(({ milestone, child }) => ({
       id: milestone.id,
       title: plainText(milestone.title, 'Next step'),
@@ -117,6 +136,7 @@ export class ExperiencePlanning {
         : milestone.done
           ? ('done' as const)
           : ('idle' as const),
+      ...(child ? { output: said.get(child.id) ?? null } : {}),
     }));
     const chats = await this.db
       .select({ id: job.id })
@@ -229,7 +249,12 @@ export class ExperiencePlanning {
       plan_id: id,
     });
   }
-  async automation(row: typeof trigger.$inferSelect, title: string) {
+  /**
+   * A routine as the person sees it. It is on while its schedule is enabled and
+   * its job can still run: a routine whose job was stopped is off, whatever its
+   * schedule says.
+   */
+  async automation(row: typeof trigger.$inferSelect, title: string, state: string) {
     const spec = triggerSpec.parse(row.spec);
     const runs = await this.db
       .select()
@@ -271,9 +296,9 @@ export class ExperiencePlanning {
         spec.kind === 'schedule'
           ? scheduleSentence(spec.cron, spec.timezone)
           : 'When the connected app has an update',
-      enabled: row.enabled,
+      enabled: row.enabled && !isTerminal(jobState.parse(state)),
       conversation_id: row.jobId,
-      runs: runs.map((run) => {
+      runs: runs.map((run, index) => {
         const status =
           run.outcome === 'completed'
             ? incomplete.has(run.id)
@@ -287,6 +312,10 @@ export class ExperiencePlanning {
                   ? 'needs_you'
                   : 'working';
         const turn = run.turnId ? turnById.get(run.turnId) : undefined;
+        // Each run shows what it said itself. The turn holds only the newest
+        // answer, so it speaks for a run still under way and for no other.
+        const said = object(run.outcomeDetail).summary;
+        const newest = !runs.slice(0, index).some((other) => other.turnId === run.turnId);
         return {
           id: run.id,
           status,
@@ -294,7 +323,12 @@ export class ExperiencePlanning {
           finished_at: run.endedAt?.toISOString() ?? null,
           conversation_id: turn ? row.jobId : null,
           turn_id: turn?.id ?? null,
-          summary: turn ? excerpt(turn.answer) : null,
+          summary:
+            typeof said === 'string'
+              ? excerpt(said)
+              : turn && newest && !run.endedAt
+                ? excerpt(turn.answer)
+                : null,
           reason: runReason(status, run.outcome, run.outcomeDetail),
         };
       }),
@@ -304,7 +338,7 @@ export class ExperiencePlanning {
   async recentResults(spaceId: string) {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const rows = await this.db
-      .select({ trigger, title: job.title })
+      .select({ trigger, title: job.title, state: job.state })
       .from(trigger)
       .innerJoin(job, eq(job.id, trigger.jobId))
       .where(
@@ -325,7 +359,7 @@ export class ExperiencePlanning {
       .limit(20);
     const results = [];
     for (const entry of rows) {
-      const view = await this.automation(entry.trigger, entry.title);
+      const view = await this.automation(entry.trigger, entry.title, entry.state);
       const run = view.runs.find(
         (item) => item.turn_id && Date.parse(item.started_at) > since.getTime(),
       );
@@ -364,7 +398,7 @@ export class ExperiencePlanning {
   }
   async automations(spaceId: string) {
     const rows = await this.db
-      .select({ trigger, title: job.title })
+      .select({ trigger, title: job.title, state: job.state })
       .from(trigger)
       .innerJoin(job, eq(job.id, trigger.jobId))
       .where(and(eq(job.spaceId, spaceId), eq(trigger.kind, 'schedule'), ownJob()))
@@ -372,7 +406,7 @@ export class ExperiencePlanning {
       .limit(100);
     return {
       automations: await Promise.all(
-        rows.map((entry) => this.automation(entry.trigger, entry.title)),
+        rows.map((entry) => this.automation(entry.trigger, entry.title, entry.state)),
       ),
     };
   }
@@ -421,9 +455,11 @@ export class ExperiencePlanning {
       return registration;
     });
     await this.triggers.syncSchedules();
-    return { automation: await this.automation(registration, input.title) };
+    return {
+      automation: await this.automation(registration, input.title, 'waiting_for_event_or_time'),
+    };
   }
-  async testAutomation(spaceId: string, id: string) {
+  private async requireAutomation(spaceId: string, id: string) {
     const [row] = await this.db
       .select({ trigger, job })
       .from(trigger)
@@ -432,8 +468,13 @@ export class ExperiencePlanning {
         and(eq(trigger.id, id), eq(job.spaceId, spaceId), eq(trigger.kind, 'schedule'), ownJob()),
       );
     if (!row) throw experienceMissing();
+    return row;
+  }
+  async testAutomation(spaceId: string, id: string) {
+    const row = await this.requireAutomation(spaceId, id);
     if (!this.triggers) return unavailable('Scheduled routines are not connected yet.');
-    if (!row.trigger.enabled) return unavailable('Enable this routine before testing it.');
+    if (isTerminal(jobState.parse(row.job.state))) throw routineEnded();
+    if (!row.trigger.enabled) return unavailable('Resume this routine before testing it.');
     if (row.job.state !== 'waiting_for_event_or_time')
       throw new ServiceError(
         'routine_busy',
@@ -443,4 +484,44 @@ export class ExperiencePlanning {
     await this.triggers.fireSchedule(id, newId('op'));
     return { status: 'ok' };
   }
+  /**
+   * Pausing turns the schedule off and leaves the routine's thread as it is. A
+   * run already under way finishes, and the routine then rests until resumed.
+   */
+  async setAutomationEnabled(spaceId: string, id: string, enabled: boolean) {
+    const row = await this.requireAutomation(spaceId, id);
+    if (!this.triggers) return unavailable('Scheduled routines are not connected yet.');
+    if (enabled && isTerminal(jobState.parse(row.job.state))) throw routineEnded();
+    await this.db.update(trigger).set({ enabled }).where(eq(trigger.id, id));
+    await this.triggers.syncSchedules();
+    return {
+      automation: await this.automation({ ...row.trigger, enabled }, row.job.title, row.job.state),
+    };
+  }
+  /** Stops the routine, a run under way included, and takes it off the list. */
+  async deleteAutomation(spaceId: string, id: string) {
+    const row = await this.requireAutomation(spaceId, id);
+    const jobs = this.service.jobs;
+    if (!this.triggers || !jobs) return unavailable('Scheduled routines are not connected yet.');
+    // The schedule goes first, so no occurrence can start a run behind the cancel.
+    await this.db.update(trigger).set({ enabled: false }).where(eq(trigger.jobId, row.job.id));
+    if (!isTerminal(jobState.parse(row.job.state))) {
+      try {
+        await jobs.cancel(row.job.id, 'routine_deleted');
+      } catch (error) {
+        // It ended in the meantime, which leaves nothing to stop.
+        if (!(error instanceof ServiceError) || error.code !== 'already_terminal') throw error;
+      }
+    }
+    await this.db.delete(trigger).where(eq(trigger.jobId, row.job.id));
+    await this.triggers.syncSchedules();
+    return { status: 'ok' as const };
+  }
 }
+
+const routineEnded = () =>
+  new ServiceError(
+    'routine_ended',
+    'This routine was stopped and cannot run again. Delete it and create a new one.',
+    409,
+  );

@@ -193,6 +193,8 @@ export class TriggerService {
       .select()
       .from(trigger)
       .where(and(eq(trigger.id, wait.trigger_id), eq(trigger.jobId, row.id)));
+    // A paused routine rests on its own schedule until it is resumed.
+    if (registration && !registration.enabled && row.kind === 'routine') return row;
     if (!registration?.enabled)
       throw new ServiceError('invalid_wait', 'Wait trigger is missing or disabled.');
     const spec = triggerSpec.parse(registration.spec);

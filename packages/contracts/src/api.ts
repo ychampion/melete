@@ -108,9 +108,6 @@ export const eventDeliveryResponse = z.object({
 // spaces
 // --------------------------------------------------------------------------
 
-export const createSpaceRequest = z.object({
-  name: z.string().min(1).max(120),
-});
 export const spaceListResponse = z.object({ spaces: z.array(space) });
 
 // --------------------------------------------------------------------------

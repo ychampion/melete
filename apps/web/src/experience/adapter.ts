@@ -515,6 +515,12 @@ export const adapter = {
     guard<{ automation: Automation }>(() => api.POST('/automations', { body })),
   testAutomation: (id: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/automations/{id}/test', path(id))),
+  pauseAutomation: (id: string) =>
+    guard<{ automation: Automation }>(() => api.POST('/automations/{id}/pause', path(id))),
+  resumeAutomation: (id: string) =>
+    guard<{ automation: Automation }>(() => api.POST('/automations/{id}/resume', path(id))),
+  deleteAutomation: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.DELETE('/automations/{id}', path(id))),
   morningBrief: (agent_id: string, at: string) =>
     guard<{ automation: Automation }>(() =>
       api.POST('/automations/morning-brief', { body: { agent_id, at } }),

@@ -202,7 +202,7 @@ async function proxyApi(
     });
   } catch {
     return Response.json(
-      { error: { code: 'api_unavailable', message: 'The API is unavailable.' } },
+      { error: { code: 'api_unavailable', message: 'Melete is not responding right now.' } },
       { status: 502, headers: { 'cache-control': 'no-store' } },
     );
   }

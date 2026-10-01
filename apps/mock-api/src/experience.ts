@@ -1836,6 +1836,16 @@ export class ExperienceMock {
           summary: 'Nothing new since the last run.',
         });
         return { status: 'ok' };
+      case 'POST /automations/{id}/pause':
+      case 'POST /automations/{id}/resume': {
+        const routine = required(this.automations, id);
+        routine.enabled = key.endsWith('/resume');
+        return { automation: routine };
+      }
+      case 'DELETE /automations/{id}':
+        required(this.automations, id);
+        this.automations.delete(id);
+        return { status: 'ok' };
       case 'GET /experience/connections':
         return { connections: this.connections() };
       case 'GET /web/settings':

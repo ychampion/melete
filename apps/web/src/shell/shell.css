@@ -805,12 +805,17 @@ label.approvals-row {
 
 .plan-grid {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) 128px 168px 40px;
   align-items: center;
   gap: 16px;
   padding: 0 12px;
 }
+.plan-grid.compact {
+  grid-template-columns: minmax(0, 1fr) 140px 40px;
+}
 @media (max-width: 767px) {
-  .plan-grid {
+  .plan-grid,
+  .plan-grid.compact {
     grid-template-columns: minmax(0, 1fr) 40px;
   }
   .plan-grid > :nth-child(2),

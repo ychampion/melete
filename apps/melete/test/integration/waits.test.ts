@@ -4,7 +4,16 @@ import { canonicalizePayload, type WaitSpec } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { ServiceError } from '../../src/api/errors.ts';
 import { session } from '../../src/db/auth-schema.ts';
-import { action, approval, connection, event, owner, space, trigger } from '../../src/db/schema.ts';
+import {
+  action,
+  approval,
+  connection,
+  event,
+  job,
+  owner,
+  space,
+  trigger,
+} from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
@@ -381,6 +390,74 @@ withDb('durable waits, triggers and approval inputs', () => {
       expect(lapsed.bundle.inputs.cancelled_wait).toBeUndefined();
       expect((await completed(lapsed)).state).toBe('completed');
     });
+
+    test('a routine resting until its next run is not run again by a correction, and each occurrence runs once', async () => {
+      const { jobs, handle } = fixture();
+      const row = await jobs.transaction((tx) =>
+        jobs.createInTransaction(
+          tx,
+          {
+            space_id: spaceId,
+            title: 'Daily haiku',
+            objective: 'Write a haiku',
+            scheduling_class: 'background',
+            importance: 'routine',
+          },
+          { kind: 'routine', dormant: true },
+        ),
+      );
+      const registration = await triggers.create(row.id, {
+        kind: 'schedule',
+        cron: '15 7 * * 6',
+        timezone: 'UTC',
+      });
+      const wait = { kind: 'event' as const, trigger_id: registration.id, deadline_at: null };
+      await handle.db
+        .update(job)
+        .set({ state: 'waiting_for_event_or_time', wait, nextWakeAt: null })
+        .where(eq(job.id, row.id));
+      // The same occurrence delivered twice is one run.
+      await triggers.fireSchedule(registration.id, 'occurrence-one');
+      await triggers.fireSchedule(registration.id, 'occurrence-one');
+      const first = await claim(await jobs.get(row.id));
+      const rested = await completed(first);
+      expect(rested.state).toBe('waiting_for_event_or_time');
+      expect(rested.wait).toEqual(wait);
+      // A memory correction afterwards leaves it resting with no wake of its own.
+      const after = await correct(rested);
+      expect(after.state).toBe('waiting_for_event_or_time');
+      expect(after.nextWakeAt).toBeNull();
+      expect(after.stateVersion).toBe(rested.stateVersion);
+      expect(await handle.sql`select id from attempt where job_id = ${row.id}`).toHaveLength(1);
+      // The next occurrence still runs, once.
+      await triggers.fireSchedule(registration.id, 'occurrence-two');
+      expect((await jobs.get(row.id)).state).toBe('queued');
+    });
+  });
+
+  test('a responsibility that ends by asking waits for the answer, and the question is queued', async () => {
+    const { jobs, handle } = fixture();
+    const row = await create();
+    const asked = await runner.commitOutcome((await claim(row)).claims, {
+      kind: 'completed',
+      summary: 'I can make you a drink first. Tea or coffee?',
+      evidence: [],
+    });
+    expect(asked.state).toBe('waiting_for_input');
+    expect(asked.wait).toMatchObject({ question: 'I can make you a drink first. Tea or coffee?' });
+    const open =
+      await handle.sql`select text from question where job_id = ${row.id} and state = 'open'`;
+    expect(open.map((entry) => entry.text)).toEqual([
+      'I can make you a drink first. Tea or coffee?',
+    ]);
+    // An answer wakes it, and a reply that asks nothing finishes it.
+    const answered = await jobs.input(row.id, 'Tea, please.');
+    const finished = await runner.commitOutcome((await claim(answered)).claims, {
+      kind: 'completed',
+      summary: 'Tea is ready.',
+      evidence: [],
+    });
+    expect(finished.state).toBe('completed');
   });
 
   test('missing, foreign and disabled wait triggers fail atomically', async () => {

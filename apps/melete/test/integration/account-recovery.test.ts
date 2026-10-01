@@ -206,6 +206,15 @@ describeWithDb('changing and resetting a password', () => {
       json({ token: second.code, new_password: 'reset-password-5' }),
     );
     expect(again.status).toBe(400);
+    // A code typed wrong is told apart from a form error.
+    const typo = await api.request(
+      '/password-reset/consume',
+      json({ token: 'not-a-code', new_password: 'reset-password-5' }),
+    );
+    expect(typo.status).toBe(400);
+    expect(((await typo.json()) as { error: { code: string } }).error.code).toBe(
+      'invalid_reset_link',
+    );
   });
 
   test('one link used twice at once sets exactly one password', async () => {

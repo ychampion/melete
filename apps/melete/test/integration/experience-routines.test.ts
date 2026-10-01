@@ -15,8 +15,11 @@ import { session } from '../../src/db/auth-schema.ts';
 import { owner, space, trigger } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
+import { ExperiencePlanning } from '../../src/experience/planning.ts';
+import { ExperienceService } from '../../src/experience/service.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
+import { buildAttemptSkeleton } from '../../src/jobs/bundle.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
@@ -262,6 +265,183 @@ withDb('routines, time zone and setup as the person sees them', () => {
       '2026-10-31T12:30:00.000Z',
       '2026-11-01T13:30:00.000Z',
       '2026-11-02T13:30:00.000Z',
+    ]);
+  });
+
+  test('a routine can be paused, resumed and deleted, and a failed or stopped one says so', async () => {
+    const planning = new ExperiencePlanning(
+      new ExperienceService(required(handle).db, required(jobs), undefined, required(runner)),
+      triggers,
+    );
+    const persona = agentResponse.parse(
+      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+    ).agent;
+    const create = async (title: string) =>
+      automationResponse.parse(
+        await (
+          await request('/automations', 'POST', {
+            title,
+            instruction: 'Write a haiku',
+            weekdays: [6],
+            at: '07:15',
+            agent_id: persona.id,
+          })
+        ).json(),
+      ).automation;
+    const listed = async (id: string) =>
+      experienceOperations['GET /automations'].response
+        .parse(await (await request('/automations')).json())
+        .automations.find((row) => row.id === id);
+    const scheduled = async (id: string) =>
+      (await required(queue).boss.getSchedules(QUEUES.triggerSchedule, id)).length > 0;
+
+    const routine = await create('Daily haiku');
+    // Each run shows its own answer, and a failed run leaves the routine on.
+    await run(routine.id, { kind: 'completed', summary: 'First haiku.', evidence: [] });
+    await run(routine.id, { kind: 'failed', reason: 'The model refused.', retryable: false });
+    await run(routine.id, { kind: 'completed', summary: 'Second haiku.', evidence: [] });
+    const runs = required(await listed(routine.id)).runs;
+    expect(runs.map((entry) => [entry.status, entry.summary])).toEqual([
+      ['done', 'Second haiku.'],
+      ['failed', null],
+      ['done', 'First haiku.'],
+    ]);
+    expect((await required(jobs).get(routine.conversation_id)).state).toBe(
+      'waiting_for_event_or_time',
+    );
+    expect((await listed(routine.id))?.enabled).toBe(true);
+
+    // Paused, nothing is scheduled and a test run is refused until it is resumed.
+    const paused = await planning.setAutomationEnabled(spaceId, routine.id, false);
+    expect(paused).toMatchObject({ automation: { enabled: false } });
+    expect(await scheduled(routine.id)).toBe(false);
+    expect((await request(`/automations/${routine.id}/test`, 'POST')).status).toBe(200);
+    expect((await required(jobs).get(routine.conversation_id)).state).toBe(
+      'waiting_for_event_or_time',
+    );
+    await planning.setAutomationEnabled(spaceId, routine.id, true);
+    expect(await scheduled(routine.id)).toBe(true);
+    expect((await listed(routine.id))?.enabled).toBe(true);
+
+    // A run under way when it is paused finishes, and the routine rests rather than ending.
+    expect((await request(`/automations/${routine.id}/test`, 'POST')).status).toBe(200);
+    const row = await required(jobs).get(routine.conversation_id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'event',
+      }),
+    );
+    await planning.setAutomationEnabled(spaceId, routine.id, false);
+    const rested = await required(runner).commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: 'Third haiku.',
+      evidence: [],
+    });
+    expect(rested.state).toBe('waiting_for_event_or_time');
+    await planning.setAutomationEnabled(spaceId, routine.id, true);
+
+    // A routine whose job was stopped is off, and says why it cannot run.
+    const stopped = await create('Stopped haiku');
+    await required(jobs).cancel(stopped.conversation_id);
+    expect((await listed(stopped.id))?.enabled).toBe(false);
+    const refused = await request(`/automations/${stopped.id}/test`, 'POST');
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe(
+      'routine_ended',
+    );
+
+    // Deleting stops it for good and takes it off the list.
+    expect(await planning.deleteAutomation(spaceId, routine.id)).toEqual({ status: 'ok' });
+    expect(await listed(routine.id)).toBeUndefined();
+    expect(await scheduled(routine.id)).toBe(false);
+    expect((await required(jobs).get(routine.conversation_id)).state).toBe('cancelled');
+    expect(await planning.deleteAutomation(spaceId, stopped.id)).toEqual({ status: 'ok' });
+    expect(await listed(stopped.id)).toBeUndefined();
+  });
+
+  test('a routine is told the open tasks, and a plan’s chat and steps are told the plan', async () => {
+    const persona = agentResponse.parse(
+      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+    ).agent;
+    expect(
+      (await request('/tasks', 'POST', { title: 'Renew the passport', due_at: null })).status,
+    ).toBe(200);
+    expect(
+      (await request('/tasks', 'POST', { title: 'Already sorted', due_at: null, done: true }))
+        .status,
+    ).toBe(200);
+    const routine = automationResponse.parse(
+      await (
+        await request('/automations/morning-brief', 'POST', { agent_id: persona.id, at: '07:30' })
+      ).json(),
+    ).automation;
+    const objective = async (jobId: string) => {
+      const row = await required(jobs).get(jobId);
+      const bundle = await required(jobs).transaction((tx) =>
+        buildAttemptSkeleton(
+          tx,
+          row,
+          { id: newId('att'), epoch: row.leaseEpoch + 1, revision: row.revision, token: 'fixture' },
+          { provider: 'stub', model: 'script', fallback: null },
+          0,
+        ),
+      );
+      return bundle.job.objective;
+    };
+    const brief = await objective(routine.conversation_id);
+    expect(brief).toContain('- Renew the passport');
+    expect(brief).not.toContain('Already sorted');
+
+    const plan = experienceOperations['POST /plans'].response.parse(
+      await (
+        await request('/plans', 'POST', {
+          title: 'Plan trip to Tahoe',
+          category: 'Personal',
+          milestones: [
+            { title: 'Book the cabin', assignee: { kind: 'person' } },
+            { title: 'Find a ski rental', assignee: { kind: 'agent', agent_id: persona.id } },
+          ],
+        })
+      ).json(),
+    );
+    if (!('plan' in plan)) throw new Error('Expected a plan');
+    const chat = conversationResponse.parse(
+      await (
+        await request(`/plans/${plan.plan.id}/conversation`, 'POST', { agent_id: persona.id })
+      ).json(),
+    ).conversation;
+    const told = await objective(chat.id);
+    expect(told).toContain('This belongs to the plan "Plan trip to Tahoe"');
+    expect(told).toContain('- [not done] Book the cabin');
+    expect(told).toContain('- [not done] Find a ski rental, assigned to an assistant');
+
+    // What the assistant did for its step is shown on the plan.
+    const [step] = await required(handle).sql<{ child_job_id: string }[]>`
+      select child_job_id from plan_milestone where plan_id = ${plan.plan.id} and child_job_id is not null`;
+    const child = await required(jobs).get(required(step).child_job_id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: child.id,
+        expected_epoch: child.leaseEpoch,
+        expected_version: child.stateVersion,
+        reason: 'created',
+      }),
+    );
+    await required(runner).commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: 'Tahoe Ski Rentals has boards for Friday.',
+      evidence: [],
+    });
+    const shown = experienceOperations['GET /plans/{id}'].response.parse(
+      await (await request(`/plans/${plan.plan.id}`)).json(),
+    );
+    if (!('plan' in shown)) throw new Error('Expected a plan');
+    expect(shown.plan.milestones.map((item) => [item.done, item.output ?? null])).toEqual([
+      [false, null],
+      [true, 'Tahoe Ski Rentals has boards for Friday.'],
     ]);
   });
 });
