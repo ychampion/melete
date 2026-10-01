@@ -232,6 +232,18 @@ function GroupStep({
  * reply and the follow-up), which stays open so what it did after the send is
  * in view.
  */
+/**
+ * The line under a stopped turn's header: how many steps it took, the same
+ * count the header shows, and the last of them.
+ */
+export function stoppedLine(tools: { title: string }[]): string {
+  const last = tools.at(-1);
+  if (!last) return 'Stopped before it got to work. Ask again when you’re ready.';
+  return `Stopped before it finished, after ${tools.length} step${
+    tools.length === 1 ? '' : 's'
+  }. Last: ${last.title}. Ask it to carry on when you’re ready.`;
+}
+
 export function Trail({
   turn,
   now,
@@ -273,7 +285,6 @@ export function Trail({
         : null;
   const took = elapsed === null ? null : spanOf(elapsed);
   const failures = tools.filter((tool) => tool.status === 'failed').length;
-  const finished = tools.filter((tool) => tool.status === 'done');
   const rest =
     doneStep || turn.status === 'stopped'
       ? [
@@ -286,16 +297,8 @@ export function Trail({
           .filter(Boolean)
           .join(' · ')
       : '';
-  // What a stopped turn got done, so stopping never leaves only a pile of cards.
-  const lastDone = finished.at(-1);
-  const stoppedSummary =
-    turn.status === 'stopped'
-      ? finished.length
-        ? `Stopped before it finished, after ${finished.length} step${
-            finished.length === 1 ? '' : 's'
-          }. Last: ${lastDone?.title ?? ''}. Ask it to carry on when you’re ready.`
-        : 'Stopped before it got to work. Ask again when you’re ready.'
-      : null;
+  // What a stopped turn got done, counted the way the header counts its steps.
+  const stoppedSummary = turn.status === 'stopped' ? stoppedLine(tools) : null;
   const underWay = [...tools].reverse().find((tool) => tool.status === 'running');
   const currentTitle = turn.live?.title ?? underWay?.title;
   const head = running ? (

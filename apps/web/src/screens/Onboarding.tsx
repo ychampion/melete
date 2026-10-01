@@ -1222,7 +1222,7 @@ export function OnboardingScreen() {
     card = (
       <Card
         title="Connect a model"
-        sub="Choose the model your agents answer with: paste an API key from your provider, or sign in to ChatGPT. You can change it any time in Settings › Models."
+        sub="Choose the model your agents answer with. You can change it any time in Settings › Models."
         footer={
           <>
             <div className="grow" />
