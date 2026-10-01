@@ -4,6 +4,7 @@ import {
   CONNECTION_KIND_SCOPES,
   type ConnectorManifest,
 } from '@melete/contracts';
+import { phoneManifest } from '../phone/connector.ts';
 import { storedSandboxConnection } from '../sandbox/connection.ts';
 import {
   DEFAULT_SANDBOX_LIFETIME_SECONDS,
@@ -176,9 +177,12 @@ describe('installable kinds against the connectors they select', () => {
 
   test('a form says a grant asks first exactly when the connector requires approval', () => {
     const tools = new Map(
-      [...emailManifest.tools, ...calendarManifest.tools, ...sandboxExecManifest.tools].map(
-        (tool) => [tool.name, tool],
-      ),
+      [
+        ...emailManifest.tools,
+        ...calendarManifest.tools,
+        ...sandboxExecManifest.tools,
+        ...phoneManifest.tools,
+      ].map((tool) => [tool.name, tool]),
     );
     for (const descriptor of CONNECTION_KIND_DESCRIPTORS)
       for (const scope of descriptor.scopes) {

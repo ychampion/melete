@@ -343,6 +343,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   ledger_item: 'operational',
   procedure_candidate: 'operational',
   paired_device: 'operational',
+  phone_call: 'operational',
   device_pairing: 'operational',
   question: 'operational',
   sandbox_session: 'operational',
@@ -643,6 +644,10 @@ describe.if(handle !== null)('removing a space', () => {
       values (${conversation}, ${seeded.spaceId}, 'finance')`;
     await sql`insert into privacy_request (space_id, conversation_id, job_id, attempt_id, route)
       values (${seeded.spaceId}, ${conversation}, ${conversation}, 'att_privacy', 'cloud')`;
+    // A call the person made to their line, with no job behind it.
+    await sql`insert into phone_call (id, connection_id, space_id, direction, party, remote_number, status)
+      values (${`call_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'inbound',
+        'person', '+14155550199', 'ended')`;
     const sandboxes = sandboxRemovalTeardown(
       new SandboxSessions(sql, { leaseSeconds: 300, workspaceRetentionSeconds: 3_600 }),
       () => new FakeSandboxProvider(),

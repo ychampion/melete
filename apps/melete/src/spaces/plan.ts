@@ -111,6 +111,9 @@ export async function sweepOperational(
     // A paired computer names its connection too, and a pairing code its space.
     await tx`delete from paired_device where space_id = ${spaceId}`;
     await tx`delete from device_pairing where space_id = ${spaceId}`;
+    // A phone call names its line's connection and keeps its transcript; calls
+    // a job placed went with it, and the person's own calls go here.
+    await tx`delete from phone_call where space_id = ${spaceId}`;
     // A memory question belongs to a space rather than to a job.
     await tx`delete from question where space_id = ${spaceId}`;
     for (const table of SPACE_KEYED_OPERATIONAL)
