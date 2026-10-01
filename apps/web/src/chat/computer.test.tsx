@@ -163,7 +163,7 @@ const desktop = (control: 'agent' | 'human', running = true) => ({
   running,
   control,
   control_epoch: 1,
-  viewport: { width: 1280 as const, height: 800 as const },
+  viewport: { width: 1024 as const, height: 768 as const },
   egress: 'open' as const,
 });
 const renderDesktop = (control: 'agent' | 'human', running = true) =>

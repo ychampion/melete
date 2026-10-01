@@ -686,7 +686,7 @@ withDb('installing each kind of connection through the API', () => {
     const read = await broker.propose(offered.claimed.claims, {
       connection_id: id,
       kind: 'calendar.list',
-      payload: { limit: 5 },
+      payload: { limit: 5, from: '2026-01-01', to: '2026-02-01' },
     });
     expect(read.status).toBe('succeeded');
     const recorded = JSON.stringify(await broker.get(offered.claimed.claims, read.action_id));

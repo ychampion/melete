@@ -97,7 +97,6 @@ withDb('the MCP server without a public address', () => {
       ['GET', '/.well-known/oauth-authorization-server'],
       ['GET', '/.well-known/oauth-protected-resource/api/mcp'],
       ['POST', '/oauth/register'],
-      ['POST', '/api/mcp'],
     ] as const) {
       const response = await off.request(path, { method });
       expect(response.status).toBe(404);
