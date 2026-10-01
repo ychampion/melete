@@ -40,24 +40,30 @@ function Unreachable({ error, onRetry }: { error: string; onRetry: () => void })
   return (
     <div
       className="col"
-      style={{
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: '100%',
-        gap: 16,
-        padding: 24,
-        textAlign: 'center',
-      }}
+      style={{ alignItems: 'center', height: '100%', overflowY: 'auto', padding: 24 }}
     >
-      <MeleteMark width={64} />
-      <h1 style={{ fontSize: 22, fontWeight: 700 }}>Couldn’t reach Melete</h1>
-      <p style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 420 }}>{error}</p>
-      <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 420 }}>
-        Start the service, or point <code>VITE_MELETE_API</code> at one that is running.
-      </p>
-      <Button variant="outline" onClick={onRetry}>
-        Try again
-      </Button>
+      {/* Auto margins centre it and still let a short window scroll to the top. */}
+      <div
+        className="col"
+        style={{
+          alignItems: 'center',
+          gap: 16,
+          maxWidth: '100%',
+          marginBlock: 'auto',
+          flexShrink: 0,
+          textAlign: 'center',
+        }}
+      >
+        <MeleteMark width={64} />
+        <h1 style={{ fontSize: 22, fontWeight: 700 }}>Couldn’t reach Melete</h1>
+        <p style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 420 }}>{error}</p>
+        <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 420 }}>
+          Start the service, or point <code>VITE_MELETE_API</code> at one that is running.
+        </p>
+        <Button variant="outline" onClick={onRetry}>
+          Try again
+        </Button>
+      </div>
     </div>
   );
 }
