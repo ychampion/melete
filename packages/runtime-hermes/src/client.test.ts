@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { type AttemptBundle, CONTEXT_LIMITS, EMPTY_SINCE_LAST } from '@melete/contracts';
+import {
+  APPROVAL_OUTDATED_NOTE,
+  type AttemptBundle,
+  CONTEXT_LIMITS,
+  EMPTY_SINCE_LAST,
+} from '@melete/contracts';
 import { estimateTokens, indexLine } from '@melete/skills';
 import {
   HERMES_APPROVAL_ANSWERS,
@@ -253,6 +258,24 @@ describe('context assembly', () => {
       '[payload abbreviated; the stored bytes are sent whole]',
     );
     expect(renderInput(resumed).length).toBeLessThan(4000);
+  });
+
+  test('a question withdrawn because the request changed is not read as a refusal', () => {
+    const withdrawn = structuredClone(bundle);
+    withdrawn.inputs.approval_results = [
+      {
+        action_id: `act_${SUFFIX}`,
+        decision: 'denied',
+        note: APPROVAL_OUTDATED_NOTE,
+        kind: 'email.send',
+        status: 'denied',
+      },
+    ];
+    const text = renderInput(withdrawn);
+    expect(text).toContain('was withdrawn before the owner answered, because the request changed');
+    expect(text).toContain('nobody refused it');
+    expect(text).not.toContain('was denied');
+    expect(text).not.toContain('The owner said');
   });
 
   test('constraints read as short prose, and a default is never written down', () => {

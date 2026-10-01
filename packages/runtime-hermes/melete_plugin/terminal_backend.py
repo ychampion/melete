@@ -86,6 +86,13 @@ REFUSED_STATUS = 126
 TIMED_OUT_STATUS = 124
 INTERRUPTED_STATUS = 130
 
+#: Said beside every result that carries no command output, so the model reports
+#: the absence instead of output it never received.
+NO_OUTPUT_INSTRUCTION = (
+    "You received no output for this command. Do not report, quote or guess any output for it; "
+    "if the person needs what it printed, say it was not returned."
+)
+
 
 def sandbox_connection(catalog: List[Dict[str, Any]]) -> Optional[str]:
     """The sandbox connection this attempt's terminal runs through, or None.
@@ -150,14 +157,17 @@ def _result(output: str, returncode: int) -> Dict[str, Any]:
 def _unknown(reason: str, action_id: Optional[str] = None) -> Dict[str, Any]:
     named = f" (action {action_id})" if action_id else ""
     return _result(
-        f"[outcome unknown{named}] {reason}. The command may have run in the sandbox. "
-        + UNCERTAIN_INSTRUCTION,
+        f"[outcome unknown{named}] {reason}. The command may have run in the sandbox, "
+        "and no output came back for it. " + UNCERTAIN_INSTRUCTION,
         UNKNOWN_STATUS,
     )
 
 
 def _refused(message: str) -> Dict[str, Any]:
-    return _result(f"[not run] {message}. {FAILURE_INSTRUCTION}", REFUSED_STATUS)
+    return _result(
+        f"[not run] {message}. The command did not run, so it has no output. {FAILURE_INSTRUCTION}",
+        REFUSED_STATUS,
+    )
 
 
 class SandboxTerminal:
@@ -269,8 +279,8 @@ class SandboxTerminal:
             # It ran; only the read-back failed. Reads are safe to repeat, and
             # were, so say what is known without inventing a status.
             return _result(
-                f"[the command ran (action {action_id}) but its result could not be read back] "
-                "Do not run it again; read the action's receipt instead.",
+                f"[no output: the command ran (action {action_id}) but its result could not be read back] "
+                f"{NO_OUTPUT_INSTRUCTION} Do not run it again; read the action's receipt instead.",
                 UNKNOWN_STATUS,
             )
         return _from_detail(detail)
@@ -299,6 +309,21 @@ def _from_detail(detail: Dict[str, Any]) -> Dict[str, Any]:
     """The engine's `{"output", "returncode"}` from the receipt the broker wrote."""
     output = str(detail.get("output") or "")
     notes: List[str] = []
+    if not output:
+        # An empty result is said out loud. Left blank, a model that expected
+        # output fills the gap with what it thinks the command would print.
+        printed = detail.get("output_bytes")
+        if "output" not in detail:
+            notes.append(f"[no output came back with this result] {NO_OUTPUT_INSTRUCTION}")
+        elif isinstance(printed, int) and not isinstance(printed, bool) and printed > 0:
+            stored = detail.get("output_path")
+            where = f" The capture is in the job workspace at {stored}." if stored else ""
+            notes.append(
+                f"[no output came back: the command wrote {printed} bytes, none of them returned here]"
+                f"{where} {NO_OUTPUT_INSTRUCTION}"
+            )
+        else:
+            notes.append(f"[no output: the command printed nothing] {NO_OUTPUT_INSTRUCTION}")
     if detail.get("output_binary"):
         notes.append(
             "[binary output: bytes that are not text are shown replaced; "

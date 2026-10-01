@@ -67,3 +67,21 @@ test('a status that leaves the turn queued keeps it sending', () => {
   );
   expect(still.turns[0]?.delivery).toBe('sending');
 });
+
+test('a status replayed for an earlier turn leaves the conversation as it is now', () => {
+  const finished: Turn = { ...queued, status: 'done', delivery: null };
+  const latest: Turn = { ...finished, id: 'turn_2', text: 'And tomorrow?' };
+  const opened = fromTurns([finished, latest], 'send', 'done');
+  const replayed = applyEvent(
+    opened,
+    event({ type: 'status', status: 'working', composer: 'pause' }),
+  );
+  expect(replayed.status).toBe('done');
+  expect(replayed.composer).toBe('send');
+  const current = applyEvent(opened, {
+    ...event({ type: 'status', status: 'working', composer: 'pause' }),
+    turn_id: 'turn_2',
+  });
+  expect(current.status).toBe('working');
+  expect(current.composer).toBe('pause');
+});

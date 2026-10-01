@@ -413,6 +413,38 @@ def test_an_unreadable_receipt_is_read_again_but_the_command_is_not_sent_again()
     assert len(broker.proposals) == 1 and broker.reads == [ACTION, ACTION]
 
 
+def test_a_command_that_printed_nothing_says_so():
+    broker = ScriptedBroker()
+    broker.receipt = receipt(output="", output_bytes=0)
+    result = environment(broker).execute("touch /work/x")
+    assert result["returncode"] == 0
+    assert result["output"].startswith("[no output: the command printed nothing]")
+    assert "Do not report, quote or guess any output" in result["output"]
+
+
+def test_output_that_did_not_come_back_is_never_left_blank():
+    broker = ScriptedBroker()
+    broker.receipt = receipt(output="", output_bytes=42, output_path="out/run.txt")
+    output = environment(broker).execute("date")["output"]
+    assert "the command wrote 42 bytes, none of them returned here" in output
+    assert "out/run.txt" in output and "Do not report, quote or guess any output" in output
+    missing = receipt()
+    del missing["detail"]["output"]
+    broker.receipt = missing
+    output = environment(broker).execute("date")["output"]
+    assert output.startswith("[no output came back with this result]")
+
+
+def test_every_result_without_output_says_there_is_none():
+    broker = ScriptedBroker()
+    broker.receipt = None
+    assert "You received no output" in environment(broker).execute("date")["output"]
+    broker.response = {"action_id": ACTION, "status": "failed", "message": "the computer is busy"}
+    assert "did not run, so it has no output" in environment(broker).execute("date")["output"]
+    broker.response = {"action_id": ACTION, "status": "unknown", "message": "lost"}
+    assert "no output came back" in environment(broker).execute("date")["output"]
+
+
 def test_an_interrupt_stops_the_wait_and_reports_the_outcome_unknown():
     broker = ScriptedBroker()
     broker.hold = threading.Event()

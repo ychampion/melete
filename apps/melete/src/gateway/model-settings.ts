@@ -462,7 +462,7 @@ export class ModelSettingsService {
     } catch {
       return failed('no_key', 'The saved key could not be opened. Paste it again.');
     }
-    if (!key) return failed('no_key', `Paste a ${label} API key first.`);
+    if (!key) return failed('no_key', `Paste your ${label} API key first.`);
 
     const url = new URL('models', base);
     const headers = new Headers({ accept: 'application/json' });

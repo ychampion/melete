@@ -13,6 +13,7 @@ import {
   type ApprovalSettings,
   type CapabilityClaims,
   type ConnectorManifest,
+  canonicalizePayload,
   DEFAULT_APPROVAL_SETTINGS,
   type JsonObject,
 } from '@melete/contracts';
@@ -788,6 +789,72 @@ describe('changes to an existing calendar event', () => {
       reason: 'It changes a meeting that has guests, and they would be told.',
     });
   });
+});
+
+describe('settings changed between the question and the answer', () => {
+  databaseTest(
+    'an approval given after the sandbox switch came back on runs what the person saw',
+    async () => {
+      const s = await setup({ settings: { classes: { sandbox: false } } });
+      const proposal = await s.propose('browser.fill', { label: 'Search', value: 'flights' });
+      expect(proposal.status).toBe('needs_approval');
+      await saveApprovalSettings(s.sql, s.claims.space_id, {
+        mode: 'auto_review',
+        classes: { ...DEFAULT_APPROVAL_SETTINGS.classes, sandbox: true },
+      });
+      await s.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      const resumed = await s.broker.resume(s.claims, proposal.action_id);
+      expect(resumed.status).toBe('succeeded');
+      expect(s.dispatched).toEqual(['browser.fill']);
+    },
+  );
+
+  databaseTest(
+    'an approval given before the sandbox switch went off still runs only those bytes',
+    async () => {
+      const s = await setup({ settings: { classes: { sandbox: false } } });
+      const proposal = await s.propose('browser.fill', { label: 'Search', value: 'hotels' });
+      await s.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      await saveApprovalSettings(s.sql, s.claims.space_id, {
+        mode: 'ask',
+        classes: { ...DEFAULT_APPROVAL_SETTINGS.classes, sandbox: false },
+      });
+      expect((await s.broker.resume(s.claims, proposal.action_id)).status).toBe('succeeded');
+      expect(s.dispatched).toEqual(['browser.fill']);
+    },
+  );
+
+  databaseTest(
+    'an approval whose binding no longer matches ends the action instead of leaving it approved',
+    async () => {
+      const s = await setup({ settings: { classes: { sandbox: false } } });
+      const proposal = await s.propose('browser.fill', { label: 'Search', value: 'trains' });
+      await s.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      // The recorded binding names another destination than the action now does.
+      const key = `broker:binding:${proposal.action_id}`;
+      const [bound] = await s.sql`select payload from event
+        where job_id = ${s.claims.job_id} and dedup_key = ${key}`;
+      const tuple = { ...bound?.payload.tuple, recipient: { to: 'someone-else@example.com' } };
+      const hash = canonicalizePayload(tuple).hash;
+      await s.sql`update event set payload = payload || ${JSON.stringify({ tuple, hash })}::jsonb
+        where job_id = ${s.claims.job_id} and dedup_key = ${key}`;
+      expect(await rejectionOf(s.broker.resume(s.claims, proposal.action_id))).toMatchObject({
+        code: 'approval_hash_mismatch',
+      });
+      const [action] = await s.sql`select status from action where id = ${proposal.action_id}`;
+      expect(action?.status).toBe('failed');
+      expect(s.dispatched).toEqual([]);
+    },
+  );
 });
 
 describe('approval settings', () => {

@@ -123,7 +123,7 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
         return {
           ok: false,
           code: 'no_key',
-          message: `Paste a ${label} API key first.`,
+          message: `Paste your ${label} API key first.`,
           status: null,
         };
       if (key?.includes('bad'))

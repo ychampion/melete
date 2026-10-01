@@ -378,7 +378,11 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         blocks: [...turn.blocks, { type: 'question', question: item.question, answered: null }],
       }));
     case 'status': {
-      const next = { ...base, composer: item.composer, status: item.status };
+      // A status replayed for an earlier turn says nothing about the conversation
+      // now: a long history opened mid-replay would otherwise read as working.
+      const index = event.turn_id ? base.turns.findIndex((t) => t.id === event.turn_id) : -1;
+      const earlier = index >= 0 && index < base.turns.length - 1;
+      const next = earlier ? base : { ...base, composer: item.composer, status: item.status };
       return patchTurn(next, event.turn_id, (turn) => ({
         ...turn,
         status: item.status,

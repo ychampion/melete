@@ -227,6 +227,14 @@ export function describeTrigger(spec: TriggerSpec): string {
 }
 
 /**
+ * The note on an approval Melete withdrew because what it was asked on changed
+ * before anyone answered it: a fact it rested on, or the job's revision.
+ * Nobody refused it: nothing was carried out, and the work asks again with the
+ * current details if it still needs to.
+ */
+export const APPROVAL_OUTDATED_NOTE = 'outdated';
+
+/**
  * Everything one attempt is given, and nothing more. The order matters for
  * prompt caching: stable prefix first, volatile inputs last.
  */

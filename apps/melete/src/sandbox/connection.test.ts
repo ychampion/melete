@@ -24,6 +24,10 @@ test("a sandbox is made in the person's time zone, and a zone that is not one is
   expect(sandboxTimeZone('Not/AZone')).toBe('UTC');
   expect(sandboxTimeZone('$(reboot)')).toBe('UTC');
   expect(sandboxTimeZone(undefined)).toBeNull();
+  // An old name a browser reports is given as the name the sandbox's zone files know.
+  expect(sandboxTimeZone('Asia/Calcutta')).toBe('Asia/Kolkata');
+  expect(sandboxTimeZone('Asia/Kolkata')).toBe('Asia/Kolkata');
+  expect(spec('Europe/Kiev')).toEqual({ LANG: 'C.UTF-8', TZ: 'Europe/Kyiv' });
 });
 
 test("a secret that is not the adapter's key is refused in one sentence that never quotes it", () => {
