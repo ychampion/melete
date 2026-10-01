@@ -1,33 +1,70 @@
 /**
- * Voice mode: a hands-free conversation inside the chat.
+ * Voice mode: a call with the agent inside the chat.
  *
  * It sits where the composer was, so the transcript, the tool trail and any
- * decision stay on screen above it. The microphone streams to a realtime
- * transcription session the service opens for this conversation; each finished
- * utterance is sent through the ordinary send path, exactly as if it had been
- * typed. The reply is read aloud a sentence at a time as it streams. Speaking
- * over it stops the playback.
+ * decision stay on screen above it; minimised, it shrinks to a bar and the
+ * composer comes back while the call goes on. The microphone streams to a
+ * realtime transcription session the service opens for this conversation.
+ *
+ * With nothing running, a finished utterance is sent through the ordinary send
+ * path, exactly as if it had been typed. While a turn runs, the call keeps
+ * talking: what is said goes to the companion, a light model call that sees the
+ * conversation and the turn's activity but cannot act. It answers, gives short
+ * progress words at natural moments, and recognises an instruction for the
+ * work. Stop, pause and carry on go to the existing controls; any other
+ * instruction is kept as the next message, sent when the turn ends, and the
+ * call says so. The reply is read aloud a sentence at a time as it streams.
+ * Speaking over it stops the playback.
  *
  * A decision is never taken by voice. When the reply waits on one, voice mode
  * says so, stops reading, and points at the card.
  */
-import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { Icon } from '../design/icons.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { answerOf, type Transcript } from '../experience/reduce.ts';
-import { base64, microphoneProblem, nextPiece, openMicrophone, speakable } from './voice.ts';
+import {
+  activityOf,
+  progressDue,
+  QUEUED,
+  queuedMessage,
+  quickCommand,
+  routeAside,
+  STOPPING,
+  stepsDone,
+} from './call.ts';
+import {
+  base64,
+  elapsed,
+  microphoneProblem,
+  nextPiece,
+  openMicrophone,
+  speakable,
+  useNowTick,
+} from './voice.ts';
 
 export type VoicePhase = 'connecting' | 'listening' | 'thinking' | 'speaking' | 'stopped';
 
 const PHASE_WORDS: Record<VoicePhase, string> = {
   connecting: 'Starting…',
   listening: 'Listening',
-  thinking: 'Thinking',
+  thinking: 'Working · talk any time',
   speaking: 'Speaking',
   stopped: 'Stopped',
 };
 
 const DECISION = 'This needs your decision. It is on the screen.';
+const UNSENT = 'I couldn’t send what you added. It’s in the message box.';
+const KEPT_AFTER_STOP = 'What you added is in the message box, for when you want it.';
+
+const WORKING = new Set(['queued', 'working', 'streaming', 'paused']);
 
 type Message = { message_type?: string; text?: string; error?: string };
 
@@ -48,30 +85,58 @@ function waitingOnPerson(transcript: Transcript, index: number): boolean {
 export function VoicePanel({
   conversationId,
   transcript,
+  agentName,
+  avatar,
+  minimised,
+  onMinimise,
   onSend,
+  onDraft,
   onEnd,
   onShowDecision,
 }: {
   conversationId: string;
   transcript: Transcript;
+  /** The conversation's agent, by name; "Melete" when it has none. */
+  agentName: string;
+  /** The agent's face, small. */
+  avatar: ReactNode;
+  /** Shrunk to a bar so the chat can be used while the call goes on. */
+  minimised: boolean;
+  onMinimise: (minimised: boolean) => void;
   /** The ordinary send path. Resolves true once the service has the message. */
   onSend: (text: string) => Promise<boolean>;
+  /** Put words in the message box, for something heard that could not be sent. */
+  onDraft: (text: string) => void;
   onEnd: () => void;
   /** Bring the waiting decision into view. */
   onShowDecision: () => void;
 }) {
   const [phase, setPhase] = useState<VoicePhase>('connecting');
   const [muted, setMuted] = useState(false);
-  const [caption, setCaption] = useState('');
+  /** What the person said last, and what the agent said last: two captions. */
+  const [heard, setHeard] = useState('');
+  const [said, setSaid] = useState('');
+  const [kept, setKept] = useState<string[]>([]);
   const [problem, setProblem] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [startedAt] = useState(() => Date.now());
+  const clock = useNowTick(true);
   const panel = useRef<HTMLDivElement>(null);
   const mutedRef = useRef(false);
   mutedRef.current = muted;
   const onSendRef = useRef(onSend);
   onSendRef.current = onSend;
-  const turns = useRef(transcript.turns.length);
-  turns.current = transcript.turns.length;
+  const onDraftRef = useRef(onDraft);
+  onDraftRef.current = onDraft;
+  const transcriptRef = useRef(transcript);
+  transcriptRef.current = transcript;
+
+  const lastIndex = transcript.turns.length - 1;
+  const latest = transcript.turns[lastIndex];
+  const waiting = waitingOnPerson(transcript, lastIndex);
+  const working = Boolean(latest && WORKING.has(latest.status)) && !waiting;
+  const workingRef = useRef(working);
+  workingRef.current = working;
 
   /* ---------- playback: pieces fetched ahead, played in order ---------- */
   const queue = useRef<Promise<Blob | null>[]>([]);
@@ -110,11 +175,11 @@ export function VoicePanel({
       URL.revokeObjectURL(url);
       playing.current = false;
       if (queue.current.length) void playNext();
-      else {
-        setPhase((current) => (current === 'speaking' ? 'listening' : current));
-        // A finished reply leaves the caption, except the note that a decision waits.
-        setCaption((current) => (current === DECISION ? current : ''));
-      }
+      // Back to the work, or to listening, once the last piece has been read.
+      else
+        setPhase((current) =>
+          current === 'speaking' ? (workingRef.current ? 'thinking' : 'listening') : current,
+        );
     };
     audio.onended = done;
     audio.onerror = done;
@@ -123,6 +188,7 @@ export function VoicePanel({
 
   const say = useCallback(
     (text: string) => {
+      setSaid(text);
       const signal = speech.current.signal;
       queue.current.push(
         adapter
@@ -141,7 +207,7 @@ export function VoicePanel({
     [conversationId, playNext],
   );
 
-  /* ---------- the reply to the latest utterance ---------- */
+  /* ---------- the reply to the latest message ---------- */
   const replying = useRef<{ index: number; spoken: number; told: boolean } | null>(null);
 
   useEffect(() => {
@@ -152,12 +218,11 @@ export function VoicePanel({
     if (waitingOnPerson(transcript, current.index)) {
       if (!current.told) {
         current.told = true;
-        setCaption(DECISION);
         say(DECISION);
       }
       return;
     }
-    const finished = !['queued', 'working', 'streaming'].includes(turn.status) && !turn.streaming;
+    const finished = !WORKING.has(turn.status) && !turn.streaming;
     const text = speakable(answerOf(turn));
     for (
       let piece = nextPiece(text, current.spoken, finished);
@@ -165,7 +230,6 @@ export function VoicePanel({
       piece = nextPiece(text, current.spoken, finished)
     ) {
       current.spoken = piece.end;
-      setCaption(piece.piece);
       say(piece.piece);
     }
     if (finished) {
@@ -173,6 +237,137 @@ export function VoicePanel({
       if (!playing.current && queue.current.length === 0) setPhase('listening');
     }
   }, [transcript, say]);
+
+  const send = useCallback((text: string) => {
+    replying.current = { index: transcriptRef.current.turns.length, spoken: 0, told: false };
+    setPhase('thinking');
+    return onSendRef.current(text).then((sent) => {
+      if (!sent) {
+        replying.current = null;
+        setPhase('listening');
+      }
+      return sent;
+    });
+  }, []);
+
+  /* ---------- what was said for the work, kept for the next message ---------- */
+  const keptRef = useRef<string[]>([]);
+  /** The person stopped the work by voice: what they added waits instead of restarting it. */
+  const stopped = useRef(false);
+  const flushing = useRef(false);
+
+  const keep = useCallback((text: string) => {
+    keptRef.current = [...keptRef.current, text];
+    setKept(keptRef.current);
+  }, []);
+
+  // Once the turn has ended, and nothing waits on the person, what was kept goes as the next message.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the reply ref clears as the transcript changes, so it is read again then
+  useEffect(() => {
+    if (working || waiting || flushing.current || replying.current || !keptRef.current.length)
+      return;
+    const text = queuedMessage(keptRef.current);
+    keptRef.current = [];
+    setKept([]);
+    if (stopped.current) {
+      stopped.current = false;
+      onDraftRef.current(text);
+      say(KEPT_AFTER_STOP);
+      return;
+    }
+    flushing.current = true;
+    void send(text).then((sent) => {
+      flushing.current = false;
+      if (!sent) {
+        onDraftRef.current(text);
+        say(UNSENT);
+      }
+    });
+  }, [working, waiting, transcript, send, say]);
+
+  /* ---------- talking while the work runs ---------- */
+  const asking = useRef(false);
+  const progress = useRef({ startedAt: 0, lastAt: null as number | null, lastSteps: 0 });
+  const lastHeardAt = useRef(0);
+
+  // A new run of work starts the progress clock again.
+  useEffect(() => {
+    if (working) progress.current = { startedAt: Date.now(), lastAt: null, lastSteps: 0 };
+  }, [working]);
+
+  const aside = useCallback(
+    async (text: string) => {
+      const command = quickCommand(text);
+      if (command === 'stop') {
+        stopped.current = true;
+        say(STOPPING);
+        void adapter.stop(conversationId);
+        return;
+      }
+      if (command === 'pause') {
+        say('Paused. Say carry on when you’re ready.');
+        void adapter.pause(conversationId);
+        return;
+      }
+      if (command === 'resume') {
+        say('Carrying on.');
+        void adapter.resume(conversationId);
+        return;
+      }
+      asking.current = true;
+      const activity = activityOf(transcriptRef.current.turns.at(-1));
+      const result = await adapter
+        .voiceAside(conversationId, { kind: 'heard', text, activity })
+        .catch(() => ({ data: null }));
+      asking.current = false;
+      progress.current.lastAt = Date.now();
+      progress.current.lastSteps = stepsDone(activity);
+      const action = routeAside(text, result.data);
+      if (action.kind === 'queue') keep(action.text);
+      if (action.kind === 'stop') {
+        stopped.current = true;
+        void adapter.stop(conversationId);
+      }
+      say(action.say);
+    },
+    [conversationId, keep, say],
+  );
+  const asideRef = useRef(aside);
+  asideRef.current = aside;
+  const sendRef = useRef(send);
+  sendRef.current = send;
+
+  // A progress word at natural moments: a step finished, never over the person, never a flood.
+  useEffect(() => {
+    if (!working || latest?.status === 'paused' || phase === 'stopped') return;
+    const activity = activityOf(latest);
+    const state = progress.current;
+    const due = progressDue({
+      now: clock,
+      startedAt: state.startedAt,
+      lastAt: state.lastAt,
+      steps: stepsDone(activity),
+      lastSteps: state.lastSteps,
+      busy:
+        asking.current ||
+        playing.current ||
+        queue.current.length > 0 ||
+        clock - lastHeardAt.current < 3000,
+    });
+    if (!due) return;
+    asking.current = true;
+    state.lastAt = clock;
+    state.lastSteps = stepsDone(activity);
+    void adapter
+      .voiceAside(conversationId, { kind: 'progress', activity })
+      .then((result) => {
+        if (result.data?.intent === 'talk' && result.data.say && workingRef.current)
+          say(result.data.say);
+      })
+      .finally(() => {
+        asking.current = false;
+      });
+  }, [clock, working, phase, latest, conversationId, say]);
 
   /* ---------- listening: session, microphone, socket ---------- */
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new attempt starts everything again
@@ -182,7 +377,7 @@ export function VoicePanel({
     let mic: { close: () => void } | null = null;
     setPhase('connecting');
     setProblem(null);
-    setCaption('');
+    setHeard('');
     const stop = (message: string | null) => {
       if (closed) return;
       closed = true;
@@ -210,23 +405,23 @@ export function VoicePanel({
         }
         const text = message.text?.trim() ?? '';
         if (message.message_type === 'partial_transcript' && text) {
-          // The person is talking: stop reading the reply to them.
+          lastHeardAt.current = Date.now();
+          // The person is talking: stop reading to them. A finished reply is not taken up again.
           if (playing.current || queue.current.length) {
             hush();
-            replying.current = null;
+            if (!workingRef.current) replying.current = null;
           }
-          setCaption(text);
-          setPhase('listening');
+          setHeard(text);
+          setPhase((current) =>
+            current === 'connecting' ? current : workingRef.current ? 'thinking' : 'listening',
+          );
         } else if (message.message_type === 'committed_transcript' && text) {
-          setCaption(text);
-          replying.current = { index: turns.current, spoken: 0, told: false };
-          setPhase('thinking');
-          void onSendRef.current(text).then((sent) => {
-            if (!sent) {
-              replying.current = null;
-              setPhase('listening');
-            }
-          });
+          lastHeardAt.current = Date.now();
+          setHeard(text);
+          // While a turn is under way, or waits on the person, nothing is sent over it.
+          if (workingRef.current || flushing.current || replying.current)
+            void asideRef.current(text);
+          else void sendRef.current(text);
         } else if (message.message_type?.endsWith('error') || message.error) {
           stop('The speech service stopped listening. Start again when you are ready.');
         }
@@ -249,7 +444,7 @@ export function VoicePanel({
             mic.close();
             return;
           }
-          setPhase('listening');
+          setPhase(workingRef.current ? 'thinking' : 'listening');
         } catch (error) {
           stop(microphoneProblem(error));
         }
@@ -266,9 +461,29 @@ export function VoicePanel({
     };
   }, [conversationId, attempt, hush]);
 
+  // The work started or ended while the call was quiet: show it.
   useEffect(() => {
-    panel.current?.focus();
-  }, []);
+    setPhase((current) =>
+      current === 'listening' && working
+        ? 'thinking'
+        : current === 'thinking' && !working && !replying.current
+          ? 'listening'
+          : current,
+    );
+  }, [working]);
+
+  useEffect(() => {
+    if (!minimised) panel.current?.focus();
+  }, [minimised]);
+
+  // Words kept for the next message are never lost to the call ending.
+  useEffect(
+    () => () => {
+      const text = queuedMessage(keptRef.current);
+      if (text) onDraftRef.current(text);
+    },
+    [],
+  );
 
   const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {
@@ -277,34 +492,70 @@ export function VoicePanel({
     }
   };
 
-  const decision = waitingOnPerson(transcript, transcript.turns.length - 1);
   const shown = muted && phase === 'listening' ? 'Muted' : PHASE_WORDS[phase];
+  const timer = elapsed(Math.max(0, clock - startedAt));
 
   return (
     <section
       ref={panel}
       className="voice-panel"
       data-phase={phase}
-      aria-label="Voice mode"
+      data-minimised={minimised || undefined}
+      aria-label={minimised ? `Call with ${agentName}` : 'Voice mode'}
       tabIndex={-1}
       onKeyDown={onKey}
     >
-      <div className="voice-orb" aria-hidden="true">
-        <span />
-      </div>
-      <div className="voice-body">
-        <div className="voice-phase" role="status" aria-live="polite">
+      <div className="voice-head">
+        <span className="voice-face" aria-hidden="true">
+          {avatar}
+          <span className="voice-orb">
+            <span />
+          </span>
+        </span>
+        <span className="voice-name">{agentName}</span>
+        <span className="voice-phase" role="status" aria-live="polite">
           {shown}
-        </div>
-        <p className="voice-caption" aria-live="polite">
-          {problem ?? (caption || (phase === 'listening' ? 'Say what you need.' : ''))}
-        </p>
-        {decision && !problem ? (
-          <button type="button" className="voice-link" onClick={onShowDecision}>
-            Show the decision
-          </button>
-        ) : null}
+        </span>
+        <span className="voice-timer">
+          <span className="sr-only">Call time </span>
+          {timer}
+        </span>
       </div>
+      {minimised ? null : (
+        <div className="voice-body">
+          {problem ? (
+            <p className="voice-caption" data-who="problem" aria-live="polite">
+              {problem}
+            </p>
+          ) : (
+            <>
+              <p className="voice-caption" data-who="you" aria-live="polite">
+                <span className="voice-speaker">You</span>
+                <span className="voice-words">
+                  {heard || (phase === 'connecting' ? '' : 'Say what you need.')}
+                </span>
+              </p>
+              {said ? (
+                <p className="voice-caption" data-who="agent" aria-live="polite">
+                  <span className="voice-speaker">{agentName}</span>
+                  <span className="voice-words">{said}</span>
+                </p>
+              ) : null}
+            </>
+          )}
+          {kept.length ? (
+            <p className="voice-kept" title={QUEUED}>
+              <Icon name="clock" size={13} />
+              <span className="voice-kept-text">Next message: {queuedMessage(kept)}</span>
+            </p>
+          ) : null}
+          {waiting && !problem ? (
+            <button type="button" className="voice-link" onClick={onShowDecision}>
+              Show the decision
+            </button>
+          ) : null}
+        </div>
+      )}
       <div className="voice-actions">
         {phase === 'stopped' ? (
           <button type="button" className="voice-btn" onClick={() => setAttempt((n) => n + 1)}>
@@ -319,12 +570,23 @@ export function VoicePanel({
             onClick={() => setMuted((value) => !value)}
           >
             <Icon name={muted ? 'micOff' : 'mic'} size={16} />
-            <span>{muted ? 'Unmute' : 'Mute'}</span>
+            <span className="voice-btn-label">{muted ? 'Unmute' : 'Mute'}</span>
           </button>
         )}
+        <button
+          type="button"
+          className="voice-btn"
+          aria-label={minimised ? 'Open the call' : 'Minimise the call'}
+          onClick={() => onMinimise(!minimised)}
+        >
+          <Icon name={minimised ? 'maximize' : 'chevronDown'} size={16} />
+          <span className="voice-btn-label" aria-hidden="true">
+            {minimised ? 'Open' : 'Minimise'}
+          </span>
+        </button>
         <button type="button" className="voice-btn" data-variant="end" onClick={onEnd}>
           <Icon name="x" size={16} />
-          <span>End</span>
+          <span className="voice-btn-label">End</span>
         </button>
       </div>
     </section>

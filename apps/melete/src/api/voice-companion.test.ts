@@ -1,0 +1,358 @@
+/**
+ * The companion that talks while the work runs. The real gateway and the real
+ * privacy router carry every call here; only the provider is replaced, at the
+ * socket, so what reaches it is what a real provider would receive.
+ */
+import { describe, expect, test } from 'bun:test';
+import type { VoiceAsideRequest } from '@melete/contracts';
+import { Hono } from 'hono';
+import type { Database } from '../db/client.ts';
+import type { GatewayProvider } from '../gateway/types.ts';
+import { MemoryPrivacyStore, PrivacyRouter } from '../privacy/index.ts';
+import { ServiceError } from './errors.ts';
+import { mountVoice, type VoicePrivacy } from './voice.ts';
+import {
+  type CompanionContext,
+  companionBody,
+  companionInput,
+  openVoiceCompanion,
+  parseCompanionReply,
+  replyText,
+  type VoiceCompanion,
+} from './voice-companion.ts';
+
+const SPACE = 'spc_1';
+const CONVERSATION = 'job_chat';
+
+const provider: GatewayProvider = {
+  name: 'openai',
+  baseUrl: 'https://api.openai.com/v1/',
+  apiKey: 'a-key-that-stays-inside-the-gateway',
+  protocols: ['chat/completions', 'responses'],
+};
+
+const context: CompanionContext = {
+  agentName: 'Melete',
+  turns: [
+    { said: 'What is on tomorrow?', answer: 'Two meetings and the dentist.' },
+    { said: 'Compare the three hotel pages for the trip.', answer: '' },
+  ],
+};
+
+const progress: VoiceAsideRequest = {
+  kind: 'progress',
+  activity: { now: 'Reading the third page', steps: ['Read page one', 'Read page two'] },
+};
+
+type Seen = { url: string; body: Record<string, unknown> };
+
+/** Stands in for the provider, recording exactly what the gateway forwarded. */
+function upstream(text: string, seen: Seen[], extra: Record<string, unknown> = {}) {
+  return async (incoming: Request): Promise<Response> => {
+    seen.push({ url: incoming.url, body: (await incoming.json()) as Record<string, unknown> });
+    return Response.json({
+      id: 'resp_1',
+      object: 'response',
+      status: 'completed',
+      model: 'gpt-6-astra',
+      output: [
+        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
+        ...((extra.output as unknown[]) ?? []),
+      ],
+      usage: { input_tokens: 300, output_tokens: 20, total_tokens: 320 },
+    });
+  };
+}
+
+async function withCompanion<T>(
+  store: MemoryPrivacyStore,
+  handler: (incoming: Request) => Promise<Response>,
+  work: (companion: VoiceCompanion) => Promise<T>,
+): Promise<T> {
+  store.scopes.set(CONVERSATION, {
+    spaceId: SPACE,
+    conversationId: CONVERSATION,
+    agentId: null,
+    turnId: null,
+  });
+  const opened = await openVoiceCompanion({
+    provider: 'openai',
+    model: 'gpt-6-astra',
+    providers: [provider],
+    privacy: new PrivacyRouter({ store }),
+    fetch: handler,
+  });
+  try {
+    return await work(opened.companion);
+  } finally {
+    await opened.close();
+  }
+}
+
+const call = (request: VoiceAsideRequest = progress) => ({
+  spaceId: SPACE,
+  conversationId: CONVERSATION,
+  request,
+  context,
+});
+
+describe('the companion has no way to act', () => {
+  test('no request body it builds carries a tool, for any protocol', () => {
+    const input = companionInput(progress, context);
+    for (const target of [
+      { provider: 'openai', model: 'gpt-6-astra' },
+      { provider: 'anthropic', model: 'claude-x' },
+      { provider: 'fireworks', model: 'accounts/fireworks/models/llama' },
+    ]) {
+      const body = companionBody(target, 'system', input) as Record<string, unknown>;
+      for (const key of [
+        'tools',
+        'tool_choice',
+        'functions',
+        'function_call',
+        'parallel_tool_calls',
+      ])
+        expect(body).not.toHaveProperty(key);
+    }
+  });
+
+  test('what reaches the provider has no tools, and a tool call in the reply is ignored', async () => {
+    const seen: Seen[] = [];
+    const reply = JSON.stringify({ intent: 'talk', say: 'Two pages down, one to go.' });
+    const answer = await withCompanion(
+      new MemoryPrivacyStore(),
+      upstream(reply, seen, {
+        output: [{ type: 'function_call', name: 'email.send', arguments: '{}', call_id: 'c1' }],
+      }),
+      (companion) => companion.answer(call()),
+    );
+    expect(answer).toEqual({ intent: 'talk', say: 'Two pages down, one to go.' });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.body).not.toHaveProperty('tools');
+    expect(seen[0]?.body).not.toHaveProperty('tool_choice');
+  });
+
+  test('only text is read from any protocol', () => {
+    expect(
+      replyText('chat/completions', {
+        choices: [
+          { message: { content: null, tool_calls: [{ function: { name: 'files.write' } }] } },
+        ],
+      }),
+    ).toBe('');
+    expect(
+      replyText('messages', {
+        content: [
+          { type: 'tool_use', name: 'calendar.delete', input: {} },
+          { type: 'text', text: 'Still reading.' },
+        ],
+      }),
+    ).toBe('Still reading.');
+  });
+});
+
+describe('what the companion is shown and what it says', () => {
+  test('it sees the conversation, the running work and what was heard', () => {
+    const input = JSON.parse(
+      companionInput(
+        { kind: 'heard', text: 'Also check the second site.', activity: progress.activity },
+        context,
+      ),
+    );
+    expect(input.earlier).toEqual([
+      { person: 'What is on tomorrow?', you: 'Two meetings and the dentist.' },
+    ]);
+    expect(input.working_on.asked).toBe('Compare the three hotel pages for the trip.');
+    expect(input.activity).toEqual({
+      done: ['Read page one', 'Read page two'],
+      now: 'Reading the third page',
+    });
+    expect(input.heard).toBe('Also check the second site.');
+  });
+
+  test('replies are read as intent and words, and anything else as words', () => {
+    expect(parseCompanionReply('{"intent":"steer","say":"I will pass that on."}')).toEqual({
+      intent: 'steer',
+      say: 'I will pass that on.',
+    });
+    expect(parseCompanionReply('```json\n{"intent":"stop","say":"Stopping now."}\n```')).toEqual({
+      intent: 'stop',
+      say: 'Stopping now.',
+    });
+    expect(parseCompanionReply('{"intent":"quiet","say":""}')).toEqual({
+      intent: 'quiet',
+      say: null,
+    });
+    expect(parseCompanionReply('{"intent":"talk","say":"  "}')).toEqual({
+      intent: 'quiet',
+      say: null,
+    });
+    expect(parseCompanionReply('I am on the last page now.')).toEqual({
+      intent: 'talk',
+      say: 'I am on the last page now.',
+    });
+    expect(parseCompanionReply('')).toEqual({ intent: 'quiet', say: null });
+    const long = parseCompanionReply(`${'This is a sentence. '.repeat(40)}`);
+    expect(long.say?.length).toBeLessThanOrEqual(400);
+    expect(long.say?.endsWith('.')).toBe(true);
+  });
+});
+
+describe('the companion obeys the privacy router as chat does', () => {
+  test('a sensitive conversation with no local model sends nothing to the cloud', async () => {
+    const store = new MemoryPrivacyStore();
+    await store.markConversation(CONVERSATION, SPACE, 'health');
+    const seen: Seen[] = [];
+    const answer = await withCompanion(store, upstream('{"intent":"talk","say":"x"}', seen), (c) =>
+      c.answer(call()),
+    );
+    expect(answer).toBeNull();
+    expect(seen).toHaveLength(0);
+  });
+
+  test('a private space sends nothing to the cloud', async () => {
+    const store = new MemoryPrivacyStore();
+    await store.saveSettings(SPACE, { private_space: true }, null);
+    const seen: Seen[] = [];
+    const answer = await withCompanion(store, upstream('{"intent":"talk","say":"x"}', seen), (c) =>
+      c.answer(call()),
+    );
+    expect(answer).toBeNull();
+    expect(seen).toHaveLength(0);
+  });
+
+  test('details are redacted on the way out and restored in what is said', async () => {
+    const seen: Seen[] = [];
+    const store = new MemoryPrivacyStore();
+    const answer = await withCompanion(
+      store,
+      async (incoming) => {
+        const body = (await incoming.clone().json()) as Record<string, unknown>;
+        const placeholder = /⟦[A-Z_]+_\d+⟧/.exec(JSON.stringify(body))?.[0] ?? 'none';
+        return upstream(
+          JSON.stringify({ intent: 'talk', say: `I am writing to ${placeholder}.` }),
+          seen,
+        )(incoming);
+      },
+      (c) =>
+        c.answer(
+          call({
+            kind: 'progress',
+            activity: { now: 'Writing to sam.taylor@example.com', steps: [] },
+          }),
+        ),
+    );
+    expect(JSON.stringify(seen[0]?.body)).not.toContain('sam.taylor@example.com');
+    expect(answer?.say).toBe('I am writing to sam.taylor@example.com.');
+  });
+});
+
+/* ---------- the route ---------- */
+
+const PERSON = 'prn_01J00000000000000000000000';
+
+function route(options: {
+  companion?: VoiceCompanion | null;
+  privacy?: VoicePrivacy;
+  now?: () => number;
+}) {
+  const built = new Hono();
+  built.onError((error, c) =>
+    error instanceof ServiceError
+      ? c.json({ error: { code: error.code, message: error.message } }, error.status)
+      : c.json({ error: { code: 'internal_error', message: String(error) } }, 500),
+  );
+  built.use('*', async (c, next) => {
+    c.set('owner', { id: PERSON, email: 'p@example.test', created_at: new Date().toISOString() });
+    c.set('experienceSpaceId', SPACE);
+    await next();
+  });
+  // The conversation lookup finds the caller's own conversation.
+  const db = {
+    select: () => ({
+      from: () => ({ where: async () => [{ id: CONVERSATION, agentId: null }] }),
+    }),
+  } as unknown as Database;
+  mountVoice(built, {
+    db,
+    allowance: { take: async () => 'r1', giveBack: async () => {} },
+    providers: {
+      transcription: null,
+      live: {
+        speak: async () => ({ body: new Response('').body as ReadableStream, mime: 'audio/mpeg' }),
+        session: async () => ({ url: 'wss://x', expires_at: new Date().toISOString() }),
+      },
+    },
+    limits: { seconds: 1800, characters: 20_000, sessions: 30 },
+    privacy: options.privacy ?? (async () => null),
+    companion: options.companion === undefined ? null : options.companion,
+    context: async () => context,
+    ...(options.now ? { now: options.now } : {}),
+  });
+  const post = (body: unknown) =>
+    built.request(`/conversations/${CONVERSATION}/voice/aside`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  return { post };
+}
+
+describe('the aside route', () => {
+  const answering = (calls: unknown[]): VoiceCompanion => ({
+    answer: async (asked) => {
+      calls.push(asked);
+      return { intent: 'talk', say: 'Two of three pages read.' };
+    },
+  });
+
+  test('answers with what to say', async () => {
+    const calls: unknown[] = [];
+    const response = await route({ companion: answering(calls) }).post(progress);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ intent: 'talk', say: 'Two of three pages read.' });
+    expect(calls).toHaveLength(1);
+  });
+
+  test('a private or sensitive place is refused before the companion is asked', async () => {
+    for (const reason of ['private', 'sensitive'] as const) {
+      const calls: unknown[] = [];
+      const response = await route({
+        companion: answering(calls),
+        privacy: async () => reason,
+      }).post({ kind: 'heard', text: 'How is it going?', activity: progress.activity });
+      expect(response.status).toBe(403);
+      expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+        'voice_private',
+      );
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  test('a privacy check that fails keeps the companion quiet too', async () => {
+    const calls: unknown[] = [];
+    const response = await route({
+      companion: answering(calls),
+      privacy: async () => {
+        throw new Error('settings unreadable');
+      },
+    }).post(progress);
+    expect(response.status).toBe(403);
+    expect(calls).toHaveLength(0);
+  });
+
+  test('no companion, no answer, a bad body, or too many asides each say so plainly', async () => {
+    expect((await route({}).post(progress)).status).toBe(404);
+    const failing: VoiceCompanion = { answer: async () => null };
+    expect((await route({ companion: failing }).post(progress)).status).toBe(502);
+    expect(
+      (await route({ companion: answering([]) }).post({ kind: 'heard', activity: {} })).status,
+    ).toBe(400);
+    let clock = 0;
+    const limited = route({ companion: answering([]), now: () => clock });
+    for (let i = 0; i < 20; i += 1) expect((await limited.post(progress)).status).toBe(200);
+    expect((await limited.post(progress)).status).toBe(429);
+    clock += 61_000;
+    expect((await limited.post(progress)).status).toBe(200);
+  });
+});

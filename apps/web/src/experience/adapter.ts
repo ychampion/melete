@@ -98,6 +98,8 @@ import type {
   Task,
   TaskInput,
   Turn,
+  VoiceAside,
+  VoiceAsideRequest,
   VoiceSession,
   VoiceStatus,
   VoiceTranscription,
@@ -663,6 +665,12 @@ export const adapter = {
   /** A realtime transcription address with a single-use token, for voice mode. */
   voiceSession: (id: string) =>
     guard<VoiceSession>(() => api.POST('/conversations/{id}/voice/session', path(id))),
+  /**
+   * A word with Melete while the turn runs: an answer, a progress word, or a
+   * note that what was heard is meant for the work. It never acts.
+   */
+  voiceAside: (id: string, body: VoiceAsideRequest) =>
+    guard<VoiceAside>(() => api.POST('/conversations/{id}/voice/aside', { ...path(id), body })),
   /** Part of a reply, read aloud. The audio arrives whole and is played from memory. */
   speak: (id: string, text: string, signal?: AbortSignal) =>
     binary(
