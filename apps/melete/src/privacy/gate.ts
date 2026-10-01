@@ -4,9 +4,11 @@
  * engine is not started; the attempt ends waiting for their answer with one
  * quick question, and nothing has been sent anywhere.
  *
- * The check fails open on an internal error on purpose: the gateway is where a
- * request is refused, and it fails closed, so a broken check can cost a failed
- * request but can never send a private conversation to a cloud model.
+ * The check fails closed. It is the only place a job's own words are judged
+ * for a sensitive topic before they reach the gateway, so when it cannot
+ * finish, the engine is not started either: the attempt ends waiting, the
+ * person is told plainly that nothing was sent, and their next message tries
+ * again.
  */
 import {
   type AttemptBundle,
@@ -18,6 +20,10 @@ import {
 } from '@melete/contracts';
 import type { Protocol } from './redact.ts';
 import type { PrivacyRouter } from './router.ts';
+
+/** What the person is told when the check could not be made. */
+export const CHECK_FAILED =
+  'Melete could not check whether this conversation needs to stay private, so it has not sent anything to a model. Send your message again to try once more.';
 
 export function withPrivacyGate<T extends RuntimeAdapter | QuestioningRuntimeAdapter>(
   runtime: T,
@@ -34,13 +40,14 @@ export function withPrivacyGate<T extends RuntimeAdapter | QuestioningRuntimeAda
     sink: EventSink,
     signal: AbortSignal,
   ): Promise<CommittedOutcome> => {
-    let decision: Awaited<ReturnType<PrivacyRouter['beforeAttempt']>> = { proceed: true };
+    let decision: Awaited<ReturnType<PrivacyRouter['beforeAttempt']>>;
     try {
       decision = await options
         .router()
         .beforeAttempt(bundle, options.engineProtocol, options.providerUrl);
     } catch (error) {
       options.onError?.(error instanceof Error ? error : new Error(String(error)));
+      decision = { proceed: false, text: CHECK_FAILED, question: null };
     }
     if (decision.proceed) return runtime.start(bundle, sink, signal);
     await sink.emit({

@@ -119,7 +119,13 @@ A conversation does not go to a cloud model when:
   words are not enough, and nothing a tool brings back (a web page, a file, an email)
   ever decides it, though its details are still swapped for placeholders. Once
   a conversation is found sensitive it stays that way until you say it isn't:
-  the chat shows why it is kept private, with **It isn't** to clear it.
+  the chat shows why it is kept private, with **It isn't** to clear it. Only
+  the person whose conversation it is can clear it. After that, what was
+  already there is not judged again, but a phrase about yourself that you write
+  later ("my therapist", "I was diagnosed with") marks it again.
+
+If the check itself cannot be made, nothing is sent: the chat says so, and your
+next message tries again.
 
 Such a conversation goes to your local model, unredacted, since it stays on your
 machine: an OpenAI-compatible server such as Ollama, llama.cpp, vLLM or LM

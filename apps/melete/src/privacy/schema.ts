@@ -45,6 +45,11 @@ export const privacyConversation = pgTable('privacy_conversation', {
    * not go back unless they clear it, which stores `none`.
    */
   sensitive: text('sensitive'),
+  /**
+   * When the person last cleared it. What they write after this is still
+   * read, so a later phrase about themselves marks it sensitive again.
+   */
+  clearedAt: timestamp('cleared_at', { withTimezone: true }),
   /** allowed: the person agreed to a redacted cloud request. declined: not this turn. */
   consent: text('consent'),
   consentTurnId: text('consent_turn_id'),

@@ -15,7 +15,8 @@
  * named in any form ("suicide", "in rehab", "PTSD"), or three different topic
  * words in what they wrote, so a passing "anxiety about the trip" or a
  * question about a news story does not move a conversation off the cloud
- * model. The person can clear a verdict that is wrong.
+ * model. The person can clear a verdict that is wrong; after that, only such
+ * a phrase in something they write later marks it again.
  */
 import type { SensitiveTopic } from '@melete/contracts';
 import type { Protocol } from './redact.ts';
@@ -119,6 +120,23 @@ export function classify(
 ): SensitiveTopic | null {
   if (!person.trim()) return null;
   return verdict([hitsOf(person)], enabled);
+}
+
+/**
+ * The first enabled topic a phrase in the person's words names outright: a
+ * phrase about themselves or their own records, or a crisis or condition. No
+ * count of passing topic words. This is what reopens a conversation the person
+ * said is not sensitive, when they later write such a phrase in it.
+ */
+export function classifyStrong(
+  person: readonly string[],
+  enabled: readonly SensitiveTopic[],
+): SensitiveTopic | null {
+  for (const topic of ORDER) {
+    if (!enabled.includes(topic)) continue;
+    if (person.some((text) => TOPICS[topic].strong.some((rule) => rule.test(text)))) return topic;
+  }
+  return null;
 }
 
 /**
