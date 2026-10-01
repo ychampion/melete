@@ -15,8 +15,6 @@ import { session } from '../../src/db/auth-schema.ts';
 import { owner, space, trigger } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
-import { ExperiencePlanning } from '../../src/experience/planning.ts';
-import { ExperienceService } from '../../src/experience/service.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { buildAttemptSkeleton } from '../../src/jobs/bundle.ts';
@@ -269,10 +267,6 @@ withDb('routines, time zone and setup as the person sees them', () => {
   });
 
   test('a routine can be paused, resumed and deleted, and a failed or stopped one says so', async () => {
-    const planning = new ExperiencePlanning(
-      new ExperienceService(required(handle).db, required(jobs), undefined, required(runner)),
-      triggers,
-    );
     const persona = agentResponse.parse(
       await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
     ).agent;
@@ -312,14 +306,15 @@ withDb('routines, time zone and setup as the person sees them', () => {
     expect((await listed(routine.id))?.enabled).toBe(true);
 
     // Paused, nothing is scheduled and a test run is refused until it is resumed.
-    const paused = await planning.setAutomationEnabled(spaceId, routine.id, false);
-    expect(paused).toMatchObject({ automation: { enabled: false } });
+    const paused = await request(`/automations/${routine.id}/pause`, 'POST');
+    expect(paused.status).toBe(200);
+    expect(await paused.json()).toMatchObject({ automation: { enabled: false } });
     expect(await scheduled(routine.id)).toBe(false);
     expect((await request(`/automations/${routine.id}/test`, 'POST')).status).toBe(200);
     expect((await required(jobs).get(routine.conversation_id)).state).toBe(
       'waiting_for_event_or_time',
     );
-    await planning.setAutomationEnabled(spaceId, routine.id, true);
+    expect((await request(`/automations/${routine.id}/resume`, 'POST')).status).toBe(200);
     expect(await scheduled(routine.id)).toBe(true);
     expect((await listed(routine.id))?.enabled).toBe(true);
 
@@ -336,14 +331,14 @@ withDb('routines, time zone and setup as the person sees them', () => {
     );
     // An occurrence due while it runs is not owed a run once it is paused and resumed.
     await required(triggers).fireSchedule(routine.id, 'backlog');
-    await planning.setAutomationEnabled(spaceId, routine.id, false);
+    expect((await request(`/automations/${routine.id}/pause`, 'POST')).status).toBe(200);
     const rested = await required(runner).commitOutcome(claimed.claims, {
       kind: 'completed',
       summary: 'Third haiku.',
       evidence: [],
     });
     expect(rested.state).toBe('waiting_for_event_or_time');
-    await planning.setAutomationEnabled(spaceId, routine.id, true);
+    expect((await request(`/automations/${routine.id}/resume`, 'POST')).status).toBe(200);
     expect((await required(jobs).get(routine.conversation_id)).state).toBe(
       'waiting_for_event_or_time',
     );
@@ -363,11 +358,13 @@ withDb('routines, time zone and setup as the person sees them', () => {
     );
 
     // Deleting stops it for good and takes it off the list.
-    expect(await planning.deleteAutomation(spaceId, routine.id)).toEqual({ status: 'ok' });
+    const deleted = await request(`/automations/${routine.id}`, 'DELETE');
+    expect(deleted.status).toBe(200);
+    expect(await deleted.json()).toEqual({ status: 'ok' });
     expect(await listed(routine.id)).toBeUndefined();
     expect(await scheduled(routine.id)).toBe(false);
     expect((await required(jobs).get(routine.conversation_id)).state).toBe('cancelled');
-    expect(await planning.deleteAutomation(spaceId, stopped.id)).toEqual({ status: 'ok' });
+    expect((await request(`/automations/${stopped.id}`, 'DELETE')).status).toBe(200);
     expect(await listed(stopped.id)).toBeUndefined();
   });
 
