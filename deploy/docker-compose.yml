@@ -1,4 +1,10 @@
 # Linux deployment. Run from the repository root using the README commands.
+#
+# The four Melete images are built here from source and named melete-*:local.
+# With MELETE_IMAGE_TAG set (deploy/.env), the same services name the published
+# images instead, ghcr.io/ychampion/melete-*:<tag> or MELETE_IMAGE_REGISTRY's,
+# which `docker compose pull` fetches and `up --no-build` starts without a build
+# (docs/DEPLOYMENT.md, "Using prebuilt images").
 name: ${COMPOSE_PROJECT_NAME:-melete}
 
 # Docker's default log has no size limit. Every service rotates a bounded
@@ -53,7 +59,7 @@ services:
       retries: 30
 
   melete:
-    image: melete-service:local
+    image: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-service:${MELETE_IMAGE_TAG:-local}"
     build:
       context: ..
       dockerfile: deploy/Dockerfile.melete
@@ -92,7 +98,7 @@ services:
       MELETE_RUNTIME_ADAPTER: docker
       MELETE_RUNTIME_URL: http://runtime:8790
       MELETE_RUNTIME_KEY: ${MELETE_RUNTIME_KEY:?run bun run deploy/scripts/configure.ts}
-      MELETE_RUNTIME_IMAGE: melete-runtime:local
+      MELETE_RUNTIME_IMAGE: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-runtime:${MELETE_IMAGE_TAG:-local}"
       MELETE_DOCKER_SOCKET: /var/run/docker.sock
       MELETE_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-melete}
       MELETE_WORK_VOLUME: ${COMPOSE_PROJECT_NAME:-melete}_work
@@ -153,7 +159,7 @@ services:
       # MELETE_SANDBOX_PROVIDER=docker with MELETE_SANDBOX_PROJECT, and build the
       # image with --profile sandbox.
       MELETE_SANDBOX_PROVIDER: ${MELETE_SANDBOX_PROVIDER:-}
-      MELETE_SANDBOX_DOCKER_IMAGE: ${MELETE_SANDBOX_DOCKER_IMAGE:-}
+      MELETE_SANDBOX_DOCKER_IMAGE: "${MELETE_SANDBOX_DOCKER_IMAGE:-${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-sandbox:${MELETE_IMAGE_TAG:-local}}"
       MELETE_SANDBOX_DOCKER_CPUS: ${MELETE_SANDBOX_DOCKER_CPUS:-}
       MELETE_SANDBOX_DOCKER_MEMORY_MB: ${MELETE_SANDBOX_DOCKER_MEMORY_MB:-}
       MELETE_SANDBOX_DOCKER_PIDS: ${MELETE_SANDBOX_DOCKER_PIDS:-}
@@ -210,10 +216,11 @@ services:
       retries: 30
     stop_grace_period: 40s
 
-  # Builds the runtime image before the service can launch an attempt from it.
-  # Nothing runs here: no engine, no credential, no network.
+  # Builds the runtime image (or holds the pulled one) before the service can
+  # launch an attempt from it. Nothing runs here: no engine, no credential, no
+  # network.
   runtime-image:
-    image: melete-runtime:local
+    image: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-runtime:${MELETE_IMAGE_TAG:-local}"
     build:
       context: ../packages/runtime-hermes
       dockerfile: Dockerfile
@@ -226,7 +233,7 @@ services:
   # (a desktop and a browser) and only a docker sandbox provider uses it. The
   # service starts one container per agent from it; nothing runs here.
   sandbox-image:
-    image: ${MELETE_SANDBOX_DOCKER_IMAGE:-melete-sandbox:local}
+    image: "${MELETE_SANDBOX_DOCKER_IMAGE:-${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-sandbox:${MELETE_IMAGE_TAG:-local}}"
     build:
       context: ..
       dockerfile: deploy/Dockerfile.sandbox
@@ -237,7 +244,7 @@ services:
     logging: *bounded-logs
 
   runtime:
-    image: melete-runtime:local
+    image: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-runtime:${MELETE_IMAGE_TAG:-local}"
     restart: unless-stopped
     logging: *bounded-logs
     networks: [internal]
@@ -288,7 +295,7 @@ services:
       retries: 30
 
   web:
-    image: melete-web:local
+    image: "${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-web:${MELETE_IMAGE_TAG:-local}"
     build:
       context: ..
       dockerfile: deploy/Dockerfile.web

@@ -27,6 +27,9 @@ docker compose -f deploy/docker-compose.yml --profile sandbox up -d --build --wa
 ```
 
 `--profile sandbox` builds `melete-sandbox:local` from `deploy/Dockerfile.sandbox`.
+An installation on [prebuilt images](DEPLOYMENT.md#using-prebuilt-images) pulls
+the published `melete-sandbox` image instead: run `pull` and `up -d --no-build`
+with the same `--profile sandbox`, or `deploy/scripts/update.sh --profile sandbox`.
 It starts from the runtime image's own base, so it adds about 1 GB of disk for
 the desktop and the browser. Every space then has a sandbox connection called
 **Computer**, and every agent in it gets its own container the first time it

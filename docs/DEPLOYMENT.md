@@ -2,6 +2,8 @@
 
 Start with [Install on a Linux Docker host](#install-on-a-linux-docker-host),
 or on a Windows machine with [Windows (Docker Desktop)](#windows-docker-desktop).
+On a Linux server, [Using prebuilt images](#using-prebuilt-images) is the
+recommended way to run it: the host pulls finished images and never builds.
 [Deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records image
 sizes, build and startup times, conformance results and clean-host timing from a
 measured installation. Timings depend on the host and network; the startup
@@ -107,7 +109,9 @@ docker compose -f deploy/docker-compose.yml ps
 
 All four services — `postgres`, `melete`, `runtime` and `web` — come up healthy.
 If startup fails, `docker compose -f deploy/docker-compose.yml logs --tail=100`
-names the reason.
+names the reason. To pull the published images instead of building them, set
+`MELETE_IMAGE_TAG` before starting, as
+[Using prebuilt images](#using-prebuilt-images) shows.
 
 Then open **http://localhost:3101** and create the owner account.
 
@@ -120,6 +124,127 @@ Outlook.com accepts only its own sign-in: with your own Microsoft app set in
 `MICROSOFT_OAUTH_CLIENT_ID` and `MICROSOFT_OAUTH_CLIENT_SECRET`, Outlook mail and
 calendar connect by signing in with Microsoft
 ([setup](mail-calendar.md#setting-up-your-microsoft-app)).
+
+## Using prebuilt images
+
+Every push to `main` builds the four Melete images in GitHub Actions and
+publishes them to the GitHub Container Registry, so a host can pull finished
+images rather than build them. This is the recommended way to run a server: it
+needs no build cache, no compilers and far less free disk than a build.
+
+| Image | Built from |
+| --- | --- |
+| `ghcr.io/ychampion/melete-service` | `deploy/Dockerfile.melete` |
+| `ghcr.io/ychampion/melete-web` | `deploy/Dockerfile.web` |
+| `ghcr.io/ychampion/melete-runtime` | `packages/runtime-hermes/Dockerfile` |
+| `ghcr.io/ychampion/melete-sandbox` | `deploy/Dockerfile.sandbox` |
+
+Each image carries these tags:
+
+- `main`: the latest commit on `main` for which all four images built. The
+  tag moves on all four together, only after every one of them is published.
+- the commit's first seven characters, such as `023df46`: one build, kept.
+- a release's version, such as `v0.3.0`, when that tag is pushed.
+
+The images are built for `linux/amd64`. On another architecture, build from
+source as [Install on a Linux Docker host](#install-on-a-linux-docker-host)
+shows. They hold no keys or configuration: `deploy/.env` and everything under
+`deploy/config` stay on the host. Each image is labelled with the repository
+it came from and the commit it was built from:
+
+```bash
+docker image inspect ghcr.io/ychampion/melete-service:main \
+  --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+```
+
+### Start from prebuilt images
+
+Install Bun, clone the repository and run `configure.ts` exactly as
+[Install on a Linux Docker host](#install-on-a-linux-docker-host) shows; the
+checkout still provides the Compose file, the configuration and the scripts.
+Then choose the images in `deploy/.env`:
+
+```bash
+sed -i 's/^MELETE_IMAGE_TAG=.*/MELETE_IMAGE_TAG=main/' deploy/.env
+grep -q '^MELETE_IMAGE_TAG=main$' deploy/.env || echo 'MELETE_IMAGE_TAG=main' >> deploy/.env
+```
+
+and pull and start them, without building:
+
+```bash
+bun run compose:check
+docker compose -f deploy/docker-compose.yml pull
+docker compose -f deploy/docker-compose.yml up -d --no-build --wait --wait-timeout 300
+```
+
+With a docker sandbox ([Sandboxes](#sandboxes)), add `--profile sandbox` to
+both `docker compose` lines, or set `COMPOSE_PROFILES=sandbox` in
+`deploy/.env`; the computer image is then pulled with the others.
+
+`MELETE_IMAGE_TAG` set to a version, such as `v0.3.0`, stays on that release;
+check out the same tag (`git checkout v0.3.0`) so the Compose file matches the
+images. `MELETE_IMAGE_REGISTRY` pulls the same names from another registry,
+such as a mirror; empty, it is `ghcr.io/ychampion`. Leave `MELETE_IMAGE_TAG`
+empty to build from source again: `up -d --build` builds and tags the images
+`melete-*:local` as before.
+
+### Update
+
+```bash
+deploy/scripts/update.sh
+# With a docker sandbox, or overlay files, pass the same options Compose was started with:
+deploy/scripts/update.sh --profile sandbox
+```
+
+The script does the update in a safe order:
+
+1. It measures the free space on the filesystem that holds Docker's images,
+   and refuses with nothing changed when it is below 4 GB
+   (`MELETE_UPDATE_MIN_FREE_GB` sets another threshold), naming what to clean.
+2. It fast-forwards the checkout with `git pull --ff-only`, so the Compose file
+   matches the images; a diverged or edited checkout stops it.
+3. It pulls every image first. If any pull fails, it stops and the running
+   containers are not touched.
+4. It starts the new images with `up -d --no-build --wait`, then restarts the
+   `melete` service and waits for health again. The service looks up the
+   engine image's ID when it starts, so a new engine image alone does not
+   reach chats until the service restarts.
+5. Last, it runs `docker image prune -f`, which removes the images the pull
+   replaced. An image a container still uses, such as one an attempt started
+   before the update, is kept.
+
+The service migrates its database when it starts, so take a
+[backup](#backup-and-restore) before an update you may want to undo. To go
+back, set `MELETE_IMAGE_TAG` to the previous commit's tag, check out that
+commit, and run the `pull` and `up -d --no-build` lines above, then
+`docker compose -f deploy/docker-compose.yml restart melete`.
+
+### Switch an installation from source builds
+
+Set `MELETE_IMAGE_TAG=main` in `deploy/.env` and run `deploy/scripts/update.sh`
+(with `--profile sandbox` if the installation uses a docker sandbox). After it
+reports the stack healthy, the images built here are no longer used; remove
+them and the build cache to recover the space:
+
+```bash
+docker builder prune -af
+docker image rm melete-service:local melete-web:local melete-runtime:local
+```
+
+Keep `melete-sandbox:local` when spaces already have a **Computer**: their
+connections name that image, and `update.sh` points it at the pulled sandbox
+image on every update so those computers stay current.
+
+### Package visibility
+
+The repository is public, and the published packages are meant to be pulled
+without signing in. If a pull answers `denied` or `unauthorized`, a package is
+still private. Its owner makes it public once per package: on GitHub, open the
+package (the repository's **Packages** list, or the profile's **Packages** tab),
+then **Package settings → Danger Zone → Change visibility → Public**, for each
+of `melete-service`, `melete-web`, `melete-runtime` and `melete-sandbox`. Until
+then, `docker login ghcr.io` with a token that has `read:packages` lets a host
+pull them.
 
 ## Windows (Docker Desktop)
 
@@ -1072,7 +1197,9 @@ labels and inventories when rebuilding.
 
 [Upgrading between releases](UPGRADING.md) is its own page: the target
 release's `deploy/scripts/upgrade.ts`, taken out of its tag, prints the whole
-plan with `--dry-run`. The service migrates its database at every boot under an advisory lock, so the
+plan with `--dry-run`. An installation that runs the published images updates
+with `deploy/scripts/update.sh` instead
+([Using prebuilt images](#using-prebuilt-images)). The service migrates its database at every boot under an advisory lock, so the
 procedure is a consistent backup, a checkout, a rebuild and a wait for health;
 the backup below is its first half.
 
@@ -1190,7 +1317,8 @@ rm -f deploy/.env
 
 What is left afterwards is the source directory you cloned and the images:
 `melete-service:local`, `melete-runtime:local` and `melete-web:local`, which
-Docker built, and `postgres:17-alpine`, plus `tailscale/tailscale` with
+Docker built (or the `ghcr.io/ychampion/melete-*` images, when the installation
+pulled them), and `postgres:17-alpine`, plus `tailscale/tailscale` with
 Tailscale, which it pulled. Every installation on a host shares these images,
 so remove them only when this was the last one:
 
@@ -1199,6 +1327,8 @@ docker image rm melete-service:local melete-runtime:local melete-web:local \
   postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
 # With Tailscale, also remove:
 #   tailscale/tailscale@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680
+# With prebuilt images, remove those instead of the :local ones:
+#   docker image ls --format '{{.Repository}}:{{.Tag}}' 'ghcr.io/ychampion/melete-*' | xargs -r docker image rm
 ```
 
 ## Removing a space

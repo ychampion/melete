@@ -99,6 +99,23 @@ export function unboundedServices(services: Record<string, { logging?: unknown }
     .filter(([, service]) => !boundedLogging(service.logging))
     .map(([name]) => name);
 }
+/**
+ * The name a Melete image has in the Compose file: melete-<name>:local when it is
+ * built from source, and the published image when MELETE_IMAGE_TAG is set
+ * (docs/DEPLOYMENT.md, "Using prebuilt images").
+ */
+export const imageReference = (name: string): string =>
+  `\${MELETE_IMAGE_TAG:+\${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-${name}:\${MELETE_IMAGE_TAG:-local}`;
+
+/** The services that build or hold each published image. */
+export const PUBLISHED_IMAGES: Record<string, string> = {
+  melete: imageReference('service'),
+  web: imageReference('web'),
+  runtime: imageReference('runtime'),
+  'runtime-image': imageReference('runtime'),
+  'sandbox-image': `\${MELETE_SANDBOX_DOCKER_IMAGE:-${imageReference('sandbox')}}`,
+};
+
 const networkNames = (service: ComposeService | undefined): string[] =>
   Array.isArray(service?.networks) ? service.networks : Object.keys(service?.networks ?? {});
 
@@ -330,6 +347,22 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
       (image.secrets ?? []).length === 0 &&
       (image.volumes ?? []).length === 0,
     'runtime-image must not receive environment entries, env_file, secrets, or volume mounts',
+  );
+
+  // One switch moves every Melete image between the source build and the
+  // published images, so the service never launches an engine or a computer
+  // from the other set. The service is told the same names the stack holds.
+  const misnamed = Object.entries(PUBLISHED_IMAGES)
+    .filter(([name, reference]) => compose.services?.[name]?.image !== reference)
+    .map(([name]) => name);
+  say(
+    'every Melete image follows MELETE_IMAGE_TAG together',
+    misnamed.length === 0 &&
+      compose.services?.melete?.environment?.MELETE_RUNTIME_IMAGE ===
+        PUBLISHED_IMAGES['runtime-image'] &&
+      compose.services?.melete?.environment?.MELETE_SANDBOX_DOCKER_IMAGE ===
+        PUBLISHED_IMAGES['sandbox-image'],
+    `services whose image is not the shared reference: ${misnamed.join(', ') || 'none'}; MELETE_RUNTIME_IMAGE and MELETE_SANDBOX_DOCKER_IMAGE must name the runtime-image and sandbox-image images`,
   );
 
   // The warm cell is a probe: it may carry placeholders, never a minted
