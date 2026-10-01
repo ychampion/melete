@@ -23,7 +23,7 @@ import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
-import { LIMIT_REACHED_NOTE } from '../../src/jobs/limits.ts';
+import { LIMIT_REACHED_NOTE, waitingForSlotNote } from '../../src/jobs/limits.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { CONVERSATION_BUDGET, DEFAULT_BUDGET, JobService } from '../../src/jobs/service.ts';
@@ -235,6 +235,33 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
     ).toBe(true);
     // "continue" is a new turn, which is what the sentence promised.
     expect((await send(chat.id, 'continue')).status).toBe(200);
+  });
+
+  test('a turn waiting for a free slot says so in the conversation, while it is queued', async () => {
+    const chat = await createConversation();
+    expect((await send(chat.id, 'What time is it in Paris?')).status).toBe(200);
+    const row = await required(jobs).get(chat.id);
+    const wake = {
+      job_id: row.id,
+      expected_epoch: row.leaseEpoch,
+      expected_version: row.stateVersion,
+      reason: 'input' as const,
+    };
+    await required(runner).noteWaiting(wake, 2);
+    // Told once per wait, however often it is looked at.
+    await required(runner).noteWaiting(wake, 2);
+    const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
+    const notes = page.events.filter((event) => event.item.type === 'note');
+    expect(notes.map((event) => event.item)).toEqual([
+      { type: 'note', text: 'Waiting for a free slot — 2 other tasks are running' },
+    ]);
+    expect(notes[0]?.turn_id).toBeTruthy();
+    expect(waitingForSlotNote(1)).toBe('Waiting for a free slot — 1 other task is running');
+    // A wake that would no longer start the job says nothing.
+    required(await required(runner).claim(wake));
+    await required(runner).noteWaiting(wake, 3);
+    const later = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
+    expect(later.events.filter((event) => event.item.type === 'note')).toHaveLength(1);
   });
 
   test('a conversation from before conversations had their own limits gets them on its next turn', async () => {

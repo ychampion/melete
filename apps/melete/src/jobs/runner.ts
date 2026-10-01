@@ -69,6 +69,8 @@ import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
 
 export const HEARTBEAT_MS = 15_000;
 export const LEASE_MS = 45_000;
+/** How many attempts run at once unless the service is told otherwise. */
+export const DEFAULT_ATTEMPT_CONCURRENCY = 4;
 
 export type RunnerOptions = {
   key: string;
@@ -83,6 +85,8 @@ export type RunnerOptions = {
   scopes?: string[];
   liveConnectionScopes?: boolean;
   scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
+  /** How many attempts run at once; one more waits for a free slot. */
+  concurrency?: number;
   heartbeatMs?: number;
   leaseMs?: number;
   artifactRoots?: ArtifactRoots;
@@ -111,7 +115,7 @@ export class AttemptRunner {
   private readonly running = new Map<string, { jobId: string; returned: Promise<void> }>();
   private workerStarted = false;
   private stopping = false;
-  scheduler = new FairScheduler(2);
+  scheduler: FairScheduler;
   private readonly wakes = new Set<Promise<void>>();
   /** Wait registration is supplied by the trigger service, inside the outcome transaction. */
   onWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
@@ -134,7 +138,12 @@ export class AttemptRunner {
   ) {
     if (Buffer.byteLength(options.key) < 32)
       throw new Error('MELETE_CAPABILITY_KEY must be at least 32 bytes');
+    this.scheduler = new FairScheduler(this.concurrency);
     jobs.onCancelled = (id) => this.interrupt(id);
+  }
+
+  private get concurrency() {
+    return this.options.concurrency ?? DEFAULT_ATTEMPT_CONCURRENCY;
   }
 
   private get leaseMs() {
@@ -1218,12 +1227,15 @@ export class AttemptRunner {
     if (this.workerStarted) return;
     this.workerStarted = true;
     this.stopping = false;
-    this.scheduler = new FairScheduler(2);
+    this.scheduler = new FairScheduler(this.concurrency);
     await this.recover();
+    // Each queue hands over more wakes than can run, so one that has to wait
+    // waits here, in the scheduler's fair order, where its conversation can be
+    // told so, rather than unseen in the queue.
     for (const [scheduling, queue] of Object.entries(ATTEMPT_QUEUES))
       await this.jobs.boss.work<AttemptWake>(
         queue,
-        { batchSize: 1, localConcurrency: 2, pollingIntervalSeconds: 0.5 },
+        { batchSize: 1, localConcurrency: this.concurrency * 2, pollingIntervalSeconds: 0.5 },
         async (wakes) => {
           for (const wake of wakes)
             await this.scheduledWake(scheduling as SchedulingClass, wake.data);
@@ -1249,10 +1261,41 @@ export class AttemptRunner {
 
   private async scheduledWake(scheduling: SchedulingClass, wake: AttemptWake) {
     try {
+      const running = this.scheduler.activeCount;
+      if (running >= this.scheduler.capacity)
+        void this.noteWaiting(wake, running).catch((error: unknown) =>
+          process.stderr.write(`waiting note not recorded: ${String(error)}
+`),
+        );
       await this.scheduler.run(scheduling, () => this.handleWake(wake));
     } catch (error) {
       if (!this.stopping) throw error;
     }
+  }
+
+  /**
+   * Tells the job's conversation that its turn waits for a free slot. Only a
+   * wake that would still start the job does, and once per wake.
+   */
+  async noteWaiting(wake: AttemptWake, running: number): Promise<void> {
+    await this.jobs.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ state: job.state, epoch: job.leaseEpoch, version: job.stateVersion })
+        .from(job)
+        .where(eq(job.id, wake.job_id));
+      if (
+        row?.state !== 'queued' ||
+        row.epoch !== wake.expected_epoch ||
+        row.version !== wake.expected_version
+      )
+        return;
+      await appendEvent(tx, {
+        jobId: wake.job_id,
+        type: 'notice',
+        payload: { kind: 'waiting_for_slot', running },
+        dedupKey: `${wake.job_id}:${wake.expected_epoch}:${wake.expected_version}:waiting_for_slot`,
+      });
+    });
   }
 
   async stop(): Promise<void> {

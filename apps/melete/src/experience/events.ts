@@ -27,7 +27,7 @@ import {
 } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
-import { LIMIT_REACHED_NOTE } from '../jobs/limits.ts';
+import { LIMIT_REACHED_NOTE, waitingForSlotNote } from '../jobs/limits.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import { AnswerStream, answerText } from './answer-filter.ts';
 import {
@@ -652,6 +652,13 @@ export class ExperienceEvents {
                     ? 'resume'
                     : 'pause',
             });
+          } else if (
+            source.type === 'notice' &&
+            payload.kind === 'waiting_for_slot' &&
+            source.jobId === id &&
+            typeof payload.running === 'number'
+          ) {
+            await emit(source, { type: 'note', text: waitingForSlotNote(payload.running) });
           } else if (source.type === 'notice' && payload.kind === 'gap') {
             await emit(source, {
               type: 'note',
