@@ -272,65 +272,99 @@ export class PolicyService {
       );
       if (refused) throw new ServiceError('invalid_credential', refused, 400);
     }
-    if (
-      (request.kind === 'revoke' && before.status !== 'revoked') ||
-      (request.kind === 'switch' && request.secret_ref !== before.secretRef)
-    )
-      await this.options.beforeKeyChange?.(
-        { id: before.id, provider: before.provider },
-        request.kind,
-        request.kind === 'switch'
-          ? { secretRef: request.secret_ref, spaceId: before.spaceId }
-          : undefined,
-      );
-    const result = await this.jobs.transaction(async (tx) => {
-      const source = await checked(tx, true);
-      const [parent] = await tx
-        .update(space)
-        .set({ policyGeneration: sql`${space.policyGeneration} + 1` })
-        .where(eq(space.id, source.spaceId))
-        .returning();
-      if (!parent) throw new Error('Connection space disappeared');
-      const [updated] = await tx
+    // While the old key's work is undone nothing new may start through this
+    // connection, so it reads as inactive until the change commits. That is a
+    // short write of its own: the teardown reaches providers for up to two
+    // minutes, which no transaction is held open for.
+    let paused = false;
+    const resume = async () => {
+      if (!paused) return;
+      await this.jobs.db
         .update(connection)
-        .set({
-          generation: source.generation + 1,
-          status: request.kind === 'revoke' ? 'revoked' : 'active',
-          secretRef: request.kind === 'switch' ? request.secret_ref : null,
-          health: 'unknown',
-          lastCheckedAt: null,
-        })
-        .where(eq(connection.id, id))
-        .returning();
-      if (!updated) throw new Error('Locked connection disappeared');
-      if (request.kind === 'revoke')
-        await tx
-          .update(trigger)
-          .set({ enabled: false })
-          .where(
-            and(
-              // A watch listens on its connection exactly as an event trigger does.
-              inArray(trigger.kind, ['event', 'watch']),
-              sql`${trigger.spec}->>'connection_id' = ${id}`,
-            ),
-          );
-      const controls = await this.invalidateInTransaction(
-        tx,
-        source.spaceId,
-        parent.policyGeneration,
-        id,
-        request.kind === 'switch' ? 'credential_switched' : 'connection_revoked',
-      );
-      return {
-        response: connectionGeneration.parse({
-          connection_id: id,
-          generation: updated.generation,
-          policy_generation: parent.policyGeneration,
-          status: updated.status,
-        }),
-        controls,
-      };
-    });
+        .set({ status: 'active' })
+        .where(
+          and(
+            eq(connection.id, id),
+            eq(connection.generation, before.generation),
+            eq(connection.status, 'disabled'),
+          ),
+        );
+    };
+    const changed = () =>
+      this.jobs.transaction(async (tx) => {
+        const source = await checked(tx, true);
+        const [parent] = await tx
+          .update(space)
+          .set({ policyGeneration: sql`${space.policyGeneration} + 1` })
+          .where(eq(space.id, source.spaceId))
+          .returning();
+        if (!parent) throw new Error('Connection space disappeared');
+        const [updated] = await tx
+          .update(connection)
+          .set({
+            generation: source.generation + 1,
+            status: request.kind === 'revoke' ? 'revoked' : 'active',
+            secretRef: request.kind === 'switch' ? request.secret_ref : null,
+            health: 'unknown',
+            lastCheckedAt: null,
+          })
+          .where(eq(connection.id, id))
+          .returning();
+        if (!updated) throw new Error('Locked connection disappeared');
+        if (request.kind === 'revoke')
+          await tx
+            .update(trigger)
+            .set({ enabled: false })
+            .where(
+              and(
+                // A watch listens on its connection exactly as an event trigger does.
+                inArray(trigger.kind, ['event', 'watch']),
+                sql`${trigger.spec}->>'connection_id' = ${id}`,
+              ),
+            );
+        const controls = await this.invalidateInTransaction(
+          tx,
+          source.spaceId,
+          parent.policyGeneration,
+          id,
+          request.kind === 'switch' ? 'credential_switched' : 'connection_revoked',
+        );
+        return {
+          response: connectionGeneration.parse({
+            connection_id: id,
+            generation: updated.generation,
+            policy_generation: parent.policyGeneration,
+            status: updated.status,
+          }),
+          controls,
+        };
+      });
+    let result: Awaited<ReturnType<typeof changed>>;
+    try {
+      if (
+        this.options.beforeKeyChange &&
+        ((request.kind === 'revoke' && before.status !== 'revoked') ||
+          (request.kind === 'switch' && request.secret_ref !== before.secretRef))
+      ) {
+        paused = await this.jobs.db.transaction(async (tx) => {
+          const source = await checked(tx, true);
+          if (source.status !== 'active') return false;
+          await tx.update(connection).set({ status: 'disabled' }).where(eq(connection.id, id));
+          return true;
+        });
+        await this.options.beforeKeyChange(
+          { id: before.id, provider: before.provider },
+          request.kind,
+          request.kind === 'switch'
+            ? { secretRef: request.secret_ref, spaceId: before.spaceId }
+            : undefined,
+        );
+      }
+      result = await changed();
+    } catch (error) {
+      await resume();
+      throw error;
+    }
     await this.signal(result.controls);
     return result.response;
   }
