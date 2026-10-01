@@ -218,9 +218,13 @@ withDb('the delta brief', () => {
     );
     const summary = bundle.job.progress_summary;
     expect(summary).toContain('Already done for this request in an earlier attempt');
-    expect(summary).toContain('"Heat pumps in 2026" (https://heat.example.test/pumps)');
-    expect(summary).toContain('3.4 million installs');
-    expect(summary).toContain('Ran `wc -l sales.csv`, exit 0. Output: 42 sales.csv');
+    expect(summary).toContain('Read the web page https://heat.example.test/pumps');
+    expect(summary).toContain(
+      'Title: Heat pumps in 2026. Air-source heat pumps reached 3.4 million installs',
+    );
+    expect(summary).toContain('Ran `wc -l sales.csv`, exit 0: what it gave back is [2] below.');
+    expect(summary).toContain('[2] 42 sales.csv');
+    expect(summary).toMatch(/^<melete-earlier-[0-9a-f]{16}>$/m);
     // What the answered request read is in its answer, not repeated here.
     expect(summary).not.toContain('old.example.test');
   }, 60_000);
