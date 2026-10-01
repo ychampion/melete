@@ -116,6 +116,7 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
         'extraction_budget',
         'extraction_call_refused',
         'extraction_provider_refused',
+        'extraction_provider_auth',
         'extraction_kept_private',
       ].includes(code) ||
       (code === 'extraction_unreadable' && batch.work.fence >= 2)

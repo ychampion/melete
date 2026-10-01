@@ -27,7 +27,11 @@ export const EXTRACTION_LIMITS = {
   calls: 4,
   usd: 0.04,
   call_usd: 0.01,
-  output_tokens: 4000,
+  /**
+   * Room for the answer. A model that writes out its working first ran out at
+   * 4,000 tokens on a short message and left nothing readable.
+   */
+  output_tokens: 8000,
   /** Reasoning models take several seconds for a short message, more while a chat turn runs. */
   timeout_ms: 60_000,
 } as const;

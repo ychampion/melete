@@ -8,6 +8,7 @@ import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import type { ExtractionGateway } from './extract.ts';
 import { applyRestriction } from './forget.ts';
 import { lockEventOrder } from './invalidate.ts';
+import { MarkdownViews } from './markdown.ts';
 import { startJobRecompute } from './recompute.ts';
 import { FileRestrictionJournal, restoreMemory } from './restore.ts';
 import type { MemoryRouteOptions } from './routes.ts';
@@ -18,6 +19,11 @@ type DeploymentMemoryOptions = {
   boss: PgBoss;
   /** Retain this directory independently of Postgres backups. */
   restrictionsDir: string;
+  /**
+   * The spaces' git repositories, where memory is written out as knowledge
+   * files and the review queue reads its proposals. Left out, neither runs.
+   */
+  spacesDir?: string;
   workers?: boolean;
   /** Wakes a job memory invalidated; left out, invalidations wait for the runner's scan. */
   onJobRecompute?: (jobId: string) => Promise<void>;
@@ -160,6 +166,9 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
   let service: Awaited<ReturnType<typeof startMemoryService>> | undefined;
   const scopeForJob = resolveJobScope(options.sql, journal);
   let stopCapture: (() => Promise<void>) | undefined;
+  const markdown = options.spacesDir
+    ? new MarkdownViews(options.sql, options.spacesDir, { name: 'Owner', email: 'owner@localhost' })
+    : undefined;
   if (options.workers === false) await restoreMemory(options.sql, journal);
   else {
     const onError = (code: string) => process.stderr.write(`memory: ${code}\n`);
@@ -167,6 +176,7 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
       sql: options.sql,
       boss: options.boss,
       journal,
+      markdown,
       gateway: options.gateway,
       onError,
     });
@@ -186,6 +196,7 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
   const routes: MemoryRouteOptions = {
     sql: options.sql,
     journal,
+    markdown,
     // The installation owner holds every space's memory on this path.
     async provision(spaceId, principalId) {
       const [row] = await options.sql`select o.id as owner_id, m.owner_id as memory_owner_id

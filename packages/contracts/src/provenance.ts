@@ -183,6 +183,10 @@ export const REJECTION_REASONS = [
   'invalid_shape',
   /** The person asked Melete not to learn this subject again. */
   'blocked_by_person',
+  /** A statement or preference cited nothing the person said or wrote. */
+  'unsupported_attribution',
+  /** The extractor's change set was refused as a whole; the detail names why. */
+  'change_set_refused',
 ] as const;
 export const rejectionReason = z.enum(REJECTION_REASONS);
 export type RejectionReason = z.infer<typeof rejectionReason>;
