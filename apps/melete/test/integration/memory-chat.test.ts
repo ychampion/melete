@@ -921,6 +921,55 @@ withDb('asking to forget in plain words', () => {
         ['active', '+351 910 000 010'],
         ['retracted', null],
       ]);
+
+      // The other way round: when the value that won is removed, the one it beat
+      // becomes the current value, active and with its own (outside) trust.
+      const mine = await record(
+        db,
+        scope,
+        {
+          identity: 'gym-mine',
+          text: 'The gym number is +351 910 000 020.',
+          eventAt: '2026-08-02T09:00:00Z',
+        },
+        [
+          {
+            key: 'contact.gym.phone',
+            content: '+351 910 000 020',
+            quote: '+351 910 000 020',
+            kind: 'user_statement',
+          },
+        ],
+      );
+      await record(
+        db,
+        scope,
+        {
+          identity: 'gym-letter',
+          text: 'Reach us on +351 910 000 021.',
+          eventAt: '2026-08-03T09:00:00Z',
+          author: 'external',
+          stream: 'mail',
+        },
+        [
+          {
+            key: 'contact.gym.phone',
+            content: '+351 910 000 021',
+            quote: '+351 910 000 021',
+            kind: 'document_assertion',
+          },
+        ],
+      );
+      await deleteMemorySource(db.sql, scope, mine.sourceId, journal.journal);
+      const promoted = await head(db, scope, 'contact.gym.phone');
+      expect([promoted?.content, promoted?.status, promoted?.origin_trust]).toEqual([
+        '+351 910 000 021',
+        'active',
+        'external_content',
+      ]);
+      await buildViews(db.sql, scope);
+      const recalled = await recall(db.sql, scope, { query: 'gym phone' });
+      expect(recalled.items.map((item) => item.content)).toContain('+351 910 000 021');
     } finally {
       await journal.close();
     }

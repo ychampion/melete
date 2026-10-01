@@ -175,14 +175,18 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
  * A claim citing a removed span loses only the revisions that rest on removed
  * evidence. When another revision still rests wholly on what remains, the
  * claim stays: the removed revisions are set aside and their text deleted, and
- * if the current value was one of them, the latest remaining revision becomes
- * current again. Returns false when nothing remains, and the claim is hidden.
+ * if the current value was one of them, the latest remaining revision that is
+ * still in force becomes the current value, active, with its own evidence and
+ * trust. One that lost to the removed value on precedence wins once that value
+ * is gone; one whose validity has ended is not a current value. Returns false
+ * when nothing usable remains, and the claim is hidden.
  */
 async function keepWhatRemains(tx: MemoryTx, spaceId: string, claimId: string) {
   const [claim] =
     await tx`select head_revision from memory_claims where id = ${claimId} and space_id = ${spaceId} and not hidden`;
   if (!claim) return false;
   const revisions = await tx`select r.revision, r.status,
+      (r.valid_until is null or r.valid_until > clock_timestamp()) as in_force,
       exists (select 1 from memory_references ref where ref.claim_id = r.claim_id and ref.revision = r.revision) as cited,
       exists (select 1 from memory_references ref left join memory_sources s on s.id = ref.source_id
         where ref.claim_id = r.claim_id and ref.revision = r.revision and (
@@ -194,16 +198,19 @@ async function keepWhatRemains(tx: MemoryTx, spaceId: string, claimId: string) {
   const removed = revisions.filter((r) => r.removed).map((r) => Number(r.revision));
   const remaining = revisions.filter((r) => !r.removed && r.cited && r.status !== 'retracted');
   if (!remaining.length) return false;
+  const headRemoved = removed.includes(Number(claim.head_revision));
+  const next = headRemoved ? remaining.filter((r) => r.in_force).at(-1) : undefined;
+  if (headRemoved && !next) return false;
   await tx`update memory_revisions set status = 'retracted', superseded_at = coalesce(superseded_at, clock_timestamp())
     where claim_id = ${claimId} and revision = any(${removed})`;
   await tx`delete from memory_revision_content where claim_id = ${claimId} and revision = any(${removed})`;
   await tx`delete from memory_index_entries where space_id = ${spaceId} and claim_id = ${claimId} and revision = any(${removed})`;
   await tx`delete from memory_dense_entries where space_id = ${spaceId} and claim_id = ${claimId} and revision = any(${removed})`;
-  if (removed.includes(Number(claim.head_revision))) {
-    const latest = remaining.at(-1);
+  if (next) {
+    // A disputed value stays disputed; anything else becomes the active value reads return.
     await tx`update memory_revisions set status = 'active', superseded_at = null
-      where claim_id = ${claimId} and revision = ${latest?.revision} and status = 'superseded'`;
-    await tx`update memory_claims set head_revision = ${latest?.revision} where id = ${claimId}`;
+      where claim_id = ${claimId} and revision = ${next.revision} and status in ('superseded', 'historical')`;
+    await tx`update memory_claims set head_revision = ${next.revision} where id = ${claimId}`;
   }
   return true;
 }

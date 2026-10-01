@@ -19,6 +19,7 @@ import { type MemoryScope, provisionMemorySpace } from '../../src/memory/db.ts';
 import { latestDigest, writeDueDigest } from '../../src/memory/digest.ts';
 import { ingest } from '../../src/memory/evidence.ts';
 import type { ExtractionGateway } from '../../src/memory/extract.ts';
+import { deleteMemorySource } from '../../src/memory/forget.ts';
 import { recordOutput } from '../../src/memory/outputs.ts';
 import {
   beliefMarkdown,
@@ -264,6 +265,48 @@ withDb('rewinding a day', () => {
         ?.changes.map((c) => c.change)
         .sort(),
     ).toEqual(['corrected', 'learned']);
+  });
+
+  test('undoing a rewind never brings back a value whose source was removed since', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const zone = 'UTC';
+    await db.sql`insert into experience_profile (space_id, time_zone) values (${scope.spaceId}, ${zone})`;
+    const dayOne = localDay(new Date(Date.now() - 3 * 86_400_000), zone);
+    const dayTwo = addDays(dayOne, 1);
+    const on = (day: string, time: string) => zonedInstant(day, time, zone);
+    await pref(db, scope, 'pref.coffee.order', 'flat white', on(dayOne, '09:00').toISOString());
+    const coffee = await keyed(db, scope, 'pref.coffee.order');
+    await setRecordedAt(db, coffee, on(dayOne, '09:05'));
+    const belief = (await listBeliefs(db.sql, scope, zone)).find((b) => b.id === coffee);
+    await new ExperienceMemory(db.sql).edit(scope.spaceId, scope.ownerId, coffee, {
+      value: 'oat flat white',
+      version: belief?.version,
+    });
+    await setRecordedAt(db, coffee, on(dayTwo, '10:00'));
+    const [corrected] = await db.sql`select ref.source_id from memory_claims c
+      join memory_references ref on ref.claim_id = c.id and ref.revision = c.head_revision
+      where c.id = ${coffee}`;
+
+    const window = await resolveTarget(db.sql, scope, { day: dayTwo }, zone);
+    const rewind = await applyRewind(db.sql, scope, window, { day: dayTwo });
+    expect(rewind.steps.map((step) => [step.from, step.to])).toEqual([
+      ['oat flat white', 'flat white'],
+    ]);
+    // The correction's source is removed: its value goes with it, text and all.
+    const journal = await journalFor('rewind-removed');
+    await deleteMemorySource(db.sql, scope, String(corrected?.source_id), journal);
+
+    const undone = await undoRewind(db.sql, scope, rewind.id);
+    expect(undone.skipped).toEqual([
+      'Coffee: order: what it held came from something since removed, so it stays set aside.',
+    ]);
+    const values = (await listBeliefs(db.sql, scope, zone)).map((b) => b.value);
+    expect(values).toEqual(['flat white']);
+    const [text] = await db.sql`select count(*)::int as n from memory_revision_content b
+      join memory_claims c on c.id = b.claim_id
+      where c.id = ${coffee} and b.content = 'oat flat white'`;
+    expect(text?.n).toBe(0);
   });
 
   test('undoing a day keeps a belief the person changed on a later day', async () => {

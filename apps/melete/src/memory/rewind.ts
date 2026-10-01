@@ -182,7 +182,10 @@ async function planSteps(tx: MemoryTx, scope: MemoryScope, window: RewindWindow)
     }
     const prior = await snapshot(tx, head.id, Number(before.revision));
     if (prior.revision === current.revision) continue;
-    if (!(await eligibleRevision(tx, scope, head.id, prior.revision))) {
+    if (
+      !(await eligibleRevision(tx, scope, head.id, prior.revision)) ||
+      !(await restorable(tx, scope, head.id, prior.revision))
+    ) {
       skipped.push(`${label}: what it said before came from something you have since forgotten.`);
       continue;
     }
@@ -190,6 +193,27 @@ async function planSteps(tx: MemoryTx, scope: MemoryScope, window: RewindWindow)
   }
   return { steps, skipped };
 }
+
+/**
+ * Whether a revision can be brought back: its text is still held and every
+ * source it cites is still there and unforgotten. A revision whose evidence
+ * was removed since lost its text with it, and stays set aside.
+ */
+async function restorable(tx: MemoryTx, scope: MemoryScope, claimId: string, revision: number) {
+  const [row] = await tx`select 1 from memory_revision_content b
+    join memory_claims c on c.id = b.claim_id
+    where b.claim_id = ${claimId} and b.revision = ${revision} and c.space_id = ${scope.spaceId}
+      and exists (select 1 from memory_references ref where ref.claim_id = b.claim_id and ref.revision = b.revision)
+      and not exists (
+        select 1 from memory_references ref left join memory_sources s on s.id = ref.source_id
+        where ref.claim_id = b.claim_id and ref.revision = b.revision and (
+          s.id is null or s.space_id <> c.space_id or s.state <> 'active' or s.source_version <> ref.source_version
+          or exists (select 1 from memory_suppressions sup where sup.space_id = c.space_id and
+            ((sup.source_id = s.id and (sup.start is null or (sup.start < ref."end" and sup."end" > ref.start)))
+             or (sup.operation = 'clear' and s.eligibility_generation <= sup.eligibility_cutoff)))))`;
+  return Boolean(row);
+}
+const REMOVED_SINCE = 'what it held came from something since removed, so it stays set aside.';
 
 /** Publish a snapshot's value again on its claim, citing the snapshot's own evidence. */
 async function republish(
@@ -351,6 +375,10 @@ export async function undoRewind(
     const undone: UndoStep[] = [];
     for (const step of [...steps].reverse()) {
       const head = await getHead(tx, scope, step.claim_id);
+      if (head && !(await restorable(tx, scope, step.claim_id, step.from.revision))) {
+        skipped.push(`${step.label}: ${REMOVED_SINCE}`);
+        continue;
+      }
       if (step.action === 'restore') {
         if (!head || head.head_revision !== step.produced || head.current.status !== 'active') {
           skipped.push(`${step.label}: it changed again since, so it was left as it is.`);
