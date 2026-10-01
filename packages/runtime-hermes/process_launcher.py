@@ -289,27 +289,38 @@ def await_handoff(host: str, port: int, key: str):
     return received['handoff']
 
 
-def render_attempt_configuration() -> None:
+def render_attempt_configuration(started_with, handed) -> None:
     """Write the engine's configuration again, now with the attempt's capability.
 
     The program is the boot script's own, handed over by it, so a container
     engine started with its attempt and one handed it later are configured by
-    the same code.
+    the same code. It reads the environment the container was started with and
+    the attempt's values, not what the engine mirrored into its own environment
+    while it loaded (the engine fills in TERMINAL_ENV and the rest of its
+    terminal defaults from its configuration as it imports).
     """
-    program = os.environ.pop('MELETE_BOOT_CONFIG', '')
+    program = started_with.get('MELETE_BOOT_CONFIG', '')
     if not program:
         raise SystemExit('The boot configuration program was not handed to the spare')
-    target = str(Path(os.environ['HERMES_HOME']) / 'config.yaml')
+    environment = {**started_with, **handed}
+    target = str(Path(environment['HERMES_HOME']) / 'config.yaml')
+    loaded = dict(os.environ)
     saved = sys.argv
     sys.argv = ['-c', target]
+    os.environ.clear()
+    os.environ.update(environment)
     try:
         exec(compile(program, 'melete-boot-config', 'exec'), {'__name__': '__main__'})  # noqa: S102
     finally:
         sys.argv = saved
+        os.environ.clear()
+        os.environ.update(loaded)
+        os.environ.pop('MELETE_BOOT_CONFIG', None)
 
 
 if __name__ == '__main__':
     if os.environ.get('MELETE_RUNTIME_SPARE') == '1':
+        started_with = dict(os.environ)
         watched = frozenset(filter(None, os.environ.get('MELETE_RUNTIME_SPARE_KEYS', '').split(',')))
         spare_cwd = os.environ.get('TERMINAL_CWD')
         sys.argv = ['hermes']
@@ -322,15 +333,16 @@ if __name__ == '__main__':
         if os.environ.get('MELETE_RUNTIME_HANDOFF') == 'http':
             # A container engine: its port is fixed and the supervisor reaches
             # it by address, so there is no listener to report.
+            handoff = await_handoff(
+                os.environ.get('API_SERVER_HOST', '0.0.0.0'),
+                int(os.environ['API_SERVER_PORT']),
+                os.environ['API_SERVER_KEY'],
+            )
             take_attempt(
-                await_handoff(
-                    os.environ.get('API_SERVER_HOST', '0.0.0.0'),
-                    int(os.environ['API_SERVER_PORT']),
-                    os.environ['API_SERVER_KEY'],
-                ),
+                handoff,
                 spare_cwd,
                 allowed=watched,
-                prepare=render_attempt_configuration,
+                prepare=lambda: render_attempt_configuration(started_with, handoff['env']),
             )
             sys.argv = ['hermes', 'gateway', 'run']
             from hermes_cli.main import main

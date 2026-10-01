@@ -331,6 +331,8 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
    * service that stopped in between; no attempt runs until this is done.
    */
   private async reconcileWorkspaces() {
+    // No workspace root yet means no attempt has ever left anything in it.
+    if (!(await lstat(resolve(this.options.workRoot)).catch(() => undefined))) return;
     const root = await this.workspaceRoot();
     for (const entry of await readdir(root)) {
       if (entry.startsWith(ADOPTING)) {

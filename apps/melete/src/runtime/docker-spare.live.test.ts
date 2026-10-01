@@ -24,6 +24,20 @@ async function docker(args: string[]): Promise<string> {
   return out.trim();
 }
 
+/** Both of a container's streams: an engine reports why it stopped on stderr. */
+async function logs(name: string, tail = '40'): Promise<string> {
+  const child = Bun.spawn(['docker', 'logs', '--tail', tail, name], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const [out, err] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return `${out}${err}`.trim();
+}
+
 /** The attempt container's own limits, as the supervisor starts it, on the default bridge. */
 async function run(name: string, environment: Record<string, string>) {
   started.push(name);
@@ -70,7 +84,7 @@ async function until(
     } catch {}
     await Bun.sleep(50);
   }
-  throw new Error(`${name} did not answer: ${await docker(['logs', '--tail', '40', name])}`);
+  throw new Error(`${name} did not answer ${url}: ${await logs(name)}`);
 }
 
 const base = (key: string) => ({
@@ -139,8 +153,7 @@ describe.skipIf(!live)('the runtime image on a real engine', () => {
     const handoffMs = Date.now() - handedAt;
     const config = await docker(['exec', spareName, 'cat', '/var/lib/hermes/config.yaml']);
     expect(config).toContain('x-melete-capability: live-capability-S1');
-    const logs = await docker(['logs', spareName]);
-    expect(logs).not.toContain('melete-spare:unusable');
+    expect(await logs(spareName, 'all')).not.toContain('melete-spare:unusable');
     process.stdout.write(
       `engine ready: started with its attempt ${coldMs} ms; spare loaded in ${loadMs} ms, ` +
         `then ready ${handoffMs} ms after its handoff\n`,

@@ -411,6 +411,13 @@ describe('Docker spare engines', () => {
     expect((await readdir(f.root)).filter((entry) => entry.startsWith('.spare-'))).toEqual([]);
   });
 
+  test('startup with no workspace root yet has nothing to put back', async () => {
+    const f = await setup();
+    await rm(f.root, { recursive: true, force: true });
+    await f.runtime.initialize();
+    await mkdir(f.root);
+  });
+
   test('startup puts back a workspace left set aside and removes spares left behind', async () => {
     const f = await setup();
     const id = 'c'.repeat(24);

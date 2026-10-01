@@ -224,28 +224,33 @@ def test_the_container_spare_is_configured_with_its_capability_before_it_serves(
     hooks = hooks_module(monkeypatch)
     order = []
     monkeypatch.setattr(hooks, 'attempt_arrived', lambda: order.append('arrived'))
+    program = (
+        'import os, sys\n'
+        'if os.environ.get("TERMINAL_ENV"):\n'
+        '    raise SystemExit("TERMINAL_ENV may only name the sandbox backend")\n'
+        'open(sys.argv[1], "w").write(os.environ["MELETE_ATTEMPT_TOKEN"])\n'
+    )
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('MELETE_RUNTIME_SPARE', '1')
     monkeypatch.setenv('MELETE_RUNTIME_HANDOFF', 'http')
+    monkeypatch.setenv('MELETE_BOOT_CONFIG', program)
     monkeypatch.delenv('MELETE_ATTEMPT_TOKEN', raising=False)
-    monkeypatch.setenv(
-        'MELETE_BOOT_CONFIG',
-        'import os, sys\n'
-        'open(sys.argv[1], "w").write(os.environ["MELETE_ATTEMPT_TOKEN"])\n',
-    )
+    monkeypatch.delenv('TERMINAL_ENV', raising=False)
+    started_with = dict(os.environ)
+    # What the engine mirrors from its configuration into its environment as it loads.
+    monkeypatch.setenv('TERMINAL_ENV', 'local')
+    handoff = {'cwd': str(tmp_path), 'env': {'MELETE_ATTEMPT_TOKEN': 'cap'}}
 
     def prepare():
-        render_attempt_configuration()
+        render_attempt_configuration(started_with, handoff['env'])
         order.append('configured')
 
-    take_attempt(
-        {'cwd': str(tmp_path), 'env': {'MELETE_ATTEMPT_TOKEN': 'cap'}},
-        None,
-        allowed=frozenset({'MELETE_ATTEMPT_TOKEN'}),
-        prepare=prepare,
-    )
+    take_attempt(handoff, None, allowed=frozenset({'MELETE_ATTEMPT_TOKEN'}), prepare=prepare)
     assert (tmp_path / 'config.yaml').read_text() == 'cap'
     assert order == ['configured', 'arrived']
+    # The engine keeps what it had loaded with, now with the attempt's values.
+    assert os.environ['TERMINAL_ENV'] == 'local'
+    assert os.environ['MELETE_ATTEMPT_TOKEN'] == 'cap'
     for name in ('MELETE_RUNTIME_SPARE', 'MELETE_RUNTIME_HANDOFF', 'MELETE_BOOT_CONFIG'):
         assert name not in os.environ
 
