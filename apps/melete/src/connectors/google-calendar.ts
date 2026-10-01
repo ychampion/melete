@@ -15,6 +15,7 @@ import type {
   VerifyResult,
 } from '@melete/contracts';
 import {
+  byStart,
   calendarManifest,
   createPayload,
   deletePayload,
@@ -222,7 +223,8 @@ export class GoogleCalendarConnector implements Connector {
           nextPageToken?: string;
         } | null;
         const items = (listed?.items ?? []).filter((event) => event.status !== 'cancelled');
-        const events = items.map(eventView).slice(0, payload.limit);
+        // Google cannot order series by start, so the page is put in order here.
+        const events = byStart(items.map(eventView)).slice(0, payload.limit);
         const truncated = Boolean(listed?.nextPageToken) || items.length > payload.limit;
         return this.success(action, listDetail(events, window, truncated, false));
       }

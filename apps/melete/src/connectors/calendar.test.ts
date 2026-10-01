@@ -431,6 +431,11 @@ describe('calendar listing window', () => {
     expect(listWindow(listPayload.parse({ from: '2026-11-01' }), now).to).toBe(
       '2027-01-30T00:00:00.000Z',
     );
+    // An end alone, even one in the past, covers the 90 days before it rather than nothing.
+    expect(listWindow(listPayload.parse({ to: '2026-09-20' }), now)).toEqual({
+      from: '2026-06-22T00:00:00.000Z',
+      to: '2026-09-20T00:00:00.000Z',
+    });
     expect(listPayload.safeParse({ from: '2026-12-01', to: '2026-11-01' }).success).toBe(false);
     expect(listPayload.safeParse({ from: 'next week' }).success).toBe(false);
   });

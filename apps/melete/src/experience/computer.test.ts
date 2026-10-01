@@ -129,3 +129,47 @@ test('file paths built from record ids are shown, and keys that contain slashes 
     '[hidden]',
   ]);
 });
+
+/** A seeded generator, so the fuzz below is the same run every time. */
+function seeded(seed: number) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test('base64 keys that contain a slash stay hidden after a path, as they were before file names were let through', () => {
+  const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  // The rule before record ids were let through: any long mixed run is a key.
+  const before =
+    /(?<![A-Za-z0-9+/_-])(?=[A-Za-z0-9+/_-]*[A-Z])(?=[A-Za-z0-9+/_-]*[a-z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{40,}/;
+  const random = seeded(175);
+  const keys = Array.from({ length: 4000 }, () =>
+    Array.from({ length: 40 }, () => BASE64[Math.floor(random() * 64)]).join(''),
+  ).filter((key) => key.includes('/'));
+  expect(keys.length).toBeGreaterThan(1500);
+  for (const context of [
+    (key: string) => `cp out /tmp/${key}.txt`,
+    (key: string) => `ls /home/agent/${key}`,
+    (key: string) => `cat work/notes/${key}`,
+    (key: string) => `key: ${key}`,
+  ]) {
+    const lines = keys.map(context);
+    const shown = lines.filter((line) => terminalText(line, 4000, 'first') !== '[hidden]').length;
+    const shownBefore = lines.filter((line) => !before.test(line)).length;
+    expect(shown).toBeLessThanOrEqual(shownBefore);
+    expect(shown).toBeLessThanOrEqual(keys.length / 100);
+  }
+});
+
+test('a key with slashes behind a path, and a webhook address, stay hidden', () => {
+  for (const line of [
+    'cat /home/agent/wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    'curl https://hooks.slack.com/services/T0AB12CD3/B0EF45GH6/sLaCkWeBhOoKsEcReTvAlUe',
+  ])
+    expect(terminalText(line, 4000, 'first')).toBe('[hidden]');
+});

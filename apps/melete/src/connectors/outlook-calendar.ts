@@ -19,6 +19,7 @@ import type {
   VerifyResult,
 } from '@melete/contracts';
 import {
+  byStart,
   calendarManifest,
   createPayload,
   deletePayload,
@@ -263,6 +264,7 @@ export class OutlookCalendarConnector implements Connector {
         const listed = await this.page(
           new URLSearchParams({
             $top: String(payload.limit),
+            $orderby: 'start/dateTime',
             // Events that touch the window; a series keeps its pattern.
             $filter: `end/dateTime ge ${literal(utc(window.from))} and start/dateTime lt ${literal(utc(window.to))}`,
           }),
@@ -272,7 +274,7 @@ export class OutlookCalendarConnector implements Connector {
         return this.success(
           action,
           listDetail(
-            live.map(eventView).slice(0, payload.limit),
+            byStart(live.map(eventView)).slice(0, payload.limit),
             window,
             listed.more || live.length > payload.limit,
             false,

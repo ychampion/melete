@@ -464,9 +464,23 @@ ENGINE_TERMINAL = "terminal"
 #: How the engine names what it flagged: "Command flagged as dangerous (<what>)".
 _FLAGGED = re.compile(r"flagged as dangerous \(([^\n]{1,160}?)\)(?: but |\.|$)")
 
+#: How the engine's reviewer names what it refused when nobody can be asked.
+_SMART_DENIED = re.compile(r"^BLOCKED by smart approval: ([^\n]{1,160}?)\. The command")
+
+
+def _safety_refusal(error: str) -> bool:
+    """True only for the engine's safety gate refusing a command nobody could approve.
+
+    The engine marks other refusals `blocked` too, such as a working directory it
+    will not use; those are passed through as the engine wrote them.
+    """
+    return error.startswith("BLOCKED") and (
+        "approvals.unattended_mode" in error or error.startswith("BLOCKED by smart approval:")
+    )
+
 
 def _blocked_reason(error: str) -> str:
-    found = _FLAGGED.search(error)
+    found = _FLAGGED.search(error) or _SMART_DENIED.search(error)
     return found.group(1).strip() if found else "it matched a safety rule"
 
 
@@ -506,7 +520,10 @@ def blocked_command_result(client: Any) -> Callable[..., Optional[str]]:
             return None
         if not isinstance(body, dict) or body.get("status") != "blocked":
             return None
-        reason = _blocked_reason(str(body.get("error") or ""))
+        error = str(body.get("error") or "")
+        if not _safety_refusal(error):
+            return None
+        reason = _blocked_reason(error)
         body["error"] = blocked_command_text(reason)
         body["exit_code"] = REFUSED_STATUS
         try:

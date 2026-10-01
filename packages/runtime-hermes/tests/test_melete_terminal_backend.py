@@ -533,6 +533,24 @@ def test_everything_else_passes_through_untouched(tool_name, result):
 def test_a_description_with_its_own_brackets_is_kept_whole():
     blocked = json.dumps({"output": "", "exit_code": -1, "status": "blocked", "error": (
         "BLOCKED: Command flagged as dangerous (pipe remote content to PowerShell (iwr | iex)) but this "
-        "session runs on an unattended platform (api_server) with no user present to approve it.")})
+        "session runs on an unattended platform (api_server) with no user present to approve it. Find an "
+        "alternative approach that avoids this command. To allow dangerous commands on unattended "
+        "platforms, set approvals.unattended_mode: approve in config.yaml.")})
     body = json.loads(blocked_command_result(SayingBroker())(tool_name="terminal", result=blocked))
     assert "(pipe remote content to PowerShell (iwr | iex))" in body["error"]
+
+
+def test_a_blocked_working_directory_is_not_called_a_safety_refusal():
+    broker = SayingBroker()
+    workdir = json.dumps({"output": "", "exit_code": -1, "status": "blocked",
+                          "error": "Blocked: workdir contains disallowed characters"})
+    assert blocked_command_result(broker)(tool_name="terminal", result=workdir) is None
+    assert broker.said == []
+
+
+def test_a_reviewer_refusal_names_what_it_refused():
+    smart = json.dumps({"output": "", "exit_code": -1, "status": "blocked", "error": (
+        "BLOCKED by smart approval: delete in root path. The command was assessed as genuinely "
+        "dangerous. Do NOT retry.")})
+    body = json.loads(blocked_command_result(SayingBroker())(tool_name="terminal", result=smart))
+    assert "(delete in root path)" in body["error"]

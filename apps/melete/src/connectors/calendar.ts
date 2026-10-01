@@ -64,15 +64,29 @@ export const listPayload = z
 export type ListWindow = { from: string; to: string };
 
 /**
- * The window a listing covers. With no `from` it starts yesterday, so an
- * event that is under way is still listed; with no `to` it ends
- * {@link DEFAULT_LIST_DAYS} days after the start. The receipt always carries
- * the window, so whoever reads it knows what was and was not looked at.
+ * The window a listing covers. With neither end it starts yesterday, so an
+ * event that is under way is still listed, and ends {@link DEFAULT_LIST_DAYS}
+ * days later. With only `to`, it is the {@link DEFAULT_LIST_DAYS} days before
+ * `to`, so an end in the past never makes an empty, inverted window; with only
+ * `from`, it is the same span after `from`. The receipt always carries the
+ * window, so whoever reads it knows what was and was not looked at.
  */
 export function listWindow(payload: z.infer<typeof listPayload>, now = Date.now()): ListWindow {
-  const from = payload.from ? Date.parse(payload.from) : now - DAY_MS;
-  const to = payload.to ? Date.parse(payload.to) : from + DEFAULT_LIST_DAYS * DAY_MS;
+  const span = DEFAULT_LIST_DAYS * DAY_MS;
+  const to = payload.to
+    ? Date.parse(payload.to)
+    : (payload.from ? Date.parse(payload.from) : now - DAY_MS) + span;
+  const from = payload.from ? Date.parse(payload.from) : payload.to ? to - span : now - DAY_MS;
   return { from: new Date(from).toISOString(), to: new Date(to).toISOString() };
+}
+
+/** Events earliest first; one whose start cannot be read goes last. */
+export function byStart(events: EventView[]): EventView[] {
+  const at = (event: EventView) => {
+    const time = Date.parse(event.start);
+    return Number.isNaN(time) ? Number.POSITIVE_INFINITY : time;
+  };
+  return [...events].sort((a, b) => at(a) - at(b));
 }
 
 /**
@@ -170,7 +184,7 @@ export const calendarManifest: ConnectorManifest = {
     {
       name: 'calendar.list',
       description:
-        'List events and series (with recurrence rules) between `from` and `to`, earliest first. Defaults: from yesterday, to 90 days after `from`; pass both for other dates. The result names its window. If `truncated` is true more events exist than were returned: list again with a narrower window before calling the list complete.',
+        'List events and series (with recurrence rules) between `from` and `to`, earliest first. Defaults: yesterday to 90 days later; one end alone covers the 90 days after `from` or before `to`. The result names its window. If `truncated` is true more events exist than were returned: list again with a narrower window before calling the list complete.',
       input_schema: {
         type: 'object',
         additionalProperties: false,

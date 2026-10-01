@@ -47,31 +47,18 @@ const CREDENTIAL_SHAPES =
   /\bBearer\s+\S|\bsk-[A-Za-z0-9_-]{8,}|\bgh[opsu]_[A-Za-z0-9]{8,}|\bgithub_pat_|\bxox[abprs]-|\bAKIA[0-9A-Z]{12}|\bAIza[0-9A-Za-z_-]{20}|\beyJ[A-Za-z0-9_-]{8,}\.|sealed-box-v1:|-----BEGIN|(?:^|[^A-Za-z])[A-Za-z_]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie|credential)[A-Za-z_]*\s*[:=]/i;
 /** A long random run mixing cases and digits; a lowercase path, slug or model id is not one. */
 const RANDOM_RUN =
-  /(?<![A-Za-z0-9+/_-])(?=[A-Za-z0-9+/_-]*[A-Z])(?=[A-Za-z0-9+/_-]*[a-z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{40,}/g;
-/** One part of a path that is itself shaped like a key. */
-const KEY_SEGMENT = /^(?=[^/]*[A-Z])(?=[^/]*[a-z])(?=[^/]*\d)[A-Za-z0-9+_-]{24,}$/;
-/** The service's own record id, which names files the agent saves (`act_….png`). */
-const RECORD_ID = /^[a-z]{2,6}_[0-9A-HJKMNP-TV-Z]{26}$/;
-
+  /(?<![A-Za-z0-9+/_-])(?=[A-Za-z0-9+/_-]*[A-Z])(?=[A-Za-z0-9+/_-]*[a-z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{40,}/;
 /**
- * Whether a long run is a key rather than a file path. Base64 carries `/` too,
- * so a run is read as a path only when it starts at a root or has at least two
- * ordinary lowercase names in it (`/home/agent/…`, `work/notes/…`); even then,
- * a part of it shaped like a key still counts.
+ * The service's own record id standing as a whole name, with the extension a
+ * saved file gives it (`act_….png`). It names a file the agent saved, not a
+ * secret, so it is taken out before the random-run test; nothing else is.
  */
-function keyRun(run: string): boolean {
-  if (!run.includes('/')) return true;
-  const segments = run.split('/');
-  const path =
-    run.startsWith('/') || segments.filter((segment) => /^[a-z]{3,}$/.test(segment)).length >= 2;
-  if (!path) return true;
-  return segments.some((segment) => !RECORD_ID.test(segment) && KEY_SEGMENT.test(segment));
-}
+const RECORD_NAME =
+  /(?<![A-Za-z0-9+_-])[a-z]{2,6}_[0-9A-HJKMNP-TV-Z]{26}(?:\.[A-Za-z0-9]{1,8})?(?![A-Za-z0-9+_-])/g;
 
 export const CREDENTIAL = {
   test: (text: string): boolean =>
-    CREDENTIAL_SHAPES.test(text) ||
-    [...text.matchAll(RANDOM_RUN)].some((match) => keyRun(match[0])),
+    CREDENTIAL_SHAPES.test(text) || RANDOM_RUN.test(text.replace(RECORD_NAME, ' ')),
 };
 /** A path segment that reads like a key rather than a word: long, and mixing letters and digits. */
 const TOKEN_SEGMENT = /^(?=[^/]*\d)(?=[^/]*[A-Za-z])[A-Za-z0-9_.~-]{12,}$/;
