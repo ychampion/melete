@@ -1148,9 +1148,10 @@ withDb('experience rows and authenticated scope', () => {
     const result = experienceOperations['GET /conversations/{id}/cards'].response.parse(
       await (await request(`/conversations/${chat.id}/cards`)).json(),
     );
-    expect(result.cards).toHaveLength(5);
+    // Reading a file makes nothing new, so it stays in the activity and is not a card.
+    expect(result.cards).toHaveLength(4);
     expect(result.cards.map((card) => card.title).sort()).toEqual(
-      ['Dinner event', 'Dinner invitation', 'Dinner menu', 'dinner-notes.txt', 'menu.txt'].sort(),
+      ['Dinner event', 'Dinner invitation', 'Dinner menu', 'dinner-notes.txt'].sort(),
     );
     expect(
       result.cards.find((card) => card.title === 'Dinner event')?.facts.map((fact) => fact.label),
@@ -1165,12 +1166,12 @@ withDb('experience rows and authenticated scope', () => {
         .filter((card) => card.source_connection)
         .map((card) => card.source_connection)
         .sort(),
-    ).toEqual(ids.sort());
+    ).toEqual(ids.filter((_, index) => entries[index]?.kind !== 'files.read').sort());
     expect(JSON.stringify(result)).not.toMatch(BACKEND_VOCABULARY);
     expect(JSON.stringify(result)).not.toContain('private details stay inside');
     expect(JSON.stringify(result)).not.toContain('foreign-secret');
     const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
-    expect(page.events.filter((event) => event.item.type === 'card')).toHaveLength(5);
+    expect(page.events.filter((event) => event.item.type === 'card')).toHaveLength(4);
     expect(JSON.stringify(page)).not.toMatch(BACKEND_VOCABULARY);
   });
 
