@@ -24,6 +24,7 @@
  */
 import type { Sql, TransactionSql } from 'postgres';
 import { recordId } from '../broker/records.ts';
+import { type ComputerControls, computerControls } from './computer-control.ts';
 import { checkSpec, LABEL_SESSION, SandboxRefusal, type SessionPersistence } from './manifest.ts';
 import type { SessionStatus } from './schema.ts';
 import {
@@ -99,6 +100,8 @@ export type SessionOptions = {
   workspaceRetentionSeconds: number;
   /** Where session ids come from; replaced only by tests that replay recorded traffic. */
   ids?: () => string;
+  /** Who is driving each computer; the process's own table unless a test brings one. */
+  controls?: ComputerControls;
 };
 
 /**
@@ -240,6 +243,7 @@ async function usedSeconds(tx: Query, jobId: string): Promise<number> {
 
 export class SandboxSessions {
   private readonly ids: () => string;
+  private readonly controls: ComputerControls;
 
   constructor(
     private readonly sql: Sql,
@@ -253,6 +257,16 @@ export class SandboxSessions {
     )
       throw new Error('workspace retention needs a positive whole number of seconds');
     this.ids = options.ids ?? (() => recordId('sbx'));
+    this.controls = options.controls ?? computerControls;
+  }
+
+  /**
+   * Whether a person has taken over this computer. Taking over ends the
+   * agent's attempt, and the computer is the person's until they hand it
+   * back: it is not settled with that attempt, nor handed to another one.
+   */
+  heldByPerson(providerSandboxId: string): boolean {
+    return this.controls.state(providerSandboxId).control === 'human';
   }
 
   async get(id: string): Promise<SessionRow | null> {
@@ -865,7 +879,8 @@ export class SandboxSessions {
    * sweep settles it at once rather than when its own lease runs out. A
    * service that stopped in the middle of a command leaves exactly this: an
    * attempt ended or no longer heartbeating, and a session still `ready`.
-   * With `scope`, only one agent's workspace in one space.
+   * A computer a person has taken over is left alone: taking over ends the
+   * attempt on purpose. With `scope`, only one agent's workspace in one space.
    */
   async expireOrphaned(scope?: { spaceId: string; agentId: string }): Promise<string[]> {
     const rows = await this.sql`update sandbox_session
@@ -874,6 +889,7 @@ export class SandboxSessions {
       where status in ('opening', 'ready') and attempt_id is not null
         and lease_expires_at >= now()
         and ${attemptGone(this.sql)}
+        and not (provider_sandbox_id = any(${this.controls.heldByPerson()}::text[]))
         ${scope ? this.sql`and space_id = ${scope.spaceId} and agent_id = ${scope.agentId}` : this.sql``}
       returning id`;
     return rows.map((row) => row.id as string);

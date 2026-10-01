@@ -103,11 +103,15 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
     },
 
     async settleAttempt(attemptId, signal) {
-      const rows = await sql`select id, agent_id, persistence, connection_id, adapter
+      const rows = await sql`select id, agent_id, persistence, connection_id, adapter,
+          provider_sandbox_id
         from sandbox_session
         where attempt_id = ${attemptId} and status in ('opening', 'ready')`;
       for (const row of rows) {
         const id = String(row.id);
+        // Taking over the computer is what ended this attempt; the person keeps
+        // it, and the sweep settles it once they hand it back.
+        if (sessions.heldByPerson(String(row.provider_sandbox_id))) continue;
         const workspace = row.agent_id !== null && row.persistence !== 'ephemeral';
         try {
           const provider = providerFor(String(row.adapter), String(row.connection_id));
