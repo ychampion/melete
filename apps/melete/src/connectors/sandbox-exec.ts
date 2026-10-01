@@ -95,9 +95,16 @@ export type SandboxExecOptions = {
  */
 export const WORKSPACE_WAIT_MS = 60_000;
 
-/** Why a command cut off by a stop or restart of the service was not finished. */
+/**
+ * Why a command cut off by a stop or restart of the service was not finished,
+ * when the computer it ran in could reach nothing outside.
+ */
 export const INTERRUPTED =
   "Melete stopped while this command was running in the agent's computer, so its result was not captured. It may have run in part or in full, and anything it changed is inside that computer: check before running it again";
+
+/** The same, when the computer had network access: what it did may have reached outside. */
+export const INTERRUPTED_WITH_NETWORK =
+  "Melete stopped while this command was running in the agent's computer, so its result was not captured. It may have run in part or in full. The computer had network access, so the command may also have reached outside it, for example by sending or uploading something: check before running it again";
 const WORKSPACE_POLL_MS = 2_000;
 
 /** The conversation holding the computer, as the model can repeat it to the person. */
@@ -736,8 +743,23 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         };
       // The command ran, or may have, inside the agent's own computer, and its
       // result cannot be read now. Asking the person whether it "arrived"
-      // would be a question about a place only the agent uses.
-      return { outcome: 'failed', reason: INTERRUPTED, retryable: false };
+      // would be a question about a place only the agent uses. Only a
+      // computer that could reach nothing outside keeps everything it did
+      // inside; when that is not known, the command may have reached out.
+      let closed = false;
+      try {
+        const [ran] = await sql`select s.egress_policy from sandbox_command c
+          join sandbox_session s on s.id = c.session_id
+          where c.action_id = ${action.id}`;
+        closed = (ran?.egress_policy as { kind?: string } | undefined)?.kind === 'deny_all';
+      } catch {
+        // Not known: said as the wider case.
+      }
+      return {
+        outcome: 'failed',
+        reason: closed ? INTERRUPTED : INTERRUPTED_WITH_NETWORK,
+        retryable: false,
+      };
     },
 
     close: options.close,

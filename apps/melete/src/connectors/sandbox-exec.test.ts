@@ -19,6 +19,7 @@ import { ConnectorRegistry } from './registry.ts';
 import {
   createSandboxExecConnector,
   INTERRUPTED,
+  INTERRUPTED_WITH_NETWORK,
   outputText,
   sandboxDispatchBudgetMs,
   sandboxExecManifest,
@@ -128,6 +129,7 @@ withDb('a command in a remote sandbox', () => {
       /** Shared where two connections run side by side, so their sandbox ids differ. */
       engine?: FakeSandboxEngine;
       workspaceWaitMs?: number;
+      egress?: SandboxConnectionConfig['egress'];
     } = {},
   ) => {
     if (!handle) throw new Error('Postgres is unavailable');
@@ -140,7 +142,11 @@ withDb('a command in a remote sandbox', () => {
     const connector = createSandboxExecConnector({
       sessions,
       provider,
-      config: { ...config, ...(over.persistence ? { persistence: over.persistence } : {}) },
+      config: {
+        ...config,
+        ...(over.persistence ? { persistence: over.persistence } : {}),
+        ...(over.egress ? { egress: over.egress } : {}),
+      },
       connectionId: scope.connectionId,
       spaceId: scope.spaceId,
       project: PROJECT,
@@ -654,5 +660,18 @@ withDb('a command in a remote sandbox', () => {
     expect(cut.result.outcome).toBe('unknown');
     const lost = await s.connector.abandoned?.(cut.action, s.context(cut.action));
     expect(lost).toEqual({ outcome: 'failed', reason: INTERRUPTED, retryable: false });
+  }, 60_000);
+
+  test('a command cut off in a computer with network access is not said to have stayed inside it', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const s = await setup({ egress: 'open' });
+    s.provider.loseNextAcknowledgement('after_start');
+    const cut = await s.run({ command: 'sleep 20; curl -sd @notes.md https://example.test/' });
+    expect(cut.result.outcome).toBe('unknown');
+    const lost = await s.connector.abandoned?.(cut.action, s.context(cut.action));
+    expect(lost).toEqual({ outcome: 'failed', reason: INTERRUPTED_WITH_NETWORK, retryable: false });
+    if (lost?.outcome !== 'failed') throw new Error(JSON.stringify(lost));
+    expect(lost.reason).not.toContain('inside that computer');
+    expect(lost.reason).toContain('may also have reached outside');
   }, 60_000);
 });
