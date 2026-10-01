@@ -21,6 +21,7 @@ import {
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
+import { lastActivity, spanOf } from '../experience/duration.ts';
 import { lookOf } from '../experience/hooks.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
 import { OPEN_TEXT_LIMIT_BYTES } from '../experience/text-prefix.ts';
@@ -259,21 +260,42 @@ export function Trail({
   const hasRows = tools.length > 0;
   const expandable = steps.length > 0;
   const expanded = expandable && (open ?? (running ? !answering : continued));
+  // A turn that ended without a closing step ended where its last tool entry did, so
+  // its time stops there instead of counting on for as long as the chat is open.
+  const ended = running || doneStep ? null : lastActivity(tools);
+  const started = new Date(turn.turn.created_at).getTime();
   const elapsed = doneStep
-    ? Math.max(1, Math.round(doneStep.elapsed_ms / 1000))
-    : Math.max(0, Math.round((now - new Date(turn.turn.created_at).getTime()) / 1000));
+    ? Math.max(1, doneStep.elapsed_ms / 1000)
+    : running
+      ? Math.max(0, (now - started) / 1000)
+      : ended !== null
+        ? Math.max(1, (ended - started) / 1000)
+        : null;
+  const took = elapsed === null ? null : spanOf(elapsed);
   const failures = tools.filter((tool) => tool.status === 'failed').length;
-  const rest = doneStep
-    ? [
-        tools.length ? `${tools.length} step${tools.length === 1 ? '' : 's'}` : '',
-        failures ? `${failures} didn’t work` : '',
-        !hasRows && doneStep.source_count
-          ? `${doneStep.source_count} source${doneStep.source_count === 1 ? '' : 's'}`
-          : '',
-      ]
-        .filter(Boolean)
-        .join(' · ')
-    : '';
+  const finished = tools.filter((tool) => tool.status === 'done');
+  const rest =
+    doneStep || turn.status === 'stopped'
+      ? [
+          tools.length ? `${tools.length} step${tools.length === 1 ? '' : 's'}` : '',
+          failures ? `${failures} didn’t work` : '',
+          doneStep && !hasRows && doneStep.source_count
+            ? `${doneStep.source_count} source${doneStep.source_count === 1 ? '' : 's'}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : '';
+  // What a stopped turn got done, so stopping never leaves only a pile of cards.
+  const lastDone = finished.at(-1);
+  const stoppedSummary =
+    turn.status === 'stopped'
+      ? finished.length
+        ? `Stopped before it finished, after ${finished.length} step${
+            finished.length === 1 ? '' : 's'
+          }. Last: ${lastDone?.title ?? ''}. Ask it to carry on when you’re ready.`
+        : 'Stopped before it got to work. Ask again when you’re ready.'
+      : null;
   const underWay = [...tools].reverse().find((tool) => tool.status === 'running');
   const currentTitle = turn.live?.title ?? underWay?.title;
   const head = running ? (
@@ -283,7 +305,7 @@ export function Trail({
         <span className="pulse" style={{ animationDelay: '.2s' }} />
         <span className="pulse" style={{ animationDelay: '.4s' }} />
       </span>
-      <span>{turn.status === 'paused' ? `Paused · ${elapsed}s` : `Working · ${elapsed}s`}</span>
+      <span>{turn.status === 'paused' ? `Paused · ${took}` : `Working · ${took}`}</span>
       {!expanded && currentTitle ? (
         <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
           · {currentTitle}
@@ -293,13 +315,13 @@ export function Trail({
   ) : (
     <>
       {turn.status === 'stopped' ? (
-        <span>Stopped after {elapsed}s</span>
+        <span>{took ? `Stopped after ${took}` : 'Stopped'}</span>
       ) : turn.status === 'needs_you' ? (
-        <span>Waiting for you · {elapsed}s</span>
+        <span>Waiting for you</span>
       ) : turn.status === 'failed' ? (
         <span>Stopped without finishing</span>
       ) : (
-        <span>Worked for {elapsed}s</span>
+        <span>{took ? `Worked for ${took}` : 'Done'}</span>
       )}
       {rest ? (
         <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
@@ -330,6 +352,19 @@ export function Trail({
           {head}
         </div>
       )}
+      {stoppedSummary ? (
+        <p
+          style={{
+            margin: '2px 0 0 20px',
+            fontFamily: 'var(--font-body)',
+            fontSize: 13,
+            lineHeight: '19px',
+            color: 'var(--muted)',
+          }}
+        >
+          {stoppedSummary}
+        </p>
+      ) : null}
       {expanded ? (
         <ol className="trail-steps act-list" id={stepsId} aria-label="What it did">
           {steps.map((step, index) => {

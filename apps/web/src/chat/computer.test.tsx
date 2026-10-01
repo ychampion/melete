@@ -197,6 +197,29 @@ test('a desktop the person holds is live and can be handed back', () => {
   expect(html).not.toContain('Take over');
 });
 
+test('while the agent is not at work, nothing says it has control', () => {
+  const html = renderToStaticMarkup(
+    <ComputerPanel
+      agent={NOVA}
+      computer={{ browser: null, terminal: [], available: { browser: false, terminal: true } }}
+      desktop={desktop('agent')}
+      error={null}
+      working={false}
+      onClose={() => {}}
+      onChanged={() => {}}
+    />,
+  );
+  expect(html).not.toContain('Nova has control');
+  expect(html).toContain('Nova isn’t using it now');
+  expect(html).toContain('Take over');
+});
+
+test('the live view says it is opening, and is not called live before a picture arrives', () => {
+  const html = renderDesktop('human');
+  expect(html).toContain('Opening the live view');
+  expect(html).not.toContain('computer-live-badge');
+});
+
 test('a stopped desktop says it starts again when used, and offers nothing to watch', () => {
   const html = renderDesktop('agent', false);
   expect(html).toContain('It starts again when Nova uses it');

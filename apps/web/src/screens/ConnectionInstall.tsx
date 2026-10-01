@@ -26,6 +26,46 @@ import type {
 } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 import { APP_PASSWORD } from './app-passwords.ts';
+import './connections.css';
+
+/** Where an installation's owner reads how to turn on each sign-in. */
+const SETUP_DOC = 'https://github.com/ychampion/melete/blob/main/docs/mail-calendar.md';
+export const SETUP_DOCS: Record<string, string> = {
+  google: `${SETUP_DOC}#signing-in-with-google`,
+  microsoft: `${SETUP_DOC}#signing-in-with-microsoft`,
+};
+/** Said wherever an option needs the server set up first. */
+export const NOT_SET_UP = 'Available when your server is set up for it.';
+
+/** Kinds of connection a person uses day to day; the rest are for developers. */
+const EVERYDAY = new Set<ConnectionKind['kind']>(['mail', 'caldav', 'ics']);
+
+/** Which sign-in is the easier way to connect each kind, when it is offered. */
+const SIGN_IN_FOR: Record<string, string> = {
+  gmail: 'google',
+  'google-calendar-feed': 'google',
+};
+
+/** Addresses in help text become links: "myaccount.google.com/apppasswords" opens it. */
+export function Linked({ text }: { text: string }) {
+  const parts = text.split(
+    /((?:[a-z0-9-]+\.)+(?:com|net|org)(?:\/[A-Za-z0-9/_-]*[A-Za-z0-9_-])?)/g,
+  );
+  return (
+    <>
+      {parts.map((part, index) =>
+        index % 2 === 1 ? (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the parts of one fixed sentence
+          <a key={index} href={`https://${part}`} target="_blank" rel="noreferrer">
+            {part}
+          </a>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
 
 const INPUT_TYPE: Partial<Record<ConnectionItemField['input'], string>> = {
   email: 'email',
@@ -113,7 +153,7 @@ export function AppPasswordExplainer({ kindId }: { kindId: string }) {
       </span>
       {note.lines.map((line) => (
         <p key={line} style={{ fontSize: 13, lineHeight: '19px', color: 'var(--secondary)' }}>
-          {line}
+          <Linked text={line} />
         </p>
       ))}
     </div>
@@ -124,11 +164,16 @@ export function KindForm({
   kind,
   onDone,
   onInstalled,
+  signIn: easier,
+  onSignIn,
 }: {
   kind: ConnectionKind;
   onDone: () => void;
   /** Called only when the connection was saved, before `onDone`. */
   onInstalled?: () => void;
+  /** The account sign-in that connects this kind without a password, when there is one. */
+  signIn?: SignInEntry;
+  onSignIn?: () => void;
 }) {
   const [values, setValues] = useState<FormValues>(() => emptyForm(kind));
   const [sending, setSending] = useState(false);
@@ -203,6 +248,31 @@ export function KindForm({
           {kind.description}
         </span>
       </div>
+      {easier?.available ? (
+        <div className="col connect-easier" role="note">
+          <span>
+            Signing in with {easier.title} is the simpler way: no app password, and you can stop it
+            from your {easier.title} account at any time.
+          </span>
+          <div>
+            <Button size="sm" icon="arrowUpRight" onClick={onSignIn}>
+              Sign in with {easier.title} instead
+            </Button>
+          </div>
+        </div>
+      ) : easier ? (
+        <div className="col connect-easier" role="note">
+          <span>
+            Signing in with {easier.title} needs your server set up for it, so {kind.title} connects
+            here with an app password instead.{' '}
+            {SETUP_DOCS[easier.connect.provider] ? (
+              <a href={SETUP_DOCS[easier.connect.provider]} target="_blank" rel="noreferrer">
+                How to set up {easier.title} sign-in
+              </a>
+            ) : null}
+          </span>
+        </div>
+      ) : null}
       <AppPasswordExplainer kindId={kind.id} />
       <Field label="Name">
         <Input
@@ -391,8 +461,12 @@ export function AccountSignIn({
       </ul>
       {!entry.available ? (
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-          {entry.unavailable_reason}
-          {entry.setup_hint ? ` ${entry.setup_hint}` : ''}
+          {NOT_SET_UP}{' '}
+          {SETUP_DOCS[provider] ? (
+            <a href={SETUP_DOCS[provider]} target="_blank" rel="noreferrer">
+              How to set this up
+            </a>
+          ) : null}
         </span>
       ) : null}
       {error ? (
@@ -436,6 +510,12 @@ export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
   const kind = list.find((item) => item.id === chosen);
   const accounts = (kinds.data?.catalog ?? []).filter(isSignIn);
   const account = accounts.find((item) => item.id === signingIn);
+  // Sign-ins this server offers come first; the ones it is not set up for say so, with no button.
+  const ready = accounts.filter((item) => item.available);
+  const later = accounts.filter((item) => !item.available);
+  const everyday = list.filter((item) => EVERYDAY.has(item.kind));
+  const builders = list.filter((item) => !EVERYDAY.has(item.kind));
+  const easier = (kindId: string) => accounts.find((item) => item.id === SIGN_IN_FOR[kindId]);
   // An instance that does not serve kinds cannot install anything, so nothing is drawn.
   if (kinds.unavailable || (!kinds.loading && !kinds.error && list.length === 0)) return null;
 
@@ -456,35 +536,82 @@ export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
         <KindForm
           key={kind.id}
           kind={kind}
+          signIn={easier(kind.id)}
+          onSignIn={() => {
+            const entry = easier(kind.id);
+            if (!entry) return;
+            setChosen(null);
+            setSigningIn(entry.id);
+          }}
           onDone={() => {
             setChosen(null);
             onInstalled();
           }}
         />
       ) : (
-        <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-          {accounts.map((item) => (
-            <Button
-              key={item.id}
-              variant="outline"
-              icon="plus"
-              title={item.available ? item.description : item.unavailable_reason}
-              onClick={() => setSigningIn(item.id)}
-            >
-              Sign in with {item.title}
-            </Button>
-          ))}
-          {list.map((item) => (
-            <Button
-              key={item.id}
-              variant="outline"
-              icon="plus"
-              title={item.description}
-              onClick={() => setChosen(item.id)}
-            >
-              {item.title}
-            </Button>
-          ))}
+        <div className="col" style={{ gap: 14 }}>
+          {ready.length || everyday.length ? (
+            <div className="col" style={{ gap: 8 }}>
+              <span className="connect-group">Mail and calendars</span>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                {ready.map((item) => (
+                  <Button
+                    key={item.id}
+                    variant="outline"
+                    icon="plus"
+                    title={item.description}
+                    onClick={() => setSigningIn(item.id)}
+                  >
+                    Sign in with {item.title}
+                  </Button>
+                ))}
+                {everyday.map((item) => (
+                  <Button
+                    key={item.id}
+                    variant="outline"
+                    icon="plus"
+                    title={item.description}
+                    onClick={() => setChosen(item.id)}
+                  >
+                    {item.title}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {later.length ? (
+            <div className="col" style={{ gap: 6 }}>
+              {later.map((item) => (
+                <div key={item.id} className="row connect-later">
+                  <span className="connect-later-name">Sign in with {item.title}</span>
+                  <span className="grow">{NOT_SET_UP}</span>
+                  {SETUP_DOCS[item.connect.provider] ? (
+                    <a href={SETUP_DOCS[item.connect.provider]} target="_blank" rel="noreferrer">
+                      How to set this up
+                    </a>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {builders.length ? (
+            <div className="col" style={{ gap: 8 }}>
+              <span className="connect-group">For developers</span>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                {builders.map((item) => (
+                  <Button
+                    key={item.id}
+                    variant="outline"
+                    icon="plus"
+                    title={item.description}
+                    onClick={() => setChosen(item.id)}
+                  >
+                    {item.title}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
     </div>

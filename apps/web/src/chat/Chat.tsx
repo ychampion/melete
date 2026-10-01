@@ -856,6 +856,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             computer={computer.computer}
             desktop={computer.desktop}
             error={computer.error}
+            working={working}
             onClose={() => setComputerOpen(false)}
             onChanged={() => void computer.refresh()}
           />

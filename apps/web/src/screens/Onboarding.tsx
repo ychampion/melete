@@ -9,12 +9,17 @@ import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
 import { Logo } from '../design/logos.tsx';
 import { MeleteMark } from '../design/mark.tsx';
-import { Button, Chip, Field, Input, Segmented, Toggle } from '../design/primitives.tsx';
+import { Button, Chip, Field, Input, Segmented, Select, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { lookOf, messageKey, useApp, useLoad, useMedia } from '../experience/hooks.ts';
-import { givenName, onboardedProfile } from '../experience/profile.ts';
+import { givenName, onboardedProfile, UNNAMED } from '../experience/profile.ts';
 import { keptAnswer, SETUP_QUESTIONS, SKIP_REPLY } from '../experience/setup-answers.ts';
-import { browserTimeZone, setupTimeZone } from '../experience/timezone.ts';
+import {
+  browserTimeZone,
+  setupTimeZone,
+  timeZoneChoices,
+  zoneName,
+} from '../experience/timezone.ts';
 import type { AgentInput, MemoryItem, TourStage } from '../experience/types.ts';
 import { models } from '../models/api.ts';
 import { ActiveModel, ModelConnect } from '../models/ModelConnect.tsx';
@@ -52,8 +57,8 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [google, setGoogle] = useState<boolean | null>(null);
   const [apple, setApple] = useState<boolean | null>(null);
-  // ChatGPT is always offered; its panel says when this installation has no client.
-  const [chatgpt, setChatgpt] = useState<{ ready: boolean; reason: string | null } | null>(null);
+  // ChatGPT is offered, like Google and Apple, only when this server is set up for it.
+  const [chatgpt, setChatgpt] = useState(false);
   const [chatgptOpen, setChatgptOpen] = useState(false);
   const phone = useMedia('(max-width: 900px)');
 
@@ -61,16 +66,13 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
     void adapter.setupStatus().then((r) => setCreating(r.data?.needed === true));
   }, []);
 
-  // Google and Apple are drawn only when the service says they work.
+  // Google, Apple and ChatGPT are drawn only when the service says they work.
   useEffect(() => {
     void adapter.signInGoogle().then((r) => setGoogle(r.unavailable === null && r.error === null));
     void adapter.signInApple().then((r) => setApple(r.unavailable === null && r.error === null));
-    void adapter.signInChatGPT().then((r) =>
-      setChatgpt({
-        ready: r.unavailable === null && r.error === null,
-        reason: r.unavailable ?? r.error,
-      }),
-    );
+    void adapter
+      .signInChatGPT()
+      .then((r) => setChatgpt(r.unavailable === null && r.error === null));
   }, []);
 
   // A magic link lands here with its token in the fragment; consume it once.
@@ -163,10 +165,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
       {inner}
     </div>
   );
-  const kchip = (
-    name: 'gcal' | 'slack' | 'imessage' | 'gmaps' | 'notion' | 'linear',
-    label: string,
-  ) => (
+  const kchip = (name: 'gcal' | 'gmail', label: string) => (
     <span
       className="row"
       style={{
@@ -269,7 +268,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 </div>
                 <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
                   {kchip('gcal', 'Pricing sync · Tue 3:00 PM')}
-                  {kchip('slack', 'Sam · to approve')}
+                  {kchip('gmail', 'Sam · to approve')}
                 </div>
               </>,
               1,
@@ -303,8 +302,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 </div>
                 <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
                   {kchip('gcal', 'Tonight 7:30 PM')}
-                  {kchip('imessage', 'Alex · to approve')}
-                  {kchip('gmaps', '12 min walk')}
+                  {kchip('gmail', 'Alex · to approve')}
                 </div>
               </>,
               2,
@@ -323,8 +321,8 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                   Following up with legal on the pricing page review, as Sam asked.
                 </span>
                 <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                  {kchip('notion', 'Pricing page launch · brief')}
-                  {kchip('linear', 'PRC-114 · Legal review')}
+                  {kchip('gmail', 'Legal · follow-up sent')}
+                  {kchip('gcal', 'Review · Thursday 2:00 PM')}
                 </div>
               </>,
               3,
@@ -341,25 +339,14 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 color: 'var(--studio-muted)',
               }}
             >
-              Works with the apps you already use
+              Works with your mail and calendar
             </span>
-            <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
-              {(
-                [
-                  'gcal',
-                  'gmail',
-                  'slack',
-                  'notion',
-                  'gdrive',
-                  'whatsapp',
-                  'zoom',
-                  'linear',
-                  'github',
-                  'spotify',
-                ] as const
-              ).map((name) => (
-                <Logo key={name} name={name} size={28} />
-              ))}
+            <div className="row" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+              <Logo name="gmail" size={28} />
+              <Logo name="gcal" size={28} />
+              <span style={{ fontSize: 13, color: 'var(--studio-muted)' }}>
+                Gmail, Google Calendar, Outlook, iCloud, Fastmail and any IMAP or CalDAV account
+              </span>
             </div>
           </div>
         </div>
@@ -457,18 +444,20 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                       <span>Continue with Apple</span>
                     </button>
                   ) : null}
-                  <button
-                    type="button"
-                    className="btn btn-xl btn-outline"
-                    style={{ width: '100%', gap: 10, fontSize: 14 }}
-                    aria-expanded={chatgptOpen}
-                    aria-controls="signin-chatgpt"
-                    onClick={() => setChatgptOpen((open) => !open)}
-                  >
-                    <Icon name="chat" size={18} />
-                    <span>Sign in with ChatGPT</span>
-                  </button>
-                  {chatgptOpen ? (
+                  {chatgpt ? (
+                    <button
+                      type="button"
+                      className="btn btn-xl btn-outline"
+                      style={{ width: '100%', gap: 10, fontSize: 14 }}
+                      aria-expanded={chatgptOpen}
+                      aria-controls="signin-chatgpt"
+                      onClick={() => setChatgptOpen((open) => !open)}
+                    >
+                      <Icon name="chat" size={18} />
+                      <span>Sign in with ChatGPT</span>
+                    </button>
+                  ) : null}
+                  {chatgpt && chatgptOpen ? (
                     <section
                       id="signin-chatgpt"
                       aria-label="Sign in with ChatGPT"
@@ -478,65 +467,32 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                       <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
                         Sign in with your ChatGPT account
                       </span>
-                      {chatgpt?.ready ? (
-                        <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
-                          OpenAI confirms who you are and shares your name, email address and
-                          profile picture with this installation. Your ChatGPT password stays with
-                          OpenAI.
-                        </span>
-                      ) : null}
-                      {chatgpt?.ready ? (
-                        <Button
-                          icon="arrowUpRight"
-                          block
-                          onClick={() =>
-                            void adapter
-                              .signInChatGPT()
-                              .then((r) =>
-                                r.data
-                                  ? refreshProfile()
-                                  : setNotice(r.error ?? r.unavailable ?? ''),
-                              )
-                          }
-                        >
-                          Continue to ChatGPT
-                        </Button>
-                      ) : (
-                        <div
-                          className="row"
-                          style={{
-                            gap: 8,
-                            alignItems: 'flex-start',
-                            padding: '10px 12px',
-                            borderRadius: 10,
-                            background: 'var(--sand)',
-                            color: 'var(--sand-ink)',
-                            fontSize: 13,
-                            lineHeight: '19px',
-                          }}
-                        >
-                          <span style={{ display: 'flex', paddingTop: 2 }}>
-                            <Icon name="info" size={14} />
-                          </span>
-                          <span>
-                            {chatgpt?.reason ??
-                              'This installation hasn’t set up ChatGPT sign-in yet.'}
-                          </span>
-                        </div>
-                      )}
-                      {chatgpt?.ready ? null : (
-                        <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
-                          When it’s set up, OpenAI shares your name and email with Melete. Your
-                          ChatGPT password stays with OpenAI.
-                        </span>
-                      )}
+                      <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
+                        OpenAI confirms who you are and shares your name, email address and profile
+                        picture with this installation. Your ChatGPT password stays with OpenAI.
+                      </span>
+                      <Button
+                        icon="arrowUpRight"
+                        block
+                        onClick={() =>
+                          void adapter
+                            .signInChatGPT()
+                            .then((r) =>
+                              r.data ? refreshProfile() : setNotice(r.error ?? r.unavailable ?? ''),
+                            )
+                        }
+                      >
+                        Continue to ChatGPT
+                      </Button>
                     </section>
                   ) : null}
-                  <div className="row" style={{ gap: 12 }}>
-                    <span className="grow hairline" />
-                    <span style={{ fontSize: 12, color: 'var(--muted)' }}>or with email</span>
-                    <span className="grow hairline" />
-                  </div>
+                  {google || apple || chatgpt ? (
+                    <div className="row" style={{ gap: 12 }}>
+                      <span className="grow hairline" />
+                      <span style={{ fontSize: 12, color: 'var(--muted)' }}>or with email</span>
+                      <span className="grow hairline" />
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               <form
@@ -1080,6 +1036,9 @@ export function OnboardingScreen() {
   const [stage, setStage] = useState(0);
   const [name, setName] = useState(givenName(profile));
   const [brief, setBrief] = useState(true);
+  // The zone the person chose before, or this browser's: never the account's default.
+  const [zone, setZone] = useState(() => setupTimeZone(profile, browserTimeZone()));
+  const [zoneOpen, setZoneOpen] = useState(false);
   const [agent, setAgent] = useState<AgentInput>({
     ...blankAgent(),
     name: 'Nova',
@@ -1149,6 +1108,34 @@ export function OnboardingScreen() {
     setAsked(asked + 1);
   };
 
+  const saveProfile = () =>
+    adapter.saveProfile({
+      // No name given stays unnamed, so the greeting never calls the person "You".
+      name: name.trim() || profile?.name || UNNAMED,
+      time_zone: zone,
+      day_hours: profile?.day_hours ?? { start: '08:00', end: '22:00' },
+      time_zone_confirmed: true,
+      onboarded: true,
+    });
+
+  /** Setup put off: only the name and time zone are kept. No agent, routine or chat is made. */
+  const later = async () => {
+    if (busy || saving) return;
+    setBusy(true);
+    const saved = await saveProfile();
+    setBusy(false);
+    if (!saved.data) {
+      toast({
+        kind: 'err',
+        title: saved.error ?? saved.unavailable ?? 'Couldn’t save your profile',
+      });
+      return;
+    }
+    refreshProfile();
+    setOnboarded(true);
+    navigate('/');
+  };
+
   const finish = async () => {
     if (busy || saving) return;
     setBusy(true);
@@ -1156,14 +1143,7 @@ export function OnboardingScreen() {
       toast({ kind: 'err', title });
       setBusy(false);
     };
-    // The zone the person chose before, or this browser's: never the account's default.
-    const savedProfile = await adapter.saveProfile({
-      name: name.trim() || profile?.name || 'You',
-      time_zone: setupTimeZone(profile, browserTimeZone()),
-      day_hours: profile?.day_hours ?? { start: '08:00', end: '22:00' },
-      time_zone_confirmed: true,
-      onboarded: true,
-    });
+    const savedProfile = await saveProfile();
     if (!savedProfile.data)
       return fail(savedProfile.error ?? savedProfile.unavailable ?? 'Couldn’t save your profile');
     let agentId = completed.current.agentId;
@@ -1273,7 +1253,7 @@ export function OnboardingScreen() {
           <>
             {stepLabel}
             <div className="grow" />
-            <Button variant="ghost" onClick={() => void finish()}>
+            <Button variant="ghost" disabled={busy} onClick={() => void later()}>
               Maybe later
             </Button>
             <Button iconRight="chevronRight" onClick={() => setStep(2)}>
@@ -1343,6 +1323,38 @@ export function OnboardingScreen() {
                 placeholder="Jamie Davis"
               />
             </Field>
+          </div>
+          <div className="col setup-zone" style={{ gap: 6, width: 520, maxWidth: '100%' }}>
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <Icon name="clock" size={15} />
+              <span style={{ fontSize: 14, color: 'var(--heading)' }}>
+                Your time zone: <strong style={{ fontWeight: 600 }}>{zoneName(zone)}</strong>
+              </span>
+              {zoneOpen ? null : (
+                <Button variant="ghost" size="sm" onClick={() => setZoneOpen(true)}>
+                  Change
+                </Button>
+              )}
+            </div>
+            {zoneOpen ? (
+              <Select
+                label="Time zone"
+                value={zone}
+                onChange={(next) => {
+                  setZone(next);
+                  setZoneOpen(false);
+                }}
+                width="100%"
+                options={timeZoneChoices(zone).map((value) => ({
+                  value,
+                  label: zoneName(value),
+                }))}
+              />
+            ) : (
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                Taken from this browser. Routines and reminders run on this clock.
+              </span>
+            )}
           </div>
           <div
             className="row"
