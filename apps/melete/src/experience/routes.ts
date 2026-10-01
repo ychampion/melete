@@ -179,6 +179,12 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'POST /automations': (spaceId, _c, input) => planning.createAutomation(spaceId, input),
     'POST /automations/{id}/test': (spaceId, c) =>
       planning.testAutomation(spaceId, c.req.param('id') ?? ''),
+    'POST /automations/{id}/pause': (spaceId, c) =>
+      planning.setAutomationEnabled(spaceId, c.req.param('id') ?? '', false),
+    'POST /automations/{id}/resume': (spaceId, c) =>
+      planning.setAutomationEnabled(spaceId, c.req.param('id') ?? '', true),
+    'DELETE /automations/{id}': (spaceId, c) =>
+      planning.deleteAutomation(spaceId, c.req.param('id') ?? ''),
     'POST /automations/morning-brief': (spaceId, _c, input) =>
       planning.createAutomation(spaceId, {
         ...input,
