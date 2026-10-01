@@ -85,6 +85,8 @@ export interface GatewaySettlement {
   privacy?: GatewayPrivacyReceipt;
   /** The call was cut off because its attempt was stopped or cancelled. */
   stopped?: boolean;
+  /** `usage` is the gateway's estimate of a call cut off part way, not the provider's count. */
+  usageEstimated?: boolean;
 }
 
 export interface GatewayBudget {

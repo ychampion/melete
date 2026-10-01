@@ -13,6 +13,7 @@ import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import {
   ConnectorFactory,
+  configuredConnectors,
   type SandboxRuntimeOptions,
   useConnectorFactory,
 } from '../../src/connectors/configured.ts';
@@ -310,9 +311,12 @@ withDb('the sandbox connection kind', () => {
     const first = await h.install(body());
     expect(first.status).toBe(201);
     const id = connectionResponse.parse(first.json).connection.id;
+    const before = await h.counts();
     const second = await h.install({ ...body(), label: 'Another sandbox' });
     expect(second.status).toBe(409);
     expect(JSON.parse(second.text).error.code).toBe('conflict');
+    // The key sealed for the refused installation is not left behind.
+    expect(await h.counts()).toEqual(before);
     expect(
       await h.sql`select id from connection where provider = 'sandbox' and status <> 'revoked'`,
     ).toHaveLength(1);
@@ -536,6 +540,43 @@ withDb('the sandbox connection kind', () => {
     }
     const [row] = await h.sql`select status, secret_ref from connection where id = ${id}`;
     expect(row).toMatchObject({ status: 'revoked', secret_ref: null });
+    await teardown.close();
+  }, 120_000);
+
+  test('a revocation a stopped process left part way finishes at the next start, never comes back', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const { id, provider, teardown, opened } = await revocationSetup();
+    // The process stopped after pausing the connection for its revocation.
+    await h.sql`update connection set status = 'disabled', key_change = 'revoke' where id = ${id}`;
+    // A restart serves no connection that was being revoked.
+    const reopened = await configuredConnectors({
+      sql: h.sql,
+      workRoot: 'unused',
+      spacesRoot: 'unused',
+      masterKey: MASTER_KEY,
+    });
+    try {
+      expect(reopened.get(id)).toBeUndefined();
+    } finally {
+      await reopened.close();
+    }
+    const [paused] = await h.sql`select status from connection where id = ${id}`;
+    expect(paused?.status).toBe('disabled');
+    const policy = new PolicyService(h.jobs, undefined, {
+      beforeKeyChange: sandboxKeyChange({
+        sessions: h.sessions,
+        providerFor: teardown.providerFor,
+        log: () => {},
+      }),
+    });
+    expect(await policy.finishInterruptedRevocations()).toEqual([]);
+    for (const session of opened)
+      expect(await provider.inspect(sessionHandle(session), AbortSignal.timeout(10_000))).toBe(
+        'gone',
+      );
+    const [row] =
+      await h.sql`select status, key_change, secret_ref from connection where id = ${id}`;
+    expect(row).toMatchObject({ status: 'revoked', key_change: null, secret_ref: null });
     await teardown.close();
   }, 120_000);
 

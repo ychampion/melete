@@ -200,7 +200,9 @@ export class PostgresGatewayBudget implements GatewayBudget {
       const detail = {
         ...(attempt.outcome_detail ?? {}),
         gateway_usage_uncertain:
-          attempt.outcome_detail?.gateway_usage_uncertain === true || usage === null,
+          attempt.outcome_detail?.gateway_usage_uncertain === true ||
+          usage === null ||
+          result.usageEstimated === true,
       };
       await tx`update attempt set model_actual = coalesce(${result.modelActual}, model_actual),
         usage = ${JSON.stringify(accumulated)}::jsonb,
@@ -227,7 +229,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
           latency_ms: result.latencyMs,
           status: result.status,
           http_status: result.httpStatus,
-          usage_uncertain: usage === null,
+          usage_uncertain: usage === null || result.usageEstimated === true,
           late,
           ...(result.stopped ? { stopped: true } : {}),
           ...(result.privacy ? { privacy: result.privacy } : {}),

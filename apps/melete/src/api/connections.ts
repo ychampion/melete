@@ -63,7 +63,7 @@ import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { SignedInCredential } from '../connectors/signed-in.ts';
 import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
-import { connection, owner, space } from '../db/schema.ts';
+import { connection, owner, secret, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
@@ -510,6 +510,19 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         .returning({ generation: connection.generation });
       if (!created) throw new Error('Connection installation was not created');
       return created.generation;
+    }).catch(async (error: unknown) => {
+      // Nothing points at a secret sealed for an installation that was refused,
+      // and nothing else would ever remove it before the space itself goes.
+      if (secretRef)
+        await deps.db
+          .delete(secret)
+          .where(and(eq(secret.id, secretRef), eq(secret.spaceId, spaceId)))
+          .catch((cleanup: unknown) =>
+            console.error(
+              `connections: a refused installation's secret was not removed (${cleanup instanceof Error ? cleanup.name : 'error'})`,
+            ),
+          );
+      throw error;
     });
     // A lifecycle change during the handshake owns the newer state, on both success and failure.
     const stillInstalling = and(

@@ -616,7 +616,15 @@ describe('model gateway effect boundary', () => {
     while (!(await reader.read().catch(() => ({ done: true }))).done);
     expect(performance.now() - stoppedAt).toBeLessThan(2_000);
     expect(sent).toBeLessThan(100);
-    expect(gateway.budget.settlements[0]).toMatchObject({ status: 'unknown', stopped: true });
+    expect(gateway.budget.settlements[0]).toMatchObject({
+      status: 'unknown',
+      stopped: true,
+      usageEstimated: true,
+    });
+    // Charged for what it streamed, not for its whole output allowance of 100.
+    const output = gateway.budget.settlements[0]?.usage?.outputTokens ?? 0;
+    expect(output).toBeGreaterThan(0);
+    expect(output).toBeLessThan(100);
     // Nothing is left to stop.
     expect(stopModelCalls(principal.jobId)).toBe(0);
   });

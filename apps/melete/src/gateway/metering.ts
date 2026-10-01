@@ -46,10 +46,36 @@ function validCount(value: unknown): value is number {
 }
 
 /** Accumulates usage from JSON, OpenAI SSE, Responses SSE, and Anthropic SSE. */
+/** Fields of a streamed event that carry what the model wrote: text, reasoning or tool arguments. */
+const WRITTEN = new Set([
+  'content',
+  'text',
+  'thinking',
+  'reasoning',
+  'reasoning_content',
+  'arguments',
+  'partial_json',
+  'delta',
+]);
+
+/** Everything a streamed event says the model wrote, in any of the three protocols. */
+function written(value: unknown, depth = 0): string {
+  if (depth > 6 || !value || typeof value !== 'object') return '';
+  let found = '';
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof child === 'string') {
+      if (WRITTEN.has(key)) found += child;
+    } else found += written(child, depth + 1);
+  }
+  return found;
+}
+
 export class UsageCollector {
   modelActual: string | null = null;
   usage: GatewayUsage | null = null;
   completed = false;
+  /** Tokens the streamed output came to so far, estimated from its text. */
+  private writtenTokens = 0;
   private pending = '';
   private eventData: string[] = [];
   private bytes = 0;
@@ -157,7 +183,25 @@ export class UsageCollector {
       this.completed = true;
       return;
     }
-    this.observe(JSON.parse(data));
+    const event = JSON.parse(data);
+    const text = written(event);
+    if (text) this.writtenTokens += estimateInputTokens(text);
+    this.observe(event);
+  }
+
+  /**
+   * What a stream cut off before its usage arrived cost, as best it can be
+   * told: the input the gateway counted and the output streamed so far, never
+   * more output than the request was allowed.
+   */
+  estimate(inputTokens: number, maxOutputTokens: number): GatewayUsage {
+    const outputTokens = Math.min(maxOutputTokens, this.writtenTokens);
+    return {
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      cachedInputTokens: 0,
+    };
   }
 }
 

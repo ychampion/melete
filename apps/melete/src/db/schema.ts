@@ -196,6 +196,12 @@ export const connection = pgTable(
     configuration: jsonb('configuration').$type<Record<string, unknown>>().notNull().default({}),
     setupState: text('setup_state').notNull().default('connected'),
     status: text('status').notNull().default('active'),
+    /**
+     * Set while a revocation ('revoke') or key switch ('switch') has paused
+     * this connection to undo what its old key did; cleared when the change
+     * commits or is given up. A restart reads it to finish or undo the pause.
+     */
+    keyChange: text('key_change'),
     generation: integer('generation').notNull().default(0),
     health: text('health').notNull().default('unknown'),
     lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
