@@ -49,7 +49,7 @@ import {
   connectorAllowsAudience,
 } from '../connectors/types.ts';
 import { agentAccess, directSend } from '../experience/access.ts';
-import { plainText } from '../experience/projectors.ts';
+import { plainText, tooLongToAsk } from '../experience/projectors.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
@@ -1159,6 +1159,12 @@ export class BrokerService implements BrokerOperations {
       if (!row) throw new Error('Action insert returned no record');
       const created = actionFromRow(row);
       const classified = await this.classify(tx, job, created, tool);
+      // What the person approves is shown to them whole: a command too long
+      // for its card is refused here, and nothing of it is recorded.
+      const hidden = classified.requires_approval
+        ? tooLongToAsk(created.kind, created.canonical_payload)
+        : null;
+      if (hidden) throw new BrokerFault('payload_invalid', hidden);
       const expiresAt = classified.requires_approval
         ? new Date(Date.now() + (this.options.approvalTtlMs ?? 86_400_000)).toISOString()
         : null;

@@ -729,3 +729,60 @@ describe('full effect authority binding', () => {
     );
   }
 });
+
+describe('a command shown for approval', () => {
+  databaseTest(
+    'one too long for its card is refused when proposed, and nothing is recorded',
+    async () => {
+      if (!fixture) throw new Error('Postgres fixture unavailable');
+      const seed = await seedJob(fixture.sql, { scopes: ['terminal.run'] });
+      const terminal: Connector = {
+        manifest: {
+          ...manifest,
+          tools: [
+            {
+              name: 'terminal.run',
+              description: 'Run a command',
+              input_schema: { type: 'object' },
+              effect_class: 'write_reversible',
+              required_scopes: ['terminal.run'],
+              requires_approval: true,
+              verify: false,
+            },
+          ],
+        },
+        async execute() {
+          throw new Error('nothing is sent');
+        },
+        async verify() {
+          return { decision: 'unsupported', reason: 'fixture' };
+        },
+        async health() {
+          return { status: 'ok', detail: 'fixture', checked_at: new Date().toISOString() };
+        },
+      };
+      const broker = new BrokerService({
+        sql: fixture.sql,
+        connectors: { get: (id: string) => (id === seed.connectionId ? terminal : undefined) },
+      });
+      const refused = (await rejectionOf(
+        broker.propose(seed.claims, {
+          kind: 'terminal.run',
+          connection_id: seed.connectionId,
+          payload: { command: `echo ${'x'.repeat(3000)}` },
+        }),
+      )) as { code?: string; message?: string };
+      expect(refused.code).toBe('payload_invalid');
+      expect(refused.message).toContain('Nothing ran');
+      expect(
+        await fixture.sql`select id from action where job_id = ${seed.claims.job_id}`,
+      ).toHaveLength(0);
+      const asked = await broker.propose(seed.claims, {
+        kind: 'terminal.run',
+        connection_id: seed.connectionId,
+        payload: { command: 'date -u' },
+      });
+      expect(asked.status).toBe('needs_approval');
+    },
+  );
+});
