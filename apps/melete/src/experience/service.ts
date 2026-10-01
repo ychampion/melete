@@ -13,25 +13,16 @@ import {
   type SubmissionReceipt,
   unavailable,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import {
-  action,
-  agent,
-  approval,
-  connection,
-  event,
-  experienceTurn,
-  job,
-  trigger,
-} from '../db/schema.ts';
+import { agent, connection, event, experienceTurn, job, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
-import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
+import { inConversation, withdrawPermissions } from '../jobs/withdraw.ts';
 import { ownJob } from '../principals/authority.ts';
 import { agentValues, agentView } from './agents.ts';
 import { answerStream } from './answer-filter.ts';
@@ -85,47 +76,7 @@ export async function withdrawPendingPermissions(
   conversationId: string,
   note: typeof SUPERSEDED_NOTE | typeof STOPPED_NOTE,
 ) {
-  const pending = await tx
-    .select({ approval, action })
-    .from(approval)
-    .innerJoin(action, eq(action.id, approval.actionId))
-    .innerJoin(job, eq(job.id, action.jobId))
-    .where(
-      and(
-        isNull(approval.decision),
-        eq(action.status, 'needs_approval'),
-        or(eq(job.id, conversationId), eq(job.experienceParentId, conversationId)),
-      ),
-    )
-    .for('update', { of: [approval, action] });
-  for (const { approval: stale, action: effect } of pending) {
-    await tx
-      .update(approval)
-      .set({ decision: 'denied', decidedAt: new Date(), decidedBy: note })
-      .where(eq(approval.id, stale.id));
-    await tx.update(action).set({ status: 'denied' }).where(eq(action.id, effect.id));
-    // The same record the broker keeps for every status an action moves through.
-    await appendEvent(tx, {
-      jobId: effect.jobId,
-      attemptId: effect.attemptId,
-      type: 'action_status_changed',
-      payload: { action_id: effect.id, from: effect.status, to: 'denied' },
-      dedupKey: `${stale.id}:${note}:status`,
-    });
-    await appendEvent(tx, {
-      jobId: effect.jobId,
-      attemptId: effect.attemptId,
-      type: 'approval_decided',
-      payload: {
-        approval_id: stale.id,
-        action_id: effect.id,
-        decision: 'denied',
-        note,
-        payload_hash: effect.payloadHash,
-      },
-      dedupKey: `${stale.id}:decision`,
-    });
-  }
+  await withdrawPermissions(tx, inConversation(conversationId), note);
 }
 
 export class ExperienceService {

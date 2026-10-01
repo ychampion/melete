@@ -6,8 +6,9 @@ import {
   loadApprovalSettings,
   saveApprovalSettings,
 } from '../broker/auto-review.ts';
-import { loadAction } from '../broker/records.ts';
+import { appendEvent, loadAction, lockJob } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
+import { ENDED_NOTE, ENDED_STATES } from '../jobs/withdraw.ts';
 import { actionBecause } from '../memory/basis.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import { actionProjectionRow, type ExperienceEffects } from './effects.ts';
@@ -30,6 +31,61 @@ import {
 } from './rules.ts';
 import { experienceMissing } from './service.ts';
 
+/** What the person is told when they answer a permission whose work has ended. */
+const ENDED_MESSAGE = 'This was withdrawn because the work it was for has ended.';
+
+/**
+ * Withdraw the permissions still waiting in jobs of this space that have
+ * ended. A job withdraws them itself when it ends; this catches any left
+ * behind, including ones from before that was so, each time they are read.
+ */
+export async function withdrawEndedPermissions(sql: Sql, spaceId: string, jobId?: string) {
+  const ended = await sql`select distinct a.job_id from approval p
+    join action a on a.id = p.action_id join job j on j.id = a.job_id
+    where j.space_id = ${spaceId} and p.decision is null and a.status = 'needs_approval'
+      and j.state = any(${[...ENDED_STATES]}::text[])
+      and (${jobId ?? null}::text is null or j.id = ${jobId ?? null})`;
+  for (const row of ended) {
+    const id = String(row.job_id);
+    await sql.begin(async (tx) => {
+      const job = await lockJob(tx, id);
+      if (!ENDED_STATES.includes(job.state)) return;
+      const pending =
+        await tx`select p.id, a.id as action_id, a.attempt_id, a.status, a.payload_hash
+        from approval p join action a on a.id = p.action_id
+        where a.job_id = ${id} and p.decision is null and a.status = 'needs_approval'
+        for update of p, a`;
+      for (const stale of pending) {
+        await tx`update approval set decision = 'denied', decided_at = now(),
+          decided_by = ${ENDED_NOTE} where id = ${stale.id}`;
+        await tx`update action set status = 'denied' where id = ${stale.action_id}`;
+        await appendEvent(
+          tx,
+          id,
+          stale.attempt_id,
+          'action_status_changed',
+          { action_id: stale.action_id, from: stale.status, to: 'denied' },
+          `${stale.id}:${ENDED_NOTE}:status`,
+        );
+        await appendEvent(
+          tx,
+          id,
+          stale.attempt_id,
+          'approval_decided',
+          {
+            approval_id: stale.id,
+            action_id: stale.action_id,
+            decision: 'denied',
+            note: ENDED_NOTE,
+            payload_hash: stale.payload_hash,
+          },
+          `${stale.id}:decision`,
+        );
+      }
+    });
+  }
+}
+
 export class ExperiencePermissions {
   constructor(
     readonly sql: Sql,
@@ -39,6 +95,7 @@ export class ExperiencePermissions {
 
   async find(spaceId: string, id: string) {
     const [row] = await this.sql`select p.*, j.experience_parent_id, j.experience_command_key,
+      j.state as job_state,
       c.label, c.provider,
       c.configuration, a.job_id, a.connection_id from approval p join action a on a.id = p.action_id
       join job j on j.id = a.job_id join connection c on c.id = a.connection_id
@@ -105,9 +162,12 @@ export class ExperiencePermissions {
   }
 
   async list(spaceId: string) {
+    // Only what can still be answered: an ended job's permissions are withdrawn first.
+    await withdrawEndedPermissions(this.sql, spaceId);
     const rows = await this.sql`select p.id from approval p join action a on a.id = p.action_id
       join job j on j.id = a.job_id where j.space_id = ${spaceId} ${ownJobClause(this.sql, 'j')}
       and p.decision is null and a.status = 'needs_approval'
+      and not (j.state = any(${[...ENDED_STATES]}::text[]))
       and (p.expires_at is null or p.expires_at > now()) order by p.requested_at limit 200`;
     return {
       permissions: await Promise.all(rows.map((row) => this.card(spaceId, String(row.id)))),
@@ -118,6 +178,13 @@ export class ExperiencePermissions {
     const input = permissionDecision.parse(raw);
     const row = await this.find(spaceId, id);
     const ruleId = `rule_${id}`;
+    // The work this was for has ended, so nothing it covered can happen: it is
+    // withdrawn, a Deny agrees with that, and an Allow is told why it cannot.
+    if (ENDED_STATES.includes(String(row.job_state)) || row.decided_by === ENDED_NOTE) {
+      await withdrawEndedPermissions(this.sql, spaceId, String(row.job_id));
+      if (input.option === 'deny') return { status: 'ok', option: input.option, rule: null };
+      throw new ServiceError('permission_withdrawn', ENDED_MESSAGE, 409);
+    }
     await this.broker.decide(
       String(row.action_id),
       {
@@ -138,6 +205,8 @@ export class ExperiencePermissions {
             'This was withdrawn when you stopped.',
             409,
           );
+        if (approval.decided_by === ENDED_NOTE)
+          throw new ServiceError('permission_withdrawn', ENDED_MESSAGE, 409);
         if (job.space_id !== spaceId || permissionVersion(approval) !== input.version)
           throw new ServiceError('stale_permission', 'This request changed. Review it again.', 409);
         if (
