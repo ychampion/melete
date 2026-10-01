@@ -66,7 +66,7 @@ describe('broker actions', () => {
     expect(running).toMatchObject({
       id: `action:${send.id}`,
       kind: 'connector',
-      title: 'Sending the email',
+      title: 'Sending an email to sam@example.test',
       status: 'running',
       ended_at: null,
       input_summary: {
@@ -83,6 +83,7 @@ describe('broker actions', () => {
       approvalId: 'apr_1',
     });
     expect(waiting.status).toBe('needs_approval');
+    expect(waiting.title).toBe('Proposed sending an email to sam@example.test — waiting for you');
     expect(waiting.detail).toEqual({ type: 'permission', id: 'apr_1' });
     const sent = actionCall({
       action: { ...send, receipt: { detail: {} } },
@@ -91,7 +92,7 @@ describe('broker actions', () => {
       at: later,
     });
     expect(sent).toMatchObject({
-      title: 'Sent the email',
+      title: 'Sent an email to sam@example.test',
       status: 'done',
       started_at: at.toISOString(),
       ended_at: later.toISOString(),
@@ -129,7 +130,7 @@ describe('broker actions', () => {
     });
     expect(page).toMatchObject({
       kind: 'web',
-      title: 'Read a web page',
+      title: 'Read page example.test/menu',
       input_summary: { text: 'On example.test' },
       output_summary: {
         text: 'Page read',
@@ -180,7 +181,7 @@ describe('broker actions', () => {
       raw: 'succeeded',
       at,
     });
-    expect(plugin).toMatchObject({ kind: 'connector', title: 'Used Linear' });
+    expect(plugin).toMatchObject({ kind: 'connector', title: 'Used Linear → create issue' });
   });
 
   test('a command carrying a credential is not shown at all', () => {
@@ -210,7 +211,7 @@ describe('broker actions', () => {
     });
     expect(run).toMatchObject({
       kind: 'sandbox',
-      title: 'Ran a command',
+      title: 'Ran `ls -la` in its computer',
       input_summary: { text: 'Command', quote: { text: 'ls -la', from: 'request' } },
       output_summary: { text: 'Finished', quote: { text: 'total 8', from: 'app' } },
     });

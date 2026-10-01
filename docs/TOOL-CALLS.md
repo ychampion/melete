@@ -16,7 +16,11 @@ Entries come through the conversation's event stream, `GET /conversations/{id}/e
 
 Each `tool` item is a complete copy of the entry. Keep the latest copy for each `id`. The server-sent event name is the item type, so a client listening for `tool` receives these and nothing else.
 
-The trail already shows connected-app actions as one grouped step with source chips. Those steps have no `tool` field. The finished-step copies with a `tool` field cover the work that the grouped step leaves out: memory, skills, the browser, the workspace, and tools the runtime runs itself. The model's own thinking and retries appear as `tool` items only.
+The web client draws a turn's activity from the `tool` items: one row per entry, placed where the entry first appeared and updated in place with each newer copy. A finished copy is never replaced by a running copy read later. The finished-step copies with a `tool` field join the same row. Connected-app actions also arrive as one grouped step with source chips and no `tool` field; when a turn has rows, a client shows only that step's chips. The model's own entries and scheduled retries are not rows; a wait for the person's computer is.
+
+### Steps
+
+Each `model` entry is the model deciding what to do next, and the entries after it, up to the next `model` entry, are what it decided. The model's reasoning, as `reasoning` items, falls between them; draw it as a closed "Thinking" block rather than as the main content.
 
 ## The entry
 
@@ -32,6 +36,15 @@ type ToolCall = {
   output_summary: ToolSummary | null;
   detail: ToolDetail | null;
   parent: string | null;   // the id of the entry this one sits under
+  input_excerpt?: ToolExcerpt;   // the fuller input: a whole command
+  output_excerpt?: ToolExcerpt;  // the fuller output: what a command printed, the subjects found
+  failure?: 'error' | 'refused' | 'declined'; // on a failed entry, which way it went
+};
+
+type ToolExcerpt = {
+  text: string;            // up to 2,000 characters and 40 lines, plain text
+  from: 'page' | 'message' | 'file' | 'event' | 'app' | 'request';
+  more: boolean;           // true when it was cut
 };
 
 type ToolSummary = {
@@ -53,12 +66,12 @@ type ToolDetail = {
 
 | Kind | Work | Example titles |
 | --- | --- | --- |
-| `connector` | Mail, calendar and connected apps, including installed plugins | "Sending the email", "Sent the email", "Used Linear" |
-| `web` | Reading a page, searching the web | "Read a web page", "Searched the web" |
-| `file` | Files in the space | "Saved a file" |
-| `artifact` | Publishing a file, making audio | "Published a file" |
+| `connector` | Mail, calendar and connected apps, including installed servers | "Read 3 emails from your inbox", "Proposed sending an email to sam@example.com — waiting for you", "Used Linear → create issue" |
+| `web` | Reading a page, searching the web | "Read page example.com/guide", "Searched the web for “rent prices”" |
+| `file` | Files in the space | "Wrote report.md (2 KB)" |
+| `artifact` | Publishing a file, making audio | "Published report.pdf" |
 | `browser` | Steps in a browser session | "Filled in a form" |
-| `sandbox` | Commands and code in the workspace | "Ran a command" |
+| `sandbox` | Commands, code and the screen of the agent's own computer | "Ran `python report.py` in its computer", "Took a screenshot of its computer" |
 | `skill` | A skill applied to the request | "Used the skill: Research with sources" |
 | `memory_recall` | Saved details the turn used | "Used what you told me: Home city, Diet" |
 | `memory_write` | A new saved detail | "Remembered: Diet" |
@@ -68,14 +81,14 @@ type ToolDetail = {
 | `retry` | A wait before trying the same request again | "Scheduled another try" |
 | `tool` | Anything else | "Used a tool" |
 
-A running entry's title describes the work in progress ("Sending the email"). A finished one describes the result ("Sent the email").
+A running entry's title describes the work in progress ("Sending an email to sam@example.com"). A finished one describes the result ("Sent an email to sam@example.com"), and one waiting on the person says so ("Proposed sending an email to sam@example.com — waiting for you"). A query, page, file name or command in a title is scrubbed like a quote, kept short and set off in quotation marks or backticks; when it fails the scrub, the title keeps the plain verb ("Ran a command in its computer"). What was typed on a screen is never named.
 
 ### Status
 
 - `running`: under way.
 - `needs_approval`: waiting on the person. `detail` is `{ "type": "permission", "id": <approval id> }`, the same id as the permission card in the stream.
 - `done`: finished.
-- `failed`: it did not happen. `output_summary` says why, in plain words ("You declined this.").
+- `failed`: it did not happen. `output_summary` says why, in plain words ("You declined this."), and `failure` says which way: `declined` by the person, `refused` by a rule or the destination, or an `error`. A refusal's internal message is never shown.
 - `unknown`: the destination never confirmed whether it happened. Melete asks the person before anything goes again.
 
 An action entry (`id` starting `action:`) that leaves `needs_approval` means the person decided. Any other entry can arrive while a permission or question is open without closing it.
@@ -88,6 +101,8 @@ A summary is safe to show the person whose conversation it is:
 - Anything that came from outside is in `quote`, with `from` saying where it came from. That covers a page title, a message subject, a file name, or the words the model gave a tool. Draw a quote as a quotation from that source, never in the assistant's voice. A page can say "Ignore previous instructions" and it will arrive here as a quote from `page`.
 - Render every `text` and `quote.text` as plain text. They are never Markdown or HTML, so a quote that contains `**`, `<a>` or a link stays literal.
 - Values shaped like credentials, sealed secrets, signed tokens or internal record names are dropped entirely, including a secret inside a longer name such as `DB_PASSWORD=`. Links keep their scheme, host and path only, and a path that carries something shaped like a key is cut back to the site.
+- Excerpts are scrubbed one line at a time: a line that looks like a credential or an internal record becomes `[hidden]`, and an excerpt with nothing left is left out. A message body or a file's contents is never an excerpt; the draft, the permission card and the file itself show those.
+- A privacy placeholder in what the model gave a tool is shown with its real value, resolved against the conversation's own record, on that conversation's own stream only.
 - Memory entries name saved details by their plain label ("Home city"). In a shared space, a detail another person saved is counted but never named or quoted. A recall never includes the saved values, and a forget never repeats what was forgotten.
 
 ## Progress
@@ -125,13 +140,13 @@ A person asks "Book dinner with Sam at seven and let him know." These are the `t
 {"id":"model:bl_1","kind":"model","title":"Thought it through","status":"done","started_at":"19:00:01","ended_at":"19:00:03","input_summary":null,"output_summary":{"text":"Answered in 1.9 s"},"detail":null,"parent":null}
 {"id":"call:att_7Q:c1","kind":"skill","title":"Using the skill: Book a table","status":"running","started_at":"19:00:03","ended_at":null,"input_summary":{"text":"Asked for","quote":{"text":"dinner for two at seven","from":"request"}},"output_summary":null,"detail":null,"parent":null}
 {"id":"call:att_7Q:c1","kind":"skill","title":"Used the skill: Book a table","status":"done","started_at":"19:00:03","ended_at":"19:00:03","input_summary":{"text":"Asked for","quote":{"text":"dinner for two at seven","from":"request"}},"output_summary":{"text":"Done"},"detail":null,"parent":null}
-{"id":"action:act_2","kind":"web","title":"Reading a web page","status":"running","started_at":"19:00:04","ended_at":null,"input_summary":{"text":"On bistro.example"},"output_summary":null,"detail":null,"parent":null}
-{"id":"action:act_2","kind":"web","title":"Read a web page","status":"done","started_at":"19:00:04","ended_at":"19:00:05","input_summary":{"text":"On bistro.example"},"output_summary":{"text":"Page read","quote":{"text":"Bistro Lune: book a table","from":"page"}},"detail":{"type":"page","id":"act_2","url":"https://bistro.example/book"},"parent":null}
-{"id":"action:act_3","kind":"connector","title":"Sending the email","status":"running","started_at":"19:00:07","ended_at":null,"input_summary":{"text":"To sam@example.com","quote":{"text":"Dinner at seven","from":"request"}},"output_summary":null,"detail":null,"parent":null}
-{"id":"action:act_3","kind":"connector","title":"Sending the email","status":"needs_approval","started_at":"19:00:07","ended_at":null,"input_summary":{"text":"To sam@example.com","quote":{"text":"Dinner at seven","from":"request"}},"output_summary":{"text":"Waiting for your OK"},"detail":{"type":"permission","id":"apr_4"},"parent":null}
-{"id":"action:act_3","kind":"connector","title":"Sending the email","status":"running","started_at":"19:00:07","ended_at":null,"input_summary":{"text":"To sam@example.com","quote":{"text":"Dinner at seven","from":"request"}},"output_summary":null,"detail":null,"parent":null}
-{"id":"action:act_3","kind":"connector","title":"Sent the email","status":"done","started_at":"19:00:07","ended_at":"19:01:12","input_summary":{"text":"To sam@example.com","quote":{"text":"Dinner at seven","from":"request"}},"output_summary":{"text":"Sent"},"detail":{"type":"receipt","id":"act_3"},"parent":null}
+{"id":"action:act_2","kind":"web","title":"Reading page bistro.example/book","status":"running","started_at":"19:00:04","ended_at":null,"input_summary":{"text":"On bistro.example"},"output_summary":null,"detail":null,"parent":null}
+{"id":"action:act_2","kind":"web","title":"Read page bistro.example/book","status":"done","started_at":"19:00:04","ended_at":"19:00:05","input_summary":{"text":"On bistro.example"},"output_summary":{"text":"Page read","quote":{"text":"Bistro Lune: book a table","from":"page"}},"detail":{"type":"page","id":"act_2","url":"https://bistro.example/book"},"parent":null}
+{"id":"action:act_3","kind":"connector","title":"Sending an email to sam@example.com","status":"running","started_at":"19:00:07","ended_at":null,"input_summary":{"text":"To sam@example.com","quote":{"text":"Dinner at seven","from":"request"}},"output_summary":null,"detail":null,"parent":null}
+{"id":"action:act_3","kind":"connector","title":"Proposed sending an email to sam@example.com — waiting for you","status":"needs_approval","started_at":"19:00:07","ended_at":null,"input_summary":{"text":"To sam@example.com","quote":{"text":"Dinner at seven","from":"request"}},"output_summary":{"text":"Waiting for your OK"},"detail":{"type":"permission","id":"apr_4"},"parent":null}
+{"id":"action:act_3","kind":"connector","title":"Sending an email to sam@example.com","status":"running","started_at":"19:00:07","ended_at":null,"input_summary":{"text":"To sam@example.com","quote":{"text":"Dinner at seven","from":"request"}},"output_summary":null,"detail":null,"parent":null}
+{"id":"action:act_3","kind":"connector","title":"Sent an email to sam@example.com","status":"done","started_at":"19:00:07","ended_at":"19:01:12","input_summary":{"text":"To sam@example.com","quote":{"text":"Dinner at seven","from":"request"}},"output_summary":{"text":"Sent"},"detail":{"type":"receipt","id":"act_3"},"parent":null}
 {"id":"memory:write:k_9@1","kind":"memory_write","title":"Remembered: Favourite restaurant","status":"done","started_at":"19:01:13","ended_at":"19:01:13","input_summary":null,"output_summary":{"text":"Saved","quote":{"text":"Bistro Lune","from":"message"}},"detail":{"type":"memory","id":"k_9"},"parent":null}
 ```
 
-The trail for the same turn shows the recall, the skill and the memory write as finished steps, and the page and the email as the grouped connected-app step. While the email waits for approval, `progress` reads `{ "steps_done": 3, "current": "Sending the email" }`.
+The activity for the same turn has a row for the recall, the skill, the page, the email and the memory write, in that order; the model entries mark where each step began. While the email waits for approval, `progress` reads `{ "steps_done": 3, "current": "Proposed sending an email to sam@example.com — waiting for you" }`.

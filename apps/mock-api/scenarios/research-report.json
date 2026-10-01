@@ -1,0 +1,162 @@
+{
+  "id": "research-report",
+  "title": "Research rents and mail a report",
+  "summary": "Nova searches the web, reads two pages (one refuses), runs a script on its computer, writes a report, and proposes mailing it.",
+  "match": ["rent report", "research report", "market report"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "reason",
+      "delay_ms": 900,
+      "text": "They want this month's rent prices for Lisbon, a short report, and the report mailed to Sam. "
+    },
+    {
+      "step": "reason",
+      "delay_ms": 700,
+      "text": "Search first, read the two most useful pages, then work the numbers out on the computer rather than by hand."
+    },
+    {
+      "step": "tool",
+      "delay_ms": 900,
+      "name": "web_search",
+      "kind": "web",
+      "title": "Searched the web for “Lisbon rent prices October 2026”",
+      "active_title": "Searching the web for “Lisbon rent prices October 2026”",
+      "input": {
+        "text": "Asked for",
+        "quote": { "text": "Lisbon rent prices October 2026", "from": "request" }
+      },
+      "output": { "text": "8 results" },
+      "output_excerpt": {
+        "text": "Lisbon rental market report, October 2026\nRent prices by parish, Lisbon\nWhat a one-bedroom costs in Lisbon now\nAverage rent in Portugal rises again\nLisbon rent tracker\nHousing costs in southern Europe\nRenting in Lisbon: a guide\nQuarterly housing statistics",
+        "from": "page",
+        "more": false
+      }
+    },
+    {
+      "step": "tool",
+      "delay_ms": 1600,
+      "name": "web_extract",
+      "kind": "web",
+      "title": "Read page housing-stats.example/lisbon/october",
+      "active_title": "Reading page housing-stats.example/lisbon/october",
+      "input": { "text": "On housing-stats.example" },
+      "output": {
+        "text": "Page read",
+        "quote": { "text": "Lisbon rental market report, October 2026", "from": "page" }
+      },
+      "detail": {
+        "type": "page",
+        "id": "page_1",
+        "url": "https://housing-stats.example/lisbon/october"
+      }
+    },
+    {
+      "step": "tool",
+      "delay_ms": 1400,
+      "name": "web_extract",
+      "kind": "web",
+      "title": "Reading page rent-tracker.example/lisbon",
+      "active_title": "Reading page rent-tracker.example/lisbon",
+      "status": "failed",
+      "failure": "error",
+      "input": { "text": "On rent-tracker.example" },
+      "output": { "text": "The site would not let the page be read." }
+    },
+    {
+      "step": "reason",
+      "delay_ms": 900,
+      "text": "One source has the parish table. That is enough; average it on the computer."
+    },
+    {
+      "step": "tool",
+      "delay_ms": 900,
+      "name": "terminal.run",
+      "kind": "sandbox",
+      "title": "Ran `python report.py --city lisbon` in its computer",
+      "active_title": "Running `python report.py --city lisbon` in its computer",
+      "arguments": { "command": "python report.py --city lisbon --month 2026-10" },
+      "result": {
+        "exit_code": 0,
+        "output": "Loaded 24 parishes\nAverage one-bedroom: 1,284 EUR\nAverage two-bedroom: 1,712 EUR\nWrote report.md"
+      },
+      "input": {
+        "text": "Command",
+        "quote": { "text": "python report.py --city lisbon --month 2026-10", "from": "request" }
+      },
+      "output": { "text": "Finished", "quote": { "text": "Loaded 24 parishes", "from": "app" } },
+      "input_excerpt": {
+        "text": "python report.py --city lisbon --month 2026-10",
+        "from": "request",
+        "more": false
+      },
+      "output_excerpt": {
+        "text": "Loaded 24 parishes\nParish            1-bed   2-bed\nAlvalade          1,190   1,605\nArroios           1,240   1,660\nAvenidas Novas    1,420   1,890\nBelém             1,380   1,840\nCampo de Ourique  1,350   1,790\nEstrela           1,410   1,880\nMisericórdia      1,460   1,950\nSanto António     1,520   2,010\nAverage one-bedroom: 1,284 EUR\nAverage two-bedroom: 1,712 EUR\nWrote report.md",
+        "from": "app",
+        "more": false
+      }
+    },
+    {
+      "step": "tool",
+      "delay_ms": 2600,
+      "name": "write_file",
+      "kind": "file",
+      "title": "Wrote report.md (2 KB)",
+      "active_title": "Writing report.md",
+      "input": { "text": "File", "quote": { "text": "report.md", "from": "file" } },
+      "output": { "text": "Saved" }
+    },
+    {
+      "step": "tool",
+      "delay_ms": 900,
+      "name": "memory",
+      "kind": "memory_write",
+      "title": "Remembered: Sam gets the monthly rent report",
+      "active_title": "Remembering",
+      "output": {
+        "text": "Saved",
+        "quote": { "text": "Mail Sam the rent report each month", "from": "message" }
+      }
+    },
+    {
+      "step": "tool",
+      "delay_ms": 800,
+      "name": "propose_send",
+      "kind": "connector",
+      "title": "Proposed sending an email to sam@example.com — waiting for you",
+      "active_title": "Sending an email to sam@example.com",
+      "status": "needs_approval",
+      "input": {
+        "text": "To sam@example.com",
+        "quote": { "text": "Lisbon rents, October", "from": "request" }
+      },
+      "output": { "text": "Waiting for your OK" }
+    },
+    {
+      "step": "text",
+      "delay_ms": 700,
+      "text": "One-bedrooms in Lisbon average 1,284 EUR this month and two-bedrooms 1,712 EUR, from the parish table on housing-stats.example. The second source would not load, so the report rests on one. "
+    },
+    {
+      "step": "text",
+      "delay_ms": 500,
+      "text": "The report is in report.md, and the email to Sam is ready for you to check."
+    },
+    {
+      "step": "propose",
+      "delay_ms": 500,
+      "ref": "mail-report",
+      "kind": "email.send",
+      "connection": "outbox",
+      "effect_class": "write_external",
+      "payload": {
+        "to": ["sam@example.com"],
+        "subject": "Lisbon rents, October",
+        "body": "Hi Sam,\n\nThis month's Lisbon rents: one-bedrooms average 1,284 EUR, two-bedrooms 1,712 EUR. The report is attached.\n\nBest"
+      }
+    }
+  ]
+}

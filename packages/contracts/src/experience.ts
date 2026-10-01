@@ -288,6 +288,26 @@ export const toolSummary = z.strictObject({
   quote: toolQuote.optional(),
 });
 export type ToolSummary = z.infer<typeof toolSummary>;
+/**
+ * A longer stretch of what went in or came out, for a row the person opens: a
+ * whole command, the first lines it printed, the words of a search. It is
+ * scrubbed line by line like a summary's quote, and `more` says it was cut.
+ * Draw it as plain monospace text, never as Markdown or HTML.
+ */
+export const TOOL_EXCERPT_LIMIT = 2000;
+export const toolExcerpt = z.strictObject({
+  text: z.string().min(1).max(TOOL_EXCERPT_LIMIT),
+  from: toolQuote.shape.from,
+  more: z.boolean(),
+});
+export type ToolExcerpt = z.infer<typeof toolExcerpt>;
+/**
+ * Why a failed entry did not happen: it went wrong (`error`), a rule or the
+ * destination would not allow it (`refused`), or the person said no
+ * (`declined`). `output_summary` says it in plain words.
+ */
+export const toolFailure = z.enum(['error', 'refused', 'declined']);
+export type ToolFailure = z.infer<typeof toolFailure>;
 /** Something the person can open for more: a file, the pending permission, a page. */
 export const toolDetail = z.strictObject({
   type: z.enum(['artifact', 'permission', 'receipt', 'memory', 'page']),
@@ -299,6 +319,14 @@ export type ToolDetail = z.infer<typeof toolDetail>;
  * One piece of work done for the person, shown in the conversation. Each
  * change arrives as a whole new copy under the same `id`; a client keeps the
  * latest. `parent` names the entry this one belongs under.
+ *
+ * The title says what was done with what: "Searched the web for “…”", "Read
+ * page example.com/…". A name, a query or a command in it is scrubbed like a
+ * quote and set off in quotation marks or backticks.
+ *
+ * Model entries (`kind: "model"`) mark the steps of a turn: each one is the
+ * model deciding what to do next, and the entries after it, up to the next
+ * one, are what it decided.
  */
 export const toolCall = z.strictObject({
   id,
@@ -311,6 +339,12 @@ export const toolCall = z.strictObject({
   output_summary: toolSummary.nullable(),
   detail: toolDetail.nullable(),
   parent: id.nullable(),
+  /** The fuller input, when there is more to it than the summary holds. */
+  input_excerpt: toolExcerpt.optional(),
+  /** The fuller output, likewise. */
+  output_excerpt: toolExcerpt.optional(),
+  /** Set on a failed entry when the reason is known. */
+  failure: toolFailure.optional(),
 });
 export type ToolCall = z.infer<typeof toolCall>;
 

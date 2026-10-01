@@ -6,6 +6,7 @@
  * is gone, and the interface says so rather than stitching halves.
  */
 import type { MeleteEvent } from '@melete/client';
+import type { ToolEntry } from './trace.ts';
 import type {
   ComposerState,
   Draft,
@@ -266,11 +267,59 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
 /** The turn statuses in which a tool entry can still be under way. */
 const UNDER_WAY = new Set<TurnStatus>(['queued', 'working', 'streaming', 'paused']);
 
+type ToolStep = Extract<TrailStep, { type: 'action' }> & { tool: ToolEntry };
+const ENDED = new Set(['done', 'failed', 'unknown']);
+
+/**
+ * Whether a tool entry is a row of the turn's activity. The model's own calls
+ * mark steps rather than being one, and a scheduled retry is plumbing; a wait
+ * for the person's computer is something they can act on, so it shows.
+ */
+export const isActivity = (tool: ToolEntry): boolean =>
+  tool.kind !== 'model' && (tool.kind !== 'retry' || tool.id.startsWith('wait:'));
+
+/**
+ * The newer of two copies of one entry. Copies arrive in stream order, but a
+ * finished entry is never taken back to under way by a copy read again later,
+ * such as a replayed running copy after the finished one.
+ */
+export function newerTool(shown: ToolEntry, next: ToolEntry): ToolEntry {
+  return ENDED.has(shown.status) && !ENDED.has(next.status) ? shown : next;
+}
+
+/**
+ * Put a tool entry in the turn's activity: a new row where it first appeared,
+ * or the latest copy in the row it already has.
+ */
+function placeTool(trail: TrailStep[], tool: ToolEntry): TrailStep[] {
+  if (!isActivity(tool)) return trail;
+  const index = trail.findIndex((step) => step.type === 'action' && step.tool?.id === tool.id);
+  if (index < 0) {
+    const row: ToolStep = { type: 'action', label: tool.title, meta: '', sources: [], tool };
+    return [...trail, row];
+  }
+  const current = trail[index] as ToolStep;
+  const latest = newerTool(current.tool, tool);
+  if (latest === current.tool) return trail;
+  const next = trail.slice();
+  next[index] = { ...current, label: latest.title, tool: latest };
+  return next;
+}
+
 function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
   const item = event.item;
   switch (item.type) {
-    case 'say':
     case 'action':
+      // A finished step that is one tool entry joins that entry's row.
+      if (item.tool) {
+        const tool = item.tool;
+        return patchTurn(base, event.turn_id, (turn) => ({
+          ...turn,
+          trail: placeTool(turn.trail, tool),
+        }));
+      }
+      return patchTurn(base, event.turn_id, (turn) => ({ ...turn, trail: [...turn.trail, item] }));
+    case 'say':
     case 'note':
     case 'done':
       return patchTurn(base, event.turn_id, (turn) => ({
@@ -347,6 +396,7 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
       const underWay = tool.status === 'running' || tool.status === 'needs_approval';
       return patchTurn(base, event.turn_id, (turn) => ({
         ...turn,
+        trail: placeTool(turn.trail, tool),
         live: underWay
           ? { id: tool.id, title: tool.title }
           : turn.live?.id === tool.id
