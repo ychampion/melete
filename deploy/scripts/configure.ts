@@ -4,12 +4,15 @@
  *   bun run deploy/scripts/configure.ts [--provider name] [--model id]
  *     [--tailscale [--tailscale-hostname name]]
  *   bun run deploy/scripts/configure.ts --fake [--tailscale ...]
+ *   bun run deploy/scripts/configure.ts --connect-in-app [--provider name] [--model id]
  *
  * The default is a production configuration: a real model provider, with its
  * key read from this command's environment (FIREWORKS_API_KEY for the default
  * provider) and written into deploy/.env, never printed. `--fake` is the
  * explicit opt-in to the demonstration: the scripted provider and the test
- * connector, and no key at all.
+ * connector, and no key at all. `--connect-in-app` writes the production
+ * configuration without any key: the person pastes their key into Settings ›
+ * Models once Melete is running, so it never passes through a shell.
  *
  * An ElevenLabs key in this command's environment (ELEVENLABS_API_KEY) is
  * written too, which turns voice on; without one voice stays off.
@@ -56,7 +59,11 @@ import { parseEnvFile, providerWarnings } from './provider-settings.ts';
 import { tailscaleNodeName, tailscaleNotes } from './tailscale-origin.ts';
 
 export const CONFIGURE_USAGE =
-  'Usage: bun run deploy/scripts/configure.ts [--provider name] [--model id] [--tailscale [--tailscale-hostname name]], or --fake for the demonstration';
+  'Usage: bun run deploy/scripts/configure.ts [--provider name] [--model id] [--connect-in-app] [--tailscale [--tailscale-hostname name]], or --fake for the demonstration';
+
+/** Printed after a `--connect-in-app` run, in place of the warning about an empty key. */
+export const CONNECT_IN_APP_NOTE =
+  'No model key was written. Once Melete is running, create your account and connect a model in Settings › Models.';
 
 /**
  * The options, refused whole when one is not known: the file is written once
@@ -68,6 +75,7 @@ export function configureOptions(args: readonly string[]): {
   nodeName: string | null;
   provider?: string;
   model?: string;
+  inApp?: true;
 } {
   let provider: string | undefined;
   let model: string | undefined;
@@ -81,10 +89,19 @@ export function configureOptions(args: readonly string[]): {
       if (argument === '--provider') provider = value;
       else model = value;
       index += 1;
-    } else if (argument !== '--fake' && argument !== '--tailscale')
+    } else if (
+      argument !== '--fake' &&
+      argument !== '--tailscale' &&
+      argument !== '--connect-in-app'
+    )
       throw new Error(`Unknown option ${argument}. ${CONFIGURE_USAGE}`);
   }
   const fake = args.includes('--fake');
+  const inApp = args.includes('--connect-in-app');
+  if (fake && inApp)
+    throw new Error(
+      `--fake needs no model key, so --connect-in-app has nothing to do beside it. ${CONFIGURE_USAGE}`,
+    );
   if (fake && (provider || model))
     throw new Error(
       `--fake runs the scripted demonstration provider; it takes no --provider or --model. ${CONFIGURE_USAGE}`,
@@ -99,6 +116,7 @@ export function configureOptions(args: readonly string[]): {
     nodeName: tailscaleNodeName(args),
     ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),
+    ...(inApp ? { inApp: true as const } : {}),
   };
 }
 
@@ -111,7 +129,7 @@ export function configureOptions(args: readonly string[]): {
  * state where every model call would be refused.
  */
 export function providerSettings(
-  options: { fake: boolean; provider?: string; model?: string },
+  options: { fake: boolean; provider?: string; model?: string; inApp?: boolean },
   example: Record<string, string>,
   environment: Record<string, string | undefined>,
 ): Record<string, string> {
@@ -139,7 +157,19 @@ export function providerSettings(
     MELETE_ENABLE_TEST_CONNECTOR: 'false',
   };
   // A provider reached by the owner's sign-in has no key to read; the owner
-  // signs in once the stack is up.
+  // signs in once the stack is up. With --connect-in-app the key is pasted into
+  // the app instead, so none is read here, even one the environment holds: a key
+  // in deploy/.env would be shown as set by the operator and could not be changed
+  // in the app.
+  if (options.inApp) {
+    if (provider !== OPENAI_COMPATIBLE) return production;
+    // The endpoint's address is not a secret, and the service needs it to start.
+    if (!baseUrl)
+      throw new ConfigureRefusal(
+        "Set OPENAI_COMPAT_BASE_URL in this command's environment; the key can still be pasted into the app.",
+      );
+    return { ...production, OPENAI_COMPAT_BASE_URL: baseUrl };
+  }
   if (variables.length === 0) return production;
   const keys = Object.fromEntries(
     variables.flatMap((name) => {
@@ -327,9 +357,12 @@ async function configure(root: string) {
   );
   if (nodeName !== null)
     for (const note of tailscaleNotes(nodeName)) process.stdout.write(`${note}\n`);
-  // A real provider is selected with its key still empty. Say so now, not at the first job.
-  for (const warning of providerWarnings(parseEnvFile(content)))
-    process.stderr.write(`WARNING: ${warning}\n`);
+  // A real provider is selected with its key still empty. Say so now, not at the first job,
+  // unless the key is meant to be pasted into the app.
+  if (options.inApp) process.stdout.write(`${CONNECT_IN_APP_NOTE}\n`);
+  else
+    for (const warning of providerWarnings(parseEnvFile(content)))
+      process.stderr.write(`WARNING: ${warning}\n`);
 }
 
 if (import.meta.main) {
