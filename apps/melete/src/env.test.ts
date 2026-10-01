@@ -172,6 +172,8 @@ describe('the engine limits', () => {
       'MELETE_MCP_EGRESS_PORT',
       'MELETE_MCP_IDLE_MS',
       'MELETE_RUNTIME_START_TIMEOUT_MS',
+      'MELETE_ENGINE_PREWARM',
+      'MELETE_ATTEMPT_CONCURRENCY',
       'MELETE_SPEECH_MODEL',
     ];
     for (const name of names) expect(composed[name]).toBe('');
@@ -181,6 +183,17 @@ describe('the engine limits', () => {
       expect(env[name as keyof typeof env]).toEqual(defaults[name as keyof typeof defaults]);
     expect(env.MELETE_MCP_EGRESS_PORT).toBe(8789);
     expect(loadEnv({ MELETE_MCP_IDLE_MS: '60000' }).MELETE_MCP_IDLE_MS).toBe(60000);
+  });
+
+  test('spare engines and concurrent attempts are counts, with the old switch still read', () => {
+    expect(loadEnv({}).MELETE_ENGINE_PREWARM).toBe(1);
+    expect(loadEnv({ MELETE_ENGINE_PREWARM: 'true' }).MELETE_ENGINE_PREWARM).toBe(1);
+    expect(loadEnv({ MELETE_ENGINE_PREWARM: 'false' }).MELETE_ENGINE_PREWARM).toBe(0);
+    expect(loadEnv({ MELETE_ENGINE_PREWARM: '2' }).MELETE_ENGINE_PREWARM).toBe(2);
+    expect(() => loadEnv({ MELETE_ENGINE_PREWARM: 'lots' })).toThrow();
+    expect(loadEnv({}).MELETE_ATTEMPT_CONCURRENCY).toBe(4);
+    expect(loadEnv({ MELETE_ATTEMPT_CONCURRENCY: '6' }).MELETE_ATTEMPT_CONCURRENCY).toBe(6);
+    expect(() => loadEnv({ MELETE_ATTEMPT_CONCURRENCY: '0' })).toThrow();
   });
 
   test('the defaults are the ones the engine configuration renders', () => {

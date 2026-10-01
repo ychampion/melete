@@ -145,3 +145,125 @@ def test_a_closed_or_malformed_handoff_ends_the_spare(monkeypatch):
     monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps({'cwd': '.', 'env': {'A': 1}}) + '\n'))
     with pytest.raises(SystemExit):
         receive_attempt(None)
+
+
+# -- a spare engine in a container ---------------------------------------------------
+
+import threading  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+
+from process_launcher import (  # noqa: E402
+    HANDOFF_PATH,
+    await_handoff,
+    render_attempt_configuration,
+    take_attempt,
+)
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
+
+
+def call(port, method, key, body=None, path=HANDOFF_PATH):
+    request = urllib.request.Request(
+        f'http://127.0.0.1:{port}{path}',
+        method=method,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={'authorization': f'Bearer {key}'} if key else {},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+
+def test_a_container_spare_takes_one_authenticated_handoff_over_its_port():
+    port = free_port()
+    result = {}
+    server = threading.Thread(
+        target=lambda: result.setdefault('handoff', await_handoff('127.0.0.1', port, 'spare-key')),
+    )
+    server.start()
+    for _ in range(100):
+        try:
+            if call(port, 'GET', 'spare-key') == 200:
+                break
+        except OSError:
+            import time
+            time.sleep(0.02)
+    assert call(port, 'GET', 'wrong-key') == 401
+    assert call(port, 'GET', 'spare-key', path='/v1/capabilities') == 404
+    assert call(port, 'POST', 'wrong-key', {'cwd': '/work', 'env': {}}) == 401
+    handoff = {'cwd': '/work', 'env': {'MELETE_ATTEMPT_TOKEN': 'cap'}}
+    assert call(port, 'POST', 'spare-key', handoff) == 204
+    server.join(5)
+    assert not server.is_alive()
+    assert result['handoff'] == handoff
+    # One handoff only: the port is the engine's once it has been taken.
+    with pytest.raises(OSError):
+        call(port, 'GET', 'spare-key')
+
+
+def test_a_handoff_may_set_only_the_values_the_spare_was_started_without(tmp_path, monkeypatch):
+    hooks_module(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        take_attempt(
+            {'cwd': str(tmp_path), 'env': {'MELETE_ATTEMPT_TOKEN': 'cap', 'PYTHONPATH': '/x'}},
+            None,
+            allowed=frozenset({'MELETE_ATTEMPT_TOKEN'}),
+        )
+    assert os.environ.get('PYTHONPATH') != '/x'
+
+
+def test_the_container_spare_is_configured_with_its_capability_before_it_serves(tmp_path, monkeypatch):
+    hooks = hooks_module(monkeypatch)
+    order = []
+    monkeypatch.setattr(hooks, 'attempt_arrived', lambda: order.append('arrived'))
+    program = (
+        'import os, sys\n'
+        'if os.environ.get("TERMINAL_ENV"):\n'
+        '    raise SystemExit("TERMINAL_ENV may only name the sandbox backend")\n'
+        'open(sys.argv[1], "w").write(os.environ["MELETE_ATTEMPT_TOKEN"])\n'
+    )
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('MELETE_RUNTIME_SPARE', '1')
+    monkeypatch.setenv('MELETE_RUNTIME_HANDOFF', 'http')
+    monkeypatch.setenv('MELETE_BOOT_CONFIG', program)
+    monkeypatch.delenv('MELETE_ATTEMPT_TOKEN', raising=False)
+    monkeypatch.delenv('TERMINAL_ENV', raising=False)
+    started_with = dict(os.environ)
+    # What the engine mirrors from its configuration into its environment as it loads.
+    monkeypatch.setenv('TERMINAL_ENV', 'local')
+    handoff = {'cwd': str(tmp_path), 'env': {'MELETE_ATTEMPT_TOKEN': 'cap'}}
+
+    def prepare():
+        render_attempt_configuration(started_with, handoff['env'])
+        order.append('configured')
+
+    take_attempt(handoff, None, allowed=frozenset({'MELETE_ATTEMPT_TOKEN'}), prepare=prepare)
+    assert (tmp_path / 'config.yaml').read_text() == 'cap'
+    assert order == ['configured', 'arrived']
+    # The engine keeps what it had loaded with, now with the attempt's values.
+    assert os.environ['TERMINAL_ENV'] == 'local'
+    assert os.environ['MELETE_ATTEMPT_TOKEN'] == 'cap'
+    for name in ('MELETE_RUNTIME_SPARE', 'MELETE_RUNTIME_HANDOFF', 'MELETE_BOOT_CONFIG'):
+        assert name not in os.environ
+
+
+def test_a_container_spares_directory_is_not_watched_but_its_attempt_values_are(monkeypatch):
+    """A container engine loads in /work and serves in /work: its workspace takes
+    that directory over, so the engine reading it while loading reads what the
+    attempt would. A process spare loads in its own home, so there it is a read."""
+    monkeypatch.setenv('MELETE_ATTEMPT_TOKEN', 'placeholder')
+    source = "import os\nHERE = os.getcwd()\nTOKEN = os.environ.get('MELETE_ATTEMPT_TOKEN')"
+    with watch_reads(ATTEMPT_KEYS, working_directory=False) as seen:
+        run_as('engine_module', source)
+    assert seen == {'MELETE_ATTEMPT_TOKEN'}
+    with watch_reads(ATTEMPT_KEYS) as seen:
+        run_as('engine_module', source)
+    assert seen == {'MELETE_ATTEMPT_TOKEN', 'cwd'}

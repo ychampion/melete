@@ -996,6 +996,19 @@ milliseconds, an attempt's container may take to start and answer before the
 attempt is ended. Raise it on a slow host where the first start after an
 upgrade takes longer.
 
+`MELETE_ENGINE_PREWARM` (default `1`; `true` and `false` still read as `1` and
+`0`) is how many engine containers are kept loaded ahead of the next attempts.
+An engine container takes around ten seconds to load on a small host; a reply
+that takes a loaded one starts its model call a second or two after the
+message instead. Each spare holds an idle engine's memory. Set `0` on a host
+that cannot spare it; replies then wait for their engine to load.
+
+`MELETE_ATTEMPT_CONCURRENCY` (default `4`) is how many attempts run at once,
+each in its own engine container. Further work waits for a free slot in a fair
+order across chats, routines and quiet work, and the conversation says it is
+waiting and how many other tasks are running. Raise it on a host with memory to
+spare; each running attempt may use up to 2 GB.
+
 ## Memory extraction
 
 Deployment memory can extract structured observations without a model. If

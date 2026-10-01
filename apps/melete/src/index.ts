@@ -704,6 +704,7 @@ export async function bootstrap(
           probeUrl: env.MELETE_RUNTIME_URL,
           probeKey: env.MELETE_RUNTIME_KEY,
           startTimeoutMs: env.MELETE_RUNTIME_START_TIMEOUT_MS,
+          spares: env.MELETE_ENGINE_PREWARM,
           pendingWait: (bundle) => pendingRuntimeWait(handle.sql, bundle),
           catalogState: brokerCatalogState({ brokerUrl: env.MELETE_BROKER_URL }),
           brokerPort: parseBrokerBind(env.MELETE_BROKER_BIND)?.port,
@@ -716,6 +717,12 @@ export async function bootstrap(
           },
         });
         await supervisedRuntime.initialize();
+        // The first reply need not wait for an engine to load either: one is
+        // loaded for the model the next attempt would be given.
+        const next = await modelSettings?.activeChoice().catch(() => undefined);
+        const provider = next?.provider ?? env.MELETE_DEFAULT_PROVIDER;
+        const model = next?.model ?? env.MELETE_DEFAULT_MODEL;
+        if (provider && model) supervisedRuntime.warm({ provider, model, fallback: null });
       }
       let hermesRuntime: SupervisedHermesRuntime | undefined;
       if (handle && queue && env.MELETE_RUNTIME_ADAPTER !== 'docker') {
@@ -763,7 +770,7 @@ export async function bootstrap(
           dockerImage: env.MELETE_RUNTIME_IMAGE,
           dockerNetwork: env.MELETE_RUNTIME_NETWORK,
           dockerWorkVolume: env.MELETE_RUNTIME_WORK_VOLUME,
-          prewarm: env.MELETE_ENGINE_PREWARM,
+          prewarm: env.MELETE_ENGINE_PREWARM > 0,
         });
         // Before any worker can claim a job and launch a replacement engine.
         await supervisor.initialize?.();
@@ -832,6 +839,7 @@ export async function bootstrap(
       });
       runner = new AttemptRunner(jobs, gatedRuntime, {
         key: env.MELETE_CAPABILITY_KEY,
+        concurrency: env.MELETE_ATTEMPT_CONCURRENCY,
         artifactRoots: { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
