@@ -8,7 +8,7 @@ import {
   triggerSpec,
   unavailable,
 } from '@melete/contracts';
-import { and, desc, eq, gt, inArray, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import {
   artifact,
@@ -297,6 +297,7 @@ export class ExperiencePlanning {
           ? scheduleSentence(spec.cron, spec.timezone)
           : 'When the connected app has an update',
       enabled: row.enabled && !isTerminal(jobState.parse(state)),
+      ended: isTerminal(jobState.parse(state)),
       conversation_id: row.jobId,
       runs: runs.map((run, index) => {
         const status =
@@ -492,7 +493,15 @@ export class ExperiencePlanning {
     const row = await this.requireAutomation(spaceId, id);
     if (!this.triggers) return unavailable('Scheduled routines are not connected yet.');
     if (enabled && isTerminal(jobState.parse(row.job.state))) throw routineEnded();
-    await this.db.update(trigger).set({ enabled }).where(eq(trigger.id, id));
+    // Occurrences that arrived before the change are not owed a run: a resumed
+    // routine waits for its next time rather than catching up.
+    const [latest] = await this.db
+      .select({ seq: sql<number>`coalesce(max(${event.seq}), 0)::bigint` })
+      .from(event);
+    await this.db
+      .update(trigger)
+      .set({ enabled, cursor: String(latest?.seq ?? 0) })
+      .where(eq(trigger.id, id));
     await this.triggers.syncSchedules();
     return {
       automation: await this.automation({ ...row.trigger, enabled }, row.job.title, row.job.state),

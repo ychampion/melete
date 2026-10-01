@@ -28005,6 +28005,9 @@
           "enabled": {
             "type": "boolean"
           },
+          "ended": {
+            "type": "boolean"
+          },
           "conversation_id": {
             "$ref": "#/components/schemas/__schema213"
           },
@@ -28020,6 +28023,7 @@
           "title",
           "schedule",
           "enabled",
+          "ended",
           "conversation_id",
           "runs"
         ],

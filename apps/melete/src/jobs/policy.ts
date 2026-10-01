@@ -25,7 +25,7 @@ import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import type { AttemptRunner } from './runner.ts';
-import type { JobService } from './service.ts';
+import { type JobService, routineRest } from './service.ts';
 
 /** Account changes commit fences before signalling disposable inference processes. */
 export class PolicyService {
@@ -175,22 +175,37 @@ export class PolicyService {
           payload: control,
           dedupKey: `${running.id}:ended`,
         });
+        // A conversation or routine counts the attempts of its current turn only.
         const [count] = await tx
           .select({ n: sql<number>`count(*)::int` })
           .from(attempt)
-          .where(eq(attempt.jobId, row.id));
+          .where(
+            and(
+              eq(attempt.jobId, row.id),
+              ['chat', 'routine'].includes(row.kind) && row.currentTurnId
+                ? eq(attempt.turnId, row.currentTurnId)
+                : undefined,
+            ),
+          );
+        const remaining = Math.max(
+          0,
+          jobBudget.parse(row.budget).max_attempts - Number(count?.n ?? 0),
+        );
+        // A routine whose run cannot be retried goes back to its schedule.
+        const rest = remaining === 0 ? await routineRest(tx, row) : null;
         await this.jobs.move(
           tx,
           row,
+          rest
+            ? { kind: 'attempt_waiting_for_event_or_time' }
+            : { kind: 'attempt_failed', retryable: true, attempts_remaining: remaining },
           {
-            kind: 'attempt_failed',
-            retryable: true,
-            attempts_remaining: Math.max(
-              0,
-              jobBudget.parse(row.budget).max_attempts - Number(count?.n ?? 0),
-            ),
+            attemptId: running.id,
+            bumpEpoch: true,
+            reason: 'recovery',
+            payload: { reason },
+            ...(rest ? { wait: rest } : {}),
           },
-          { attemptId: running.id, bumpEpoch: true, reason: 'recovery', payload: { reason } },
         );
       } else if (
         row.state === 'waiting_for_approval' &&

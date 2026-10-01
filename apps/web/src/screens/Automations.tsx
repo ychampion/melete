@@ -182,7 +182,7 @@ function RoutineCard({
           <span style={{ fontSize: 13, color: 'var(--secondary)' }}>{automation.schedule}</span>
         </div>
         <Badge tone={automation.enabled ? 'success' : 'neutral'} dot={automation.enabled}>
-          {automation.enabled ? 'On' : 'Off'}
+          {automation.ended ? 'Stopped' : automation.enabled ? 'On' : 'Paused'}
         </Badge>
       </div>
       <div className="col">
@@ -195,42 +195,46 @@ function RoutineCard({
         ) : null}
       </div>
       <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-        <Button
-          size="sm"
-          variant="outline"
-          icon="refresh"
-          loading={busy === 'test'}
-          disabled={busy !== null || !automation.enabled}
-          onClick={() => {
-            setBusy('test');
-            void adapter.testAutomation(automation.id).then(async (r) => {
-              setBusy(null);
-              if (r.data === null) {
-                toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t run it' });
-                return;
-              }
-              const fresh = await adapter.automations();
-              const next = fresh.data?.automations.find((a) => a.id === automation.id);
-              if (next) onChange(next);
-              toast({
-                kind: 'info',
-                title: `${automation.title} is running now`,
-                sub: 'Its answer appears in its thread and on Home. Nothing goes out that would not go out on schedule.',
+        {automation.ended ? null : (
+          <Button
+            size="sm"
+            variant="outline"
+            icon="refresh"
+            loading={busy === 'test'}
+            disabled={busy !== null || !automation.enabled}
+            onClick={() => {
+              setBusy('test');
+              void adapter.testAutomation(automation.id).then(async (r) => {
+                setBusy(null);
+                if (r.data === null) {
+                  toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t run it' });
+                  return;
+                }
+                const fresh = await adapter.automations();
+                const next = fresh.data?.automations.find((a) => a.id === automation.id);
+                if (next) onChange(next);
+                toast({
+                  kind: 'info',
+                  title: `${automation.title} is running now`,
+                  sub: 'Its answer appears in its thread and on Home. Nothing goes out that would not go out on schedule.',
+                });
               });
-            });
-          }}
-        >
-          Test run
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          loading={busy === 'switch'}
-          disabled={busy !== null}
-          onClick={toggle}
-        >
-          {automation.enabled ? 'Pause' : 'Resume'}
-        </Button>
+            }}
+          >
+            Test run
+          </Button>
+        )}
+        {automation.ended ? null : (
+          <Button
+            size="sm"
+            variant="outline"
+            loading={busy === 'switch'}
+            disabled={busy !== null}
+            onClick={toggle}
+          >
+            {automation.enabled ? 'Pause' : 'Resume'}
+          </Button>
+        )}
         {automation.runs.some((run) => run.conversation_id) ? (
           <a href={href(`/chat/${automation.conversation_id}`)} className="btn btn-sm btn-ghost">
             All results

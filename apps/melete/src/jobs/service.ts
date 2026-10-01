@@ -20,7 +20,7 @@ import type { PgBoss } from 'pg-boss';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { databaseNow } from '../db/clock.ts';
-import { attempt, job, space } from '../db/schema.ts';
+import { attempt, job, space, trigger } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -510,4 +510,22 @@ export class JobService {
       return updated;
     });
   }
+}
+
+/**
+ * Where a routine goes when a run is over, finished or failed: back to waiting
+ * for its own schedule, paused or not. One bad run does not end a routine.
+ * Null for any other job, or a routine whose schedule was deleted.
+ */
+export async function routineRest(
+  tx: Transaction,
+  row: JobRow,
+): Promise<Extract<WaitSpec, { kind: 'event' }> | null> {
+  if (row.kind !== 'routine') return null;
+  const [schedule] = await tx
+    .select({ id: trigger.id })
+    .from(trigger)
+    .where(and(eq(trigger.jobId, row.id), eq(trigger.kind, 'schedule')))
+    .limit(1);
+  return schedule ? { kind: 'event', trigger_id: schedule.id, deadline_at: null } : null;
 }

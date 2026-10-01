@@ -433,6 +433,56 @@ withDb('durable waits, triggers and approval inputs', () => {
       await triggers.fireSchedule(registration.id, 'occurrence-two');
       expect((await jobs.get(row.id)).state).toBe('queued');
     });
+
+    test('a routine mid-run on a wait of its own is woken by a correction like any job', async () => {
+      const row = await routine();
+      const own = { kind: 'timer' as const, wake_at: new Date(Date.now() + 120_000).toISOString() };
+      await waitFor(await claim(row), own);
+      expect((await correct(row)).state).toBe('queued');
+    });
+  });
+
+  /** A routine with a schedule, running now, with the attempts given. */
+  async function routine(maxAttempts?: number) {
+    const { jobs } = fixture();
+    const row = await jobs.transaction((tx) =>
+      jobs.createInTransaction(
+        tx,
+        {
+          space_id: spaceId,
+          title: 'Daily haiku',
+          objective: 'Write a haiku',
+          scheduling_class: 'background',
+          importance: 'routine',
+          ...(maxAttempts ? { budget: { max_attempts: maxAttempts } } : {}),
+        },
+        { kind: 'routine' },
+      ),
+    );
+    await triggers.create(row.id, { kind: 'schedule', cron: '15 7 * * 6', timezone: 'UTC' });
+    return jobs.get(row.id);
+  }
+
+  test('a routine may not wait on an event trigger that was disabled', async () => {
+    const { handle } = fixture();
+    const row = await routine();
+    const watched = await eventTrigger(row);
+    await handle.db.update(trigger).set({ enabled: false }).where(eq(trigger.id, watched.id));
+    const admitted = await claim(row);
+    await rejects(
+      () => waitFor(admitted, { kind: 'event', trigger_id: watched.id, deadline_at: null }),
+      'invalid_wait',
+    );
+  });
+
+  test('a routine run that is lost for good goes back to its schedule', async () => {
+    const { jobs } = fixture();
+    const row = await routine(1);
+    const admitted = await claim(row);
+    expect(await runner.loseAttempt(admitted.claims.attempt_id, 'lease_expired')).toBe(true);
+    const rested = await jobs.get(row.id);
+    expect(rested.state).toBe('waiting_for_event_or_time');
+    expect(rested.wait).toMatchObject({ kind: 'event' });
   });
 
   test('missing, foreign and disabled wait triggers fail atomically', async () => {

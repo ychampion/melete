@@ -483,6 +483,7 @@ export class ExperienceMock {
         title,
         schedule: scheduleSentence(cron, this.profile.time_zone),
         enabled,
+        ended: false,
         conversation_id: newId('job'),
         runs: [
           {
@@ -1474,6 +1475,7 @@ export class ExperienceMock {
       id: newId('routine'),
       title: input.title,
       enabled: true,
+      ended: false,
       schedule: scheduleSentence(
         `${Number(minute)} ${Number(hour)} * * ${[...new Set(input.weekdays)].sort().join(',')}`,
         this.profile.time_zone,

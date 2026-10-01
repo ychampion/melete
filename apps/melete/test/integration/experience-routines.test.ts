@@ -334,6 +334,8 @@ withDb('routines, time zone and setup as the person sees them', () => {
         reason: 'event',
       }),
     );
+    // An occurrence due while it runs is not owed a run once it is paused and resumed.
+    await required(triggers).fireSchedule(routine.id, 'backlog');
     await planning.setAutomationEnabled(spaceId, routine.id, false);
     const rested = await required(runner).commitOutcome(claimed.claims, {
       kind: 'completed',
@@ -342,11 +344,18 @@ withDb('routines, time zone and setup as the person sees them', () => {
     });
     expect(rested.state).toBe('waiting_for_event_or_time');
     await planning.setAutomationEnabled(spaceId, routine.id, true);
+    expect((await required(jobs).get(routine.conversation_id)).state).toBe(
+      'waiting_for_event_or_time',
+    );
+    await required(triggers).fireSchedule(routine.id, 'next');
+    expect((await required(jobs).get(routine.conversation_id)).state).toBe('queued');
+    await required(jobs).cancel(routine.conversation_id);
 
     // A routine whose job was stopped is off, and says why it cannot run.
     const stopped = await create('Stopped haiku');
     await required(jobs).cancel(stopped.conversation_id);
-    expect((await listed(stopped.id))?.enabled).toBe(false);
+    expect(await listed(stopped.id)).toMatchObject({ enabled: false, ended: true });
+    expect((await listed(routine.id))?.ended).toBe(true);
     const refused = await request(`/automations/${stopped.id}/test`, 'POST');
     expect(refused.status).toBe(409);
     expect(((await refused.json()) as { error: { code: string } }).error.code).toBe(

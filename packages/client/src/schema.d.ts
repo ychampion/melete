@@ -17226,6 +17226,7 @@ export interface components {
         __schema274: {
             conversation_id: components["schemas"]["__schema213"];
             enabled: boolean;
+            ended: boolean;
             id: components["schemas"]["__schema213"];
             runs: components["schemas"]["__schema272"][];
             schedule: components["schemas"]["__schema214"];

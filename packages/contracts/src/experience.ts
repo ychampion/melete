@@ -762,6 +762,8 @@ export const experienceAutomation = z.strictObject({
   title: text,
   schedule: text,
   enabled: z.boolean(),
+  /** Stopped for good: it cannot be resumed, only deleted. */
+  ended: z.boolean(),
   /** The thread every run of this routine writes into. */
   conversation_id: id,
   runs: z.array(automationRun),
