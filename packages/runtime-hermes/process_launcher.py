@@ -105,8 +105,12 @@ def reader(frame) -> str | None:
 
 
 @contextmanager
-def watch_reads(names):
-    """Record what is read of the named environment values and the working directory."""
+def watch_reads(names, working_directory=True):
+    """Record what is read of the named environment values and the working directory.
+
+    A container engine's working directory is the same before and after its
+    attempt (its workspace takes the directory over), so it is not watched there.
+    """
     seen = set()
     environ_type = type(os.environ)
     original_getitem = environ_type.__getitem__
@@ -126,12 +130,12 @@ def watch_reads(names):
         return original_contains(self, key)
 
     def getcwd():
-        if reads_working_directory(sys._getframe(1)):
+        if working_directory and reads_working_directory(sys._getframe(1)):
             seen.add('cwd')
         return original_getcwd()
 
     def getcwdb():
-        if reads_working_directory(sys._getframe(1)):
+        if working_directory and reads_working_directory(sys._getframe(1)):
             seen.add('cwd')
         return original_getcwdb()
 
@@ -146,9 +150,9 @@ def watch_reads(names):
         os.getcwd, os.getcwdb = original_getcwd, original_getcwdb
 
 
-def prewarm(names) -> set:
+def prewarm(names, working_directory=True) -> set:
     """Import the engine ahead of its attempt; returns whatever of the attempt was read."""
-    with watch_reads(names) as seen:
+    with watch_reads(names, working_directory) as seen:
         for module in PREWARM:
             try:
                 importlib.import_module(module)
@@ -309,7 +313,8 @@ if __name__ == '__main__':
         watched = frozenset(filter(None, os.environ.get('MELETE_RUNTIME_SPARE_KEYS', '').split(',')))
         spare_cwd = os.environ.get('TERMINAL_CWD')
         sys.argv = ['hermes']
-        read = prewarm(watched)
+        # A container's directory is its workspace's mount point, before and after.
+        read = prewarm(watched, os.environ.get('MELETE_RUNTIME_HANDOFF') != 'http')
         if read:
             print(f'{SPARE_UNUSABLE} {",".join(sorted(read))}', flush=True)
             raise SystemExit(3)

@@ -248,3 +248,17 @@ def test_the_container_spare_is_configured_with_its_capability_before_it_serves(
     assert order == ['configured', 'arrived']
     for name in ('MELETE_RUNTIME_SPARE', 'MELETE_RUNTIME_HANDOFF', 'MELETE_BOOT_CONFIG'):
         assert name not in os.environ
+
+
+def test_a_container_spares_directory_is_not_watched_but_its_attempt_values_are(monkeypatch):
+    """A container engine loads in /work and serves in /work: its workspace takes
+    that directory over, so the engine reading it while loading reads what the
+    attempt would. A process spare loads in its own home, so there it is a read."""
+    monkeypatch.setenv('MELETE_ATTEMPT_TOKEN', 'placeholder')
+    source = "import os\nHERE = os.getcwd()\nTOKEN = os.environ.get('MELETE_ATTEMPT_TOKEN')"
+    with watch_reads(ATTEMPT_KEYS, working_directory=False) as seen:
+        run_as('engine_module', source)
+    assert seen == {'MELETE_ATTEMPT_TOKEN'}
+    with watch_reads(ATTEMPT_KEYS) as seen:
+        run_as('engine_module', source)
+    assert seen == {'MELETE_ATTEMPT_TOKEN', 'cwd'}
