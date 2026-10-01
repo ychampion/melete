@@ -18,10 +18,10 @@ import {
   type SubmissionReceipt,
   TERMINAL_STATES,
 } from '@melete/contracts';
-import { and, eq, isNull, notInArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { ServiceError } from '../api/errors.ts';
-import { job, question } from '../db/schema.ts';
+import { attempt, experienceTurn, job, question } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -32,10 +32,14 @@ import {
   spaceAuthority,
   visibleJob,
 } from '../principals/authority.ts';
+import { privacyConversation } from '../privacy/schema.ts';
 import type { JobRow, JobService } from './service.ts';
 import type { SubmissionService } from './submissions.ts';
 
 export type QuestionRow = typeof question.$inferSelect;
+
+/** The notice a privacy answer leaves instead of a message from the person. */
+export const PRIVACY_DECISION = 'privacy_decision';
 
 /** The consequence of ignoring a question the runtime did not describe itself. */
 export const UNANSWERED_CONSEQUENCE =
@@ -458,10 +462,99 @@ export class QuestionService {
     return { question: after.view, job: null, receipt: null, status: 200 };
   }
 
+  /**
+   * The privacy router's question: may this conversation go to the cloud model
+   * redacted? It was asked before anything was sent, by the attempt the
+   * conversation recorded, and it is the only question with these two options.
+   */
+  private async isPrivacyQuestion(row: QuestionRow): Promise<boolean> {
+    if (!row.jobId || !row.attemptId) return false;
+    const offered = row.options.map((option) => option.id).sort();
+    if (offered.join(',') !== 'keep_private,send_redacted') return false;
+    const [asked] = await this.jobs.db
+      .select({ id: privacyConversation.conversationId })
+      .from(privacyConversation)
+      .where(eq(privacyConversation.askedAttemptId, row.attemptId))
+      .limit(1);
+    return asked !== undefined;
+  }
+
+  /**
+   * A privacy answer is a decision, not something the person said: it is
+   * recorded on the question and the held turn picks up where it stopped,
+   * with the person's own message read again. Posting the option label as a
+   * message would start a new turn and hand the agent words nobody wrote.
+   */
+  private async decidePrivacy(
+    current: { row: QuestionRow; view: OwnerQuestion },
+    text: string,
+  ): Promise<AnswerResult> {
+    const key = answerKey(current.row.id);
+    if (current.row.state === 'answered' && current.row.answerSubmissionId === key)
+      return { question: current.view, job: null, receipt: null, status: 200 };
+    if (!current.row.options.some((option) => option.label === text))
+      throw new ServiceError('invalid_choice', 'Choose one of the offered answers.', 400);
+    const jobId = current.row.jobId ?? '';
+    const heldAttempt = current.row.attemptId ?? '';
+    const resumed = await this.jobs.transaction(async (tx) => {
+      const row = await this.jobs.lock(tx, jobId);
+      if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
+      const speaker = requestPrincipal();
+      if (speaker) await requireJobAccess(tx, jobId, speaker);
+      const [open] = await tx
+        .select({ id: question.id })
+        .from(question)
+        .where(and(eq(question.id, current.row.id), eq(question.state, 'open')))
+        .for('update');
+      if (!open || row.state !== 'waiting_for_input')
+        throw new ServiceError('question_closed', 'This question is no longer open.', 409);
+      // Where the held attempt began reading: its messages are read again.
+      const [held] = await tx
+        .select({ epoch: attempt.epoch })
+        .from(attempt)
+        .where(eq(attempt.id, heldAttempt));
+      const [before] = held
+        ? await tx
+            .select({ cursor: attempt.inputCursor })
+            .from(attempt)
+            .where(and(eq(attempt.jobId, jobId), lt(attempt.epoch, held.epoch)))
+            .orderBy(desc(attempt.epoch))
+            .limit(1)
+        : [];
+      await closeOpen(
+        tx,
+        jobId,
+        { state: 'answered', answer: text, answerSubmissionId: key },
+        'answered',
+      );
+      await appendEvent(tx, {
+        jobId,
+        type: 'notice',
+        payload: {
+          kind: PRIVACY_DECISION,
+          question_id: current.row.id,
+          answer: text,
+          resume_after: Number(before?.cursor ?? 0),
+        },
+        dedupKey: `${current.row.id}:privacy_decision`,
+      });
+      // The question stood in for the turn's answer; the resumed attempt writes it.
+      if (row.currentTurnId)
+        await tx
+          .update(experienceTurn)
+          .set({ answer: '' })
+          .where(eq(experienceTurn.id, row.currentTurnId));
+      return this.jobs.move(tx, row, { kind: 'user_input_received' }, { reason: 'input' });
+    });
+    const after = await this.read(current.row.id);
+    return { question: after.view, job: resumed, receipt: null, status: 200 };
+  }
+
   async answer(id: string, input: unknown): Promise<AnswerResult> {
     const value = questionAnswerRequest.parse(input);
     const first = await this.read(id);
     if (first.row.source === 'memory') return this.settle(first, value);
+    if (await this.isPrivacyQuestion(first.row)) return this.decidePrivacy(first, value.text);
     const submissions = this.submissions;
     if (!submissions)
       throw new ServiceError('service_unavailable', 'Configure the submission service.', 503);
