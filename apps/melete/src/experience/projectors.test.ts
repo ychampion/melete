@@ -73,7 +73,10 @@ test('three calls across two connections produce one compound action with attrib
   expect(projectCards(base, calendar)[0]?.facts).toHaveLength(2);
 });
 test('source content cannot smuggle backend labels or credential URLs', () => {
-  expect(plainText('calendar.list with canonical_payload', 'Event')).toBe('Event');
+  expect(plainText('{"canonical_payload": {"to": "a@b.c"}}', 'Event')).toBe('Event');
+  expect(plainText('Lunch, key sk-proj-Q7vLm2Xr9TbW4kZp8NcY3dHs', 'Event')).toBe(
+    'Lunch, key [hidden]',
+  );
   expect(safeUrl('https://user:password@example.com')).toBeUndefined();
   expect(safeUrl('javascript:alert(1)')).toBeUndefined();
   expect(safeUrl('https://example.com/menu?token=private')).toBe('https://example.com/menu');
@@ -347,7 +350,8 @@ test('answer text keeps prose that starts with a bracket and drops whole records
   expect(answerText('[your name]\n\nSay the word')).toBe('[your name]\n\nSay the word');
   expect(answerText('[the guide](https://example.com)')).toBe('[the guide](https://example.com)');
   expect(answerText('{"tool":"email.send","to":"a@b.c"}')).toBe('');
-  expect(answerText(' [1, 2, 3] ')).toBe('');
+  // Plain data is something the agent said.
+  expect(answerText(' [1, 2, 3] ')).toBe(' [1, 2, 3] ');
 });
 
 test('answer text keeps addresses, sites and file names that share a word with a tool', () => {
@@ -365,17 +369,24 @@ test('answer text keeps addresses, sites and file names that share a word with a
   }
 });
 
-test('answer text still drops tool calls, record fields and model ids', () => {
-  for (const leaked of [
+test('answer text keeps tool names and model ids, and hides only a credential', () => {
+  for (const said of [
+    "I'm Nova. Running on `accounts/fireworks/models/deepseek-v4p1-flash`.",
     'I called email.draft with the text below.',
     'Next I will run web.fetch(https://example.com).',
     'Saved through files.write.',
     'The payload_hash for this action is 9f2c.',
-    'Answer from accounts/fireworks/models/deepseek-v4p1-flash follows.',
     'Running on gpt-4o today.',
-    'Authorization: Bearer abcdefghijklmnop',
-  ])
-    expect(answerText(leaked)).toBe('');
+  ]) {
+    expect(answerText(said)).toBe(said);
+    expect(plainText(said, 'fallback')).toBe(said);
+  }
+  expect(answerText('Authorization: Bearer abcdefghijklmnop')).toBe(
+    'Authorization: Bearer [hidden]',
+  );
+  expect(plainText('Bearer abcdefghijklmnop', 'Event')).toBe('Bearer [hidden]');
+  expect(plainText('{"tool_call": {"name": "email.send"}}', 'Event')).toBe('Event');
+  expect(safeUrl('https://example.com/?access_token=private')).toBeUndefined();
 });
 
 test('a permission to save a file names the file and carries its exact text', () => {

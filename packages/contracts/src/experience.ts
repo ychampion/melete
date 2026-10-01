@@ -291,7 +291,7 @@ export type ToolSummary = z.infer<typeof toolSummary>;
 /**
  * A longer stretch of what went in or came out, for a row the person opens: a
  * whole command, the first lines it printed, the words of a search. It is
- * scrubbed line by line like a summary's quote, and `more` says it was cut.
+ * filtered like an answer, a secret hidden where it stands, and `more` says it was cut.
  * Draw it as plain monospace text, never as Markdown or HTML.
  */
 export const TOOL_EXCERPT_LIMIT = 2000;

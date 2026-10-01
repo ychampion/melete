@@ -211,18 +211,25 @@ describe('failures say which way they went', () => {
   });
 });
 
-describe('excerpts are scrubbed line by line', () => {
-  test('a line with a key is replaced, the rest is kept', () => {
+describe('excerpts go through the answer filter, span by span', () => {
+  test('a key is hidden where it stands, and the words around it are kept', () => {
     const excerpt = toolExcerpt(
       `export API_KEY=${TOKEN}\npython report.py\n\nsee https://user:pw@example.com/x?ref=1`,
       'request',
     );
-    expect(excerpt?.text).toBe(`${HIDDEN_LINE}\npython report.py\n\nsee a link`);
+    expect(excerpt?.text).toBe(`export API_KEY=${HIDDEN_LINE}\npython report.py\n\nsee a link`);
+    expect(excerpt?.text).not.toContain(TOKEN);
     expect(excerpt?.more).toBe(false);
   });
-  test('an internal record name hides its line', () => {
-    const excerpt = toolExcerpt('called email.send\nok', 'app');
-    expect(excerpt?.text).toBe(`${HIDDEN_LINE}\nok`);
+  test('a tool name is ordinary text; a whole internal record is taken out', () => {
+    expect(toolExcerpt('called email.send\nok', 'app')?.text).toBe('called email.send\nok');
+    const excerpt = toolExcerpt(
+      'before\n{"tool_call":{"name":"email.send","arguments":{"to":"x@example.com"}}}\nafter',
+      'app',
+    );
+    expect(excerpt?.text).toContain('before');
+    expect(excerpt?.text).toContain('after');
+    expect(excerpt?.text).not.toContain('arguments');
   });
   test('nothing comes back when no line survives', () => {
     expect(toolExcerpt(`token=${TOKEN}`, 'app')).toBeUndefined();
@@ -244,7 +251,7 @@ describe('excerpts are scrubbed line by line', () => {
       { exit_code: 0, output: `Wrote report.md\nAPI token: ${TOKEN}` },
     );
     expect(run.output_excerpt).toEqual({
-      text: `Wrote report.md\n${HIDDEN_LINE}`,
+      text: `Wrote report.md\nAPI token: ${HIDDEN_LINE}`,
       from: 'app',
       more: false,
     });
@@ -270,7 +277,8 @@ describe('excerpts are scrubbed line by line', () => {
       input_excerpt: { text: `ok\nBearer ${TOKEN}`, from: 'request', more: false },
       output_excerpt: { text: `sk-${'a'.repeat(30)}`, from: 'app', more: false },
     });
-    expect(call?.input_excerpt?.text).toBe(`ok\n${HIDDEN_LINE}`);
+    expect(call?.input_excerpt?.text).toBe(`ok\nBearer ${HIDDEN_LINE}`);
+    expect(JSON.stringify(call)).not.toContain(TOKEN);
     expect(call?.output_excerpt).toBeUndefined();
   });
 });
