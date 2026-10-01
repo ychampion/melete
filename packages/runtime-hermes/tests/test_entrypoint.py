@@ -157,3 +157,24 @@ def test_without_a_sandbox_there_is_no_terminal_at_all(tmp_path, monkeypatch):
 def test_no_other_terminal_backend_is_accepted(tmp_path, monkeypatch, backend):
     with pytest.raises(SystemExit):
         boot(tmp_path, monkeypatch, TEMPLATE, {**BASE_ENVIRONMENT, "TERMINAL_ENV": backend})
+
+
+def test_a_spare_is_configured_without_a_capability_until_it_has_one(tmp_path, monkeypatch):
+    """A spare boots before its attempt exists; the same program runs again
+    with the attempt's capability once the attempt is handed over."""
+    monkeypatch.delenv("MELETE_ATTEMPT_TOKEN", raising=False)
+    spare = boot(tmp_path, monkeypatch, TEMPLATE, {
+        "MELETE_BROKER_URL": "http://broker:19188",
+        "MELETE_RUNTIME_SPARE": "1",
+    })
+    assert "extra_headers" not in spare["model"]
+    assert "extra_headers" not in spare["providers"]["melete-gateway"]
+    handed = boot(tmp_path, monkeypatch, TEMPLATE, BASE_ENVIRONMENT)
+    assert handed["model"]["extra_headers"] == {"x-melete-capability": "fixture-capability"}
+
+
+def test_an_engine_that_is_not_a_spare_never_starts_without_a_capability(tmp_path, monkeypatch):
+    monkeypatch.delenv("MELETE_ATTEMPT_TOKEN", raising=False)
+    monkeypatch.delenv("MELETE_RUNTIME_SPARE", raising=False)
+    with pytest.raises(SystemExit):
+        boot(tmp_path, monkeypatch, TEMPLATE, {"MELETE_BROKER_URL": "http://broker:19188"})

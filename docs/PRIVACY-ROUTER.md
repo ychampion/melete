@@ -112,9 +112,14 @@ A conversation does not go to a cloud model when:
 
 - the space is marked private, or its agent is;
 - it is about therapy or mental health, medical records, or personal finances
-  (statements, taxes). This is decided from what you write and, through strong
-  phrases only, what tools bring back; not from the system prompt. Once a
-  conversation is found sensitive it stays that way.
+  (statements, taxes). This is decided only from what you write: a phrase about
+  yourself or your own records ("my therapist", "I was diagnosed with", "my bank
+  statements"), a crisis or condition named in any form ("suicide", "in
+  rehab", "PTSD"), or several different topic words together. Other single
+  words are not enough, and nothing a tool brings back (a web page, a file, an email)
+  ever decides it, though its details are still swapped for placeholders. Once
+  a conversation is found sensitive it stays that way until you say it isn't:
+  the chat shows why it is kept private, with **It isn't** to clear it.
 
 Such a conversation goes to your local model, unredacted, since it stays on your
 machine: an OpenAI-compatible server such as Ollama, llama.cpp, vLLM or LM
@@ -126,8 +131,10 @@ is refused when saved and again before each use. It can be set under **Settings
 
 With no local model, nothing is sent. Melete asks first, with a quick answer:
 **Send a redacted version** or **Keep it private**. Agreeing lets that
-conversation go to the cloud model redacted; keeping it private sends nothing
-and asks again on your next message. The gateway refuses such a request itself
+conversation go to the cloud model redacted, and the request you made carries
+on from where it stopped; keeping it private sends nothing and asks again on
+your next message. Your answer is recorded as a decision, not as a message
+from you. The gateway refuses such a request itself
 (`privacy_confirmation_required`) if one arrives without that answer, so there
 is no silent fallback. The answer is about the reason it was asked for: if you
 later mark the space or the conversation's agent private, Melete asks again.

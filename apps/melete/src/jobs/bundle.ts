@@ -54,7 +54,7 @@ import { asKnowledge, attemptRecallQuery, recall } from '../memory/recall.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { selectedContext } from '../principals/context.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
-import { questionView, readDeferred } from './questions.ts';
+import { PRIVACY_DECISION, questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
 
 export const TRANSCRIPT_MAX_MESSAGES = 100;
@@ -274,6 +274,16 @@ export function assembleHistory(
     repair_briefs: [],
   };
   const transcript: CanonicalMessage[] = [];
+  // A privacy decision resumes the turn the privacy question held back. That
+  // turn's messages were never sent to a model, so they are new again.
+  let messagesAfter = afterSeq;
+  for (const row of events) {
+    if (row.seq <= afterSeq || row.type !== 'notice') continue;
+    const payload = jsonObject.safeParse(row.payload);
+    if (!payload.success || payload.data.kind !== PRIVACY_DECISION) continue;
+    const resume = payload.data.resume_after;
+    if (typeof resume === 'number' && resume >= 0) messagesAfter = Math.min(messagesAfter, resume);
+  }
   for (const row of events) {
     const parsed = jsonObject.safeParse(row.payload);
     if (!parsed.success) {
@@ -292,7 +302,7 @@ export function assembleHistory(
         at: row.createdAt.toISOString(),
       };
       transcript.push(message);
-      if (row.seq > afterSeq) inputs.new_user_messages.push(message);
+      if (row.seq > messagesAfter) inputs.new_user_messages.push(message);
     } else if (row.type === 'tool_result') {
       const result = toolResult.parse(payload);
       transcript.push({

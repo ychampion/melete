@@ -74,7 +74,15 @@ arrives. `packages/runtime-hermes/process_launcher.py` refuses to use one that
 read any of those while it loaded. `MELETE_RUNTIME_ADAPTER=docker` is the Compose path
 verified on a Linux host: the service supervises one container per attempt
 through the Docker socket (`pins the image, mounts only the job subpath, and
-isolates its sole broker peer`). `stub` is an explicit scripted choice and
+isolates its sole broker peer`). It keeps `MELETE_ENGINE_PREWARM` containers
+(one by default) loaded ahead of the next attempts, each on its own network
+with its own home and an empty workspace directory, started with nothing of an
+attempt in its environment or labels. An attempt with the same model and
+features takes one: the job's workspace becomes the spare's directory by
+renames on the work volume, and the attempt's capability, ids and time zone
+reach the engine over its private network, after which the image writes its
+configuration with the capability and starts serving. A container never serves
+a second attempt; a replacement spare starts as one is taken. `stub` is an explicit scripted choice and
 `external` expects an injected `RuntimeAdapter`. The scripted HTTP proof
 `wired-assistant.test.ts` creates a job, corrects a claim and checks the
 requests delivered through a real local Hermes to a scripted provider.

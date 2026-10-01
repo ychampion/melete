@@ -31,20 +31,29 @@
 #
 # Everything else the engine is configured to do is in the image's own copy of
 # the rendered configuration. This script adds the attempt to it and nothing more.
+#
+# 5. A spare (MELETE_RUNTIME_SPARE=1) is started before its attempt exists. It
+#    is configured here without the capability and handed to the launcher,
+#    which loads the engine, takes the attempt over its port, and runs this same
+#    program again before the engine serves (see process_launcher.py).
 set -eu
 
 : "${HERMES_HOME:?HERMES_HOME must be set}"
-: "${MELETE_ATTEMPT_TOKEN:?MELETE_ATTEMPT_TOKEN must be set}"
-: "${MELETE_JOB_ID:?MELETE_JOB_ID must be set}"
+SPARE="${MELETE_RUNTIME_SPARE:-}"
+if [ "$SPARE" != 1 ]; then
+  : "${MELETE_ATTEMPT_TOKEN:?MELETE_ATTEMPT_TOKEN must be set}"
+  : "${MELETE_JOB_ID:?MELETE_JOB_ID must be set}"
+fi
 
 mkdir -p "$HERMES_HOME/plugins"
 rm -rf "$HERMES_HOME/plugins/melete"
-cp -R /opt/melete-runtime/melete_plugin "$HERMES_HOME/plugins/melete"
+# Timestamps kept, so the bytecode compiled into the image still matches.
+cp -R --preserve=timestamps /opt/melete-runtime/melete_plugin "$HERMES_HOME/plugins/melete"
 # Melete's identity is the engine's identity slot. Written on every start, so
 # the engine never seeds its own stock persona into a fresh home.
 cp /opt/melete-runtime/SOUL.md "$HERMES_HOME/SOUL.md"
 
-python - "$HERMES_HOME/config.yaml" <<'PY'
+BOOT_CONFIG=$(cat <<'PY'
 import os, sys, yaml
 
 config = yaml.safe_load(open("/opt/melete-runtime/config.yaml", encoding="utf-8"))
@@ -99,12 +108,24 @@ if api_mode:
     provider["api_mode"] = api_mode
 # The capability is a per-attempt secret and is never written into the image.
 # The main agent reads the provider entry; the auxiliary client that makes the
-# compaction summary call reads the model section. Both get a copy.
-capability = os.environ["MELETE_ATTEMPT_TOKEN"]
-provider.setdefault("extra_headers", {})["x-melete-capability"] = capability
-model_section.setdefault("extra_headers", {})["x-melete-capability"] = capability
+# compaction summary call reads the model section. Both get a copy. A spare has
+# none until its attempt is handed over, and this program then runs again.
+capability = os.environ.get("MELETE_ATTEMPT_TOKEN")
+if capability:
+    provider.setdefault("extra_headers", {})["x-melete-capability"] = capability
+    model_section.setdefault("extra_headers", {})["x-melete-capability"] = capability
+elif os.environ.get("MELETE_RUNTIME_SPARE") != "1":
+    raise SystemExit("MELETE_ATTEMPT_TOKEN must be set")
 with open(sys.argv[1], "w", encoding="utf-8") as out:
     yaml.safe_dump(config, out, sort_keys=False)
 PY
+)
+
+python -c "$BOOT_CONFIG" "$HERMES_HOME/config.yaml"
+
+if [ "$SPARE" = 1 ]; then
+  export MELETE_BOOT_CONFIG="$BOOT_CONFIG" MELETE_RUNTIME_HANDOFF=http
+  exec python /opt/melete-runtime/process_launcher.py
+fi
 
 exec "$@"

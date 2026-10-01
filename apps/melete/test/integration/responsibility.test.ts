@@ -648,6 +648,7 @@ withDb('responsibility protocol', () => {
     });
     const runner = new AttemptRunner(jobs, runtime, {
       key: 'fair-queues-test-signing-key-32bytes',
+      concurrency: 2,
     });
     const create = (title: string, scheduling: SchedulingClass) =>
       jobs.create({
@@ -687,6 +688,66 @@ withDb('responsibility protocol', () => {
       await runner.stop();
     }
   }, 10_000);
+
+  test('four chats run at once by default, and a fifth says it is waiting for a free slot', async () => {
+    const { jobs } = fixture();
+    const started: string[] = [];
+    const releases = new Map<string, () => void>();
+    const runtime = new StubRuntimeAdapter({
+      onStall: async (_key, bundle) => {
+        started.push(bundle.job.title);
+        await new Promise<void>((resolve) => releases.set(bundle.job.title, resolve));
+      },
+    });
+    const runner = new AttemptRunner(jobs, runtime, {
+      key: 'slot-notes-test-signing-key-32bytes',
+    });
+    const created = [];
+    for (let index = 0; index < 5; index++)
+      created.push(
+        await jobs.create({
+          space_id: spaceId,
+          title: `chat-${index}`,
+          objective: 'Make bounded progress',
+          scheduling_class: 'interactive',
+          constraints: { notes: JSON.stringify({ script: [{ type: 'stall', key: 'load' }] }) },
+        }),
+      );
+    const eventually = async (check: () => Promise<boolean> | boolean) => {
+      const until = Date.now() + 8000;
+      while (!(await check())) {
+        if (Date.now() > until) throw new Error('The runner did not progress');
+        await Bun.sleep(10);
+      }
+    };
+    const waitingNotes = async () =>
+      (
+        await jobs.db
+          .select({ jobId: event.jobId, payload: event.payload })
+          .from(event)
+          .where(eq(event.type, 'notice'))
+      ).filter((row) => (row.payload as { kind?: string } | null)?.kind === 'waiting_for_slot');
+    try {
+      await runner.start();
+      await eventually(() => started.length === 4);
+      // Four run at once; the fifth is held, and its conversation is told why.
+      await eventually(async () => (await waitingNotes()).length === 1);
+      const [note] = await waitingNotes();
+      const waiting = created.find((row) => !started.includes(row.title));
+      expect(note).toEqual({
+        jobId: waiting?.id ?? '',
+        payload: { kind: 'waiting_for_slot', running: 4 },
+      });
+      expect(runner.scheduler.activeCount).toBe(4);
+      releases.get(started[0] ?? '')?.();
+      await eventually(() => started.length === 5);
+      // The note was for the wait, not a second one once it ran.
+      expect(await waitingNotes()).toHaveLength(1);
+    } finally {
+      for (const release of releases.values()) release();
+      await runner.stop();
+    }
+  }, 15_000);
 
   for (const importance of ['routine', 'important'] as const) {
     test(`${importance}: unread results change visible attention and preserve future work`, async () => {

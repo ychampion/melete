@@ -17,6 +17,7 @@ import {
 } from '@melete/contracts';
 import type { action, artifact, connection } from '../db/schema.ts';
 import { namesLocalNetwork } from '../devices/paths.ts';
+import { ENDED_NOTE } from '../jobs/withdraw.ts';
 import { answerText, hideSecrets, isInternalRecord } from './answer-filter.ts';
 
 export type ActionRow = Pick<
@@ -601,7 +602,7 @@ export function projectPermissionDecision(input: {
       input.decision === 'denied'
         ? input.note === SUPERSEDED_NOTE
           ? 'replaced'
-          : input.note === STOPPED_NOTE
+          : input.note === STOPPED_NOTE || input.note === ENDED_NOTE
             ? 'withdrawn'
             : 'deny'
         : input.ruleSaved

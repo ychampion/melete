@@ -116,6 +116,14 @@ export function mountPrivacyMock(app: Hono, deps: AppDeps, conversations: Turns)
     );
   });
 
+  app.put('/conversations/:id/privacy', async (c) => {
+    const input = C.conversationPrivacyUpdate.safeParse(await c.req.json().catch(() => null));
+    if (!input.success) return fail('invalid_request', 'Choose a topic, or none.', 400);
+    if (!(await summary(c.req.param('id'))))
+      return fail('not_found', 'That conversation was not found.', 404);
+    return c.json(C.conversationPrivacy.parse({ sensitive: input.data.sensitive, turns: [] }));
+  });
+
   app.post('/conversations/:id/privacy/reveal', async (c) => {
     const input = C.privacyRevealRequest.safeParse(await c.req.json().catch(() => null));
     if (!input.success) return fail('invalid_request', 'Choose an answer.', 400);

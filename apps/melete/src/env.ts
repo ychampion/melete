@@ -202,14 +202,22 @@ const variables = z.object({
   MELETE_RUNTIME_ADAPTER: z.enum(['hermes', 'stub', 'external', 'docker']).default('hermes'),
   MELETE_RUNTIME_SUPERVISOR: z.enum(['process', 'docker']).default('process'),
   /**
-   * The process supervisor keeps one engine loaded ahead of the next attempt, so
-   * a reply does not wait for the engine to start. It holds an idle engine's
-   * memory while nothing runs.
+   * How many engines are kept loaded ahead of the next attempts, so a reply does
+   * not wait for an engine to start: `true` is one, `false` or `0` none. Each
+   * holds an idle engine's memory while nothing runs. The process supervisor
+   * keeps at most one; the Docker runtime keeps this many containers.
    */
-  MELETE_ENGINE_PREWARM: z
-    .enum(['true', 'false'])
-    .default('true')
-    .transform((v) => v === 'true'),
+  MELETE_ENGINE_PREWARM: unsetWhenBlank(
+    z
+      .union([z.enum(['true', 'false']), z.coerce.number().int().min(0).max(8)])
+      .default('true')
+      .transform((v) => (v === 'true' ? 1 : v === 'false' ? 0 : v)),
+  ),
+  /**
+   * How many attempts run at once. Each runs its own engine; a further one
+   * waits for a free slot, and its conversation says so.
+   */
+  MELETE_ATTEMPT_CONCURRENCY: unsetWhenBlank(z.coerce.number().int().min(1).max(32).default(4)),
   MELETE_HERMES_ROOT: z.string().default(join(root, '.hermes-src')),
   MELETE_HERMES_PYTHON: z
     .string()

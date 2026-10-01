@@ -110,6 +110,43 @@ describe('durable attempt context', () => {
     expect(result.transcript.map((message) => message.content)).toEqual(['Earlier.', 'New input.']);
   });
 
+  test('a privacy answer adds no message and hands back the message the question held', () => {
+    const message = (seq: number, text: string) => ({
+      seq,
+      type: 'notice' as const,
+      payload: { kind: 'user_message', text },
+      createdAt: new Date(at),
+    });
+    const events = [
+      message(1, 'Earlier, already answered.'),
+      // The held attempt read from seq 1 and asked before anything was sent.
+      message(3, 'Research heat pump adoption in Europe.'),
+      {
+        seq: 6,
+        type: 'notice' as const,
+        payload: {
+          kind: 'privacy_decision',
+          question_id: 'q_1',
+          answer: 'Send a redacted version',
+          resume_after: 1,
+        },
+        createdAt: new Date(later),
+      },
+    ];
+    // The resumed attempt's cursor is past the held message (the held attempt read it).
+    const result = assembleHistory(events, [], 4);
+    expect(result.inputs.new_user_messages.map((entry) => entry.content)).toEqual([
+      'Research heat pump adoption in Europe.',
+    ]);
+    // No message carries the option's words.
+    expect(result.transcript.map((entry) => entry.content)).toEqual([
+      'Earlier, already answered.',
+      'Research heat pump adoption in Europe.',
+    ]);
+    // A decision already read by an earlier attempt does not hand the message back again.
+    expect(assembleHistory(events, [], 6).inputs.new_user_messages).toEqual([]);
+  });
+
   test('retains durable tool results and only committed, unfenced summaries or drafts', () => {
     const result = assembleHistory(
       [

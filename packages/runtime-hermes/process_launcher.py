@@ -12,6 +12,10 @@ with them would. Any module that reads one of those values, or the working
 directory, while it is imported would have read a value the attempt does not
 have, so the spare reports that and exits instead of being used. The Melete
 plugin, loaded on the way, fetches the attempt's tools only once it has one.
+
+A spare in a container (MELETE_RUNTIME_HANDOFF=http) is handed its attempt over
+its own port instead of stdin, writes its configuration again with the attempt's
+capability, and serves on the fixed port the container was given.
 """
 import importlib
 import json
@@ -101,8 +105,12 @@ def reader(frame) -> str | None:
 
 
 @contextmanager
-def watch_reads(names):
-    """Record what is read of the named environment values and the working directory."""
+def watch_reads(names, working_directory=True):
+    """Record what is read of the named environment values and the working directory.
+
+    A container engine's working directory is the same before and after its
+    attempt (its workspace takes the directory over), so it is not watched there.
+    """
     seen = set()
     environ_type = type(os.environ)
     original_getitem = environ_type.__getitem__
@@ -122,12 +130,12 @@ def watch_reads(names):
         return original_contains(self, key)
 
     def getcwd():
-        if reads_working_directory(sys._getframe(1)):
+        if working_directory and reads_working_directory(sys._getframe(1)):
             seen.add('cwd')
         return original_getcwd()
 
     def getcwdb():
-        if reads_working_directory(sys._getframe(1)):
+        if working_directory and reads_working_directory(sys._getframe(1)):
             seen.add('cwd')
         return original_getcwdb()
 
@@ -142,9 +150,9 @@ def watch_reads(names):
         os.getcwd, os.getcwdb = original_getcwd, original_getcwdb
 
 
-def prewarm(names) -> set:
+def prewarm(names, working_directory=True) -> set:
     """Import the engine ahead of its attempt; returns whatever of the attempt was read."""
-    with watch_reads(names) as seen:
+    with watch_reads(names, working_directory) as seen:
         for module in PREWARM:
             try:
                 importlib.import_module(module)
@@ -182,36 +190,164 @@ def receive_attempt(spare_cwd: str | None) -> None:
     line = sys.stdin.readline()
     if not line:
         raise SystemExit('The supervisor closed the spare engine before handing it an attempt')
-    handoff = json.loads(line)
-    environment = handoff['env']
+    take_attempt(json.loads(line), spare_cwd)
+
+
+def take_attempt(handoff, spare_cwd: str | None, allowed=None, prepare=None) -> None:
+    """Start from the attempt's environment and directory, as if started with them.
+
+    `allowed`, when given, is every name the handoff may set; anything else is
+    refused. `prepare` runs once the environment is the attempt's and before
+    anything held back for the attempt does.
+    """
+    environment = handoff.get('env') if isinstance(handoff, dict) else None
     if not isinstance(environment, dict) or not all(
         isinstance(key, str) and isinstance(value, str) for key, value in environment.items()
     ):
+        raise SystemExit('Invalid attempt handoff')
+    if allowed is not None and not set(environment) <= set(allowed):
+        raise SystemExit('The attempt handoff names a value the spare was not started without')
+    if not isinstance(handoff.get('cwd'), str):
         raise SystemExit('Invalid attempt handoff')
     if os.environ.get('TERMINAL_CWD') != spare_cwd:
         # The configuration named the terminal's directory as the engine loaded,
         # and it would have replaced the attempt's own value just the same.
         environment = {key: value for key, value in environment.items() if key != 'TERMINAL_CWD'}
     os.environ.update(environment)
-    for key in ('MELETE_RUNTIME_SPARE', 'MELETE_RUNTIME_SPARE_KEYS'):
+    for key in ('MELETE_RUNTIME_SPARE', 'MELETE_RUNTIME_SPARE_KEYS', 'MELETE_RUNTIME_HANDOFF'):
         os.environ.pop(key, None)
     os.chdir(handoff['cwd'])
+    if prepare is not None:
+        prepare()
     # What was held back for the attempt, the plugin's tools among it, now has one.
     hooks = sys.modules.get('melete_runtime_hooks')
     if hooks is not None:
         hooks.attempt_arrived()
 
 
+HANDOFF_PATH = '/melete/handoff'
+HANDOFF_LIMIT = 65_536
+
+
+def await_handoff(host: str, port: int, key: str):
+    """Serve one authenticated handoff on the engine's own port, then stop serving.
+
+    A container engine is reached over its private network, not a pipe, so its
+    attempt arrives the same way its runs later do. Until then a GET of the path
+    answers once the engine has loaded, which is how the supervisor knows the
+    spare is ready; nothing else is served, so a readiness probe of the engine's
+    own API keeps waiting. The engine's own server binds the same port once this
+    one has closed.
+    """
+    import hmac
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    received = {}
+
+    class Handoff(BaseHTTPRequestHandler):
+        def log_message(self, *args):  # noqa: D102 - quiet: requests carry no secrets, but no noise either
+            pass
+
+        def authorised(self) -> bool:
+            given = self.headers.get('authorization', '')
+            return hmac.compare_digest(given.encode(), f'Bearer {key}'.encode())
+
+        def answer(self, status: int) -> None:
+            self.send_response(status)
+            self.send_header('content-length', '0')
+            self.send_header('connection', 'close')
+            self.end_headers()
+
+        def do_GET(self):  # noqa: N802 - the standard library's name
+            if self.path != HANDOFF_PATH:
+                return self.answer(404)
+            self.answer(200 if self.authorised() else 401)
+
+        def do_POST(self):  # noqa: N802 - the standard library's name
+            if self.path != HANDOFF_PATH:
+                return self.answer(404)
+            if not self.authorised():
+                return self.answer(401)
+            try:
+                length = int(self.headers.get('content-length', '0'))
+                if length <= 0 or length > HANDOFF_LIMIT:
+                    raise ValueError('size')
+                handoff = json.loads(self.rfile.read(length))
+                if not isinstance(handoff, dict):
+                    raise ValueError('shape')
+            except ValueError:
+                return self.answer(400)
+            received['handoff'] = handoff
+            self.answer(204)
+
+    server = HTTPServer((host, port), Handoff)
+    try:
+        while 'handoff' not in received:
+            server.handle_request()
+    finally:
+        server.server_close()
+    return received['handoff']
+
+
+def render_attempt_configuration(started_with, handed) -> None:
+    """Write the engine's configuration again, now with the attempt's capability.
+
+    The program is the boot script's own, handed over by it, so a container
+    engine started with its attempt and one handed it later are configured by
+    the same code. It reads the environment the container was started with and
+    the attempt's values, not what the engine mirrored into its own environment
+    while it loaded (the engine fills in TERMINAL_ENV and the rest of its
+    terminal defaults from its configuration as it imports).
+    """
+    program = started_with.get('MELETE_BOOT_CONFIG', '')
+    if not program:
+        raise SystemExit('The boot configuration program was not handed to the spare')
+    environment = {**started_with, **handed}
+    target = str(Path(environment['HERMES_HOME']) / 'config.yaml')
+    loaded = dict(os.environ)
+    saved = sys.argv
+    sys.argv = ['-c', target]
+    os.environ.clear()
+    os.environ.update(environment)
+    try:
+        exec(compile(program, 'melete-boot-config', 'exec'), {'__name__': '__main__'})  # noqa: S102
+    finally:
+        sys.argv = saved
+        os.environ.clear()
+        os.environ.update(loaded)
+        os.environ.pop('MELETE_BOOT_CONFIG', None)
+
+
 if __name__ == '__main__':
     if os.environ.get('MELETE_RUNTIME_SPARE') == '1':
+        started_with = dict(os.environ)
         watched = frozenset(filter(None, os.environ.get('MELETE_RUNTIME_SPARE_KEYS', '').split(',')))
         spare_cwd = os.environ.get('TERMINAL_CWD')
         sys.argv = ['hermes']
-        read = prewarm(watched)
+        # A container's directory is its workspace's mount point, before and after.
+        read = prewarm(watched, os.environ.get('MELETE_RUNTIME_HANDOFF') != 'http')
         if read:
             print(f'{SPARE_UNUSABLE} {",".join(sorted(read))}', flush=True)
             raise SystemExit(3)
         print(SPARE_READY, flush=True)
+        if os.environ.get('MELETE_RUNTIME_HANDOFF') == 'http':
+            # A container engine: its port is fixed and the supervisor reaches
+            # it by address, so there is no listener to report.
+            handoff = await_handoff(
+                os.environ.get('API_SERVER_HOST', '0.0.0.0'),
+                int(os.environ['API_SERVER_PORT']),
+                os.environ['API_SERVER_KEY'],
+            )
+            take_attempt(
+                handoff,
+                spare_cwd,
+                allowed=watched,
+                prepare=lambda: render_attempt_configuration(started_with, handoff['env']),
+            )
+            sys.argv = ['hermes', 'gateway', 'run']
+            from hermes_cli.main import main
+            main()
+            raise SystemExit(0)
         receive_attempt(spare_cwd)
     os.environ['API_SERVER_PORT'] = '0'
     sys.argv = ['hermes', 'gateway', 'run']

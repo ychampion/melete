@@ -7,6 +7,7 @@
  * the person's own session, never cached, and drawn only in their browser.
  */
 import {
+  conversationPrivacyUpdate,
   localModelCheckRequest,
   PRIVACY_CATEGORIES,
   type PrivacySettings,
@@ -207,6 +208,17 @@ export function mountPrivacy(app: Hono, options: PrivacyRouteOptions) {
 
   app.get('/conversations/:id/privacy', async (c) => {
     const { id, router } = await conversation(c);
+    const state = await router.store.conversation(id);
+    return c.json({ sensitive: state.sensitive, turns: await router.conversationTurns(id) });
+  });
+
+  // The person clears a verdict they say is wrong, or marks the conversation
+  // themselves. Clearing also withdraws an open privacy question's premise, so
+  // the next request is not held for it.
+  app.put('/conversations/:id/privacy', async (c) => {
+    const { spaceId, id, router } = await conversation(c);
+    const input = conversationPrivacyUpdate.parse(await c.req.json());
+    await router.store.markConversation(id, spaceId, input.sensitive);
     const state = await router.store.conversation(id);
     return c.json({ sensitive: state.sensitive, turns: await router.conversationTurns(id) });
   });
