@@ -209,6 +209,10 @@ export const conversationPrivacy = z.strictObject({
 });
 export type ConversationPrivacy = z.infer<typeof conversationPrivacy>;
 
+/** The person's own word on a conversation: a topic marks it sensitive, null clears a wrong verdict. */
+export const conversationPrivacyUpdate = z.strictObject({ sensitive: sensitiveTopic.nullable() });
+export type ConversationPrivacyUpdate = z.infer<typeof conversationPrivacyUpdate>;
+
 export const privacyRevealRequest = z.strictObject({ turn_id: id() });
 export const privacyReveal = z.strictObject({
   items: z.array(
@@ -234,6 +238,10 @@ export const privacyOperations = {
   'POST /privacy/preview': { request: privacyPreviewRequest, response: privacyPreview },
   'POST /privacy/local-model/check': { request: localModelCheckRequest, response: localModelCheck },
   'GET /conversations/{id}/privacy': { response: conversationPrivacy },
+  'PUT /conversations/{id}/privacy': {
+    request: conversationPrivacyUpdate,
+    response: conversationPrivacy,
+  },
   'POST /conversations/{id}/privacy/reveal': {
     request: privacyRevealRequest,
     response: privacyReveal,

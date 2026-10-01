@@ -1515,3 +1515,21 @@
   border-radius: 5px;
   background: var(--line);
 }
+
+/* Under the header: this chat is kept private because of what was said in it. */
+.private-topic {
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px 0 24px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--chip-bg);
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+@media (max-width: 767px) {
+  .private-topic {
+    margin: 8px 16px 0;
+  }
+}

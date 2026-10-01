@@ -90,6 +90,7 @@ import type {
   RuleBounds,
   SearchResult,
   SendOutcome,
+  SensitiveTopic,
   StreamGap,
   Task,
   TaskInput,
@@ -477,6 +478,11 @@ export const adapter = {
     guard<LocalModelCheck>(() => api.POST('/privacy/local-model/check', { body })),
   conversationPrivacy: (id: string) =>
     guard<ConversationPrivacy>(() => api.GET('/conversations/{id}/privacy', path(id))),
+  /** The person's own word on a conversation: a topic marks it private, null clears it. */
+  markConversationPrivacy: (id: string, sensitive: SensitiveTopic | null) =>
+    guard<ConversationPrivacy>(() =>
+      api.PUT('/conversations/{id}/privacy', { ...path(id), body: { sensitive } }),
+    ),
   /** The real values behind one answer's placeholders, for this screen only. */
   revealPrivacy: (id: string, turnId: string) =>
     guard<PrivacyReveal>(() =>

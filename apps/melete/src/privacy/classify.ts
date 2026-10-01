@@ -3,61 +3,79 @@
  * records, personal finances. These run on the person's own model, or wait for
  * them to say otherwise.
  *
- * The rules read what the person wrote and what tools brought back, never the
- * system prompt (memory and skills there mention these words constantly). One
- * strong phrase ("my therapy notes", "tax return") is enough; otherwise three
- * different topic words must appear in the person's own words, so a passing
- * "anxiety about the trip" does not move a conversation off the cloud model.
- * Text a tool brought back counts only through strong phrases: a newsletter
- * that mentions interest rates is not a finance conversation.
+ * Only the person's own words decide it. What a tool brought back (a web page,
+ * a search result, a file, an email) never makes a conversation sensitive: a
+ * news story about a continent's "addiction" to gas is not a therapy
+ * conversation. Tool text still has its details swapped for placeholders, span
+ * by span, before a cloud model sees it.
+ *
+ * In the person's words one topic word is not enough either. It takes a phrase
+ * about themselves or their own records ("my therapist", "I was diagnosed
+ * with", "my bank account number", "my tax returns"), or three different topic
+ * words in what they wrote, so a passing "anxiety about the trip" or a
+ * question about a news story does not move a conversation off the cloud
+ * model. The person can clear a verdict that is wrong.
  */
 import type { SensitiveTopic } from '@melete/contracts';
 import type { Protocol } from './redact.ts';
 
-type Topic = { strong: RegExp; weak: RegExp };
+type Topic = { strong: RegExp[]; weak: RegExp };
+
+const WORD = String.raw`[\w'’-]+\s+`;
+/** The person speaking about themselves: "my …", "I have been …", "I'm …". */
+const SELF = `(?:my|I(?:['’]m|['’]ve| am| have| had| was| got| get| feel| take| need| keep)(?: been)?)`;
+/** Their own documents, or the ones in front of them: "my", "our", "these", "the attached". */
+const OWN = `(?:my|our|these|this|those|attached)`;
+
+/** The person about themselves, with up to two words between: "I have been struggling with X". */
+const about = (terms: string) =>
+  new RegExp(String.raw`\b${SELF}\s+(?:${WORD}){0,2}?(?:${terms})\b`, 'i');
+/** Their own records: "my last two bank statements", "these lab results". */
+const records = (terms: string) =>
+  new RegExp(String.raw`\b${OWN}\s+(?:${WORD}){0,2}?(?:${terms})\b`, 'i');
+const phrase = (terms: string) => new RegExp(String.raw`\b(?:${terms})\b`, 'i');
 
 const TOPICS: Record<SensitiveTopic, Topic> = {
   health: {
-    strong:
-      /\b(?:medical (?:records?|history|report|chart|notes?)|health records?|lab (?:results?|report|work)|blood (?:test|work) results?|discharge (?:summary|papers|notes)|diagnosed with|my diagnosis|a diagnosis of|biopsy|pathology report|MRI (?:results?|report|scan)|CT scan|x-ray results?|prescriptions? (?:for|history|list)|my (?:medications?|meds|symptoms)|chemotherapy|oncolog(?:y|ist)|HIV|miscarriage|pregnancy test|ICD-?10 codes?)\b/i,
-    weak: /\b(?:doctor|physician|clinic|hospital|patient|symptoms?|medication|dosage|prescri(?:bed|ption)|surgery|treatment|illness|disease|allerg(?:y|ies)|chronic|insulin|diabetes|cancer|pregnan(?:t|cy)|referral|specialist|cardiolog\w*|neurolog\w*|dermatolog\w*|ultrasound|vaccin\w*)\b/i,
+    strong: [
+      records(
+        `medical (?:records?|history|reports?|charts?|notes?)|health records?|lab (?:results?|reports?|work)|blood (?:tests?|work)(?: results?)?|discharge (?:summary|papers|notes)|pathology reports?|biopsy(?: results?)?|(?:MRI|CT|PET) (?:scans?|results?|reports?)|x-ray results?|prescriptions?|ICD-?10 codes?`,
+      ),
+      about(
+        String.raw`diagnos(?:is|ed)|symptoms|medications?|meds|surgery|chemo(?:therapy)?|biopsy|HIV|cancer|diabetes|tumou?r|miscarriage|pregnan(?:t|cy)|blood pressure|allerg(?:y|ies)|illness|chronic \w+|treatment`,
+      ),
+      phrase(
+        `my (?:doctor|GP|oncologist|surgeon|cardiologist|neurologist)|I(?:['’]ve| have| was| got| am)(?: been| being)? diagnosed|a diagnosis of`,
+      ),
+    ],
+    weak: /\b(?:doctor|physician|clinic|hospital|patient|symptoms?|medication|dosage|prescri(?:bed|ption)|surgery|treatment|illness|disease|allerg(?:y|ies)|chronic|insulin|diabetes|cancer|pregnan(?:t|cy)|referral|specialist|cardiolog\w*|neurolog\w*|dermatolog\w*|ultrasound|vaccin\w*|biopsy|HIV)\b/i,
   },
   therapy: {
-    strong:
-      /\b(?:therapy (?:notes?|sessions?)|session notes|my therap(?:y|ist)|counsel(?:l)?ing (?:notes?|sessions?)|psychiatr(?:ist|ic)|psycholog(?:ist|ical assessment)|mental health|panic attacks?|suicid(?:e|al)|self[- ]harm|eating disorder|PTSD|bipolar|schizophreni\w*|depressive episode|trauma (?:therapy|history)|rehab(?:ilitation)? (?:for|program)|addiction|relapse)\b/i,
-    weak: /\b(?:therap(?:y|ist)|counsel(?:l)?or|counsel(?:l)?ing|anxiety|depress(?:ed|ion)|trauma|grief|feelings|intrusive thoughts|mood|journal(?:ing)?|medicat(?:ed|ion)|CBT|DBT|EMDR|coping)\b/i,
+    strong: [
+      records(`(?:therapy|counsel(?:l)?ing) (?:session )?(?:notes?|sessions?)|session notes`),
+      phrase(
+        `my (?:therapist|psychiatrist|psychologist|counsel(?:l)?or|shrink)|I(?:['’]m| am) (?:feeling )?(?:suicidal|depressed)|(?:kill|hurt|harm) myself|relapse prevention plan`,
+      ),
+      about(
+        String.raw`depression|depressive episodes?|anxiety (?:disorder|attacks?)|panic attacks?|PTSD|bipolar|schizophreni\w*|eating disorder|addiction|relapsed?|rehab|OCD|ADHD|self[- ]harm(?:ing)?|suicidal(?: thoughts)?|mental health|trauma|therapy|psychiatric \w+`,
+      ),
+    ],
+    weak: /\b(?:therap(?:y|ist)|counsel(?:l)?or|counsel(?:l)?ing|anxiety|depress(?:ed|ion)|trauma|grief|feelings|intrusive thoughts|mood|journal(?:ing)?|medicat(?:ed|ion)|CBT|DBT|EMDR|coping|addiction|relapse|psychiatr\w+|panic)\b/i,
   },
   finance: {
-    strong:
-      /\b(?:bank statements?|tax returns?|W-2 form|form W-?2|form 1099|1099-(?:MISC|NEC|INT|DIV|B|K|R)|P60|payslips?|pay ?stubs?|credit reports?|credit score|mortgage (?:statement|application)|loan application|net worth|brokerage statement|401\(?k\)? (?:statement|balance)|IRA (?:statement|balance)|investment portfolio|my (?:debts?|salary|income|finances)|bankruptcy|account statements?|transaction history)\b/i,
-    weak: /\b(?:account balance|transactions?|salary|income|tax(?:es)?|IRS|HMRC|mortgage|loan|debts?|credit card|investments?|portfolio|pension|dividends?|brokerage|overdraft|interest rate)\b/i,
+    strong: [
+      records(
+        String.raw`bank statements?|tax returns?|W-?2s?|W-2 forms?|1099s?|1099-(?:MISC|NEC|INT|DIV|B|K|R)|P60s?|payslips?|pay ?stubs?|credit reports?|mortgage (?:statements?|applications?)|loan applications?|brokerage statements?|401\(?k\)? (?:statements?|balances?)|IRA (?:statements?|balances?)|account statements?|transaction history|card statements?`,
+      ),
+      phrase(
+        String.raw`my (?:bank account(?: number| details| balance)?|account (?:number|balance)|routing number|sort code|IBAN|card number|credit card(?: number| statement| debt)?|debts?|salary|income|finances|net worth|credit score|savings(?: account)?|investments?|investment portfolio|pension|mortgage|loans?|tax(?:es)?|bankruptcy|401\(?k\)?|IRA)|I(?:['’]m| am)? (?:filing|filed|declaring|declared) (?:for )?bankruptcy|I owe`,
+      ),
+    ],
+    weak: /\b(?:account balance|transactions?|salary|income|tax(?:es)?|IRS|HMRC|mortgage|loan|debts?|credit card|investments?|portfolio|pension|dividends?|brokerage|overdraft|interest rate|bankruptcy|credit score|net worth)\b/i,
   },
 };
 
 const ORDER: SensitiveTopic[] = ['therapy', 'health', 'finance'];
-
-function distinctWeak(text: string, pattern: RegExp): number {
-  const global = new RegExp(pattern.source, 'gi');
-  const seen = new Set<string>();
-  for (const match of text.matchAll(global)) seen.add(match[0].toLowerCase());
-  return seen.size;
-}
-
-/** The first enabled topic this text belongs to, or null. */
-export function classify(
-  text: string | { person: string; tools: string },
-  enabled: readonly SensitiveTopic[],
-): SensitiveTopic | null {
-  const { person, tools } = typeof text === 'string' ? { person: text, tools: '' } : text;
-  if (!person.trim() && !tools.trim()) return null;
-  for (const topic of ORDER) {
-    if (!enabled.includes(topic)) continue;
-    const rules = TOPICS[topic];
-    if (rules.strong.test(person) || rules.strong.test(tools)) return topic;
-    if (distinctWeak(person, rules.weak) >= 3) return topic;
-  }
-  return null;
-}
 
 /** What one string says about each topic; the same string always says the same. */
 export type TopicHits = { strong: SensitiveTopic[]; weak: Record<SensitiveTopic, string[]> };
@@ -66,7 +84,7 @@ function hitsOf(text: string): TopicHits {
   const hits: TopicHits = { strong: [], weak: { health: [], therapy: [], finance: [] } };
   for (const topic of ORDER) {
     const rules = TOPICS[topic];
-    if (rules.strong.test(text)) hits.strong.push(topic);
+    if (rules.strong.some((rule) => rule.test(text))) hits.strong.push(topic);
     const global = new RegExp(rules.weak.source, 'gi');
     hits.weak[topic] = [
       ...new Set([...text.matchAll(global)].map((match) => match[0].toLowerCase())),
@@ -75,13 +93,34 @@ function hitsOf(text: string): TopicHits {
   return hits;
 }
 
+function verdict(
+  said: readonly TopicHits[],
+  enabled: readonly SensitiveTopic[],
+): SensitiveTopic | null {
+  for (const topic of ORDER) {
+    if (!enabled.includes(topic)) continue;
+    if (said.some((hits) => hits.strong.includes(topic))) return topic;
+    if (new Set(said.flatMap((hits) => hits.weak[topic])).size >= 3) return topic;
+  }
+  return null;
+}
+
+/** The first enabled topic the person's own words belong to, or null. */
+export function classify(
+  person: string,
+  enabled: readonly SensitiveTopic[],
+): SensitiveTopic | null {
+  if (!person.trim()) return null;
+  return verdict([hitsOf(person)], enabled);
+}
+
 /**
- * `classify` over the separate strings of a request, each read once and
+ * `classify` over the separate messages the person wrote, each read once and
  * remembered: a conversation re-sends its whole history every turn, and only
  * the new messages need reading.
  */
 export function classifyParts(
-  parts: { person: string[]; tools: string[] },
+  person: readonly string[],
   enabled: readonly SensitiveTopic[],
   cache: Map<string, TopicHits>,
 ): SensitiveTopic | null {
@@ -94,15 +133,7 @@ export function classifyParts(
     }
     return hits;
   };
-  const person = parts.person.map(read);
-  const tools = parts.tools.map(read);
-  for (const topic of ORDER) {
-    if (!enabled.includes(topic)) continue;
-    if ([...person, ...tools].some((hits) => hits.strong.includes(topic))) return topic;
-    const words = new Set(person.flatMap((hits) => hits.weak[topic]));
-    if (words.size >= 3) return topic;
-  }
-  return null;
+  return verdict(person.filter((text) => text.trim()).map(read), enabled);
 }
 
 /** What the person and the tools contributed to a request: never system or developer text. */

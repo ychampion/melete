@@ -40,7 +40,10 @@ export const privacyConversation = pgTable('privacy_conversation', {
   spaceId: text('space_id')
     .notNull()
     .references(() => space.id, { onDelete: 'cascade' }),
-  /** health, therapy or finance, once found; it does not go back. */
+  /**
+   * health, therapy or finance, once found in what the person wrote; it does
+   * not go back unless they clear it, which stores `none`.
+   */
   sensitive: text('sensitive'),
   /** allowed: the person agreed to a redacted cloud request. declined: not this turn. */
   consent: text('consent'),

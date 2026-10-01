@@ -112,6 +112,8 @@ export type Scope = {
 
 export type ConversationState = {
   sensitive: SensitiveTopic | null;
+  /** The person said this conversation is not sensitive: it is not judged again. */
+  cleared: boolean;
   consent: 'allowed' | 'declined' | null;
   consentTurnId: string | null;
   askedAttemptId: string | null;
@@ -137,13 +139,26 @@ export interface PrivacyStore {
   saveVault(conversationId: string, spaceId: string, vault: Vault): Promise<void>;
   conversation(conversationId: string): Promise<ConversationState>;
   /**
-   * Change only the named fields. `sensitive` is never cleared once set: a
-   * write that carries none, or races another, leaves it as it was.
+   * Change only the named fields. `sensitive` is never cleared here once set:
+   * a write that carries none, or races another, leaves it as it was. Only the
+   * person changes it, through `markConversation`.
    */
   updateConversation(
     conversationId: string,
     spaceId: string,
-    change: Partial<ConversationState>,
+    change: Partial<Omit<ConversationState, 'cleared'>>,
+  ): Promise<void>;
+  /**
+   * The person's own word on a conversation: a topic marks it sensitive, null
+   * clears a verdict they say is wrong and keeps it from being judged again.
+   * Either way an earlier answer to the privacy question no longer applies;
+   * a question still open stays the conversation's, so answering it is still
+   * recorded as a decision.
+   */
+  markConversation(
+    conversationId: string,
+    spaceId: string,
+    sensitive: SensitiveTopic | null,
   ): Promise<void>;
   /**
    * Withdraw "send a redacted version" answers given before the space, or one
@@ -170,8 +185,12 @@ export interface PrivacyStore {
   ): Promise<boolean>;
 }
 
+/** Stored in place of a topic when the person cleared one: "once found, stays found" keeps it. */
+const CLEARED = 'none';
+
 const EMPTY_CONVERSATION: ConversationState = {
   sensitive: null,
+  cleared: false,
   consent: null,
   consentTurnId: null,
   askedAttemptId: null,
@@ -300,7 +319,9 @@ export class PostgresPrivacyStore implements PrivacyStore {
       from privacy_conversation where conversation_id = ${conversationId}`;
     if (!row) return { ...EMPTY_CONVERSATION };
     return {
-      sensitive: (row.sensitive as SensitiveTopic | null) ?? null,
+      sensitive:
+        row.sensitive && row.sensitive !== CLEARED ? (row.sensitive as SensitiveTopic) : null,
+      cleared: row.sensitive === CLEARED,
       consent: (row.consent as ConversationState['consent']) ?? null,
       consentTurnId: row.consent_turn_id ? String(row.consent_turn_id) : null,
       askedAttemptId: row.asked_attempt_id ? String(row.asked_attempt_id) : null,
@@ -329,6 +350,18 @@ export class PostgresPrivacyStore implements PrivacyStore {
         asked_attempt_id = case when ${has('askedAttemptId')} then excluded.asked_attempt_id
           else privacy_conversation.asked_attempt_id end,
         updated_at = now()`;
+  }
+
+  async markConversation(
+    conversationId: string,
+    spaceId: string,
+    sensitive: SensitiveTopic | null,
+  ): Promise<void> {
+    const value = sensitive ?? CLEARED;
+    await this.sql`insert into privacy_conversation (conversation_id, space_id, sensitive)
+      values (${conversationId}, ${spaceId}, ${value})
+      on conflict (conversation_id) do update set sensitive = excluded.sensitive,
+        consent = null, consent_turn_id = null, updated_at = now()`;
   }
 
   async revokeConsent(spaceId: string, agentIds: string[] | null): Promise<void> {
@@ -440,13 +473,28 @@ export class MemoryPrivacyStore implements PrivacyStore {
   async updateConversation(
     conversationId: string,
     _spaceId: string,
-    change: Partial<ConversationState>,
+    change: Partial<Omit<ConversationState, 'cleared'>>,
   ) {
     const current = await this.conversation(conversationId);
     this.conversations.set(conversationId, {
       ...current,
       ...change,
-      sensitive: current.sensitive ?? change.sensitive ?? null,
+      sensitive: current.cleared ? null : (current.sensitive ?? change.sensitive ?? null),
+    });
+  }
+
+  async markConversation(
+    conversationId: string,
+    _spaceId: string,
+    sensitive: SensitiveTopic | null,
+  ) {
+    const current = await this.conversation(conversationId);
+    this.conversations.set(conversationId, {
+      ...current,
+      sensitive,
+      cleared: sensitive === null,
+      consent: null,
+      consentTurnId: null,
     });
   }
 

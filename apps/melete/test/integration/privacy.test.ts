@@ -219,6 +219,34 @@ describe.if(handle !== null)('the privacy router over Postgres', () => {
     });
   });
 
+  test('the person clears a topic, and the router cannot set it again', async () => {
+    const store = new PostgresPrivacyStore(sql, () => KEY);
+    await store.updateConversation(CONVERSATION, SPACE, {
+      sensitive: 'therapy',
+      consent: 'allowed',
+      askedAttemptId: ATTEMPT,
+    });
+    await store.markConversation(CONVERSATION, SPACE, null);
+    expect(await store.conversation(CONVERSATION)).toMatchObject({
+      sensitive: null,
+      cleared: true,
+      consent: null,
+      // An open question stays the conversation's, so its answer is still a decision.
+      askedAttemptId: ATTEMPT,
+    });
+    await store.updateConversation(CONVERSATION, SPACE, { sensitive: 'therapy' });
+    expect(await store.conversation(CONVERSATION)).toMatchObject({
+      sensitive: null,
+      cleared: true,
+    });
+    // The person's own marking does set it.
+    await store.markConversation(CONVERSATION, SPACE, 'finance');
+    expect(await store.conversation(CONVERSATION)).toMatchObject({
+      sensitive: 'finance',
+      cleared: false,
+    });
+  });
+
   test('marking the space or an agent private takes back an earlier "send a redacted version"', async () => {
     const live = router();
     const store = live.store;

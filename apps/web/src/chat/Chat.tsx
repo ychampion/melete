@@ -57,6 +57,7 @@ import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { CasePanel, useCase } from './CasePanel.tsx';
 import { Composer } from './Composer.tsx';
 import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
+import { PrivateTopic } from './PrivateTopic.tsx';
 import { Protected } from './Protected.tsx';
 import {
   ActionBar,
@@ -891,6 +892,7 @@ export function ChatScreen({ id }: { id: string | null }) {
               <RailToggle />
             )}
           </div>
+          <PrivateTopic conversationId={conversationId} refresh={transcript.status} />
           <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
             <div className="chat-messages">
               {state.error ? (
