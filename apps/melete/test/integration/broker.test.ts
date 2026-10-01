@@ -372,6 +372,110 @@ describe('durable action lifecycle', () => {
     expect(s.calls()).toBe(0);
   });
 
+  databaseTest(
+    'a dispatch whose sender stopped is settled at once, as its connector says',
+    async () => {
+      const s = await setup();
+      s.connector.dispatchBudgetMs = () => 5 * 60_000;
+      const asked: string[] = [];
+      s.connector.abandoned = async (action) => {
+        asked.push(action.id);
+        return { outcome: 'failed', reason: 'cut off by a restart', retryable: false };
+      };
+      const proposal = await s.broker.propose(s.claims, {
+        kind: 'test.send',
+        connection_id: s.connectionId,
+        payload: {},
+      });
+      await s.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+      // Sent a moment ago by a process that has since stopped: its attempt ended.
+      await s.sql`update action set status = 'dispatched', dispatched_at = now() - interval '1 second' where id = ${proposal.action_id}`;
+      await s.sql`update attempt set ended_at = now() where id = ${s.claims.attempt_id}`;
+      expect(await s.broker.recoverDispatched()).toBe(1);
+      const settled = await loadAction(s.sql, proposal.action_id);
+      expect(settled.status).toBe('failed');
+      expect(settled.reconciliation).toMatchObject({ reason: 'cut off by a restart' });
+      expect(asked).toEqual([proposal.action_id]);
+      expect(s.calls()).toBe(0);
+    },
+  );
+
+  databaseTest(
+    'a dispatch whose attempt stopped heartbeating is unknown at once without a connector account',
+    async () => {
+      const s = await setup();
+      s.connector.dispatchBudgetMs = () => 5 * 60_000;
+      const proposal = await s.broker.propose(s.claims, {
+        kind: 'test.send',
+        connection_id: s.connectionId,
+        payload: {},
+      });
+      await s.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+      await s.sql`update action set status = 'dispatched', dispatched_at = now() - interval '1 second' where id = ${proposal.action_id}`;
+      await s.sql`update attempt set lease_expires_at = now() - interval '1 minute' where id = ${s.claims.attempt_id}`;
+      expect(await s.broker.recoverDispatched()).toBe(1);
+      expect((await loadAction(s.sql, proposal.action_id)).status).toBe('unknown');
+    },
+  );
+
+  databaseTest(
+    'a dispatch this process is still waiting on is never taken for an orphan',
+    async () => {
+      let release: (result: DispatchResult) => void = () => {};
+      let started: () => void = () => {};
+      const running = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const s = await setup(async () => {
+        started();
+        return new Promise<DispatchResult>((resolve) => {
+          release = resolve;
+        });
+      });
+      s.connector.dispatchBudgetMs = () => 5 * 60_000;
+      s.connector.abandoned = async () => ({
+        outcome: 'failed',
+        reason: 'wrong',
+        retryable: false,
+      });
+      const proposal = await s.broker.propose(s.claims, {
+        kind: 'test.send',
+        connection_id: s.connectionId,
+        payload: {},
+      });
+      await s.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+      const pending = s.broker.dispatch(proposal.action_id);
+      await running;
+      // The attempt ended (a stop, say) while the send is still on its way.
+      await s.sql`update attempt set ended_at = now() where id = ${s.claims.attempt_id}`;
+      expect(await s.broker.recoverDispatched()).toBe(0);
+      release({
+        outcome: 'succeeded',
+        receipt: {
+          action_id: proposal.action_id,
+          connection_id: s.connectionId,
+          external_ref: 'sent',
+          detail: {},
+          received_at: new Date().toISOString(),
+          late: false,
+        },
+      });
+      expect((await pending).status).toBe('succeeded');
+    },
+  );
+
   databaseTest('the runtime can answer a message with a glyph instead of prose', async () => {
     const s = await setup();
     const [message] = await s.sql`insert into event (job_id, type, payload, dedup_key)
@@ -624,4 +728,61 @@ describe('full effect authority binding', () => {
       },
     );
   }
+});
+
+describe('a command shown for approval', () => {
+  databaseTest(
+    'one too long for its card is refused when proposed, and nothing is recorded',
+    async () => {
+      if (!fixture) throw new Error('Postgres fixture unavailable');
+      const seed = await seedJob(fixture.sql, { scopes: ['terminal.run'] });
+      const terminal: Connector = {
+        manifest: {
+          ...manifest,
+          tools: [
+            {
+              name: 'terminal.run',
+              description: 'Run a command',
+              input_schema: { type: 'object' },
+              effect_class: 'write_reversible',
+              required_scopes: ['terminal.run'],
+              requires_approval: true,
+              verify: false,
+            },
+          ],
+        },
+        async execute() {
+          throw new Error('nothing is sent');
+        },
+        async verify() {
+          return { decision: 'unsupported', reason: 'fixture' };
+        },
+        async health() {
+          return { status: 'ok', detail: 'fixture', checked_at: new Date().toISOString() };
+        },
+      };
+      const broker = new BrokerService({
+        sql: fixture.sql,
+        connectors: { get: (id: string) => (id === seed.connectionId ? terminal : undefined) },
+      });
+      const refused = (await rejectionOf(
+        broker.propose(seed.claims, {
+          kind: 'terminal.run',
+          connection_id: seed.connectionId,
+          payload: { command: `echo ${'x'.repeat(3000)}` },
+        }),
+      )) as { code?: string; message?: string };
+      expect(refused.code).toBe('payload_invalid');
+      expect(refused.message).toContain('Nothing ran');
+      expect(
+        await fixture.sql`select id from action where job_id = ${seed.claims.job_id}`,
+      ).toHaveLength(0);
+      const asked = await broker.propose(seed.claims, {
+        kind: 'terminal.run',
+        connection_id: seed.connectionId,
+        payload: { command: 'date -u' },
+      });
+      expect(asked.status).toBe('needs_approval');
+    },
+  );
 });

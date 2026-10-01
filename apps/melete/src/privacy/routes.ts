@@ -214,10 +214,22 @@ export function mountPrivacy(app: Hono, options: PrivacyRouteOptions) {
 
   // The person clears a verdict they say is wrong, or marks the conversation
   // themselves. Clearing also withdraws an open privacy question's premise, so
-  // the next request is not held for it.
+  // the next request is not held for it. Only the person whose conversation it
+  // is may clear it: the space's owner may see a member's conversation, but
+  // saying it is not sensitive sends what the member wrote to a cloud model
+  // without asking them.
   app.put('/conversations/:id/privacy', async (c) => {
     const { spaceId, id, router } = await conversation(c);
     const input = conversationPrivacyUpdate.parse(await c.req.json());
+    if (input.sensitive === null) {
+      const person = await router.store.conversationPerson(id);
+      if (!person || person !== c.get('owner')?.id)
+        throw new ServiceError(
+          'scope_denied',
+          'Only the person whose conversation this is can say it is not sensitive.',
+          403,
+        );
+    }
     await router.store.markConversation(id, spaceId, input.sensitive);
     const state = await router.store.conversation(id);
     return c.json({ sensitive: state.sensitive, turns: await router.conversationTurns(id) });

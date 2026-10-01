@@ -28,15 +28,18 @@ import {
   type JsonValue,
   type Receipt,
   type SandboxConnectionConfig,
+  type VerifyResult,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
+import { appendEvent } from '../broker/records.ts';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
 import { isDesktopProvider } from '../sandbox/adapters/docker.ts';
 import {
   checkSandboxConfiguration,
   probeSandboxProvider,
   sandboxSpecFor,
+  sandboxTimeZone,
 } from '../sandbox/connection.ts';
 import { SandboxRefusal } from '../sandbox/manifest.ts';
 import { type CommandResult, type ExecutionRecord, runCommand } from '../sandbox/marker.ts';
@@ -82,7 +85,38 @@ export type SandboxExecOptions = {
    * is held under it: no connection is ever allowed more than the whole service.
    */
   maxPerConnection?: number;
+  /** How long a command waits for the agent's computer while another conversation uses it. */
+  workspaceWaitMs?: number;
 };
+
+/**
+ * How long a command waits for the agent's computer while another
+ * conversation of the same agent has it, before it is refused with the reason.
+ */
+export const WORKSPACE_WAIT_MS = 60_000;
+
+/**
+ * Why a command cut off by a stop or restart of the service was not finished,
+ * when the computer it ran in could reach nothing outside.
+ */
+export const INTERRUPTED =
+  "Melete stopped while this command was running in the agent's computer, so its result was not captured. It may have run in part or in full, and anything it changed is inside that computer: check before running it again";
+
+/** The same, when the computer had network access: what it did may have reached outside. */
+export const INTERRUPTED_WITH_NETWORK =
+  "Melete stopped while this command was running in the agent's computer, so its result was not captured. It may have run in part or in full. The computer had network access, so the command may also have reached outside it, for example by sending or uploading something: check before running it again";
+const WORKSPACE_POLL_MS = 2_000;
+
+/** The conversation holding the computer, as the model can repeat it to the person. */
+function holderName(holder: { jobId: string | null; title: string | null } | null, self: string) {
+  if (holder?.jobId === self)
+    return 'an earlier step of this same conversation that is still ending';
+  const title = holder?.title
+    ?.replace(/\p{Cc}/gu, ' ')
+    .trim()
+    .slice(0, 120);
+  return title ? `another conversation ("${title}")` : 'another conversation';
+}
 
 const digest = (value: Uint8Array): string => createHash('sha256').update(value).digest('hex');
 
@@ -189,15 +223,16 @@ export function sandboxDispatchBudgetMs(
   action: Pick<Action, 'canonical_payload'> & Partial<Pick<Action, 'kind'>>,
 ): number {
   if (action.kind && COMPUTER_TOOL_NAMES.has(action.kind))
-    return COMPUTER_BUDGET_MS + SANDBOX_SYNC_ALLOWANCE_MS;
+    return COMPUTER_BUDGET_MS + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS;
   let timeout: number = EXEC_LIMITS.max_timeout_ms;
   try {
     timeout = payloadOf(action).timeout_ms ?? timeout;
   } catch {
     // A payload this connector refuses is refused at once; the default serves.
   }
-  // Opening the session and syncing the workspace both ways, around the command.
-  return timeout + SANDBOX_SYNC_ALLOWANCE_MS;
+  // Waiting for the computer, opening the session and syncing the workspace
+  // both ways, around the command.
+  return timeout + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS;
 }
 
 /**
@@ -219,6 +254,14 @@ export function outputText(preview: Uint8Array, cut: boolean): { text: string; b
   return { text: text.replaceAll('\0', '�'), binary };
 }
 
+/**
+ * The words a command runs as. The person's time zone is set on each command,
+ * not only when the sandbox was made, so a workspace resumed after the zone
+ * changed still reads the current one.
+ */
+export const commandArgv = (command: string, timeZone: string | null): string[] =>
+  timeZone ? ['env', `TZ=${timeZone}`, 'sh', '-c', command] : ['sh', '-c', command];
+
 /** A path inside the sandbox's own workspace; the marker runner refuses the rest. */
 const sandboxCwd = (cwd: string | undefined) =>
   cwd === undefined || cwd === '.' ? SANDBOX_WORKDIR : `${SANDBOX_WORKDIR}/${cwd}`;
@@ -236,13 +279,16 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       throw new Error('connector action identity mismatch');
   };
 
-  /** What the job says about its agent and its sandbox-time cap. */
+  /** What the job says about its agent, its sandbox-time cap and the person's time zone. */
   const jobFacts = async (jobId: string) => {
-    const [row] = await sql`select agent_id, budget from job where id = ${jobId}`;
+    const [row] = await sql`select j.agent_id, j.budget, p.time_zone from job j
+      left join experience_profile p on p.space_id = j.space_id
+      where j.id = ${jobId}`;
     const budget = (row?.budget ?? {}) as Record<string, unknown>;
     const cap = budget.max_sandbox_seconds;
     return {
       agentId: (row?.agent_id as string | null) ?? null,
+      timeZone: sandboxTimeZone(row?.time_zone as string | null | undefined),
       // The field belongs to the job budget; absent means no cap.
       maxSandboxSeconds: typeof cap === 'number' && Number.isFinite(cap) ? cap : null,
     };
@@ -290,6 +336,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         jobId: ctx.job_id,
         attemptId: action.attempt_id,
         session,
+        timeZone: facts.timeZone,
       });
     const opening = {
       connectionId: options.connectionId,
@@ -299,20 +346,94 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       maxSandboxSeconds: facts.maxSandboxSeconds,
       concurrency,
     };
-    if (facts.agentId && options.config.persistence !== 'ephemeral')
+    if (facts.agentId && options.config.persistence !== 'ephemeral') {
+      const agentId = facts.agentId;
+      const persistence = options.config.persistence;
       return {
-        row: await sessions.openWorkspace(
-          { ...opening, agentId: facts.agentId, persistence: options.config.persistence },
-          provider,
-          specFor,
-          signal,
+        row: await waitForWorkspace(ctx, agentId, signal, () =>
+          sessions.openWorkspace({ ...opening, agentId, persistence }, provider, specFor, signal),
         ),
         reused: false,
       };
+    }
     return {
       row: await sessions.open({ ...opening, agentId: null }, provider, specFor, signal),
       reused: false,
     };
+  };
+
+  /**
+   * Whether the conversation holding the computer may be named to this one:
+   * only one of the same person's that was not found sensitive. Anyone else's,
+   * or one about a sensitive topic, is "another conversation".
+   */
+  const nameable = async (holderJobId: string | null, self: string): Promise<boolean> => {
+    if (!holderJobId) return false;
+    if (holderJobId === self) return true;
+    const [row] = await sql`select
+        coalesce(h.principal_id, (select id from owner limit 1)) is not distinct from
+          coalesce(c.principal_id, (select id from owner limit 1)) as same_person,
+        exists (select 1 from privacy_conversation p
+          where p.conversation_id = coalesce(h.experience_parent_id, h.id)
+            and p.sensitive <> 'none') as sensitive
+      from job h, job c where h.id = ${holderJobId} and c.id = ${self}`;
+    return row?.same_person === true && row?.sensitive === false;
+  };
+
+  /**
+   * Open the agent's workspace, waiting a bounded time while another
+   * conversation of the same agent holds it. A holder whose attempt is gone (a
+   * restart, a stop) is released at once rather than when its lease runs out.
+   * The conversation that waits says so, and a refusal after the wait names
+   * the conversation that has the computer, so the model can tell the person
+   * instead of retrying blind.
+   */
+  const waitForWorkspace = async <T>(
+    ctx: ConnectorContext,
+    agentId: string,
+    signal: AbortSignal,
+    open: () => Promise<T>,
+  ): Promise<T> => {
+    const scope = { spaceId: ctx.space_id, agentId };
+    const deadline = Date.now() + (options.workspaceWaitMs ?? WORKSPACE_WAIT_MS);
+    let announced = false;
+    for (;;) {
+      try {
+        return await open();
+      } catch (error) {
+        if (!(error instanceof SandboxRefusal) || error.code !== 'workspace_busy') throw error;
+      }
+      if (
+        await sessions.releaseOrphanedWorkspace(
+          scope,
+          { connectionId: options.connectionId, provider },
+          signal,
+        )
+      )
+        continue;
+      const found = await sessions.workspaceHolder(ctx.space_id, agentId);
+      const holder =
+        found && !(await nameable(found.jobId, ctx.job_id)) ? { ...found, title: null } : found;
+      const by = holderName(holder, ctx.job_id);
+      if (Date.now() >= deadline)
+        throw new SandboxRefusal(
+          'workspace_busy',
+          `the agent's computer is in use by ${by}, and only one conversation can use it at a time. Nothing ran. Tell the person, and try again once that conversation has finished, or carry on without the computer`,
+        );
+      if (!announced) {
+        announced = true;
+        await appendEvent(
+          sql,
+          ctx.job_id,
+          null,
+          'notice',
+          { kind: 'computer_busy', held_by: holder?.title ?? null },
+          `${ctx.idempotency_key}:computer_busy`,
+        ).catch(() => {});
+      }
+      await Bun.sleep(Math.min(WORKSPACE_POLL_MS, Math.max(0, deadline - Date.now())));
+      signal.throwIfAborted();
+    }
   };
 
   const receiptFor = (
@@ -474,6 +595,60 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     }
   };
 
+  const verify = async (action: Action, ctx: ConnectorContext): Promise<VerifyResult> => {
+    checkIdentity(action, ctx);
+    // Nothing records a click the way a marker records a command: whether it
+    // landed is not something the sandbox can say afterwards.
+    if (COMPUTER_TOOL_NAMES.has(action.kind))
+      return { decision: 'undecided', reason: 'a computer action leaves no record to ask' };
+    const signal = ctx.signal ?? AbortSignal.timeout(120_000);
+    const [dispatched] = await sql`select session_id from sandbox_command
+      where action_id = ${action.id}`;
+    const session = dispatched ? await sessions.get(dispatched.session_id as string) : null;
+    if (!session) return { decision: 'undecided', reason: 'this command has no session to ask' };
+    let payload: Payload;
+    try {
+      payload = payloadOf(action);
+    } catch (error) {
+      return { decision: 'undecided', reason: (error as Error).message };
+    }
+    const result = await runCommand({
+      provider,
+      handle: sessionHandle(session),
+      request: {
+        marker: action.id,
+        argv: ['sh', '-c', payload.command],
+        cwd: sandboxCwd(payload.cwd),
+        timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.max_timeout_ms,
+        // Never a first run: a verify asks what the marker says, and nothing else.
+        dispatch: 'again',
+      },
+      workRoot: options.workRoot,
+      jobId: ctx.job_id,
+      signal,
+    });
+    if (result.outcome === 'succeeded') {
+      const stored = await workspaceFile(ctx.job_id, result.record.outputPath).catch(() => null);
+      const detail = await detailFor(payload, result.record, session, stored);
+      const evidence: Record<string, JsonValue> = {
+        output_digest: result.record.outputDigest,
+        sandbox_id: session.providerSandboxId,
+        session_id: session.id,
+      };
+      return {
+        decision: 'succeeded',
+        evidence,
+        receipt: receiptFor(action, detail, result.record.outputDigest, result.late),
+      };
+    }
+    if (result.outcome === 'failed' && result.retryable) {
+      // The provider refused the start: nothing ran, and the ledger can say so.
+      const evidence: Record<string, JsonValue> = { reason: result.reason };
+      return { decision: 'failed', evidence };
+    }
+    return { decision: 'undecided', reason: result.reason };
+  };
+
   return {
     manifest: sandboxManifestFor(provider),
     catalog: { audience: 'owner' },
@@ -487,8 +662,10 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       if (COMPUTER_TOOL_NAMES.has(action.kind)) return computer(action, ctx, signal);
       let payload: Payload;
       let session: SessionRow;
+      let timeZone: string | null = null;
       try {
         payload = payloadOf(action);
+        timeZone = (await jobFacts(ctx.job_id)).timeZone;
         const opened = await sessionFor(action, ctx, signal);
         // Renewed before anything is sent: a session reused near the end of
         // its lease would otherwise be swept while this command runs.
@@ -520,7 +697,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         handle: sessionHandle(session),
         request: {
           marker: action.id,
-          argv: ['sh', '-c', payload.command],
+          argv: commandArgv(payload.command, timeZone),
           cwd: sandboxCwd(payload.cwd),
           timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.max_timeout_ms,
           dispatch,
@@ -544,58 +721,45 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       return outcome;
     },
 
-    async verify(action, ctx) {
-      checkIdentity(action, ctx);
-      // Nothing records a click the way a marker records a command: whether it
-      // landed is not something the sandbox can say afterwards.
+    verify,
+
+    async abandoned(action, ctx) {
+      // A click has no record to read back, and it can reach a page outside.
       if (COMPUTER_TOOL_NAMES.has(action.kind))
-        return { decision: 'undecided', reason: 'a computer action leaves no record to ask' };
-      const signal = ctx.signal ?? AbortSignal.timeout(120_000);
-      const [dispatched] = await sql`select session_id from sandbox_command
-        where action_id = ${action.id}`;
-      const session = dispatched ? await sessions.get(dispatched.session_id as string) : null;
-      if (!session) return { decision: 'undecided', reason: 'this command has no session to ask' };
-      let payload: Payload;
+        return { outcome: 'unknown', reason: 'the service stopped before the desktop answered' };
+      let verdict: VerifyResult;
       try {
-        payload = payloadOf(action);
-      } catch (error) {
-        return { decision: 'undecided', reason: (error as Error).message };
+        verdict = await verify(action, { ...ctx, signal: AbortSignal.timeout(30_000) });
+      } catch {
+        verdict = { decision: 'undecided', reason: 'the command could not be asked about' };
       }
-      const result = await runCommand({
-        provider,
-        handle: sessionHandle(session),
-        request: {
-          marker: action.id,
-          argv: ['sh', '-c', payload.command],
-          cwd: sandboxCwd(payload.cwd),
-          timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.max_timeout_ms,
-          // Never a first run: a verify asks what the marker says, and nothing else.
-          dispatch: 'again',
-        },
-        workRoot: options.workRoot,
-        jobId: ctx.job_id,
-        signal,
-      });
-      if (result.outcome === 'succeeded') {
-        const stored = await workspaceFile(ctx.job_id, result.record.outputPath).catch(() => null);
-        const detail = await detailFor(payload, result.record, session, stored);
-        const evidence: Record<string, JsonValue> = {
-          output_digest: result.record.outputDigest,
-          sandbox_id: session.providerSandboxId,
-          session_id: session.id,
-        };
+      if (verdict.decision === 'succeeded' && verdict.receipt)
+        return { outcome: 'succeeded', receipt: verdict.receipt };
+      if (verdict.decision === 'failed')
         return {
-          decision: 'succeeded',
-          evidence,
-          receipt: receiptFor(action, detail, result.record.outputDigest, result.late),
+          outcome: 'failed',
+          reason: 'the command never started, so it can be run again',
+          retryable: true,
         };
+      // The command ran, or may have, inside the agent's own computer, and its
+      // result cannot be read now. Asking the person whether it "arrived"
+      // would be a question about a place only the agent uses. Only a
+      // computer that could reach nothing outside keeps everything it did
+      // inside; when that is not known, the command may have reached out.
+      let closed = false;
+      try {
+        const [ran] = await sql`select s.egress_policy from sandbox_command c
+          join sandbox_session s on s.id = c.session_id
+          where c.action_id = ${action.id}`;
+        closed = (ran?.egress_policy as { kind?: string } | undefined)?.kind === 'deny_all';
+      } catch {
+        // Not known: said as the wider case.
       }
-      if (result.outcome === 'failed' && result.retryable) {
-        // The provider refused the start: nothing ran, and the ledger can say so.
-        const evidence: Record<string, JsonValue> = { reason: result.reason };
-        return { decision: 'failed', evidence };
-      }
-      return { decision: 'undecided', reason: result.reason };
+      return {
+        outcome: 'failed',
+        reason: closed ? INTERRUPTED : INTERRUPTED_WITH_NETWORK,
+        retryable: false,
+      };
     },
 
     close: options.close,

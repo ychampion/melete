@@ -49,7 +49,7 @@ import {
   connectorAllowsAudience,
 } from '../connectors/types.ts';
 import { agentAccess, directSend } from '../experience/access.ts';
-import { plainText } from '../experience/projectors.ts';
+import { plainText, tooLongToAsk } from '../experience/projectors.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
@@ -310,6 +310,8 @@ export class BrokerService implements BrokerOperations {
     addUsedSchema: false,
   });
   private readonly dispatchTimeoutMs: number;
+  /** Dispatches this process sent and is still waiting on, by action id. */
+  private readonly inFlight = new Set<string>();
 
   constructor(private readonly options: BrokerOptions) {
     this.sql = options.sql;
@@ -1157,6 +1159,12 @@ export class BrokerService implements BrokerOperations {
       if (!row) throw new Error('Action insert returned no record');
       const created = actionFromRow(row);
       const classified = await this.classify(tx, job, created, tool);
+      // What the person approves is shown to them whole: a command too long
+      // for its card is refused here, and nothing of it is recorded.
+      const hidden = classified.requires_approval
+        ? tooLongToAsk(created.kind, created.canonical_payload)
+        : null;
+      if (hidden) throw new BrokerFault('payload_invalid', hidden);
       const expiresAt = classified.requires_approval
         ? new Date(Date.now() + (this.options.approvalTtlMs ?? 86_400_000)).toISOString()
         : null;
@@ -1625,88 +1633,111 @@ export class BrokerService implements BrokerOperations {
     cellClaim?: { claims: CapabilityClaims; claimed: () => void },
   ): Promise<Action> {
     const original = await loadAction(this.sql, id);
-    const prepared = await this.sql.begin(async (tx) => {
-      const job = await lockJob(tx, original.job_id);
-      const action = await loadAction(tx, id, true);
-      if (cellClaim) {
-        await checkAttempt(tx, job, cellClaim.claims);
-        if (
-          action.job_id !== cellClaim.claims.job_id ||
-          action.attempt_id !== cellClaim.claims.attempt_id
-        )
-          throw new BrokerFault('action_not_found');
-      }
-      if (action.status !== 'admitted') return { action, context: null };
-      // A parked action is admitted and not yet due. The row lock is what makes
-      // this a decision rather than a race: a wake, a repeated proposal and a
-      // queue redelivery all serialize on it, and a destination that asked to
-      // be left alone for a minute is left alone for a minute.
-      if (action.retry_after_at && Date.parse(action.retry_after_at) > now) {
-        return { action, context: null };
-      }
-      // A conversation that was stopped sends nothing more, however long an
-      // action of it waited for its destination.
-      if (['cancelled', 'failed', 'completed'].includes(job.state))
-        return {
-          action: await this.rejectDispatch(tx, job, action, 'the conversation was stopped'),
-          context: null,
-        };
-      // The person's approval of this action has its own expiry. An action that
-      // waited past it for its destination is refused, not sent on an old yes.
-      const [given] = action.authorization_ref
-        ? await tx`select expires_at from approval
-            where id = ${action.authorization_ref} and action_id = ${action.id}`
-        : [];
-      if (given?.expires_at && new Date(given.expires_at).getTime() <= Date.now())
-        return {
-          action: await this.rejectDispatch(
-            tx,
-            job,
-            action,
-            'its approval expired while it waited',
-          ),
-          context: null,
-        };
-      const inCell =
-        this.options.connectors
-          .get(action.connection_id)
-          ?.manifest.tools.some(
-            (tool) => tool.name === action.kind && tool.execution === 'in_cell',
-          ) && executionIntent.safeParse(action.canonical_payload).success;
-      if (cellClaim && !inCell) throw new BrokerFault('unknown_tool');
-      if (inCell && !cellClaim) return { action, context: null };
-      try {
-        const fenced = await this.checkAuthority(tx, job, action);
-        if (fenced)
+    // Marked before the row can read `dispatched`, so recovery never takes a
+    // dispatch this process is about to send, or is still waiting on, for one
+    // whose sender is gone. Cleared once the connector has answered, a late
+    // answer included.
+    const prior = this.inFlight.has(id);
+    this.inFlight.add(id);
+    const release = () => {
+      if (!prior) this.inFlight.delete(id);
+    };
+    let prepared: { action: Action; context: ConnectorContext | null };
+    try {
+      prepared = await this.sql.begin(async (tx) => {
+        const job = await lockJob(tx, original.job_id);
+        const action = await loadAction(tx, id, true);
+        if (cellClaim) {
+          await checkAttempt(tx, job, cellClaim.claims);
+          if (
+            action.job_id !== cellClaim.claims.job_id ||
+            action.attempt_id !== cellClaim.claims.attempt_id
+          )
+            throw new BrokerFault('action_not_found');
+        }
+        if (action.status !== 'admitted') return { action, context: null };
+        // A parked action is admitted and not yet due. The row lock is what makes
+        // this a decision rather than a race: a wake, a repeated proposal and a
+        // queue redelivery all serialize on it, and a destination that asked to
+        // be left alone for a minute is left alone for a minute.
+        if (action.retry_after_at && Date.parse(action.retry_after_at) > now) {
+          return { action, context: null };
+        }
+        // A conversation that was stopped sends nothing more, however long an
+        // action of it waited for its destination.
+        if (['cancelled', 'failed', 'completed'].includes(job.state))
           return {
-            action: await this.rejectDispatch(tx, job, action, fenced),
+            action: await this.rejectDispatch(tx, job, action, 'the conversation was stopped'),
             context: null,
           };
-      } catch (error) {
-        if (!(error instanceof BrokerFault)) throw error;
-        return { action: await this.rejectDispatch(tx, job, action, error.message), context: null };
-      }
-      // Admission authorizes these bytes only. A storage mutation must not reach a connector.
-      if (canonicalizePayload(action.canonical_payload).hash !== action.payload_hash) {
-        await this.setStatus(tx, action, 'failed');
-        await tx`update budget_ledger set settled = 0 where action_id = ${id} and settled is null`;
-        await appendEvent(tx, job.id, action.attempt_id, 'notice', {
-          action_id: id,
-          phase: 'dispatch_rejected',
-          code: 'approval_hash_mismatch',
-        });
-        return { action: await loadAction(tx, id), context: null };
-      }
-      await tx`update action set dispatched_at = now() where id = ${id}`;
-      await this.setStatus(tx, action, 'dispatched');
-      return { action: await loadAction(tx, id), context: this.context(job, action) };
-    });
+        // The person's approval of this action has its own expiry. An action that
+        // waited past it for its destination is refused, not sent on an old yes.
+        const [given] = action.authorization_ref
+          ? await tx`select expires_at from approval
+            where id = ${action.authorization_ref} and action_id = ${action.id}`
+          : [];
+        if (given?.expires_at && new Date(given.expires_at).getTime() <= Date.now())
+          return {
+            action: await this.rejectDispatch(
+              tx,
+              job,
+              action,
+              'its approval expired while it waited',
+            ),
+            context: null,
+          };
+        const inCell =
+          this.options.connectors
+            .get(action.connection_id)
+            ?.manifest.tools.some(
+              (tool) => tool.name === action.kind && tool.execution === 'in_cell',
+            ) && executionIntent.safeParse(action.canonical_payload).success;
+        if (cellClaim && !inCell) throw new BrokerFault('unknown_tool');
+        if (inCell && !cellClaim) return { action, context: null };
+        try {
+          const fenced = await this.checkAuthority(tx, job, action);
+          if (fenced)
+            return {
+              action: await this.rejectDispatch(tx, job, action, fenced),
+              context: null,
+            };
+        } catch (error) {
+          if (!(error instanceof BrokerFault)) throw error;
+          return {
+            action: await this.rejectDispatch(tx, job, action, error.message),
+            context: null,
+          };
+        }
+        // Admission authorizes these bytes only. A storage mutation must not reach a connector.
+        if (canonicalizePayload(action.canonical_payload).hash !== action.payload_hash) {
+          await this.setStatus(tx, action, 'failed');
+          await tx`update budget_ledger set settled = 0 where action_id = ${id} and settled is null`;
+          await appendEvent(tx, job.id, action.attempt_id, 'notice', {
+            action_id: id,
+            phase: 'dispatch_rejected',
+            code: 'approval_hash_mismatch',
+          });
+          return { action: await loadAction(tx, id), context: null };
+        }
+        await tx`update action set dispatched_at = now() where id = ${id}`;
+        await this.setStatus(tx, action, 'dispatched');
+        return { action: await loadAction(tx, id), context: this.context(job, action) };
+      });
+    } catch (error) {
+      release();
+      throw error;
+    }
+    const connector = prepared.context
+      ? this.options.connectors.get(prepared.action.connection_id)
+      : undefined;
+    // Nothing is sent from here on any of these paths: a cell runs its own
+    // command and reports it, and a missing connector settles at once.
+    if (!prepared.context || cellClaim || !connector) release();
     if (!prepared.context) return prepared.action;
     if (cellClaim) {
       cellClaim.claimed();
       return prepared.action;
     }
-    const connector = this.options.connectors.get(prepared.action.connection_id);
     const readOnly = prepared.action.effect_class === 'read';
     if (!connector)
       return this.recordResult(
@@ -1733,6 +1764,7 @@ export class BrokerService implements BrokerOperations {
         },
       ),
     );
+    void execution.then(release, release);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<'timeout'>((resolve) => {
       timer = setTimeout(() => resolve('timeout'), budgetMs);
@@ -2357,28 +2389,55 @@ export class BrokerService implements BrokerOperations {
     return loadAction(tx, action.id);
   }
 
-  /** Only uncertain dispositions are recovered. This path never invokes execute(). */
+  /**
+   * Only uncertain dispositions are recovered. This path never invokes execute().
+   *
+   * A dispatch is waited on for its whole budget while its sender may still
+   * answer. One whose attempt has ended or stopped heartbeating, and that this
+   * process is not waiting on, has no sender left: the service stopped or
+   * restarted under it. That one is settled now rather than after its budget,
+   * so the next attempt is not refused over an action nobody will finish.
+   */
   async recoverDispatched(now = Date.now()): Promise<number> {
     const cutoff = new Date(now - this.dispatchTimeoutMs).toISOString();
-    const rows = await this
-      .sql`select id, connection_id, kind, effect_class, canonical_payload, dispatched_at
-      from action where status = 'dispatched' and dispatched_at <= ${cutoff}`;
+    const rows = await this.sql`select a.id, a.connection_id, a.kind, a.effect_class,
+        a.canonical_payload, a.dispatched_at,
+        not exists (select 1 from attempt t where t.id = a.attempt_id and t.ended_at is null
+          and (t.lease_expires_at is null or t.lease_expires_at > now())) as orphaned
+      from action a where a.status = 'dispatched'`;
     let recovered = 0;
     for (const row of rows) {
-      // A dispatch its connector gave longer than the default is still inside
-      // its own budget, and calling it unknown now would be a guess.
+      const orphaned = row.orphaned === true && !this.inFlight.has(row.id as string);
       const connector = this.options.connectors.get(row.connection_id);
-      const budgetMs = connector
-        ? this.dispatchBudget(connector, {
-            kind: row.kind,
-            canonical_payload: row.canonical_payload,
-          })
-        : this.dispatchTimeoutMs;
-      if (new Date(row.dispatched_at).getTime() > now - budgetMs) continue;
-      await this.recordResult(
-        row.id,
-        uncertainResult(row.effect_class === 'read', 'Dispatch ended without a durable receipt'),
+      if (!orphaned) {
+        if (new Date(row.dispatched_at).getTime() > Date.parse(cutoff)) continue;
+        // A dispatch its connector gave longer than the default is still inside
+        // its own budget, and calling it unknown now would be a guess.
+        const budgetMs = connector
+          ? this.dispatchBudget(connector, {
+              kind: row.kind,
+              canonical_payload: row.canonical_payload,
+            })
+          : this.dispatchTimeoutMs;
+        if (new Date(row.dispatched_at).getTime() > now - budgetMs) continue;
+      }
+      const fallback = uncertainResult(
+        row.effect_class === 'read',
+        orphaned
+          ? 'The service stopped before this dispatch answered'
+          : 'Dispatch ended without a durable receipt',
       );
+      let result: DispatchResult = fallback;
+      if (orphaned && connector?.abandoned) {
+        try {
+          const action = await loadAction(this.sql, row.id as string);
+          const [job] = await this.sql<LockedJob[]>`select * from job where id = ${action.job_id}`;
+          if (job) result = await connector.abandoned(action, this.context(job, action));
+        } catch {
+          result = fallback;
+        }
+      }
+      await this.recordResult(row.id, result);
       recovered += 1;
     }
     return recovered;

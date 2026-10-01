@@ -38,13 +38,16 @@ const ENDED_MESSAGE = 'This was withdrawn because the work it was for has ended.
  * Withdraw the permissions still waiting in jobs of this space that have
  * ended. A job withdraws them itself when it ends; this catches any left
  * behind, including ones from before that was so, each time they are read.
+ * Only the reader's own jobs: reading your permissions never writes to
+ * another person's.
  */
 export async function withdrawEndedPermissions(sql: Sql, spaceId: string, jobId?: string) {
   const ended = await sql`select distinct a.job_id from approval p
     join action a on a.id = p.action_id join job j on j.id = a.job_id
     where j.space_id = ${spaceId} and p.decision is null and a.status = 'needs_approval'
       and j.state = any(${[...ENDED_STATES]}::text[])
-      and (${jobId ?? null}::text is null or j.id = ${jobId ?? null})`;
+      and (${jobId ?? null}::text is null or j.id = ${jobId ?? null})
+      ${ownJobClause(sql, 'j')}`;
   for (const row of ended) {
     const id = String(row.job_id);
     await sql.begin(async (tx) => {

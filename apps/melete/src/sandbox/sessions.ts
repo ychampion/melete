@@ -24,6 +24,7 @@
  */
 import type { Sql, TransactionSql } from 'postgres';
 import { recordId } from '../broker/records.ts';
+import { type ComputerControls, computerControls } from './computer-control.ts';
 import { checkSpec, LABEL_SESSION, SandboxRefusal, type SessionPersistence } from './manifest.ts';
 import type { SessionStatus } from './schema.ts';
 import {
@@ -99,6 +100,8 @@ export type SessionOptions = {
   workspaceRetentionSeconds: number;
   /** Where session ids come from; replaced only by tests that replay recorded traffic. */
   ids?: () => string;
+  /** Who is driving each computer; the process's own table unless a test brings one. */
+  controls?: ComputerControls;
 };
 
 /**
@@ -191,6 +194,25 @@ const BUSY =
   'another attempt is using this agent’s workspace; it is not shared, and this attempt is refused rather than kept waiting';
 
 /**
+ * A session whose attempt is no longer alive: the attempt ended, its lease ran
+ * out without a heartbeat, or its row is gone. The attempt's lease is renewed
+ * every few seconds while it runs, so this is the short expiry a session
+ * inherits: a workspace is held only while the attempt that opened it is.
+ */
+const attemptGone = (sql: Query) => sql`not exists (
+    select 1 from attempt a where a.id = sandbox_session.attempt_id and a.ended_at is null
+      and (a.lease_expires_at is null or a.lease_expires_at > now()))`;
+
+/** Who holds an agent's workspace, as a person would name it. */
+export type WorkspaceHolder = {
+  sessionId: string;
+  jobId: string | null;
+  attemptId: string | null;
+  /** The title of the conversation or task that holds it. */
+  title: string | null;
+};
+
+/**
  * Mark a session lost. With `from`, only while it is still in that status, so
  * a session that changed after it was looked at is left to its new owner.
  */
@@ -221,6 +243,7 @@ async function usedSeconds(tx: Query, jobId: string): Promise<number> {
 
 export class SandboxSessions {
   private readonly ids: () => string;
+  private readonly controls: ComputerControls;
 
   constructor(
     private readonly sql: Sql,
@@ -234,6 +257,16 @@ export class SandboxSessions {
     )
       throw new Error('workspace retention needs a positive whole number of seconds');
     this.ids = options.ids ?? (() => recordId('sbx'));
+    this.controls = options.controls ?? computerControls;
+  }
+
+  /**
+   * Whether a person has taken over this computer. Taking over ends the
+   * agent's attempt, and the computer is the person's until they hand it
+   * back: it is not settled with that attempt, nor handed to another one.
+   */
+  heldByPerson(providerSandboxId: string): boolean {
+    return this.controls.state(providerSandboxId).control === 'human';
   }
 
   async get(id: string): Promise<SessionRow | null> {
@@ -842,13 +875,81 @@ export class SandboxSessions {
   }
 
   /**
+   * End the lease of every live session whose attempt is gone, so the next
+   * sweep settles it at once rather than when its own lease runs out. A
+   * service that stopped in the middle of a command leaves exactly this: an
+   * attempt ended or no longer heartbeating, and a session still `ready`.
+   * A computer a person has taken over is left alone: taking over ends the
+   * attempt on purpose. With `scope`, only one agent's workspace in one space.
+   */
+  async expireOrphaned(scope?: { spaceId: string; agentId: string }): Promise<string[]> {
+    const rows = await this.sql`update sandbox_session
+      set lease_expires_at = now() - interval '1 second',
+        last_error = coalesce(last_error, 'the attempt that held this session ended')
+      where status in ('opening', 'ready') and attempt_id is not null
+        and lease_expires_at >= now()
+        and ${attemptGone(this.sql)}
+        and not (provider_sandbox_id = any(${this.controls.heldByPerson()}::text[]))
+        ${scope ? this.sql`and space_id = ${scope.spaceId} and agent_id = ${scope.agentId}` : this.sql``}
+      returning id`;
+    return rows.map((row) => row.id as string);
+  }
+
+  /**
+   * Settle an agent's workspace when the attempt holding it is gone: suspend
+   * it now, so an attempt asking for it is not refused until the lease would
+   * have run out. Returns whether anything was released.
+   */
+  async releaseOrphanedWorkspace(
+    scope: { spaceId: string; agentId: string },
+    reach: { connectionId: string; provider: SandboxProvider },
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const expired = await this.expireOrphaned(scope);
+    if (!expired.length) return false;
+    // Only through the connection asking: another connection's sandbox is
+    // another account's, and is left to the sweep that holds its key.
+    const swept = await this.sweep(
+      (adapter, connectionId) =>
+        adapter === reach.provider.capabilities.adapter && connectionId === reach.connectionId
+          ? reach.provider
+          : undefined,
+      signal,
+      expired,
+    );
+    const [still] = await this.sql`select 1 from sandbox_session
+      where id in ${this.sql(expired)} and status in ('opening', 'ready') limit 1`;
+    return swept.length > 0 || !still;
+  }
+
+  /** The session that holds an agent's workspace, and the conversation or task it serves. */
+  async workspaceHolder(spaceId: string, agentId: string): Promise<WorkspaceHolder | null> {
+    const [row] = await this.sql`select s.id, s.job_id, s.attempt_id, j.title
+      from sandbox_session s left join job j on j.id = s.job_id
+      where s.space_id = ${spaceId} and s.agent_id = ${agentId}
+        and s.status in ('opening', 'ready')
+      order by s.opened_at desc limit 1`;
+    if (!row) return null;
+    return {
+      sessionId: row.id as string,
+      jobId: (row.job_id as string | null) ?? null,
+      attemptId: (row.attempt_id as string | null) ?? null,
+      title: (row.title as string | null) ?? null,
+    };
+  }
+
+  /**
    * Destroy the sandboxes of sessions whose lease has run out, suspend
    * workspaces whose attempt stopped renewing them, and destroy workspaces
    * suspended for longer than the retention period. Returns the sessions it
    * closed.
    */
-  async sweep(providerFor: ProviderFor, signal: AbortSignal): Promise<string[]> {
+  async sweep(providerFor: ProviderFor, signal: AbortSignal, only?: string[]): Promise<string[]> {
     const swept: string[] = [];
+    // A session whose attempt is gone is settled now, not when its own lease
+    // would have run out: nothing is left to use it, and while it stays live
+    // the agent's workspace is refused to every other attempt.
+    if (!only) await this.expireOrphaned();
     // A session whose job was removed is taken now rather than when its lease
     // runs out: no attempt is left to use it, and its time counts against no
     // job's cap.
@@ -856,6 +957,7 @@ export class SandboxSessions {
       await this.sql`select * from sandbox_session
         where status in ('opening', 'ready', 'closing')
           and (lease_expires_at < now() or job_id is null)
+          ${only ? this.sql`and id in ${this.sql(only)}` : this.sql``}
         order by lease_expires_at limit 100`
     ).map(toRow);
     for (const candidate of expired) {
@@ -905,6 +1007,7 @@ export class SandboxSessions {
         // Recorded on the row; the next sweep tries again.
       }
     }
+    if (only) return swept;
     const stale = await this.sql`select id, adapter, connection_id, status from sandbox_session
       where status = 'paused'
         and lease_expires_at < now() - make_interval(secs => ${this.options.workspaceRetentionSeconds})

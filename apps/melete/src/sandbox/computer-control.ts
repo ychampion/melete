@@ -26,6 +26,11 @@ export class ComputerControls {
     return next;
   }
 
+  /** The sandboxes a person is driving now. */
+  heldByPerson(): string[] {
+    return [...this.held].filter(([, state]) => state.control === 'human').map(([id]) => id);
+  }
+
   onChange(listener: (sandbox: string) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

@@ -14,6 +14,7 @@ import { resolveExperienceGrant } from '../../src/experience/rules.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { principalContext } from '../../src/principals/authority.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
@@ -722,6 +723,36 @@ databaseTest(
     const [row] = await s.sql`select count(*)::int as count from action
       where job_id = ${s.claims.job_id}`;
     expect(row?.count).toBe(1);
+  },
+);
+
+databaseTest(
+  "reading the permissions withdraws only the reader's own ended jobs' permissions",
+  async () => {
+    if (!fixture) throw new Error('Postgres unavailable');
+    const s = await setup('calendar');
+    const jobId = s.claims.job_id;
+    const spaceId = s.claims.space_id;
+    const member = recordId('own');
+    const other = recordId('own');
+    await s.sql`insert into principal (id, email) values (${member}, 'member@example.test'),
+      (${other}, 'other@example.test')`;
+    await s.sql`update job set principal_id = ${member} where id = ${jobId}`;
+    const stuck = await s.broker.propose(s.claims, {
+      connection_id: s.connectionId,
+      kind: 'calendar.create',
+      payload: { summary: 'Dinner', start: '2026-09-13T18:00:00Z', end: '2026-09-13T19:00:00Z' },
+    });
+    await s.sql`update job set state = 'failed' where id = ${jobId}`;
+    const decision = async () =>
+      (await s.sql`select decision from approval where id = ${stuck.approval_id ?? ''}`)[0]
+        ?.decision ?? null;
+    // Someone else reading their own list leaves this one as it is.
+    await principalContext.run(other, () => s.permissions.list(spaceId));
+    expect(await decision()).toBeNull();
+    // Its own person reading theirs withdraws it.
+    await principalContext.run(member, () => s.permissions.list(spaceId));
+    expect(await decision()).toBe('denied');
   },
 );
 

@@ -167,6 +167,13 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
     'Looked at a page in your browser',
   ],
 };
+/** What a permission card asks for a command or code in the agent's own computer. */
+const SANDBOX_ASKS: Record<string, string> = {
+  'terminal.run': "Run a command on the agent's computer",
+  'exec.run': "Run a command in the agent's workspace",
+  'exec.python': "Run code in the agent's workspace",
+};
+
 /** What a permission card asks for a connected computer, before anything has run. */
 const DEVICE_ASKS: Record<string, string> = {
   'device.run': 'Run a command on your computer',
@@ -245,6 +252,76 @@ function deviceFacts(kind: string, payload: Record<string, unknown>) {
     ...(namesLocalNetwork(payload.url)
       ? [{ label: 'Network', value: 'This page is on your computer or your local network' }]
       : []),
+  ];
+}
+
+/** The command or code of a sandbox action, as it will run. */
+function sandboxIntent(kind: string, payload: Record<string, unknown>) {
+  if (!(kind in SANDBOX_ASKS)) return null;
+  return kind === 'terminal.run'
+    ? payload
+    : payload.intent && typeof payload.intent === 'object'
+      ? (payload.intent as Record<string, unknown>)
+      : {};
+}
+
+/**
+ * Why a sandbox command or code cannot be asked about, or null when it can: a
+ * card shows what will run whole, with anything invisible written out, and
+ * one longer than a card shows is refused rather than shown in part.
+ */
+export function tooLongToAsk(kind: string, payload: unknown): string | null {
+  const intent = sandboxIntent(
+    kind,
+    payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {},
+  );
+  if (!intent) return null;
+  for (const [label, value] of [
+    ['command', intent.command],
+    ['code', intent.code],
+  ] as const) {
+    if (typeof value !== 'string') continue;
+    const shown = showInvisible(value).length;
+    if (shown > DEVICE_LIMITS.max_command_chars)
+      return `This ${label} needs the person's approval, and at ${shown} characters as the approval card shows it, it is longer than the ${DEVICE_LIMITS.max_command_chars} a card shows whole, so it was not asked for. Nothing ran. Split it into shorter steps.`;
+  }
+  return null;
+}
+
+/**
+ * The exact command or code a sandbox action will run, and where, as a
+ * computer card shows it. A command runs from the agent's workspace, `/work`,
+ * unless it names a folder inside it. One longer than a card shows is refused
+ * when it is proposed (`tooLongToAsk`), so it is always shown whole; should one
+ * still reach a card, it is cut and says so.
+ */
+function sandboxFacts(kind: string, payload: Record<string, unknown>) {
+  const intent = sandboxIntent(kind, payload);
+  if (!intent) return [];
+  const limit = DEVICE_LIMITS.max_command_chars;
+  const cut: Array<{ label: string; value: string }> = [];
+  const shown = (value: unknown) => {
+    if (typeof value !== 'string' || !value.length) return null;
+    const whole = showInvisible(value);
+    if (whole.length <= limit) return whole;
+    cut.push({
+      label: 'Length',
+      value: `${whole.length} characters; only the first ${limit} are shown, so the rest is not on this card. Deny it unless you know what it runs.`,
+    });
+    return `${whole.slice(0, limit)}…`;
+  };
+  const command = shown(intent.command);
+  const code = shown(intent.code);
+  const cwd = typeof intent.cwd === 'string' && intent.cwd && intent.cwd !== '.' ? intent.cwd : '';
+  return [
+    ...(command ? [{ label: 'Command', value: command }] : []),
+    ...(code ? [{ label: 'Code', value: code }] : []),
+    ...cut,
+    { label: 'Runs in', value: showInvisible(cwd ? `/work/${cwd}` : '/work').slice(0, limit) },
+    {
+      label: 'Computer',
+      value: "The agent's own computer, not yours",
+    },
   ];
 }
 
@@ -612,7 +689,7 @@ export function projectPermission(input: {
     ? `${base} to ${recipientText(payload)}`
     : file
       ? `Save ${file.path}`
-      : (DEVICE_ASKS[input.action.kind] ?? base);
+      : (DEVICE_ASKS[input.action.kind] ?? SANDBOX_ASKS[input.action.kind] ?? base);
   const facts = [
     ...(file
       ? [
@@ -621,6 +698,7 @@ export function projectPermission(input: {
         ]
       : []),
     ...deviceFacts(input.action.kind, payload),
+    ...sandboxFacts(input.action.kind, payload),
     ...(draft
       ? [
           ...(input.connection.sender ? [{ label: 'From', value: input.connection.sender }] : []),

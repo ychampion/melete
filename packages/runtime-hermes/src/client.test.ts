@@ -347,6 +347,14 @@ describe('context assembly', () => {
     expect(IDENTITY).toContain('receipt');
   });
 
+  test("the model is told the person's time zone, and nothing about it when there is none", () => {
+    const zoned = renderInstructions({ ...bundle, time_zone: 'Asia/Kolkata' });
+    expect(zoned).toContain(
+      `The person's time zone is Asia/Kolkata. "Today", "now" and every date and time you give mean that zone, not UTC.`,
+    );
+    expect(renderInstructions(bundle)).not.toContain('time zone');
+  });
+
   test("the run names the workspace it is given in place of the bundle's", () => {
     const current = 'the current directory (.)';
     const placed = new HermesClient({ baseUrl: 'http://127.0.0.1:1', workspace: current });

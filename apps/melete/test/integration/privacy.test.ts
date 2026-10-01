@@ -58,6 +58,22 @@ describe.if(handle !== null)('the privacy router over Postgres', () => {
       values (${ATTEMPT}, ${CONVERSATION}, 1, 'test', 'fireworks', 'm', 'trn_1')`;
   });
 
+  test('a cleared conversation keeps when it was cleared, until it is marked again', async () => {
+    const store = new PostgresPrivacyStore(sql, () => KEY);
+    await store.updateConversation(CONVERSATION, SPACE, { sensitive: 'therapy' });
+    const before = Date.now() - 1_000;
+    await store.markConversation(CONVERSATION, SPACE, null);
+    const cleared = await store.conversation(CONVERSATION);
+    expect(cleared).toMatchObject({ sensitive: null, cleared: true });
+    expect(Date.parse(cleared.clearedAt ?? '')).toBeGreaterThan(before);
+    await store.markConversation(CONVERSATION, SPACE, 'health');
+    expect(await store.conversation(CONVERSATION)).toMatchObject({
+      sensitive: 'health',
+      cleared: false,
+      clearedAt: null,
+    });
+  });
+
   test('the vault is sealed at rest, bound to its conversation, and read back after a restart', async () => {
     const first = await router().prepare({
       principal: principal(CONVERSATION),

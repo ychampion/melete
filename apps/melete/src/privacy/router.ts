@@ -33,7 +33,13 @@ import {
   type SensitiveTopic,
 } from '@melete/contracts';
 import { GatewayError, type GatewayPrincipal, type GatewayProvider } from '../gateway/types.ts';
-import { authoredParts, classify, classifyParts, type TopicHits } from './classify.ts';
+import {
+  authoredParts,
+  classify,
+  classifyParts,
+  classifyStrong,
+  type TopicHits,
+} from './classify.ts';
 import type { Detection } from './detect.ts';
 import { isLocalUrl, type LocalModel, localDetect, pinLocalModel } from './local.ts';
 import { type Protocol, Redactor } from './redact.ts';
@@ -295,13 +301,17 @@ export class PrivacyRouter {
 
   /**
    * Whether this conversation must stay private, and what the person said
-   * about it. `person` is only ever what the person wrote.
+   * about it. `person` is only ever what the person wrote. `messages` are the
+   * person's messages with when they wrote them: in a conversation they said
+   * is not sensitive, only those written after they said so are read, and
+   * only a phrase about themselves marks it again.
    */
   private async privateDecision(
     scope: Scope,
     settings: ResolvedSettings,
     person: readonly string[],
     remember: boolean,
+    messages: readonly { content: string; at: string }[] = [],
   ): Promise<{
     private: boolean;
     sensitive: SensitiveTopic | null;
@@ -315,6 +325,16 @@ export class PrivacyRouter {
       sensitive = classifyParts(person, settings.topics, this.topics);
       if (remember && sensitive && scope.conversationId && scope.spaceId)
         await this.store.updateConversation(scope.conversationId, scope.spaceId, { sensitive });
+    } else if (!sensitive && conversation?.clearedAt && remember) {
+      const clearedAt = Date.parse(conversation.clearedAt);
+      sensitive = classifyStrong(
+        messages
+          .filter((message) => Date.parse(message.at) > clearedAt)
+          .map((message) => message.content),
+        settings.topics,
+      );
+      if (sensitive && scope.conversationId && scope.spaceId)
+        await this.store.markConversation(scope.conversationId, scope.spaceId, sensitive);
     }
     const agentPrivate = scope.agentId !== null && settings.privateAgents.has(scope.agentId);
     return {
@@ -431,13 +451,9 @@ export class PrivacyRouter {
     const settings = await this.settingsFor(scope.spaceId);
     // A model the owner confirmed they run takes private conversations as written.
     if (providerUrl && (await this.onDevice(settings, providerUrl))) return { proceed: true };
-    const person = [
-      bundle.job.objective,
-      ...bundle.inputs.new_user_messages
-        .filter((message) => message.role === 'user')
-        .map((message) => message.content),
-    ];
-    const decision = await this.privateDecision(scope, settings, person, true);
+    const messages = bundle.inputs.new_user_messages.filter((message) => message.role === 'user');
+    const person = [bundle.job.objective, ...messages.map((message) => message.content)];
+    const decision = await this.privateDecision(scope, settings, person, true, messages);
     if (!decision.private) return { proceed: true };
     const local = settings.local;
     const localReady =
