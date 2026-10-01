@@ -364,17 +364,23 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
           </div>
         </div>
       ) : null}
+      {/* The form centres with auto margins rather than justify-content, so a
+          form taller than the window scrolls from its top instead of being
+          pushed above the scroll area where it cannot be reached. */}
       <div
         className="col grow"
         style={{
           alignItems: 'center',
-          justifyContent: 'center',
           position: 'relative',
+          minWidth: 0,
           padding: 24,
           overflowY: 'auto',
         }}
       >
-        <div className="col" style={{ gap: 22, width: 400, maxWidth: '100%' }}>
+        <div
+          className="col"
+          style={{ gap: 22, width: 400, maxWidth: '100%', marginBlock: 'auto', flexShrink: 0 }}
+        >
           <div className="col" style={{ gap: 8 }}>
             <MeleteMark width={64} />
             <h1
