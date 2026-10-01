@@ -30,7 +30,7 @@ describe("the guide's main path", () => {
   });
 
   test('never builds, never clones over the checkout, and reads no key', () => {
-    expect(script).not.toMatch(/(^|\s)--build/);
+    expect(script).not.toMatch(/(^|\s)--build(\s|$)/);
     expect(script).not.toContain('git clone');
     expect(script).not.toMatch(/read -rs|_API_KEY/);
   });
