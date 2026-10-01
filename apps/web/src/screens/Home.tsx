@@ -35,6 +35,7 @@ import {
   useLoad,
   useNow,
 } from '../experience/hooks.ts';
+import { givenName } from '../experience/profile.ts';
 import { shortTitle } from '../experience/title.ts';
 import { progressOf } from '../experience/trace.ts';
 import type {
@@ -96,6 +97,74 @@ export function briefLine(
   if (waiting) return `${capital(waiting)}.`;
   if (owed) return `${capital(owed)}.`;
   return null;
+}
+
+/**
+ * The greeting as a person would say it: by first name, with a full stop, as
+ * in "Good morning, Jamie." A greeting without the name is left as it is.
+ */
+export function greetingWith(greeting: string, name: string): string {
+  const first = name.trim().split(/\s+/)[0] ?? '';
+  if (!first || !greeting.endsWith(`, ${name.trim()}`)) return greeting;
+  return `${greeting.slice(0, greeting.length - name.trim().length)}${first}.`;
+}
+
+/** Until the person gives a name, the greeting offers to learn it, once, in place. */
+function AskName({ onSaved }: { onSaved: () => void }) {
+  const { profile, refreshProfile } = useApp();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  if (!profile || givenName(profile)) return null;
+  if (!open)
+    return (
+      <button type="button" className="brief-ask" onClick={() => setOpen(true)}>
+        What should I call you?
+      </button>
+    );
+  return (
+    <form
+      className="row brief-name"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const name = draft.trim();
+        if (!name || busy) return;
+        setBusy(true);
+        void adapter
+          .saveProfile({ name, time_zone: profile.time_zone, day_hours: profile.day_hours })
+          .then((result) => {
+            setBusy(false);
+            if (result.data === null) {
+              toast({
+                kind: 'err',
+                title: 'Couldn’t save your name',
+                sub: result.error ?? result.unavailable ?? '',
+              });
+              return;
+            }
+            setOpen(false);
+            refreshProfile();
+            onSaved();
+          });
+      }}
+    >
+      <Input
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        placeholder="Your name"
+        aria-label="Your name"
+        maxLength={80}
+        height={36}
+        autoFocus
+      />
+      <Button type="submit" size="sm" loading={busy} disabled={!draft.trim() || busy}>
+        Save
+      </Button>
+      <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+        Not now
+      </Button>
+    </form>
+  );
 }
 
 /** How a company suggestion reads, by what the item is. Kinds with no phrase are not offered. */
@@ -552,22 +621,17 @@ const STATUS_LINE: Partial<Record<Conversation['status'], string>> = {
 };
 
 /**
- * What In motion lists: work that is moving, waiting on the person, or finished
- * in the last day. A conversation with an open decision is waiting on the
- * person whatever its turn says, since its job cannot go on without them.
+ * What In motion lists: work that is moving or waiting on the person. A
+ * conversation with an open decision is waiting on the person whatever its
+ * turn says, since its job cannot go on without them. Finished work is not in
+ * motion, so it is left to Chats.
  */
 export function motionRows(
   conversations: Conversation[],
   waiting: ReadonlySet<string>,
-  now: number,
 ): Conversation[] {
   return conversations
-    .filter(
-      (conversation) =>
-        MOVING.has(conversation.status) ||
-        isWaiting(conversation, waiting) ||
-        (conversation.status === 'done' && now - Date.parse(conversation.updated_at) < 86_400_000),
-    )
+    .filter((conversation) => MOVING.has(conversation.status) || isWaiting(conversation, waiting))
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
     .slice(0, 3);
 }
@@ -588,7 +652,7 @@ function InMotion({ now }: { now: number }) {
   const { agents, conversations } = useApp();
   const decisions = useDecisions();
   const waiting = waitingOn(decisions);
-  const rows = motionRows(conversations, waiting, now);
+  const rows = motionRows(conversations, waiting);
   if (rows.length === 0) return null;
   return (
     <section className="home-section" aria-labelledby="home-motion">
@@ -602,10 +666,6 @@ function InMotion({ now }: { now: number }) {
       <div className="motion">
         {rows.map((conversation) => {
           const agent = agentById(agents, conversation.agent_id);
-          const progress = progressOf(conversation);
-          const segments = progress
-            ? Math.min(8, progress.steps_done + (progress.current ? 1 : 0))
-            : 0;
           return (
             <a key={conversation.id} className="motion-row" href={href(`/chat/${conversation.id}`)}>
               {agent ? (
@@ -625,23 +685,6 @@ function InMotion({ now }: { now: number }) {
                   {motionLine(conversation, waiting, agent?.name ?? 'Melete')}
                 </span>
               </span>
-              {progress && segments > 0 ? (
-                <span
-                  className="motion-track"
-                  role="img"
-                  aria-label={`${progress.steps_done} step${progress.steps_done === 1 ? '' : 's'} done${
-                    progress.current ? `, now: ${progress.current}` : ''
-                  }`}
-                >
-                  {Array.from({ length: segments }, (_, index) => (
-                    <span
-                      // biome-ignore lint/suspicious/noArrayIndexKey: segments are positions, not items
-                      key={index}
-                      data-state={index < progress.steps_done ? 'done' : 'now'}
-                    />
-                  ))}
-                </span>
-              ) : null}
               <span className="motion-when">{relative(conversation.updated_at, now)}</span>
             </a>
           );
@@ -757,23 +800,40 @@ function DayColumn({ now }: { now: number }) {
   );
   const list = tasks.data?.tasks ?? [];
   const done = list.filter((task) => task.done).length;
+  const todays = (upcoming ?? []).filter(
+    (event) => new Date(event.starts_at).toDateString() === today,
+  );
+  // The day is drawn before anything loads and with no calendar at all: the
+  // hours and the now line hold the column, with one quiet line about the calendar.
+  const quiet = home.loading
+    ? null
+    : upcoming === null
+      ? 'Your calendar shows up here once it’s connected.'
+      : todays.length === 0
+        ? 'Nothing on your calendar today.'
+        : null;
   return (
     <aside className="home-day" aria-label="Today">
-      {upcoming ? (
-        <section className="home-section" aria-labelledby="home-today">
-          <div className="home-section-head">
-            <h2 id="home-today">Today</h2>
-          </div>
-          <DayGrid events={upcoming} now={now} />
-          {later ? (
-            <span className="day-next">
-              Next: {later.title},{' '}
-              {new Date(later.starts_at).toLocaleDateString('en-US', { weekday: 'long' })}{' '}
-              {clockOf(new Date(later.starts_at))}
-            </span>
+      <section className="home-section" aria-labelledby="home-today">
+        <div className="home-section-head">
+          <h2 id="home-today">Today</h2>
+          {upcoming === null && !home.loading ? (
+            <a className="section-link" href={href('/settings/connections')}>
+              Connect calendar
+              <Icon name="chevronRight" size={14} />
+            </a>
           ) : null}
-        </section>
-      ) : null}
+        </div>
+        <DayGrid events={upcoming ?? []} now={now} />
+        {quiet ? <span className="day-next">{quiet}</span> : null}
+        {later ? (
+          <span className="day-next">
+            Next: {later.title},{' '}
+            {new Date(later.starts_at).toLocaleDateString('en-US', { weekday: 'long' })}{' '}
+            {clockOf(new Date(later.starts_at))}
+          </span>
+        ) : null}
+      </section>
       {tasks.error && !tasks.data ? (
         <LoadError compact what="your tasks" error={tasks.error} onRetry={tasks.reload} />
       ) : null}
@@ -849,7 +909,7 @@ function DayColumn({ now }: { now: number }) {
 /* ---------- the screen ---------- */
 
 export function HomeScreen() {
-  const { agents, refreshAgents, refreshConversations } = useApp();
+  const { agents, profile, refreshAgents, refreshConversations } = useApp();
   const home = useLoad(() => adapter.home(), []);
   const decisions = useDecisions();
   const [map, setMap] = useState<CompanyMap | null>(null);
@@ -943,8 +1003,11 @@ export function HomeScreen() {
         <div className="home-main" ref={mainRef} tabIndex={-1}>
           <header className="brief">
             {data ? <span className="brief-date">{data.date}</span> : null}
-            <h1 className="brief-greeting voice">{data?.greeting ?? 'Hello'}</h1>
+            <h1 className="brief-greeting voice">
+              {data ? greetingWith(data.greeting, givenName(profile)) : ' '}
+            </h1>
             {line ? <p className="brief-line voice">{line}</p> : null}
+            {data ? <AskName onSaved={home.reload} /> : null}
           </header>
           {home.error ? (
             <LoadError what="your day" error={home.error} onRetry={home.reload} />

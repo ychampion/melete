@@ -43,12 +43,22 @@ const BLURB: Record<ModelProvider, string> = {
   chatgpt: 'Your ChatGPT plan',
 };
 
-function statusLine(status: ModelProviderStatus): { text: string; tone: 'ok' | 'muted' } {
+/**
+ * The state a provider tile shows. A tick is shown only for a credential that
+ * is really there: the server's default provider with no key says it needs one.
+ */
+export function statusLine(
+  status: ModelProviderStatus,
+  serverDefault = false,
+): { text: string; tone: 'ok' | 'muted' | 'attention' } {
   if (status.method === 'sign_in')
     return status.connected
       ? { text: 'Signed in', tone: 'ok' }
       : { text: 'Not signed in', tone: 'muted' };
-  if (status.key.state === 'operator') return { text: 'Set by the operator', tone: 'ok' };
+  if (status.key.state === 'operator' && status.connected)
+    return { text: 'Set by the operator', tone: 'ok' };
+  if (!status.connected && serverDefault)
+    return { text: 'Server default · needs a key', tone: 'attention' };
   if (status.key.state === 'set')
     return { text: `Key ••••${status.key.last_four ?? ''}`, tone: 'ok' };
   return { text: 'Not connected', tone: 'muted' };
@@ -151,14 +161,33 @@ export function ModelConnect({
     ? (settings.active.provider as ModelProvider)
     : 'anthropic';
   const [selected, setSelected] = useState<ModelProvider>(initial);
-  const status = settings.providers.find((entry) => entry.provider === selected);
+  // ChatGPT is offered, as on the sign-in page, only when this server is set up for its sign-in.
+  const hasSignIn = settings.providers.some((entry) => entry.method === 'sign_in');
+  const chatgpt = useLoad(
+    () =>
+      hasSignIn
+        ? models.signInStatus('chatgpt')
+        : Promise.resolve({ data: null, error: null, unavailable: 'none' } as const),
+    [hasSignIn],
+  );
+  const signInReady =
+    chatgpt.data !== null &&
+    (chatgpt.data.state === 'signed_in' || chatgpt.data.methods.length > 0);
+  const providers = settings.providers.filter(
+    (entry) => entry.method !== 'sign_in' || entry.connected || signInReady,
+  );
+  const status = providers.find((entry) => entry.provider === selected);
   return (
     <div className="col" style={{ gap: 14 }}>
       <fieldset className="models-fieldset">
         <legend className="models-overline">Provider</legend>
         <div className="models-providers">
-          {settings.providers.map((entry) => {
-            const line = statusLine(entry);
+          {providers.map((entry) => {
+            const line = statusLine(
+              entry,
+              entry.provider === settings.operator_default.provider &&
+                settings.active.source === 'operator',
+            );
             const on = entry.provider === selected;
             const inUse = entry.provider === settings.active.provider;
             return (

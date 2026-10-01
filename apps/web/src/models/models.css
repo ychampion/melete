@@ -140,6 +140,9 @@
 .models-provider-state[data-tone="ok"] {
   color: var(--success);
 }
+.models-provider-state[data-tone="attention"] {
+  color: var(--sand-ink);
+}
 .models-in-use {
   flex-shrink: 0;
   font-size: 11px;

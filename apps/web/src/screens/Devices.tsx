@@ -415,7 +415,9 @@ export function DevicesTab({ onCount }: { onCount?: (count: number) => void }) {
         ))}
       </div>
       {devices.data && active.length === 0 ? (
-        <span style={{ fontSize: 13, color: 'var(--muted)' }}>No computer is connected yet.</span>
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+          {shown.length ? 'None connected right now.' : 'No computer is connected yet.'}
+        </span>
       ) : null}
       <div>
         <Button icon="plus" onClick={() => setPairing(true)}>

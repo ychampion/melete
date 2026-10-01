@@ -1,0 +1,11 @@
+/* Settings: the tab strip keeps the chosen tab in view and fades where it runs on. */
+.settings-tabs {
+  flex-shrink: 0;
+  min-width: 0;
+}
+@media (max-width: 1279px) {
+  .settings-tabs .tabs {
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    padding-right: 28px;
+  }
+}

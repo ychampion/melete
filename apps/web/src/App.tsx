@@ -68,6 +68,20 @@ function Unreachable({ error, onRetry }: { error: string; onRetry: () => void })
   );
 }
 
+/** The shell's frame with nothing in it yet, so a load never opens on blank paper. */
+function BootFrame() {
+  return (
+    <div className="shell" aria-busy="true">
+      <aside className="sidebar" aria-label="Sections" />
+      <div className="shell-main">
+        <div className="shell-body">
+          <main className="shell-content" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const route = useRoute();
   useTheme();
@@ -237,7 +251,8 @@ export function App() {
 
   if (!signedOut && profile.error && !profile.data)
     return <Unreachable error={profile.error} onRetry={profile.reload} />;
-  if (!signedOut && profile.loading && !profile.data) return null;
+  // While the profile loads, the frame is already there: paper, the sidebar's place and a sheet.
+  if (!signedOut && profile.loading && !profile.data) return <BootFrame />;
 
   const [head, second] = route.parts;
 
@@ -265,7 +280,7 @@ export function App() {
     if (second === 'learned') window.location.replace('#/settings/memory');
     screen = (
       <SettingsScreen
-        tab={second === 'learned' ? 'memory' : (second ?? 'memory')}
+        tab={second === 'learned' ? 'memory' : (second ?? 'account')}
         detail={route.parts[2] ?? null}
       />
     );

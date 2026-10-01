@@ -1,0 +1,24 @@
+/* What the composer says when nothing could answer yet. */
+.composer-missing {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-button);
+  background: var(--sand);
+  color: var(--sand-ink);
+  font-size: 13px;
+  line-height: 18px;
+  flex-wrap: wrap;
+}
+.composer-missing-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 600;
+  color: var(--sand-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
