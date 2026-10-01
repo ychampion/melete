@@ -77,10 +77,31 @@ const objective =
 // The capability stays inside the real attempt container. The positive catalog
 // control proves it is usable; the approval route must still reject it before
 // consulting the action id. This cannot be waived by a model response.
+// An engine started for its attempt has the capability in its environment; a
+// spare engine was handed it after it started, so the probe takes it from the
+// configuration the engine was given, which carries it either way.
 const probeSource = `
 import json, os, sys, urllib.error, urllib.request
+import yaml
 base = os.environ['MELETE_BROKER_URL'].rstrip('/')
-token = os.environ['MELETE_ATTEMPT_TOKEN']
+def configured(value):
+    if isinstance(value, dict):
+        if value.get('x-melete-capability'):
+            return value['x-melete-capability']
+        value = list(value.values())
+    if isinstance(value, list):
+        for item in value:
+            found = configured(item)
+            if found:
+                return found
+    return None
+token = os.environ.get('MELETE_ATTEMPT_TOKEN')
+if not token:
+    home = os.environ.get('HERMES_HOME', '/var/lib/hermes')
+    with open(os.path.join(home, 'config.yaml'), encoding='utf-8') as config:
+        token = configured(yaml.safe_load(config))
+if not token:
+    raise SystemExit('The attempt container holds no capability')
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def call(path, body=None):
     headers = {'authorization': 'Bearer ' + token, 'content-type': 'application/json'}
@@ -116,9 +137,21 @@ describe.skipIf(!composeEnabled)(`conformance 8: ${s.title}`, () => {
       120_000,
       'the provider comparison attempt container',
     );
-    const cell = JSON.parse(
-      await docker('exec', cellId, 'python', '-c', probeSource, newId('act')),
-    ) as CellProbe;
+    // A spare writes its configuration with the capability just after it takes the attempt.
+    const cell = await waitFor(
+      async () => {
+        try {
+          return JSON.parse(
+            await docker('exec', cellId, 'python', '-c', probeSource, newId('act')),
+          ) as CellProbe;
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('holds no capability')) return false;
+          throw error;
+        }
+      },
+      30_000,
+      'the capability in the attempt container',
+    );
     await waitForJob(created.jobId, 'waiting_for_approval');
     const [pending] = await database<
       {

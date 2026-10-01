@@ -827,15 +827,6 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     try {
       await this.adoptWorkspace(spare.directory, bundle.attempt.job_id);
       signal.throwIfAborted();
-      // Labels cannot change after creation, so the container takes the name a
-      // cold engine for this attempt would have: an operator (or a check) finds
-      // the container serving an attempt by its name either way.
-      const name = this.names(bundle.attempt.id).container;
-      await this.docker.request(
-        'POST',
-        `/containers/${resources.containerId}/rename?name=${encodeURIComponent(name)}`,
-      );
-      resources.container = name;
       const response = await this.request(`${spare.url}${SPARE_HANDOFF_PATH}`, {
         method: 'POST',
         headers: {
@@ -847,6 +838,15 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
       });
       await response.body?.cancel();
       if (response.status !== 204) throw new Error(`the spare engine answered ${response.status}`);
+      // Labels cannot change after creation, so the container takes the name a
+      // cold engine for this attempt would have: an operator (or a check) finds
+      // the container serving an attempt by its name either way.
+      const name = this.names(bundle.attempt.id).container;
+      await this.docker.request(
+        'POST',
+        `/containers/${resources.containerId}/rename?name=${encodeURIComponent(name)}`,
+      );
+      resources.container = name;
     } catch (error) {
       await this.cleanup(resources);
       await this.removeSpareDirectory(spare);
