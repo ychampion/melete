@@ -638,12 +638,19 @@ export class ExperienceMock {
    * One tool entry as the service tells it: a running copy, then a finished one
    * under the same id, and a trail step when the trail does not already carry it.
    */
-  tool(chat: Chat, done: Omit<C.ToolCall, 'status' | 'ended_at'>, doing: string, trail = true) {
+  tool(
+    chat: Chat,
+    done: Omit<C.ToolCall, 'status' | 'ended_at'>,
+    doing: string,
+    trail = true,
+    status: 'done' | 'failed' | 'needs_approval' = 'done',
+  ) {
     this.settleTool(chat);
-    const finished = C.toolCall.parse({ ...done, status: 'done', ended_at: null });
+    const finished = C.toolCall.parse({ ...done, status, ended_at: null });
+    const { output_excerpt: _output, failure: _failure, ...started } = finished;
     this.event(chat, {
       type: 'tool',
-      tool: { ...finished, title: doing, status: 'running', output_summary: null },
+      tool: { ...started, title: doing, status: 'running', output_summary: null, detail: null },
     });
     chat.openTool = { finished, trail };
     chat.view.progress = { steps_done: chat.view.progress?.steps_done ?? 0, current: doing };
@@ -655,9 +662,13 @@ export class ExperienceMock {
     const open = chat.openTool;
     if (!open) return;
     chat.openTool = undefined;
-    const finished = C.toolCall.parse({ ...open.finished, ended_at: this.now() });
+    const waiting = open.finished.status === 'needs_approval';
+    const finished = C.toolCall.parse({
+      ...open.finished,
+      ended_at: waiting ? null : this.now(),
+    });
     this.event(chat, { type: 'tool', tool: finished });
-    if (open.trail)
+    if (open.trail && !waiting)
       this.event(chat, {
         type: 'action',
         label: finished.title,
@@ -711,15 +722,17 @@ export class ExperienceMock {
     if (step.step === 'tool') {
       const command = this.computer.command(chat.view.id, step, 'running');
       if (command) chat.openCommand = () => this.computer.finish(chat.view.id, command, step);
-      const kind: C.ToolKind = step.name.startsWith('skills.')
-        ? 'skill'
-        : step.name.startsWith('browser')
-          ? 'browser'
-          : /^(exec|terminal|python)/.test(step.name)
-            ? 'sandbox'
-            : step.name.startsWith('web')
-              ? 'web'
-              : 'connector';
+      const kind: C.ToolKind = step.kind
+        ? step.kind
+        : step.name.startsWith('skills.')
+          ? 'skill'
+          : step.name.startsWith('browser')
+            ? 'browser'
+            : /^(exec|terminal|python)/.test(step.name)
+              ? 'sandbox'
+              : step.name.startsWith('web')
+                ? 'web'
+                : 'connector';
       const title = plainText(step.title, 'Used a tool', C.TOOL_TITLE_LIMIT);
       this.tool(
         chat,
@@ -728,14 +741,19 @@ export class ExperienceMock {
           kind,
           title,
           started_at: this.now(),
-          input_summary: null,
-          output_summary: step.meta ? { text: step.meta.slice(0, C.TOOL_SUMMARY_LIMIT) } : null,
-          detail: null,
+          input_summary: step.input ?? null,
+          output_summary:
+            step.output ?? (step.meta ? { text: step.meta.slice(0, C.TOOL_SUMMARY_LIMIT) } : null),
+          detail: step.detail ?? null,
           parent: null,
+          ...(step.input_excerpt ? { input_excerpt: step.input_excerpt } : {}),
+          ...(step.output_excerpt ? { output_excerpt: step.output_excerpt } : {}),
+          ...(step.status === 'failed' ? { failure: step.failure ?? 'error' } : {}),
         },
         plainText(step.active_title, title, C.TOOL_TITLE_LIMIT),
         // Evidence-bearing and connector steps already reach the trail as a grouped action.
         kind !== 'connector' && kind !== 'web' && !step.sources.length,
+        step.status,
       );
     }
     if (step.step === 'reason') {

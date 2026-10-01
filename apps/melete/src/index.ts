@@ -347,6 +347,7 @@ export function createApp(deps: AppDeps) {
       triggers: deps.triggers,
       changes: deps.events,
       browser: Boolean(deps.browserSessions),
+      privacy,
     });
   if (deps.db)
     mountCompanies(app, {

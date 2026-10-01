@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { createServer } from 'node:http';
+import { brotliCompressSync, deflateSync, gzipSync } from 'node:zlib';
 import { type Action, connectorManifest, type DispatchResult } from '@melete/contracts';
 import { BrokerFault } from '../broker/errors.ts';
 import { selfSignedPair } from '../gateway/fixtures/self-signed.ts';
@@ -521,6 +522,82 @@ test('a response over the size limit is refused, not read', async () => {
       maxChars: 400_000,
     });
     expect((detail(small.result).body as string).length).toBe(300_000);
+  } finally {
+    await site.close();
+  }
+});
+
+test('a page sent compressed is read as text, whether or not compression was asked for', async () => {
+  const page =
+    '<html><head><title>Download Python</title></head><body><h1>Python 3.14.8</h1><p>Released today.</p></body></html>';
+  const encoders: Record<string, (input: Buffer) => Buffer> = {
+    gzip: gzipSync,
+    deflate: deflateSync,
+    br: brotliCompressSync,
+  };
+  const site = await localServer((request, response) => {
+    // Some CDNs compress whatever the request said.
+    const encoding = (request.url ?? '/').slice(1);
+    response.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-encoding': encoding,
+    });
+    response.end(encoders[encoding]?.(Buffer.from(page)) ?? Buffer.from(page));
+  });
+  try {
+    for (const encoding of Object.keys(encoders)) {
+      const { result } = await read(`${site.url}${encoding}`, {
+        resolve: async () => [PUBLIC],
+        transport: site.transport,
+      });
+      const page = detail(result);
+      expect(page.title).toBe('Download Python');
+      expect(page.body as string).toContain('Python 3.14.8');
+      expect(page.body as string).not.toContain('\u0000');
+    }
+  } finally {
+    await site.close();
+  }
+});
+
+test('a compressed page that grows past the size limit is refused, and an unknown encoding is named', async () => {
+  const site = await localServer((request, response) => {
+    if (request.url === '/zstd') {
+      response.writeHead(200, { 'content-type': 'text/plain', 'content-encoding': 'zstd' });
+      response.end(Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0, 0, 0]));
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'text/plain', 'content-encoding': 'gzip' });
+    response.end(gzipSync(Buffer.from('y'.repeat(300_000))));
+  });
+  try {
+    const big = await read(site.url, {
+      resolve: async () => [PUBLIC],
+      transport: site.transport,
+      maxBytes: 100_000,
+    });
+    expect(refusal(big.result)).toContain('larger than the reading limit');
+    const unknown = await read(`${site.url}zstd`, {
+      resolve: async () => [PUBLIC],
+      transport: site.transport,
+    });
+    expect(refusal(unknown.result)).toContain('(zstd)');
+  } finally {
+    await site.close();
+  }
+});
+
+test('a NUL character in a page never reaches the receipt', async () => {
+  const site = await localServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end('<html><body><p>before\u0000after</p></body></html>');
+  });
+  try {
+    const { result } = await read(site.url, {
+      resolve: async () => [PUBLIC],
+      transport: site.transport,
+    });
+    expect(detail(result).body as string).toContain('beforeafter');
   } finally {
     await site.close();
   }

@@ -421,3 +421,38 @@ test('stop withdraws a waiting permission, and a later allow says so', async () 
     ),
   ).toEqual([[permission.id, 'withdrawn']]);
 });
+
+test('a research run tells each piece of work as a row, a failure and a waiting send included', async () => {
+  const { mock, chat } = await chatFixture('Make me a rent report for Lisbon and mail it to Sam');
+  const page = C.experienceEventPage.parse(
+    (await call(mock, `/conversations/${chat.id}/events?limit=200`)).body,
+  );
+  const tools = page.events.flatMap((event) =>
+    event.item.type === 'tool' ? [event.item.tool] : [],
+  );
+  const last = new Map(tools.map((tool) => [tool.id, tool]));
+  const rows = [...last.values()].filter((tool) => tool.kind !== 'model');
+  expect(rows.map((tool) => [tool.status, tool.title])).toContainEqual([
+    'done',
+    'Searched the web for “Lisbon rent prices October 2026”',
+  ]);
+  expect(rows.find((tool) => tool.status === 'failed')).toMatchObject({
+    failure: 'error',
+    output_summary: { text: 'The site would not let the page be read.' },
+  });
+  expect(rows.find((tool) => tool.kind === 'sandbox')?.output_excerpt?.text).toContain(
+    'Average one-bedroom',
+  );
+  expect(rows.find((tool) => tool.status === 'needs_approval')?.title).toBe(
+    'Proposed sending an email to sam@example.com — waiting for you',
+  );
+  // Every entry started as a running copy before it ended.
+  for (const id of last.keys())
+    expect(tools.find((tool) => tool.id === id)?.status).toBe('running');
+  const { turns } = C.turnList.parse((await call(mock, `/conversations/${chat.id}/messages`)).body);
+  const state = applyEvents(fromTurns(turns, 'send', 'done'), page.events);
+  const trail = state.turns[0]?.trail ?? [];
+  expect(trail.filter((step) => step.type === 'action' && step.tool).length).toBe(rows.length);
+  expect(trail.some((step) => step.type === 'reasoning')).toBe(true);
+  expect(JSON.stringify(page)).not.toMatch(BACKEND_VOCABULARY);
+});
