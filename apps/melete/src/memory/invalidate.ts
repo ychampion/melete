@@ -1,4 +1,5 @@
 import { EVENT_ORDER_LOCK, lockEventOrderIn } from '../db/transaction.ts';
+import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import {
   enqueue,
   MemoryError,
@@ -68,17 +69,20 @@ export async function invalidateDependencies(
         .filter((id): id is string => typeof id === 'string'),
     ),
   ];
-  // Only work still under way is replanned: a running or queued attempt, or a
-  // wait the job set itself mid-task. A job whose turn is over and waits for
-  // the person (a finished conversation turn, a question, an approval or a
-  // reconciliation) is left alone: its next turn reads fresh memory, and
-  // replanning it would repeat a turn that finished, side effects included.
+  // Only work still under way is replanned: a running or queued attempt, a
+  // wait the job set itself mid-task, or an action still waiting for approval.
+  // That approval was asked on the old facts, so it is withdrawn and the work
+  // asks again on the new ones; nothing it asked for has happened yet. A job
+  // whose turn is over and waits for the person (a finished conversation
+  // turn, a question or a reconciliation) is left alone: its next turn reads
+  // fresh memory, and replanning it would repeat a turn that finished, side
+  // effects included.
   // A routine resting on its own schedule is over in the same way.
   // A job that has never run an attempt was handed no memory, and an owner
   // command is never claimed by a runtime; waking either would start work
   // nobody asked for, or strand the command in a queue nothing reads.
-  const jobs = await tx`select j.id from job j where j.space_id = ${scope.spaceId}
-    and j.state in ('running','queued','waiting_for_event_or_time')
+  const jobs = await tx`select j.id, j.state from job j where j.space_id = ${scope.spaceId}
+    and j.state in ('running','queued','waiting_for_event_or_time','waiting_for_approval')
     and j.kind <> 'command' and not (j.kind = 'routine' and j.state = 'waiting_for_event_or_time'
       and exists (select 1 from trigger t where t.job_id = j.id and t.kind = 'schedule'
         and t.id = j.wait->>'trigger_id'))
@@ -86,6 +90,7 @@ export async function invalidateDependencies(
     ${all} or j.id = any(${knownJobs}) or (not exists (select 1 from memory_contexts c where c.job_id = j.id)
       and not exists (select 1 from memory_prepared p where p.job_id = j.id))) for update`;
   for (const job of jobs) {
+    if (job.state === 'waiting_for_approval') await withdrawOutdated(tx, job.id);
     // Revision and epoch invalidate existing approval bindings without changing admitted effects.
     await tx`update job set revision = revision + 1, lease_epoch = lease_epoch + 1, state_version = state_version + 1, updated_at = clock_timestamp(),
       state = case when state = 'needs_reconciliation' or exists (select 1 from action where job_id = ${job.id} and status in ('admitted','dispatched','unknown','unresolved')) then 'needs_reconciliation' else 'queued' end,
@@ -119,4 +124,34 @@ export async function invalidateDependencies(
     await tx`insert into event (job_id, attempt_id, type, payload, dedup_key) values (${context.job_id}, ${context.attempt_id}, 'notice', ${JSON.stringify(payload)}::text::jsonb, ${id}) on conflict do nothing`;
   }
   return contexts.map((context) => context.attempt_id as string);
+}
+
+/**
+ * Withdraw each permission the job is still waiting on, as denied with a note
+ * that says why, and its action with it, so the old card can never be allowed
+ * and the conversation closes it.
+ */
+async function withdrawOutdated(tx: MemoryTx, jobId: string) {
+  const pending =
+    await tx`select a.id as approval_id, x.id as action_id, x.attempt_id, x.payload_hash
+    from approval a join action x on x.id = a.action_id
+    where x.job_id = ${jobId} and a.decision is null and x.status = 'needs_approval'
+    for update of a, x`;
+  for (const row of pending) {
+    await tx`update approval set decision = 'denied', decided_at = clock_timestamp(), decided_by = ${OUTDATED_NOTE}
+      where id = ${row.approval_id}`;
+    await tx`update action set status = 'denied' where id = ${row.action_id}`;
+    const changed = { action_id: row.action_id, from: 'needs_approval', to: 'denied' };
+    await tx`insert into event (job_id, attempt_id, type, payload, dedup_key) values (${jobId}, ${row.attempt_id},
+      'action_status_changed', ${JSON.stringify(changed)}::text::jsonb, ${`${row.approval_id}:${OUTDATED_NOTE}:status`}) on conflict do nothing`;
+    const decided = {
+      approval_id: row.approval_id,
+      action_id: row.action_id,
+      decision: 'denied',
+      note: OUTDATED_NOTE,
+      payload_hash: row.payload_hash,
+    };
+    await tx`insert into event (job_id, attempt_id, type, payload, dedup_key) values (${jobId}, ${row.attempt_id},
+      'approval_decided', ${JSON.stringify(decided)}::text::jsonb, ${`${row.approval_id}:decision`}) on conflict do nothing`;
+  }
 }

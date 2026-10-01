@@ -463,6 +463,42 @@ withDb('durable waits, triggers and approval inputs', () => {
       expect(await attempts()).toBe(before);
     });
 
+    test('an approval asked on a corrected fact is withdrawn, and the old card can no longer be allowed', async () => {
+      const { jobs, handle } = fixture();
+      const admitted = await claim(await create());
+      const proposal = await proposed(admitted);
+      const waiting = await runner.commitOutcome(admitted.claims, {
+        kind: 'waiting_for_approval',
+        action_ids: [proposal.actionId],
+      });
+      const after = await correct(waiting);
+      expect(after.revision).toBe(waiting.revision + 1);
+      expect(after.state).toBe('queued');
+      const [withdrawn] = await handle.db
+        .select()
+        .from(approval)
+        .where(eq(approval.id, proposal.approvalId));
+      expect(withdrawn).toMatchObject({ decision: 'denied', decidedBy: 'outdated' });
+      await rejects(
+        () =>
+          approvals.decide(
+            proposal.approvalId,
+            { decision: 'approved', payload_hash: proposal.hash },
+            ownerId,
+          ),
+        'revision_mismatch',
+      );
+      expect(
+        (await handle.db.select().from(action).where(eq(action.id, proposal.actionId)))[0]?.status,
+      ).toBe('denied');
+      // The next attempt is told why, and may ask again on the new facts.
+      const next = await claim(after);
+      expect(next.bundle.inputs.approval_results).toMatchObject([
+        { action_id: proposal.actionId, decision: 'denied', note: 'outdated' },
+      ]);
+      expect(await jobs.get(after.id)).toMatchObject({ state: 'running' });
+    });
+
     test('a routine mid-run on a wait of its own is woken by a correction like any job', async () => {
       const row = await routine();
       const own = { kind: 'timer' as const, wake_at: new Date(Date.now() + 120_000).toISOString() };

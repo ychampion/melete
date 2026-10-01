@@ -494,14 +494,20 @@ export class ExperiencePlanning {
     if (!this.triggers) return unavailable('Scheduled routines are not connected yet.');
     if (enabled && isTerminal(jobState.parse(row.job.state))) throw routineEnded();
     // Occurrences that arrived before the change are not owed a run: a resumed
-    // routine waits for its next time rather than catching up.
-    const [latest] = await this.db
-      .select({ seq: sql<number>`coalesce(max(${event.seq}), 0)::bigint` })
-      .from(event);
-    await this.db
-      .update(trigger)
-      .set({ enabled, cursor: String(latest?.seq ?? 0) })
-      .where(eq(trigger.id, id));
+    // routine waits for its next time rather than catching up. The routine's
+    // lock is the one an arriving occurrence takes, so none lands in between.
+    const jobs = this.service.jobs;
+    if (!jobs) return unavailable('Scheduled routines are not connected yet.');
+    await jobs.transaction(async (tx) => {
+      await jobs.lock(tx, row.job.id);
+      const [latest] = await tx
+        .select({ seq: sql<number>`coalesce(max(${event.seq}), 0)::bigint` })
+        .from(event);
+      await tx
+        .update(trigger)
+        .set({ enabled, cursor: String(latest?.seq ?? 0) })
+        .where(eq(trigger.id, id));
+    });
     await this.triggers.syncSchedules();
     return {
       automation: await this.automation({ ...row.trigger, enabled }, row.job.title, row.job.state),
