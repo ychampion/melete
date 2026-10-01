@@ -26,6 +26,7 @@ import { actionBecause } from '../memory/basis.ts';
 import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
+import type { PrivacyRouter } from '../privacy/router.ts';
 import { AGENT_TEMPLATES } from './agents.ts';
 import { ExperienceBeliefs } from './beliefs.ts';
 import { type ComputerBinding, projectComputer } from './computer.ts';
@@ -56,6 +57,8 @@ export type ExperienceDeps = {
   changes?: EventChanges;
   /** A browser worker is configured, so a conversation's agent can have a browser. */
   browser?: boolean;
+  /** Resolves privacy placeholders for the conversation's own stream. */
+  privacy?: Pick<PrivacyRouter, 'resolvePayload'>;
 };
 /**
  * Rows these routes keep for the space as a whole rather than for one job: the
@@ -108,6 +111,10 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         (await questions.list(spaceId)).questions.find((item) => item.id === id),
       because: async (spaceId, actionId) =>
         deps.sql ? actionBecause(deps.sql, spaceId, actionId) : [],
+      rehydrate: deps.privacy
+        ? async (jobId, attemptId, value) =>
+            (await deps.privacy?.resolvePayload(jobId, attemptId, value))?.value ?? value
+        : undefined,
     },
     deps.changes,
   );

@@ -52,6 +52,8 @@ import {
 } from './tools.ts';
 
 type EventRow = typeof event.$inferSelect;
+/** Resolves privacy placeholders in a value against its conversation's vault. */
+export type Rehydrate = (jobId: string, attemptId: string, value: unknown) => Promise<unknown>;
 
 /** An attempt's answer and reasoning, as streamed so far. */
 type AttemptText = { answer: AnswerStream; reasoning: AnswerStream };
@@ -102,8 +104,20 @@ async function toolCalls(
   source: EventRow,
   jobs: string[],
   spaceId: string,
+  rehydrate?: Rehydrate,
 ): Promise<ToolCall[]> {
   const payload = object(source.payload);
+  // What the model gave a tool can still carry a privacy placeholder; the
+  // conversation's own stream shows its real value, and only that stream.
+  const real = async (value: unknown) => {
+    if (!rehydrate || !source.jobId || !source.attemptId) return value;
+    if (!JSON.stringify(value ?? null).includes('⟦')) return value;
+    try {
+      return await rehydrate(source.jobId, source.attemptId, value);
+    } catch {
+      return value;
+    }
+  };
   const effect = async (actionId: unknown) => {
     if (typeof actionId !== 'string') return undefined;
     const [row] = await tx
@@ -132,7 +146,16 @@ async function toolCalls(
   }
   if (source.type === 'notice' && payload.phase === 'admission_rejected') {
     const row = await effect(payload.action_id);
-    return row ? [actionCall({ ...row, raw: 'failed', at: source.createdAt })] : [];
+    return row
+      ? [
+          actionCall({
+            ...row,
+            raw: 'failed',
+            at: source.createdAt,
+            refusal: typeof payload.code === 'string' ? payload.code : '',
+          }),
+        ]
+      : [];
   }
   if (source.type === 'notice' && payload.phase === 'repair_parked') {
     const row = await effect(payload.action_id);
@@ -160,7 +183,7 @@ async function toolCalls(
       attemptId: source.attemptId,
       callId: String(payload.call_id ?? ''),
       tool: String(payload.tool ?? ''),
-      arguments: payload.arguments,
+      arguments: await real(payload.arguments),
       proposedAt: source.createdAt,
     });
     return call ? [call] : [];
@@ -184,7 +207,7 @@ async function toolCalls(
       attemptId: source.attemptId,
       callId: payload.call_id,
       tool: String(proposed.tool ?? ''),
-      arguments: proposed.arguments,
+      arguments: await real(proposed.arguments),
       proposedAt: proposal.createdAt,
       result: { ok: payload.ok === true, at: source.createdAt },
     });
@@ -269,6 +292,8 @@ export class ExperienceEvents {
       ) => Promise<Extract<ExperienceEvent['item'], { type: 'question' }>['question'] | undefined>;
       /** What an action rested on, named on its receipt. */
       because?: (spaceId: string, actionId: string) => Promise<BecauseLink[]>;
+      /** Real values for placeholders in what the model gave a tool. */
+      rehydrate?: Rehydrate;
     },
     /** Commit notifications, so a live stream reads new events when they land rather than on its next poll. */
     readonly changes?: EventChanges,
@@ -385,7 +410,13 @@ export class ExperienceEvents {
         };
         for (const source of raw) {
           const payload = object(source.payload);
-          for (const tool of await toolCalls(tx, source, jobs, spaceId)) {
+          for (const tool of await toolCalls(
+            tx,
+            source,
+            jobs,
+            spaceId,
+            this.projections?.rehydrate,
+          )) {
             const shown = await shownTool(tx, id, tool.id, 'tool');
             if (JSON.stringify(shown) !== JSON.stringify(tool))
               await emit(source, { type: 'tool', tool }, `tool:${tool.id}`);
