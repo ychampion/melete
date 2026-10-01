@@ -77,27 +77,6 @@ export const LOST_NOTE =
 /** How many attempts run at once unless the service is told otherwise. */
 export const DEFAULT_ATTEMPT_CONCURRENCY = 4;
 
-/** The kinds of job whose final question is put to the person and waited on. */
-const ASKING_KINDS = new Set(['responsibility', 'milestone']);
-/** A question is the 4,000 characters a queue entry holds, so a long answer keeps its end. */
-const QUESTION_LIMIT = 4000;
-
-/** Whether a reply ends by asking something: its last sentence is a question. */
-export function endsWithQuestion(reply: string): boolean {
-  return /\?[\s"'”’)\]*_]*$/.test(reply.trim());
-}
-
-function questionFrom(reply: string): string {
-  const text = reply.trim();
-  if (text.length <= QUESTION_LIMIT) return text;
-  const last =
-    text
-      .split(/\n\s*\n/)
-      .at(-1)
-      ?.trim() ?? '';
-  return (last.length <= QUESTION_LIMIT ? last : last.slice(-QUESTION_LIMIT)).trim();
-}
-
 export type RunnerOptions = {
   key: string;
   provider?: string;
@@ -623,25 +602,13 @@ export class AttemptRunner {
         payload: { kind: 'wait_restored', wait: cancelled },
         dedupKey: `${attemptId}:wait-restored`,
       });
-    // A responsibility whose last words ask the person something has not
-    // finished: it waits for the answer, and the question reaches their queue.
-    // A conversation's reply is read where it was said, and a routine keeps its
-    // schedule. The last budgeted attempt keeps its answer rather than failing.
-    const settled: AttemptOutcome =
-      restored.kind === 'completed' &&
-      carried.length === 0 &&
-      remaining > 0 &&
-      ASKING_KINDS.has(row.kind) &&
-      endsWithQuestion(restored.summary)
-        ? { kind: 'waiting_for_input', question: questionFrom(restored.summary) }
-        : restored;
     // A runtime's final prose cannot withdraw the broker's unanswered revocation
     // question, even on the last budgeted attempt. Only owner input resolves it.
     const outcome: AttemptOutcome = reconnect
       ? { kind: 'waiting_for_input', question: reconnect.text }
-      : remaining === 0 && settled.kind.startsWith('waiting_')
+      : remaining === 0 && restored.kind.startsWith('waiting_')
         ? { kind: 'budget_exhausted', summary: 'The job has used its attempt budget.' }
-        : settled;
+        : restored;
     let input: TransitionInput;
     let wait: WaitSpec = { kind: 'none' };
     let artifactFailures: string[] = [];

@@ -435,31 +435,6 @@ withDb('durable waits, triggers and approval inputs', () => {
     });
   });
 
-  test('a responsibility that ends by asking waits for the answer, and the question is queued', async () => {
-    const { jobs, handle } = fixture();
-    const row = await create();
-    const asked = await runner.commitOutcome((await claim(row)).claims, {
-      kind: 'completed',
-      summary: 'I can make you a drink first. Tea or coffee?',
-      evidence: [],
-    });
-    expect(asked.state).toBe('waiting_for_input');
-    expect(asked.wait).toMatchObject({ question: 'I can make you a drink first. Tea or coffee?' });
-    const open =
-      await handle.sql`select text from question where job_id = ${row.id} and state = 'open'`;
-    expect(open.map((entry) => entry.text)).toEqual([
-      'I can make you a drink first. Tea or coffee?',
-    ]);
-    // An answer wakes it, and a reply that asks nothing finishes it.
-    const answered = await jobs.input(row.id, 'Tea, please.');
-    const finished = await runner.commitOutcome((await claim(answered)).claims, {
-      kind: 'completed',
-      summary: 'Tea is ready.',
-      evidence: [],
-    });
-    expect(finished.state).toBe('completed');
-  });
-
   test('missing, foreign and disabled wait triggers fail atomically', async () => {
     const { jobs, handle } = fixture();
     const foreign = await eventTrigger(await create());
