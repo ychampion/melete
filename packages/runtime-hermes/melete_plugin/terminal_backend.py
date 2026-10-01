@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import os
 import posixpath
+import signal as signals
 import threading
 import time
 import uuid
@@ -70,10 +71,13 @@ ANSWER_SLACK_SECONDS = 30
 #: How often the wait checks for an interrupt.
 POLL_SECONDS = 0.2
 
-#: What a command that never answered returns. The engine reads nonzero as
-#: "did not succeed"; the text says why and that it must not be run again.
-UNKNOWN_STATUS = -1
-REFUSED_STATUS = -1
+#: What a command that never answered, or never ran, returns. The engine reads
+#: nonzero as "did not succeed"; the text says why. Both stay positive and below
+#: 128: the engine reads a negative status as a signal death (-1 is "terminated
+#: by SIGHUP") and 128+n as signal n, which would tell the model a story that
+#: did not happen.
+UNKNOWN_STATUS = 125
+REFUSED_STATUS = 126
 TIMED_OUT_STATUS = 124
 INTERRUPTED_STATUS = 130
 
@@ -277,6 +281,15 @@ class SandboxTerminal:
         return None
 
 
+def _signal_status(name: Any) -> int:
+    """The shell's 128+n for a signal the receipt names, else the unknown status."""
+    number = name if isinstance(name, int) and not isinstance(name, bool) else None
+    if isinstance(name, str):
+        found = getattr(signals, name.strip().upper(), None)
+        number = int(found) if isinstance(found, int) else None
+    return 128 + number if number and 0 < number < 64 else UNKNOWN_STATUS
+
+
 def _from_detail(detail: Dict[str, Any]) -> Dict[str, Any]:
     """The engine's `{"output", "returncode"}` from the receipt the broker wrote."""
     output = str(detail.get("output") or "")
@@ -304,7 +317,7 @@ def _from_detail(detail: Dict[str, Any]) -> Dict[str, Any]:
     elif isinstance(exit_code, int) and not isinstance(exit_code, bool):
         returncode = exit_code
     else:
-        returncode = UNKNOWN_STATUS
+        returncode = _signal_status(detail.get("signal"))
         notes.append(f"[the command ended without an exit status (signal {detail.get('signal')})]")
     if notes:
         output = (output + "\n" if output else "") + "\n".join(notes)
