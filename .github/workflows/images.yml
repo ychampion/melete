@@ -1,0 +1,159 @@
+# Builds the four shipped images and publishes them to the GitHub Container
+# Registry, so an installation can pull finished images instead of building
+# (docs/DEPLOYMENT.md, "Using prebuilt images").
+#
+# Each image is pushed first under the short commit only. The moving `main` tag,
+# and a release's version tag, are added in a last step once all four exist, so
+# a host that pulls `main` never gets a service from one commit and an engine
+# from another. A pull request that changes this file builds the same images
+# without signing in or pushing. deploy/scripts/images-workflow.test.ts checks
+# this file.
+name: Images
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    paths: ['.github/workflows/images.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-${{ github.ref }}
+  # A publish runs to the end, so the moving tags never stop half moved; a
+  # pull request's dry run gives way to a newer push.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The runtime image asserts its plugin digest during the build. This names a
+  # stale pin, and every other boundary check, before any build starts.
+  check:
+    name: Compose and pin checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Compose boundary and plugin pin checks
+        run: bun run compose:check
+      # The four Melete images switch together: built names without a tag, the
+      # published names with one.
+      - name: Compose names the published images when a tag is set
+        env:
+          POSTGRES_PASSWORD: check
+          DATABASE_URL: postgres://check
+          MELETE_MASTER_KEY: check
+          MELETE_CAPABILITY_KEY: check
+          MELETE_APPROVAL_KEY: check
+          MELETE_RUNTIME_KEY: check
+          DOCKER_GID: '0'
+        run: |
+          compose=(docker compose -f deploy/docker-compose.yml --profile sandbox)
+          built="$("${compose[@]}" config --images | sort -u)"
+          published="$(MELETE_IMAGE_TAG=check "${compose[@]}" config --images | sort -u)"
+          printf '%s\n' "$built" "$published"
+          test "$(grep -c '^melete-[a-z]*:local$' <<<"$built")" = 4
+          test "$(grep -c '^ghcr.io/ychampion/melete-[a-z]*:check$' <<<"$published")" = 4
+
+  build:
+    name: Build ${{ matrix.image }}
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - image: melete-service
+            context: .
+            file: deploy/Dockerfile.melete
+          - image: melete-web
+            context: .
+            file: deploy/Dockerfile.web
+          - image: melete-runtime
+            context: packages/runtime-hermes
+            file: packages/runtime-hermes/Dockerfile
+          - image: melete-sandbox
+            context: .
+            file: deploy/Dockerfile.sandbox
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Name the image
+        id: name
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "ref=ghcr.io/${owner}/${{ matrix.image }}:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Sign in to the GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build, and push under the commit
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          build-args: |
+            VITE_MELETE_API=/api
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.name.outputs.ref }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  # Moves `main`, or adds the release's version, to the commit's four images
+  # together, after every one of them is in the registry. A manual run on
+  # another branch publishes under its commit only.
+  publish:
+    name: Tag the published images
+    needs: build
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag melete-service, melete-web, melete-runtime and melete-sandbox
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          commit="${GITHUB_SHA::7}"
+          if [ "$REF_TYPE" = tag ]; then
+            case "$REF_NAME" in
+              v[0-9]*) moving="$REF_NAME" ;;
+              *) echo "::error::not a version tag: $REF_NAME"; exit 1 ;;
+            esac
+          else
+            moving=main
+          fi
+          for image in melete-service melete-web melete-runtime melete-sandbox; do
+            source="ghcr.io/${owner}/${image}:${commit}"
+            docker buildx imagetools create --tag "ghcr.io/${owner}/${image}:${moving}" "$source"
+            echo "${source} -> ${moving}"
+          done

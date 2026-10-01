@@ -10,7 +10,9 @@ import {
   checkCellConfig,
   checkCompose,
   defaultComposePath,
+  imageReference,
   loadCompose,
+  PUBLISHED_IMAGES,
   SANDBOX_SETTINGS,
   VOICE_SETTINGS,
 } from './compose-check.ts';
@@ -33,6 +35,102 @@ describe('the shipped compose file', () => {
 
   test('declares the internal network as internal', () => {
     expect(compose.networks?.internal?.internal).toBe(true);
+  });
+});
+
+/**
+ * Compose's interpolation for the forms the image names use, ${NAME:-default}
+ * and ${NAME:+alternative}, nested: enough to read what each setting resolves to.
+ */
+function interpolate(text: string, env: Record<string, string>): string {
+  let out = '';
+  let index = 0;
+  while (index < text.length) {
+    if (!text.startsWith('${', index)) {
+      out += text[index];
+      index += 1;
+      continue;
+    }
+    let depth = 0;
+    let end = index;
+    for (; end < text.length; end += 1) {
+      if (text.startsWith('${', end)) {
+        depth += 1;
+        end += 1;
+      } else if (text[end] === '}') {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    const body = text.slice(index + 2, end);
+    const match = /^(\w+)(?::([-+])([\s\S]*))?$/.exec(body);
+    if (!match) throw new Error(`unsupported: ${body}`);
+    const [, name = '', operator, rest = ''] = match;
+    const value = env[name] ?? '';
+    if (operator === '-') out += value === '' ? interpolate(rest, env) : value;
+    else if (operator === '+') out += value === '' ? '' : interpolate(rest, env);
+    else out += value;
+    index = end + 1;
+  }
+  return out;
+}
+
+describe('the image names', () => {
+  const resolved = (env: Record<string, string>) =>
+    Object.fromEntries(
+      Object.keys(PUBLISHED_IMAGES).map((name) => [
+        name,
+        interpolate(compose.services?.[name]?.image ?? '', env),
+      ]),
+    );
+
+  test('are the source build names when no image tag is set', () => {
+    const settings: Record<string, string>[] = [
+      {},
+      { MELETE_IMAGE_TAG: '', MELETE_IMAGE_REGISTRY: 'example.com/x' },
+    ];
+    for (const env of settings)
+      expect(resolved(env)).toEqual({
+        melete: 'melete-service:local',
+        web: 'melete-web:local',
+        runtime: 'melete-runtime:local',
+        'runtime-image': 'melete-runtime:local',
+        'sandbox-image': 'melete-sandbox:local',
+      });
+  });
+
+  test('are the published images when a tag is set, from the named registry', () => {
+    expect(resolved({ MELETE_IMAGE_TAG: 'main' })).toEqual({
+      melete: 'ghcr.io/ychampion/melete-service:main',
+      web: 'ghcr.io/ychampion/melete-web:main',
+      runtime: 'ghcr.io/ychampion/melete-runtime:main',
+      'runtime-image': 'ghcr.io/ychampion/melete-runtime:main',
+      'sandbox-image': 'ghcr.io/ychampion/melete-sandbox:main',
+    });
+    const mirrored = resolved({
+      MELETE_IMAGE_TAG: 'v0.3.0',
+      MELETE_IMAGE_REGISTRY: 'r.example/me',
+    });
+    expect(mirrored.melete).toBe('r.example/me/melete-service:v0.3.0');
+    expect(mirrored['sandbox-image']).toBe('r.example/me/melete-sandbox:v0.3.0');
+  });
+
+  test('tell the service the engine and computer images the stack holds', () => {
+    const environment = compose.services?.melete?.environment ?? {};
+    const settings: Record<string, string>[] = [
+      {},
+      { MELETE_IMAGE_TAG: 'abc1234' },
+      { MELETE_SANDBOX_DOCKER_IMAGE: 'own:1' },
+    ];
+    for (const env of settings) {
+      expect(interpolate(String(environment.MELETE_RUNTIME_IMAGE), env)).toBe(
+        interpolate(compose.services?.runtime?.image ?? '', env),
+      );
+      expect(interpolate(String(environment.MELETE_SANDBOX_DOCKER_IMAGE), env)).toBe(
+        interpolate(compose.services?.['sandbox-image']?.image ?? '', env),
+      );
+    }
+    expect(imageReference('web')).toBe(compose.services?.web?.image ?? '');
   });
 });
 
@@ -299,6 +397,19 @@ describe('the check catches the mistakes that would matter', () => {
     const broken = structuredClone(compose);
     if (broken.services?.web) broken.services.web.logging = logging;
     expect(failures(broken)).toContain('every service has bounded logs');
+  });
+
+  test('one image left out of the shared tag', () => {
+    const name = 'every Melete image follows MELETE_IMAGE_TAG together';
+    const pinned = structuredClone(compose);
+    if (pinned.services?.web) pinned.services.web.image = 'melete-web:local';
+    expect(failures(pinned)).toContain(name);
+    const told = structuredClone(compose);
+    if (told.services?.melete?.environment)
+      told.services.melete.environment.MELETE_SANDBOX_DOCKER_IMAGE =
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose expands this variable.
+        '${MELETE_SANDBOX_DOCKER_IMAGE:-}';
+    expect(failures(told)).toContain(name);
   });
 
   test('removing the runtime service altogether', () => {

@@ -92,6 +92,9 @@ To try a demo with a practice model first, use
 `bun run deploy/scripts/configure.ts --fake` as the second line. It needs no
 key, and you can switch to your own model later.
 
+On a server, you can skip the build and pull the published images instead:
+[Using prebuilt images](docs/DEPLOYMENT.md#using-prebuilt-images).
+
 [Deployment](docs/DEPLOYMENT.md) covers version requirements, Windows, remote
 servers, HTTPS, Tailscale, backups and removal.
 
