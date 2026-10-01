@@ -13,6 +13,7 @@ import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { createPhoneConnector, takeDown } from '../phone/connector.ts';
 import type { Fetch } from '../phone/elevenlabs.ts';
 import { readLine, storedPhoneConnection } from '../phone/line.ts';
+import type { CallPrivacy } from '../phone/privacy.ts';
 import type { DockerSandboxSettings } from '../sandbox/adapters/docker.ts';
 import {
   createSandboxProvider,
@@ -215,12 +216,19 @@ export type ConnectorOptions = {
   microsoft?: { client: AccountClient; tenant?: string; endpoints?: MicrosoftEndpoints };
   /**
    * What a phone line needs besides its own row: the address ElevenLabs reaches
-   * this service at, and the ElevenLabs API base. Only a test replaces `fetch`.
+   * this service at, the ElevenLabs API base, and the private and sensitive
+   * marks a call follows (without them no call is placed). Only a test
+   * replaces `fetch`.
    */
   phone?: PhoneRuntimeOptions;
 };
 
-export type PhoneRuntimeOptions = { publicUrl?: string; apiBase?: string; fetch?: Fetch };
+export type PhoneRuntimeOptions = {
+  publicUrl?: string;
+  apiBase?: string;
+  fetch?: Fetch;
+  privacy?: CallPrivacy;
+};
 
 /**
  * What the service brings to a sandbox connection: the session table, the
@@ -467,6 +475,7 @@ export class ConnectorFactory {
         secrets: this.secrets,
         ...(options.phone?.apiBase ? { apiBase: options.phone.apiBase } : {}),
         ...(options.phone?.fetch ? { fetch: options.phone.fetch } : {}),
+        ...(options.phone?.privacy ? { privacy: options.phone.privacy } : {}),
       });
     }
     if (row.provider === 'test' && options.enableTestConnector)
@@ -759,6 +768,8 @@ type ConnectorExtras = {
   stdioLauncher?: StdioLauncher;
   stdioLifecycle?: StdioLifecycleOptions;
   privateContext?: PrivateContext;
+  /** The marks a phone call follows; without them a phone line places no call. */
+  callPrivacy?: CallPrivacy;
 };
 
 export function connectorOptionsFromEnv(
@@ -778,7 +789,11 @@ export function connectorOptionsFromEnv(
     stdioLifecycle: { idleMs: env.MELETE_MCP_IDLE_MS },
     privateContext: extra.privateContext,
     cellIsolated: builtinEnvironment(env).cellIsolated,
-    phone: { publicUrl: env.MELETE_PUBLIC_URL, apiBase: env.MELETE_ELEVENLABS_API_URL },
+    phone: {
+      publicUrl: env.MELETE_PUBLIC_URL,
+      apiBase: env.MELETE_ELEVENLABS_API_URL,
+      ...(extra.callPrivacy ? { privacy: extra.callPrivacy } : {}),
+    },
     ...(env.MICROSOFT_OAUTH_CLIENT_ID && env.MICROSOFT_OAUTH_CLIENT_SECRET
       ? {
           microsoft: {

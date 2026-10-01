@@ -923,7 +923,9 @@ which is set when the call starts.
 During a call, Melete answers with the gateway model, not with a job. A job
 attempt is too slow for a phone turn, so each turn is a single request through
 the service's own gateway to the model set by `MELETE_PHONE_PROVIDER` and
-`MELETE_PHONE_MODEL` (the default model when these are unset). The request
+`MELETE_PHONE_MODEL`. When these are unset it is the model new chats use, as
+chosen in the app. The privacy router handles each turn as a service call for
+the line's space and the call's conversation, as it does memory's. The request
 carries:
 
 - the call's context, as the person approved it: why the call exists, what may
@@ -943,13 +945,48 @@ reaches the instructions. On a call Melete placed, it also never chooses what
 memory is recalled: the recall query is the approved purpose and what may be
 shared. No call tool can change the call's context.
 
+### What ElevenLabs and the telephony provider receive
+
+| Who | What |
+| --- | --- |
+| ElevenLabs | The audio of the whole call, both sides. It transcribes what is said, speaks every reply Melete writes, and keeps the conversation (transcript, length and its own summary) under the person's ElevenLabs account. |
+| ElevenLabs | Each turn's request and reply: the conversation so far, and the text Melete answers with. The call's instructions, what memory recalled and the approved context stay in Melete; only what is said aloud reaches ElevenLabs. |
+| ElevenLabs | For a call Melete places: the number called, the fixed opening line (with the person's name, and the callee's name if given), and the call id. |
+| ElevenLabs | At installation: the line's key (as a workspace secret), the three addresses on this service, the line's label, and the Twilio account SID and auth token or the SIP credentials, which it uses to set up the number. |
+| Twilio or the SIP trunk | The call itself: both numbers and the audio, as for any phone call. |
+
+### Private spaces and sensitive conversations
+
+A call carries a conversation to ElevenLabs, so it follows the marks voice and
+the model gateway follow:
+
+- **Proposing a call** from a space or agent marked private, or from a
+  conversation that looks like it is about a sensitive topic, is refused before
+  the person is asked. The refusal tells the model to ask the person. Only if
+  they agree may it propose the call again with `allow_from_private: true`. The
+  approval card then says the conversation is private or sensitive and that
+  approving lets this one call go ahead. The flag is part of the approved
+  payload.
+- **Dispatching** checks again. A space marked private after the approval stops
+  the call before anything is dialled, unless the approved payload carries the
+  flag.
+- **The person's own call** to a line whose space is marked private, or whose
+  conversation looks sensitive, is not taken. The caller hears one sentence that
+  names nobody ("calls are off on this line for now"), and no model call or
+  memory recall is made. Calls in have no override.
+- A check that cannot answer counts as private, and the flag does not cover
+  it.
+
 ### Placing a call
 
 `phone.call` takes `phone_number`, `purpose`, `may_share` and
-`must_not_agree_to`, plus an optional `callee_name` and `callee_time_zone`. It
-is `write_external` and needs approval. The approval is bound to the whole
-payload, so a changed number or purpose is a new action that needs its own
-approval. When the approved action is dispatched:
+`must_not_agree_to`, plus an optional `callee_name`, `callee_time_zone` and
+`allow_from_private`. It is `write_external` and always needs the person's
+approval: auto-review sends it to the person, and no standing rule covers it.
+The approval card shows the number, the callee's name, the purpose, what may
+be shared, what must not be agreed to, and that ElevenLabs hears the call. The
+approval is bound to the whole payload, so a changed number or purpose is a new
+action that needs its own approval. When the approved action is dispatched:
 
 - The callee's local time must be inside the line's calling hours.
   - The zone is the one named in the request. If none is named, it is the zone
@@ -1002,8 +1039,8 @@ them to the owner. Where the call then appears depends on its kind:
 Evidence: `provision.test.ts`, `keys.test.ts`, `hours.test.ts` and
 `turns.test.ts` in [`phone/`](../apps/melete/src/phone/), and
 [phone.test.ts](../apps/melete/test/integration/phone.test.ts), which installs,
-calls and revokes a line against a stand-in for ElevenLabs. No test reaches
-ElevenLabs or Twilio.
+calls and revokes a line against a stand-in for ElevenLabs, and checks the
+private and sensitive refusals. No test reaches ElevenLabs or Twilio.
 
 ## Composing read results
 

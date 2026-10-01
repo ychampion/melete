@@ -9,6 +9,12 @@
  * under the action, and only then placed through ElevenLabs with the call id
  * in the conversation's initiation data. The opening line is fixed: it says an
  * AI assistant is calling, and for whom.
+ *
+ * Everything said on a call goes to ElevenLabs. A call is not proposed from a
+ * space or agent marked private, or from a conversation that looks like it is
+ * about a sensitive topic, unless the payload says the person chose this one
+ * (`allow_from_private`), which the approval card then shows. The same check
+ * runs again when the approved call is dispatched.
  */
 import type {
   Action,
@@ -20,6 +26,7 @@ import type {
 import { e164Number } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { BrokerFault } from '../broker/errors.ts';
 import type { SecretAccess } from '../connectors/secrets.ts';
 import type { Connector } from '../connectors/types.ts';
 import { newId } from '../ids.ts';
@@ -27,6 +34,7 @@ import { outboundOpening } from './calls.ts';
 import { ElevenLabsClient, ElevenLabsError, type Fetch } from './elevenlabs.ts';
 import { withinHours, zonesFor } from './hours.ts';
 import { type Line, withLineSecret } from './line.ts';
+import { CALL_OFF_HERE, type CallPrivacy, callPrivacyReason } from './privacy.ts';
 import { teardownLine } from './provision.ts';
 import type { CallRow } from './turns.ts';
 
@@ -38,6 +46,8 @@ export const phoneCallPayload = z
     must_not_agree_to: z.string().max(1000),
     callee_name: z.string().max(80).optional(),
     callee_time_zone: z.string().max(64).optional(),
+    /** The person chose this call although the conversation is private or sensitive. */
+    allow_from_private: z.literal(true).optional(),
   })
   .strict();
 export type PhoneCallPayload = z.infer<typeof phoneCallPayload>;
@@ -76,6 +86,12 @@ export const phoneManifest: ConnectorManifest = {
             description:
               'The callee’s time zone, such as Europe/London, when the number alone does not say.',
           },
+          allow_from_private: {
+            type: 'boolean',
+            const: true,
+            description:
+              'Set only after the person has said this call may go ahead although this space or agent is marked private, or this conversation is about a sensitive topic. Everything said on the call goes to ElevenLabs. The approval card shows it.',
+          },
         },
       },
       effect_class: 'write_external',
@@ -96,6 +112,8 @@ export type PhoneConnectorOptions = {
   apiBase?: string;
   fetch?: Fetch;
   now?: () => Date;
+  /** Private and sensitive marks. Without it no call is placed. */
+  privacy?: CallPrivacy;
 };
 
 export function createPhoneConnector(options: PhoneConnectorOptions): Connector {
@@ -135,10 +153,32 @@ export function createPhoneConnector(options: PhoneConnectorOptions): Connector 
     reason,
     retryable: false,
   });
+  /**
+   * Why this conversation may not be carried to ElevenLabs, or null when it
+   * may. The person's choice covers a private or sensitive conversation, never
+   * a check that could not answer.
+   */
+  const privacyRefusal = async (jobId: string, spaceId: string, chosen: boolean) => {
+    const reason = await callPrivacyReason(options.privacy, { spaceId, jobId });
+    if (!reason || (chosen && reason !== 'unchecked')) return null;
+    return reason;
+  };
 
   return {
     manifest: phoneManifest,
     catalog: { audience: 'owner' },
+
+    async prepare(payload, ctx) {
+      const parsed = phoneCallPayload.safeParse(payload);
+      if (!parsed.success) return payload;
+      const refusal = await privacyRefusal(
+        ctx.job_id,
+        ctx.space_id,
+        parsed.data.allow_from_private === true,
+      );
+      if (refusal) throw new BrokerFault('scope_denied', CALL_OFF_HERE[refusal]);
+      return payload;
+    },
 
     async execute(action): Promise<DispatchResult> {
       const parsed = phoneCallPayload.safeParse(action.canonical_payload);
@@ -155,6 +195,18 @@ export function createPhoneConnector(options: PhoneConnectorOptions): Connector 
           return failed(existing.failure ?? 'The call was not placed.');
         return { outcome: 'unknown', reason: 'An earlier dispatch of this call never heard back.' };
       }
+      // The marks may have changed since the person approved; they are read again.
+      const refusal = await privacyRefusal(
+        action.job_id,
+        line.spaceId,
+        payload.allow_from_private === true,
+      );
+      if (refusal)
+        return failed(
+          refusal === 'unchecked'
+            ? 'Melete could not check this conversation’s privacy settings, so the call was not placed.'
+            : 'This conversation is now marked private or sensitive, so the call was not placed.',
+        );
       const zones = zonesFor(payload.phone_number, payload.callee_time_zone);
       if (!zones)
         return failed(

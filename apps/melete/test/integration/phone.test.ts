@@ -4,7 +4,9 @@
  * start of an inbound call take only the line's own key; an approved call is
  * placed within calling hours and the day's limit, and a changed number or
  * purpose is not covered by the approval; the end-of-call report needs the
- * line's signature; revoking takes the line down again.
+ * line's signature; a private or sensitive conversation places no call unless
+ * the person chose it, and the person's own call is not taken there; revoking
+ * takes the line down again.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { createHmac } from 'node:crypto';
@@ -28,6 +30,8 @@ import { outboundOpening, STRANGER_OPENING } from '../../src/phone/calls.ts';
 import type { Fetch } from '../../src/phone/elevenlabs.ts';
 import { localMinutes } from '../../src/phone/hours.ts';
 import type { ModelReply, ModelTurn } from '../../src/phone/model.ts';
+import { callPrivacyFrom, PRIVATE_LINE_OPENING } from '../../src/phone/privacy.ts';
+import { PostgresPrivacyStore, PrivacyRouter } from '../../src/privacy/index.ts';
 import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -119,6 +123,10 @@ async function harness() {
     MELETE_MASTER_KEY: MASTER_KEY,
     MELETE_PUBLIC_URL: PUBLIC_URL,
   });
+  // One router for the routes and the line, so a change in Settings reaches both at once.
+  const privacy = new PrivacyRouter({
+    store: new PostgresPrivacyStore(fixture.sql, () => MASTER_KEY),
+  });
   useConnectorFactory(
     registry,
     new ConnectorFactory({
@@ -126,7 +134,12 @@ async function harness() {
       workRoot: 'unused',
       spacesRoot: 'unused',
       masterKey: MASTER_KEY,
-      phone: { publicUrl: PUBLIC_URL, apiBase: 'https://api.elevenlabs.io', fetch: elevenlabs },
+      phone: {
+        publicUrl: PUBLIC_URL,
+        apiBase: 'https://api.elevenlabs.io',
+        fetch: elevenlabs,
+        privacy: callPrivacyFrom(privacy),
+      },
     }),
   );
   const jobs = new JobService(fixture.db, queue.boss);
@@ -149,6 +162,7 @@ async function harness() {
     registry,
     jobs,
     phone,
+    privacy,
     checkDatabase: async () => 'ok',
   });
   // The same database with no public address: nothing can reach a line, so none is offered.
@@ -762,6 +776,172 @@ withDb('a phone line through ElevenLabs', () => {
       const [call] =
         await h.sql`select status, failure from phone_call where action_id = ${proposal.action_id}`;
       expect(call).toEqual({ status: 'failed', failure: 'Nobody answered.' });
+    });
+  });
+
+  describe('privacy', () => {
+    const day = zoneAt(10 * 60, 18 * 60);
+    const body = (overrides: Record<string, unknown> = {}) =>
+      ({
+        phone_number: '+442071234567',
+        purpose: 'Ask whether the order has shipped',
+        may_share: 'The order number',
+        must_not_agree_to: 'Any change to the order',
+        callee_time_zone: day,
+        ...overrides,
+      }) as JsonObject;
+    const settings = async (change: Record<string, unknown>) => {
+      if (!h) throw new Error('Postgres unavailable');
+      const response = await h.app.request('/privacy/settings', {
+        ...h.as(h.cookie, change),
+        method: 'PUT',
+      });
+      expect(response.status).toBe(200);
+    };
+    const placedSince = (before: number) =>
+      seen.slice(before).filter((request) => request.path.includes('outbound-call'));
+
+    test('a proposed call waits for the person, and nothing is dialled before they approve', async () => {
+      if (!h) throw new Error('Postgres unavailable');
+      const claims = await h.seedJob();
+      const before = seen.length;
+      const proposal = await h.broker.propose(claims, {
+        kind: 'phone.call',
+        connection_id: line.id,
+        payload: body(),
+      });
+      expect(proposal.status).toBe('needs_approval');
+      const [action] =
+        await h.sql`select canonical_payload from action where id = ${proposal.action_id}`;
+      expect(action?.canonical_payload).toMatchObject({
+        phone_number: '+442071234567',
+        purpose: 'Ask whether the order has shipped',
+      });
+      // Before the person approves, the call cannot be admitted and nothing reaches ElevenLabs.
+      expect(
+        await rejectionOf(h.broker.admit(claims, proposal.action_id, proposal.payload_hash)),
+      ).toMatchObject({ code: 'action_not_admissible' });
+      expect(placedSince(before)).toEqual([]);
+      // Refused, it is never placed.
+      await h.broker.decide(proposal.action_id, {
+        decision: 'denied',
+        payload_hash: proposal.payload_hash,
+      });
+      expect(
+        await rejectionOf(h.broker.admit(claims, proposal.action_id, proposal.payload_hash)),
+      ).toBeDefined();
+      expect(placedSince(before)).toEqual([]);
+      const [calls] =
+        await h.sql`select count(*)::int as n from phone_call where action_id = ${proposal.action_id}`;
+      expect(calls?.n).toBe(0);
+    });
+
+    test('a private space or a sensitive conversation proposes no call unless the person chose it', async () => {
+      if (!h) throw new Error('Postgres unavailable');
+      await h.sql`delete from phone_call where connection_id = ${line.id} and direction = 'outbound'`;
+      const claims = await h.seedJob();
+      const before = seen.length;
+      await settings({ private_space: true });
+      try {
+        const refused = (await rejectionOf(
+          h.broker.propose(claims, { kind: 'phone.call', connection_id: line.id, payload: body() }),
+        )) as { code?: string; message?: string };
+        expect(refused.code).toBe('scope_denied');
+        expect(refused.message).toContain('marked private');
+        expect(refused.message).toContain('ElevenLabs');
+
+        // The person said this call may go ahead: it is proposed, and still needs their approval.
+        const chosen = await h.broker.propose(claims, {
+          kind: 'phone.call',
+          connection_id: line.id,
+          payload: body({ allow_from_private: true }),
+        });
+        expect(chosen.status).toBe('needs_approval');
+        await h.broker.decide(chosen.action_id, {
+          decision: 'approved',
+          payload_hash: chosen.payload_hash,
+        });
+        await h.broker.admit(claims, chosen.action_id, chosen.payload_hash);
+        expect((await h.broker.dispatch(chosen.action_id)).status).toBe('succeeded');
+        expect(placedSince(before).length).toBe(1);
+      } finally {
+        await settings({ private_space: false });
+      }
+
+      // A conversation that looks sensitive is held the same way.
+      const sensitive = await h.seedJob();
+      await h.sql`insert into privacy_conversation (conversation_id, space_id, sensitive)
+        values (${sensitive.job_id}, ${h.spaceId}, 'health')`;
+      const held = (await rejectionOf(
+        h.broker.propose(sensitive, {
+          kind: 'phone.call',
+          connection_id: line.id,
+          payload: body(),
+        }),
+      )) as { code?: string; message?: string };
+      expect(held.code).toBe('scope_denied');
+      expect(held.message).toContain('sensitive topic');
+      expect(placedSince(before).length).toBe(1);
+    });
+
+    test('a space marked private after the approval stops the call before it is dialled', async () => {
+      if (!h) throw new Error('Postgres unavailable');
+      await h.sql`delete from phone_call where connection_id = ${line.id} and direction = 'outbound'`;
+      const claims = await h.seedJob();
+      const proposal = await h.broker.propose(claims, {
+        kind: 'phone.call',
+        connection_id: line.id,
+        payload: body({ purpose: 'Approved before the space was private' }),
+      });
+      await h.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      await h.broker.admit(claims, proposal.action_id, proposal.payload_hash);
+      const before = seen.length;
+      await settings({ private_space: true });
+      try {
+        expect((await h.broker.dispatch(proposal.action_id)).status).toBe('failed');
+      } finally {
+        await settings({ private_space: false });
+      }
+      expect(placedSince(before)).toEqual([]);
+    });
+
+    test('the person’s own call is not taken where the line answers privately, and no model or memory is asked', async () => {
+      if (!h) throw new Error('Postgres unavailable');
+      const turns = asked.length;
+      const recalls = recalled.length;
+      await settings({ private_space: true });
+      try {
+        const started = phoneInboundResponse.parse(
+          await (
+            await h.app.request(
+              `/phone/${line.id}/inbound`,
+              turnRequest(line.key, { caller_id: OWN_NUMBER, conversation_id: 'conv_private' }),
+            )
+          ).json(),
+        );
+        expect(started.conversation_config_override.agent.first_message).toBe(PRIVATE_LINE_OPENING);
+        expect(PRIVATE_LINE_OPENING).not.toContain('Zara');
+        const turn = await h.app.request(
+          `/phone/${line.id}/llm/v1/chat/completions`,
+          turnRequest(line.key, {
+            stream: false,
+            tools: END_CALL_TOOL,
+            messages: [{ role: 'user', content: 'What is on my calendar?' }],
+            elevenlabs_extra_body: { call_id: started.custom_llm_extra_body.call_id },
+          }),
+        );
+        const reply = (await turn.json()) as {
+          choices: Array<{ message: { tool_calls: Array<{ function: { name: string } }> } }>;
+        };
+        expect(reply.choices[0]?.message.tool_calls[0]?.function.name).toBe('end_call');
+        expect(asked.length).toBe(turns);
+        expect(recalled.length).toBe(recalls);
+      } finally {
+        await settings({ private_space: false });
+      }
     });
   });
 

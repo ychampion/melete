@@ -115,6 +115,7 @@ import { configuredMemoryGateway } from './memory/gateway.ts';
 import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { startServiceMemory } from './memory/start.ts';
+import { callPrivacyFrom } from './phone/privacy.ts';
 import { mountPhone, type PhoneRouteDeps } from './phone/routes.ts';
 import {
   refusedForRemoval,
@@ -334,7 +335,8 @@ export function createApp(deps: AppDeps) {
       // Voice goes to its provider directly, so it follows the router's private marks.
       privacy: voicePrivacyFrom(privacy),
     });
-  // Each phone turn's model call goes through the router.
+  // A phone call goes to ElevenLabs directly, so it follows the same marks; each
+  // turn's model call goes through the router as well.
   if (connections)
     mountPhone(app, {
       ...connections,
@@ -624,6 +626,8 @@ export async function bootstrap(
         stdioLauncher,
         // A space or agent the person marked private reads no public web pages.
         privateContext: ({ spaceId, agentId }) => privacy.marksPrivate(spaceId, agentId),
+        // A call carries what is said to ElevenLabs, so it follows the same marks.
+        callPrivacy: callPrivacyFrom(privacy),
       });
       catalog = new RuntimeCatalog(handle.db, registry);
       // Sandboxes are the service's own: their providers come from the same

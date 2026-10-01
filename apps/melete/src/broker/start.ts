@@ -24,6 +24,7 @@ import { ModelSettingsService } from '../gateway/model-settings.ts';
 import { startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
+import { callPrivacyFrom } from '../phone/privacy.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
 import type { BrowserSessionService } from '../workers/browser/routes.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
@@ -81,6 +82,7 @@ export async function startEffectBoundary(
       connections,
       browserSessions: dependencies.browserSessions ?? browser?.sessions,
       privateContext: ({ spaceId, agentId }) => dependencies.privacy.marksPrivate(spaceId, agentId),
+      callPrivacy: callPrivacyFrom(dependencies.privacy),
     }));
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
   let review: Awaited<ReturnType<typeof configuredReviewGateway>> | undefined;

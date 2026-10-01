@@ -3,6 +3,9 @@
  *
  * An inbound call from one of the person's own numbers reaches Melete as the
  * person; anybody else hears one polite sentence and the person gets a note.
+ * When the line's space is marked private, or its conversation looks like it is
+ * about a sensitive topic, the person's own call is not taken either: they hear
+ * one sentence that names nobody, and no model or memory is asked.
  * At the end of a call its transcript, outcome and length are kept, the call
  * appears in the conversation it belongs to, what the person said on their own
  * call goes to memory the way anything they type does, and what the call asked
@@ -19,10 +22,16 @@ import type { JobService } from '../jobs/service.ts';
 import type { ConversationRecord } from './elevenlabs.ts';
 import { normalizeNumber } from './hours.ts';
 import { type Line, lineOwner } from './line.ts';
+import { type CallPrivacy, callPrivacyReason, PRIVATE_LINE_OPENING } from './privacy.ts';
 import { phoneLine, type StoredLine } from './schema.ts';
 import type { CallRow } from './turns.ts';
 
-export type CallRecordDeps = { sql: Sql; jobs?: JobService };
+export type CallRecordDeps = {
+  sql: Sql;
+  jobs?: JobService;
+  /** The marks a call follows; without them the person's own calls are not taken. */
+  privacy?: CallPrivacy;
+};
 
 /** Notes about strangers are kept to one per number in this window. */
 const STRANGER_NOTE_WINDOW = '1 hour';
@@ -100,24 +109,51 @@ export async function startInbound(
   const person = caller !== null && line.stored.phone.allowed_callers.includes(caller);
   const conversationId = input.conversationId?.trim() || null;
   const id = newId('call');
-  const [inserted] = await deps.sql<{ id: string; party: string }[]>`insert into phone_call
-      (id, connection_id, space_id, direction, party, remote_number, conversation_id, status)
+  // The person's call is taken only where voice may go: a private space or
+  // agent, or a sensitive conversation, ends it with one sentence. The call is
+  // written down as already over, so no turn reaches the model or memory.
+  const off =
+    person &&
+    (await callPrivacyReason(deps.privacy, {
+      spaceId: line.spaceId,
+      jobId: await lineJob(deps.sql, line.id),
+    })) !== null;
+  const [inserted] = await deps.sql<
+    { id: string; party: string; status: string }[]
+  >`insert into phone_call
+      (id, connection_id, space_id, direction, party, remote_number, conversation_id, status,
+       failure, ended_at)
     values (${id}, ${line.id}, ${line.spaceId}, 'inbound', ${person ? 'person' : 'unknown'},
-      ${caller ?? 'withheld'}, ${conversationId}, 'in_progress')
+      ${caller ?? 'withheld'}, ${conversationId}, ${off ? 'ended' : 'in_progress'},
+      ${off ? PRIVATE_CALL : null},
+      case when ${off}::boolean then now() end)
     on conflict (connection_id, conversation_id) where conversation_id is not null do nothing
-    returning id, party`;
+    returning id, party, status`;
   // ElevenLabs may ask twice for the same call; the first answer stands.
   const [existing] = inserted
     ? [inserted]
-    : await deps.sql<{ id: string; party: string }[]>`select id, party from phone_call
-        where connection_id = ${line.id} and conversation_id = ${conversationId}`;
-  const call = existing ?? { id, party: 'unknown' };
+    : await deps.sql<{ id: string; party: string; status: string }[]>`select id, party, status
+        from phone_call where connection_id = ${line.id} and conversation_id = ${conversationId}`;
+  const call = existing ?? { id, party: 'unknown', status: 'ended' };
   if (inserted && !person) await noteStranger(deps, line, call.id, caller);
   return {
     callId: call.id,
     opening:
-      call.party === 'person' ? openingForPerson(line.stored.phone.on_behalf_of) : STRANGER_OPENING,
+      call.party !== 'person'
+        ? STRANGER_OPENING
+        : call.status === 'in_progress'
+          ? openingForPerson(line.stored.phone.on_behalf_of)
+          : PRIVATE_LINE_OPENING,
   };
+}
+
+/** Why a call the person made to their own line was not taken. */
+export const PRIVATE_CALL = 'Not taken: the line answers somewhere marked private or sensitive.';
+
+/** The line's own conversation, when one has been made. */
+async function lineJob(sql: Sql, lineId: string): Promise<string | null> {
+  const [row] = await sql`select job_id from phone_line where connection_id = ${lineId}`;
+  return row?.job_id ? String(row.job_id) : null;
 }
 
 async function noteStranger(

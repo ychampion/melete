@@ -449,3 +449,54 @@ test('a saved file card opens text in the app and offers anything else as a down
     handle: 'art_01ABC',
   });
 });
+
+test('a call to approve shows the number, why, what may be shared, and who hears it', () => {
+  const call: ActionRow = {
+    ...base,
+    kind: 'phone.call',
+    effectClass: 'write_external',
+    connectionId: 'phone-connection',
+    canonicalPayload: {
+      phone_number: '+442071234567',
+      purpose: 'Move the dentist appointment to next week',
+      may_share: 'Her first name',
+      must_not_agree_to: 'Any cancellation fee',
+      callee_name: 'the clinic',
+    },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const card = (action: ActionRow) =>
+    projectPermission({
+      id: 'apr_call',
+      version: 'v1',
+      action,
+      connection: { id: 'phone-connection', label: 'Home line', provider: 'phone' },
+      reasons: ['This change needs your permission before it happens.'],
+      canAlways: false,
+      requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+    });
+  const shown = card(call);
+  expect(shown.what).toBe('Call +442071234567');
+  expect(shown.options).toEqual(['allow_once', 'deny']);
+  expect(shown.preview?.facts).toEqual([
+    { label: 'Number', value: '+442071234567' },
+    { label: 'Calling', value: 'the clinic' },
+    { label: 'Purpose', value: 'Move the dentist appointment to next week' },
+    { label: 'May share', value: 'Her first name' },
+    { label: 'Must not agree to', value: 'Any cancellation fee' },
+    {
+      label: 'Who hears it',
+      value:
+        'ElevenLabs hears and transcribes the whole call, both sides, and speaks the replies. The call opens by saying an AI assistant is calling for you.',
+    },
+  ]);
+  expect(JSON.stringify(shown)).not.toMatch(BACKEND_VOCABULARY);
+  // A call the person chose from a private conversation says so on the card.
+  const chosen = card({
+    ...call,
+    canonicalPayload: { ...(call.canonicalPayload as object), allow_from_private: true },
+  });
+  expect(chosen.preview?.facts.at(-1)?.label).toBe('Private');
+  expect(chosen.preview?.facts.at(-1)?.value).toContain('Approving lets this one call go ahead');
+});

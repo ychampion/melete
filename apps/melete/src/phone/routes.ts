@@ -35,6 +35,7 @@ import { conversationRecord, ElevenLabsClient, type Fetch } from './elevenlabs.t
 import { lineKeyMatches, signatureValid } from './keys.ts';
 import { type Line, readLine, withLineSecret } from './line.ts';
 import { type CallModel, configuredCallModel } from './model.ts';
+import { callPrivacyFrom } from './privacy.ts';
 import { LINE_KEY_HEADER } from './provision.ts';
 import { answerTurn, type CallRow, type Recall } from './turns.ts';
 
@@ -44,7 +45,7 @@ export type PhoneRouteDeps = {
   env: Env;
   registry: ConnectorRegistry;
   jobs?: JobService;
-  /** The service's privacy router, which every turn's model call goes through. */
+  /** The service's privacy router: its marks decide whether a call is taken at all. */
   privacy: PrivacyRouter;
   /** The model connected in the app, which a turn uses unless MELETE_PHONE_MODEL names one. */
   modelSettings?: ModelSettingsService;
@@ -95,7 +96,11 @@ export function mountPhone(app: Hono, deps: PhoneRouteDeps) {
       ...(deps.modelSettings ? { settings: deps.modelSettings } : {}),
     });
   const turnDeps = { sql: deps.sql, model, recall: deps.recall ?? memoryRecall(deps.sql) };
-  const records = { sql: deps.sql, ...(deps.jobs ? { jobs: deps.jobs } : {}) };
+  const records = {
+    sql: deps.sql,
+    ...(deps.jobs ? { jobs: deps.jobs } : {}),
+    privacy: callPrivacyFrom(deps.privacy),
+  };
 
   /** The line this request names, when it presents that line's key. */
   const keyedLine = async (c: Context): Promise<Line | null> => {

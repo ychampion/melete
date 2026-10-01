@@ -480,6 +480,10 @@ Placing a call is `phone.call`, an external effect bound to its approval:
   read is flagged on the approval card.
 - Each call is held to the callee's local calling hours and to a daily limit.
 - The opening line always says an AI assistant is calling.
+- A call from a space or agent marked private, or from a sensitive
+  conversation, is refused unless the approved payload says the person chose
+  it; the person's own calls are not taken there at all (see
+  [CONNECTORS](CONNECTORS.md), "Private spaces and sensitive conversations").
 
 What remains:
 

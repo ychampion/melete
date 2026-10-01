@@ -229,6 +229,44 @@ function describeElement(element: Record<string, unknown>): string {
   ].join(', ');
 }
 
+/**
+ * What a phone call's card shows: the exact number, why, what may be shared and
+ * what must not be agreed to (the whole approved context), who hears the call,
+ * and, when the person is choosing a call from a private or sensitive
+ * conversation, that they are.
+ */
+export function phoneCallFacts(kind: string, payload: Record<string, unknown>) {
+  if (kind !== 'phone.call') return [];
+  const said = (value: unknown, fallback: string) =>
+    typeof value === 'string' && value.trim() ? plainText(value, fallback, 1000) : fallback;
+  return [
+    { label: 'Number', value: said(payload.phone_number, 'Not given') },
+    ...(typeof payload.callee_name === 'string' && payload.callee_name.trim()
+      ? [{ label: 'Calling', value: said(payload.callee_name, 'Not given') }]
+      : []),
+    { label: 'Purpose', value: said(payload.purpose, 'Not given') },
+    { label: 'May share', value: said(payload.may_share, 'Nothing beyond the purpose') },
+    {
+      label: 'Must not agree to',
+      value: said(payload.must_not_agree_to, 'Anything that commits you to something'),
+    },
+    {
+      label: 'Who hears it',
+      value:
+        'ElevenLabs hears and transcribes the whole call, both sides, and speaks the replies. The call opens by saying an AI assistant is calling for you.',
+    },
+    ...(payload.allow_from_private === true
+      ? [
+          {
+            label: 'Private',
+            value:
+              'This conversation is marked private or looks sensitive. Approving lets this one call go ahead anyway.',
+          },
+        ]
+      : []),
+  ];
+}
+
 function deviceFacts(kind: string, payload: Record<string, unknown>) {
   if (!kind.startsWith('device.')) return [];
   const expected =
@@ -631,7 +669,9 @@ export function projectPermission(input: {
     ? `${base} to ${recipientText(payload)}`
     : file
       ? `Save ${file.path}`
-      : (DEVICE_ASKS[input.action.kind] ?? base);
+      : input.action.kind === 'phone.call'
+        ? `Call ${typeof payload.phone_number === 'string' ? payload.phone_number : 'a number'}`
+        : (DEVICE_ASKS[input.action.kind] ?? base);
   const facts = [
     ...(file
       ? [
@@ -640,6 +680,7 @@ export function projectPermission(input: {
         ]
       : []),
     ...deviceFacts(input.action.kind, payload),
+    ...phoneCallFacts(input.action.kind, payload),
     ...(draft
       ? [
           ...(input.connection.sender ? [{ label: 'From', value: input.connection.sender }] : []),
