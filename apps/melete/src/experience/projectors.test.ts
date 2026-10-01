@@ -17,6 +17,7 @@ import {
   SUPERSEDED_NOTE,
   safeUrl,
   senderAddress,
+  tooLongToAsk,
 } from './projectors.ts';
 
 const base: ActionRow = {
@@ -146,6 +147,85 @@ test('a permission to send shows the mailbox it leaves from above the recipient'
     'Message',
   ]);
   expect(JSON.stringify(shown)).not.toMatch(BACKEND_VOCABULARY);
+});
+
+test("a permission to run a command in the agent's computer shows the command and where it runs", () => {
+  const command: ActionRow = {
+    ...base,
+    kind: 'terminal.run',
+    effectClass: 'write_reversible',
+    connectionId: 'sandbox-connection',
+    canonicalPayload: { command: 'date -u', cwd: 'reports' },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const computer = { id: 'sandbox-connection', label: 'Computer', provider: 'sandbox' };
+  const shown = projectPermission({
+    id: 'apr_cmd',
+    version: 'v1',
+    action: command,
+    connection: computer,
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: true,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+  });
+  // Asked for in the present tense, before anything has run.
+  expect(shown.what).toBe("Run a command on the agent's computer");
+  expect(shown.preview?.title).toBe("Run a command on the agent's computer");
+  expect(shown.preview?.facts).toEqual([
+    { label: 'Command', value: 'date -u' },
+    { label: 'Runs in', value: '/work/reports' },
+    { label: 'Computer', value: "The agent's own computer, not yours" },
+  ]);
+  // A long command says it was cut, and anything invisible in it is written out.
+  const long = projectPermission({
+    id: 'apr_long',
+    version: 'v1',
+    action: { ...command, canonicalPayload: { command: `echo ‮${'x'.repeat(5000)}` } },
+    connection: computer,
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: false,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+  });
+  const facts = long.preview?.facts ?? [];
+  expect(facts[0]?.value.startsWith('echo <U+202E>x')).toBe(true);
+  expect(facts.find((fact) => fact.label === 'Length')?.value).toContain('5013 characters');
+  expect(facts.find((fact) => fact.label === 'Runs in')?.value).toBe('/work');
+});
+
+test('a sandbox command longer than its card shows is refused, not asked for in part', () => {
+  expect(tooLongToAsk('terminal.run', { command: 'date -u' })).toBeNull();
+  expect(tooLongToAsk('terminal.run', { command: 'x'.repeat(3000) })).toBeNull();
+  expect(tooLongToAsk('terminal.run', { command: 'x'.repeat(3001) })).toContain('Nothing ran');
+  // Measured as shown: invisible characters are written out on the card.
+  expect(tooLongToAsk('terminal.run', { command: `echo ${'\u200b'.repeat(400)}` })).toContain(
+    'Nothing ran',
+  );
+  expect(tooLongToAsk('exec.python', { intent: { code: 'print(1)\n'.repeat(400) } })).toContain(
+    'code',
+  );
+  expect(tooLongToAsk('exec.run', { intent: { command: 'ls' } })).toBeNull();
+  // Other actions are shown their own way.
+  expect(tooLongToAsk('device.run', { command: 'x'.repeat(5000) })).toBeNull();
+  // A card is always a valid card, however much of a command is invisible.
+  const shown = projectPermission({
+    id: 'apr_hidden',
+    version: 'v1',
+    action: {
+      ...base,
+      kind: 'terminal.run',
+      effectClass: 'write_reversible',
+      connectionId: 'sandbox-connection',
+      canonicalPayload: { command: `echo ${'\u0007'.repeat(2000)}` },
+      receipt: null,
+      status: 'needs_approval',
+    },
+    connection: { id: 'sandbox-connection', label: 'Computer', provider: 'sandbox' },
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: false,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+  });
+  expect(shown.preview?.facts.find((fact) => fact.label === 'Length')).toBeDefined();
 });
 
 test('a decided permission says which of the three choices was taken', () => {

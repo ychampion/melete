@@ -257,8 +257,10 @@ def test_a_command_is_one_broker_action_and_its_output_comes_back():
     assert payload["cwd"] == "src"
     assert payload["timeout_ms"] == 30_000
     assert call["client_ref"].endswith(payload["run"])
-    # The HTTP wait covers the broker's whole budget for the command.
+    # The HTTP wait covers the broker's whole budget for the command: the
+    # command's own timeout, the sync allowance and the wait for the computer.
     assert call["timeout"] >= 30 + SESSION_MARGIN_SECONDS
+    assert call["timeout"] > 30 + 120 + 60
     assert broker.reads == [ACTION]
 
 

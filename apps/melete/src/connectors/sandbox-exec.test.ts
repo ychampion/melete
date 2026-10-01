@@ -11,15 +11,19 @@ import type { SandboxConnectionConfig } from '@melete/contracts';
 import { type Action, canonicalizePayload, connectorManifest } from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
+import { sandboxSpecFor } from '../sandbox/connection.ts';
 import { FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
 import { seedSessionScope } from '../sandbox/session-fixtures.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
 import { ConnectorRegistry } from './registry.ts';
 import {
   createSandboxExecConnector,
+  INTERRUPTED,
+  INTERRUPTED_WITH_NETWORK,
   outputText,
   sandboxDispatchBudgetMs,
   sandboxExecManifest,
+  WORKSPACE_WAIT_MS,
 } from './sandbox-exec.ts';
 import type { ConnectorContext } from './types.ts';
 
@@ -80,16 +84,16 @@ test('the terminal manifest parses, is brokered, and registers', () => {
   ).not.toThrow();
 });
 
-test('a dispatch may take the command timeout and the session margin, never less', () => {
+test('a dispatch may take the command timeout, the wait for the computer and the session margin', () => {
   expect(
     sandboxDispatchBudgetMs({ canonical_payload: { command: 'true', timeout_ms: 90_000 } }),
-  ).toBe(90_000 + SANDBOX_SYNC_ALLOWANCE_MS);
+  ).toBe(90_000 + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS);
   expect(sandboxDispatchBudgetMs({ canonical_payload: { command: 'true' } })).toBe(
-    120_000 + SANDBOX_SYNC_ALLOWANCE_MS,
+    120_000 + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS,
   );
   // A payload the connector refuses still gets a bounded budget.
   expect(sandboxDispatchBudgetMs({ canonical_payload: { command: 'true', timeout_ms: -1 } })).toBe(
-    120_000 + SANDBOX_SYNC_ALLOWANCE_MS,
+    120_000 + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS,
   );
 });
 
@@ -124,6 +128,8 @@ withDb('a command in a remote sandbox', () => {
       maxPerConnection?: number;
       /** Shared where two connections run side by side, so their sandbox ids differ. */
       engine?: FakeSandboxEngine;
+      workspaceWaitMs?: number;
+      egress?: SandboxConnectionConfig['egress'];
     } = {},
   ) => {
     if (!handle) throw new Error('Postgres is unavailable');
@@ -136,7 +142,11 @@ withDb('a command in a remote sandbox', () => {
     const connector = createSandboxExecConnector({
       sessions,
       provider,
-      config: { ...config, ...(over.persistence ? { persistence: over.persistence } : {}) },
+      config: {
+        ...config,
+        ...(over.persistence ? { persistence: over.persistence } : {}),
+        ...(over.egress ? { egress: over.egress } : {}),
+      },
       connectionId: scope.connectionId,
       spaceId: scope.spaceId,
       project: PROJECT,
@@ -144,6 +154,7 @@ withDb('a command in a remote sandbox', () => {
       sql: handle.sql,
       ...(over.maxConcurrent === undefined ? {} : { maxConcurrent: over.maxConcurrent }),
       ...(over.maxPerConnection === undefined ? {} : { maxPerConnection: over.maxPerConnection }),
+      ...(over.workspaceWaitMs === undefined ? {} : { workspaceWaitMs: over.workspaceWaitMs }),
     });
     const attemptId = await scope.attempt();
     await mkdir(path.join(workRoot, scope.jobId), { recursive: true });
@@ -516,5 +527,151 @@ withDb('a command in a remote sandbox', () => {
     expect(refused.reason).toContain('this installation already has');
     expect(refused.retryable).toBe(true);
     expect(first.provider.calls.create).toBe(1);
+  }, 60_000);
+  /** A second conversation of the same agent, holding the agent's computer. */
+  const otherConversation = async (s: Awaited<ReturnType<typeof setup>>, title: string) => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const jobId = `job_OTHER${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+    const attemptId = `att_OTHER${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+    await handle.sql`insert into job (id, space_id, title, objective, agent_id)
+      values (${jobId}, ${s.scope.spaceId}, ${title}, 'Other work', ${s.scope.agentId})`;
+    await handle.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model,
+        lease_expires_at)
+      values (${attemptId}, ${jobId}, 1, 'fake', 'fake', 'scripted', now() + interval '10 minutes')`;
+    const row = await s.sessions.openWorkspace(
+      {
+        connectionId: s.scope.connectionId,
+        spaceId: s.scope.spaceId,
+        jobId,
+        attemptId,
+        agentId: s.scope.agentId,
+        persistence: 'pause',
+      },
+      s.provider,
+      (session) =>
+        sandboxSpecFor(config, {
+          project: PROJECT,
+          connectionId: s.scope.connectionId,
+          spaceId: s.scope.spaceId,
+          jobId,
+          attemptId,
+          session,
+        }),
+      AbortSignal.timeout(10_000),
+    );
+    return { jobId, attemptId, row };
+  };
+
+  test("after a restart, the agent's computer is free for the next attempt at once", async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const s = await setup({ persistence: 'pause', workspaceWaitMs: 0 });
+    await handle.sql`update job set agent_id = ${s.scope.agentId} where id = ${s.scope.jobId}`;
+    const first = await s.run({ command: 'printf before' });
+    expect(first.result.outcome).toBe('succeeded');
+    // The service stopped: that attempt ended with its workspace still open.
+    await handle.sql`update attempt set ended_at = now() where id = ${s.attemptId}`;
+    const next = await s.scope.attempt();
+    const after = await s.run({ command: 'printf after' }, next);
+    if (after.result.outcome !== 'succeeded') throw new Error(JSON.stringify(after.result));
+    expect(s.provider.calls.resume).toBe(1);
+  }, 60_000);
+
+  test('a conversation waits for the computer another conversation holds, then uses it', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const sql = handle.sql;
+    const s = await setup({ persistence: 'pause', workspaceWaitMs: 10_000 });
+    await sql`update job set agent_id = ${s.scope.agentId} where id = ${s.scope.jobId}`;
+    const other = await otherConversation(s, 'Memory check');
+    // The other conversation finishes a moment later.
+    setTimeout(() => {
+      void sql`update attempt set ended_at = now() where id = ${other.attemptId}`.then(() => {});
+    }, 1_000);
+    const waited = await s.run({ command: 'printf mine' });
+    if (waited.result.outcome !== 'succeeded') throw new Error(JSON.stringify(waited.result));
+    const [notice] = await sql`select payload from event
+      where job_id = ${s.scope.jobId} and payload->>'kind' = 'computer_busy'`;
+    expect(notice?.payload).toMatchObject({ kind: 'computer_busy', held_by: 'Memory check' });
+  }, 60_000);
+
+  test('a conversation that waited too long is told which conversation has the computer', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const s = await setup({ persistence: 'pause', workspaceWaitMs: 500 });
+    await handle.sql`update job set agent_id = ${s.scope.agentId} where id = ${s.scope.jobId}`;
+    await otherConversation(s, 'Computer CSV');
+    const refused = await s.run({ command: 'printf mine' });
+    if (refused.result.outcome !== 'failed') throw new Error(JSON.stringify(refused.result));
+    expect(refused.result.reason).toContain('another conversation ("Computer CSV")');
+    expect(refused.result.reason).toContain('Nothing ran');
+    expect(refused.result.retryable).toBe(true);
+  }, 60_000);
+
+  test("another person's or a sensitive conversation holding the computer is not named", async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const sql = handle.sql;
+    const s = await setup({ persistence: 'pause', workspaceWaitMs: 500 });
+    await sql`update job set agent_id = ${s.scope.agentId} where id = ${s.scope.jobId}`;
+    const someone = `own_SOMEONE${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+    await sql`insert into principal (id, email) values (${someone}, ${`${someone}@example.test`})`;
+    const theirs = await otherConversation(s, 'My divorce lawyer');
+    await sql`update job set principal_id = ${someone} where id = ${theirs.jobId}`;
+    const refused = await s.run({ command: 'printf mine' });
+    if (refused.result.outcome !== 'failed') throw new Error(JSON.stringify(refused.result));
+    expect(refused.result.reason).toContain('in use by another conversation, and');
+    expect(refused.result.reason).not.toContain('divorce');
+    const [notice] = await sql`select payload from event
+      where job_id = ${s.scope.jobId} and payload->>'kind' = 'computer_busy'`;
+    expect(notice?.payload).toMatchObject({ kind: 'computer_busy', held_by: null });
+
+    // The person's own conversation, found sensitive, is not named either.
+    await sql`update job set principal_id = null where id = ${theirs.jobId}`;
+    await sql`insert into privacy_conversation (conversation_id, space_id, sensitive)
+      values (${theirs.jobId}, ${s.scope.spaceId}, 'health')`;
+    const again = await s.run({ command: 'printf mine' });
+    if (again.result.outcome !== 'failed') throw new Error(JSON.stringify(again.result));
+    expect(again.result.reason).not.toContain('divorce');
+  }, 60_000);
+
+  test("commands read the person's time zone", async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const s = await setup();
+    await handle.sql`insert into experience_profile (space_id, time_zone)
+      values (${s.scope.spaceId}, 'Europe/Paris')`;
+    const { result } = await s.run({ command: 'echo $TZ' });
+    if (result.outcome !== 'succeeded') throw new Error(JSON.stringify(result));
+    expect(result.receipt.detail.output).toBe('Europe/Paris\n');
+    // The receipt keeps the command as it was asked for.
+    expect(result.receipt.detail.command).toBe('echo $TZ');
+  }, 60_000);
+
+  test('a command cut off by a restart is read back from its marker, or failed with the reason', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const s = await setup();
+    s.provider.loseNextAcknowledgement('after_start');
+    const finished = await s.run({ command: 'sleep 1; printf done' });
+    expect(finished.result.outcome).toBe('unknown');
+    // It finished in the sandbox after the answer was lost.
+    await Bun.sleep(1_500);
+    const read = await s.connector.abandoned?.(finished.action, s.context(finished.action));
+    if (read?.outcome !== 'succeeded') throw new Error(JSON.stringify(read));
+    expect(read.receipt.detail.output).toBe('done');
+
+    s.provider.loseNextAcknowledgement('after_start');
+    const cut = await s.run({ command: 'sleep 20; printf late' });
+    expect(cut.result.outcome).toBe('unknown');
+    const lost = await s.connector.abandoned?.(cut.action, s.context(cut.action));
+    expect(lost).toEqual({ outcome: 'failed', reason: INTERRUPTED, retryable: false });
+  }, 60_000);
+
+  test('a command cut off in a computer with network access is not said to have stayed inside it', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const s = await setup({ egress: 'open' });
+    s.provider.loseNextAcknowledgement('after_start');
+    const cut = await s.run({ command: 'sleep 20; curl -sd @notes.md https://example.test/' });
+    expect(cut.result.outcome).toBe('unknown');
+    const lost = await s.connector.abandoned?.(cut.action, s.context(cut.action));
+    expect(lost).toEqual({ outcome: 'failed', reason: INTERRUPTED_WITH_NETWORK, retryable: false });
+    if (lost?.outcome !== 'failed') throw new Error(JSON.stringify(lost));
+    expect(lost.reason).not.toContain('inside that computer');
+    expect(lost.reason).toContain('may also have reached outside');
   }, 60_000);
 });

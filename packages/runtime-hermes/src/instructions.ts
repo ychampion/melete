@@ -102,6 +102,11 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
     '# This attempt',
     '',
     `Workspace: ${workspace}. It is the only path you can write to.`,
+    ...(bundle.time_zone
+      ? [
+          `The person's time zone is ${bundle.time_zone}. "Today", "now" and every date and time you give mean that zone, not UTC.`,
+        ]
+      : []),
     'Answer in your reply. Save a file only when the owner asks for one.',
     `Budget: at most ${bundle.budget.max_turns} turns and ${bundle.budget.max_actions} actions.`,
     'Every tool call is proposed to the broker, which records it and may need the',

@@ -75,6 +75,7 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
   let timer: ReturnType<typeof setInterval> | undefined;
   let reconcileTimer: ReturnType<typeof setInterval> | undefined;
   const pending = new Set<Promise<void>>();
+  const settling = new Set<string>();
 
   const wiring: SandboxWiring = {
     async reconcile(signal) {
@@ -102,11 +103,15 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
     },
 
     async settleAttempt(attemptId, signal) {
-      const rows = await sql`select id, agent_id, persistence, connection_id, adapter
+      const rows = await sql`select id, agent_id, persistence, connection_id, adapter,
+          provider_sandbox_id
         from sandbox_session
         where attempt_id = ${attemptId} and status in ('opening', 'ready')`;
       for (const row of rows) {
         const id = String(row.id);
+        // Taking over the computer is what ended this attempt; the person keeps
+        // it, and the sweep settles it once they hand it back.
+        if (sessions.heldByPerson(String(row.provider_sandbox_id))) continue;
         const workspace = row.agent_id !== null && row.persistence !== 'ephemeral';
         try {
           const provider = providerFor(String(row.adapter), String(row.connection_id));
@@ -121,10 +126,17 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
     },
 
     afterAttempt(attemptId) {
+      // An attempt can be reported ended twice (its outcome, then its return);
+      // one settlement at a time, so its workspace is not suspended twice.
+      if (settling.has(attemptId)) return;
+      settling.add(attemptId);
       const work = wiring
         .settleAttempt(attemptId, AbortSignal.timeout(120_000))
         .catch(() => {})
-        .finally(() => pending.delete(work));
+        .finally(() => {
+          pending.delete(work);
+          settling.delete(attemptId);
+        });
       pending.add(work);
     },
 

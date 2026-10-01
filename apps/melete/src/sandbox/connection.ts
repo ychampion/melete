@@ -12,6 +12,7 @@
  * does not offer.
  */
 import {
+  canonicalTimeZone,
   modalTokenParts,
   type SandboxAdapter,
   type SandboxConnectionConfig,
@@ -93,6 +94,8 @@ export function sandboxSpecFor(
     jobId?: string | null;
     attemptId?: string | null;
     session: string;
+    /** The person's time zone, so `date` and every timestamp inside read in it. */
+    timeZone?: string | null;
   },
 ): SandboxSpec {
   return {
@@ -110,8 +113,21 @@ export function sandboxSpecFor(
       attempt: ids.attemptId ?? null,
       session: ids.session,
     }),
-    env: { LANG: 'C.UTF-8' },
+    env: {
+      LANG: 'C.UTF-8',
+      ...(sandboxTimeZone(ids.timeZone) ? { TZ: sandboxTimeZone(ids.timeZone) as string } : {}),
+    },
   };
+}
+
+/**
+ * A time zone a sandbox may be given: an IANA name the runtime knows, in its
+ * canonical spelling. Anything else is left out, and the sandbox reads UTC.
+ */
+export function sandboxTimeZone(zone: string | null | undefined): string | null {
+  if (!zone) return null;
+  const canonical = canonicalTimeZone(zone);
+  return /^[A-Za-z][A-Za-z0-9_+/-]{0,63}$/.test(canonical) ? canonical : null;
 }
 
 /**

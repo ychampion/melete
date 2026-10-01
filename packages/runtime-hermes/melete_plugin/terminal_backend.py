@@ -59,10 +59,12 @@ WORK_DIR = "/work"
 MIN_TIMEOUT_MS = 100
 MAX_TIMEOUT_MS = 120_000
 
-#: Mirrors SANDBOX_SYNC_ALLOWANCE_MS in apps/melete/src/env.ts: the
-#: broker may take this long beyond the command's own timeout to open the
-#: session and sync the workspace before it calls the outcome unknown.
-SESSION_MARGIN_SECONDS = 120
+#: Mirrors SANDBOX_SYNC_ALLOWANCE_MS in apps/melete/src/env.ts plus
+#: WORKSPACE_WAIT_MS in apps/melete/src/connectors/sandbox-exec.ts: the
+#: broker may take this long beyond the command's own timeout to wait for the
+#: agent's computer, open the session and sync the workspace before it calls
+#: the outcome unknown.
+SESSION_MARGIN_SECONDS = 180
 
 #: Past the broker's own budget, so the broker's answer arrives before this
 #: process gives up on it.

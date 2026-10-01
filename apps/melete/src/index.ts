@@ -642,6 +642,11 @@ export async function bootstrap(
       if (sandboxes) {
         await sandboxes.reconcile(AbortSignal.timeout(120_000));
         sandboxes.start();
+        // Sessions left by attempts that ended with the last process are
+        // settled now, not when the first timed sweep comes round.
+        void sandboxes.sweep(AbortSignal.timeout(120_000)).catch(() => {
+          process.stderr.write('sandbox sweep at start failed\n');
+        });
       }
     }
     if (handle) {
@@ -869,10 +874,15 @@ export async function bootstrap(
       // An attempt that ends leaves no sandbox running: its workspace is
       // suspended, and an ephemeral session is closed. Off the outcome
       // transaction, since both are provider calls.
-      if (sandboxes)
+      if (sandboxes) {
         runner.onFinished.push(async (_tx, _row, _outcome, attemptId) => {
           sandboxes?.afterAttempt(attemptId);
         });
+        // An attempt that is stopped, fenced, lost or cut short by shutdown
+        // never reaches the outcome above, and its workspace must not stay
+        // held until its lease runs out.
+        runner.onSettled.push((attemptId) => sandboxes?.afterAttempt(attemptId));
+      }
       if (browser)
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);

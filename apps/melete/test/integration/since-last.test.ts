@@ -133,6 +133,102 @@ withDb('the delta brief', () => {
     expect(text).toContain(firstAttempt);
   }, 60_000);
 
+  test('a resumed attempt is given what the interrupted one already read and ran', async () => {
+    const { handle } = fixture();
+    // The request was answered once (the seeded attempt); the next one read a
+    // page and ran a command, then stopped to ask the person something.
+    const before = newId('act');
+    const paused = newId('att');
+    await handle.db.insert(attempt).values({
+      id: paused,
+      jobId,
+      epoch: 2,
+      runtimeVersion: 'stub/1',
+      provider: 'fake',
+      model: 'scripted-v1',
+      startedAt: new Date(Date.now() - 50_000),
+      endedAt: new Date(Date.now() - 10_000),
+      outcome: 'waiting_for_input',
+      outcomeDetail: { kind: 'waiting_for_input', question: 'Send a redacted version?' },
+    });
+    const done = (
+      id: string,
+      attemptId: string,
+      kind: string,
+      payload: object,
+      detail: object,
+      ago: number,
+    ) =>
+      handle.db.insert(action).values({
+        id,
+        jobId,
+        attemptId,
+        connectionId,
+        kind,
+        effectClass: 'read',
+        canonicalPayload: payload,
+        payloadHash: 'c'.repeat(64),
+        status: 'succeeded',
+        idempotencyKey: id,
+        createdAt: new Date(Date.now() - ago),
+        dispatchedAt: new Date(Date.now() - ago),
+        resolvedAt: new Date(Date.now() - ago + 1_000),
+        receipt: {
+          action_id: id,
+          connection_id: connectionId,
+          external_ref: null,
+          detail,
+          received_at: new Date(Date.now() - ago + 1_000).toISOString(),
+          late: false,
+        },
+      });
+    await done(
+      before,
+      firstAttempt,
+      'web.fetch',
+      { url: 'https://old.example.test/' },
+      { url: 'https://old.example.test/', title: 'Answered already', body: 'old' },
+      90_000,
+    );
+    await done(
+      newId('act'),
+      paused,
+      'web.fetch',
+      { url: 'https://heat.example.test/pumps' },
+      {
+        url: 'https://heat.example.test/pumps',
+        final_url: 'https://heat.example.test/pumps',
+        title: 'Heat pumps in 2026',
+        body: 'Air-source heat pumps reached 3.4 million installs across Europe.',
+      },
+      40_000,
+    );
+    await done(
+      newId('act'),
+      paused,
+      'terminal.run',
+      { command: 'wc -l sales.csv' },
+      { command: 'wc -l sales.csv', exit_code: 0, output: '42 sales.csv\n' },
+      30_000,
+    );
+
+    const row = await fixture().jobs.get(jobId);
+    const bundle = await serviceTransaction(handle.db, (tx) =>
+      buildAttemptSkeleton(tx, row, { ...identity(newId('att')), epoch: 3 }, model, 0),
+    );
+    const summary = bundle.job.progress_summary;
+    expect(summary).toContain('Already done for this request in an earlier attempt');
+    expect(summary).toContain('Read the web page https://heat.example.test/pumps');
+    expect(summary).toContain(
+      'Title: Heat pumps in 2026. Air-source heat pumps reached 3.4 million installs',
+    );
+    expect(summary).toContain('Ran `wc -l sales.csv`, exit 0: what it gave back is [2] below.');
+    expect(summary).toContain('[2] 42 sales.csv');
+    expect(summary).toMatch(/^<melete-earlier-[0-9a-f]{16}>$/m);
+    // What the answered request read is in its answer, not repeated here.
+    expect(summary).not.toContain('old.example.test');
+  }, 60_000);
+
   test('artifacts and knowledge written since the last attempt arrive as evidence handles', async () => {
     const { handle } = fixture();
     const artifactId = newId('art');

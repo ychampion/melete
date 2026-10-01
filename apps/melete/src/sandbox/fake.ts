@@ -668,9 +668,16 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
     case 'env': {
       const rest = [...args];
       const environment = { ...shell.environment };
-      while (rest[0] === '-u') {
-        delete environment[rest[1] ?? ''];
-        rest.splice(0, 2);
+      // `-u NAME` takes a name out; `NAME=value` sets one, as `env` does.
+      for (;;) {
+        if (rest[0] === '-u') {
+          delete environment[rest[1] ?? ''];
+          rest.splice(0, 2);
+        } else if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[0] ?? '')) {
+          const assignment = rest.shift() as string;
+          const split = assignment.indexOf('=');
+          environment[assignment.slice(0, split)] = assignment.slice(split + 1);
+        } else break;
       }
       if (rest.length) return program(rest, { ...shell, environment }, io);
       io.out(

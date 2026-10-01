@@ -50,6 +50,13 @@ export interface Connector {
   execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
   verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult>;
   /**
+   * What a dispatch is settled as when the process that sent it ended before
+   * its answer came back, for a connector that can say more than "unknown": a
+   * command in the agent's own sandbox can read its marker, and anything it
+   * did stays inside that sandbox. Without it, such a dispatch is unknown.
+   */
+  abandoned?(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
+  /**
    * How long one dispatch of this action may take before its outcome is
    * unknown, for a connector whose work may outlast the broker's own dispatch
    * timeout: a command the admitted payload gives two minutes. The broker
