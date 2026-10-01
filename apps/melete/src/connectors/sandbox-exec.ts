@@ -375,7 +375,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           coalesce(c.principal_id, (select id from owner limit 1)) as same_person,
         exists (select 1 from privacy_conversation p
           where p.conversation_id = coalesce(h.experience_parent_id, h.id)
-            and p.sensitive is not null) as sensitive
+            and p.sensitive <> 'none') as sensitive
       from job h, job c where h.id = ${holderJobId} and c.id = ${self}`;
     return row?.same_person === true && row?.sensitive === false;
   };

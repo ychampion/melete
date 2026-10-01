@@ -375,7 +375,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
     if (!sql || !privateContext) return [];
     const ids = [...new Set([ctx.job_id, ...found.flatMap((entry) => entry.jobId ?? [])])];
     const rows = await sql`select j.id, j.space_id, coalesce(j.agent_id, p.agent_id) as agent_id,
-        c.sensitive is not null as sensitive
+        coalesce(c.sensitive <> 'none', false) as sensitive
       from job j
       left join job p on p.id = j.experience_parent_id
       left join privacy_conversation c on c.conversation_id = coalesce(j.experience_parent_id, j.id)

@@ -207,6 +207,19 @@ withDb('files saved in other conversations', () => {
     ).toEqual([`${entry}/entry.md`, `${report}/report.txt`, `${results}/results.txt`].sort());
   });
 
+  test('a conversation the person said is not sensitive is offered again', async () => {
+    const { chat, written, call, ownerId, sql, spaceId } = await setup();
+    const earlier = await chat('Addiction research', ownerId);
+    await sql`insert into privacy_conversation (conversation_id, space_id, sensitive)
+      values (${earlier}, ${spaceId}, 'none')`;
+    const now = await chat('Now', ownerId);
+    const note = await written(earlier, 'sources.txt', 'reading list');
+    const listed = await call(now, 'files.list', { path: FROM_CHATS, area: 'artifacts' });
+    expect((listed.entries as Array<{ name: string }>).map((item) => item.name)).toEqual([
+      `${note}/sources.txt`,
+    ]);
+  });
+
   test('without a privacy check no other conversation is offered', async () => {
     const { chat, written, ownerId, sql, spaceId, workRoot, spacesRoot } = await setup();
     const earlier = await chat('Earlier', ownerId);
