@@ -244,6 +244,8 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
  * - `extraction_call_refused` / `extraction_provider_refused`: asking again
  *   cannot succeed (the call is too large for the gateway or the model, or the
  *   provider rejected the request itself, a wrong model name for one); stop;
+ * - `extraction_provider_auth`: the provider refused the key (401 or 403);
+ *   stop, and health names it, since only a working key helps;
  * - `extraction_gateway_failure`: the provider is failing, limiting or out of
  *   reach, or the call timed out; wait and try again;
  * - `extraction_kept_private`: the message came from a private conversation
@@ -256,7 +258,14 @@ export function failureCode(status: number, body: string, provider: number | nul
   if (status === 504 && body.includes('request_aborted')) return 'extraction_gateway_timeout';
   if (status === 413 || /memory_call_too_large|input_context_exceeded/.test(body))
     return 'extraction_call_refused';
-  if (typeof provider === 'number' && provider >= 400 && provider < 500 && provider !== 429)
+  if (provider === 401 || provider === 403) return 'extraction_provider_auth';
+  // A provider that timed out the request or is rate limiting may answer next time.
+  if (
+    typeof provider === 'number' &&
+    provider >= 400 &&
+    provider < 500 &&
+    ![408, 429].includes(provider)
+  )
     return 'extraction_provider_refused';
   return 'extraction_gateway_failure';
 }

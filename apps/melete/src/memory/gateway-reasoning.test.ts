@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import type { MemorySql } from './db.ts';
+import { MemoryError, type MemorySql } from './db.ts';
 import { openMemoryGateway } from './gateway.ts';
 
 /** Just enough of the database for the gateway's call ledger: nothing spent, nothing kept. */
@@ -87,4 +87,12 @@ test('a model that cannot stop thinking is asked again as it is', async () => {
   );
   expect(reply).toBe(ANSWER);
   expect(sent.map((body) => body.reasoning_effort)).toEqual(['none', undefined]);
+});
+
+test('a provider that refuses the key ends the read with a reason health can name', async () => {
+  const failed = await read(() =>
+    Response.json({ error: { message: 'Invalid API key.' } }, { status: 401 }),
+  ).catch((error: unknown) => error);
+  expect(failed).toBeInstanceOf(MemoryError);
+  expect((failed as MemoryError).code).toBe('extraction_provider_auth');
 });

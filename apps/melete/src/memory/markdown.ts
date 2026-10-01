@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import {
@@ -7,6 +7,7 @@ import {
   isMemoryKey,
   memoryKnowledgeFrontmatter,
   ownerKnowledgeEdit,
+  prefixedId,
 } from '@melete/contracts';
 import {
   discardProposal,
@@ -92,6 +93,41 @@ export function claimFrontmatter(head: ClaimHead, disputed = false) {
   });
 }
 
+/** New HTTP-created spaces need their own repository before views can commit. */
+export async function prepareSpaceRepository(spacesRoot: string, spaceId: string) {
+  prefixedId('sp').parse(spaceId);
+  await mkdir(spacesRoot, { recursive: true });
+  const root = await realpath(spacesRoot);
+  const directory = join(root, spaceId);
+  let initialized = false;
+  for (const path of [directory, join(directory, '.git')]) {
+    const stat = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      return null;
+    });
+    if (stat && (stat.isSymbolicLink() || !stat.isDirectory()))
+      throw new MemoryError('unsafe_view_path');
+    if (path === join(directory, '.git') && stat) initialized = true;
+  }
+  await mkdir(directory, { recursive: true });
+  if ((await realpath(directory)) !== resolve(directory)) throw new MemoryError('unsafe_view_path');
+  if (initialized) return;
+  await promisify(execFile)(
+    'git',
+    ['-C', directory, '-c', 'init.defaultBranch=memory', 'init', '--quiet'],
+    {
+      windowsHide: true,
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_TERMINAL_PROMPT: '0',
+      },
+    },
+  );
+}
+
 /** Only server-configured roots and server-derived space/claim IDs can name files. */
 export class MarkdownViews {
   constructor(
@@ -102,6 +138,8 @@ export class MarkdownViews {
 
   private async paths(spaceId: string) {
     if (!/^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(spaceId)) throw new MemoryError('scope_denied');
+    // A space made after startup, by any path, gets its repository on first use.
+    await prepareSpaceRepository(this.spacesRoot, spaceId);
     const paths = spacePaths(resolve(this.spacesRoot), spaceId);
     for (const path of [
       paths.root,

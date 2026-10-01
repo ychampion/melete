@@ -5025,6 +5025,7 @@ export interface paths {
                             database: "ok" | "unreachable" | "not_configured";
                             memory?: {
                                 failed: number;
+                                failed_reason: ("provider_auth" | "provider_refused" | "provider_unavailable" | "provider_slow" | "daily_budget" | "unreadable_answer" | "too_large" | "no_memory_model" | "other") | null;
                                 reason: ("provider_unavailable" | "provider_slow" | "daily_budget") | null;
                                 /** @enum {string} */
                                 status: "ok" | "waiting";
@@ -9176,7 +9177,7 @@ export interface paths {
                                 index: number;
                                 key: string | null;
                                 /** @enum {string} */
-                                reason: "key_not_in_registry" | "span_not_verbatim" | "span_outside_segment" | "value_not_in_evidence" | "date_not_parseable" | "value_not_well_formed" | "confidence_is_not_a_status" | "checked_status_requires_tier0" | "invalid_shape" | "blocked_by_person";
+                                reason: "key_not_in_registry" | "span_not_verbatim" | "span_outside_segment" | "value_not_in_evidence" | "date_not_parseable" | "value_not_well_formed" | "confidence_is_not_a_status" | "checked_status_requires_tier0" | "invalid_shape" | "blocked_by_person" | "unsupported_attribution" | "change_set_refused";
                                 recorded_at: components["schemas"]["__schema148"];
                                 work_id: components["schemas"]["__schema335"];
                             }[];

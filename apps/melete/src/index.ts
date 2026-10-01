@@ -683,6 +683,7 @@ export async function bootstrap(
         sql: handle.sql,
         boss: queue.boss,
         restrictionsDir: env.MELETE_RESTRICTIONS_DIR,
+        spacesDir: env.MELETE_SPACES_DIR,
         workers: options.workers,
         onJobRecompute: wakeRecomputedJob,
         gateway: memoryGateway?.gateway,

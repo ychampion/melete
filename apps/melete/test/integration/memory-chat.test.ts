@@ -12,6 +12,7 @@ import { newId } from '../../src/ids.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { SubmissionService } from '../../src/jobs/submissions.ts';
+import { describeSource, sourceKind } from '../../src/memory/beliefs.ts';
 import { captureChat, chatIntent } from '../../src/memory/capture.ts';
 import { MemoryError, type MemoryScope } from '../../src/memory/db.ts';
 import { ingest } from '../../src/memory/evidence.ts';
@@ -284,6 +285,95 @@ withDb('automatic memory from chat', () => {
       await say(db, second, 'Forget that.');
       await settle();
       expect((await handed('Book my flight')).join()).not.toContain('window');
+    } finally {
+      await journal.close();
+    }
+  });
+
+  test('"Remember that ..." is kept as something the person said, not as a correction', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const owner: MemoryScope = { ...scope, principalId: scope.ownerId };
+    const journal = await createJournal();
+    const gateway = scriptedGateway();
+    const service = { sql: db.sql, boss: db.boss, journal: journal.journal, gateway };
+    try {
+      const capture = {
+        privacyOrigin: async () => null,
+        sql: db.sql,
+        journal: journal.journal,
+        scopeForJob: scopeFor(db, owner),
+      };
+      const job = await conversation(db, scope);
+      await say(db, job, 'Remember that I prefer an aisle seat.');
+      await captureChat(capture);
+      const work =
+        await db.sql`select id from memory_work where space_id = ${scope.spaceId} and status = 'pending'`;
+      for (const row of work) await runExtractionWork(service, row.id as string);
+      const [source] =
+        await db.sql`select publisher, stream, source_type, author, origin_trust, event_at
+        from memory_sources where space_id = ${scope.spaceId}`;
+      expect([source?.source_type, source?.author, source?.origin_trust]).toEqual([
+        'message',
+        'owner',
+        'owner',
+      ]);
+      const facts = {
+        publisher: source?.publisher as string,
+        stream: source?.stream as string,
+        source_type: source?.source_type as string,
+        author: source?.author as string,
+        event_at: new Date(source?.event_at as Date).toISOString(),
+      };
+      expect(sourceKind(facts)).toBe('chat');
+      expect(describeSource(facts, 'UTC')).toStartWith('you told me in chat');
+      const [kept] = await db.sql`select b.content from memory_claims c
+        join memory_revision_content b on b.claim_id = c.id and b.revision = c.head_revision
+        where c.space_id = ${scope.spaceId} and c.key = 'pref.travel.seat'`;
+      expect(kept?.content).toBe('aisle seat');
+    } finally {
+      await journal.close();
+    }
+  });
+
+  test('a document the person adds is theirs to learn from, and one somebody else wrote is refused on the record', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const journal = await createJournal();
+    const gateway = scriptedGateway();
+    const service = { sql: db.sql, boss: db.boss, journal: journal.journal, gateway };
+    const document = async (identity: string, author: 'owner' | 'external', text: string) => {
+      const evidence = await ingest(db.sql, scope, {
+        stream: 'documents',
+        source_identity: identity,
+        source_version: '1',
+        source_type: 'document',
+        author,
+        event_at: '2026-08-02T09:00:00Z',
+        text,
+      });
+      const [work] =
+        await db.sql`select id from memory_work where source_id = ${evidence.source.source_id}`;
+      await runExtractionWork(service, work?.id as string);
+      const [row] = await db.sql`select status, error_code from memory_work where id = ${work?.id}`;
+      return { id: work?.id as string, state: [row?.status, row?.error_code] };
+    };
+    try {
+      const own = await document('notes', 'owner', 'I prefer an aisle seat on long flights.');
+      expect(own.state).toEqual(['done', null]);
+      const [kept] = await db.sql`select b.content from memory_claims c
+        join memory_revision_content b on b.claim_id = c.id and b.revision = c.head_revision
+        where c.space_id = ${scope.spaceId} and c.key = 'pref.travel.seat'`;
+      expect(kept?.content).toBe('aisle seat');
+
+      const theirs = await document('forwarded', 'external', "Maya's number is +351 912 345 678.");
+      expect(theirs.state).toEqual(['rejected', 'unsupported_attribution']);
+      const rejected =
+        await db.sql`select work_id, proposal_index, key, reason from memory_rejections
+        where space_id = ${scope.spaceId}`;
+      expect(rejected.map((row) => [row.work_id, row.proposal_index, row.key, row.reason])).toEqual(
+        [[theirs.id, 0, 'contact.maya.phone', 'unsupported_attribution']],
+      );
     } finally {
       await journal.close();
     }
@@ -564,6 +654,7 @@ withDb('a model provider outage', () => {
         waiting: 1,
         reason: 'provider_unavailable',
         failed: 0,
+        failed_reason: null,
       });
       // However long the outage, the gap stops growing at 30 minutes.
       const { id } = await work();
@@ -916,6 +1007,7 @@ withDb('failures asking again cannot fix', () => {
       expect(await state(waited)).toEqual(['rejected', 'extraction_provider_unavailable:given_up']);
       const health = await memoryHealth(db.sql);
       expect(health.failed).toBeGreaterThanOrEqual(2);
+      expect(health.failed_reason).toBe('provider_unavailable');
     } finally {
       await opened.close();
       await journal.close();
@@ -936,6 +1028,11 @@ test('a failed call is sorted by whether asking again can help', () => {
   expect(failureCode(502, 'provider_rejected_request', 404)).toBe('extraction_provider_refused');
   expect(failureCode(502, 'provider_rejected_request', 400)).toBe('extraction_provider_refused');
   expect(failureCode(429, 'provider_rejected_request', 429)).toBe('extraction_gateway_failure');
+  // A refused key is told apart, so health can say the key is the problem.
+  expect(failureCode(502, 'provider_rejected_request', 401)).toBe('extraction_provider_auth');
+  expect(failureCode(502, 'provider_rejected_request', 403)).toBe('extraction_provider_auth');
+  // A provider that timed the request out may answer next time.
+  expect(failureCode(502, 'provider_rejected_request', 408)).toBe('extraction_gateway_failure');
   expect(failureCode(502, 'provider_rejected_request', 503)).toBe('extraction_gateway_failure');
   expect(failureCode(504, 'request_timeout', null)).toBe('extraction_gateway_failure');
 });

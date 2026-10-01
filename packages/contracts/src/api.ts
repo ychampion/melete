@@ -29,7 +29,9 @@ export const healthResponse = z.object({
    * Whether automatic memory is reading what people say. `waiting` counts
    * messages held back, and `reason` says why: the memory model's provider is
    * not answering, or people's daily reads are spent. `failed` counts messages
-   * given up in the last day. Counts only; no content.
+   * whose reading was given up in the last day, for any reason, and
+   * `failed_reason` says why the latest was: the provider refused the key, the
+   * model's answer could not be read, and so on. Counts only; no content.
    */
   memory: z
     .object({
@@ -37,6 +39,19 @@ export const healthResponse = z.object({
       waiting: z.number().int().nonnegative(),
       failed: z.number().int().nonnegative(),
       reason: z.enum(['provider_unavailable', 'provider_slow', 'daily_budget']).nullable(),
+      failed_reason: z
+        .enum([
+          'provider_auth',
+          'provider_refused',
+          'provider_unavailable',
+          'provider_slow',
+          'daily_budget',
+          'unreadable_answer',
+          'too_large',
+          'no_memory_model',
+          'other',
+        ])
+        .nullable(),
     })
     .optional(),
   time: timestamp,

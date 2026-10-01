@@ -2,6 +2,7 @@ import {
   type ExtractionProposal,
   extractionChangeSet,
   isMemoryKey,
+  type RejectionReason,
   type SourceEvent,
   type SourceRef,
 } from '@melete/contracts';
@@ -124,7 +125,7 @@ async function validateProposal(
       throw new MemoryError('unsupported_attribution');
     if (
       ['user_statement', 'preference', 'exception'].includes(proposal.kind) &&
-      !sources.some((s) => ['message', 'owner_edit'].includes(s.source_type))
+      !sources.some(isOwnWords)
     )
       throw new MemoryError('unsupported_attribution');
     const observed = sources.every(
@@ -144,6 +145,28 @@ async function validateProposal(
       throw new MemoryError('unsupported_checked_fact');
   }
   return { proposal, head, sources, refs };
+}
+/**
+ * Whether a source holds the person's own words, so a statement or preference
+ * can be attributed to them: something they said or edited, or a document they
+ * added and declared their own. A document somebody else wrote is not.
+ */
+export function isOwnWords(source: Pick<SourceEvent, 'source_type' | 'author'>): boolean {
+  if (source.source_type === 'message' || source.source_type === 'owner_edit') return true;
+  return source.source_type === 'document' && source.author === 'owner';
+}
+
+/** How a refused change set is recorded at /memory/rejections: a reason and a readable line. */
+export function changeSetRejection(code: string): { reason: RejectionReason; detail: string } {
+  if (code === 'unsupported_attribution')
+    return {
+      reason: 'unsupported_attribution',
+      detail: 'A statement or preference must rest on something the person said or wrote.',
+    };
+  return {
+    reason: 'change_set_refused',
+    detail: `The proposed change could not be kept (${code.slice(0, 120)}).`,
+  };
 }
 export type CommitResult = {
   status: 'committed' | 'duplicate' | 'retry' | 'rejected' | 'review';
@@ -323,6 +346,9 @@ export async function commitExtraction(
   reviewed = false,
   hooks: PublicationHooks = {},
 ): Promise<CommitResult> {
+  // Which proposal a refusal of the whole set came from, when one did.
+  let failedIndex = 0;
+  let failedKey: string | null = null;
   try {
     const parsed = extractionChangeSet.parse(raw);
     // E3. Structural validation runs before anything is published and before the
@@ -380,6 +406,8 @@ export async function commitExtraction(
       const validated: Validated[] = [];
       const targets = new Set<string>();
       for (const proposal of proposals) {
+        failedIndex = Math.max(0, parsed.proposals.indexOf(proposal));
+        failedKey = 'key' in proposal && typeof proposal.key === 'string' ? proposal.key : null;
         const item = await validateProposal(tx, scope, batch, proposal);
         if (proposal.op !== 'no-op') {
           const target =
@@ -389,6 +417,8 @@ export async function commitExtraction(
         }
         validated.push(item);
       }
+      failedIndex = 0;
+      failedKey = null;
       if (space.require_review && !reviewed && validated.some((v) => v.proposal.op !== 'no-op')) {
         await tx`insert into memory_proposals (id, space_id, work_id, fence, payload) values (${batch.work.id}, ${scope.spaceId}, ${batch.work.id}, ${batch.work.fence}, ${JSON.stringify({ batch, proposals })}::text::jsonb)
           on conflict (id) do update set fence = excluded.fence, payload = excluded.payload, status = 'pending'`;
@@ -520,8 +550,14 @@ export async function commitExtraction(
       await lockSpace(tx, scope);
       const [work] =
         await tx`select status, fence from memory_work where id = ${batch.work.id} and space_id = ${scope.spaceId}`;
-      if (work?.status === 'leased' && work.fence === batch.work.fence)
+      if (work?.status === 'leased' && work.fence === batch.work.fence) {
         await finishWork(tx, batch, 'rejected', code);
+        // The whole set was refused: the person can read why at /memory/rejections.
+        const { reason, detail } = changeSetRejection(code);
+        await recordRejections(tx, scope, batch, [
+          { index: failedIndex, key: failedKey, reason, detail },
+        ]);
+      }
     });
     return { status: 'rejected', claim_ids: [], reason: code };
   }

@@ -10696,7 +10696,9 @@
                               "confidence_is_not_a_status",
                               "checked_status_requires_tier0",
                               "invalid_shape",
-                              "blocked_by_person"
+                              "blocked_by_person",
+                              "unsupported_attribution",
+                              "change_set_refused"
                             ]
                           },
                           "detail": {
@@ -11065,13 +11067,35 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "failed_reason": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "provider_auth",
+                                "provider_refused",
+                                "provider_unavailable",
+                                "provider_slow",
+                                "daily_budget",
+                                "unreadable_answer",
+                                "too_large",
+                                "no_memory_model",
+                                "other"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
                         "status",
                         "waiting",
                         "failed",
-                        "reason"
+                        "reason",
+                        "failed_reason"
                       ],
                       "additionalProperties": false
                     },

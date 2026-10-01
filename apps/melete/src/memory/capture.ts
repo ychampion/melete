@@ -233,21 +233,18 @@ async function captureOne(
   // Read before anything is kept, so a message is never stored without it.
   const privateOrigin = await options.privacyOrigin(row.job_id, text);
   const evidence = await sql.begin(async (tx) => {
-    const saved = await persistEvidence(
-      tx,
-      scope,
-      {
-        stream: CHAT_STREAM,
-        source_identity: `event:${row.seq}`,
-        source_version: '1',
-        source_type: 'message',
-        author: 'owner',
-        event_at: new Date(row.created_at).toISOString(),
-        text: text.slice(0, 64000),
-      },
-      // "Remember that …" in the person's own words is kept at owner trust.
-      intent.explicit,
-    );
+    // Everything the person types is kept at owner trust, "Remember that …"
+    // included. Asking to remember states a fact; it does not correct one, so it
+    // is never recorded as an owner edit.
+    const saved = await persistEvidence(tx, scope, {
+      stream: CHAT_STREAM,
+      source_identity: `event:${row.seq}`,
+      source_version: '1',
+      source_type: 'message',
+      author: 'owner',
+      event_at: new Date(row.created_at).toISOString(),
+      text: text.slice(0, 64000),
+    });
     if (privateOrigin)
       await tx`update memory_sources set private_origin = ${privateOrigin}
         where id = ${saved.source.source_id} and private_origin is null`;

@@ -1,8 +1,6 @@
-import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, lstat, mkdir, realpath } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
-import { promisify } from 'node:util';
+import { access } from 'node:fs/promises';
+import { join } from 'node:path';
 import { prefixedId } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
 import { SESSION_COOKIE } from '../api/auth.ts';
@@ -11,45 +9,10 @@ import { MemoryError, type MemoryScope, type MemorySql, provisionMemorySpace } f
 import type { ExtractionGateway } from './extract.ts';
 import { applyRestriction } from './forget.ts';
 import { lockEventOrder } from './invalidate.ts';
-import { MarkdownViews } from './markdown.ts';
+import { MarkdownViews, prepareSpaceRepository } from './markdown.ts';
 import { startJobRecompute } from './recompute.ts';
 import { FileRestrictionJournal, type RestrictionJournal } from './restore.ts';
 import { startMemoryService } from './service.ts';
-
-/** New HTTP-created spaces need their own repository before views can commit. */
-async function prepareSpaceRepository(spacesRoot: string, spaceId: string) {
-  prefixedId('sp').parse(spaceId);
-  await mkdir(spacesRoot, { recursive: true });
-  const root = await realpath(spacesRoot);
-  const directory = join(root, spaceId);
-  let initialized = false;
-  for (const path of [directory, join(directory, '.git')]) {
-    const stat = await lstat(path).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== 'ENOENT') throw error;
-      return null;
-    });
-    if (stat && (stat.isSymbolicLink() || !stat.isDirectory()))
-      throw new MemoryError('unsafe_view_path');
-    if (path === join(directory, '.git') && stat) initialized = true;
-  }
-  await mkdir(directory, { recursive: true });
-  if ((await realpath(directory)) !== resolve(directory)) throw new MemoryError('unsafe_view_path');
-  if (initialized) return;
-  await promisify(execFile)(
-    'git',
-    ['-C', directory, '-c', 'init.defaultBranch=memory', 'init', '--quiet'],
-    {
-      windowsHide: true,
-      timeout: 15_000,
-      env: {
-        ...process.env,
-        GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
-        GIT_CONFIG_NOSYSTEM: '1',
-        GIT_TERMINAL_PROMPT: '0',
-      },
-    },
-  );
-}
 
 /** The retained restriction log is never silently recreated over existing memory. */
 /**

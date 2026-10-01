@@ -21,7 +21,11 @@ const parent = await testDatabase();
 afterAll(async () => parent?.close());
 const withDb = parent ? describe : describe.skip;
 
-async function fixture(workers = false, onJobRecompute?: (jobId: string) => Promise<void>) {
+async function fixture(
+  workers = false,
+  onJobRecompute?: (jobId: string) => Promise<void>,
+  spaces = false,
+) {
   const handle = await testDatabase();
   if (!handle) throw new Error('Postgres unavailable');
   const queue = await startQueue(handle.url);
@@ -31,6 +35,7 @@ async function fixture(workers = false, onJobRecompute?: (jobId: string) => Prom
     sql: handle.sql,
     boss: queue.boss,
     restrictionsDir: directory,
+    ...(spaces ? { spacesDir: join(directory, 'spaces') } : {}),
     workers,
     onJobRecompute,
   };
@@ -234,6 +239,22 @@ withDb('deployment memory startup', () => {
       await f.close();
     }
   }, 15000);
+
+  test('the knowledge review queue answers on a deployment, with nothing pending at first', async () => {
+    const f = await fixture(false, undefined, true);
+    try {
+      const owner = await f.setup();
+      const response = await f.app.request('/knowledge/proposals', { headers: owner.headers });
+      expect(response.status).toBe(200);
+      expect(((await response.json()) as { proposals: unknown[] }).proposals).toEqual([]);
+      // The space's repository was made on first use, under the configured root.
+      expect((await stat(join(f.directory, 'spaces', owner.spaceId, '.git'))).isDirectory()).toBe(
+        true,
+      );
+    } finally {
+      await f.close();
+    }
+  });
 
   test('a deployment wakes the jobs memory invalidated and settles their outbox rows', async () => {
     const woken: string[] = [];
