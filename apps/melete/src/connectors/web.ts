@@ -2,6 +2,7 @@ import { lookup } from 'node:dns/promises';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import type { Action, ConnectorManifest, DispatchResult } from '@melete/contracts';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
@@ -114,6 +115,41 @@ export function publicPin(addresses: readonly ResolvedAddress[]): ResolvedAddres
  * down, so a server that answers at once and then trickles one byte at a time
  * is cut off like one that never answers.
  */
+/**
+ * Content encodings a page may arrive in. Some servers compress whether or not
+ * the request asked for it, so every answer is decoded by what it says it is.
+ */
+const DECODERS: Record<string, (input: Buffer, options: { maxOutputLength: number }) => Buffer> = {
+  gzip: gunzipSync,
+  'x-gzip': gunzipSync,
+  deflate: inflateSync,
+  br: brotliDecompressSync,
+};
+
+/** The body as text: decoded, held to the size limit after decoding, and free of NULs. */
+function decodeBody(raw: Buffer, encodingHeader: string | undefined, maxBytes: number): string {
+  const encodings = (encodingHeader ?? '')
+    .split(',')
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => part && part !== 'identity');
+  let body = raw;
+  // Listed in the order they were applied, so they are undone in reverse.
+  for (const encoding of encodings.reverse()) {
+    if (body.length === 0) break;
+    const decode = DECODERS[encoding];
+    if (!decode) throw new Error(`web response uses an encoding that cannot be read (${encoding})`);
+    try {
+      body = decode(body, { maxOutputLength: maxBytes });
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === 'ERR_BUFFER_TOO_LARGE')
+        throw new Error('web response exceeds the size limit');
+      throw new Error(`web response could not be decoded (${encoding})`);
+    }
+  }
+  // A NUL never carries meaning in a page, and a receipt cannot store one.
+  return body.toString('utf8').replaceAll('\u0000', '');
+}
+
 export const pinnedWebRequest: WebTransport = (url, address, options) =>
   new Promise((resolve, reject) => {
     const request = url.protocol === 'https:' ? httpsRequest : httpRequest;
@@ -149,6 +185,7 @@ export const pinnedWebRequest: WebTransport = (url, address, options) =>
             : callback(null, address.address, address.family),
         headers: {
           accept: options.accept ?? 'text/plain, text/html, application/json',
+          'accept-encoding': 'gzip, deflate, br',
           'user-agent': 'Melete/0.1',
         },
       },
@@ -176,11 +213,14 @@ export const pinnedWebRequest: WebTransport = (url, address, options) =>
             if (value !== undefined)
               headers[name] = Array.isArray(value) ? value.join(', ') : value;
           }
-          resolve({
-            status: response.statusCode ?? 502,
-            headers,
-            body: Buffer.concat(chunks).toString('utf8'),
-          });
+          let body: string;
+          try {
+            body = decodeBody(Buffer.concat(chunks), headers['content-encoding'], options.maxBytes);
+          } catch (error) {
+            reject(error);
+            return;
+          }
+          resolve({ status: response.statusCode ?? 502, headers, body });
         });
       },
     );
@@ -379,6 +419,8 @@ function transportFailure(error: unknown, timeoutMs: number): string {
   const text = error instanceof Error ? error.message : String(error);
   const code = (error as { code?: unknown } | null)?.code;
   if (/size limit/.test(text)) return 'The page is larger than the reading limit.';
+  const encoding = /cannot be read \(([^)]+)\)/.exec(text)?.[1];
+  if (encoding) return `The page is sent in an encoding Melete cannot read (${encoding}).`;
   if (/timed out/.test(text) || code === 'ETIMEDOUT' || code === 'ABORT_ERR')
     return `The page did not answer within ${Math.round(timeoutMs / 1000)} seconds.`;
   if (typeof code === 'string' && /ENOTFOUND|EAI_AGAIN|ENODATA|NXDOMAIN/.test(code))

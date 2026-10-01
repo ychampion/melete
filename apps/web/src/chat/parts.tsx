@@ -24,7 +24,7 @@ import { decisionKey, pressOf } from '../experience/decide.ts';
 import { lookOf } from '../experience/hooks.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
 import { OPEN_TEXT_LIMIT_BYTES } from '../experience/text-prefix.ts';
-import { type ToolEntry, toolOf } from '../experience/trace.ts';
+import { toolOf } from '../experience/trace.ts';
 import type {
   ActionResolution,
   ActionReview,
@@ -44,6 +44,7 @@ import type {
   TurnStatus,
 } from '../experience/types.ts';
 import { href } from '../router.ts';
+import { ActivityRow, ThinkingBlock } from './activity.tsx';
 
 export const timeOf = (iso: string) =>
   new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -182,55 +183,53 @@ const actionIcon = (step: Extract<TrailStep, { type: 'action' }>): IconName => {
   return 'search';
 };
 
-const TOOL_ICON: Record<string, IconName> = {
-  connector: 'mail',
-  web: 'globe',
-  file: 'fileText',
-  artifact: 'upload',
-  browser: 'compass',
-  sandbox: 'square',
-  skill: 'sparkles',
-  memory_recall: 'book',
-  memory_write: 'book',
-  memory_correct: 'pencil',
-  memory_forget: 'trash',
-  model: 'sparkles',
-  retry: 'refresh',
-};
+const RUNNING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
 
-/** What went in and what came out, in Melete's words; anything from outside is quoted. */
-function ToolLines({ tool }: { tool: ToolEntry }) {
-  const summaries = [tool.input_summary, tool.output_summary].filter(
-    (summary): summary is NonNullable<typeof summary> => summary !== null,
-  );
-  if (summaries.length === 0) return null;
-  return (
-    <div className="trail-tool">
-      {summaries.map((summary, index) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: input then output, in that order
-        <span key={index} className="trail-tool-line">
-          {summary.text}
-          {summary.quote ? (
-            <q className="trail-quote" title={`From a ${summary.quote.from}`}>
-              {summary.quote.text}
-            </q>
-          ) : null}
-        </span>
+/** A step the trail tells without a tool entry: grouped app work and its sources. */
+function GroupStep({
+  step,
+  chipsOnly,
+}: {
+  step: Extract<TrailStep, { type: 'action' }>;
+  /** The rows above already name the work, so only the sources are added. */
+  chipsOnly: boolean;
+}) {
+  const chips = step.sources.length ? (
+    <div className="trail-chips">
+      {step.sources.map((source) => (
+        <SourceChip key={`${source.app}-${source.title}`} source={source} />
       ))}
     </div>
+  ) : null;
+  if (chipsOnly) return chips ? <li className="act-sources">{chips}</li> : null;
+  return (
+    <li className="col">
+      <div className="trail-row">
+        <span className="trail-icon">
+          <span style={{ color: 'var(--secondary)', display: 'flex' }}>
+            <Icon name={actionIcon(step)} size={15} />
+          </span>
+        </span>
+        <span style={{ flex: 1, fontSize: 13, color: 'var(--secondary)', minWidth: 0 }}>
+          {step.label}
+          {step.meta ? <span style={{ color: 'var(--muted)' }}> · {step.meta}</span> : null}
+        </span>
+      </div>
+      {chips}
+    </li>
   );
 }
 
-const RUNNING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
-
 /**
- * What the agent did for a turn, drawn above its answer. The header is live
- * while the turn runs and says how long it took once it ends; the steps and
- * the model's reasoning open beneath it. They are open while the agent works
- * and nothing has been said yet, and closed once the answer arrives or the
- * turn ends, unless the person opened or closed them, or the job kept going
- * after it first settled (a chase: the send, then the reply and the
- * follow-up), which stays open so what it did after the send is in view.
+ * What the agent did for a turn, drawn above its answer: an ordered list of
+ * the work, one row per tool entry as it starts, finishing in place, with the
+ * model's reasoning closed between rows. The header is live while the turn
+ * runs and says how long it took and how many steps once it ends. The list is
+ * open while the agent works and nothing has been said yet, and closed once
+ * the answer arrives or the turn ends, unless the person opened or closed it,
+ * or the job kept going after it first settled (a chase: the send, then the
+ * reply and the follow-up), which stays open so what it did after the send is
+ * in view.
  */
 export function Trail({
   turn,
@@ -253,21 +252,30 @@ export function Trail({
   const stepsId = useId();
   const steps = turn.trail.filter((s) => s.type !== 'done');
   if (turn.trail.length === 0 && !running) return null;
+  const tools = steps.flatMap((step) => {
+    const tool = toolOf(step);
+    return tool ? [tool] : [];
+  });
+  const hasRows = tools.length > 0;
   const expandable = steps.length > 0;
   const expanded = expandable && (open ?? (running ? !answering : continued));
   const elapsed = doneStep
     ? Math.max(1, Math.round(doneStep.elapsed_ms / 1000))
     : Math.max(0, Math.round((now - new Date(turn.turn.created_at).getTime()) / 1000));
+  const failures = tools.filter((tool) => tool.status === 'failed').length;
   const rest = doneStep
     ? [
-        doneStep.apps.join(', '),
-        doneStep.source_count
+        tools.length ? `${tools.length} step${tools.length === 1 ? '' : 's'}` : '',
+        failures ? `${failures} didn’t work` : '',
+        !hasRows && doneStep.source_count
           ? `${doneStep.source_count} source${doneStep.source_count === 1 ? '' : 's'}`
           : '',
       ]
         .filter(Boolean)
         .join(' · ')
     : '';
+  const underWay = [...tools].reverse().find((tool) => tool.status === 'running');
+  const currentTitle = turn.live?.title ?? underWay?.title;
   const head = running ? (
     <>
       <span className="working-dots" aria-hidden="true">
@@ -276,9 +284,9 @@ export function Trail({
         <span className="pulse" style={{ animationDelay: '.4s' }} />
       </span>
       <span>{turn.status === 'paused' ? `Paused · ${elapsed}s` : `Working · ${elapsed}s`}</span>
-      {!expanded && turn.live ? (
+      {!expanded && currentTitle ? (
         <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
-          · {turn.live.title}
+          · {currentTitle}
         </span>
       ) : null}
     </>
@@ -300,6 +308,10 @@ export function Trail({
       ) : null}
     </>
   );
+  const last = steps.at(-1);
+  // A running row or reasoning being written already shows the work under way.
+  const showsWork =
+    underWay !== undefined || (last?.type === 'reasoning' && running) || turn.status === 'paused';
   return (
     <div className="col trail" style={{ gap: 4 }}>
       {expandable ? (
@@ -319,28 +331,27 @@ export function Trail({
         </div>
       )}
       {expanded ? (
-        <div className="trail-steps" id={stepsId}>
+        <ol className="trail-steps act-list" id={stepsId} aria-label="What it did">
           {steps.map((step, index) => {
-            const key = `${step.type}-${index}`;
+            const key =
+              step.type === 'action' && step.tool ? step.tool.id : `${step.type}-${index}`;
             if (step.type === 'reasoning')
               return (
-                <div
+                <ThinkingBlock
                   key={key}
-                  className="trail-reasoning"
-                  data-live={running && index === steps.length - 1 ? 'true' : undefined}
-                >
-                  {step.text.trim()}
-                </div>
+                  text={step.text}
+                  live={running && index === steps.length - 1}
+                />
               );
             if (step.type === 'say')
               return (
-                <div key={key} className="trail-say">
+                <li key={key} className="trail-say">
                   {step.text}
-                </div>
+                </li>
               );
             if (step.type === 'note')
               return (
-                <div key={key} className="trail-row" data-note="true">
+                <li key={key} className="trail-row" data-note="true">
                   <span className="trail-icon">
                     <span
                       style={{
@@ -352,54 +363,34 @@ export function Trail({
                     />
                   </span>
                   <span style={{ flex: 1, fontSize: 13, color: 'var(--muted)' }}>{step.text}</span>
-                </div>
+                </li>
               );
             if (step.type !== 'action') return null;
             const tool = toolOf(step);
-            return (
-              <div key={key} className="col">
-                <div className="trail-row">
-                  <span className="trail-icon">
-                    <span
-                      style={{
-                        color: tool?.status === 'failed' ? 'var(--danger)' : 'var(--secondary)',
-                        display: 'flex',
-                      }}
-                    >
-                      <Icon name={(tool && TOOL_ICON[tool.kind]) || actionIcon(step)} size={15} />
-                    </span>
-                  </span>
-                  <span style={{ flex: 1, fontSize: 13, color: 'var(--secondary)', minWidth: 0 }}>
-                    {tool?.title ?? step.label}
-                    {!tool && step.meta ? (
-                      <span style={{ color: 'var(--muted)' }}> · {step.meta}</span>
-                    ) : null}
-                  </span>
-                </div>
-                {tool ? <ToolLines tool={tool} /> : null}
-                {step.sources.length ? (
-                  <div className="trail-chips">
-                    {step.sources.map((source) => (
-                      <SourceChip key={`${source.app}-${source.title}`} source={source} />
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            );
+            if (tool) return <ActivityRow key={key} tool={tool} now={now} live={running} />;
+            return <GroupStep key={key} step={step} chipsOnly={hasRows} />;
           })}
-          {running ? (
-            <div className="trail-row">
+          {running && !showsWork ? (
+            <li className="trail-row">
               <span className="trail-icon">
                 <span style={{ color: 'var(--primary)', display: 'flex' }}>
                   <Icon name="loader" size={14} stroke={2} className="spin" />
                 </span>
               </span>
               <span style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>
-                {turn.status === 'paused' ? 'Paused' : (turn.live?.title ?? 'Still working')}
+                {turn.live?.title ?? 'Still working'}
               </span>
-            </div>
+            </li>
           ) : null}
-        </div>
+          {turn.status === 'paused' ? (
+            <li className="trail-row">
+              <span className="trail-icon">
+                <Icon name="clock" size={14} />
+              </span>
+              <span style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>Paused</span>
+            </li>
+          ) : null}
+        </ol>
       ) : null}
     </div>
   );

@@ -337,6 +337,33 @@ def test_a_command_with_no_exit_status_is_not_reported_as_success():
     broker.receipt = receipt(exit_code=None, signal="SIGTERM")
     result = environment(broker).execute("true")
     assert result["returncode"] != 0 and "SIGTERM" in result["output"]
+    # The shell's own encoding, so the engine names the right signal.
+    assert result["returncode"] == 128 + 15
+
+
+def _reads_as_a_signal(returncode: int) -> bool:
+    """How the engine reads a status: negative is a signal death, 129+ is 128+signal."""
+    return returncode < 0 or returncode > 128
+
+
+def test_a_command_that_did_not_run_never_reads_as_killed_by_a_signal():
+    broker = ScriptedBroker()
+    broker.response = {
+        "action_id": ACTION,
+        "status": "failed",
+        "message": "workspace_busy: another attempt is using this agent's workspace",
+    }
+    refused = environment(broker).execute("echo hello")
+    assert refused["output"].startswith("[not run] workspace_busy")
+    assert refused["returncode"] != 0 and not _reads_as_a_signal(refused["returncode"])
+    broker.response = {"action_id": ACTION, "status": "needs_approval", "requires_approval": True}
+    parked = environment(broker).execute("echo hello")
+    assert parked["returncode"] != 0 and not _reads_as_a_signal(parked["returncode"])
+    broker.response = None
+    broker.error = BrokerError("unreachable", "timed out")
+    lost = environment(broker).execute("echo hello")
+    assert lost["output"].startswith("[outcome unknown]")
+    assert lost["returncode"] != 0 and not _reads_as_a_signal(lost["returncode"])
 
 
 def test_a_refusal_says_the_command_did_not_run():

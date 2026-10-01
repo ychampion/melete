@@ -331,6 +331,204 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* The activity: one row per piece of work, in the order it started. */
+.act-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.act-row,
+.act-thinking,
+.act-sources {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.act-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  width: 100%;
+  padding: 0 6px 0 0;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--secondary);
+  min-width: 0;
+}
+button.act-line:hover {
+  background: var(--hover);
+}
+button.act-line:focus-visible,
+.act-more:focus-visible,
+.act-link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+.act-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  background: var(--canvas);
+  border-radius: 999px;
+  position: relative;
+  z-index: 1;
+  color: var(--secondary);
+}
+.act-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* An opened row shows its whole title, however narrow the screen. */
+.act-line[aria-expanded="true"] > .act-title {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* The work under way: its title breathes until it finishes. */
+.act-title[data-current="true"] {
+  color: var(--text);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.act-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--chip-bg);
+  color: var(--text);
+}
+.act-time {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.act-status {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.act-status[data-status="running"] {
+  color: var(--primary);
+}
+.act-status[data-status="done"] {
+  color: var(--success);
+}
+.act-status[data-status="failed"] {
+  color: var(--danger);
+}
+.act-status[data-status="needs_approval"] {
+  color: var(--rating);
+}
+.act-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.act-row[data-status="failed"] .act-title,
+.act-row[data-status="failed"] .act-icon {
+  color: var(--danger);
+}
+.act-reason {
+  padding: 0 0 6px 26px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--danger);
+}
+.act-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0 10px 26px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+  min-width: 0;
+}
+.act-row[data-status="failed"] .act-detail .act-summary:last-of-type {
+  color: var(--danger);
+}
+.act-summary {
+  overflow-wrap: anywhere;
+}
+.act-excerpt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.act-excerpt-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.act-pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--chip-bg);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 17px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.act-more {
+  align-self: flex-start;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--primary);
+  padding: 2px 0;
+  border-radius: 4px;
+}
+.act-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  font-weight: 500;
+  color: var(--primary);
+  border-radius: 4px;
+}
+.act-note {
+  color: var(--muted);
+}
+.act-tail {
+  flex: 2;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.act-thinking > .act-line > .act-title {
+  flex: 0 1 auto;
+}
+.act-thinking[data-live="true"] .act-title {
+  color: var(--text);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.act-thinking .trail-reasoning {
+  margin-top: 0;
+}
+.act-sources .trail-chips {
+  padding-top: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .act-title[data-current="true"],
+  .act-thinking[data-live="true"] .act-title {
+    animation: none;
+  }
+}
 .working-dots {
   display: inline-flex;
   gap: 3px;

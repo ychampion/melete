@@ -7,7 +7,15 @@
  * authorized input, so the mock cannot drift from the real machine by writing a
  * state it likes better.
  */
-import { EVENT_TYPES, effectClass } from '@melete/contracts';
+import {
+  EVENT_TYPES,
+  effectClass,
+  toolDetail,
+  toolExcerpt,
+  toolFailure,
+  toolKind,
+  toolSummary,
+} from '@melete/contracts';
 import { z } from 'zod';
 
 const label = z.string().min(1).max(60);
@@ -55,6 +63,16 @@ export const scenarioStep = z.discriminatedUnion('step', [
     active_title: z.string().optional(),
     meta: z.string().default(''),
     sources: z.array(source).default([]),
+    /** The tool entry as the service would describe it; inferred from the name when left out. */
+    kind: toolKind.optional(),
+    /** How the entry ends. `needs_approval` leaves it waiting on the person. */
+    status: z.enum(['done', 'failed', 'needs_approval']).default('done'),
+    failure: toolFailure.optional(),
+    input: toolSummary.optional(),
+    output: toolSummary.optional(),
+    input_excerpt: toolExcerpt.optional(),
+    output_excerpt: toolExcerpt.optional(),
+    detail: toolDetail.optional(),
   }),
   /** The agent answers with one glyph on the person's message instead of prose. */
   z.object({

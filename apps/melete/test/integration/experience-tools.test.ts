@@ -532,8 +532,83 @@ withDb('tool entries in the conversation', () => {
         .conversation.progress;
     };
     expect(await progress('working')).toEqual({ steps_done: 0, current: 'Looking at an image' });
-    expect(await progress('needs_you')).toEqual({ steps_done: 0, current: 'Sending the email' });
+    expect(await progress('needs_you')).toEqual({
+      steps_done: 0,
+      current: 'Proposed sending an email to sam@example.test — waiting for you',
+    });
     // Nothing finished and nothing under way: an ended turn with no steps reports none.
     expect(await progress('done')).toBeUndefined();
+  }, 60000);
+
+  test('a refusal and a decline each end their entry with the plain reason', async () => {
+    const db = required(handle).db;
+    const { chat, claims } = await conversationWithAttempt('Run the report and mail it');
+    const attemptId = claims.attempt_id;
+    const raw = async (type: string, payload: Record<string, unknown>) => {
+      await db.insert(event).values({
+        jobId: chat.id,
+        attemptId,
+        type,
+        payload,
+        dedupKey: `tools-fixture:${randomBytes(8).toString('hex')}`,
+      });
+    };
+    const cellId = newId('conn');
+    await db
+      .insert(connection)
+      .values({ id: cellId, spaceId, label: 'Workspace', provider: 'sandbox' });
+    const runId = newId('act');
+    await db.insert(action).values({
+      id: runId,
+      jobId: chat.id,
+      attemptId,
+      connectionId: cellId,
+      kind: 'terminal.run',
+      effectClass: 'read',
+      canonicalPayload: { command: 'python report.py' },
+      payloadHash: 'd'.repeat(64),
+      idempotencyKey: runId,
+      status: 'proposed',
+    });
+    await raw('action_requested', { action_id: runId, kind: 'terminal.run' });
+    await raw('notice', {
+      action_id: runId,
+      phase: 'admission_rejected',
+      code: 'scope_denied',
+      reason: 'Current policy rejects this effect',
+    });
+    const mailId = newId('conn');
+    await db.insert(connection).values({ id: mailId, spaceId, label: 'Mail', provider: 'imap' });
+    const sendId = newId('act');
+    await db.insert(action).values({
+      id: sendId,
+      jobId: chat.id,
+      attemptId,
+      connectionId: mailId,
+      kind: 'email.send',
+      effectClass: 'write_external',
+      canonicalPayload: { to: ['sam@example.test'], subject: 'Report' },
+      payloadHash: 'e'.repeat(64),
+      idempotencyKey: sendId,
+      status: 'denied',
+    });
+    await raw('action_requested', { action_id: sendId, kind: 'email.send' });
+    await raw('action_status_changed', { action_id: sendId, from: 'proposed', to: 'denied' });
+    const page = await new ExperienceEvents(db).page(spaceId, 0, chat.id, 200);
+    const calls = tools(page.events);
+    const run = calls.filter((call) => call.id === `action:${runId}`).at(-1);
+    expect(run).toMatchObject({
+      status: 'failed',
+      failure: 'refused',
+      title: 'Running `python report.py` in its computer',
+      output_summary: { text: 'A rule here does not allow this, so nothing was sent.' },
+    });
+    expect(JSON.stringify(page)).not.toContain('Current policy');
+    const send = calls.filter((call) => call.id === `action:${sendId}`).at(-1);
+    expect(send).toMatchObject({
+      status: 'failed',
+      failure: 'declined',
+      output_summary: { text: 'You declined this.' },
+    });
   }, 60000);
 });
