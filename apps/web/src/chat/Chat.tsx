@@ -485,6 +485,8 @@ export function ChatScreen({ id }: { id: string | null }) {
     if (arriving) voiceOnArrival = null;
     return arriving;
   });
+  /** The call shrunk to a bar, so the chat can be used while it goes on. */
+  const [voiceMin, setVoiceMin] = useState(false);
   /** The agent's computer is opened by the person and stays as they left it. */
   const [computerOpen, setComputerOpen] = useState(false);
 
@@ -803,7 +805,11 @@ export function ChatScreen({ id }: { id: string | null }) {
         iconSize={size > 32 ? 20 : 16}
         on={voiceOpen}
         aria-pressed={voiceOpen}
-        onClick={() => (voiceOpen ? setVoiceOpen(false) : void startVoice())}
+        onClick={() => {
+          setVoiceMin(false);
+          if (voiceOpen) setVoiceOpen(false);
+          else void startVoice();
+        }}
       />
     ) : null;
   // A new tool entry on the stream is when the computer most likely changed.
@@ -972,14 +978,33 @@ export function ChatScreen({ id }: { id: string | null }) {
             </div>
           </div>
           {voiceOpen && conversationId ? (
-            <div className="chat-foot">
+            <div className="chat-foot" data-call={voiceMin ? 'minimised' : 'open'}>
               <div className="chat-foot-inner">
                 <VoicePanel
                   conversationId={conversationId}
                   transcript={transcript}
+                  agentName={agent?.name?.trim() || 'Melete'}
+                  avatar={
+                    agent ? (
+                      <AgentFace look={lookOf(agent)} size={28} />
+                    ) : (
+                      <MeleteAvatar size={28} />
+                    )
+                  }
+                  minimised={voiceMin}
+                  onMinimise={setVoiceMin}
                   onSend={send}
+                  onDraft={(words) =>
+                    setText((current) =>
+                      current.trim()
+                        ? `${current.trimEnd()}
+${words}`
+                        : words,
+                    )
+                  }
                   onEnd={() => {
                     setVoiceOpen(false);
+                    setVoiceMin(false);
                     // Back to the control that opened it, for a keyboard user.
                     requestAnimationFrame(() =>
                       document.querySelector<HTMLElement>('[aria-label="Voice mode"]')?.focus(),
@@ -1021,7 +1046,7 @@ export function ChatScreen({ id }: { id: string | null }) {
               ) : null}
             </div>
           ) : null}
-          <div className="chat-foot" hidden={Boolean(pending) || voiceOpen}>
+          <div className="chat-foot" hidden={Boolean(pending) || (voiceOpen && !voiceMin)}>
             <div className="chat-foot-inner">
               {!stuck ? (
                 <button
