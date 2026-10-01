@@ -27,7 +27,10 @@ const OWNER = 'com.melete.attempt-supervisor';
 const PROJECT = 'com.melete.project';
 const ATTEMPT = 'com.melete.attempt';
 const JOB = 'com.melete.job';
-/** Marks an engine container started ahead of its attempt; it names no attempt or job. */
+/**
+ * Marks an engine container started ahead of its attempt; its labels name no
+ * attempt or job. Once an attempt takes it, its container name is that attempt's.
+ */
 const SPARE = 'com.melete.spare';
 /** A spare's own workspace directory, until an attempt's job takes it over. */
 const SPARE_DIRECTORY = '.spare-';
@@ -212,6 +215,19 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     );
   }
 
+  /**
+   * Whether a container name is the one a cold engine for some attempt would
+   * carry, which a spare is renamed to when an attempt takes it (`claimSpare`).
+   */
+  private attemptContainerName(name: string): boolean {
+    const prefix = `/${this.options.project}-att_`;
+    if (!name.startsWith(prefix)) return false;
+    const attempt = `att_${name.slice(prefix.length).toUpperCase()}`;
+    return (
+      prefixedId('att').safeParse(attempt).success && `/${this.names(attempt).container}` === name
+    );
+  }
+
   /** The resource names an owned container, network or volume must carry, or nothing. */
   private expectedNames(labels?: Labels): Names | undefined {
     if (this.owned(labels)) return this.names(labels?.[ATTEMPT] ?? '');
@@ -286,8 +302,12 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     for (const container of containers) {
       const names = this.expectedNames(container.Labels);
       if (!names) continue;
-      if (!container.Names.includes(`/${names.container}`))
-        throw new Error('An owned attempt container has an unexpected name');
+      // A spare an attempt took carries that attempt's name; its network and home keep the spare's.
+      const named =
+        container.Names.includes(`/${names.container}`) ||
+        (this.ownedSpare(container.Labels) &&
+          container.Names.some((name) => this.attemptContainerName(name)));
+      if (!named) throw new Error('An owned attempt container has an unexpected name');
       await this.remove('DELETE', `/containers/${container.Id}?force=true`);
     }
     const networks = (await this.docker.request('GET', `/networks?filters=${filter}`)) as Array<{
@@ -807,6 +827,15 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     try {
       await this.adoptWorkspace(spare.directory, bundle.attempt.job_id);
       signal.throwIfAborted();
+      // Labels cannot change after creation, so the container takes the name a
+      // cold engine for this attempt would have: an operator (or a check) finds
+      // the container serving an attempt by its name either way.
+      const name = this.names(bundle.attempt.id).container;
+      await this.docker.request(
+        'POST',
+        `/containers/${resources.containerId}/rename?name=${encodeURIComponent(name)}`,
+      );
+      resources.container = name;
       const response = await this.request(`${spare.url}${SPARE_HANDOFF_PATH}`, {
         method: 'POST',
         headers: {

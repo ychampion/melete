@@ -308,6 +308,15 @@ describe('Docker spare engines', () => {
         HERMES_TIMEZONE: 'Europe/Paris',
       },
     });
+    // It is named for the attempt it took, as a cold engine for that attempt would be.
+    expect(
+      f.engines.calls.some(
+        (call) =>
+          call.method === 'POST' &&
+          call.path ===
+            `/containers/${spare.id}/rename?name=test-melete-${identity('att', 0).toLowerCase()}`,
+      ),
+    ).toBe(true);
     // The attempt's container is the spare; no other engine was started for it.
     expect(
       f.engines.containers.filter((entry) => !entry.config.Env.includes('MELETE_RUNTIME_SPARE=1')),
@@ -431,6 +440,16 @@ describe('Docker spare engines', () => {
           'com.melete.spare': id,
         },
       },
+      {
+        // A spare an attempt had taken, renamed for that attempt.
+        Id: 'old-handed-spare',
+        Names: [`/test-melete-${identity('att', 7).toLowerCase()}`],
+        Labels: {
+          'com.melete.attempt-supervisor': 'v1',
+          'com.melete.project': 'test-melete',
+          'com.melete.spare': 'd'.repeat(24),
+        },
+      },
     ];
     const job = identity('job', 0);
     // Stopped between the renames: the job's files set aside, the spare's directory in place.
@@ -439,12 +458,30 @@ describe('Docker spare engines', () => {
     await mkdir(join(f.root, job));
     await mkdir(join(f.root, `.spare-${id}`));
     await f.runtime.initialize();
-    expect(
-      f.engines.calls.some(
-        (call) => call.method === 'DELETE' && call.path.startsWith('/containers/old-spare'),
-      ),
-    ).toBe(true);
+    for (const stale of ['old-spare', 'old-handed-spare'])
+      expect(
+        f.engines.calls.some(
+          (call) => call.method === 'DELETE' && call.path.startsWith(`/containers/${stale}?`),
+        ),
+      ).toBe(true);
     expect(await readFile(join(f.root, job, 'kept.txt'), 'utf8')).toBe('kept');
     expect((await readdir(f.root)).sort()).toEqual([job]);
+  });
+
+  test('startup refuses a spare-labelled container under any other name', async () => {
+    const f = await setup();
+    f.engines.stale = [
+      {
+        Id: 'foreign',
+        Names: ['/test-melete-something-else'],
+        Labels: {
+          'com.melete.attempt-supervisor': 'v1',
+          'com.melete.project': 'test-melete',
+          'com.melete.spare': 'e'.repeat(24),
+        },
+      },
+    ];
+    await expect(f.runtime.initialize()).rejects.toThrow('unexpected name');
+    expect(f.engines.calls.some((call) => call.method === 'DELETE')).toBe(false);
   });
 });

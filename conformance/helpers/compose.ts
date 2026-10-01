@@ -70,6 +70,38 @@ export async function sql(): Promise<postgres.Sql> {
   return postgres(await databaseUrl(), { max: 4, prepare: false, idle_timeout: 5 });
 }
 
+/**
+ * The live engine containers serving a job's attempts, found through the
+ * attempts the service recorded for it. An engine started for its attempt
+ * carries the job's label; a spare engine an attempt took was started before
+ * the job existed, so it carries that attempt's name instead.
+ */
+export async function jobContainers(database: postgres.Sql, jobId: string): Promise<string[]> {
+  const attempts = (
+    await database<{ id: string }[]>`select id from attempt where job_id = ${jobId}`
+  ).map((attempt) => attempt.id.toLowerCase());
+  const rows = (
+    await docker(
+      'ps',
+      '--no-trunc',
+      '--filter',
+      'label=com.melete.attempt-supervisor=v1',
+      '--format',
+      '{{.ID}} {{.Names}} {{.Label "com.melete.job"}}',
+    )
+  )
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+  return rows
+    .map((row) => row.split(' '))
+    .filter(
+      ([, name = '', job]) =>
+        job === jobId || attempts.some((attempt) => name.endsWith(`-${attempt}`)),
+    )
+    .map(([id = '']) => id);
+}
+
 let cookie: Promise<string> | undefined;
 async function ownerCookie(): Promise<string> {
   requireCompose();

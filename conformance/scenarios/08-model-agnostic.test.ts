@@ -13,6 +13,7 @@ import {
   createStackJob,
   docker,
   job,
+  jobContainers,
   sql,
   waitFor,
   waitForJob,
@@ -108,20 +109,7 @@ describe.skipIf(!composeEnabled)(`conformance 8: ${s.title}`, () => {
     ownedJobs.push(created.jobId);
     const cellId = await waitFor(
       async () => {
-        const values = (
-          await docker(
-            'ps',
-            '--no-trunc',
-            '-q',
-            '--filter',
-            'label=com.melete.attempt-supervisor=v1',
-            '--filter',
-            `label=com.melete.job=${created.jobId}`,
-          )
-        )
-          .trim()
-          .split('\n')
-          .filter(Boolean);
+        const values = await jobContainers(database, created.jobId);
         if (values.length > 1) throw new Error('The policy comparison job has multiple live cells');
         return values[0];
       },
