@@ -57,7 +57,8 @@ const SECRET_PATTERNS: RegExp[] = [
   // An approval hash: a sha256 in lowercase hex.
   /(?<![0-9A-Za-z])[0-9a-f]{64}(?![0-9A-Za-z])/g,
   // The service's own record ids: a known prefix and a 26-character time-ordered id.
-  /(?<![A-Za-z0-9_])(?:job|att|act|apr|sec|turn)_[0-9A-HJKMNP-TV-Z]{26}(?![A-Za-z0-9_])/g,
+  // One that names a file (`act_….png`, `…/act_…`) is a file name, not a record.
+  /(?<![A-Za-z0-9_/\\])(?:job|att|act|apr|sec|turn)_[0-9A-HJKMNP-TV-Z]{26}(?![A-Za-z0-9_]|\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9_-]))/g,
 ];
 /** A long random run mixing upper case, lower case and digits, outside a link. */
 const RANDOM_RUN =

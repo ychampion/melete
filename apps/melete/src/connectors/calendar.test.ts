@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { connectorManifest } from '@melete/contracts';
-import { CalendarConnector, calendarManifest, importIcs } from './calendar.ts';
+import {
+  CalendarConnector,
+  calendarManifest,
+  importIcs,
+  listPayload,
+  listWindow,
+} from './calendar.ts';
 import { asConnectorFault } from './faults.ts';
 import { mailAction, mailContext } from './mail-fixtures.ts';
 import type { SecretAccess } from './secrets.ts';
@@ -204,7 +210,10 @@ describe('calendar connector', () => {
     );
     expect((await connector.verify(action, mailContext())).decision).toBe('succeeded');
     expect(fake.puts()).toBe(1);
-    const listed = await connector.execute(mailAction('calendar.list'), mailContext());
+    const listed = await connector.execute(
+      mailAction('calendar.list', { from: '2026-09-01', to: '2026-10-01' }),
+      mailContext(),
+    );
     if (listed.outcome !== 'succeeded') throw new Error('Expected calendar list');
     expect(listed.receipt.detail.events).toHaveLength(1);
     expect(JSON.stringify(listed)).not.toContain('caldav-private-password');
@@ -352,5 +361,82 @@ describe('a calendar test says why it failed', () => {
     const broken = await refusingCaldav(500).health();
     expect(broken.status).toBe('failing');
     expect(broken.reason).toBeUndefined();
+  });
+});
+
+describe('calendar listing window', () => {
+  const vevent = (uid: string, start: string, extra = '') =>
+    `BEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART;VALUE=DATE:${start}\r\nSUMMARY:${uid}\r\n${extra}END:VEVENT\r\n`;
+  const feed = (events: string[]) =>
+    `BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${events.join('')}END:VCALENDAR\r\n`;
+  const list = async (ics: string, input: Record<string, unknown>) => {
+    const connector = new CalendarConnector(
+      { id: 'con_test', spaceId: 'spc_test', mode: 'ics', ics },
+      secret,
+    );
+    const result = await connector.execute(mailAction('calendar.list', input), mailContext());
+    if (result.outcome !== 'succeeded') throw new Error('Expected calendar list');
+    return result.receipt.detail as {
+      events: Array<{ uid: string }>;
+      window: { from: string; to: string };
+      truncated: boolean;
+      note?: string;
+    };
+  };
+
+  test('only events inside the window are listed, earliest first, wherever they sit in the feed', async () => {
+    // Feed order is not date order: the late event comes first in the file.
+    const ics = feed([
+      vevent('christmas-2026', '20261225'),
+      vevent('new-year-2026', '20260101'),
+      vevent('thanksgiving-2026', '20261126'),
+      vevent('new-year-2027', '20270101'),
+    ]);
+    const detail = await list(ics, { from: '2026-11-01', to: '2027-01-01' });
+    expect(detail.events.map((event) => event.uid)).toEqual([
+      'thanksgiving-2026',
+      'christmas-2026',
+    ]);
+    expect(detail.truncated).toBe(false);
+    expect(detail.note).toBeUndefined();
+    expect(detail.window).toEqual({
+      from: '2026-11-01T00:00:00.000Z',
+      to: '2027-01-01T00:00:00.000Z',
+    });
+  });
+
+  test('a listing that hits the limit says so instead of looking complete', async () => {
+    const days = Array.from({ length: 5 }, (_, day) => vevent(`day-${day}`, `2026120${day + 1}`));
+    const detail = await list(feed(days), { from: '2026-12-01', to: '2026-12-31', limit: 3 });
+    expect(detail.events.map((event) => event.uid)).toEqual(['day-0', 'day-1', 'day-2']);
+    expect(detail.truncated).toBe(true);
+    expect(detail.note).toContain('more exist');
+  });
+
+  test('a series is listed when one of its occurrences falls inside the window', async () => {
+    const ics = feed([
+      vevent('weekly', '20260105', 'RRULE:FREQ=WEEKLY\r\n'),
+      vevent('ended', '20260105', 'RRULE:FREQ=WEEKLY;COUNT=2\r\n'),
+    ]);
+    const detail = await list(ics, { from: '2026-12-01', to: '2026-12-31' });
+    expect(detail.events.map((event) => event.uid)).toEqual(['weekly']);
+  });
+
+  test('with no window the listing starts yesterday and looks 90 days ahead', () => {
+    const now = Date.parse('2026-10-01T12:00:00Z');
+    expect(listWindow(listPayload.parse({}), now)).toEqual({
+      from: '2026-09-30T12:00:00.000Z',
+      to: '2026-12-29T12:00:00.000Z',
+    });
+    expect(listWindow(listPayload.parse({ from: '2026-11-01' }), now).to).toBe(
+      '2027-01-30T00:00:00.000Z',
+    );
+    // An end alone, even one in the past, covers the 90 days before it rather than nothing.
+    expect(listWindow(listPayload.parse({ to: '2026-09-20' }), now)).toEqual({
+      from: '2026-06-22T00:00:00.000Z',
+      to: '2026-09-20T00:00:00.000Z',
+    });
+    expect(listPayload.safeParse({ from: '2026-12-01', to: '2026-11-01' }).success).toBe(false);
+    expect(listPayload.safeParse({ from: 'next week' }).success).toBe(false);
   });
 });

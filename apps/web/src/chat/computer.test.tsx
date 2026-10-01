@@ -154,3 +154,51 @@ test('keys become page keys: typed characters carry text, shortcuts do not', () 
   expect(pasteInput('x'.repeat(5000))).toEqual({ k: 'text', text: 'x'.repeat(4000) });
   expect(shownAddress('https://tables.example/')).toBe('tables.example');
 });
+
+const desktop = (control: 'agent' | 'human', running = true) => ({
+  session_id: 'sbx_1',
+  job_id: 'job_1',
+  agent_id: 'agent_1',
+  status: 'ready' as const,
+  running,
+  control,
+  control_epoch: 1,
+  viewport: { width: 1024 as const, height: 768 as const },
+  egress: 'open' as const,
+});
+const renderDesktop = (control: 'agent' | 'human', running = true) =>
+  renderToStaticMarkup(
+    <ComputerPanel
+      agent={NOVA}
+      computer={{ browser: null, terminal: [], available: { browser: false, terminal: true } }}
+      desktop={desktop(control, running)}
+      error={null}
+      onClose={() => {}}
+      onChanged={() => {}}
+    />,
+  );
+
+test('the sandbox desktop shows with its holder, and can be watched or taken over', () => {
+  const html = renderDesktop('agent');
+  expect(html).toContain('aria-label="Desktop"');
+  expect(html).toContain('Nova has control');
+  expect(html).toContain('Watch');
+  expect(html).toContain('Take over');
+  expect(html).not.toContain('Hand back');
+  // A desktop is something on the computer, so the empty state does not show.
+  expect(html).not.toContain('Nothing on Nova’s computer yet');
+});
+
+test('a desktop the person holds is live and can be handed back', () => {
+  const html = renderDesktop('human');
+  expect(html).toContain('You have control');
+  expect(html).toContain('Hand back');
+  expect(html).toContain('Opening the live view');
+  expect(html).not.toContain('Take over');
+});
+
+test('a stopped desktop says it starts again when used, and offers nothing to watch', () => {
+  const html = renderDesktop('agent', false);
+  expect(html).toContain('It starts again when Nova uses it');
+  expect(html).not.toContain('>Watch<');
+});

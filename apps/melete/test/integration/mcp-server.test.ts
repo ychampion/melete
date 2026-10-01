@@ -32,7 +32,7 @@ import {
   OAuthStore,
   UNUSED_CLIENT_LIMIT,
 } from '../../src/mcp-server/oauth.ts';
-import { TOOL_CALLS_PER_MINUTE } from '../../src/mcp-server/routes.ts';
+import { MCP_SERVER_OFF, TOOL_CALLS_PER_MINUTE } from '../../src/mcp-server/routes.ts';
 import { createMemoryTrustResolver } from '../../src/memory/broker-trust.ts';
 import { provisionMemorySpace } from '../../src/memory/db.ts';
 import { recordOutput } from '../../src/memory/outputs.ts';
@@ -84,6 +84,32 @@ async function refusal(promise: Promise<unknown>) {
   }
   throw new Error('Expected a refusal');
 }
+
+withDb('the MCP server without a public address', () => {
+  test('its paths say it is not enabled and how to turn it on, not that they are unbuilt', async () => {
+    const off = createApp({
+      db: required(handle).db,
+      sql: required(handle).sql,
+      env: loadEnv({ NODE_ENV: 'test', MELETE_SPACES_DIR: root }),
+      checkDatabase: async () => 'ok',
+    });
+    for (const [method, path] of [
+      ['GET', '/.well-known/oauth-authorization-server'],
+      ['GET', '/.well-known/oauth-protected-resource/api/mcp'],
+      ['POST', '/oauth/register'],
+    ] as const) {
+      const response = await off.request(path, { method });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: { code: 'not_enabled', message: MCP_SERVER_OFF },
+      });
+    }
+    const elsewhere = await off.request('/api/no-such-thing');
+    expect(
+      ((await elsewhere.json()) as { error: { message: string } }).error.message,
+    ).not.toContain('not implemented');
+  });
+});
 
 let cookie = '';
 let principalId = '';

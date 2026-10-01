@@ -19,11 +19,14 @@ import type {
   VerifyResult,
 } from '@melete/contracts';
 import {
+  byStart,
   calendarManifest,
   createPayload,
   deletePayload,
   type EventView,
+  listDetail,
   listPayload,
+  listWindow,
   retryAfterSeconds,
   updatePayload,
 } from './calendar.ts';
@@ -169,6 +172,15 @@ export class OutlookCalendarConnector implements Connector {
     ctx?: ConnectorContext,
     beforeWrite = false,
   ): Promise<GraphEvent[]> {
+    return (await this.page(query, ctx, beforeWrite)).events;
+  }
+
+  /** One page of events, and whether Graph has more after it. */
+  private async page(
+    query: URLSearchParams,
+    ctx?: ConnectorContext,
+    beforeWrite = false,
+  ): Promise<{ events: GraphEvent[]; more: boolean }> {
     query.set('$expand', `singleValueExtendedProperties($filter=id eq ${literal(MELETE_MARK)})`);
     const response = await this.request('GET', `/events?${query}`, ctx);
     if (beforeWrite && [401, 403, 429, 503].includes(response.status)) await this.refused(response);
@@ -178,8 +190,9 @@ export class OutlookCalendarConnector implements Connector {
     }
     const listed = (await boundedJson(response, MAX_RESPONSE_BYTES)) as {
       value?: GraphEvent[];
+      '@odata.nextLink'?: string;
     } | null;
-    return listed?.value ?? [];
+    return { events: listed?.value ?? [], more: Boolean(listed?.['@odata.nextLink']) };
   }
 
   /** The event Melete created under `uid`, found by its mark. */
@@ -247,22 +260,26 @@ export class OutlookCalendarConnector implements Connector {
       this.assertContext(action, ctx);
       if (action.kind === 'calendar.list') {
         const payload = listPayload.parse(action.canonical_payload);
-        const now = this.config.now?.() ?? Date.now();
-        const events = await this.events(
+        const window = listWindow(payload, this.config.now?.() ?? Date.now());
+        const listed = await this.page(
           new URLSearchParams({
             $top: String(payload.limit),
-            // From yesterday on; a series keeps its pattern.
-            $filter: `end/dateTime ge ${literal(utc(new Date(now - 86_400_000).toISOString()))}`,
+            $orderby: 'start/dateTime',
+            // Events that touch the window; a series keeps its pattern.
+            $filter: `end/dateTime ge ${literal(utc(window.from))} and start/dateTime lt ${literal(utc(window.to))}`,
           }),
           ctx,
         );
-        return this.success(action, {
-          events: events
-            .filter((event) => !event.isCancelled)
-            .map(eventView)
-            .slice(0, payload.limit),
-          read_only: false,
-        });
+        const live = listed.events.filter((event) => !event.isCancelled);
+        return this.success(
+          action,
+          listDetail(
+            byStart(live.map(eventView)).slice(0, payload.limit),
+            window,
+            listed.more || live.length > payload.limit,
+            false,
+          ),
+        );
       }
       if (action.kind === 'calendar.delete') {
         const payload = deletePayload.parse(action.canonical_payload);

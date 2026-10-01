@@ -202,7 +202,8 @@ export class ExperienceHome {
                 ? 'error'
                 : 'connected',
           access: row.scopes.some((scope) =>
-            /(?:send|create|update|delete|write|move)$/.test(scope),
+            // Running commands and driving a desktop act too, not only writes.
+            /(?:send|create|update|delete|write|move|run|click|type|key|scroll|open)$/.test(scope),
           )
             ? 'asks_before_acting'
             : row.scopes.some((scope) => scope.endsWith('.draft'))

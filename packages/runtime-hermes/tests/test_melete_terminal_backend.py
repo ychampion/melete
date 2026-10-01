@@ -29,8 +29,10 @@ from melete_plugin.terminal_backend import (  # noqa: E402
     INTERRUPTED_STATUS,
     MAX_TIMEOUT_MS,
     SESSION_MARGIN_SECONDS,
+    REFUSED_STATUS,
     TERMINAL_TOOL,
     SandboxTerminal,
+    blocked_command_result,
     engine_classes,
     register_terminal_backend,
     sandbox_connection,
@@ -454,3 +456,101 @@ def test_no_local_process_is_ever_started():
     env = environment(ScriptedBroker())
     with pytest.raises(RuntimeError):
         env._run_bash("true")
+
+
+# -- commands the engine refuses before the backend sees them -------------------
+
+
+class SayingBroker(ScriptedBroker):
+    def __init__(self, fail: bool = False) -> None:
+        super().__init__()
+        self.said: List[Dict[str, str]] = []
+        self.fail = fail
+
+    def say(self, text: str, ref: str) -> Dict[str, Any]:
+        if self.fail:
+            raise BrokerError("payload_invalid", "no")
+        self.said.append({"text": text, "ref": ref})
+        return {"status": "ok"}
+
+
+ENGINE_BLOCK = json.dumps({
+    "output": "",
+    "exit_code": -1,
+    "error": (
+        "BLOCKED: Command flagged as dangerous (write to system config) but this session runs on an "
+        "unattended platform (api_server) with no user present to approve it. Find an alternative "
+        "approach that avoids this command. To allow dangerous commands on unattended platforms, set "
+        "approvals.unattended_mode: approve in config.yaml."
+    ),
+    "status": "blocked",
+})
+
+
+def test_the_backend_rewrites_engine_refusals_once_it_is_registered():
+    ctx = RecordingContext()
+    register_terminal_backend(
+        ctx, SayingBroker(), [TERMINAL_ENTRY],  # type: ignore[arg-type]
+        provider_base=StandInProvider, environment_base=StandInEnvironment,
+    )
+    assert "transform_tool_result" in ctx.hooks
+
+
+def test_an_engine_refusal_tells_the_model_the_truth_and_leaves_a_visible_note():
+    broker = SayingBroker()
+    rewritten = blocked_command_result(broker)(tool_name="terminal", args={"command": "touch /etc/x"}, result=ENGINE_BLOCK)
+    assert rewritten is not None
+    body = json.loads(rewritten)
+    assert body["status"] == "blocked" and body["exit_code"] == REFUSED_STATUS
+    assert body["error"].startswith("NOT RUN.")
+    assert "write to system config" in body["error"]
+    assert "nothing for the person to approve" in body["error"]
+    # The engine's advice to change its own config never reaches the model.
+    assert "unattended_mode" not in body["error"] and "config.yaml" not in body["error"]
+    assert broker.said and broker.said[0]["text"] == (
+        "I did not run a command because a safety rule blocks it (write to system config). Nothing ran."
+    )
+    assert broker.proposals == []
+
+
+def test_a_note_that_cannot_be_left_does_not_change_what_the_model_reads():
+    rewritten = blocked_command_result(SayingBroker(fail=True))(tool_name="terminal", result=ENGINE_BLOCK)
+    assert rewritten is not None and json.loads(rewritten)["error"].startswith("NOT RUN.")
+
+
+@pytest.mark.parametrize("tool_name,result", [
+    ("terminal", json.dumps({"output": "hi", "exit_code": 0, "error": None})),
+    ("terminal", "plain text"),
+    ("read_file", ENGINE_BLOCK),
+    ("terminal", {"status": "blocked"}),
+])
+def test_everything_else_passes_through_untouched(tool_name, result):
+    broker = SayingBroker()
+    assert blocked_command_result(broker)(tool_name=tool_name, result=result) is None
+    assert broker.said == []
+
+
+def test_a_description_with_its_own_brackets_is_kept_whole():
+    blocked = json.dumps({"output": "", "exit_code": -1, "status": "blocked", "error": (
+        "BLOCKED: Command flagged as dangerous (pipe remote content to PowerShell (iwr | iex)) but this "
+        "session runs on an unattended platform (api_server) with no user present to approve it. Find an "
+        "alternative approach that avoids this command. To allow dangerous commands on unattended "
+        "platforms, set approvals.unattended_mode: approve in config.yaml.")})
+    body = json.loads(blocked_command_result(SayingBroker())(tool_name="terminal", result=blocked))
+    assert "(pipe remote content to PowerShell (iwr | iex))" in body["error"]
+
+
+def test_a_blocked_working_directory_is_not_called_a_safety_refusal():
+    broker = SayingBroker()
+    workdir = json.dumps({"output": "", "exit_code": -1, "status": "blocked",
+                          "error": "Blocked: workdir contains disallowed characters"})
+    assert blocked_command_result(broker)(tool_name="terminal", result=workdir) is None
+    assert broker.said == []
+
+
+def test_a_reviewer_refusal_names_what_it_refused():
+    smart = json.dumps({"output": "", "exit_code": -1, "status": "blocked", "error": (
+        "BLOCKED by smart approval: delete in root path. The command was assessed as genuinely "
+        "dangerous. Do NOT retry.")})
+    body = json.loads(blocked_command_result(SayingBroker())(tool_name="terminal", result=smart))
+    assert "(delete in root path)" in body["error"]

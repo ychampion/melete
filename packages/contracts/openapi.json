@@ -30687,6 +30687,7 @@
           "unavailable",
           "credential_refused",
           "sign_in_required",
+          "needs_sign_in",
           "not_running",
           "revoked"
         ]

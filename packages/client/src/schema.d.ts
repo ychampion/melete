@@ -17672,7 +17672,7 @@ export interface components {
         /** @enum {string} */
         __schema404: "ok" | "degraded" | "failing";
         /** @enum {string} */
-        __schema405: "ok" | "degraded" | "unavailable" | "credential_refused" | "sign_in_required" | "not_running" | "revoked";
+        __schema405: "ok" | "degraded" | "unavailable" | "credential_refused" | "sign_in_required" | "needs_sign_in" | "not_running" | "revoked";
         __schema406: string;
         __schema407: string;
         __schema408: string;

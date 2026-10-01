@@ -519,13 +519,22 @@ export class SandboxComputerService {
   }
 }
 
+/** What each refusal tells the person, in words rather than its code. */
+const REFUSAL_TEXT: Record<ComputerFault['reason'], string> = {
+  session_not_found: 'That computer is no longer running.',
+  live_taken: 'Someone else is already watching this computer.',
+  live_closed: 'The live view has closed. Open it again.',
+  not_you: 'Only the person this job belongs to can watch or control its computer.',
+  origin_refused: 'This request did not come from the Melete app.',
+  agent_control: 'The agent is using the computer. Take over first to use it yourself.',
+  epoch_changed: 'Control of the computer changed. Try again.',
+  slow_down: 'Too many inputs at once. Slow down a little.',
+  no_desktop: 'This computer has no desktop to show.',
+};
+
 function refused(error: unknown): never {
   if (error instanceof ComputerFault)
-    throw new ServiceError(
-      error.reason,
-      `The computer could not do that: ${error.reason}.`,
-      STATUS[error.reason],
-    );
+    throw new ServiceError(error.reason, REFUSAL_TEXT[error.reason], STATUS[error.reason]);
   throw error;
 }
 

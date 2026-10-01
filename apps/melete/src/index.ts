@@ -437,7 +437,7 @@ export function createApp(deps: AppDeps) {
       {
         error: {
           code: 'not_found',
-          message: 'This endpoint is not implemented yet. See packages/contracts/openapi.json.',
+          message: 'There is no endpoint at this path. See packages/contracts/openapi.json.',
         },
       },
       404,

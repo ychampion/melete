@@ -22,6 +22,7 @@ import type {
   CatalogEntry,
   ConnectionItemField,
   ConnectionKind,
+  McpSignInStart,
 } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 import { APP_PASSWORD } from './app-passwords.ts';
@@ -131,6 +132,8 @@ export function KindForm({
 }) {
   const [values, setValues] = useState<FormValues>(() => emptyForm(kind));
   const [sending, setSending] = useState(false);
+  // Installed, but the server asks the person to sign in before it answers.
+  const [signIn, setSignIn] = useState<{ id: string; detail: string } | null>(null);
   const gap = missing(kind, values);
   const setField = (path: string, next: FieldValue) =>
     setValues((current) => ({ ...current, fields: { ...current.fields, [path]: next } }));
@@ -151,6 +154,11 @@ export function KindForm({
           return;
         }
         const check = result.data.check;
+        if (check?.code === 'needs_sign_in') {
+          setSignIn({ id: result.data.connection.id, detail: check.detail });
+          onInstalled?.();
+          return;
+        }
         if (check && check.status === 'failing')
           toast({
             kind: 'err',
@@ -163,6 +171,22 @@ export function KindForm({
       })
       .finally(() => setSending(false));
   };
+
+  if (signIn)
+    return (
+      <div className="col card-12" style={{ gap: 12, padding: 16 }}>
+        <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--heading)' }}>
+          {values.label} needs you to sign in
+        </span>
+        <span style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>{signIn.detail}</span>
+        <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
+          <McpSignIn connectionId={signIn.id} label={values.label} />
+          <Button variant="ghost" onClick={onDone}>
+            Done
+          </Button>
+        </div>
+      </div>
+    );
 
   return (
     <form
@@ -468,6 +492,63 @@ export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
 }
 
 /**
+ * Signing in to a remote MCP server that asked for it. The sign-in is started
+ * first, so the person sees where they will sign in before the browser leaves;
+ * the page is then opened from the click itself, which pop-up blockers allow.
+ * A service that cannot take sign-ins says why (it needs its public address).
+ */
+export function McpSignIn({ connectionId, label }: { connectionId: string; label: string }) {
+  const [started, setStarted] = useState<McpSignInStart | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [opened, setOpened] = useState(false);
+  if (!started)
+    return (
+      <Button
+        size="sm"
+        loading={starting}
+        disabled={starting}
+        onClick={() => {
+          setStarting(true);
+          void adapter
+            .startMcpSignIn(connectionId)
+            .then((result) => {
+              if (result.data) setStarted(result.data);
+              else
+                toast({
+                  kind: 'err',
+                  title: `Couldn’t start signing in to ${label}`,
+                  sub: result.error ?? result.unavailable ?? undefined,
+                });
+            })
+            .finally(() => setStarting(false));
+        }}
+      >
+        Sign in
+      </Button>
+    );
+  const host = URL.canParse(started.issuer) ? new URL(started.issuer).host : started.issuer;
+  return (
+    <span className="row" style={{ gap: 8, flexWrap: 'wrap', fontSize: 12, color: 'var(--muted)' }}>
+      <Button
+        size="sm"
+        disabled={opened}
+        onClick={() => {
+          window.open(started.authorize_url, '_blank', 'noopener,noreferrer');
+          setOpened(true);
+        }}
+      >
+        Continue to {host}
+      </Button>
+      {opened
+        ? 'Finish signing in there, then test the connection.'
+        : started.scopes.length
+          ? `Asks for: ${started.scopes.map((scope) => scope.label ?? scope.scope).join(', ')}`
+          : null}
+    </span>
+  );
+}
+
+/**
  * Test and remove, for one connection. A connection the service keeps in every
  * space is tested here and not removed: the service does not make it again.
  */
@@ -484,11 +565,13 @@ export function ConnectionActions({
 }) {
   const [busy, setBusy] = useState<'test' | 'remove' | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [needsSignIn, setNeedsSignIn] = useState(false);
   const test = () => {
     setBusy('test');
     void adapter
       .testConnection(id)
       .then((result) => {
+        setNeedsSignIn(result.data?.check.code === 'needs_sign_in');
         if (result.data === null)
           toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t test that' });
         else if (result.data.check.status === 'failing')
@@ -529,6 +612,7 @@ export function ConnectionActions({
       >
         Test
       </Button>
+      {needsSignIn ? <McpSignIn connectionId={id} label={label} /> : null}
       {!removable ? null : confirming ? (
         <>
           <Button

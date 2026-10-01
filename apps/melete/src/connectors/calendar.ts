@@ -46,9 +46,71 @@ export type CalendarConnection = {
 );
 
 export const MAX_CALENDAR_BYTES = 2 * 1024 * 1024;
+/** How far ahead a listing looks when the caller names no end. */
+export const DEFAULT_LIST_DAYS = 90;
+const DAY_MS = 86_400_000;
+const instant = z.union([z.iso.datetime({ offset: true }), z.iso.date()]);
 export const listPayload = z
-  .object({ limit: z.number().int().min(1).max(100).default(50) })
-  .strict();
+  .object({
+    limit: z.number().int().min(1).max(100).default(50),
+    from: instant.optional(),
+    to: instant.optional(),
+  })
+  .strict()
+  .refine((v) => !v.from || !v.to || Date.parse(v.to) > Date.parse(v.from), {
+    message: '`to` must be after `from`',
+  });
+
+export type ListWindow = { from: string; to: string };
+
+/**
+ * The window a listing covers. With neither end it starts yesterday, so an
+ * event that is under way is still listed, and ends {@link DEFAULT_LIST_DAYS}
+ * days later. With only `to`, it is the {@link DEFAULT_LIST_DAYS} days before
+ * `to`, so an end in the past never makes an empty, inverted window; with only
+ * `from`, it is the same span after `from`. The receipt always carries the
+ * window, so whoever reads it knows what was and was not looked at.
+ */
+export function listWindow(payload: z.infer<typeof listPayload>, now = Date.now()): ListWindow {
+  const span = DEFAULT_LIST_DAYS * DAY_MS;
+  const to = payload.to
+    ? Date.parse(payload.to)
+    : (payload.from ? Date.parse(payload.from) : now - DAY_MS) + span;
+  const from = payload.from ? Date.parse(payload.from) : payload.to ? to - span : now - DAY_MS;
+  return { from: new Date(from).toISOString(), to: new Date(to).toISOString() };
+}
+
+/** Events earliest first; one whose start cannot be read goes last. */
+export function byStart(events: EventView[]): EventView[] {
+  const at = (event: EventView) => {
+    const time = Date.parse(event.start);
+    return Number.isNaN(time) ? Number.POSITIVE_INFINITY : time;
+  };
+  return [...events].sort((a, b) => at(a) - at(b));
+}
+
+/**
+ * The receipt detail of a listing. `truncated` says more events fall in the
+ * window than were returned, so the list must not be presented as complete.
+ */
+export function listDetail(
+  events: EventView[],
+  window: ListWindow,
+  truncated: boolean,
+  readOnly: boolean,
+): JsonObject {
+  return {
+    events,
+    read_only: readOnly,
+    window,
+    truncated,
+    ...(truncated
+      ? {
+          note: `Only the first ${events.length} events in this window are listed; more exist. Ask again with a narrower from/to before treating the list as complete.`,
+        }
+      : {}),
+  };
+}
 const fields = {
   summary: z.string().min(1).max(1000),
   start: z.iso.datetime({ offset: true }),
@@ -121,11 +183,23 @@ export const calendarManifest: ConnectorManifest = {
     },
     {
       name: 'calendar.list',
-      description: 'List calendar event series, including recurrence rules.',
+      description:
+        'List events and series (with recurrence rules) between `from` and `to`, earliest first. Defaults: yesterday to 90 days later; one end alone covers the 90 days after `from` or before `to`. The result names its window. If `truncated` is true more events exist than were returned: list again with a narrower window before calling the list complete.',
       input_schema: {
         type: 'object',
         additionalProperties: false,
-        properties: { limit: { type: 'integer', minimum: 1, maximum: 100 } },
+        properties: {
+          limit: { type: 'integer', minimum: 1, maximum: 100 },
+          from: {
+            type: 'string',
+            description: 'Start of the window, an ISO date or date-time. Defaults to yesterday.',
+          },
+          to: {
+            type: 'string',
+            description:
+              'End of the window, an ISO date or date-time after `from`. Defaults to 90 days after `from`.',
+          },
+        },
       },
       effect_class: 'read',
       required_scopes: ['calendar.list'],
@@ -178,15 +252,65 @@ export type EventView = {
   etag: string | null;
 };
 
+type ParsedEvent = { view: EventView; event: ICAL.Event };
+
 /** Parse structured ICS, including folded/escaped fields, without executing embedded URLs. */
 export function importIcs(ics: string, etag: string | null = null): EventView[] {
+  return parseIcs(ics, etag).map((parsed) => parsed.view);
+}
+
+/** Most occurrences a series is walked through looking for one inside the window. */
+const MAX_OCCURRENCES = 5000;
+
+/**
+ * When an event or series first touches the window, in epoch milliseconds, or
+ * null when it never does. A series too long to walk is kept rather than
+ * dropped, placed at the start of the window.
+ */
+function firstInWindow(event: ICAL.Event, from: number, to: number): number | null {
+  const first = event.startDate.toJSDate().getTime();
+  const length = Math.max(0, (event.endDate?.toJSDate().getTime() ?? first) - first);
+  const touches = (start: number) => start < to && (start + length > from || start >= from);
+  if (!event.isRecurring()) return touches(first) ? first : null;
+  const occurrences = event.iterator();
+  for (let step = 0; step < MAX_OCCURRENCES; step++) {
+    const next = occurrences.next();
+    if (!next) return null;
+    const start = next.toJSDate().getTime();
+    if (start >= to) return null;
+    if (touches(start)) return start;
+  }
+  return from;
+}
+
+/** The events in a window, earliest first, and whether any were left out. */
+export function eventsInWindow(
+  parsed: ParsedEvent[],
+  window: ListWindow,
+  limit: number,
+): { events: EventView[]; truncated: boolean } {
+  const from = Date.parse(window.from);
+  const to = Date.parse(window.to);
+  const inside = parsed
+    .flatMap(({ view, event }) => {
+      const at = firstInWindow(event, from, to);
+      return at === null ? [] : [{ view, at }];
+    })
+    .sort((a, b) => a.at - b.at);
+  return {
+    events: inside.slice(0, limit).map((item) => item.view),
+    truncated: inside.length > limit,
+  };
+}
+
+export function parseIcs(ics: string, etag: string | null = null): ParsedEvent[] {
   if (Buffer.byteLength(ics) > MAX_CALENDAR_BYTES) throw new Error('Calendar import too large');
   const component = new ICAL.Component(ICAL.parse(ics));
   if (component.name !== 'vcalendar') throw new Error('Expected VCALENDAR');
   return component.getAllSubcomponents('vevent').map((item) => {
     const event = new ICAL.Event(item);
     if (!event.uid || !event.startDate) throw new Error('Malformed calendar event');
-    return {
+    const view: EventView = {
       uid: event.uid,
       summary: event.summary ?? '',
       start: event.startDate.toString(),
@@ -196,6 +320,7 @@ export function importIcs(ics: string, etag: string | null = null): EventView[] 
       recurrence: item.getFirstPropertyValue('rrule')?.toString() ?? null,
       etag,
     };
+    return { view, event };
   });
 }
 
@@ -343,11 +468,11 @@ export class CalendarConnector implements Connector {
       this.assertContext(action, ctx);
       if (action.kind === 'calendar.list') {
         const payload = listPayload.parse(action.canonical_payload);
-        if (this.config.mode === 'ics')
-          return this.success(action, {
-            events: importIcs(this.config.ics).slice(0, payload.limit),
-            read_only: true,
-          });
+        const window = listWindow(payload);
+        if (this.config.mode === 'ics') {
+          const listed = eventsInWindow(parseIcs(this.config.ics), window, payload.limit);
+          return this.success(action, listDetail(listed.events, window, listed.truncated, true));
+        }
         const response = await this.request(
           'REPORT',
           null,
@@ -365,7 +490,7 @@ export class CalendarConnector implements Connector {
           removeNSPrefix: true,
           ignoreAttributes: true,
         }).parse(xml);
-        const events: EventView[] = [];
+        const events: ParsedEvent[] = [];
         for (const item of array(object(object(parsed).multistatus).response)) {
           for (const propstat of array(object(item).propstat)) {
             const prop = object(object(propstat).prop);
@@ -374,7 +499,7 @@ export class CalendarConnector implements Connector {
               /\s200\s/.test(String(object(propstat).status))
             ) {
               events.push(
-                ...importIcs(
+                ...parseIcs(
                   prop['calendar-data'],
                   typeof prop.getetag === 'string' ? prop.getetag : null,
                 ),
@@ -382,7 +507,8 @@ export class CalendarConnector implements Connector {
             }
           }
         }
-        return this.success(action, { events: events.slice(0, payload.limit), read_only: false });
+        const listed = eventsInWindow(events, window, payload.limit);
+        return this.success(action, listDetail(listed.events, window, listed.truncated, false));
       }
       if (this.config.mode === 'ics')
         return {

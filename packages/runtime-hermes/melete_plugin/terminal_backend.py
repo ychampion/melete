@@ -29,9 +29,12 @@ only when a space has a sandbox. Everything that decides what happens lives in
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import posixpath
+import re
 import signal as signals
 import threading
 import time
@@ -446,5 +449,90 @@ def register_terminal_backend(
     if registrar(provider) is None:
         logger.error("melete: the engine refused the sandbox terminal backend")
         return None
+    register_hook = getattr(ctx, "register_hook", None)
+    if register_hook is not None:
+        register_hook("transform_tool_result", blocked_command_result(client))
     logger.info("melete: terminal commands run in the sandbox of connection %s", connection_id)
     return provider
+
+
+# -- commands the engine itself refuses ----------------------------------------
+
+#: The engine's own terminal tool, which the sandbox backend serves.
+ENGINE_TERMINAL = "terminal"
+
+#: How the engine names what it flagged: "Command flagged as dangerous (<what>)".
+_FLAGGED = re.compile(r"flagged as dangerous \(([^\n]{1,160}?)\)(?: but |\.|$)")
+
+#: How the engine's reviewer names what it refused when nobody can be asked.
+_SMART_DENIED = re.compile(r"^BLOCKED by smart approval: ([^\n]{1,160}?)\. The command")
+
+
+def _safety_refusal(error: str) -> bool:
+    """True only for the engine's safety gate refusing a command nobody could approve.
+
+    The engine marks other refusals `blocked` too, such as a working directory it
+    will not use; those are passed through as the engine wrote them.
+    """
+    return error.startswith("BLOCKED") and (
+        "approvals.unattended_mode" in error or error.startswith("BLOCKED by smart approval:")
+    )
+
+
+def _blocked_reason(error: str) -> str:
+    found = _FLAGGED.search(error) or _SMART_DENIED.search(error)
+    return found.group(1).strip() if found else "it matched a safety rule"
+
+
+def blocked_command_text(reason: str) -> str:
+    """What the model reads instead of the engine's own refusal.
+
+    The engine's text tells the model to change `approvals.unattended_mode` in
+    its config file, which the model then passes on as "approve it". There is no
+    approval to give: the engine refused the command before it reached Melete,
+    nothing was proposed and nothing ran. Approving such commands unattended is
+    deliberately not offered.
+    """
+    return (
+        f"NOT RUN. The engine's safety rules refused this command before it reached the sandbox ({reason}). "
+        "No action was recorded and no approval was requested, so there is nothing for the person to approve: "
+        "do not ask them to approve it. Tell them plainly that the command was blocked by a safety rule. "
+        "If the task still needs it, use a narrower command that avoids what was flagged."
+    )
+
+
+def blocked_command_result(client: Any) -> Callable[..., Optional[str]]:
+    """A `transform_tool_result` hook for terminal commands the engine refused.
+
+    The engine decides these before the backend is called, so the broker never
+    sees them and the conversation would otherwise show nothing. The hook
+    rewrites the model's copy into what actually happened and leaves a short,
+    visible note in the conversation through the broker, so the person sees the
+    refusal even if the model says nothing about it.
+    """
+
+    def transform(tool_name: str = "", result: Any = None, **_metadata: Any) -> Optional[str]:
+        if tool_name != ENGINE_TERMINAL or not isinstance(result, str):
+            return None
+        try:
+            body = json.loads(result)
+        except ValueError:
+            return None
+        if not isinstance(body, dict) or body.get("status") != "blocked":
+            return None
+        error = str(body.get("error") or "")
+        if not _safety_refusal(error):
+            return None
+        reason = _blocked_reason(error)
+        body["error"] = blocked_command_text(reason)
+        body["exit_code"] = REFUSED_STATUS
+        try:
+            client.say(
+                f"I did not run a command because a safety rule blocks it ({reason}). Nothing ran.",
+                f"blocked:{hashlib.sha256(result.encode('utf-8')).hexdigest()[:32]}",
+            )
+        except Exception as error:  # the note is a courtesy; the model's text is what must be right
+            logger.warning("melete: could not note a blocked command (%s)", error)
+        return json.dumps(body, ensure_ascii=False)
+
+    return transform

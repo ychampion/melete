@@ -15,11 +15,14 @@ import type {
   VerifyResult,
 } from '@melete/contracts';
 import {
+  byStart,
   calendarManifest,
   createPayload,
   deletePayload,
   type EventView,
+  listDetail,
   listPayload,
+  listWindow,
   retryAfterSeconds,
   updatePayload,
 } from './calendar.ts';
@@ -202,11 +205,12 @@ export class GoogleCalendarConnector implements Connector {
       this.assertContext(action, ctx);
       if (action.kind === 'calendar.list') {
         const payload = listPayload.parse(action.canonical_payload);
-        const now = this.config.now?.() ?? Date.now();
+        const window = listWindow(payload, this.config.now?.() ?? Date.now());
         const query = new URLSearchParams({
           maxResults: String(payload.limit),
-          // Series and single events from yesterday on; a series keeps its rule.
-          timeMin: new Date(now - 86_400_000).toISOString(),
+          // Series and single events that touch the window; a series keeps its rule.
+          timeMin: window.from,
+          timeMax: window.to,
           singleEvents: 'false',
         });
         const response = await this.request('GET', `/events?${query}`, ctx);
@@ -216,12 +220,13 @@ export class GoogleCalendarConnector implements Connector {
         }
         const listed = (await boundedJson(response, MAX_RESPONSE_BYTES)) as {
           items?: GoogleEvent[];
+          nextPageToken?: string;
         } | null;
-        const events = (listed?.items ?? [])
-          .filter((event) => event.status !== 'cancelled')
-          .map(eventView)
-          .slice(0, payload.limit);
-        return this.success(action, { events, read_only: false });
+        const items = (listed?.items ?? []).filter((event) => event.status !== 'cancelled');
+        // Google cannot order series by start, so the page is put in order here.
+        const events = byStart(items.map(eventView)).slice(0, payload.limit);
+        const truncated = Boolean(listed?.nextPageToken) || items.length > payload.limit;
+        return this.success(action, listDetail(events, window, truncated, false));
       }
       if (action.kind === 'calendar.delete') {
         const payload = deletePayload.parse(action.canonical_payload);

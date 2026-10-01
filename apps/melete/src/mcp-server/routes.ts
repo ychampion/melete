@@ -126,10 +126,33 @@ function whoIsAsking(client: McpClientRecord) {
     : `<p><strong>Unverified:</strong> &ldquo;${escapeHtml(client.name)}&rdquo; is the name this assistant gave itself. Melete has not checked who runs it.</p>`;
 }
 
+/** What the server's own paths answer while it is off, instead of a generic not-found. */
+export const MCP_SERVER_OFF =
+  "Melete's MCP server is not enabled on this service. Set MELETE_PUBLIC_URL to the address assistants reach this service at, then restart it.";
+const MCP_SERVER_PATHS = [
+  '/.well-known/oauth-authorization-server',
+  '/.well-known/oauth-protected-resource',
+  '/.well-known/oauth-protected-resource/*',
+  '/oauth/register',
+  '/oauth/authorize',
+  '/oauth/token',
+  '/oauth/revoke',
+  '/mcp',
+  '/mcp/clients',
+  '/mcp/clients/*',
+];
+
 export function mountMcpServer(app: Hono, deps: McpServerDeps) {
   const addresses = mcpServerAddresses(deps.env.MELETE_PUBLIC_URL);
-  // Without a public address no assistant could reach the endpoint or return from consent.
-  if (!addresses) return;
+  // Without a public address no assistant could reach the endpoint or return
+  // from consent, so the server stays off and its paths say so.
+  if (!addresses) {
+    for (const path of MCP_SERVER_PATHS)
+      app.all(path, (c) =>
+        c.json({ error: { code: 'not_enabled', message: MCP_SERVER_OFF } }, 404),
+      );
+    return;
+  }
   const store = new OAuthStore(deps.sql, addresses, deps.oauth);
   const effects =
     deps.broker && deps.registry
