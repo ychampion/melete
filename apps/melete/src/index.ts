@@ -905,6 +905,16 @@ export async function bootstrap(
         beforeKeyChange: releaseSandboxes,
         ...(sandboxTeardown ? { checkKeyChange: sandboxKeyCheck(sandboxTeardown) } : {}),
       });
+      // Revocations a stopped process left part way finish now, in the
+      // background: each can reach a provider, and its connection stays
+      // inactive until it does.
+      void policy
+        .finishInterruptedRevocations()
+        .catch((error: unknown) =>
+          console.error(
+            `connections: interrupted revocations were not checked (${error instanceof Error ? error.message : 'error'})`,
+          ),
+        );
       attention = new AttentionService(jobs, runner);
       // A memory question is answered by settling the key it disputes, which
       // only memory can do, so the queue is handed that one capability.

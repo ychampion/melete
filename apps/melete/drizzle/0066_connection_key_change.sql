@@ -1,0 +1,1 @@
+ALTER TABLE "connection" ADD COLUMN "key_change" text;

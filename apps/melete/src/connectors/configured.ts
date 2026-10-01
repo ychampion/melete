@@ -660,12 +660,14 @@ export async function configuredConnectors(options: ConnectorOptions) {
   // A space under removal is never served again, including by a process that
   // starts while its removal is still running or is waiting on something that
   // blocked it. Its connection rows go in a later phase of that removal.
-  // A revocation or key switch pauses its connection (`disabled`, still
-  // `connected`) while it undoes what the old key did, and puts it back if the
-  // change does not commit. A process that stopped part way never put it back,
-  // so a restart does: the change was not made, and the person can make it again.
-  await options.sql`update connection set status = 'active'
-    where status = 'disabled' and setup_state = 'connected'`;
+  // A key switch pauses its connection while it undoes what the old key did,
+  // and puts it back if the switch does not commit. A process that stopped
+  // part way never did, so a restart does: the switch was not made, the old
+  // key is still the connection's, and the person can switch again. An
+  // interrupted revocation is finished instead (`finishInterruptedRevocations`),
+  // and a connection disabled for any other reason is left alone.
+  await options.sql`update connection set status = 'active', key_change = null
+    where status = 'disabled' and key_change = 'switch'`;
   const connections = await options.sql`select c.* from connection c
     join space s on s.id = c.space_id
     where c.status = 'active' and s.removed_at is null

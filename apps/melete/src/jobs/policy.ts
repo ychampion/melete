@@ -273,21 +273,24 @@ export class PolicyService {
       if (refused) throw new ServiceError('invalid_credential', refused, 400);
     }
     // While the old key's work is undone nothing new may start through this
-    // connection, so it reads as inactive until the change commits; a restart
-    // part way puts it back (see `configuredConnectors`). That is a
-    // short write of its own: the teardown reaches providers for up to two
-    // minutes, which no transaction is held open for.
+    // connection, so it reads as inactive until the change commits, and the
+    // row records which change paused it. That is a short write of its own:
+    // the teardown reaches providers for up to two minutes, which no
+    // transaction is held open for. A restart part way finishes a revocation
+    // (`finishInterruptedRevocations`) and puts a switch back on its old key
+    // (`configuredConnectors`).
     let paused = false;
     const resume = async () => {
       if (!paused) return;
       await this.jobs.db
         .update(connection)
-        .set({ status: 'active' })
+        .set({ status: 'active', keyChange: null })
         .where(
           and(
             eq(connection.id, id),
             eq(connection.generation, before.generation),
             eq(connection.status, 'disabled'),
+            eq(connection.keyChange, request.kind),
           ),
         );
     };
@@ -306,6 +309,7 @@ export class PolicyService {
             generation: source.generation + 1,
             status: request.kind === 'revoke' ? 'revoked' : 'active',
             secretRef: request.kind === 'switch' ? request.secret_ref : null,
+            keyChange: null,
             health: 'unknown',
             lastCheckedAt: null,
           })
@@ -350,7 +354,10 @@ export class PolicyService {
         paused = await this.jobs.db.transaction(async (tx) => {
           const source = await checked(tx, true);
           if (source.status !== 'active') return false;
-          await tx.update(connection).set({ status: 'disabled' }).where(eq(connection.id, id));
+          await tx
+            .update(connection)
+            .set({ status: 'disabled', keyChange: request.kind })
+            .where(eq(connection.id, id));
           return true;
         });
         await this.options.beforeKeyChange(
@@ -368,6 +375,34 @@ export class PolicyService {
     }
     await this.signal(result.controls);
     return result.response;
+  }
+
+  /**
+   * Finish the revocations a stopped process left part way: the person asked
+   * for them, so they complete, teardown included, rather than the connection
+   * coming back. Until each does, its connection stays inactive. Returns the
+   * ids that could not be finished; a later start tries them again.
+   */
+  async finishInterruptedRevocations(): Promise<string[]> {
+    const interrupted = await this.jobs.db
+      .select({ id: connection.id, generation: connection.generation })
+      .from(connection)
+      .where(and(eq(connection.keyChange, 'revoke'), eq(connection.status, 'disabled')));
+    const unfinished: string[] = [];
+    for (const row of interrupted) {
+      try {
+        await this.changeConnection(row.id, {
+          kind: 'revoke',
+          expected_generation: row.generation,
+        });
+      } catch (error) {
+        unfinished.push(row.id);
+        console.error(
+          `connections: the interrupted revocation of ${row.id} is not finished yet (${error instanceof Error ? error.message : 'error'}); it stays inactive`,
+        );
+      }
+    }
+    return unfinished;
   }
 
   async changePolicy(spaceId: string, expectedGeneration: number) {
