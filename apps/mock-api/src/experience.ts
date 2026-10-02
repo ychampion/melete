@@ -14,6 +14,7 @@ import {
 import type { AppDeps } from './app.ts';
 import { MockBeliefError, MockBeliefs } from './beliefs.ts';
 import { ComputerMock } from './computer.ts';
+import { MockRunError, MockRuns } from './runs.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { newId } from './store.ts';
 
@@ -145,6 +146,8 @@ export class ExperienceMock {
     () => this.deps.store.now(),
     () => this.profile.time_zone,
   );
+  /** Long work in the background, seeded at three stages. */
+  readonly runs = new MockRuns(() => this.deps.store.now());
   /** Answers given during setup, by key, so the first message can refer to one. */
   readonly answers = new Map<string, string>();
   /** Set once the welcome scenario has played; every later message picks by text. */
@@ -524,6 +527,7 @@ export class ExperienceMock {
     japan.conversation_ids = [kyoto.id];
     this.start('Passport renewal', atlas.id, 'Which documents do I need to renew in person?');
     this.beliefs.seed(kyoto.id);
+    this.runs.seed(kyoto.id, nova.id);
   }
   /**
    * Every experience event is also a store event on the conversation's job, so
@@ -1519,6 +1523,13 @@ export class ExperienceMock {
     } catch (error) {
       if (error instanceof MockBeliefError)
         throw new MockExperienceError(error.status, error.message);
+      throw error;
+    }
+    try {
+      const answered = this.runs.handle(key, id, input, c.req.query());
+      if (answered !== undefined) return answered;
+    } catch (error) {
+      if (error instanceof MockRunError) throw new MockExperienceError(error.status, error.message);
       throw error;
     }
     switch (key) {
