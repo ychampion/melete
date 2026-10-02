@@ -14,6 +14,7 @@ import {
 import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
 import { BrokerFault } from '../broker/errors.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { ConnectorFaultError } from './faults.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import type { PrivateContext } from './web.ts';
@@ -237,6 +238,7 @@ export const filesManifest: ConnectorManifest = {
 
 export function createFilesConnector(options: FilesOptions): Connector {
   const limit = options.maxBytes ?? 2 * 1024 * 1024;
+  const workspace = new LocalWorkspaceFs(options.workRoot);
   const resolveFile = async (
     ctx: ConnectorContext,
     area: Area,
@@ -246,9 +248,9 @@ export function createFilesConnector(options: FilesOptions): Connector {
     if (!/^job_[A-Za-z0-9]+$/.test(ctx.job_id) || !/^sp_[A-Za-z0-9]+$/.test(ctx.space_id)) {
       throw new Error('invalid trusted file scope');
     }
-    const base = await realpath(area === 'work' ? options.workRoot : options.spacesRoot);
-    const scope = area === 'work' ? [ctx.job_id] : [ctx.space_id, 'artifacts'];
-    return noLinks(base, [...scope, ...segmentsFor(relative)], create);
+    if (area === 'work') return workspace.resolve(ctx.job_id, relative, create);
+    const base = await realpath(options.spacesRoot);
+    return noLinks(base, [ctx.space_id, 'artifacts', ...segmentsFor(relative)], create);
   };
   const read = async (target: string): Promise<Buffer> => {
     const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -404,11 +406,16 @@ export function createFilesConnector(options: FilesOptions): Connector {
       throw new Error(`there is no file ${JSON.stringify(relative)} in artifacts`);
     const entry = (await savedElsewhere(ctx)).find((candidate) => candidate.id === id);
     if (!entry) throw new Error(`there is no file ${JSON.stringify(relative)} in artifacts`);
-    const base = await realpath(entry.area === 'work' ? options.workRoot : options.spacesRoot);
-    const scope = entry.area === 'work' ? [entry.jobId as string] : [ctx.space_id, 'artifacts'];
     if (entry.area === 'work' && !/^job_[A-Za-z0-9]+$/.test(entry.jobId ?? ''))
       throw new Error('invalid trusted file scope');
-    const target = await noLinks(base, [...scope, ...segmentsFor(entry.path)], false);
+    const target =
+      entry.area === 'work'
+        ? await workspace.resolve(entry.jobId as string, entry.path, false)
+        : await noLinks(
+            await realpath(options.spacesRoot),
+            [ctx.space_id, 'artifacts', ...segmentsFor(entry.path)],
+            false,
+          );
     const content = await read(target).catch((error: unknown) => {
       if (!missing(error)) throw error;
       throw new Error(`the file ${JSON.stringify(entry.name)} is no longer there`);

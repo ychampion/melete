@@ -33,6 +33,7 @@ import {
 import type { Sql } from 'postgres';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { noLinks, segmentsFor } from './files.ts';
 import type { MailAttachment } from './mail-transport.ts';
 import type { Connector, ConnectorContext } from './types.ts';
@@ -210,9 +211,10 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
   const source = async (ctx: ConnectorContext, area: string, relative: string) => {
     if (!/^job_[A-Za-z0-9]+$/.test(ctx.job_id) || !/^sp_[A-Za-z0-9]+$/.test(ctx.space_id))
       throw new Error('invalid trusted file scope');
-    const base = await realpath(area === 'work' ? options.workRoot : options.spacesRoot);
-    const scope = area === 'work' ? [ctx.job_id] : [ctx.space_id, 'artifacts'];
-    return noLinks(base, [...scope, ...segmentsFor(relative)], false);
+    if (area === 'work')
+      return new LocalWorkspaceFs(options.workRoot).resolve(ctx.job_id, relative, false);
+    const base = await realpath(options.spacesRoot);
+    return noLinks(base, [ctx.space_id, 'artifacts', ...segmentsFor(relative)], false);
   };
 
   const checkIdentity = (action: Action, ctx: ConnectorContext) => {

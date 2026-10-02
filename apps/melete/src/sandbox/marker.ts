@@ -33,6 +33,7 @@
  */
 import { createHash } from 'node:crypto';
 import { EXEC_LIMITS } from '@melete/contracts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import {
   type ExecOutcome,
   type FileEntry,
@@ -44,7 +45,7 @@ import {
   SandboxTransportError,
   type StartFact,
 } from './types.ts';
-import { readWorkspaceFile, SANDBOX_WORKDIR, writeWorkspaceFile } from './workspace.ts';
+import { SANDBOX_WORKDIR } from './workspace.ts';
 
 export const MARKER_ROOT = '/var/tmp/.melete-exec';
 export const REENTERED_EXIT = 111;
@@ -207,13 +208,9 @@ async function capture(
   let outputPath: string | null = null;
   if (truncated) {
     outputPath = `${EXEC_LIMITS.output_dir}/${options.request.marker}.out`;
-    await writeWorkspaceFile(options.workRoot, options.jobId, outputPath, captured, 0o644);
-    const stored = await readWorkspaceFile(
-      options.workRoot,
-      options.jobId,
-      outputPath,
-      maxCaptureBytes,
-    );
+    const workspace = new LocalWorkspaceFs(options.workRoot);
+    await workspace.write(options.jobId, outputPath, captured, 0o644);
+    const stored = await workspace.read(options.jobId, outputPath, maxCaptureBytes);
     if (digest(stored) !== outputDigest)
       throw new Error('the stored output does not hash to the recorded digest');
   }

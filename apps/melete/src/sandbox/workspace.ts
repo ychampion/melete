@@ -14,10 +14,12 @@
  * kept, and set-id, sticky, group- and world-writable bits never cross.
  */
 import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
+import { lstat, open, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { noLinks, segmentsFor } from '../connectors/files.ts';
+import { LocalWorkspaceFs, portable, SyncRefusal, syncMode } from '../runtime/workspace-fs.ts';
 import type { SandboxHandle, SandboxProvider } from './types.ts';
+
+export { SyncRefusal, type SyncRefusalCode, syncMode } from '../runtime/workspace-fs.ts';
 
 const MiB = 1024 * 1024;
 
@@ -29,126 +31,12 @@ export const SYNC_LIMITS = {
 
 export const SANDBOX_WORKDIR = '/work';
 
-export type SyncRefusalCode =
-  | 'symlink'
-  | 'path'
-  | 'not_regular'
-  | 'too_many_files'
-  | 'too_large'
-  | 'file_too_large'
-  | 'duplicate'
-  | 'changed';
-
-export class SyncRefusal extends Error {
-  override readonly name = 'SyncRefusal';
-  constructor(
-    readonly code: SyncRefusalCode,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
 export type SyncReport = { files: number; directories: number; bytes: number };
 
 type WorkspaceLimits = { maxFiles: number; maxTotalBytes: number; maxFileBytes: number };
 
-/** Only the two modes a synchronised file may have. */
-export const syncMode = (mode: number): 0o644 | 0o755 => ((mode & 0o111) !== 0 ? 0o755 : 0o644);
-
 function checkJob(jobId: string): void {
   if (!/^job_[A-Za-z0-9]+$/.test(jobId)) throw new Error('invalid trusted job scope');
-}
-
-function portable(relative: string): string[] {
-  try {
-    return segmentsFor(relative);
-  } catch (error) {
-    throw new SyncRefusal(
-      'path',
-      `a path outside the job workspace was refused: ${JSON.stringify(relative)} (${(error as Error).message})`,
-    );
-  }
-}
-
-/** The job's workspace directory, created if absent and never a link. */
-async function jobBase(workRoot: string, jobId: string): Promise<string> {
-  checkJob(jobId);
-  const base = await realpath(workRoot);
-  const target = path.join(base, jobId);
-  try {
-    await mkdir(target);
-  } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
-  }
-  const stat = await lstat(target);
-  if (stat.isSymbolicLink() || !stat.isDirectory())
-    throw new SyncRefusal('symlink', 'the job workspace is not a plain directory');
-  return base;
-}
-
-async function ensureDirectory(base: string, segments: string[]): Promise<void> {
-  const target = await noLinks(base, segments, true);
-  try {
-    await mkdir(target);
-  } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
-  }
-  const stat = await lstat(target);
-  if (stat.isSymbolicLink() || !stat.isDirectory())
-    throw new SyncRefusal('not_regular', `not a directory: ${segments.slice(1).join('/')}`);
-}
-
-/**
- * Write one file under `<workRoot>/<job_id>`, re-resolving every component
- * first. The final open does not follow a link, so a link swapped in after
- * the check is an error rather than a write somewhere else.
- */
-export async function writeWorkspaceFile(
-  workRoot: string,
-  jobId: string,
-  relative: string,
-  bytes: Uint8Array,
-  mode: number,
-): Promise<void> {
-  const base = await jobBase(workRoot, jobId);
-  const target = await noLinks(base, [jobId, ...portable(relative)], true);
-  const file = await open(
-    target,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
-    syncMode(mode),
-  );
-  try {
-    const stat = await file.stat();
-    if (!stat.isFile()) throw new SyncRefusal('not_regular', `not a regular file: ${relative}`);
-    await file.writeFile(bytes);
-    await file.sync();
-  } finally {
-    await file.close();
-  }
-  // The open mode is filtered by the umask; the synchronised mode is not.
-  await chmod(target, syncMode(mode));
-}
-
-/** Read one file under `<workRoot>/<job_id>`, refusing links and anything above `maxBytes`. */
-export async function readWorkspaceFile(
-  workRoot: string,
-  jobId: string,
-  relative: string,
-  maxBytes: number,
-): Promise<Buffer> {
-  checkJob(jobId);
-  const base = await realpath(workRoot);
-  const target = await noLinks(base, [jobId, ...portable(relative)], false);
-  const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const stat = await file.stat();
-    if (!stat.isFile()) throw new SyncRefusal('not_regular', `not a regular file: ${relative}`);
-    if (stat.size > maxBytes) throw new SyncRefusal('file_too_large', `too large: ${relative}`);
-    return await file.readFile();
-  } finally {
-    await file.close();
-  }
 }
 
 type LocalFile = { relative: string; absolute: string; size: number; mode: 0o644 | 0o755 };
@@ -198,13 +86,13 @@ export type SyncOptions = {
 /** Copy `<workRoot>/<job_id>` into the sandbox's `/work`. */
 export async function syncIn(options: SyncOptions): Promise<SyncReport> {
   const limits = { ...SYNC_LIMITS, ...options.limits };
-  const base = await jobBase(options.workRoot, options.jobId);
-  const root = await noLinks(base, [options.jobId], false);
+  const workspace = new LocalWorkspaceFs(options.workRoot);
+  const root = await workspace.prepare(options.jobId);
   const files = await walkLocal(root, limits);
   let bytes = 0;
   async function* read() {
     for (const file of files) {
-      const target = await noLinks(base, [options.jobId, ...portable(file.relative)], false);
+      const target = await workspace.resolve(options.jobId, portable(file.relative), false);
       const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
         const stat = await handle.stat();
@@ -284,13 +172,14 @@ export async function syncOut(options: SyncOptions): Promise<SyncReport> {
       );
     fetched.push({ relative: file.relative, bytes, mode: file.mode });
   }
-  const base = await jobBase(options.workRoot, options.jobId);
+  const workspace = new LocalWorkspaceFs(options.workRoot);
+  await workspace.prepare(options.jobId);
   directories.sort((a, b) => a.length - b.length);
-  for (const segments of directories) await ensureDirectory(base, [options.jobId, ...segments]);
+  for (const segments of directories) await workspace.directory(options.jobId, segments);
   let bytes = 0;
   for (const file of fetched) {
     options.signal.throwIfAborted();
-    await writeWorkspaceFile(options.workRoot, options.jobId, file.relative, file.bytes, file.mode);
+    await workspace.write(options.jobId, file.relative, file.bytes, file.mode);
     bytes += file.bytes.byteLength;
   }
   return { files: fetched.length, directories: directories.length, bytes };

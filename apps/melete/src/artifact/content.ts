@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, realpath } from 'node:fs/promises';
 import { noLinks, segmentsFor } from '../connectors/files.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 
 export type ArtifactRoots = { workRoot: string; spacesRoot: string };
 export const defaultArtifactRoots = (): ArtifactRoots => ({
@@ -17,9 +18,14 @@ export async function readArtifactContent(
   if (!/^job_[A-Za-z0-9]+$/.test(location.jobId) || !/^sp_[A-Za-z0-9]+$/.test(location.spaceId))
     throw new Error('invalid artifact scope');
   if (!['work', 'artifacts'].includes(location.area)) throw new Error('invalid artifact area');
-  const base = await realpath(location.area === 'work' ? roots.workRoot : roots.spacesRoot);
-  const scope = location.area === 'work' ? [location.jobId] : [location.spaceId, 'artifacts'];
-  const target = await noLinks(base, [...scope, ...segmentsFor(location.path)], false);
+  const target =
+    location.area === 'work'
+      ? await new LocalWorkspaceFs(roots.workRoot).resolve(location.jobId, location.path, false)
+      : await noLinks(
+          await realpath(roots.spacesRoot),
+          [location.spaceId, 'artifacts', ...segmentsFor(location.path)],
+          false,
+        );
   const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();

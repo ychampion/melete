@@ -35,7 +35,7 @@ import {
   type Receipt,
 } from '@melete/contracts';
 import { validateArtifact } from '../artifact/validate.ts';
-import { noLinks, segmentsFor } from './files.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 export type ExecOptions = {
@@ -119,12 +119,12 @@ export const execManifest: ConnectorManifest = {
 
 export function createExecConnector(options: ExecOptions): Connector {
   const limit = options.maxBytes ?? EXEC_LIMITS.max_capture_bytes;
+  const workspace = new LocalWorkspaceFs(options.workRoot);
 
   /** Resolve a relative path inside this job's workspace, refusing every escape. */
   const resolveInWorkspace = async (ctx: ConnectorContext, relative: string): Promise<string> => {
     if (!/^job_[A-Za-z0-9]+$/.test(ctx.job_id)) throw new Error('invalid trusted file scope');
-    const base = await realpath(options.workRoot);
-    return noLinks(base, [ctx.job_id, ...segmentsFor(relative)], false);
+    return workspace.resolve(ctx.job_id, relative, false);
   };
 
   const readStored = async (target: string): Promise<Buffer> => {

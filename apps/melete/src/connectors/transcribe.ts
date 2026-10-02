@@ -31,6 +31,7 @@ import {
   receipt,
 } from '@melete/contracts';
 import { z } from 'zod';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { noLinks, segmentsFor } from './files.ts';
 import { atomicWrite, capabilityDirectory, digest, readBytes } from './tts.ts';
 import type { Connector, ConnectorContext } from './types.ts';
@@ -241,14 +242,14 @@ export function createTranscriptionConnector(options: TranscriptionConnectorOpti
       throw new Error('invalid trusted file scope');
     const mime = mediaTypeFor(relative);
     if (!mime) throw new Error('source must be an audio or video file');
-    const file = await noLinks(
-      await realpath(area === 'artifacts' ? options.spacesRoot : options.workRoot),
-      [
-        ...(area === 'artifacts' ? [ctx.space_id, 'artifacts'] : [ctx.job_id]),
-        ...segmentsFor(relative),
-      ],
-      false,
-    );
+    const file =
+      area === 'artifacts'
+        ? await noLinks(
+            await realpath(options.spacesRoot),
+            [ctx.space_id, 'artifacts', ...segmentsFor(relative)],
+            false,
+          )
+        : await new LocalWorkspaceFs(options.workRoot).resolve(ctx.job_id, relative, false);
     const bytes = await readBytes(file);
     if (!bytes) throw new Error('source file was not found');
     if (bytes.length > TRANSCRIBE_MAX_BYTES) throw new Error('source file is larger than 100 MB');

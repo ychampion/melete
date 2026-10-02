@@ -39,6 +39,7 @@ import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import { ConnectorFaultError } from '../connectors/faults.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { type DeviceHub, sharedDeviceHub } from './hub.ts';
 import {
   DevicePathError,
@@ -654,7 +655,8 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         if (bytes.byteLength < 24 || !bytes.subarray(0, 8).equals(PNG_MAGIC))
           throw new Error('the screenshot is not a PNG image');
         if (!/^job_[A-Za-z0-9]+$/.test(ctx.job_id)) throw new Error('invalid trusted job scope');
-        const folder = path.join(options.workRoot, ctx.job_id, 'device');
+        const workspace = new LocalWorkspaceFs(options.workRoot).root(ctx.job_id);
+        const folder = path.join(workspace, 'device');
         await mkdir(folder, { recursive: true });
         const file = `screenshot-${action.id}.png`;
         await writeFile(path.join(folder, file), bytes, { mode: 0o600 });
