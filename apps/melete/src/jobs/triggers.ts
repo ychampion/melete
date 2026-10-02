@@ -41,6 +41,42 @@ export type TriggerRow = typeof trigger.$inferSelect;
  */
 export const WATCH_SCAN_LIMIT = 200;
 
+/**
+ * Refuses a trigger that could never fire as the person meant it: a watch
+ * pattern that does not compile, or a schedule that is not a valid cron and
+ * time zone.
+ */
+export function checkTriggerSpec(jobs: Pick<JobService, 'boss'>, spec: TriggerSpec): void {
+  // A pattern that does not compile would silently never match, which reads
+  // to a person as "the watch is broken" long after they set it. Refuse it now.
+  if (spec.kind === 'watch') {
+    for (const clause of spec.predicate.all) {
+      if (clause.op !== 'matches') continue;
+      try {
+        if (typeof clause.value !== 'string') throw new Error('pattern must be text');
+        compileWatchPattern(clause.value);
+      } catch {
+        throw new ServiceError(
+          'invalid_predicate',
+          `The pattern for ${clause.field} is not a supported regular expression.`,
+          400,
+        );
+      }
+    }
+  }
+  if (spec.kind === 'schedule') {
+    try {
+      jobs.boss.previewSchedule(spec.cron, { tz: spec.timezone, count: 1 });
+    } catch {
+      throw new ServiceError(
+        'invalid_schedule',
+        'Provide a valid cron expression and timezone.',
+        400,
+      );
+    }
+  }
+}
+
 type WatchScan = {
   job_id: string;
   trigger_id: string;
@@ -62,34 +98,7 @@ export class TriggerService {
 
   async create(jobId: string, input: TriggerSpec): Promise<TriggerRow> {
     const spec = triggerSpec.parse(input);
-    // A pattern that does not compile would silently never match, which reads
-    // to a person as "the watch is broken" long after they set it. Refuse it now.
-    if (spec.kind === 'watch') {
-      for (const clause of spec.predicate.all) {
-        if (clause.op !== 'matches') continue;
-        try {
-          if (typeof clause.value !== 'string') throw new Error('pattern must be text');
-          compileWatchPattern(clause.value);
-        } catch {
-          throw new ServiceError(
-            'invalid_predicate',
-            `The pattern for ${clause.field} is not a supported regular expression.`,
-            400,
-          );
-        }
-      }
-    }
-    if (spec.kind === 'schedule') {
-      try {
-        this.jobs.boss.previewSchedule(spec.cron, { tz: spec.timezone, count: 1 });
-      } catch {
-        throw new ServiceError(
-          'invalid_schedule',
-          'Provide a valid cron expression and timezone.',
-          400,
-        );
-      }
-    }
+    checkTriggerSpec(this.jobs, spec);
     const created = await this.jobs.transaction(async (tx) => {
       const row = await this.jobs.lock(tx, jobId);
       if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
@@ -193,12 +202,12 @@ export class TriggerService {
       .select()
       .from(trigger)
       .where(and(eq(trigger.id, wait.trigger_id), eq(trigger.jobId, row.id)));
-    // A paused routine rests on its own schedule until it is resumed.
+    // A paused routine rests on its own schedule until it is resumed, and
+    // paused long work on whatever it stands on.
     if (
       registration &&
       !registration.enabled &&
-      registration.kind === 'schedule' &&
-      row.kind === 'routine'
+      ((registration.kind === 'schedule' && row.kind === 'routine') || row.kind === 'run')
     )
       return row;
     if (!registration?.enabled)

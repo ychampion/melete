@@ -1,7 +1,7 @@
 /**
- * Long work in the mock: three pieces seeded at different stages (one well
+ * Long work in the mock: four pieces seeded at different stages (one well
  * under way with tries, helpers and an update; one waiting on the person; one
- * finished), plus whatever is started through POST /runs. Pausing, resuming,
+ * finished; one standing on a weekday schedule), plus whatever is started through POST /runs. Pausing, resuming,
  * stopping, replying and setting a limit change the view the way the service
  * does, and the record pages and exports like the service's.
  */
@@ -66,6 +66,11 @@ export function runStatusLine(view: C.RunView, paused: boolean): string {
       const helpers = view.steps.filter((step) => step.status === 'working').length;
       if (helpers > 0)
         return join(`Waiting for ${helpers} helper${helpers === 1 ? '' : 's'}`, tried);
+      if (view.standing)
+        return join(
+          view.standing.kind === 'schedule' ? 'Waiting until next time' : 'Watching',
+          tried,
+        );
       return join(view.next_shift_at ? 'Picks up again later' : 'Waiting', tried);
     }
   }
@@ -135,6 +140,7 @@ export class MockRuns {
       started_at: this.iso(input.started),
       finished_at: null,
       next_shift_at: null,
+      standing: null,
       shifts: 0,
       metric: input.metric ?? null,
       limit: null,
@@ -375,6 +381,54 @@ export class MockRuns {
     tutor.view.findings = 2;
     tutor.view.shifts = 4;
     this.refresh(tutor);
+
+    // Standing: wakes every weekday morning and says something only when there is news.
+    const prices = this.blank({
+      title: 'Supplier prices each morning',
+      goal: 'Every weekday morning, check the supplier price list and tell me what changed.',
+      status: 'waiting',
+      agent_id: agentId,
+      started: 9 * 24 * 60,
+    });
+    this.add(
+      prices,
+      9 * 24 * 60 - 2,
+      'plan',
+      'How I’ll go about it',
+      'Each weekday at 9:00, read the price list, compare it with the last one, and tell you only about changes.',
+    );
+    this.add(
+      prices,
+      2 * 24 * 60,
+      'report',
+      'Two prices went up',
+      'Oak panels are up 6% to $54 and fence posts up 4% to $19. Everything else is the same.',
+    );
+    prices.view.latest_report = {
+      title: 'Two prices went up',
+      body: 'Oak panels are up 6% to $54 and fence posts up 4% to $19. Everything else is the same.',
+      created_at: this.iso(2 * 24 * 60),
+    };
+    this.add(
+      prices,
+      20 * 60,
+      'checkpoint',
+      'No changes today',
+      'Checked the list; nothing moved.',
+      {
+        next: 'Check the list again tomorrow morning.',
+      },
+    );
+    prices.view.next = 'Check the list again tomorrow morning.';
+    const next = new Date(this.clock().getTime() + 14 * 60 * 60_000).toISOString();
+    prices.view.standing = {
+      kind: 'schedule',
+      description: C.cronWords('0 9 * * 1-5'),
+      next_wake_at: next,
+    };
+    prices.view.next_shift_at = next;
+    prices.view.shifts = 7;
+    this.refresh(prices);
   }
 
   create(input: Record<string, unknown>) {
@@ -390,6 +444,12 @@ export class MockRuns {
     });
     run.view.limit = value.limit ?? null;
     run.view.next = 'Make a plan and start on the first part.';
+    if (value.repeat)
+      run.view.standing = {
+        kind: 'schedule',
+        description: C.cronWords(value.repeat.cron),
+        next_wake_at: null,
+      };
     return this.refresh(run);
   }
 
@@ -453,6 +513,7 @@ export class MockRuns {
         const run = this.required(id);
         if (run.view.status !== 'done' && run.view.status !== 'failed') {
           run.view.status = 'stopped';
+          run.view.standing = null;
           run.view.finished_at ??= this.iso();
           run.view.question = null;
           run.paused = false;

@@ -10,7 +10,7 @@ import { adapter } from '../experience/adapter.ts';
 import type { Run } from '../experience/types.ts';
 import { href } from '../router.ts';
 import { usePoll } from './poll.ts';
-import { ago, excerpt, isOpen, lastActivity, statusOf, workOrder } from './words.ts';
+import { ago, excerpt, isOpen, lastActivity, standingLine, statusOf, workOrder } from './words.ts';
 import './runs.css';
 
 /**
@@ -70,6 +70,7 @@ export function RunChatCards({
               </span>
               <span className="run-chat-title">{run.title}</span>
               <span className="run-chat-line">{run.status_line}</span>
+              {run.standing ? <span className="run-card-repeat">{standingLine(run)}</span> : null}
               {update ? <span className="run-chat-update clamp2">{excerpt(update)}</span> : null}
             </span>
             <Icon name="chevronRight" size={16} style={{ color: 'var(--muted)' }} />

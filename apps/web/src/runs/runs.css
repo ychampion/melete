@@ -58,6 +58,12 @@
   color: var(--secondary);
   overflow-wrap: anywhere;
 }
+.run-card-repeat {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--secondary);
+  overflow-wrap: anywhere;
+}
 .run-card-meta {
   font-size: 12px;
   line-height: 16px;

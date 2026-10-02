@@ -86,6 +86,22 @@ export function ago(iso: string, now: number): string {
   return days === 1 ? 'yesterday' : `${days} days ago`;
 }
 
+/**
+ * What work that repeats waits for, and when it next wakes if that is known:
+ * "Every weekday at 9:00 · next Tue 9:00". Null for work that does not repeat.
+ */
+export function standingLine(run: Pick<Run, 'standing'>): string | null {
+  const standing = run.standing;
+  if (!standing) return null;
+  if (!standing.next_wake_at) return standing.description;
+  const when = new Date(standing.next_wake_at).toLocaleString('en-US', {
+    weekday: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+  return `${standing.description} · next ${when}`;
+}
+
 /** A measured value as a person reads it: no float noise, no trailing zeros. */
 export function formatValue(value: number): string {
   if (Number.isInteger(value)) return value.toLocaleString('en-US');

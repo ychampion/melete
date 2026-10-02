@@ -402,7 +402,14 @@ export class ExperiencePlanning {
       .select({ trigger, title: job.title, state: job.state })
       .from(trigger)
       .innerJoin(job, eq(job.id, trigger.jobId))
-      .where(and(eq(job.spaceId, spaceId), eq(trigger.kind, 'schedule'), ownJob()))
+      .where(
+        and(
+          eq(job.spaceId, spaceId),
+          eq(job.kind, 'routine'),
+          eq(trigger.kind, 'schedule'),
+          ownJob(),
+        ),
+      )
       .orderBy(trigger.createdAt)
       .limit(100);
     return {
@@ -466,7 +473,13 @@ export class ExperiencePlanning {
       .from(trigger)
       .innerJoin(job, eq(job.id, trigger.jobId))
       .where(
-        and(eq(trigger.id, id), eq(job.spaceId, spaceId), eq(trigger.kind, 'schedule'), ownJob()),
+        and(
+          eq(trigger.id, id),
+          eq(job.spaceId, spaceId),
+          eq(job.kind, 'routine'),
+          eq(trigger.kind, 'schedule'),
+          ownJob(),
+        ),
       );
     if (!row) throw experienceMissing();
     return row;

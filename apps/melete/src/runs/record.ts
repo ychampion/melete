@@ -8,6 +8,7 @@ import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { job, runEntry, runState } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobRow } from '../jobs/service.ts';
+import { standingBrief } from './standing.ts';
 
 export const BRIEF_RECENT = 5;
 
@@ -149,6 +150,7 @@ export async function runBrief(tx: Transaction, row: JobRow): Promise<string> {
         ].join('\n'),
       );
   }
+  lines.push(...(await standingBrief(tx, row)));
   lines.push(
     step
       ? 'Record what you learn with run.log. Call run.finish with the result when your part is done, or run.checkpoint to continue in another shift.'

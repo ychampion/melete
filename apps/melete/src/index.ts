@@ -906,6 +906,7 @@ export async function bootstrap(
       );
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
+      if (runs) runs.triggers = triggers;
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
       operations = new OperationService(jobs, runner);
