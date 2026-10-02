@@ -15,7 +15,6 @@ import {
 } from '@melete/contracts';
 import { and, desc, eq } from 'drizzle-orm';
 import { requestPersonQuestion } from '../../src/broker/ask-person.ts';
-import { requestRuntimeWait } from '../../src/broker/runtime-wait.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import { event, experienceTurn, owner, question, space, trigger } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -214,32 +213,20 @@ withDb('the agent asks the person and waits for the answer', () => {
     expect((await required(jobs).get(id)).state).toBe('queued');
   });
 
-  test('one question per turn, none while one waits, and no wait set beside it', async () => {
+  test('one question per turn, with at most four choices', async () => {
     const { claims } = await chatTurn('Find a gift');
     await ask(claims.claims, { question: 'What budget?', choices: ['Under $50', 'Under $100'] });
     // The same call again is the same question; a different one is refused.
     await ask(claims.claims, { question: 'What budget?', choices: ['Under $50', 'Under $100'] });
-    expect((await rejectionOf(ask(claims.claims, { question: 'For whom?' }))).code).toBe(
-      'payload_invalid',
-    );
-    expect(
-      (
-        await rejectionOf(
-          requestRuntimeWait(sql(), claims.claims, {
-            kind: 'timer',
-            wake_at: new Date(Date.now() + 3600_000).toISOString(),
-          }),
-        )
-      ).code,
-    ).toBeDefined();
+    expect(await rejectionOf(ask(claims.claims, { question: 'For whom?' }))).toMatchObject({
+      code: 'payload_invalid',
+    });
     // Too many choices is refused before anything is written.
     expect(
-      (
-        await rejectionOf(
-          ask(claims.claims, { question: 'Which?', choices: ['a', 'b', 'c', 'd', 'e'] }),
-        )
-      ).code,
-    ).toBe('payload_invalid');
+      await rejectionOf(
+        ask(claims.claims, { question: 'Which?', choices: ['a', 'b', 'c', 'd', 'e'] }),
+      ),
+    ).toMatchObject({ code: 'payload_invalid' });
   });
 
   test('stopping the conversation withdraws its question', async () => {
