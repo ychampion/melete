@@ -277,7 +277,7 @@ const obj = (properties: Record<string, unknown>, required: string[]) => ({
 export const RUN_START_TOOL: ToolSpec = {
   name: 'run.start',
   description:
-    'Start work that continues in the background for hours or days and reports back. Use it whenever the person asks for something to be done in the background, or the work is too big for one reply: research across many sources, testing ideas, anything to keep at until done.',
+    'Start work that continues in the background for hours or days and reports back. Use it whenever the person asks for something to be done in the background, for helpers or parallel work, or for something to repeat or be watched, or when the work is too big for one reply: research across many sources, testing ideas, anything to keep at until done. Helpers working in parallel, measured tries in the sandbox and schedules are only available inside this work.',
   effect_class: 'write_reversible',
   connection_id: null,
   input_schema: obj(
