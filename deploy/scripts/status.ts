@@ -56,6 +56,17 @@ const GB = 1024 ** 3;
 export const MIN_FREE_BYTES = 10 * GB;
 export const UPDATE_FREE_BYTES = 4 * GB;
 
+/**
+ * Free space below `failBelowBytes` fails; below `warnBelowBytes` it warns. The
+ * defaults are the update floor and the first-install minimum; an installation
+ * that sets `disk.min_free_mb` in deploy/melete.deploy.json passes its own floor.
+ */
+export type DiskFloors = { failBelowBytes: number; warnBelowBytes: number };
+export const DEFAULT_DISK_FLOORS: DiskFloors = {
+  failBelowBytes: UPDATE_FREE_BYTES,
+  warnBelowBytes: MIN_FREE_BYTES,
+};
+
 const COMPOSE = 'docker compose -f deploy/docker-compose.yml';
 
 const isSet = (env: Record<string, string>, name: string) => Boolean(env[name]?.trim());
@@ -66,7 +77,7 @@ export const webPort = (env: Record<string, string> | null) => env?.WEB_PORT?.tr
 export const sandboxOn = (env: Record<string, string> | null) =>
   env?.MELETE_SANDBOX_PROVIDER?.trim() === 'docker';
 
-export function judgeStatus(facts: StatusFacts): Check[] {
+export function judgeStatus(facts: StatusFacts, floors: DiskFloors = DEFAULT_DISK_FLOORS): Check[] {
   const checks: Check[] = [];
   const { env } = facts;
   const prebuilt = Boolean(env?.MELETE_IMAGE_TAG?.trim());
@@ -91,13 +102,19 @@ export function judgeStatus(facts: StatusFacts): Check[] {
     });
   else {
     const free = `${(facts.freeBytes / GB).toFixed(1)} GB free where Docker keeps its images`;
+    const warnBelow = Math.max(floors.warnBelowBytes, floors.failBelowBytes);
+    const belowOwnFloor =
+      facts.freeBytes < floors.failBelowBytes &&
+      floors.failBelowBytes !== DEFAULT_DISK_FLOORS.failBelowBytes;
     checks.push(
-      facts.freeBytes >= MIN_FREE_BYTES
+      facts.freeBytes >= warnBelow
         ? { level: 'ok', name: 'Disk', detail: free }
         : {
-            level: facts.freeBytes >= UPDATE_FREE_BYTES ? 'warn' : 'fail',
+            level: facts.freeBytes >= floors.failBelowBytes ? 'warn' : 'fail',
             name: 'Disk',
-            detail: `${free}; a first install needs 10 GB.`,
+            detail: belowOwnFloor
+              ? `${free}; this installation keeps at least ${Math.round(floors.failBelowBytes / 1024 ** 2)} MB free.`
+              : `${free}; a first install needs 10 GB.`,
             fix: 'Free space first, for example with docker builder prune -af and docker image prune -f.',
           },
     );
@@ -325,7 +342,8 @@ export function render(checks: readonly Check[]): string {
 
 type Run = (command: readonly string[]) => CommandOutput;
 
-function freeSpace(run: Run, images: StatusFacts['images']): number | null {
+/** Free bytes where Docker keeps its images, measured on the engine's own machine when it is elsewhere. */
+export function freeSpace(run: Run, images: StatusFacts['images']): number | null {
   const root = run(['docker', 'info', '--format', '{{.DockerRootDir}}']);
   const dir = root.stdout.trim();
   if (root.code !== 0 || !dir) return null;
@@ -373,8 +391,8 @@ export async function gatherStatus(
   composeArgs: readonly string[],
   run: Run = spawnCommand,
 ): Promise<StatusFacts> {
-  const outputs = readHostDocker();
-  const docker = judgeDockerMachine(outputs, readDockerHost(spawnCommand, root));
+  const outputs = readHostDocker(run);
+  const docker = judgeDockerMachine(outputs, readDockerHost(run, root));
   const dockerVersions = `Engine ${outputs.engine.stdout.trim().split(' ')[1] ?? '?'}, Compose ${outputs.compose.stdout.trim() || '?'}`;
   const envPath = resolve(root, 'deploy/.env');
   const env = existsSync(envPath) ? parseEnvFile(readFileSync(envPath, 'utf8')) : null;
