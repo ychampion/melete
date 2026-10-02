@@ -365,6 +365,7 @@ export function createApp(deps: AppDeps) {
       runner: deps.runner,
       events: experience ? experience.events : undefined,
       changes: deps.events,
+      computers: deps.sandboxComputers,
     });
   if (deps.db)
     mountCompanies(app, {

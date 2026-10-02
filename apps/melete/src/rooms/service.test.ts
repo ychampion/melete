@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { mentionsOf } from './service.ts';
+import { distinctNames } from './transcript.ts';
 
 describe('which messages ask a room agent', () => {
   test('a message that names the agent asks it, by its own name or as Melete', () => {
@@ -21,5 +22,16 @@ describe('which messages ask a room agent', () => {
       'Melete',
       'alice',
     ]);
+  });
+});
+
+describe('names in a room', () => {
+  test("a name two people share carries each one's email, and a unique name stands alone", () => {
+    const names = distinctNames([
+      { id: 'a', displayName: 'Sam', email: 'sam@one.test' },
+      { id: 'b', displayName: null, email: 'SAM@two.test' },
+      { id: 'c', displayName: 'Lee', email: 'lee@one.test' },
+    ]);
+    expect([...names.values()]).toEqual(['Sam (sam@one.test)', 'SAM (SAM@two.test)', 'Lee']);
   });
 });

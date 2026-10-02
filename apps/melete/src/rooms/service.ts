@@ -6,6 +6,7 @@
  */
 import { createHash } from 'node:crypto';
 import {
+  displayNameText,
   type RoomRole,
   type RoomStreamFrame,
   roomDetail,
@@ -24,6 +25,7 @@ import { newId } from '../ids.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import { principalContext, spaceAuthority } from '../principals/authority.ts';
 import type { PrincipalService } from '../principals/service.ts';
+import { ComputerFault, type SandboxComputerService } from '../sandbox/computer.ts';
 import { presentIn } from './presence.ts';
 import { messageView, requestView, threadView } from './projection.ts';
 import {
@@ -36,7 +38,7 @@ import {
   touchMessage,
 } from './release.ts';
 import { roomMessage, roomPresence, roomThread } from './schema.ts';
-import { displayName, namesOf } from './transcript.ts';
+import { displayName, distinctNames, namesOf } from './transcript.ts';
 
 const missing = () => new ServiceError('not_found', 'That room is not here.', 404);
 const roomOwnerOnly = () =>
@@ -68,6 +70,8 @@ export function mentionsOf(text: string, agentName: string): { mentions: string[
 
 export type RoomDeps = RoomWork & {
   db: Database;
+  /** The desktops of the room's computers, when this installation runs them. */
+  computers?: SandboxComputerService;
   principals: PrincipalService;
   runner?: AttemptRunner;
   /** The conversation projector, run as the room's principal for the room's requests. */
@@ -169,6 +173,7 @@ export class RoomService {
       )
       .orderBy(asc(spaceMembership.createdAt), asc(spaceMembership.principalId));
     const present = new Set(await presentIn(this.deps.db, spaceId));
+    const names = distinctNames(rows.map(({ person }) => person));
     const persona = await serviceTransaction(this.deps.db, (tx) => roomAgentOf(tx, spaceId));
     return roomDetail.parse({
       room: {
@@ -178,7 +183,7 @@ export class RoomService {
       members: rows.map(({ membership, person }) =>
         roomMember.parse({
           principal_id: person.id,
-          display_name: displayName(person),
+          display_name: names.get(person.id) ?? displayName(person),
           role: membership.role,
           // A guest sees who is in the room, not how to reach them.
           ...(access.role === 'guest' ? {} : { email: person.email }),
@@ -237,7 +242,35 @@ export class RoomService {
     };
   }
 
+  /**
+   * Set the name a person shows in rooms. It must read as one line, and it
+   * must not be another person's name, or the part before the @ of another
+   * person's email, ignoring case: a name is how a room, and its agent, tell
+   * people apart.
+   */
   async rename(actor: string, name: string | null) {
+    if (name !== null) {
+      displayNameText.parse(name);
+      const [taken] = await this.deps.db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(
+          and(
+            ne(principal.id, actor),
+            or(
+              sql`lower(${principal.displayName}) = lower(${name})`,
+              sql`lower(split_part(${principal.email}, '@', 1)) = lower(${name})`,
+            ),
+          ),
+        )
+        .limit(1);
+      if (taken)
+        throw new ServiceError(
+          'name_taken',
+          'Someone here already goes by that name. Choose another.',
+          409,
+        );
+    }
     const [row] = await this.deps.db
       .update(principal)
       .set({ displayName: name })
@@ -396,9 +429,23 @@ export class RoomService {
         .set({ lastActivityAt: new Date() })
         .where(eq(roomThread.id, thread.id));
       let message = await touchMessage(tx, inserted);
-      if (asks && !held && (await startRequest(tx, this.deps, message))) {
-        const [current] = await tx.select().from(roomMessage).where(eq(roomMessage.id, message.id));
-        if (current) message = current;
+      if (asks && !held) {
+        if (await startRequest(tx, this.deps, message)) {
+          const [current] = await tx
+            .select()
+            .from(roomMessage)
+            .where(eq(roomMessage.id, message.id));
+          if (current) message = current;
+        } else {
+          // An ask that cannot start stops asking, as a released one does, so
+          // the thread never waits behind it.
+          const [dropped] = await tx
+            .update(roomMessage)
+            .set({ requestState: 'none' })
+            .where(eq(roomMessage.id, message.id))
+            .returning();
+          if (dropped) message = await touchMessage(tx, dropped);
+        }
       }
       return { thread, message };
     });
@@ -428,6 +475,26 @@ export class RoomService {
     if (!last || last.authorPrincipalId !== actor || !last.requestJobId) return false;
     const [request] = await tx.select().from(job).where(eq(job.id, last.requestJobId));
     return Boolean(request && !['queued', 'running'].includes(request.state));
+  }
+
+  /**
+   * The computers one of the room's requests is using. Everyone in the room may
+   * watch them; the sessions this returns are taken over only by the room's
+   * owners, which the computer itself checks again.
+   */
+  async computers(spaceId: string, jobId: string, actor: string) {
+    await this.access(this.deps.db, spaceId, actor);
+    const [row] = await this.deps.db
+      .select({ id: job.id })
+      .from(job)
+      .where(and(eq(job.id, jobId), eq(job.spaceId, spaceId), eq(job.audience, 'room')));
+    if (!row) throw new ServiceError('not_found', 'That request is not here.', 404);
+    if (!this.deps.computers) return { computers: [] };
+    const computers = await this.deps.computers.list(jobId, actor).catch((error: unknown) => {
+      if (error instanceof ComputerFault) throw missing();
+      throw error;
+    });
+    return { computers };
   }
 
   /** Stop a request's turn in flight: the person who asked it, or a room owner. */

@@ -44,7 +44,7 @@ export const roomMember = z.strictObject({
 });
 export type RoomMember = z.infer<typeof roomMember>;
 
-/** How the room works. Owners change it in a later release; these are the values in force. */
+/** How the room works: who decides its permissions, when its agent answers, and whether guests may ask. */
 export const roomPolicy = z.strictObject({
   approvers: z.enum(['requester', 'any_member', 'owners']),
   agent_turns: z.enum(['asked', 'every_message']),
@@ -73,9 +73,17 @@ export const person = z.strictObject({
 export const peopleQuery = z.strictObject({ query: z.string().max(200).optional() });
 export const peopleList = z.strictObject({ people: z.array(person) });
 
-export const updateMeRequest = z.strictObject({
-  display_name: z.string().trim().min(1).max(80).nullable(),
-});
+/**
+ * The name other people in a room see. One line of plain text: no control
+ * characters or line breaks, so a name is never more than a name.
+ */
+export const displayNameText = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80)
+  .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+$/u, 'Use one line of plain text.');
+export const updateMeRequest = z.strictObject({ display_name: displayNameText.nullable() });
 export const meResponse = z.strictObject({
   owner: z.strictObject({
     id: z.string(),

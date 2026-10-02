@@ -18,7 +18,10 @@ remove someone, and anyone can leave (`DELETE /rooms/{id}/members/{person}`).
 Removing someone ends their access at once, including any thread they have
 open. What they said stays in the room. The room's owner cannot be removed.
 
-Each person can set the name others see in a room with `PATCH /me`.
+Each person can set the name others see in a room with `PATCH /me`. A name is
+one line of plain text, and no two people go by the same one: a name already
+in use, or the part before the @ of someone else's email, is refused. Where two
+people's names match anyway, each is shown with their email.
 
 ## Threads and asking the agent
 
@@ -69,7 +72,10 @@ who is not in a room finds no room at all. A room's requests belong to the
 room, so they never appear in anyone's own chats, plans, approvals or job
 lists; they are read through the room's routes only. Files a request makes are
 read by the people in the room. Everyone in the room can watch the room's
-computer, and only the room's owners take it over.
+computer (`GET /rooms/{id}/requests/{request}/computers` finds it), and only the
+room's owners take it over.
 
 When the people in a room change, work under way in it starts again with the
-new roster, and permissions its requests were waiting on are withdrawn.
+new roster, and permissions its requests were waiting on are withdrawn. The
+requests someone asked end when they leave, since only they could answer them,
+and an ask of theirs still waiting its turn is dropped.

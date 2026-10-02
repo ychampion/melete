@@ -6,6 +6,7 @@ import {
   boundTranscript,
   type CompletionRecords,
   evaluateCompletion,
+  inTimeOrder,
   renderEarlierWork,
   TRANSCRIPT_MAX_CHARACTERS,
   TRANSCRIPT_MAX_MESSAGES,
@@ -547,5 +548,24 @@ describe("a room request's history", () => {
     expect(assembleHistory(events, [], 1).transcript.every((message) => !('name' in message))).toBe(
       true,
     );
+  });
+});
+
+describe('a room thread beside the request', () => {
+  test('the two read as one conversation in the order things were said, tool calls kept together', () => {
+    const message = (content: string, when: string, role: 'user' | 'tool' = 'user') => ({
+      role,
+      content,
+      at: `2026-09-11T08:00:0${when}.000Z`,
+    });
+    const thread = [message('talk before', '1'), message('talk after', '4')];
+    const history = [message('the ask', '2'), message('result', '3', 'tool'), message('more', '5')];
+    expect(inTimeOrder(thread, history).map((entry) => entry.content)).toEqual([
+      'talk before',
+      'the ask',
+      'result',
+      'talk after',
+      'more',
+    ]);
   });
 });

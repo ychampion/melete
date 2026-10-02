@@ -461,7 +461,10 @@ room's members, and it is never added to a room. Its membership generation is
 the room's roster generation, bumped with every change of who is in the room,
 so a capability minted before the change is refused at the broker.
 
-Each ask is its own request job, recorded with the person who asked, and only
+Names are how the agent and the room tell people apart, so a name is one line
+of plain text, no two people go by the same one, and where names still match
+each is shown with its email. Where a name enters the agent's input it is
+quoted. Each ask is its own request job, recorded with the person who asked, and only
 that person's words reach it: another member's message starts their own request
 or none, never touches someone else's, and so never withdraws their pending
 permission. A request reads the room's own material and the thread with each
@@ -475,11 +478,9 @@ own-job rule; three paths admit room readers on purpose: a request's files, the
 room computer's view (owners alone take it over), and the room's own routes. A
 thread's live stream checks membership before every frame and closes when the
 reader is removed. Removing someone, or their leaving, fences work in flight,
-which starts again with the new roster.
+which starts again with the new roster; the requests they asked end.
 [rooms.test.ts](../apps/melete/test/integration/rooms.test.ts) holds each of
-these as a test, and `the room computer can be watched by members and taken
-over only by owners` in [computer.test.ts](../apps/melete/src/sandbox/computer.test.ts)
-holds the computer.
+these as a test, including the room computer through the service's own routes.
 
 What remains: what a member says in a room stays in the room after they leave.
 Isolation between a room and the rest of the installation is an application

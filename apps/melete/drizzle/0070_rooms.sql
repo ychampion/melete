@@ -73,3 +73,8 @@ SELECT p."id", s."id", 'agent'
 FROM "space" s JOIN "principal" p ON p."email" = lower(s."id") || '@room.invalid' AND p."kind" = 'room'
 WHERE s."kind" = 'shared'
   AND NOT EXISTS (SELECT 1 FROM "space_membership" m WHERE m."space_id" = s."id" AND m."role" = 'agent');
+--> statement-breakpoint
+-- A room's own tools serve the requests made of its agent, as a new room's do.
+UPDATE "connection" c SET "shared_use" = 'room'
+FROM "space" s
+WHERE s."id" = c."space_id" AND s."kind" = 'shared' AND c."configuration" ? 'builtin';

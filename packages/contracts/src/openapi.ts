@@ -884,6 +884,20 @@ function roomsPaths() {
         },
       },
     },
+    '/rooms/{id}/requests/{jobId}/computers': {
+      get: {
+        tags: ['rooms'],
+        summary: "The computers one of the room's requests is using",
+        description:
+          'Everyone in the room may watch them through `/sandbox/sessions/{id}/live`; only the ' +
+          "room's owners take one over.",
+        requestParams: { path: z.object({ id: z.string(), jobId: z.string() }) },
+        responses: {
+          '200': jsonResponse('Computers', sandboxComputerList),
+          '404': notIn,
+        },
+      },
+    },
     '/rooms/{id}/presence': {
       post: {
         tags: ['rooms'],

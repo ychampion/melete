@@ -266,6 +266,28 @@ export function renderEarlierWork(actions: readonly EarlierAction[]): string {
   ].join('\n');
 }
 
+/**
+ * A room's thread and the request's own history as one conversation, in the
+ * order things were said. Each list is already in order; where two entries
+ * share a time the thread's comes first, and the history's own order (a tool
+ * call before its result) is never changed.
+ */
+export function inTimeOrder(
+  thread: readonly CanonicalMessage[],
+  history: readonly CanonicalMessage[],
+): CanonicalMessage[] {
+  const merged: CanonicalMessage[] = [];
+  let next = 0;
+  for (const entry of history) {
+    while (next < thread.length && (thread[next]?.at ?? '') <= entry.at) {
+      const said = thread[next++];
+      if (said) merged.push(said);
+    }
+    merged.push(entry);
+  }
+  return [...merged, ...thread.slice(next)];
+}
+
 /** Pure assembly is shared by the database reader and focused replay tests. */
 export function assembleHistory(
   events: readonly HistoryEvent[],
@@ -752,7 +774,7 @@ export async function buildAttemptSkeleton(
         row.objective,
         await situation(tx, row),
         room
-          ? `Asked by ${room.requester}. Only ${room.requester} can answer this request's questions.`
+          ? `Asked by ${JSON.stringify(room.requester)}. Only ${JSON.stringify(room.requester)} can answer this request's questions.`
           : '',
       ]
         .filter(Boolean)
@@ -766,7 +788,7 @@ export async function buildAttemptSkeleton(
     inputs: { ...history.inputs, ...(cancelledWait ? { cancelled_wait: cancelledWait } : {}) },
     since_last: delta,
     transcript: room
-      ? boundTranscript([...room.thread, ...history.transcript])
+      ? boundTranscript(inTimeOrder(room.thread, history.transcript))
       : history.transcript,
     tools: [],
     skills: mergeSkills(procedures, context.skills),

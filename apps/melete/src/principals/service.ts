@@ -5,7 +5,7 @@ import {
   type JobState,
   spaceMembership as membershipContract,
 } from '@melete/contracts';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { job, owner, principal, space, spaceMembership, trigger } from '../db/schema.ts';
@@ -199,12 +199,21 @@ export class PrincipalService {
       const controls = await principalContext.exit(() =>
         fenceRoster(tx, spaceId, generation, jobs),
       );
-      // The member's own jobs end with their access. A room's requests belong to
-      // the room, not to the member, and start again under the new roster.
+      // The member's own jobs end with their access, and so do the requests
+      // they asked of the room: only the person who asked a request answers it,
+      // so one whose asker has gone would wait for ever.
       const affected = await tx
         .select()
         .from(job)
-        .where(and(eq(job.spaceId, spaceId), eq(job.principalId, memberId)))
+        .where(
+          and(
+            eq(job.spaceId, spaceId),
+            or(
+              eq(job.principalId, memberId),
+              and(eq(job.audience, 'room'), eq(job.requestedByPrincipalId, memberId)),
+            ),
+          ),
+        )
         .orderBy(job.id);
       const cancelled: string[] = [];
       for (const row of affected) {

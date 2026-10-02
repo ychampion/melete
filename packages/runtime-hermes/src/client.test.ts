@@ -228,7 +228,7 @@ describe('context assembly', () => {
     room.inputs.new_user_messages = [
       { role: 'user', content: 'Can you book Friday?', name: 'Alice', at: '2026-09-11T00:00:00Z' },
     ];
-    expect(renderInput(room)).toContain('## From Alice\n\nCan you book Friday?');
+    expect(renderInput(room)).toContain('## From "Alice"\n\nCan you book Friday?');
     expect(renderInput(room)).not.toContain('## From the owner');
     room.inputs.new_user_messages = [
       { role: 'user', content: 'Can you book Friday?', at: '2026-09-11T00:00:00Z' },

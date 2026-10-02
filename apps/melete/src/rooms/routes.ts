@@ -11,6 +11,7 @@ import {
   peopleQuery,
   postRoomMessageRequest,
   type RoomStreamFrame,
+  sandboxComputerList,
   updateMeRequest,
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
@@ -110,6 +111,13 @@ export function mountRooms(app: Hono, deps: RoomDeps & { changes?: EventChanges 
     const result = await service.stop(param(c, 'id'), param(c, 'jobId'), actor(c));
     return result instanceof Response ? result : c.json(result);
   });
+  app.get('/rooms/:id/requests/:jobId/computers', async (c) =>
+    c.json(
+      sandboxComputerList.parse(
+        await service.computers(param(c, 'id'), param(c, 'jobId'), actor(c)),
+      ),
+    ),
+  );
   app.post('/rooms/:id/presence', async (c) =>
     c.json(await service.presence(param(c, 'id'), actor(c))),
   );

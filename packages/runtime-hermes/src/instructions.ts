@@ -211,7 +211,8 @@ export function renderInput(bundle: AttemptBundle): string {
   for (const message of bundle.inputs.new_user_messages) {
     lines.push(
       '',
-      message.name ? `## From ${message.name}` : '## From the owner',
+      // A name is quoted, so it reads as a name and never as part of the heading.
+      message.name ? `## From ${JSON.stringify(message.name)}` : '## From the owner',
       '',
       message.content,
     );

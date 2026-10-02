@@ -33,7 +33,27 @@ export async function namesOf(
     .select({ id: principal.id, displayName: principal.displayName, email: principal.email })
     .from(principal)
     .where(inArray(principal.id, unique));
-  return new Map(rows.map((row) => [row.id, displayName(row)]));
+  return distinctNames(rows);
+}
+
+/**
+ * Names that tell people apart: a name two of these people share, ignoring
+ * case, carries each one's email, so nobody reads as somebody else.
+ */
+export function distinctNames(
+  rows: readonly { id: string; displayName: string | null; email: string }[],
+): Map<string, string> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const key = displayName(row).toLowerCase();
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return new Map(
+    rows.map((row) => {
+      const name = displayName(row);
+      return [row.id, (counts.get(name.toLowerCase()) ?? 0) > 1 ? `${name} (${row.email})` : name];
+    }),
+  );
 }
 
 export type RoomTranscript = {
