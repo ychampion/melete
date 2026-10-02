@@ -376,7 +376,9 @@ export function freeSpace(run: Run, images: StatusFacts['images']): number | nul
   return df.code === 0 ? parseDfAvailable(df.stdout) : null;
 }
 
-async function getJson(url: string): Promise<Record<string, unknown> | null> {
+export type GetJson = (url: string) => Promise<Record<string, unknown> | null>;
+
+export async function getJson(url: string): Promise<Record<string, unknown> | null> {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
     if (!response.ok) return null;
@@ -390,6 +392,7 @@ export async function gatherStatus(
   root: string,
   composeArgs: readonly string[],
   run: Run = spawnCommand,
+  get: GetJson = getJson,
 ): Promise<StatusFacts> {
   const outputs = readHostDocker(run);
   const docker = judgeDockerMachine(outputs, readDockerHost(run, root));
@@ -423,8 +426,8 @@ export async function gatherStatus(
     }
   }
   const base = `http://127.0.0.1:${webPort(env)}/api`;
-  const health = env === null ? null : await getJson(`${base}/health`);
-  const setup = health === null ? null : await getJson(`${base}/setup`);
+  const health = env === null ? null : await get(`${base}/health`);
+  const setup = health === null ? null : await get(`${base}/setup`);
   return {
     docker,
     dockerVersions,

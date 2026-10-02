@@ -3,11 +3,22 @@
  * real Compose files, a fake Docker that answers from a table and records every
  * command, and captured output.
  */
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  closeSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { CommandOutput } from '../../../apps/melete/src/runtime/docker-engine.ts';
-import type { Context } from './context.ts';
+import type { Context, Endpoint, Source, StreamResult } from './context.ts';
 
 export const REAL_DEPLOY_DIR = resolve(import.meta.dir, '../../../deploy');
 
@@ -79,8 +90,55 @@ export const SUPPORTED_HOST: FakeDocker['rules'] = [
   ['docker context inspect', ok('unix:///var/run/docker.sock')],
 ];
 
+export type StreamCall = { source: Source; sinks: readonly Endpoint[] };
+
+/**
+ * A stream that writes to file sinks for real (new, 0600) and records command
+ * sinks. A command source yields `streamed <command>` unless `streamFails`
+ * names a prefix of it or of a sink command.
+ */
+export function fakeStream(calls: StreamCall[], fails: () => readonly string[]) {
+  return async (source: Source, sinks: readonly Endpoint[]): Promise<StreamResult> => {
+    calls.push({ source, sinks });
+    const commands = [
+      ...('command' in source ? [source.command.join(' ')] : []),
+      ...sinks.flatMap((sink) => ('command' in sink ? [sink.command.join(' ')] : [])),
+    ];
+    const failing = fails().find((part) => commands.some((line) => line.includes(part)));
+    if (failing)
+      return {
+        ok: false,
+        bytes: 0,
+        sha256: '',
+        detail: `${failing} exited 1: it failed in this test`,
+      };
+    const bytes =
+      'bytes' in source
+        ? Buffer.from(source.bytes)
+        : 'file' in source
+          ? readFileSync(source.file)
+          : Buffer.from(`streamed ${source.command.join(' ')}`);
+    for (const sink of sinks)
+      if ('file' in sink) {
+        const fd = openSync(sink.file, 'wx', 0o600);
+        writeSync(fd, bytes);
+        closeSync(fd);
+      }
+    return {
+      ok: true,
+      bytes: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+      detail: '',
+    };
+  };
+}
+
 export type TestContext = Context & {
   docker: FakeDocker;
+  streams: StreamCall[];
+  /** Text that, found in the source or a sink command, makes the stream fail. */
+  streamFails: string[];
+  slept: number[];
   printed: () => string;
   errors: () => string;
   attached: string[][];
@@ -95,6 +153,9 @@ export function testContext(
   const out: string[] = [];
   const err: string[] = [];
   const attached: string[][] = [];
+  const streams: StreamCall[] = [];
+  const streamFails: string[] = [];
+  const slept: number[] = [];
   return {
     deployDir,
     root: resolve(deployDir, '..'),
@@ -116,6 +177,16 @@ export function testContext(
     },
     probePort: async () => 'free',
     fetch: async () => new Response(null, { status: 401 }),
+    stream: fakeStream(streams, () => streamFails),
+    freeAt: () => 50 * 1024 ** 3,
+    sameDisk: () => true,
+    sleep: async (ms) => {
+      slept.push(ms);
+    },
+    now: () => new Date('2026-10-02T10:00:00Z'),
+    streams,
+    streamFails,
+    slept,
     out: (text) => out.push(text),
     err: (text) => err.push(text),
     docker,

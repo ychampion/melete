@@ -7,13 +7,19 @@
  * nothing was changed; 3 acted, but did not finish (the output says what next).
  */
 import { basename, resolve } from 'node:path';
+import { runBackup } from './commands/backup.ts';
 import { runCheck } from './commands/check.ts';
+import { runDeploy } from './commands/deploy.ts';
 import { runDoctor } from './commands/doctor.ts';
 import { runInit } from './commands/init.ts';
 import { runLogs } from './commands/logs.ts';
+import { runRestore } from './commands/restore.ts';
+import { runRollback } from './commands/rollback.ts';
 import { runSet } from './commands/set.ts';
 import { runStatus } from './commands/status.ts';
+import { runUpgrade } from './commands/upgrade.ts';
 import { type Context, DEFAULT_DEPLOY_DIR, realContext } from './context.ts';
+import { readHistory, renderHistory } from './history.ts';
 import { EXIT, type ExitCode } from './schema.ts';
 
 export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [options]
@@ -25,6 +31,14 @@ export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [opt
   status [--json]            The installation's report: services, API, account and the optional parts
   set NAME=value ...         Change settings in deploy/.env; --from-env NAME for a key
   logs [service ...]         The stack's logs: --since, --tail, --follow, --timestamps
+  deploy [--tag <tag>]       Update to published images: plan, back up, pull one at a time, switch, verify
+         [--dry-run] [--checkout | --allow-compose-mismatch] [--skip-backup | --backup-to ssh://host:/path]
+  rollback [--dry-run]       Back to the images before the last deploy, or the restore steps if migrations ran
+  backup [--estimate]        Back up the database, journal and settings to backup.dir, a new private directory
+         [--with-volumes] [--dir <path>] [--to ssh://host:/path]
+  restore <backup> [--plan]  Check a backup's checksums and print the steps that restore it
+  upgrade <version>          Upgrade an installation that builds its images (deploy/scripts/upgrade.ts)
+  history [--json]           The deploys, rollbacks and upgrades this installation has run
 
 --deploy-dir names the deployment directory of another checkout; the default is this checkout's deploy/.
 Exit codes: 0 done, 1 a check failed, 2 refused with nothing changed, 3 acted but did not finish.
@@ -99,6 +113,23 @@ export async function main(argv: readonly string[], make = realContext): Promise
       return await runLogs(context, parsed.rest);
     case 'init':
       return await runInit(context, parsed.rest);
+    case 'deploy':
+      return await runDeploy(context, parsed.rest, parsed.json);
+    case 'rollback':
+      return await runRollback(context, parsed.rest, parsed.json);
+    case 'backup':
+      return await runBackup(context, parsed.rest, parsed.json);
+    case 'restore':
+      return await runRestore(context, parsed.rest, parsed.json);
+    case 'upgrade':
+      return await runUpgrade(context, parsed.rest);
+    case 'history': {
+      const refused = noExtra('Usage: bun run melete history [--json]');
+      if (refused !== null) return refused;
+      const entries = readHistory(context.deployDir);
+      context.out(json(parsed.json, entries));
+      return EXIT.ok;
+    }
     case '':
     case 'help':
       context.out(USAGE);
@@ -107,5 +138,11 @@ export async function main(argv: readonly string[], make = realContext): Promise
       return refuse(`${parsed.command} is not a melete command.\n${USAGE}`);
   }
 }
+
+const json = (asJson: boolean, entries: ReturnType<typeof readHistory>) =>
+  asJson
+    ? `${JSON.stringify(entries, null, 2)}
+`
+    : renderHistory(entries);
 
 if (import.meta.main) process.exit(await main(process.argv.slice(2)));
