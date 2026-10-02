@@ -291,6 +291,10 @@ withDb('checking a result before it is called done', () => {
     // The person writes while the check runs; that shift cannot give the result again.
     await request(`/runs/${run.id}/message`, 'POST', { text: 'Also note the renewal date.' });
     const again = await claim(run.id);
+    // Its brief says so before it tries.
+    expect(again.bundle.job.objective).toContain(
+      'The result you gave is being checked right now by a separate check. Do not call run.finish again.',
+    );
     expect(
       String(await rejectionOf(tool(again.claims, 'run.finish', { summary: 'Again.' }))),
     ).toContain('being checked right now');
@@ -360,6 +364,22 @@ withDb('checking a result before it is called done', () => {
       ].join('\n'),
     );
     expect(brief).not.toContain('An ordinary note');
+    expect(brief).not.toContain('being checked right now');
+  });
+
+  test('a try that only ties the best is not listed as a dead end', async () => {
+    const run = await start({ goal: 'Raise the hit rate' });
+    const shift = await claim(run.id);
+    const log = (title: string, value: number, outcome: string) =>
+      tool(shift.claims, 'run.log', { kind: 'experiment', title, value, outcome });
+    await log('Bigger cache', 80, 'kept');
+    await log('Bigger cache, measured again', 80, 'discarded');
+    await log('Smaller cache', 60, 'discarded');
+    await commit(shift.claims);
+    const brief = (await claim(run.id)).bundle.job.objective;
+    const dead = brief.slice(brief.indexOf("Already tried, didn't work"));
+    expect(dead).toContain('- Smaller cache = 60');
+    expect(dead).not.toContain('measured again');
   });
 
   test('the same call a fourth time in one shift is refused with a reason', async () => {
@@ -601,5 +621,12 @@ describe('the repeat guard', () => {
       'already made 3 times',
     );
     guard.note(run, 'web.fetch', { url: 'https://example.test/other' });
+  });
+
+  test('a try may be measured again as often as needed', () => {
+    const guard = new RepeatGuard();
+    const run = claims(['run.log', 'run.try']);
+    for (let made = 0; made < REPEAT_LIMIT + 2; made++)
+      guard.note(run, 'run.try', { title: 'Again', command: 'bun run bench' });
   });
 });

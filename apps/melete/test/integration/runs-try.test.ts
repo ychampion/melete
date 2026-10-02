@@ -328,6 +328,59 @@ withDb('tries the harness measures', () => {
     });
   });
 
+  test('variants are not run when the first command did not run through', async () => {
+    const run = await start({ goal: 'Time the build' });
+    const shift = await claim(run.id);
+    const variants = [
+      { label: 'fast', command: "printf 'METRIC score=2\\n'" },
+      { label: 'faster', command: "printf 'METRIC score=3\\n'" },
+    ];
+    const before = provider.calls.exec;
+    const slow = await measure(shift.claims, {
+      title: 'Slow start',
+      command: 'sleep 5',
+      timeout_seconds: 1,
+      variants,
+    });
+    expect(provider.calls.exec - before).toBe(1);
+    expect(slow.tries).toHaveLength(1);
+    expect(slow.tries[0]).toMatchObject({ title: 'Slow start', outcome: 'failed' });
+    expect(JSON.stringify(slow)).toContain('variants were not run');
+    expect(JSON.stringify(slow)).toContain('ran past its time limit');
+    expect(await record(run.id)).toHaveLength(1);
+
+    const agentId = newId('agent');
+    await required(handle).db.insert(agent).values({
+      id: agentId,
+      spaceId,
+      name: 'Asks first',
+      role: 'Researcher',
+      colour: '#336699',
+      surface: 'rounded',
+      eyeColour: '#222222',
+      tone: 'plain',
+      standingInstruction: '',
+      asksBeforeActing: true,
+    });
+    const careful = await start({ goal: 'Careful timing', agent_id: agentId });
+    const asked = await claim(careful.id);
+    const waiting = await measure(asked.claims, {
+      title: 'Asked first',
+      command: "printf 'METRIC score=1\\n'",
+      variants,
+    });
+    // One question for the person, not one per variant.
+    expect(waiting.tries).toEqual([
+      expect.objectContaining({ title: 'Asked first', status: 'waiting_for_approval' }),
+    ]);
+    expect(JSON.stringify(waiting)).toContain('waits for the person’s approval');
+    const parked = await required(handle)
+      .db.select()
+      .from(action)
+      .where(eq(action.jobId, careful.id));
+    expect(parked).toHaveLength(1);
+  });
+
   test('a command the person must approve waits, and runs when the try is asked again', async () => {
     const agentId = newId('agent');
     await required(handle).db.insert(agent).values({

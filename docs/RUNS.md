@@ -57,8 +57,14 @@ any helper's.
 | ends without a verdict | the run completes, and its result says the check could not be finished |
 
 The run is given its result by a shift that only records it, with no model
-call (`RunService.settle`, called when the shift is claimed). `run.finish`
-while the check is under way is refused with a reason the model can read.
+call (`RunService.settle`, called when the shift is claimed). While the check
+is under way, the brief of any shift says so plainly, and `run.finish` is
+refused with a reason the model can read. If the person wrote and no shift has
+read it yet (an answer to a question the work asked while the check ran, say),
+the result is not given silently: one shift runs first, with their words and
+the checked result in its brief. If it changes nothing, that shift ends and the
+checked result is given; if it gives a new result with `run.finish`, that one
+is checked in turn.
 Helpers' results are never checked, nor is a run without a `done_when`. The
 person can turn the check off for one piece of work: `check_result: false` on
 `POST /runs` or `PUT /runs/{id}/limit`.
@@ -73,7 +79,9 @@ The next shift starts from the record (`runBrief` in
 goal, the plan, where the last shift left off, the best try and the latest
 ones, what was already tried and did not work, recent findings and what the
 helpers returned. "Already tried, didn't work" lists failed and discarded tries
-and notes logged with `dead_end: true`, so later shifts do not repeat them.
+and notes logged with `dead_end: true`, so later shifts do not repeat them. A
+discarded try that only ties the best kept value (the best measured again, say)
+is not listed: it is a confirmation, not a dead end.
 
 `GET /runs/{id}/record` pages through it and `GET /runs/{id}/export` returns
 it as one Markdown document.
@@ -105,7 +113,10 @@ connection, so admission, the person's approval rules, the sandbox's egress
 policy and settings, and the action receipt all apply unchanged. The files are
 written by that same command, ahead of the try's own, so one approval and one
 receipt cover both. The first command runs alone (it writes the files and opens
-the computer); the variants then run side by side.
+the computer); the variants then run side by side. When the first command did
+not run through (it could not run, ran past its time limit, or waits for the
+person's approval), the variants are not run, and the result says why: they
+would run without the files, or each ask the person again.
 
 When the commands finish, the service writes one experiment entry per command:
 
@@ -171,8 +182,16 @@ standing work.
   `{ kind: "watch", connection_id, event_name, predicate }` for only the
   observations that pass a watch's test. A new wake replaces the old one.
   `"drop_trigger"` stops it standing and goes on now. Helpers cannot stand.
-- The time zone defaults to the person's profile time zone. A schedule may
-  wake the work at most every 5 minutes.
+- The time zone defaults to the person's profile time zone. A schedule the
+  person sets (`POST /runs` with `repeat`) may wake the work at most every 5
+  minutes. A schedule the work sets for itself (`run.start` from a
+  conversation, or `run.checkpoint`) may wake it at most once an hour; a
+  tighter one is refused with that minimum, because every wake costs model
+  calls nobody chose. Waking on a connection or a watch is not limited.
+- When the work itself sets, changes or drops what it waits for, the person
+  is told once in plain words ("I'll check this every weekday at 9:00."): a
+  `report` entry in the record and a notification, sent whatever the spacing
+  of progress. Setting the same wake again tells them nothing.
 
 The waking is the trigger service's (`apps/melete/src/jobs/triggers.ts`): one
 `trigger` row per standing run, which the run's wait names. Nothing new is
@@ -191,7 +210,9 @@ in step with what the run asked for.
   the trigger resets the idle count: a quiet week is the point. The idle rule
   still applies to hand-offs that go on now.
 - Quiet wakes notify nobody and get no daily summary. Only `run.log` reports,
-  questions and the final result reach the person.
+  questions, changes to what it waits for and the final result reach the
+  person. A report from a shift a trigger woke is always sent, even within 30
+  minutes of the last: that alert is why the work stands.
 - Limits the person set still stop it to ask; failures still stop it to ask.
 - A result being checked comes first: while the check runs, a shift that ends
   (one a message started, say) rests until the check is done rather than on
@@ -233,7 +254,8 @@ result and to change its approach (`apps/melete/src/broker/repeats.ts`). A
 client reference does not make a call new: the engine derives it from the
 call's arguments and never resends, so the same reference again is a repeat.
 Terminal commands carry a fresh name each time, so running the same command
-again (tests after each fix) is not one.
+again (tests after each fix) is not one, and `run.try` is never counted:
+measuring again is how a value is confirmed.
 
 ## The person's side
 
@@ -245,7 +267,8 @@ finished run up again. Pause lets a shift under way finish and starts no new
 one; Stop ends the run and its helpers. A run that goes a day without an
 update gets a short one written from its record. Progress notifications go
 out at most once every 30 minutes for a run; the rest stay in the record and
-the view, and the result always goes out. `GET /runs` reads every run in the
+the view. The result, a change to what standing work waits for, and a report
+from a shift its trigger woke always go out. `GET /runs` reads every run in the
 list together, with a fixed number of queries and at most ten recent tries
 each.
 
@@ -258,17 +281,25 @@ the broker path (which tools each kind of job is offered, and refusals a model
 can read). `apps/melete/test/integration/runs-try.test.ts` covers measured
 tries against the in-memory sandbox: files and `METRIC` lines, `value_pattern`,
 nonzero exits and missing values, variants, the best by direction, a command
-waiting for approval and then running, the refusal without a sandbox, and the
-tool over the broker's HTTP surface.
+waiting for approval and then running, variants left out when the first
+command did not run through, the refusal without a sandbox, and the tool over
+the broker's HTTP surface.
 `apps/melete/test/integration/runs-standing.test.ts` covers standing work:
 resting on a schedule and waking on it with the reason in the brief, quiet
 wakes that are neither idle nor notified, a watch that wakes only on a match
 and passes the observation on, changing and dropping the trigger, pause,
-resume and stop, finishing, limits, and refused wakes.
+resume and stop, finishing, limits, refused wakes, the hourly limit on
+schedules the work sets with the person told of each change, and reports from
+a woken shift that are never held back.
 `apps/melete/test/integration/runs-check.test.ts` covers the check
 of a result (passing, gaps sent back, given anyway after two, no verdict,
-refused while under way, turned off), the "already tried" list, the repeat
-guard, a cancelled helper waking its run, helpers ending at once, the failure
+refused while under way and said in the brief, turned off), the "already
+tried" list and ties with the best left out of it, the repeat guard and
+`run.try` left out of it, a cancelled helper waking its run, helpers ending at once, the failure
 count starting again, a shift lost after its result, helpers that cannot read
 an action back, the limits a run keeps, spaced-out notifications, and the
 list agreeing with each view.
+`apps/melete/test/integration/runs-together.test.ts` covers a checked result
+meeting other things: a shift during the check, standing work cancelled any way,
+and an answer the person gave while the check ran, read before the result is
+given.

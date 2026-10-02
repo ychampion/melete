@@ -2,7 +2,8 @@
  * Long work runs unattended, and a model that has lost its way tends to make
  * the same call again and again. Within one attempt of a run or a helper, the
  * same tool with the same arguments is answered three times; the fourth is
- * refused with a message the model can act on. Counts live in memory: they
+ * refused with a message the model can act on. `run.try` is exempt: measuring
+ * again is how a value is confirmed. Counts live in memory: they
  * belong to one attempt, which does not outlive this process anyway.
  */
 import { createHash } from 'node:crypto';
@@ -37,6 +38,8 @@ export class RepeatGuard {
   note(claims: CapabilityClaims, name: string, args: unknown) {
     // Only long work: a run's attempts and its helpers' are offered run.log.
     if (!claims.scopes.includes('run.log')) return;
+    // Running a try again measures again: the same answer is not a given.
+    if (name === 'run.try') return;
     let calls = this.attempts.get(claims.attempt_id);
     if (!calls) {
       if (this.attempts.size >= ATTEMPTS_KEPT) {

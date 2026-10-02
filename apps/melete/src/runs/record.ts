@@ -4,7 +4,7 @@
  * service that writes it.
  */
 import { RUN_TRY_LIMITS, type RunStatus } from '@melete/contracts';
-import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { action, job, runEntry, runState } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobRow } from '../jobs/service.ts';
@@ -119,6 +119,31 @@ export async function runBrief(tx: Transaction, row: JobRow): Promise<string> {
           'Close these gaps, then call run.finish again.',
         ].join('\n'),
       );
+    // A shift runs on a checked result only when the person wrote since a shift last read them.
+    if (last?.kind === 'check' && data.settle === true && typeof data.result === 'string')
+      lines.push(
+        [
+          'Your result has been through its check and is ready to be given to the person:',
+          clip(data.result, 1500),
+          'The person wrote since then; their words are in this conversation. If they change nothing, end this shift with one short line and this result is given. If they ask for a change, make it in this shift and call run.finish with the new result; it is checked again.',
+        ].join('\n'),
+      );
+    const [checking] = await tx
+      .select({ id: runState.jobId })
+      .from(runState)
+      .innerJoin(job, eq(job.id, runState.jobId))
+      .where(
+        and(
+          eq(runState.parentRunId, run),
+          isNotNull(runState.checking),
+          notInArray(job.state, ['completed', 'failed', 'cancelled']),
+        ),
+      )
+      .limit(1);
+    if (checking)
+      lines.push(
+        'The result you gave is being checked right now by a separate check. Do not call run.finish again. When there is nothing else to do, end this shift with run.checkpoint and next_shift "when_helpers_finish"; what the check finds comes back to you.',
+      );
   }
   const age = Math.max(0, Date.now() - state.createdAt.getTime());
   const days = Math.floor(age / 86_400_000);
@@ -141,8 +166,14 @@ export async function runBrief(tx: Transaction, row: JobRow): Promise<string> {
     .from(runEntry)
     .where(and(eq(runEntry.runJobId, run), eq(runEntry.kind, 'experiment')))
     .orderBy(desc(runEntry.seq));
+  const best = bestExperiment(experiments, metric?.direction ?? 'higher');
+  // The best try that was kept; one discarded for only matching it is no dead end.
+  const kept = bestExperiment(
+    experiments.filter((entry) => object(entry.data).outcome === 'kept'),
+    metric?.direction ?? 'higher',
+  );
+  const keptValue = kept ? Number(object(kept.data).value) : null;
   if (experiments.length) {
-    const best = bestExperiment(experiments, metric?.direction ?? 'higher');
     const show = (entry: Entry) => {
       const data = object(entry.data);
       const value = typeof data.value === 'number' ? ` = ${data.value}` : '';
@@ -177,9 +208,12 @@ export async function runBrief(tx: Transaction, row: JobRow): Promise<string> {
       and(
         eq(runEntry.runJobId, run),
         or(
+          and(eq(runEntry.kind, 'experiment'), sql`${runEntry.data}->>'outcome' = 'failed'`),
+          // A try that only ties the best kept one (it measured again, say) is not a dead end.
           and(
             eq(runEntry.kind, 'experiment'),
-            sql`${runEntry.data}->>'outcome' in ('failed', 'discarded')`,
+            sql`${runEntry.data}->>'outcome' = 'discarded'`,
+            sql`(case when jsonb_typeof(${runEntry.data}->'value') = 'number' then (${runEntry.data}->>'value')::float8 end) is distinct from ${keptValue}::float8`,
           ),
           sql`${runEntry.data}->>'dead_end' = 'true'`,
         ),

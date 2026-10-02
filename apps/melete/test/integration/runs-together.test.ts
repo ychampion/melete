@@ -188,6 +188,39 @@ withDb('standing work with a checked result', () => {
     expect(required(waiting.nextWakeAt).getTime() - Date.now()).toBeGreaterThan(60_000);
   });
 
+  test('an answer given while the result was checked is read before the result is given', async () => {
+    const { run, between, check } = await givenThenWoken({
+      goal: 'Find a supplier under $45',
+      done_when: 'A supplier price under $45 with its page',
+    });
+    await commit(between.claims, {
+      kind: 'waiting_for_input',
+      question: 'Which supplier C do you mean?',
+    });
+    const checking = await claim(check);
+    await tool(checking.claims, 'run.finish', { summary: 'Confirmed.', verdict: 'passes' });
+    await commit(checking.claims);
+    expect((await row(run.id)).state).toBe('waiting_for_input');
+
+    // The answer starts a shift that reads it, with the checked result in its brief.
+    await request(`/runs/${run.id}/message`, 'POST', { text: 'C is the one in Porto.' });
+    const reads = await claim(run.id);
+    expect(reads.bundle.job.objective).toContain(
+      'Your result has been through its check and is ready to be given to the person:\nSupplier B at $38.',
+    );
+    expect(JSON.stringify(reads.bundle.inputs.new_user_messages)).toContain(
+      'C is the one in Porto.',
+    );
+    expect((await view(run.id)).status).not.toBe('done');
+    await commit(reads.claims, done('Porto is no cheaper.'));
+    // Read, and nothing changed: the checked result is given.
+    expect(await claimNow(run.id)).toBeNull();
+    const finished = await view(run.id);
+    expect(finished.status).toBe('done');
+    expect(finished.result).toBe('Supplier B at $38.');
+    expect(finished.check.state).toBe('passed');
+  });
+
   test('standing work stopped any way stands on nothing', async () => {
     const run = await start({
       goal: 'Each morning, read the prices',

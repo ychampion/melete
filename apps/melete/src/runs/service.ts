@@ -76,7 +76,7 @@ import { newId } from '../ids.ts';
 import { requireCurrentAttempt } from '../jobs/fence.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import { DEFAULT_BUDGET, type JobRow, type JobService } from '../jobs/service.ts';
-import type { TriggerService } from '../jobs/triggers.ts';
+import type { TriggerRow, TriggerService } from '../jobs/triggers.ts';
 import { ownJob, principalContext, requestPrincipal } from '../principals/authority.ts';
 import {
   bestExperiment,
@@ -97,9 +97,11 @@ import {
   restOn,
   setStandingEnabled,
   stand,
+  standingNotice,
   standingTrigger,
   standingView,
   unstand,
+  wokenBy,
 } from './standing.ts';
 import {
   better,
@@ -283,7 +285,14 @@ export class RunService {
     });
     // Work that repeats stands on its schedule from the start; the caller
     // registers the schedule once this commits.
-    if (input.repeat) await stand(tx, this.jobs, row, { kind: 'schedule', ...input.repeat });
+    if (input.repeat)
+      await stand(
+        tx,
+        this.jobs,
+        row,
+        { kind: 'schedule', ...input.repeat },
+        origin.typed ? 'person' : 'work',
+      );
     return row;
   }
 
@@ -299,6 +308,9 @@ export class RunService {
       agentId: turn?.agentId ?? row.agentId,
       principalId: row.principalId,
     });
+    // A schedule the conversation set rather than the person: they are told.
+    if (input.repeat)
+      await this.standingChanged(tx, created, null, await standingTrigger(tx, created.id));
     return {
       status: 'started',
       run_id: created.id,
@@ -332,7 +344,11 @@ export class RunService {
       body: input.body ?? '',
       data,
     });
-    if (input.kind === 'report') await this.reported(tx, run, row, input.title, input.body ?? '');
+    // A report from a shift its trigger woke is why the work stands: never held back.
+    if (input.kind === 'report')
+      await this.reported(tx, run, row, input.title, input.body ?? '', {
+        spaced: !(row.kind === 'run' && (await wokenBy(tx, row.id))),
+      });
     return {
       status: 'recorded',
       entry_id: entry.id,
@@ -382,7 +398,16 @@ export class RunService {
     const timeout = timeoutMs(input.timeout_seconds, RUN_TRY_LIMITS.default_timeout_seconds);
     // The first command writes the files and opens the computer; the others
     // then run alongside each other in it.
-    const ran: SandboxRun[] = [await sandbox({ command: first, timeout_ms: timeout })];
+    const head = await sandbox({ command: first, timeout_ms: timeout });
+    const ran: SandboxRun[] = [head];
+    // Variants need what the first command set up; without it they would
+    // run without the files, or each ask the person again.
+    const opened = head.status === 'ran' && !head.timed_out;
+    if (!opened) tries.splice(1);
+    const skipped =
+      opened || !input.variants?.length
+        ? null
+        : `The variants were not run, because the first command ${head.status === 'waiting' ? 'waits for the person’s approval' : head.status === 'ran' ? 'ran past its time limit' : 'did not run'}. Run them once it has run.`;
     ran.push(
       ...(await Promise.all(
         tries.slice(1).map((entry) =>
@@ -514,6 +539,7 @@ export class RunService {
         new_best: kept,
         best: kept ? winning : bestBefore,
         ...(metric ? { metric: metric.name, direction } : {}),
+        ...(skipped ? { variants: skipped } : {}),
         ...(waiting
           ? {
               instruction:
@@ -546,7 +572,8 @@ export class RunService {
   /**
    * A report reaches the person: noted on the run and sent as a notification.
    * Progress is sent at most once per `PUSH_EVERY_MS` for a run; the rest stays
-   * in the record and the view. The result is always sent.
+   * in the record and the view. What is not `spaced` (the result, a change to
+   * what standing work waits for, a report a trigger woke) is always sent.
    */
   private async reported(
     tx: Transaction,
@@ -554,13 +581,13 @@ export class RunService {
     row: JobRow,
     title: string,
     body: string,
-    final = false,
+    { spaced = true, key = 'run-report' }: { spaced?: boolean; key?: string } = {},
   ) {
     await tx.update(runState).set({ lastReportAt: new Date() }).where(eq(runState.jobId, run));
     const [root] = await tx.select().from(job).where(eq(job.id, run));
     const principal = root?.principalId ?? row.principalId;
     if (!principal || !root) return;
-    if (!final) {
+    if (spaced) {
       const since = new Date((await databaseNow(tx)).getTime() - PUSH_EVERY_MS);
       const [recent] = await tx
         .select({ id: pushIntent.id })
@@ -585,9 +612,30 @@ export class RunService {
         body: clip(body || title, 300),
         because: 'Because it is working on this for you and has news.',
         url: `/#/runs/${run}`,
-        dedupKey: `run-report:${run}:${newId('rune')}`,
+        dedupKey: `${key}:${run}:${newId('rune')}`,
       })
       .onConflictDoNothing({ target: pushIntent.dedupKey });
+  }
+
+  /**
+   * The work changed what it waits for (a schedule, a watch, or nothing now):
+   * the person is told once, in plain words, whatever the spacing of progress.
+   */
+  private async standingChanged(
+    tx: Transaction,
+    row: JobRow,
+    attemptId: string | null,
+    registration: TriggerRow | null,
+  ) {
+    const words = await standingNotice(tx, row, registration);
+    await this.write(tx, {
+      run: row.id,
+      attemptId,
+      kind: 'report',
+      title: words,
+      data: { automatic: true, standing: true },
+    });
+    await this.reported(tx, row.id, row, words, '', { spaced: false, key: 'run-standing' });
   }
 
   private async delegate(tx: Transaction, row: JobRow, attemptId: string, raw: unknown) {
@@ -698,13 +746,14 @@ export class RunService {
       if (Date.parse(input.next_shift) <= Date.now())
         throw new ServiceError('payload_invalid', 'next_shift must be in the future.', 400);
     }
-    const nextShift = await checkpointNext(
+    const { next: nextShift, standing } = await checkpointNext(
       tx,
       this.jobs,
       row,
       Boolean(state.parentRunId),
       input.next_shift,
     );
+    if (standing !== undefined) await this.standingChanged(tx, row, attemptId, standing);
     await this.write(tx, {
       run: this.rootOf(state),
       step: state.parentRunId ? row.id : null,
@@ -783,7 +832,7 @@ export class RunService {
       data,
     });
     await tx.update(runState).set({ finishedAt: new Date() }).where(eq(runState.jobId, row.id));
-    if (!step) await this.reported(tx, row.id, row, 'Done', input.summary, true);
+    if (!step) await this.reported(tx, row.id, row, 'Done', input.summary, { spaced: false });
     return {
       status: 'finished',
       instruction: 'Recorded. End now with the result in one or two sentences.',
@@ -1320,6 +1369,10 @@ export class RunService {
     const last = await this.lastResult(tx, row.id);
     const data = object(last?.data);
     if (!settledCheck(last) || typeof data.result !== 'string') return null;
+    // The person wrote and no shift has read it yet (an answer to a question
+    // asked while the check ran, say): a shift reads it first, with the
+    // checked result in its brief.
+    if (await this.unread(tx, row.id, attemptId)) return null;
     const [proposal] =
       typeof data.proposal === 'string'
         ? await tx.select().from(runEntry).where(eq(runEntry.id, data.proposal))
@@ -1337,8 +1390,38 @@ export class RunService {
       },
     });
     await tx.update(runState).set({ finishedAt: new Date() }).where(eq(runState.jobId, row.id));
-    await this.reported(tx, row.id, row, 'Done', data.result, true);
+    await this.reported(tx, row.id, row, 'Done', data.result, { spaced: false });
     return { kind: 'completed', summary: data.result, evidence: [] };
+  }
+
+  /** Whether the person's latest words to the run came after every shift but this one started. */
+  private async unread(tx: Transaction, run: string, attemptId: string): Promise<boolean> {
+    const [said] = await tx
+      .select({ seq: event.seq })
+      .from(event)
+      .where(
+        and(
+          eq(event.jobId, run),
+          eq(event.type, 'notice'),
+          sql`${event.payload}->>'kind' = 'user_message'`,
+        ),
+      )
+      .orderBy(desc(event.seq))
+      .limit(1);
+    if (!said) return false;
+    const [read] = await tx
+      .select({ seq: event.seq })
+      .from(event)
+      .where(
+        and(
+          eq(event.jobId, run),
+          eq(event.type, 'attempt_started'),
+          gt(event.seq, said.seq),
+          ne(event.attemptId, attemptId),
+        ),
+      )
+      .limit(1);
+    return !read;
   }
 
   /**

@@ -28,8 +28,13 @@ import type { JobRow, JobService } from '../jobs/service.ts';
 import { checkTriggerSpec, type TriggerRow } from '../jobs/triggers.ts';
 import { clip, object } from './record.ts';
 
-/** The shortest time a schedule may leave between two wakes. */
+/** The shortest time a schedule the person set may leave between two wakes. */
 export const STANDING_MIN_GAP_MS = 5 * 60_000;
+/**
+ * The shortest time a schedule the work set for itself may leave between two
+ * wakes. Every wake is a shift with model calls, and nobody chose the cost.
+ */
+export const WORK_STANDING_MIN_GAP_MS = 60 * 60_000;
 
 /** How a checkpoint's handoff is marked when the run rests on its trigger. */
 export const ON_TRIGGER = 'on_trigger';
@@ -63,13 +68,17 @@ async function latestSeq(tx: Transaction): Promise<number> {
 /**
  * Sets what a run stands on, replacing what it stood on before. It counts
  * only what happens from now: mail that came in last week does not wake it.
+ * A schedule the work set for itself wakes it at most once an hour; one the
+ * person set, at most every 5 minutes. `changed` is false when the run
+ * already stood on the same thing.
  */
 export async function stand(
   tx: Transaction,
   jobs: Pick<JobService, 'boss'>,
   row: JobRow,
   wake: RunWake,
-): Promise<TriggerRow> {
+  setBy: 'person' | 'work',
+): Promise<{ registration: TriggerRow; changed: boolean }> {
   const spec: TriggerSpec =
     wake.kind === 'schedule'
       ? triggerSpec.parse({
@@ -80,13 +89,16 @@ export async function stand(
       : triggerSpec.parse(wake);
   checkTriggerSpec(jobs, spec);
   if (spec.kind === 'schedule') {
+    const least = setBy === 'person' ? STANDING_MIN_GAP_MS : WORK_STANDING_MIN_GAP_MS;
     const times = jobs.boss.previewSchedule(spec.cron, { tz: spec.timezone, count: 6 });
     for (let index = 1; index < times.length; index++) {
       const gap = (times[index]?.getTime() ?? 0) - (times[index - 1]?.getTime() ?? 0);
-      if (gap < STANDING_MIN_GAP_MS)
+      if (gap < least)
         throw new ServiceError(
           'invalid_schedule',
-          'A schedule can wake this work at most every 5 minutes. To act as soon as something changes, watch a connection instead.',
+          setBy === 'person'
+            ? 'A schedule can wake this work at most every 5 minutes. To act as soon as something changes, watch a connection instead.'
+            : 'A schedule you set can wake this work at most once an hour: leave at least an hour between wakes. To act as soon as something changes, watch a connection instead.',
           400,
         );
     }
@@ -102,6 +114,7 @@ export async function stand(
         400,
       );
   }
+  const before = await standingTrigger(tx, row.id);
   await tx.delete(trigger).where(eq(trigger.jobId, row.id));
   const [created] = await tx
     .insert(trigger)
@@ -120,7 +133,7 @@ export async function stand(
     payload: { kind: 'trigger_created', trigger_id: created.id, spec },
     dedupKey: `${created.id}:created`,
   });
-  return created;
+  return { registration: created, changed: !before || !Bun.deepEquals(before.spec, spec) };
 }
 
 /** The run no longer stands on anything. True when it did. */
@@ -163,6 +176,7 @@ export async function restOn(tx: Transaction, registration: TriggerRow): Promise
  * What a checkpoint's `next_shift` stands for once the run's trigger is set:
  * a wake replaces the trigger and rests on it, "drop_trigger" removes it and
  * goes on now, and a run that stands rests on its trigger unless told otherwise.
+ * `standing` is what it now stands on when that changed (null: nothing).
  */
 export async function checkpointNext(
   tx: Transaction,
@@ -170,7 +184,7 @@ export async function checkpointNext(
   row: JobRow,
   helper: boolean,
   next: string | RunWake | undefined,
-): Promise<string> {
+): Promise<{ next: string; standing?: TriggerRow | null }> {
   if (typeof next === 'object') {
     if (helper)
       throw new ServiceError(
@@ -178,15 +192,24 @@ export async function checkpointNext(
         'A helper cannot wait on a schedule or a watch; its work does.',
         400,
       );
-    await stand(tx, jobs, row, next);
-    return ON_TRIGGER;
+    const { registration, changed } = await stand(tx, jobs, row, next, 'work');
+    return changed ? { next: ON_TRIGGER, standing: registration } : { next: ON_TRIGGER };
   }
-  if (next === 'drop_trigger') {
-    await unstand(tx, row.id);
-    return 'now';
-  }
-  if (next) return next;
-  return !helper && (await standingTrigger(tx, row.id)) ? ON_TRIGGER : 'now';
+  if (next === 'drop_trigger')
+    return (await unstand(tx, row.id)) ? { next: 'now', standing: null } : { next: 'now' };
+  if (next) return { next };
+  return { next: !helper && (await standingTrigger(tx, row.id)) ? ON_TRIGGER : 'now' };
+}
+
+/** What the person is told when the work itself changes what it waits for. */
+export async function standingNotice(
+  tx: Transaction,
+  row: JobRow,
+  registration: TriggerRow | null,
+): Promise<string> {
+  if (!registration) return "I'll stop checking on this by myself and carry on with it now.";
+  const words = await describe(tx, row, triggerSpec.parse(registration.spec));
+  return `I'll check this ${words.charAt(0).toLowerCase()}${words.slice(1)}.`;
 }
 
 const OPERATOR_WORDS: Record<string, string> = {
@@ -283,17 +306,12 @@ function formatAt(at: Date, zone: string) {
   }
 }
 
-/**
- * For a standing run's shift: why it woke, if a trigger woke it, and how it
- * stands. The observation that woke it is quoted, clipped, as outside data.
- */
-export async function standingBrief(tx: Transaction, row: JobRow): Promise<string[]> {
-  if (row.kind !== 'run') return [];
-  const lines: string[] = [];
+/** The trigger's notice that woke the run's current (or next) shift, if one did. */
+export async function wokenBy(tx: Transaction, runId: string) {
   const [ended] = await tx
     .select({ seq: event.seq })
     .from(event)
-    .where(and(eq(event.jobId, row.id), eq(event.type, 'attempt_ended')))
+    .where(and(eq(event.jobId, runId), eq(event.type, 'attempt_ended')))
     .orderBy(desc(event.seq))
     .limit(1);
   const [woke] = await tx
@@ -301,7 +319,7 @@ export async function standingBrief(tx: Transaction, row: JobRow): Promise<strin
     .from(event)
     .where(
       and(
-        eq(event.jobId, row.id),
+        eq(event.jobId, runId),
         eq(event.type, 'notice'),
         gt(event.seq, ended?.seq ?? 0),
         sql`${event.payload}->>'kind' = 'trigger_event'`,
@@ -309,6 +327,17 @@ export async function standingBrief(tx: Transaction, row: JobRow): Promise<strin
     )
     .orderBy(desc(event.seq))
     .limit(1);
+  return woke ?? null;
+}
+
+/**
+ * For a standing run's shift: why it woke, if a trigger woke it, and how it
+ * stands. The observation that woke it is quoted, clipped, as outside data.
+ */
+export async function standingBrief(tx: Transaction, row: JobRow): Promise<string[]> {
+  if (row.kind !== 'run') return [];
+  const lines: string[] = [];
+  const woke = await wokenBy(tx, row.id);
   const registration = await standingTrigger(tx, row.id);
   if (woke) {
     const payload = object(woke.payload);

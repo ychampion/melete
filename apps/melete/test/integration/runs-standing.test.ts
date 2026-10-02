@@ -403,4 +403,124 @@ withDb('standing work', () => {
       ),
     ).toContain('helper cannot wait');
   });
+
+  test('a schedule the work sets wakes it at most hourly, and the person is told each change', async () => {
+    // The person may still have work wake every 5 minutes.
+    const often = await start({ goal: 'Check often', repeat: { cron: '*/5 * * * *' } });
+    expect((await request(`/runs/${often.id}/stop`, 'POST')).status).toBe(200);
+    const told = async (id: string) =>
+      (
+        await required(handle)
+          .db.select()
+          .from(runEntry)
+          .where(and(eq(runEntry.runJobId, id), eq(runEntry.kind, 'report')))
+          .orderBy(runEntry.seq)
+      ).map((entry) => entry.title);
+
+    const run = await start({ goal: 'Keep an eye on the price list' });
+    const first = await claim(run.id);
+    const tooOften = String(
+      await rejectionOf(
+        tool(first.claims, 'run.checkpoint', {
+          summary: 'Set up.',
+          next: 'Look again.',
+          next_shift: { kind: 'schedule', cron: '*/30 * * * *' },
+        }),
+      ),
+    );
+    expect(tooOften).toContain('at most once an hour');
+    const weekdays = { kind: 'schedule', cron: '0 9 * * 1-5' };
+    await tool(first.claims, 'run.checkpoint', {
+      summary: 'Set up.',
+      next: 'Look again.',
+      next_shift: weekdays,
+    });
+    await required(runner).commitOutcome(first.claims, done());
+    expect(await told(run.id)).toEqual(["I'll check this every weekday at 9:00."]);
+    expect(await notices(run.id)).toHaveLength(1);
+
+    // The same wake again is no news.
+    await fire(run.id);
+    const same = await claim(run.id);
+    await tool(same.claims, 'run.checkpoint', {
+      summary: 'Nothing new.',
+      next: 'Look again.',
+      next_shift: weekdays,
+    });
+    await required(runner).commitOutcome(same.claims, done());
+    expect(await told(run.id)).toHaveLength(1);
+
+    // A change, and dropping it, are each told at once, however soon after.
+    await fire(run.id);
+    const watch = await claim(run.id);
+    await tool(watch.claims, 'run.checkpoint', {
+      summary: 'Mail is quicker.',
+      next: 'Read the next price mail.',
+      next_shift: { kind: 'event', connection_id: mailId, event_name: 'mail.new' },
+    });
+    await required(runner).commitOutcome(watch.claims, done());
+    await mail('prices', { from: 'prices@supplier.example', subject: 'New list' });
+    const drop = await claim(run.id);
+    await tool(drop.claims, 'run.checkpoint', {
+      summary: 'Read it.',
+      next: 'Write it up.',
+      next_shift: 'drop_trigger',
+    });
+    await required(runner).commitOutcome(drop.claims, done());
+    expect(await told(run.id)).toEqual([
+      "I'll check this every weekday at 9:00.",
+      "I'll check this when new mail arrives in Work mail.",
+      "I'll stop checking on this by myself and carry on with it now.",
+    ]);
+    expect(await notices(run.id)).toHaveLength(3);
+    expect((await request(`/runs/${run.id}/stop`, 'POST')).status).toBe(200);
+
+    // A conversation starting work that repeats is held to the same hour.
+    const chat = await required(jobs).transaction((tx) =>
+      required(jobs).createInTransaction(
+        tx,
+        { space_id: spaceId, title: 'Prices', objective: 'Prices' },
+        { kind: 'chat' },
+      ),
+    );
+    await required(jobs).input(chat.id, 'Keep checking the price list for me.');
+    const turn = await claim(chat.id);
+    expect(
+      String(
+        await rejectionOf(
+          tool(turn.claims, 'run.start', {
+            goal: 'Check the price list',
+            repeat: { cron: '*/15 * * * *' },
+          }),
+        ),
+      ),
+    ).toContain('at most once an hour');
+    const started = (await tool(turn.claims, 'run.start', {
+      goal: 'Check the price list',
+      repeat: { cron: '0 * * * *' },
+    })) as { run_id: string };
+    expect(await told(started.run_id)).toEqual(["I'll check this every hour."]);
+    expect((await request(`/runs/${started.run_id}/stop`, 'POST')).status).toBe(200);
+  });
+
+  test('a report from a shift its trigger woke always reaches the person', async () => {
+    const run = await start({ goal: 'Tell me about price changes', repeat: { cron: '0 9 * * *' } });
+    await quietShift(run.id);
+    const progress = async () =>
+      (await notices(run.id)).filter((push) => push.dedupKey.startsWith(`run-report:${run.id}:`));
+    for (const title of ['Posts went up 4%', 'Posts went up again']) {
+      await fire(run.id);
+      const woke = await claim(run.id);
+      await tool(woke.claims, 'run.log', { kind: 'report', title });
+      await required(runner).commitOutcome(woke.claims, done());
+    }
+    expect(await progress()).toHaveLength(2);
+    // A shift the person's message started is spaced as before.
+    await request(`/runs/${run.id}/message`, 'POST', { text: 'And panels?' });
+    const asked = await claim(run.id);
+    await tool(asked.claims, 'run.log', { kind: 'report', title: 'Panels are unchanged' });
+    await required(runner).commitOutcome(asked.claims, done());
+    expect(await progress()).toHaveLength(2);
+    expect((await request(`/runs/${run.id}/stop`, 'POST')).status).toBe(200);
+  });
 });
