@@ -9037,7 +9037,7 @@
             }
           },
           "409": {
-            "description": "What it asks for changed, or it was withdrawn",
+            "description": "What it asks for changed, it was withdrawn, or someone already answered it (the message says who, and how)",
             "content": {
               "application/json": {
                 "schema": {

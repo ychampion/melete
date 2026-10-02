@@ -625,19 +625,52 @@ export class RoomService {
     await this.access(this.deps.db, spaceId, actor);
     const permissions = this.deps.permissions;
     if (!permissions) return unavailable('Answering is not connected to the agent yet.');
-    await permissions.decideInRoom(spaceId, approvalId, input, actor);
-    // An answer to a card that changed meanwhile withdraws it rather than
-    // answering it; that is said, not reported as this person's answer.
+    const wanted = input.option === 'deny' ? 'denied' : 'approved';
+    // A card someone has already answered says who answered it and how, to a
+    // second answer the same or the opposite: one person's answer stands.
+    const answered = async () => {
+      const [row] = await this.deps.db
+        .select({ decision: approval.decision, decidedBy: approval.decidedBy })
+        .from(approval)
+        .where(eq(approval.id, approvalId));
+      if (!row?.decision || !row.decidedBy) return null;
+      if (row.decidedBy === actor && row.decision === wanted) return null;
+      const names = await namesOf(this.deps.db, [row.decidedBy]);
+      const who = names.get(row.decidedBy);
+      // Withdrawn by the service rather than answered by a person.
+      if (!who) return null;
+      const how = row.decision === 'approved' ? 'allowed' : 'denied';
+      return new ServiceError(
+        'already_answered',
+        row.decidedBy === actor ? `You already ${how} this.` : `${who} already ${how} this.`,
+        409,
+      );
+    };
+    const before = await answered();
+    if (before) throw before;
+    try {
+      await permissions.decideInRoom(spaceId, approvalId, input, actor);
+    } catch (error) {
+      // Two answers at once: the one recorded first stands.
+      const raced = await answered();
+      if (raced) throw raced;
+      throw error;
+    }
     const [recorded] = await this.deps.db
       .select({ decidedBy: approval.decidedBy })
       .from(approval)
       .where(eq(approval.id, approvalId));
-    if (recorded?.decidedBy !== actor)
+    if (recorded?.decidedBy !== actor) {
+      const raced = await answered();
+      if (raced) throw raced;
+      // An answer to a card that changed meanwhile withdraws it rather than
+      // answering it; that is said, not reported as this person's answer.
       throw new ServiceError(
         'permission_withdrawn',
         'This request changed before you answered, so it was withdrawn.',
         409,
       );
+    }
     const names = await namesOf(this.deps.db, [actor]);
     return {
       status: 'ok' as const,

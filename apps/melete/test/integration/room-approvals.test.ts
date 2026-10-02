@@ -493,6 +493,50 @@ withDb('room approvals', () => {
       decision: 'denied',
       decided_by: world.carol.id,
     });
+    // One answer stands: a second, the same or the opposite, is told who answered and how.
+    const allowFirst = { ...deny, option: 'allow_once' as const };
+    for (const [person, body] of [
+      [world.alice, allowFirst],
+      [world.alice, deny],
+      [world.bob, allowFirst],
+    ] as const) {
+      const again = await answer(person, roomId, first.approvalId, body);
+      expect([
+        again.status,
+        ((await again.json()) as { error: { code: string; message: string } }).error,
+      ]).toEqual([
+        409,
+        { code: 'already_answered', message: `${world.carol.label} already denied this.` },
+      ]);
+    }
+    const own = await answer(world.carol, roomId, first.approvalId, allowFirst);
+    expect([
+      own.status,
+      ((await own.json()) as { error: { message: string } }).error.message,
+    ]).toEqual([409, 'You already denied this.']);
+    await ok(answer(world.carol, roomId, first.approvalId, deny));
+    expect(await decision(first.approvalId)).toEqual({
+      decision: 'denied',
+      decided_by: world.carol.id,
+    });
+
+    // A card whose request ended is withdrawn: an answer to it says so, and is not recorded as the person's.
+    const ended = await askAndWait(world.bob, roomId, notes);
+    const { card: endedCard } = await card(world.carol, roomId, ended.threadId, ended.approvalId);
+    // The request ends with its permission still open, as one left behind by an earlier release.
+    await database().sql`update job set state = 'cancelled' where id = ${ended.requestId}`;
+    for (const option of ['deny', 'allow_once'] as const) {
+      const late = await answer(world.carol, roomId, ended.approvalId, {
+        option,
+        version: endedCard.version,
+        payload_hash: ended.hash,
+      });
+      expect([
+        late.status,
+        ((await late.json()) as { error: { code: string } }).error.code,
+      ]).toEqual([409, 'permission_withdrawn']);
+    }
+    expect((await decision(ended.approvalId)).decided_by).not.toBe(world.carol.id);
 
     // Under the owners' rule the asker no longer answers, and the rule covers
     // a permission that was already waiting when it changed.

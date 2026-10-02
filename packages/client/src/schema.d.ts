@@ -13913,7 +13913,7 @@ export interface paths {
                         "application/json": components["schemas"]["__schema162"];
                     };
                 };
-                /** @description What it asks for changed, or it was withdrawn */
+                /** @description What it asks for changed, it was withdrawn, or someone already answered it (the message says who, and how) */
                 409: {
                     headers: {
                         [name: string]: unknown;

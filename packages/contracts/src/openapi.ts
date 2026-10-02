@@ -941,7 +941,9 @@ function roomsPaths() {
           '200': jsonResponse('Answered', roomPermissionOutcome),
           '403': problem("The room's rule does not name this person"),
           '404': notIn,
-          '409': problem('What it asks for changed, or it was withdrawn'),
+          '409': problem(
+            'What it asks for changed, it was withdrawn, or someone already answered it (the message says who, and how)',
+          ),
         },
       },
     },
