@@ -20,6 +20,7 @@ import {
 import type { AppDeps } from './app.ts';
 import { MockBeliefError, MockBeliefs } from './beliefs.ts';
 import { ComputerMock } from './computer.ts';
+import { DEMO_AGENTS } from './demo-agents.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { newId } from './store.ts';
 
@@ -184,10 +185,10 @@ export class ExperienceMock {
     this.computer = new ComputerMock(deps.store, deps.spaceId, deps.computer ?? true, () =>
       this.now(),
     );
-    // Melete first, as the service lists it, then the specialists made from each template.
+    // Melete first, as the service lists it, then the demo space's specialists.
     for (const [made, isDefault] of [
       [MELETE_AGENT, true],
-      ...AGENT_TEMPLATES.templates.map((template) => [template.agent, false] as const),
+      ...DEMO_AGENTS.map((agent) => [agent, false] as const),
     ] as const) {
       const agent = C.experienceAgent.parse({
         ...made,

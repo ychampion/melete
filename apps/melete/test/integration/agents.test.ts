@@ -98,11 +98,11 @@ withDb('Melete, the agent every space has', () => {
       ];
     expect(count).toBe(1);
 
-    await experience.saveAgent(scope.spaceId, template('Quill'));
+    await experience.saveAgent(scope.spaceId, template('Lark'));
     const { agents } = await experience.agents(scope.spaceId);
     expect(agents.map((agent) => [agent.name, agent.is_default])).toEqual([
       ['Melete', true],
-      ['Quill', false],
+      ['Lark', false],
     ]);
     expect(agents[0]).toMatchObject({
       allowed_connection_ids: null,
@@ -651,10 +651,10 @@ withDb('deleting an agent', () => {
     if (!db || !experience) return;
     const scope = await createScope(db);
     const melete = await experience.defaultAgent(scope.spaceId);
-    const quill = (await experience.saveAgent(scope.spaceId, template('Quill'))).agent;
+    const lark = (await experience.saveAgent(scope.spaceId, template('Lark'))).agent;
     const start = async (title: string) => {
       const created = await principalContext.run(scope.ownerId, () =>
-        experience.createConversation(scope.spaceId, { title, agent_id: quill.id }),
+        experience.createConversation(scope.spaceId, { title, agent_id: lark.id }),
       );
       if (!('conversation' in created)) throw new Error('conversation not created');
       return created.conversation.id;
@@ -670,11 +670,11 @@ withDb('deleting an agent', () => {
     );
     const step = newId('mile');
     await db.sql`insert into plan_milestone (id, plan_id, title, ordinal, agent_id)
-      values (${step}, ${chat}, 'Write it', 0, ${quill.id})`;
+      values (${step}, ${chat}, 'Write it', 0, ${lark.id})`;
 
     // Not while it is answering.
     await db.sql`update experience_turn set status = 'working' where job_id = ${chat}`;
-    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, quill.id))).toMatchObject({
+    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, lark.id))).toMatchObject({
       code: 'agent_busy',
       status: 409,
     });
@@ -683,7 +683,7 @@ withDb('deleting an agent', () => {
     const attempt = newId('att');
     await db.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
       values (${attempt}, ${routine}, 1, 'fake', 'fake', 'scripted')`;
-    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, quill.id))).toMatchObject({
+    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, lark.id))).toMatchObject({
       code: 'agent_busy',
       status: 409,
     });
@@ -691,18 +691,18 @@ withDb('deleting an agent', () => {
     // An older turn a later message replaced keeps the status it had; it holds nothing.
     const earlier = newId('turn');
     await db.sql`insert into experience_turn (id, job_id, agent_id, submission_id, text, status)
-      values (${earlier}, ${chat}, ${quill.id}, ${`sub_${earlier}`}, 'Earlier', 'needs_you')`;
+      values (${earlier}, ${chat}, ${lark.id}, ${`sub_${earlier}`}, 'Earlier', 'needs_you')`;
     // Not while it is marked private: its chats would leave that protection.
     await db.sql`insert into privacy_settings (space_id, settings)
-      values (${scope.spaceId}, ${JSON.stringify({ private_agent_ids: [quill.id] })}::jsonb)`;
-    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, quill.id))).toMatchObject({
+      values (${scope.spaceId}, ${JSON.stringify({ private_agent_ids: [lark.id] })}::jsonb)`;
+    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, lark.id))).toMatchObject({
       code: 'agent_private',
       status: 409,
     });
     await db.sql`delete from privacy_settings where space_id = ${scope.spaceId}`;
 
-    expect(await experience.deleteAgent(scope.spaceId, quill.id)).toEqual({
-      id: quill.id,
+    expect(await experience.deleteAgent(scope.spaceId, lark.id)).toEqual({
+      id: lark.id,
       moved_to: melete.id,
       conversations: 1,
       routines: 1,
@@ -713,36 +713,36 @@ withDb('deleting an agent', () => {
     // What it said stays its own.
     const turns =
       await db.sql`select distinct agent_id from experience_turn where job_id = ${chat}`;
-    expect(turns.map((row) => row.agent_id)).toEqual([quill.id]);
+    expect(turns.map((row) => row.agent_id)).toEqual([lark.id]);
     const [planned] = await db.sql`select agent_id from plan_milestone where id = ${step}`;
     expect(planned?.agent_id).toBe(melete.id);
-    // Melete reaches more than Quill did, so the routine waits for the person.
+    // Melete reaches more than Lark did, so the routine waits for the person.
     const [paused] = await db.sql`select enabled from trigger where id = ${schedule}`;
     expect(paused?.enabled).toBe(false);
     // It is listed only to name its turns, and is no longer picked or mentioned.
     const listed = await experience.agents(scope.spaceId);
     expect(listed.agents.map((agent) => agent.name)).toEqual(['Melete']);
-    expect(listed.removed?.map((agent) => agent.name)).toEqual(['Quill']);
-    expect(await rejectionOf(experience.requireAgent(scope.spaceId, quill.id))).toMatchObject({
+    expect(listed.removed?.map((agent) => agent.name)).toEqual(['Lark']);
+    expect(await rejectionOf(experience.requireAgent(scope.spaceId, lark.id))).toMatchObject({
       status: 404,
     });
     await db.sql`update job set state = 'waiting_for_input', current_turn_id = null where id = ${chat}`;
     await principalContext.run(scope.ownerId, () =>
-      experience.message(scope.spaceId, chat, { text: '@Quill one more line' }, newId('turn')),
+      experience.message(scope.spaceId, chat, { text: '@Lark one more line' }, newId('turn')),
     );
     const [latest] =
       await db.sql`select agent_id from experience_turn where job_id = ${chat} order by created_at desc, id desc limit 1`;
     expect(latest?.agent_id).toBe(melete.id);
     // Its name is free again.
-    const again = await experience.saveAgent(scope.spaceId, template('Quill'));
-    expect(again.agent.name).toBe('Quill');
+    const again = await experience.saveAgent(scope.spaceId, template('Lark'));
+    expect(again.agent.name).toBe('Lark');
 
     // Melete is never deleted, and a deleted agent is not here.
     expect(await rejectionOf(experience.deleteAgent(scope.spaceId, melete.id))).toMatchObject({
       code: 'default_agent_fixed',
       status: 400,
     });
-    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, quill.id))).toMatchObject({
+    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, lark.id))).toMatchObject({
       status: 404,
     });
   });
@@ -754,7 +754,7 @@ withDb('deleting an agent', () => {
     const melete = await service.defaultAgent(h.shared);
     const helper = (
       await principalContext.run(h.owner, () =>
-        service.saveAgent(h.shared, { ...template('Sage'), allowed_connection_ids: [h.narrow] }),
+        service.saveAgent(h.shared, { ...template('Theo'), allowed_connection_ids: [h.narrow] }),
       )
     ).agent;
     const theirs = await h.chat(h.member, helper.id);
@@ -792,32 +792,36 @@ withDb('agent names', () => {
   test('two agents in a space never share a name, and templates suggest a free one', async () => {
     if (!db || !experience) return;
     const scope = await createScope(db);
-    const nova = (await experience.saveAgent(scope.spaceId, template('Nova'))).agent;
-    for (const name of ['Nova', ' nova ', 'NOVA'])
+    const iris = (await experience.saveAgent(scope.spaceId, template('Iris'))).agent;
+    for (const name of ['Iris', ' iris ', 'IRIS'])
       expect(
-        await rejectionOf(experience.saveAgent(scope.spaceId, { ...template('Nova'), name })),
+        await rejectionOf(experience.saveAgent(scope.spaceId, { ...template('Iris'), name })),
       ).toMatchObject({ code: 'name_taken', status: 409 });
     expect(
-      ((await rejectionOf(experience.saveAgent(scope.spaceId, template('Nova')))) as Error).message,
-    ).toBe('You already have an agent called Nova. Try Nova 2.');
+      ((await rejectionOf(experience.saveAgent(scope.spaceId, template('Iris')))) as Error).message,
+    ).toBe('You already have an agent called Iris. Try Iris 2.');
     // Saving an agent under the name it already has is fine; taking another's is not.
-    await experience.saveAgent(scope.spaceId, { ...template('Nova'), tone: 'Brisk' }, nova.id);
-    const sage = (await experience.saveAgent(scope.spaceId, template('Sage'))).agent;
+    await experience.saveAgent(scope.spaceId, { ...template('Iris'), tone: 'Brisk' }, iris.id);
+    const theo = (await experience.saveAgent(scope.spaceId, template('Theo'))).agent;
     expect(
-      await rejectionOf(experience.saveAgent(scope.spaceId, template('Nova'), sage.id)),
+      await rejectionOf(experience.saveAgent(scope.spaceId, template('Iris'), theo.id)),
     ).toMatchObject({ code: 'name_taken' });
-    // The Planner template is offered under a name no agent here has.
+    // The inbox template is offered under a name no agent here has.
     const { templates } = await experience.agentTemplates(scope.spaceId);
     const names = Object.fromEntries(templates.map((entry) => [entry.id, entry.agent.name]));
-    expect(names).toMatchObject({ planner: 'Nova 2', study: 'Sage 2', travel: 'Atlas' });
+    expect(names).toMatchObject({
+      'inbox-triage': 'Iris 2',
+      'study-coach': 'Theo 2',
+      'trip-planner': 'Juno',
+    });
     expect(
       (
         await experience.saveAgent(scope.spaceId, {
-          ...template('Nova'),
-          name: names.planner ?? '',
+          ...template('Iris'),
+          name: names['inbox-triage'] ?? '',
         })
       ).agent.name,
-    ).toBe('Nova 2');
+    ).toBe('Iris 2');
   });
 });
 
@@ -828,7 +832,7 @@ withDb('what was said to a deleted agent', () => {
     const owner: MemoryScope = { ...scope, principalId: scope.ownerId };
     const journal = await createJournal();
     const quiet = (
-      await experience.saveAgent(scope.spaceId, { ...template('Quill'), writes_memory: false })
+      await experience.saveAgent(scope.spaceId, { ...template('Lark'), writes_memory: false })
     ).agent;
     const created = await principalContext.run(scope.ownerId, () =>
       experience.createConversation(scope.spaceId, { title: 'Tea', agent_id: quiet.id }),

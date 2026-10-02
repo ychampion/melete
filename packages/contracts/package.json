@@ -17,6 +17,10 @@
       "types": "./src/redact.ts",
       "default": "./src/redact.ts"
     },
+    "./agent-library": {
+      "types": "./src/agent-library.ts",
+      "default": "./src/agent-library.ts"
+    },
     "./mention": {
       "types": "./src/mention.ts",
       "default": "./src/mention.ts"

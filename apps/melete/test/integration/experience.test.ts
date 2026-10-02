@@ -413,7 +413,7 @@ withDb('experience rows and authenticated scope', () => {
       reason: 'input',
     });
     expect(claimed).not.toBeNull();
-    expect(required(claimed).bundle.identity).toContain('Nova');
+    expect(required(claimed).bundle.identity).toContain('In this conversation you are ');
     await required(runner).commitOutcome(required(claimed).claims, {
       kind: 'completed',
       summary: 'Dinner is ready.',

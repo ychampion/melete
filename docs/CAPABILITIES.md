@@ -149,7 +149,7 @@ agent in personal spaces to it; in a shared space they stay without one, as
 before. A space made later receives Melete the first time its agents are read
 or a chat is started.
 
-A specialist (Scout the researcher, Quill the writer, or one made from scratch)
+A specialist (one added from the agent library, or one made from scratch)
 has its own name, role, look, tone and standing instruction, and four limits
 the service enforces:
 
@@ -172,6 +172,40 @@ this; a member's message stays with the chat's agent. Each turn records the agen
 that agent's limits apply to the turn.
 [agents.test.ts](../apps/melete/test/integration/agents.test.ts) covers each
 of these.
+
+### Agent library
+
+`GET /agents/templates` lists ready-made agents on twelve shelves, from
+Personal to Shopping & subscriptions. Each template carries a one-line
+benefit, what it does and what it won't do, the kinds of thing it works best
+with (mail, calendar, files, web pages, a browser, its own computer, your
+computer, apps you connect), a brief of up to 500 characters, and its
+switches. Adding one opens a draft to name and review; saving it makes that
+one agent.
+
+- **Nothing is granted by the template.** Every template carries no
+  connections. The draft starts with the person's connected connections that
+  match "works best with" ticked and marked as suggested, so they see exactly
+  what it will reach and can untick any before creating it; setup does the
+  same for the agents picked there and lists what each will reach. An agent without the computer is never
+  offered as working with a browser, its own computer or your computer.
+- **The starter routine is offered, not made.** After the agent is saved its
+  routine is shown with its schedule; `POST /automations` runs only when the
+  person presses Set it up, and the routine then runs as that agent.
+- **Getting-to-know-you answers are the person's own statements.** Each
+  answer is saved through `POST /memory/items` on the question's
+  `pref.<purpose>.<name>` key, with the question and answer as its statement;
+  a blank answer saves nothing. Only templates whose agent reads memory ask.
+
+The library promises only what the connectors, the browser worker, the
+agent's computer and paired computers do today; health and money templates
+organise and remind, and give no medical, financial or tax advice.
+[agent-library.test.ts](../apps/melete/src/experience/agent-library.test.ts)
+checks every template (unique names, known kinds, no granted connection, a
+brief within the persona cap, built-in skills, one memory purpose each), and
+[the integration test](../apps/melete/test/integration/agent-library.test.ts)
+adds one: exactly one agent, no routine until asked, and the answers saved on
+their keys.
 
 ## Auto-review
 

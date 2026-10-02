@@ -642,7 +642,12 @@ export const agentInput = z.strictObject({
   surface: z.enum(['rounded', 'blob', 'diamond', 'octagon', 'gear']),
   eye_colour: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   tone: z.string().max(80),
-  standing_instruction: z.string().max(200),
+  /**
+   * A short brief the agent follows in every chat it handles. Sized so the
+   * whole persona, with the longest name, tone and memory note, stays within
+   * the 250-token identity cap.
+   */
+  standing_instruction: z.string().max(500),
   /** Null means every connection in the space, including ones connected later. */
   allowed_connection_ids: z.array(id).max(50).nullable(),
   asks_before_acting: z.boolean(),
@@ -671,7 +676,78 @@ export const experienceAgent = agentInput.extend({
   usage: z.strictObject({ conversations: count, last_used: date.nullable() }),
 });
 export type ExperienceAgent = z.infer<typeof experienceAgent>;
-export const agentTemplate = z.strictObject({ id, title: text, agent: agentInput });
+/** The shelves of the agent library, in the order a client shows them. */
+export const AGENT_CATEGORIES = [
+  'Personal',
+  'Home & family',
+  'Money',
+  'Work & email',
+  'Research',
+  'Writing',
+  'Travel',
+  'Health & routines',
+  'Learning',
+  'Code & projects',
+  'Small business',
+  'Shopping & subscriptions',
+] as const;
+export const agentCategory = z.enum(AGENT_CATEGORIES);
+/**
+ * The kinds of thing an agent works best with. They are shown, never granted:
+ * the person chooses an agent's connections and switches themselves.
+ * `computer` is the agent's own computer; `devices` are the person's paired
+ * computers; `browser` is the browser the agent drives with takeover; `web`
+ * is reading public pages.
+ */
+export const AGENT_WORKS_WITH = [
+  'mail',
+  'calendar',
+  'files',
+  'web',
+  'browser',
+  'computer',
+  'devices',
+  'mcp',
+] as const;
+export const agentWorksWith = z.enum(AGENT_WORKS_WITH);
+/** A routine the library offers after an agent is added. Nothing runs until the person sets it up. */
+export const starterRoutine = z.strictObject({
+  title: z.string().min(1).max(80),
+  instruction: z.string().min(1).max(600),
+  weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+  at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+});
+/**
+ * A question asked once after an agent is added. The answer is saved as the
+ * person's own statement on `memory_key`, a `pref.<purpose>.<name>` key, so it
+ * stays tied to what the agent is for.
+ */
+export const templateQuestion = z.strictObject({
+  id: z.string().regex(/^[a-z0-9-]{1,40}$/),
+  question: z.string().min(1).max(160),
+  placeholder: z.string().max(120),
+  memory_key: memoryKey.refine((key) => key.startsWith('pref.'), 'Use a pref. key.'),
+});
+export const agentTemplate = z.strictObject({
+  id,
+  title: text,
+  category: agentCategory,
+  /** One line on what it does for the person. */
+  benefit: z.string().min(1).max(120),
+  /** What it does, in a few plain lines. */
+  does: z.array(z.string().min(1).max(160)).min(1).max(5),
+  /** What it never does, in plain words. */
+  wont: z.array(z.string().min(1).max(160)).min(1).max(4),
+  works_best_with: z.array(agentWorksWith).max(5),
+  starter_routine: starterRoutine.nullable(),
+  questions: z.array(templateQuestion).max(4),
+  /** Built-in skills that fit its work. Skills are chosen per request; this only names them. */
+  skills: z.array(z.string().regex(/^[a-z0-9-]{1,64}$/)).max(4),
+  /** Offered during setup as well as in the library. */
+  featured: z.boolean(),
+  agent: agentInput,
+});
+export type AgentTemplate = z.infer<typeof agentTemplate>;
 export const agentList = z.strictObject({
   agents: z.array(experienceAgent),
   /**

@@ -5,11 +5,17 @@
  * the person allows it. Each step is one a first-time user takes in the web app;
  * a break anywhere along it is a break a new user meets on their first visit.
  */
+
 import { afterAll, expect, test } from 'bun:test';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { AttemptBundle, JobConstraints, RuntimeAdapter } from '@melete/contracts';
+import {
+  agentTemplateList,
+  experienceConnectionList,
+  suggestedConnections,
+} from '@melete/contracts';
 import { EmailConnector, emailManifest } from '../../src/connectors/email.ts';
 import type { MailTransport, OutgoingMail } from '../../src/connectors/mail-transport.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -184,16 +190,26 @@ const ANSWER = 'I drafted the email to Alex for you to review.';
         ),
       );
 
-      // An agent taken straight from a template reaches every connection in the space.
-      const { templates } = (await (await call('/agents/templates')).json()) as {
-        templates: Array<{ agent: Record<string, unknown> }>;
-      };
-      const made = await call('/agents', 'POST', templates[0]?.agent);
+      // A template grants nothing itself; its draft starts with the connections it
+      // works best with ticked, and the person creates it as it is.
+      const { templates } = agentTemplateList.parse(await (await call('/agents/templates')).json());
+      const inbox = templates.find((template) => template.id === 'inbox-triage');
+      if (!inbox) throw new Error('Missing inbox template');
+      expect(inbox.agent.allowed_connection_ids).toEqual([]);
+      const { connections } = experienceConnectionList.parse(
+        await (await call('/experience/connections')).json(),
+      );
+      const ticked = suggestedConnections(inbox.works_best_with, connections);
+      expect(ticked).toEqual([mailboxId]);
+      const made = await call('/agents', 'POST', {
+        ...inbox.agent,
+        allowed_connection_ids: ticked,
+      });
       expect(made.status).toBe(200);
       const { agent } = (await made.json()) as {
         agent: { id: string; allowed_connection_ids: string[] | null };
       };
-      expect(agent.allowed_connection_ids).toBeNull();
+      expect(agent.allowed_connection_ids).toEqual([mailboxId]);
 
       // A chat asking for an email draft runs one turn to its end.
       const started = await call('/conversations', 'POST', {

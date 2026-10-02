@@ -12,7 +12,8 @@
       "@melete/client": ["./packages/client/src/index.ts"],
       "@melete/client/*": ["./packages/client/src/*"],
       "@melete/contracts/redact": ["./packages/contracts/src/redact.ts"],
-      "@melete/contracts/mention": ["./packages/contracts/src/mention.ts"]
+      "@melete/contracts/mention": ["./packages/contracts/src/mention.ts"],
+      "@melete/contracts/agent-library": ["./packages/contracts/src/agent-library.ts"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]

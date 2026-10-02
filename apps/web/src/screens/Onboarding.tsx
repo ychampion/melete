@@ -4,6 +4,8 @@
  * can do), plugging in apps, meeting Melete, and saving four answers
  * as memory before opening a conversation that refers to one of them.
  */
+
+import { suggestedConnections } from '@melete/contracts/agent-library';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
@@ -1168,7 +1170,14 @@ export function OnboardingScreen() {
     // Each specialist the person picked is made once, even across a retry.
     for (const template of chosenTemplates(templates.data?.templates ?? [], picked)) {
       if (completed.current.made.includes(template.id)) continue;
-      const made = await adapter.createAgent(template.agent);
+      // It reaches the connections it works best with, as the list under the chips shows.
+      const made = await adapter.createAgent({
+        ...template.agent,
+        allowed_connection_ids: suggestedConnections(
+          template.works_best_with,
+          connections.data?.connections ?? [],
+        ),
+      });
       if (!made.data)
         return fail(made.error ?? made.unavailable ?? `Couldn’t add ${template.agent.name}`);
       completed.current.made.push(template.id);
@@ -1758,37 +1767,58 @@ export function OnboardingScreen() {
                 onChange={(on) => setVoice({ ...voice, asks_before_acting: on })}
               />
             </div>
-            {templates.data?.templates.length ? (
+            {templates.data?.templates.some((template) => template.featured) ? (
               <fieldset className="field-group col" style={{ gap: 8 }}>
                 <legend className="overline">Add a specialist too? Optional</legend>
                 <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                  A specialist keeps to one job and only the tools it needs. Ask one in any chat
-                  with @ and its name.
+                  A specialist keeps to one job and only the tools it needs. Each one you pick
+                  reaches the connections listed for it; change that later on the Agents screen,
+                  where the full library is too. Ask one in any chat with @ and its name.
                 </span>
                 <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                  {templates.data.templates.map((template) => {
-                    const on = picked.includes(template.id);
-                    return (
-                      <Chip
-                        key={template.id}
-                        on={on}
-                        aria-pressed={on}
-                        onClick={() =>
-                          setPicked(
-                            on
-                              ? picked.filter((id) => id !== template.id)
-                              : [...picked, template.id],
-                          )
-                        }
-                      >
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                          <AgentFace look={lookOf(template.agent)} size={16} />
-                          {template.agent.name} · {template.title}
-                        </span>
-                      </Chip>
-                    );
-                  })}
+                  {templates.data.templates
+                    .filter((template) => template.featured)
+                    .map((template) => {
+                      const on = picked.includes(template.id);
+                      return (
+                        <Chip
+                          key={template.id}
+                          on={on}
+                          aria-pressed={on}
+                          onClick={() =>
+                            setPicked(
+                              on
+                                ? picked.filter((id) => id !== template.id)
+                                : [...picked, template.id],
+                            )
+                          }
+                        >
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                            <AgentFace look={lookOf(template.agent)} size={16} />
+                            {template.agent.name} · {template.title}
+                          </span>
+                        </Chip>
+                      );
+                    })}
                 </div>
+                {chosenTemplates(templates.data.templates, picked).length ? (
+                  <ul className="col" style={{ gap: 4, listStyle: 'none', padding: 0, margin: 0 }}>
+                    {chosenTemplates(templates.data.templates, picked).map((template) => {
+                      const reach = (connections.data?.connections ?? []).filter(
+                        (connection) =>
+                          suggestedConnections(template.works_best_with, [connection]).length,
+                      );
+                      return (
+                        <li key={template.id} style={{ fontSize: 12, color: 'var(--secondary)' }}>
+                          {template.agent.name} will reach{' '}
+                          {reach.length
+                            ? reach.map((connection) => connection.label).join(', ')
+                            : 'nothing yet, until you connect what it works best with'}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : null}
               </fieldset>
             ) : null}
           </div>
