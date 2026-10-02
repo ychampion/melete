@@ -107,13 +107,12 @@ for (const [name, engine] of engines) {
 
       // And were that refusal to fail, the policy alone still holds in a top-level page.
       await page.goto(`${stack.web}/api${VIEW_PREFIX}direct/index.html`);
-      await page.waitForFunction(
-        "document.getElementById('out')?.textContent?.startsWith('{')",
-        null,
-        {
-          timeout: 20_000,
-        },
-      );
+      // Read from outside the page: the page's own policy refuses the evaluated
+      // script a waitForFunction would run in it.
+      for (let tries = 0; tries < 80; tries++) {
+        if ((await page.textContent('#out'))?.startsWith('{')) break;
+        await settle(250);
+      }
       expectNothingLeaked(
         JSON.parse((await page.textContent('#out')) ?? '{}') as Record<string, string>,
       );
@@ -138,7 +137,8 @@ for (const [name, engine] of engines) {
       const child = page.frames().find((frame) => frame !== page.mainFrame());
       let title = '';
       try {
-        title = (await child?.title()) ?? '';
+        // A frame that loaded answers at once; a blocked one may never answer.
+        title = (await Promise.race([child?.title(), settle(5_000).then(() => '')])) ?? '';
       } catch {
         title = '';
       }
