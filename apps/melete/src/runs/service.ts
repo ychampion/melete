@@ -982,11 +982,18 @@ export class RunService {
     )
       return outcome;
 
-    // A result was given and is being checked: the run rests until the check
-    // is done. Whatever else the shift ended with, the result stands.
-    if (!step && mine.some((entry) => entry.kind === 'proposed')) {
+    // A result was given and is being checked, by this shift or before it:
+    // the run rests until the check is done, rather than on a trigger it
+    // stands on, and one whose check already ended is given its result now.
+    // Whatever else the shift ended with, the result stands.
+    const checking = step ? false : await this.checkUnderWay(tx, row.id);
+    if (
+      !step &&
+      (checking ||
+        mine.some((entry) => entry.kind === 'proposed') ||
+        settledCheck(await this.lastResult(tx, row.id)))
+    ) {
       const now = (await databaseNow(tx)).getTime();
-      const checking = await this.checkUnderWay(tx, row.id);
       if (checking)
         await tx.update(runState).set({ waitingOnSteps: true }).where(eq(runState.jobId, row.id));
       return {
@@ -1312,8 +1319,7 @@ export class RunService {
     if (row.kind !== 'run') return null;
     const last = await this.lastResult(tx, row.id);
     const data = object(last?.data);
-    if (last?.kind !== 'check' || data.settle !== true || typeof data.result !== 'string')
-      return null;
+    if (!settledCheck(last) || typeof data.result !== 'string') return null;
     const [proposal] =
       typeof data.proposal === 'string'
         ? await tx.select().from(runEntry).where(eq(runEntry.id, data.proposal))
@@ -1877,6 +1883,12 @@ function experimentView(entry: Entry) {
   };
 }
 
+/** Whether the newest entry about the run's result is a check that gives it. */
+function settledCheck(last: Entry | undefined): boolean {
+  const data = object(last?.data);
+  return last?.kind === 'check' && data.settle === true && typeof data.result === 'string';
+}
+
 /** Where the check of the run's result stands, from the newest entry about its result. */
 function checkOf(state: State, last: Entry | undefined): RunView['check'] {
   const enabled = state.checkResult && Boolean(state.doneWhen);
@@ -1977,7 +1989,9 @@ export function attachRuns(runner: AttemptRunner, runs: RunService) {
   runner.onFinished.push(async (tx, row) => {
     if (row.kind === 'run' && isTerminal(row.state as JobState)) await unstand(tx, row.id);
   });
-  runs.jobs.cancelledInTransaction.push((tx, row) =>
-    runs.stepEnded(tx, row, { kind: 'failed', retryable: false, reason: 'It was stopped.' }),
-  );
+  runs.jobs.cancelledInTransaction.push(async (tx, row) => {
+    await runs.stepEnded(tx, row, { kind: 'failed', retryable: false, reason: 'It was stopped.' });
+    // However it was stopped; the schedule it leaves is dropped at the next sync.
+    if (row.kind === 'run') await unstand(tx, row.id);
+  });
 }
