@@ -60,6 +60,7 @@ import {
   readInstallation,
   shellOverrideMessage,
   shellOverrides,
+  WRITTEN_BY_DEPLOY,
 } from '../installation.ts';
 import { interpolateDocument } from '../interpolate.ts';
 import { LockRefusal, withLock } from '../lock.ts';
@@ -530,7 +531,11 @@ export async function runDeploy(
 
   const act = async (): Promise<ExitCode> => {
     const installation = readInstallation(context.deployDir, context.machine.platform);
-    const overridden = shellOverrides(context.environment, installation.env ?? {});
+    const overridden = shellOverrides(
+      context.environment,
+      installation.env ?? {},
+      WRITTEN_BY_DEPLOY,
+    );
     if (overridden.length > 0) {
       steps.add({ id: 'deploy.shell', level: 'fail', detail: shellOverrideMessage(overridden) });
       return finish();

@@ -219,16 +219,24 @@ export const SHELL_PINNED = [
   'MELETE_SANDBOX_DOCKER_IMAGE',
 ] as const;
 
-/** The pinned settings this shell sets to something other than deploy/.env. Names only. */
+/** The settings deploy and rollback write to deploy/.env. */
+export const WRITTEN_BY_DEPLOY = ['MELETE_IMAGE_TAG'] as const;
+
+/**
+ * The pinned settings this shell would override, names only: any it sets that
+ * the command is about to write (Compose would keep the shell's value whatever
+ * deploy/.env says next), and any it sets to something other than deploy/.env.
+ */
 export function shellOverrides(
   environment: Readonly<Record<string, string | undefined>>,
   env: Record<string, string>,
+  written: readonly string[] = [],
 ): string[] {
   return SHELL_PINNED.filter((name) => {
     const shell = environment[name];
-    return shell !== undefined && shell !== (env[name] ?? '');
+    return shell !== undefined && (written.includes(name) || shell !== (env[name] ?? ''));
   });
 }
 
 export const shellOverrideMessage = (names: readonly string[]) =>
-  `This shell sets ${names.join(', ')} to something other than deploy/.env, and Compose would use the shell's value. Run unset ${names.join(' ')} (or make them match deploy/.env), then run this again. Nothing was changed.`;
+  `This shell sets ${names.join(', ')}, which Compose reads before deploy/.env, so the stack would not run what deploy/.env says. Run unset ${names.join(' ')}, then run this again. Nothing was changed.`;

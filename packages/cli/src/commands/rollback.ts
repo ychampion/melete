@@ -18,6 +18,7 @@ import {
   readInstallation,
   shellOverrideMessage,
   shellOverrides,
+  WRITTEN_BY_DEPLOY,
 } from '../installation.ts';
 import { migrationDelta, restoreSteps } from '../plan.ts';
 import { EXIT, type ExitCode } from '../schema.ts';
@@ -62,7 +63,7 @@ export async function runRollback(
   }
   const installation = readInstallation(context.deployDir, context.machine.platform);
   const env = installation.env ?? {};
-  const overridden = shellOverrides(context.environment, env);
+  const overridden = shellOverrides(context.environment, env, WRITTEN_BY_DEPLOY);
   if (overridden.length > 0) {
     context.err(`${shellOverrideMessage(overridden)}\n`);
     return EXIT.refused;

@@ -328,10 +328,12 @@ or one a container still runs, is left alone. A failure after the switch exits
 `deploy/.melete/history.jsonl`.
 
 The history line for a run is written the moment `MELETE_IMAGE_TAG` changes,
-so a run that fails or is cut short after that point is on record too. A shell
-that exports `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY`, `COMPOSE_PROJECT_NAME`
-or `MELETE_SANDBOX_DOCKER_IMAGE` with a value other than `deploy/.env`'s is
-refused, because Compose would use the shell's value. With the `sandbox`
+so a run that fails or is cut short after that point is on record too. Compose
+reads the shell before `deploy/.env`, so `deploy` and `rollback` are refused in
+a shell that exports `MELETE_IMAGE_TAG` at all, since they write it, and every
+command that acts on the stack is refused when the shell exports
+`MELETE_IMAGE_REGISTRY`, `COMPOSE_PROJECT_NAME` or `MELETE_SANDBOX_DOCKER_IMAGE`
+with a value other than `deploy/.env`'s. With the `sandbox`
 profile, `melete-sandbox:local` follows the new computer image only when it
 was the previous release's published image; an image of your own under that
 name is left alone.

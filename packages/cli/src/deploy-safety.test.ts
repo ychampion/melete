@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runDeploy } from './commands/deploy.ts';
+import { runRollback } from './commands/rollback.ts';
 import { appendHistory } from './history.ts';
 import { temporaryDeployDir } from './testing.ts';
 import {
@@ -45,17 +46,40 @@ describe('what deploy refuses before it acts', () => {
     rig.context.environment = { MELETE_IMAGE_TAG: 'v0.9.0', COMPOSE_PROJECT_NAME: 'melete' };
     expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(2);
     const printed = rig.context.printed();
-    expect(printed).toMatch(/fail\s+deploy\.shell\s+This shell sets MELETE_IMAGE_TAG to something/);
+    expect(printed).toMatch(
+      /fail\s+deploy\.shell\s+This shell sets MELETE_IMAGE_TAG, which Compose reads/,
+    );
     expect(printed).not.toContain('v0.9.0');
     expect(printed).not.toContain('COMPOSE_PROJECT_NAME');
     expect(rig.state.calls).toEqual([]);
     expect(env(deployDir)).toBe(rig.envBefore);
   });
 
-  test('a shell value equal to deploy/.env is no reason to refuse', async () => {
+  test('a shell that sets MELETE_IMAGE_TAG at all refuses deploy and rollback, even to the same value', async () => {
     const deployDir = temporaryDeployDir();
     const rig = deployRig(deployDir);
-    rig.context.environment = { MELETE_IMAGE_TAG: 'main', MELETE_IMAGE_REGISTRY: '' };
+    // Equal now, but deploy writes a new tag to deploy/.env and Compose would keep the shell's.
+    rig.context.environment = { MELETE_IMAGE_TAG: 'main' };
+    expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(2);
+    expect(rig.context.printed()).toMatch(
+      /fail\s+deploy\.shell\s+This shell sets MELETE_IMAGE_TAG,/,
+    );
+    expect(rig.state.calls).toEqual([]);
+    expect(env(deployDir)).toBe(rig.envBefore);
+
+    rig.context.environment = {};
+    expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(0);
+    rig.context.environment = { MELETE_IMAGE_TAG: short(NEW) };
+    const calls = rig.state.calls.length;
+    expect(await runRollback(rig.context, [], false, rig.dependencies)).toBe(2);
+    expect(rig.context.errors()).toContain('This shell sets MELETE_IMAGE_TAG,');
+    expect(rig.state.calls).toHaveLength(calls);
+  });
+
+  test('a setting deploy does not write may be set in the shell to the value deploy/.env holds', async () => {
+    const deployDir = temporaryDeployDir();
+    const rig = deployRig(deployDir);
+    rig.context.environment = { MELETE_IMAGE_REGISTRY: '', COMPOSE_PROJECT_NAME: 'melete' };
     expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(0);
   });
 
