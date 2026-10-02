@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { AgentComputer, ComputerProcess } from '../experience/types.ts';
 import { ComputerPanel } from './ComputerPanel.tsx';
 import { ProcessesPanel } from './ProcessesPanel.tsx';
-import { processStateWords, runningFor } from './processes.ts';
+import { previewDue, processStateWords, runningFor } from './processes.ts';
 
 const process = (overrides: Partial<ComputerProcess>): ComputerProcess => ({
   id: 'prc_1',
@@ -77,4 +77,11 @@ test('no processes, no strip; processes alone keep the computer from looking emp
   );
   expect(html).toContain('aria-label="Processes"');
   expect(html).not.toContain('Nothing on');
+});
+
+test('a preview is renewed in its last five minutes, and not before', () => {
+  const now = Date.parse('2026-10-03T10:00:00Z');
+  expect(previewDue(new Date(now + 6 * 60_000).toISOString(), now)).toBe(false);
+  expect(previewDue(new Date(now + 4 * 60_000).toISOString(), now)).toBe(true);
+  expect(previewDue(new Date(now - 1_000).toISOString(), now)).toBe(true);
 });

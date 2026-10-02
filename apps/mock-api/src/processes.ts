@@ -86,7 +86,7 @@ export class ProcessesMock {
           process_id: process.id,
           path: `${PREVIEW_PREFIX}${token}/`,
           port: process.port,
-          expires_at: new Date(Date.now() + 12 * 3_600_000).toISOString(),
+          expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
         }),
       );
     });

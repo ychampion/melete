@@ -276,11 +276,12 @@ inside Melete.
   origin, no Melete session, and nothing fetched from anywhere, including the
   server's own API. Pages, scripts and styles that link the server's own
   files from the root (`/src/main.js`) have those links kept inside the
-  preview. Live reload connections are not passed on, so reload the preview to
-  see a change.
+  preview, up to 5 MiB per answer; larger ones are passed on unchanged. Live
+  reload connections are not passed on, so reload the preview to see a change.
 - One answer may be up to 50 MiB, and the server has 30 seconds to give it.
-- A preview lasts as long as the browser session that opened it, twelve hours
-  at most, and ends when the process stops.
+- A preview lasts half an hour. While it is on screen the computer view opens
+  a new one shortly before then and reloads the page. It ends at once when the
+  process stops or the browser session that opened it signs out.
 
 ## Watching and taking over
 

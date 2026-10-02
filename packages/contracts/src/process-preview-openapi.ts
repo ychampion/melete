@@ -92,8 +92,8 @@ export const processPreviewPaths = () => ({
         'Returns where the page the process serves on its declared port loads for this ' +
         'person. Only the person whose job started the process may open one, from a browser ' +
         'session, while the process runs and listens on that port. The preview belongs to ' +
-        'that session and ends when it signs out, when the process stops, or after twelve ' +
-        'hours. It is meant to be framed by Melete with ' +
+        'that session and ends when it signs out, when the process stops, or after half an ' +
+        'hour; ask again for a new one while it is shown. It is meant to be framed by Melete with ' +
         '`sandbox="allow-scripts allow-forms allow-downloads"`: the page runs with an opaque ' +
         'origin, holds no Melete session, and reaches nothing but that port of that computer. ' +
         'A computer with no network cannot be previewed.',

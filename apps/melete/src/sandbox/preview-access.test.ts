@@ -112,7 +112,7 @@ async function scene() {
 
   // Each person signs in with a browser session of their own.
   const digests = new Map<string, string>();
-  for (const who of [alice, bo]) {
+  for (const who of [alice, bo, ownerId]) {
     const digest = createHash('sha256').update(randomBytes(32)).digest('hex');
     await sql`insert into session (token_hash, principal_id, owner_id, expires_at)
       values (${digest}, ${who}, ${ownerId}, now() + interval '30 days')`;
@@ -141,7 +141,7 @@ async function scene() {
       headers: { 'x-test-as': who },
     });
   const load = (path: string) => app.request(path, { headers: { 'sec-fetch-dest': 'iframe' } });
-  return { sql, scope, alice, bo, processId, app, open, load, stopped, digests };
+  return { sql, scope, alice, bo, ownerId, processId, app, open, load, stopped, digests };
 }
 
 withDb('a preview of a server in an agent computer', () => {
@@ -223,5 +223,17 @@ withDb('a preview of a server in an agent computer', () => {
       state: 'stopped',
       end_reason: 'the person stopped it from the computer view',
     });
+  }, 60_000);
+
+  test("a job with no recorded person is its space owner's, not the installation owner's", async () => {
+    const { sql, scope, open, alice, bo, ownerId } = await scene();
+    // Bo owns this shared space; the installation owner is only a member of it.
+    await sql`update space set owner_principal_id = ${bo} where id = ${scope.spaceId}`;
+    await sql`insert into space_membership (principal_id, space_id, role)
+      values (${ownerId}, ${scope.spaceId}, 'member') on conflict do nothing`;
+    await sql`update job set principal_id = null where id = ${scope.jobId}`;
+    expect((await open(ownerId)).status).toBe(404);
+    expect((await open(alice)).status).toBe(404);
+    expect((await open(bo)).status).toBe(200);
   }, 60_000);
 });

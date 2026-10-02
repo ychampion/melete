@@ -524,12 +524,18 @@ the computer and the service, so no other computer is reachable from it.
 
 The token in the path names one person, one process, the port and the computer
 it runs in, and the browser session it was opened from, and is signed with a
-key of its own. Only the person whose job started the process can open one,
-and only while it runs and listens on its port. Every request checks again
-that the session is signed in, that the person may still use the space, that
-the computer's connection is active, and that the process still runs on that
-port in that computer. Stopping the process, revoking the connection, losing
-the space or signing out ends the preview on its next request.
+key of its own. A preview lasts half an hour; the computer view opens a new
+one while it is on screen. Only the person whose job started the process can
+open one (a job with no recorded person is its space owner's), and only while
+the process runs and listens on its port. Every request checks again that the
+session is signed in, that the person may still use the space, that the
+computer's connection is active, and that the process record still says it
+runs, with that port, in that computer. Whether the process itself still
+listens is checked when the preview is opened, not on each request: if it
+stopped listening before the record caught up, another process in the same
+computer could answer on that port, and nothing outside that computer can.
+Stopping the process, revoking the connection, losing the space or signing out
+ends the preview on its next request.
 
 WebRTC and name lookups are open to a previewed page as they are to an app.
 The preview shows what the agent's own server serves, to the person who asked

@@ -16,7 +16,8 @@
  * `GET /previews/:token/*` reads no session: Melete frames the page in a
  * sandboxed iframe, it has an opaque origin and holds none. On every request
  * it checks the token, the browser session, that the person may still watch
- * the computer, that the process still runs with that port in that computer,
+ * the computer, that the process record still says it runs with that port in
+ * that computer (whether it listens is asked only when the preview is opened),
  * and then forwards the request to that one port at the computer's own
  * address on its private network, and nowhere else:
  *
