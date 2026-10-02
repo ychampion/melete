@@ -11,6 +11,9 @@ import { Shell } from '../shell/Shell.tsx';
 import { type Me, type RoomDetail, type RoomThread, roomsApi } from './api.ts';
 import { People } from './People.tsx';
 import { PersonAvatar } from './parts.tsx';
+import { RoomMemory } from './RoomMemory.tsx';
+import { approversLine, RoomSettings } from './RoomSettings.tsx';
+import { dayOf } from './reduce.ts';
 import { NewThread, Thread } from './Thread.tsx';
 
 /** How often an open room says the person is still looking at it. */
@@ -36,6 +39,10 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
   const [me, setMe] = useState<Me | null>(knownMe);
   const [present, setPresent] = useState<Set<string>>(new Set());
   const [peopleOpen, setPeopleOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Bumped when the room's rule changes, so the open thread reads who may answer now.
+  const [ruleChanged, setRuleChanged] = useState(0);
 
   const readRoom = useCallback(async () => {
     const result = await roomsApi.detail(roomId);
@@ -88,6 +95,8 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
   const room = detail?.room ?? null;
   const here = (detail?.members ?? []).filter((member) => present.has(member.principal_id));
   const opened = threadId !== null;
+  const guest = room?.my_role === 'guest';
+  const myPlace = detail?.members.find((member) => member.principal_id === me?.id) ?? null;
 
   if (gone)
     return (
@@ -125,6 +134,14 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
             </a>
             <h1 className="room-title clamp1">{room?.name ?? ' '}</h1>
             {room?.purpose ? <p className="room-purpose">{room.purpose}</p> : null}
+            {detail ? (
+              <p className="room-rule">
+                {guest && myPlace?.expires_at
+                  ? `You are a guest here until ${dayOf(myPlace.expires_at)}. `
+                  : ''}
+                {approversLine(detail.policy.approvers)}
+              </p>
+            ) : null}
           </div>
           <div className="row room-head-actions">
             {here.length > 0 ? (
@@ -138,6 +155,22 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
                 {here.length > 5 ? <li className="room-here-more">+{here.length - 5}</li> : null}
               </ul>
             ) : null}
+            <Button
+              variant="outline"
+              icon="bookmark"
+              onClick={() => setMemoryOpen(true)}
+              disabled={!detail}
+            >
+              Memory
+            </Button>
+            <Button
+              variant="outline"
+              icon="sliders"
+              onClick={() => setSettingsOpen(true)}
+              disabled={!detail}
+            >
+              Settings
+            </Button>
             <Button
               variant="outline"
               icon="users"
@@ -193,6 +226,7 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
                 threadId={threadId}
                 detail={detail}
                 me={me}
+                ruleChanged={ruleChanged}
                 onActivity={readThreads}
                 onGone={() => void readRoom()}
               />
@@ -209,6 +243,24 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
           </section>
         </div>
       </div>
+      {detail && memoryOpen ? (
+        <RoomMemory
+          open
+          onClose={() => setMemoryOpen(false)}
+          detail={detail}
+          guest={me?.kind === 'guest' || guest}
+        />
+      ) : null}
+      {detail && settingsOpen ? (
+        <RoomSettings
+          onClose={() => setSettingsOpen(false)}
+          detail={detail}
+          onChanged={() => {
+            void readRoom();
+            setRuleChanged((n) => n + 1);
+          }}
+        />
+      ) : null}
       {detail ? (
         <People
           open={peopleOpen}

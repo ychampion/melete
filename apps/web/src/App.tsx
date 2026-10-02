@@ -13,6 +13,8 @@ import {
 } from './experience/hooks.ts';
 import { onboardedProfile } from './experience/profile.ts';
 import type { Agent, Capabilities, Conversation } from './experience/types.ts';
+import { roomsApi } from './rooms/api.ts';
+import { InviteScreen } from './rooms/InviteScreen.tsx';
 import { RoomsRoute } from './rooms/RoomsScreen.tsx';
 import { navigate, useRoute } from './router.ts';
 import { AgentsScreen } from './screens/Agents.tsx';
@@ -88,11 +90,25 @@ export function App() {
   useTheme();
 
   const [signedOut, setSignedOut] = useState(false);
+  // A guest's sign-in reaches only the rooms they were invited to and their own account.
+  const [guest, setGuest] = useState(false);
   // An expired or revoked cookie needs sign-in, including after a page reload.
   const profile = useLoad(async () => {
     const result = await adapter.profile();
-    if (result.error !== null && result.unauthorized) setSignedOut(true);
-    else if (result.data) setSignedOut(false);
+    if (result.error !== null && result.unauthorized) {
+      setSignedOut(true);
+      setGuest(false);
+    } else if (result.data) {
+      setSignedOut(false);
+      setGuest(false);
+    } else if (result.error !== null) {
+      // The personal profile refuses a guest; their account says which they are.
+      const me = await roomsApi.me();
+      if (me.data?.owner.kind === 'guest') {
+        setSignedOut(false);
+        setGuest(true);
+      }
+    }
     return result;
   }, []);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -128,6 +144,11 @@ export function App() {
             : permissions.unavailable !== null
               ? []
               : previous.permissions,
+          handoffs: permissions.data
+            ? (permissions.data.handoffs ?? [])
+            : permissions.unavailable !== null
+              ? []
+              : previous.handoffs,
           questions: questions.data
             ? questions.data.questions
             : questions.unavailable !== null
@@ -195,6 +216,7 @@ export function App() {
     setDecisions(NO_DECISIONS);
     setOnboardedHere(false);
     setSignedOut(true);
+    setGuest(false);
     navigate('/welcome');
   }, []);
 
@@ -222,9 +244,12 @@ export function App() {
       refreshConversations,
       refreshAgents,
       signOut,
+      guest: guest && !signedOut,
     }),
     [
       signOut,
+      guest,
+      signedOut,
       signedIn,
       refreshProfile,
       capabilities,
@@ -250,12 +275,31 @@ export function App() {
     );
   }
 
+  const [head, second] = route.parts;
+
+  // A guest gets the rooms they were invited to, and nothing personal: no Home,
+  // no chats, no setup. Their sign-in would be refused everywhere else.
+  if (guest && !signedOut) {
+    let room: React.ReactNode;
+    if (head === 'invite') room = <InviteScreen signedIn="guest" onJoined={refreshProfile} />;
+    else {
+      if (head !== 'rooms') navigate('/rooms');
+      room = <RoomsRoute parts={head === 'rooms' ? route.parts : ['rooms']} />;
+    }
+    return <AppContext.Provider value={value}>{room}</AppContext.Provider>;
+  }
+  // An invite link opens for anyone; it says what to do when the wrong account is signed in.
+  if (head === 'invite' && (signedOut || profile.data))
+    return (
+      <AppContext.Provider value={value}>
+        <InviteScreen signedIn={signedIn ? 'person' : null} onJoined={refreshProfile} />
+      </AppContext.Provider>
+    );
+
   if (!signedOut && profile.error && !profile.data)
     return <Unreachable error={profile.error} onRetry={profile.reload} />;
   // While the profile loads, the frame is already there: paper, the sidebar's place and a sheet.
   if (!signedOut && profile.loading && !profile.data) return <BootFrame />;
-
-  const [head, second] = route.parts;
 
   let screen: React.ReactNode;
   if (head === 'reset') {

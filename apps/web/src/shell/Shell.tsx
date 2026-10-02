@@ -161,12 +161,12 @@ function SpaceSwitcher() {
 }
 
 function AccountMenu({ address }: { address: string | null }) {
-  const { profile, signOut } = useApp();
+  const { profile, signOut, guest } = useApp();
   const route = useRoute();
   const [open, setOpen] = useState(false);
   const [theme, setTheme, dark] = useTheme();
   const close = useCallback(() => setOpen(false), []);
-  const name = givenName(profile) || 'You';
+  const name = guest ? 'Guest' : givenName(profile) || 'You';
   const initials = name
     .split(' ')
     .map((part) => part[0] ?? '')
@@ -199,16 +199,19 @@ function AccountMenu({ address }: { address: string | null }) {
               {profile ? <span className="clamp1">{zoneName(profile.time_zone)}</span> : null}
             </div>
             <MenuSep />
-            <MenuItem
-              icon="sliders"
-              kbd="⌘,"
-              onSelect={() => {
-                close();
-                navigate('/settings');
-              }}
-            >
-              Settings
-            </MenuItem>
+            {/* A guest's sign-in reaches rooms and nothing else, Settings included. */}
+            {guest ? null : (
+              <MenuItem
+                icon="sliders"
+                kbd="⌘,"
+                onSelect={() => {
+                  close();
+                  navigate('/settings');
+                }}
+              >
+                Settings
+              </MenuItem>
+            )}
             <div className="menu-item" style={{ cursor: 'default' }}>
               <Icon name="moon" size={16} />
               <span className="grow">Dark appearance</span>
@@ -236,14 +239,18 @@ function AccountMenu({ address }: { address: string | null }) {
           </Menu>
         </Popover>
       </div>
-      <IconButton name="bug" label="Report a problem" onClick={() => openFeedback()} />
-      <IconButton
-        name="sliders"
-        label="Settings"
-        on={inSettings}
-        aria-current={inSettings ? 'page' : undefined}
-        onClick={() => navigate('/settings')}
-      />
+      {guest ? null : (
+        <>
+          <IconButton name="bug" label="Report a problem" onClick={() => openFeedback()} />
+          <IconButton
+            name="sliders"
+            label="Settings"
+            on={inSettings}
+            aria-current={inSettings ? 'page' : undefined}
+            onClick={() => navigate('/settings')}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -258,7 +265,10 @@ function Sidebar({
   onPalette: () => void;
 }) {
   const route = useRoute();
-  const { conversations, conversationsError, agents, profile, refreshConversations } = useApp();
+  const { conversations, conversationsError, agents, profile, refreshConversations, guest } =
+    useApp();
+  // A guest reaches only the rooms they were invited to.
+  const nav = guest ? NAV.filter((item) => item.path === '/rooms') : NAV;
   const decisions = useDecisions();
   const activeChat = route.parts[0] === 'chat' ? (route.parts[1] ?? null) : null;
   const chats = [...conversations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
@@ -276,29 +286,33 @@ function Sidebar({
           className="phone-only"
           onClick={onClose}
         />
-        <IconButton
-          name="compose"
-          label="New chat"
-          onClick={() => {
-            onClose();
-            navigate('/chat/new');
-          }}
-        />
+        {guest ? null : (
+          <IconButton
+            name="compose"
+            label="New chat"
+            onClick={() => {
+              onClose();
+              navigate('/chat/new');
+            }}
+          />
+        )}
       </div>
       <nav className="sidebar-nav" aria-label="Pages">
-        <button
-          type="button"
-          className="nav-item"
-          onClick={() => {
-            onClose();
-            onPalette();
-          }}
-        >
-          <Icon name="search" size={18} />
-          <span>Search</span>
-          <Kbd>⌘K</Kbd>
-        </button>
-        {NAV.map((item) => (
+        {guest ? null : (
+          <button
+            type="button"
+            className="nav-item"
+            onClick={() => {
+              onClose();
+              onPalette();
+            }}
+          >
+            <Icon name="search" size={18} />
+            <span>Search</span>
+            <Kbd>⌘K</Kbd>
+          </button>
+        )}
+        {nav.map((item) => (
           <a
             key={item.path}
             className="nav-item"
@@ -317,7 +331,7 @@ function Sidebar({
           </a>
         ))}
       </nav>
-      <div className="sidebar-recent">
+      <div className="sidebar-recent" style={guest ? { display: 'none' } : undefined}>
         <div className="recent-label">Chats</div>
         {recent.map((chat) => {
           const agent = agentById(agents, chat.agent_id);
@@ -735,11 +749,13 @@ export function Shell({
   // What the person chose with the toggle, kept while they move between pages.
   const [railChoice, setRailChoice] = useState<boolean | null>(railPreference);
   const [palette, setPalette] = useState(false);
-  const { agents } = useApp();
+  const { agents, guest } = useApp();
   const route = useRoute();
   const agent = agentById(agents, agentId);
 
   useEffect(() => {
+    // Search reads the person's own chats and memory, which a guest does not have.
+    if (guest) return;
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -748,7 +764,7 @@ export function Shell({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [guest]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a navigation closes the drawer
   useEffect(() => {
@@ -875,13 +891,15 @@ export function Shell({
                   onClick={toggleRail}
                 />
               ) : null}
-              <IconButton
-                name="search"
-                label="Search"
-                size={44}
-                iconSize={20}
-                onClick={openPalette}
-              />
+              {guest ? null : (
+                <IconButton
+                  name="search"
+                  label="Search"
+                  size={44}
+                  iconSize={20}
+                  onClick={openPalette}
+                />
+              )}
             </header>
           ) : null}
           <div className="shell-body">
@@ -894,8 +912,8 @@ export function Shell({
             ) : null}
           </div>
         </div>
-        <CommandPalette open={palette} onClose={() => setPalette(false)} />
-        <FeedbackHost />
+        {guest ? null : <CommandPalette open={palette} onClose={() => setPalette(false)} />}
+        {guest ? null : <FeedbackHost />}
         <ToastStack />
       </div>
     </RailContext.Provider>

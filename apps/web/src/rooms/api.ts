@@ -30,6 +30,16 @@ export type RoomMessage = ThreadView['messages'][number];
 export type RoomRequest = ThreadView['requests'][number];
 export type Posted = Ok<paths['/rooms/{id}/threads/{threadId}/messages'], 'post'>;
 export type Me = Ok<paths['/me'], 'get'>['owner'];
+export type RoomPolicy = RoomDetail['policy'];
+export type RoomPermission = NonNullable<RoomRequest['permissions']>[number];
+export type RoomMemory = Ok<paths['/rooms/{id}/memory'], 'get'>;
+export type RoomMemoryItem = RoomMemory['items'][number];
+export type RoomShare = RoomMemory['shares'][number];
+export type InviteList = Ok<paths['/rooms/{id}/invites'], 'get'>;
+export type RoomInvite = InviteList['invites'][number];
+export type InviteCreated = Ok<paths['/rooms/{id}/invites'], 'post'>;
+export type InviteView = Ok<paths['/invites/view'], 'post'>;
+export type Handoff = Ok<paths['/handoffs'], 'get'>['handoffs'][number];
 
 /** One frame of a thread's live stream; its `seq` resumes the stream. */
 export type RoomFrame =
@@ -111,7 +121,100 @@ export const roomsApi = {
     ),
   presence: (id: string) =>
     call<{ present: string[] }>(() => api.POST('/rooms/{id}/presence', room(id))),
+
+  /* ---------- how the room works, and who answers its permissions ---------- */
+  setPolicy: (id: string, change: Partial<RoomPolicy>) =>
+    call<{ policy: RoomPolicy }>(() =>
+      api.PUT('/rooms/{id}/policy', { ...room(id), body: change }),
+    ),
+  /** Answer a permission for exactly the content the card shows. */
+  answer: (id: string, permission: RoomPermission, option: 'allow_once' | 'deny') =>
+    call<{ status: 'ok'; option: 'allow_once' | 'deny' }>(() =>
+      api.POST('/rooms/{id}/approvals/{approvalId}', {
+        params: { path: { id, approvalId: permission.id } },
+        body: { option, version: permission.version, payload_hash: permission.payload_hash ?? '' },
+      }),
+    ),
+
+  /* ---------- what the room remembers, and what people shared into it ---------- */
+  memory: (id: string) => call<RoomMemory>(() => api.GET('/rooms/{id}/memory', room(id))),
+  forget: (id: string, claimId: string) =>
+    call<{ forgotten: string }>(() =>
+      api.POST('/rooms/{id}/memory/{claimId}/forget', { params: { path: { id, claimId } } }),
+    ),
+  deleteMessage: (id: string, messageId: string) =>
+    call<{ message: RoomMessage }>(() =>
+      api.DELETE('/rooms/{id}/messages/{messageId}', { params: { path: { id, messageId } } }),
+    ),
+  share: (id: string, claimId: string, membersOnly: boolean) =>
+    call<{ share: RoomShare }>(() =>
+      api.POST('/rooms/{id}/shares', {
+        ...room(id),
+        body: { claim_id: claimId, members_only: membersOnly },
+      }),
+    ),
+  withdrawShare: (id: string, shareId: string) =>
+    call<{ withdrawn: string }>(() =>
+      api.DELETE('/rooms/{id}/shares/{shareId}', { params: { path: { id, shareId } } }),
+    ),
+
+  /* ---------- guests ---------- */
+  invites: (id: string) => call<InviteList>(() => api.GET('/rooms/{id}/invites', room(id))),
+  invite: (id: string, email: string, days: number) =>
+    call<InviteCreated>(() =>
+      api.POST('/rooms/{id}/invites', {
+        ...room(id),
+        body: { email, expires_in_days: days },
+      }),
+    ),
+  withdrawInvite: (id: string, inviteId: string) =>
+    call<{ invite: RoomInvite }>(() =>
+      api.DELETE('/rooms/{id}/invites/{inviteId}', { params: { path: { id, inviteId } } }),
+    ),
+  viewInvite: (token: string) =>
+    call<InviteView>(() => api.POST('/invites/view', { body: { token } })),
+  acceptInvite: (token: string, password: string | null, displayName: string | null) =>
+    call<{ room_id: string }>(() =>
+      api.POST('/invites/accept', {
+        body: {
+          token,
+          ...(password ? { password } : {}),
+          ...(displayName?.trim() ? { display_name: displayName.trim() } : {}),
+        },
+      }),
+    ),
+
+  /* ---------- tasks a room hands the person, on their own Home ---------- */
+  decideHandoff: (handoff: Handoff, decision: 'accept' | 'decline') =>
+    call<{ handoff: Handoff }>(() =>
+      api.POST('/handoffs/{id}', {
+        params: { path: { id: handoff.id } },
+        body:
+          decision === 'accept'
+            ? { decision: 'accept', task_hash: handoff.task_hash }
+            : { decision: 'decline' },
+      }),
+    ),
+  handoffResult: (handoff: Handoff, decision: 'share' | 'keep') =>
+    call<{ handoff: Handoff }>(() =>
+      api.POST('/handoffs/{id}/result', {
+        params: { path: { id: handoff.id } },
+        body:
+          decision === 'share'
+            ? { decision: 'share', result_hash: handoff.result_hash ?? '' }
+            : { decision: 'keep' },
+      }),
+    ),
 };
+
+/**
+ * The address an invite opens. The service gives a full link when it knows its
+ * public address; otherwise the path, which opens on this same page's address.
+ */
+export function inviteLink(created: { link: string | null; path: string }, origin: string): string {
+  if (created.link) return created.link;
+  return `${origin.replace(/\/+$/, '')}${created.path.startsWith('/') ? '' : '/'}${created.path}`;
+}
 
 /** What following a thread yields: a frame, or that the stream (re)opened or ended for good. */
 export type ThreadSignal =

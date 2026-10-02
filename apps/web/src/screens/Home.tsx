@@ -48,6 +48,7 @@ import type {
   Question,
 } from '../experience/types.ts';
 import { isWaiting, waitingOn } from '../experience/waiting.ts';
+import { RoomHandoffs } from '../rooms/Handoffs.tsx';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { blankAgent } from './Agents.tsx';
@@ -1049,6 +1050,7 @@ export function HomeScreen() {
           </div>
           <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
+          <RoomHandoffs handoffs={decisions.handoffs} onChanged={refreshConversations} />
           <WaitingOnSection now={now} />
           <RoutineResults results={data?.routine_results ?? []} now={now} />
           <InMotion now={now} />

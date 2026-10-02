@@ -1,6 +1,6 @@
 /**
  * Small pieces every rooms screen draws: a person's label, which always
- * carries their email after their name, and their avatar.
+ * carries the room's handle for them after their name, and their avatar.
  */
 import { Avatar } from '../design/primitives.tsx';
 import { initialsOf, splitLabel } from './reduce.ts';
@@ -14,15 +14,15 @@ export function toneOf(id: string): (typeof TONES)[number] {
   return TONES[hash % TONES.length] ?? 'blue';
 }
 
-/** `Name <email>`, with the email set quieter; read aloud and copied, it is the whole label. */
+/** `Name <handle>`, with the handle set quieter; read aloud and copied, it is the whole label. */
 export function Who({ label, strong = true }: { label: string; strong?: boolean }) {
-  const { name, email } = splitLabel(label);
+  const { name, handle } = splitLabel(label);
   return (
     <span className="who">
       <span className="who-name" data-strong={strong ? 'true' : undefined}>
         {name}
       </span>
-      {email ? <span className="who-email">{` <${email}>`}</span> : null}
+      {handle ? <span className="who-handle">{` <${handle}>`}</span> : null}
     </span>
   );
 }

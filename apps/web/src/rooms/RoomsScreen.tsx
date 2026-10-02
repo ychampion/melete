@@ -6,7 +6,7 @@
 import { useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { Button, Count, Dialog, Field, Input } from '../design/primitives.tsx';
-import { useLoad } from '../experience/hooks.ts';
+import { useApp, useLoad } from '../experience/hooks.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { roomsApi } from './api.ts';
@@ -24,6 +24,7 @@ export function RoomsRoute({ parts }: { parts: string[] }) {
 
 export function RoomsScreen() {
   const rooms = useLoad(() => roomsApi.list(), []);
+  const { guest } = useApp();
   const [making, setMaking] = useState(false);
   const list = rooms.data?.rooms ?? [];
 
@@ -34,13 +35,16 @@ export function RoomsScreen() {
           <div className="col" style={{ gap: 4 }}>
             <h1>Rooms</h1>
             <p style={{ fontSize: 14, color: 'var(--muted)' }}>
-              Talk with other people and one shared agent. Everyone in a room sees its threads and
-              what the agent does there.
+              {guest
+                ? 'The rooms you were invited to. You read and post in them for as long as your invite lasts.'
+                : 'Talk with other people and one shared agent. Everyone in a room sees its threads and what the agent does there.'}
             </p>
           </div>
-          <Button icon="plus" onClick={() => setMaking(true)}>
-            New room
-          </Button>
+          {guest ? null : (
+            <Button icon="plus" onClick={() => setMaking(true)}>
+              New room
+            </Button>
+          )}
         </div>
         {rooms.error ? (
           <div className="row" style={{ gap: 12, fontSize: 13, color: 'var(--secondary)' }}>
@@ -81,7 +85,9 @@ export function RoomsScreen() {
           ))}
           {!rooms.loading && list.length === 0 && !rooms.error ? (
             <div className="rooms-empty">
-              Make a room for a team or a project, add the people in it, and ask its agent together.
+              {guest
+                ? 'Your invite has run out, or an owner ended it. Ask them for a new one.'
+                : 'Make a room for a team or a project, add the people in it, and ask its agent together.'}
             </div>
           ) : null}
         </div>

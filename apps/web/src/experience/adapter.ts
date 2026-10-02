@@ -88,6 +88,7 @@ import type {
   ResultCard,
   RewindPreview,
   RewindTarget,
+  RoomHandoff,
   Rule,
   RuleBounds,
   SandboxComputer,
@@ -279,7 +280,8 @@ export const adapter = {
     guard<PermissionOutcome>(() =>
       api.POST('/permissions/{id}', { ...path(id), body: { option: 'always', version, bounds } }),
     ).then(worthHearing),
-  permissions: () => guard<{ permissions: Permission[] }>(() => api.GET('/permissions')),
+  permissions: () =>
+    guard<{ permissions: Permission[]; handoffs?: RoomHandoff[] }>(() => api.GET('/permissions')),
   undo: (id: string) =>
     guard<{ receipt: Receipt }>(() => api.POST('/receipts/{id}/undo', path(id))),
   sendDraft: (id: string) => guard<SendOutcome>(() => api.POST('/drafts/{id}/send', path(id))),
