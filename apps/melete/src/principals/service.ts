@@ -9,7 +9,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { job, owner, principal, space, spaceMembership, trigger } from '../db/schema.ts';
-import { serviceTransaction } from '../db/transaction.ts';
+import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { PolicyService } from '../jobs/policy.ts';
 import type { JobService } from '../jobs/service.ts';
@@ -63,8 +63,19 @@ export class PrincipalService {
     });
   }
 
-  async createShared(actor: string, name: string) {
+  /**
+   * A shared space is a room. Its creator owns it, and it gets its own
+   * principal, which its agent acts as: no password, never listed, and a
+   * membership whose generation is the room's roster generation.
+   */
+  async createShared(actor: string, name: string, purpose?: string | null) {
     return serviceTransaction(this.db, async (tx) => {
+      const [creator] = await tx
+        .select({ kind: principal.kind })
+        .from(principal)
+        .where(eq(principal.id, actor));
+      if (creator?.kind !== 'person')
+        throw new ServiceError('scope_denied', 'Only a person can make a room.', 403);
       const id = newId('sp');
       const [created] = await tx
         .insert(space)
@@ -75,15 +86,27 @@ export class PrincipalService {
           audience: 'space',
           ownerPrincipalId: actor,
           gitPath: join(this.spacesRoot, id),
+          purpose: purpose?.trim() || null,
         })
         .returning();
       await tx.insert(spaceMembership).values({ principalId: actor, spaceId: id, role: 'owner' });
+      const roomPrincipal = newId('own');
+      await tx.insert(principal).values({
+        id: roomPrincipal,
+        email: roomPrincipalEmail(id),
+        kind: 'room',
+        displayName: name,
+      });
+      await tx
+        .insert(spaceMembership)
+        .values({ principalId: roomPrincipal, spaceId: id, role: 'agent' });
       return created;
     });
   }
 
   async grant(actor: string, spaceId: string, memberId: string) {
-    return serviceTransaction(this.db, async (tx) => {
+    const jobs = this.jobs;
+    const result = await serviceTransaction(this.db, async (tx) => {
       await tx.select({ id: space.id }).from(space).where(eq(space.id, spaceId)).for('update');
       const access = await spaceAuthority(tx, spaceId, actor, true);
       if (access.space.kind !== 'shared' || access.role !== 'owner')
@@ -93,14 +116,17 @@ export class PrincipalService {
           403,
         );
       const [target] = await tx.select().from(principal).where(eq(principal.id, memberId));
-      if (!target) throw new ServiceError('not_found', 'Principal not found.', 404);
+      // A room's own principal, or any account that is not a person, is never added.
+      if (target?.kind !== 'person')
+        throw new ServiceError('not_found', 'Principal not found.', 404);
       const [existing] = await tx
         .select()
         .from(spaceMembership)
         .where(
           and(eq(spaceMembership.spaceId, spaceId), eq(spaceMembership.principalId, memberId)),
         );
-      if (existing && !existing.revokedAt) return membershipView(existing);
+      if (existing && !existing.revokedAt)
+        return { membership: membershipView(existing), controls: [] as ContextInvalidated[] };
       const [row] = await tx
         .insert(spaceMembership)
         .values({ spaceId, principalId: memberId, role: 'member' })
@@ -110,24 +136,38 @@ export class PrincipalService {
         })
         .returning();
       if (!row) throw new Error('Membership insert returned no row');
-      return membershipView(row);
+      // Who can read the room changed, so work in flight starts again with the new roster.
+      const controls = await fenceRoster(tx, spaceId, access.space.policyGeneration + 1, jobs);
+      return { membership: membershipView(row), controls };
     });
+    for (const control of result.controls) jobs?.onCancelled?.(control.job_id);
+    return result.membership;
   }
 
+  /**
+   * End a membership: an owner removes a member, or a member leaves. The space's
+   * owner cannot be removed, and a room's own principal is not a member to remove.
+   */
   async revoke(actor: string, spaceId: string, memberId: string) {
     const jobs = this.jobs;
     if (!jobs) throw new ServiceError('service_unavailable', 'Configure the job service.', 503);
     const result = await jobs.transaction(async (tx) => {
       await tx.select({ id: space.id }).from(space).where(eq(space.id, spaceId)).for('update');
       const access = await spaceAuthority(tx, spaceId, actor, true);
-      if (access.space.kind !== 'shared' || access.role !== 'owner' || access.ownerId === memberId)
+      const leaving = actor === memberId && access.role !== 'agent';
+      if (
+        access.space.kind !== 'shared' ||
+        (access.role !== 'owner' && !leaving) ||
+        access.ownerId === memberId
+      )
         throw new ServiceError('scope_denied', 'A shared-space owner may revoke a member.', 403);
       const [existing] = await tx
         .select()
         .from(spaceMembership)
         .where(and(eq(spaceMembership.spaceId, spaceId), eq(spaceMembership.principalId, memberId)))
         .for('update');
-      if (!existing) throw new ServiceError('not_found', 'Membership not found.', 404);
+      if (!existing || existing.role === 'agent')
+        throw new ServiceError('not_found', 'Membership not found.', 404);
       if (existing.revokedAt)
         return {
           membership: membershipView(existing),
@@ -148,30 +188,15 @@ export class PrincipalService {
         sql`delete from mcp_token where space_id = ${spaceId} and principal_id = ${memberId}`,
       );
       const generation = access.space.policyGeneration + 1;
-      await tx.update(space).set({ policyGeneration: generation }).where(eq(space.id, spaceId));
-      // Memory caches and prepared outputs carry the same revoked access fence.
-      await tx.execute(
-        sql`update memory_spaces set policy_generation = policy_generation + 1, access_generation = access_generation + 1 where space_id = ${spaceId}`,
-      );
-      await tx.execute(
-        sql`update memory_contexts set invalidated_at = now(), items = '[]'::jsonb where space_id = ${spaceId} and invalidated_at is null`,
-      );
-      // So do the copies of what memory handed the member's own actions, kept to
-      // say why each was taken.
+      // The copies of what memory handed the member's own actions, kept to say
+      // why each was taken, go with the access.
       await tx.execute(
         sql`update memory_action_basis b set items = '[]'::jsonb from job j
           where b.space_id = ${spaceId} and j.id = b.job_id and j.principal_id = ${memberId}`,
       );
-      await tx.execute(
-        sql`update memory_prepared set stale = true, content = null where space_id = ${spaceId}`,
-      );
-      const controls = await new PolicyService(jobs).invalidateInTransaction(
-        tx,
-        spaceId,
-        generation,
-        null,
-        'policy_changed',
-      );
+      const controls = await fenceRoster(tx, spaceId, generation, jobs);
+      // The member's own jobs end with their access. A room's requests belong to
+      // the room, not to the member, and start again under the new roster.
       const affected = await tx
         .select()
         .from(job)
@@ -202,4 +227,46 @@ export class PrincipalService {
     for (const control of result.controls) jobs.onCancelled?.(control.job_id);
     return { membership: result.membership, policy_generation: result.policy_generation };
   }
+}
+
+/** The address a room principal is created with: `.invalid` is never routable (RFC 2606). */
+export const roomPrincipalEmail = (spaceId: string) => `${spaceId.toLowerCase()}@room.invalid`;
+
+/**
+ * A shared space's roster changed. Everything read or prepared under the old
+ * roster is fenced: the space's policy generation and memory caches move on,
+ * work in flight starts again with fresh context, and the room principal's
+ * generation (the room's roster generation) moves, so a capability minted for
+ * the old roster is refused at the broker.
+ */
+async function fenceRoster(
+  tx: Transaction,
+  spaceId: string,
+  generation: number,
+  jobs?: JobService,
+): Promise<ContextInvalidated[]> {
+  await tx.update(space).set({ policyGeneration: generation }).where(eq(space.id, spaceId));
+  await tx
+    .update(spaceMembership)
+    .set({ generation: sql`${spaceMembership.generation} + 1` })
+    .where(and(eq(spaceMembership.spaceId, spaceId), eq(spaceMembership.role, 'agent')));
+  // Memory caches and prepared outputs carry the same access fence.
+  await tx.execute(
+    sql`update memory_spaces set policy_generation = policy_generation + 1, access_generation = access_generation + 1 where space_id = ${spaceId}`,
+  );
+  await tx.execute(
+    sql`update memory_contexts set invalidated_at = now(), items = '[]'::jsonb where space_id = ${spaceId} and invalidated_at is null`,
+  );
+  await tx.execute(
+    sql`update memory_prepared set stale = true, content = null where space_id = ${spaceId}`,
+  );
+  return jobs
+    ? new PolicyService(jobs).invalidateInTransaction(
+        tx,
+        spaceId,
+        generation,
+        null,
+        'policy_changed',
+      )
+    : [];
 }

@@ -45,6 +45,7 @@ export * from './reactions.ts';
 export * from './redact.ts';
 export * from './repair.ts';
 export * from './responsibility.ts';
+export * from './rooms.ts';
 export * from './runtime.ts';
 export * from './sandbox-computer.ts';
 export * from './skills.ts';

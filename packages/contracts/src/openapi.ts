@@ -224,6 +224,26 @@ import {
   submissionId,
   submissionResponse,
 } from './responsibility.ts';
+import {
+  addRoomMemberRequest,
+  createRoomRequest,
+  createRoomThreadRequest,
+  meResponse,
+  peopleList,
+  peopleQuery,
+  postRoomMessageRequest,
+  roomDetail,
+  roomLeaveResponse,
+  roomList,
+  roomMembershipResponse,
+  roomMessageResponse,
+  roomPresenceResponse,
+  roomStopResponse,
+  roomStreamFrame,
+  roomThreadList,
+  roomThreadView,
+  updateMeRequest,
+} from './rooms.ts';
 import { runtimeEvent } from './runtime.ts';
 import {
   sandboxComputerList,
@@ -696,6 +716,185 @@ const admission = <T extends z.ZodType>(
     ),
   },
 });
+
+/** The rooms routes. Each names its room in the path and checks the caller's membership itself. */
+function roomsPaths() {
+  const room = idParam('id', 'Room id');
+  const thread = { path: z.object({ id: z.string(), threadId: z.string() }) };
+  const notIn = problem('Not in this room, or no such room');
+  return {
+    '/rooms': {
+      get: {
+        tags: ['rooms'],
+        summary: 'The rooms the signed-in person is in',
+        responses: { '200': jsonResponse('Rooms', roomList) },
+      },
+      post: {
+        tags: ['rooms'],
+        summary: 'Make a room; its maker owns it',
+        description:
+          'A room is a shared space where several people talk to one agent. The agent acts as ' +
+          'the room, never as any one person, and reads only what the room has.',
+        requestBody: json(createRoomRequest),
+        responses: {
+          '201': jsonResponse('The new room', roomDetail),
+          '403': problem('Only a person can make a room'),
+        },
+      },
+    },
+    '/rooms/{id}': {
+      get: {
+        tags: ['rooms'],
+        summary: 'A room, its people and how it works',
+        requestParams: room,
+        responses: { '200': jsonResponse('The room', roomDetail), '404': notIn },
+      },
+    },
+    '/rooms/{id}/members': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Add a person to a room',
+        description:
+          'Who can read the room changes, so work under way in it starts again with the new people.',
+        requestParams: room,
+        requestBody: json(addRoomMemberRequest),
+        responses: {
+          '201': jsonResponse('The new member', roomMembershipResponse),
+          '403': problem('Only an owner of the room adds people'),
+          '404': notIn,
+        },
+      },
+    },
+    '/rooms/{id}/members/{principalId}': {
+      delete: {
+        tags: ['rooms'],
+        summary: 'Remove someone from a room, or leave it',
+        description:
+          'Their access ends at once, including any thread they have open. What they said stays in the room.',
+        requestParams: { path: z.object({ id: z.string(), principalId: z.string() }) },
+        responses: {
+          '200': jsonResponse('Removed', roomLeaveResponse),
+          '403': problem('Only an owner removes someone else; the owner cannot be removed'),
+          '404': notIn,
+        },
+      },
+    },
+    '/people': {
+      get: {
+        tags: ['rooms'],
+        summary: 'People on this installation who can be added to a room',
+        requestParams: { query: peopleQuery },
+        responses: {
+          '200': jsonResponse('People', peopleList),
+          '403': problem('Only a person can look up people'),
+        },
+      },
+    },
+    '/rooms/{id}/threads': {
+      get: {
+        tags: ['rooms'],
+        summary: "A room's threads, most recently active first",
+        requestParams: room,
+        responses: { '200': jsonResponse('Threads', roomThreadList), '404': notIn },
+      },
+      post: {
+        tags: ['rooms'],
+        summary: 'Start a thread with its first message',
+        description:
+          'With `ask_agent`, or a message that names the agent, the first message asks the agent.',
+        requestParams: room,
+        requestBody: json(createRoomThreadRequest),
+        responses: {
+          '201': jsonResponse('The thread and its first message', roomMessageResponse),
+          '404': notIn,
+          '409': problem('The submission ID belongs to a different message'),
+        },
+      },
+    },
+    '/rooms/{id}/threads/{threadId}': {
+      get: {
+        tags: ['rooms'],
+        summary: 'A thread: every message with its author, and each request the agent was asked',
+        requestParams: thread,
+        responses: { '200': jsonResponse('The thread', roomThreadView), '404': notIn },
+      },
+    },
+    '/rooms/{id}/threads/{threadId}/messages': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Post a message in a thread',
+        description:
+          'A message asks the agent when it names the agent, or follows straight on from the ' +
+          "agent's answer to its author. An ask reaches the asker's own request, never anyone " +
+          "else's; while another request in the thread is under way, it waits its turn. A message " +
+          'that does not ask starts nothing.',
+        requestParams: thread,
+        requestBody: json(postRoomMessageRequest),
+        responses: {
+          '200': jsonResponse('The message', roomMessageResponse),
+          '404': notIn,
+          '409': problem(
+            'The thread is closed, or the submission ID belongs to a different message',
+          ),
+        },
+      },
+    },
+    '/rooms/{id}/threads/{threadId}/events': {
+      get: {
+        tags: ['rooms'],
+        summary: "A thread's live frames: messages and the agent's work, in order",
+        description:
+          'With `Accept: text/event-stream`, a stream of frames; otherwise one page. Each frame ' +
+          'carries `seq`; resume with `Last-Event-ID`. The stream closes once the reader is no ' +
+          'longer in the room.',
+        requestParams: {
+          path: z.object({ id: z.string(), threadId: z.string() }),
+          query: z.object({ after: z.string().optional() }),
+          header: z.object({ 'Last-Event-ID': z.string().optional() }),
+        },
+        responses: {
+          '200': {
+            description: 'Frames',
+            content: {
+              'application/json': {
+                schema: z.object({
+                  frames: z.array(roomStreamFrame),
+                  next_cursor: z.number().int().nonnegative(),
+                }),
+              },
+              'text/event-stream': {
+                schema: z.string(),
+                example: 'id: 42\nevent: message\ndata: {"seq":42,"kind":"message"}\n\n',
+              },
+            },
+          },
+          '404': notIn,
+        },
+      },
+    },
+    '/rooms/{id}/requests/{jobId}/stop': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Stop what the agent is doing for one request',
+        requestParams: { path: z.object({ id: z.string(), jobId: z.string() }) },
+        responses: {
+          '200': jsonResponse('The request', roomStopResponse),
+          '403': problem('Only the person who asked, or an owner of the room'),
+          '404': notIn,
+        },
+      },
+    },
+    '/rooms/{id}/presence': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Say the signed-in person is looking at the room',
+        description: 'Display only: who may read a room is decided by membership, not presence.',
+        requestParams: room,
+        responses: { '200': jsonResponse('Who is here now', roomPresenceResponse), '404': notIn },
+      },
+    },
+  };
+}
 
 export const OPENAPI_VERSION = '0.1.0-pre';
 
@@ -1202,6 +1401,7 @@ export function buildOpenApiDocument() {
           },
         },
         ...experiencePaths(),
+        ...roomsPaths(),
         '/responsibilities': {
           post: {
             tags: ['jobs'],
@@ -1662,6 +1862,16 @@ export function buildOpenApiDocument() {
             security: [{ session: [] }],
             responses: {
               '200': jsonResponse('The signed-in account', ownerResponse),
+              '401': problem('No session, or the session has expired'),
+            },
+          },
+          patch: {
+            tags: ['account'],
+            summary: 'Change the name other people in a room see',
+            security: [{ session: [] }],
+            requestBody: json(updateMeRequest),
+            responses: {
+              '200': jsonResponse('The signed-in account', meResponse),
               '401': problem('No session, or the session has expired'),
             },
           },

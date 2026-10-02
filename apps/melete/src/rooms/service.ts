@@ -1,0 +1,567 @@
+/**
+ * Rooms. A room is a shared space; its people talk in threads, and its agent
+ * acts as the room's own principal, never as any one of them. Every method
+ * here takes the person asking as an argument and checks their membership,
+ * at its current generation, before it reads or writes anything.
+ */
+import { createHash } from 'node:crypto';
+import {
+  type RoomRole,
+  type RoomStreamFrame,
+  roomDetail,
+  roomList,
+  roomMember,
+  roomStreamFrame,
+  unavailable,
+} from '@melete/contracts';
+import { and, asc, desc, eq, gt, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { ServiceError } from '../api/errors.ts';
+import type { Database } from '../db/client.ts';
+import { event, job, principal, space, spaceMembership } from '../db/schema.ts';
+import { serviceTransaction, type Transaction } from '../db/transaction.ts';
+import type { ExperienceEvents } from '../experience/events.ts';
+import { newId } from '../ids.ts';
+import type { AttemptRunner } from '../jobs/runner.ts';
+import { principalContext, spaceAuthority } from '../principals/authority.ts';
+import type { PrincipalService } from '../principals/service.ts';
+import { presentIn } from './presence.ts';
+import { messageView, requestView, threadView } from './projection.ts';
+import {
+  type RoomWork,
+  releaseThread,
+  roomAgentOf,
+  roomPrincipalOf,
+  startRequest,
+  threadHeld,
+  touchMessage,
+} from './release.ts';
+import { roomMessage, roomPresence, roomThread } from './schema.ts';
+import { displayName, namesOf } from './transcript.ts';
+
+const missing = () => new ServiceError('not_found', 'That room is not here.', 404);
+const roomOwnerOnly = () =>
+  new ServiceError('scope_denied', 'Only an owner of this room can do that.', 403);
+
+/** The room's agent is asked when a message names it: `@Melete`, or `@` and the agent's name. */
+export function mentionsOf(text: string, agentName: string): { mentions: string[]; asks: boolean } {
+  const mentions = [...text.matchAll(/(?:^|[^\w@])@([\p{L}\p{N}_.-]+)/gu)].map(
+    (match) => match[1]?.replace(/[.-]+$/, '') ?? '',
+  );
+  const lower = text.toLowerCase();
+  const names = [...new Set(['melete', agentName.trim().toLowerCase()])].filter(Boolean);
+  const word = /[\p{L}\p{N}_]/u;
+  // `@name` standing on its own: not inside an address, and not the start of a longer word.
+  const asks = names.some((name) => {
+    for (let at = lower.indexOf(`@${name}`); at >= 0; at = lower.indexOf(`@${name}`, at + 1)) {
+      const before = lower[at - 1];
+      const after = lower[at + name.length + 1];
+      if (
+        (before === undefined || !(word.test(before) || before === '@' || before === '.')) &&
+        (after === undefined || !word.test(after))
+      )
+        return true;
+    }
+    return false;
+  });
+  return { mentions: mentions.filter(Boolean), asks };
+}
+
+export type RoomDeps = RoomWork & {
+  db: Database;
+  principals: PrincipalService;
+  runner?: AttemptRunner;
+  /** The conversation projector, run as the room's principal for the room's requests. */
+  events?: ExperienceEvents;
+};
+
+export class RoomService {
+  constructor(readonly deps: RoomDeps) {}
+
+  /**
+   * The caller's place in a room, checked now: a current membership of a
+   * shared space that is not being removed. The room's own principal and any
+   * other space are refused as if the room were not there.
+   */
+  async access(reader: Database | Transaction, spaceId: string, actor: string, lock = false) {
+    const granted = await spaceAuthority(reader, spaceId, actor, lock).catch((error: unknown) => {
+      if (error instanceof ServiceError) throw missing();
+      throw error;
+    });
+    if (granted.space.kind !== 'shared' || granted.role === 'agent') throw missing();
+    const room = await roomPrincipalOf(reader, spaceId);
+    return { role: granted.role as RoomRole, roomPrincipal: room.id, space: granted.space };
+  }
+
+  private async kindOf(actor: string) {
+    const [row] = await this.deps.db
+      .select({ kind: principal.kind })
+      .from(principal)
+      .where(eq(principal.id, actor));
+    return row?.kind ?? null;
+  }
+
+  async list(actor: string) {
+    const rows = await this.deps.db
+      .select({ space, role: spaceMembership.role })
+      .from(spaceMembership)
+      .innerJoin(space, eq(space.id, spaceMembership.spaceId))
+      .where(
+        and(
+          eq(spaceMembership.principalId, actor),
+          isNull(spaceMembership.revokedAt),
+          ne(spaceMembership.role, 'agent'),
+          eq(space.kind, 'shared'),
+          isNull(space.removedAt),
+        ),
+      )
+      .orderBy(asc(space.createdAt), asc(space.id));
+    const rooms = [];
+    for (const row of rows) rooms.push(await this.summary(row.space, row.role as RoomRole, actor));
+    return roomList.parse({ rooms });
+  }
+
+  private async summary(row: typeof space.$inferSelect, role: RoomRole, actor: string) {
+    const [seen] = await this.deps.db
+      .select({ at: roomPresence.lastSeenAt })
+      .from(roomPresence)
+      .where(and(eq(roomPresence.spaceId, row.id), eq(roomPresence.principalId, actor)));
+    const [unread] = await this.deps.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(roomMessage)
+      .where(
+        and(
+          eq(roomMessage.spaceId, row.id),
+          ne(roomMessage.authorPrincipalId, actor),
+          seen ? gt(roomMessage.createdAt, seen.at) : undefined,
+        ),
+      );
+    return {
+      id: row.id,
+      name: row.name,
+      purpose: row.purpose,
+      my_role: role,
+      unread: Number(unread?.count ?? 0),
+      created_at: row.createdAt.toISOString(),
+    };
+  }
+
+  async create(actor: string, name: string, purpose?: string) {
+    if ((await this.kindOf(actor)) !== 'person')
+      throw new ServiceError('scope_denied', 'Only a person can make a room.', 403);
+    const made = await this.deps.principals.createShared(actor, name, purpose);
+    if (!made) throw new Error('Space insert returned no row');
+    await serviceTransaction(this.deps.db, (tx) => roomAgentOf(tx, made.id));
+    return made.id;
+  }
+
+  async detail(spaceId: string, actor: string) {
+    const access = await this.access(this.deps.db, spaceId, actor);
+    const rows = await this.deps.db
+      .select({ membership: spaceMembership, person: principal })
+      .from(spaceMembership)
+      .innerJoin(principal, eq(principal.id, spaceMembership.principalId))
+      .where(
+        and(
+          eq(spaceMembership.spaceId, spaceId),
+          isNull(spaceMembership.revokedAt),
+          ne(spaceMembership.role, 'agent'),
+        ),
+      )
+      .orderBy(asc(spaceMembership.createdAt), asc(spaceMembership.principalId));
+    const present = new Set(await presentIn(this.deps.db, spaceId));
+    const persona = await serviceTransaction(this.deps.db, (tx) => roomAgentOf(tx, spaceId));
+    return roomDetail.parse({
+      room: {
+        ...(await this.summary(access.space, access.role, actor)),
+        agent_name: persona.name,
+      },
+      members: rows.map(({ membership, person }) =>
+        roomMember.parse({
+          principal_id: person.id,
+          display_name: displayName(person),
+          role: membership.role,
+          // A guest sees who is in the room, not how to reach them.
+          ...(access.role === 'guest' ? {} : { email: person.email }),
+          present: present.has(person.id),
+        }),
+      ),
+      policy: { approvers: 'requester', agent_turns: 'asked', guests_may_ask: true },
+    });
+  }
+
+  async addMember(spaceId: string, actor: string, memberId: string) {
+    const access = await this.access(this.deps.db, spaceId, actor);
+    if (access.role !== 'owner') throw roomOwnerOnly();
+    await this.deps.principals.grant(actor, spaceId, memberId);
+    const [person] = await this.deps.db.select().from(principal).where(eq(principal.id, memberId));
+    if (!person) throw missing();
+    return {
+      member: roomMember.parse({
+        principal_id: person.id,
+        display_name: displayName(person),
+        role: 'member',
+        email: person.email,
+        present: false,
+      }),
+    };
+  }
+
+  /** An owner removes someone, or a person leaves. Their access, and their open streams, end at once. */
+  async removeMember(spaceId: string, actor: string, memberId: string) {
+    const access = await this.access(this.deps.db, spaceId, actor);
+    if (access.role !== 'owner' && actor !== memberId) throw roomOwnerOnly();
+    await this.deps.principals.revoke(actor, spaceId, memberId);
+    return { removed: memberId };
+  }
+
+  /** Accounts a person can add to a room: people, never a room's own principal or a guest. */
+  async people(actor: string, query?: string) {
+    if ((await this.kindOf(actor)) !== 'person')
+      throw new ServiceError('scope_denied', 'Only a person can look up people.', 403);
+    const pattern = query?.trim() ? `%${query.trim().replace(/[\\%_]/g, '\\$&')}%` : undefined;
+    const rows = await this.deps.db
+      .select()
+      .from(principal)
+      .where(
+        and(
+          eq(principal.kind, 'person'),
+          pattern
+            ? or(ilike(principal.email, pattern), ilike(principal.displayName, pattern))
+            : undefined,
+        ),
+      )
+      .orderBy(asc(principal.email))
+      .limit(50);
+    return {
+      people: rows.map((row) => ({ id: row.id, display_name: displayName(row), email: row.email })),
+    };
+  }
+
+  async rename(actor: string, name: string | null) {
+    const [row] = await this.deps.db
+      .update(principal)
+      .set({ displayName: name })
+      .where(and(eq(principal.id, actor), inArray(principal.kind, ['person', 'guest'])))
+      .returning();
+    if (!row) throw new ServiceError('not_found', 'Account not found.', 404);
+    return {
+      owner: {
+        id: row.id,
+        email: row.email,
+        created_at: row.createdAt.toISOString(),
+        display_name: row.displayName,
+      },
+    };
+  }
+
+  async threads(spaceId: string, actor: string) {
+    await this.access(this.deps.db, spaceId, actor);
+    const rows = await this.deps.db
+      .select()
+      .from(roomThread)
+      .where(eq(roomThread.spaceId, spaceId))
+      .orderBy(desc(roomThread.lastActivityAt), desc(roomThread.id))
+      .limit(200);
+    const names = await namesOf(
+      this.deps.db,
+      rows.map((row) => row.createdBy),
+    );
+    return { threads: rows.map((row) => threadView(row, names)) };
+  }
+
+  private async requireThread(reader: Database | Transaction, spaceId: string, threadId: string) {
+    const [row] = await reader
+      .select()
+      .from(roomThread)
+      .where(and(eq(roomThread.id, threadId), eq(roomThread.spaceId, spaceId)));
+    if (!row) throw new ServiceError('not_found', 'That thread is not here.', 404);
+    return row;
+  }
+
+  /** A thread with every message and author, and each request's answer, cards and receipts. */
+  async thread(spaceId: string, threadId: string, actor: string) {
+    await this.access(this.deps.db, spaceId, actor);
+    const row = await this.requireThread(this.deps.db, spaceId, threadId);
+    // A waiting ask whose turn has come starts here too, should a hook have missed it.
+    await serviceTransaction(this.deps.db, (tx) => releaseThread(tx, this.deps, threadId));
+    const messages = await this.deps.db
+      .select()
+      .from(roomMessage)
+      .where(eq(roomMessage.threadId, threadId))
+      .orderBy(asc(roomMessage.createdAt), asc(roomMessage.id));
+    const requests = await this.deps.db
+      .select()
+      .from(job)
+      .where(
+        and(eq(job.roomThreadId, threadId), eq(job.spaceId, spaceId), eq(job.audience, 'room')),
+      )
+      .orderBy(asc(job.createdAt), asc(job.id));
+    const names = await namesOf(this.deps.db, [
+      row.createdBy,
+      ...messages.map((message) => message.authorPrincipalId),
+      ...requests.flatMap((request) =>
+        request.requestedByPrincipalId ? [request.requestedByPrincipalId] : [],
+      ),
+    ]);
+    const views = [];
+    for (const request of requests) views.push(await requestView(this.deps.db, request, names));
+    return {
+      thread: threadView(row, names),
+      messages: messages.map((message) => messageView(message, names)),
+      requests: views,
+    };
+  }
+
+  /**
+   * Post a message, in a new thread or an existing one. It asks the agent when
+   * it names the agent, when it starts a thread with `ask_agent`, or when it
+   * follows straight on from the agent's answer to its own author. An ask
+   * reaches the asker's own request or a new one; if another request holds the
+   * thread, it waits its turn. A message that does not ask starts nothing.
+   */
+  async post(
+    spaceId: string,
+    actor: string,
+    input: { text: string; submission_id: string },
+    target: { threadId: string } | { title?: string; askAgent?: boolean },
+  ) {
+    const key = createHash('sha256')
+      .update(`${spaceId}:${actor}:${input.submission_id}`)
+      .digest('hex');
+    const result = await this.deps.jobs.transaction(async (tx) => {
+      await this.access(tx, spaceId, actor, true);
+      const [replayed] = await tx
+        .select()
+        .from(roomMessage)
+        .where(eq(roomMessage.submissionId, key));
+      if (replayed) {
+        if (
+          replayed.text !== input.text ||
+          ('threadId' in target && replayed.threadId !== target.threadId)
+        )
+          throw new ServiceError(
+            'submission_conflict',
+            'This submission ID belongs to a different message.',
+            409,
+          );
+        const thread = await this.requireThread(tx, spaceId, replayed.threadId);
+        return { thread, message: replayed };
+      }
+      const persona = await roomAgentOf(tx, spaceId);
+      let thread: typeof roomThread.$inferSelect;
+      let first = false;
+      if ('threadId' in target) {
+        const [locked] = await tx
+          .select()
+          .from(roomThread)
+          .where(and(eq(roomThread.id, target.threadId), eq(roomThread.spaceId, spaceId)))
+          .for('update');
+        if (!locked) throw new ServiceError('not_found', 'That thread is not here.', 404);
+        if (locked.archivedAt)
+          throw new ServiceError('thread_archived', 'This thread is closed.', 409);
+        thread = locked;
+      } else {
+        const title =
+          target.title?.trim() || input.text.split('\n')[0]?.trim().slice(0, 200) || 'Thread';
+        const [made] = await tx
+          .insert(roomThread)
+          .values({ id: newId('rth'), spaceId, title, createdBy: actor })
+          .returning();
+        if (!made) throw new Error('Thread insert returned no row');
+        thread = made;
+        first = true;
+      }
+      const { mentions, asks: named } = mentionsOf(input.text, persona.name);
+      const asks =
+        named ||
+        (first && 'askAgent' in target && target.askAgent === true) ||
+        (!first && (await this.followsAnswer(tx, thread.id, actor)));
+      const held = asks && (await threadHeld(tx, thread.id));
+      const [inserted] = await tx
+        .insert(roomMessage)
+        .values({
+          id: newId('rmg'),
+          spaceId,
+          threadId: thread.id,
+          authorPrincipalId: actor,
+          text: input.text,
+          mentions,
+          requestState: asks ? 'pending' : 'none',
+          submissionId: key,
+        })
+        .returning();
+      if (!inserted) throw new Error('Message insert returned no row');
+      await tx
+        .update(roomThread)
+        .set({ lastActivityAt: new Date() })
+        .where(eq(roomThread.id, thread.id));
+      let message = await touchMessage(tx, inserted);
+      if (asks && !held && (await startRequest(tx, this.deps, message))) {
+        const [current] = await tx.select().from(roomMessage).where(eq(roomMessage.id, message.id));
+        if (current) message = current;
+      }
+      return { thread, message };
+    });
+    const names = await namesOf(this.deps.db, [
+      result.thread.createdBy,
+      result.message.authorPrincipalId,
+    ]);
+    return {
+      thread: threadView(result.thread, names),
+      message: messageView(result.message, names),
+      request_job_id: result.message.requestJobId,
+    };
+  }
+
+  /**
+   * Whether a message follows straight on from the agent's answer to its
+   * author: the thread's last message is the author's own ask, and that
+   * request has answered.
+   */
+  private async followsAnswer(tx: Transaction, threadId: string, actor: string) {
+    const [last] = await tx
+      .select()
+      .from(roomMessage)
+      .where(eq(roomMessage.threadId, threadId))
+      .orderBy(desc(roomMessage.createdAt), desc(roomMessage.id))
+      .limit(1);
+    if (!last || last.authorPrincipalId !== actor || !last.requestJobId) return false;
+    const [request] = await tx.select().from(job).where(eq(job.id, last.requestJobId));
+    return Boolean(request && !['queued', 'running'].includes(request.state));
+  }
+
+  /** Stop a request's turn in flight: the person who asked it, or a room owner. */
+  async stop(spaceId: string, jobId: string, actor: string) {
+    const access = await this.access(this.deps.db, spaceId, actor);
+    const [row] = await this.deps.db
+      .select()
+      .from(job)
+      .where(and(eq(job.id, jobId), eq(job.spaceId, spaceId), eq(job.audience, 'room')));
+    if (!row) throw new ServiceError('not_found', 'That request is not here.', 404);
+    if (row.requestedByPrincipalId !== actor && access.role !== 'owner')
+      throw new ServiceError(
+        'scope_denied',
+        'Only the person who asked, or an owner of this room, can stop it.',
+        403,
+      );
+    if (!this.deps.runner) return unavailable('Stopping is not connected to the agent yet.');
+    if (row.currentTurnId) await this.deps.runner.stopConversation(jobId);
+    const [after] = await this.deps.db.select().from(job).where(eq(job.id, jobId));
+    const names = await namesOf(
+      this.deps.db,
+      row.requestedByPrincipalId ? [row.requestedByPrincipalId] : [],
+    );
+    return { request: await requestView(this.deps.db, after ?? row, names) };
+  }
+
+  async presence(spaceId: string, actor: string) {
+    await this.access(this.deps.db, spaceId, actor);
+    await this.deps.db
+      .insert(roomPresence)
+      .values({ spaceId, principalId: actor })
+      .onConflictDoUpdate({
+        target: [roomPresence.spaceId, roomPresence.principalId],
+        set: { lastSeenAt: new Date() },
+      });
+    return { present: await presentIn(this.deps.db, spaceId) };
+  }
+
+  /**
+   * One page of a thread's live frames after `after`: messages as they are now,
+   * and the conversation events of the thread's requests, in commit order. The
+   * requests are projected as the room's principal, the identity they belong
+   * to, after the viewer's own membership has been checked.
+   */
+  async frames(
+    spaceId: string,
+    threadId: string,
+    actor: string,
+    after: number,
+    limit = 100,
+  ): Promise<RoomStreamFrame[]> {
+    const access = await this.access(this.deps.db, spaceId, actor);
+    await this.requireThread(this.deps.db, spaceId, threadId);
+    const requests = await this.deps.db
+      .select({ id: job.id })
+      .from(job)
+      .where(
+        and(eq(job.roomThreadId, threadId), eq(job.spaceId, spaceId), eq(job.audience, 'room')),
+      );
+    const ids = requests.map((request) => request.id);
+    const events = this.deps.events;
+    if (events)
+      for (const id of ids)
+        await principalContext.run(access.roomPrincipal, () =>
+          events.sync(spaceId, id, access.roomPrincipal),
+        );
+    const messages = await this.deps.db
+      .select()
+      .from(roomMessage)
+      .where(and(eq(roomMessage.threadId, threadId), gt(roomMessage.streamSeq, after)))
+      .orderBy(asc(roomMessage.streamSeq))
+      .limit(limit);
+    const projected = ids.length
+      ? await this.deps.db
+          .select()
+          .from(event)
+          .where(
+            and(
+              inArray(event.jobId, ids),
+              gt(event.seq, after),
+              sql`${event.payload}->>'kind' = 'experience'`,
+            ),
+          )
+          .orderBy(asc(event.seq))
+          .limit(limit)
+      : [];
+    const names = await namesOf(
+      this.deps.db,
+      messages.map((message) => message.authorPrincipalId),
+    );
+    const frames: RoomStreamFrame[] = [
+      ...messages.map((message) =>
+        roomStreamFrame.parse({
+          seq: message.streamSeq,
+          kind: 'message',
+          message: messageView(message, names),
+        }),
+      ),
+      ...projected.map((row) => {
+        const payload = row.payload as Record<string, unknown>;
+        return roomStreamFrame.parse({
+          seq: row.seq,
+          kind: 'request',
+          request_job_id: row.jobId,
+          event: {
+            seq: row.seq,
+            conversation_id: row.jobId,
+            turn_id: payload.turn_id ?? null,
+            created_at: payload.at ?? row.createdAt.toISOString(),
+            item: payload.item,
+          },
+        });
+      }),
+    ].sort((a, b) => a.seq - b.seq);
+    // Two sources each cut at `limit`: only the frames below both cuts are complete.
+    const cut = Math.min(
+      messages.length === limit
+        ? (messages.at(-1)?.streamSeq ?? Number.MAX_SAFE_INTEGER)
+        : Number.MAX_SAFE_INTEGER,
+      projected.length === limit
+        ? (projected.at(-1)?.seq ?? Number.MAX_SAFE_INTEGER)
+        : Number.MAX_SAFE_INTEGER,
+    );
+    return frames.filter((frame) => frame.seq <= cut);
+  }
+
+  /** Whether the person may still read the room, for a stream's per-frame check. */
+  async stillIn(spaceId: string, actor: string): Promise<boolean> {
+    return this.access(this.deps.db, spaceId, actor).then(
+      () => true,
+      (error: unknown) => {
+        if (error instanceof ServiceError) return false;
+        throw error;
+      },
+    );
+  }
+}

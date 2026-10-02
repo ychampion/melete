@@ -122,12 +122,14 @@ import {
   spaceAuthority,
 } from './principals/authority.ts';
 import { mountPrincipals } from './principals/routes.ts';
+import { PrincipalService } from './principals/service.ts';
 import { withPrivacyGate } from './privacy/gate.ts';
 import { defaultPrivacyRouter, PostgresPrivacyStore, PrivacyRouter } from './privacy/index.ts';
 import { mountPrivacy } from './privacy/routes.ts';
 import { engineProtocol, providerAddress, servicePrivacyRouter } from './privacy/service.ts';
 import { mountPush } from './push/routes.ts';
 import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
+import { mountRooms } from './rooms/routes.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
 import { assertDockerEngine } from './runtime/docker-engine.ts';
@@ -335,7 +337,8 @@ export function createApp(deps: AppDeps) {
       companion: deps.voiceCompanion ?? null,
     });
   if (deps.db) mountPush(app, deps.push ?? new PushService(deps.db, pushConfig(deps.env)));
-  if (deps.db)
+  const experience =
+    deps.db &&
     mountExperience(app, {
       db: deps.db,
       jobs: deps.jobs,
@@ -351,6 +354,17 @@ export function createApp(deps: AppDeps) {
       changes: deps.events,
       browser: Boolean(deps.browserSessions),
       privacy,
+    });
+  // Rooms: shared spaces where several people talk to one agent.
+  if (deps.db && deps.jobs && submissions)
+    mountRooms(app, {
+      db: deps.db,
+      jobs: deps.jobs,
+      submissions,
+      principals: new PrincipalService(deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs),
+      runner: deps.runner,
+      events: experience ? experience.events : undefined,
+      changes: deps.events,
     });
   if (deps.db)
     mountCompanies(app, {

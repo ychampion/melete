@@ -45,17 +45,19 @@ import {
   knowledgeRecord,
   planMilestone,
   question,
+  space,
   task,
   trigger,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
-import { agentIdentity, agentView } from '../experience/agents.ts';
+import { agentIdentity, agentView, roomIdentity } from '../experience/agents.ts';
 import { procedureReach, selectProcedureSkills } from '../learning/selection.ts';
 import type { MemoryScope, MemorySql } from '../memory/db.ts';
 import { pendingRepairBriefs } from '../memory/outputs.ts';
 import { asKnowledge, attemptRecallQuery, recall } from '../memory/recall.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { selectedContext } from '../principals/context.ts';
+import { roomTranscript } from '../rooms/transcript.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { PRIVACY_DECISION, questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
@@ -269,6 +271,8 @@ export function assembleHistory(
   events: readonly HistoryEvent[],
   attempts: readonly HistoryAttempt[],
   afterSeq: number,
+  /** In a room, the name of each person who spoke, by principal; each message carries its speaker's. */
+  names?: ReadonlyMap<string, string>,
 ): Pick<AttemptBundle, 'inputs' | 'transcript'> & { progressSummary: string } {
   const inputs: AttemptBundle['inputs'] = {
     new_user_messages: [],
@@ -299,9 +303,14 @@ export function assembleHistory(
       payload.kind === 'user_message' &&
       typeof payload.text === 'string'
     ) {
+      const speaker =
+        names && typeof payload.principal_id === 'string'
+          ? names.get(payload.principal_id)
+          : undefined;
       const message: CanonicalMessage = {
         role: 'user',
         content: payload.text,
+        ...(speaker ? { name: speaker } : {}),
         at: row.createdAt.toISOString(),
       };
       transcript.push(message);
@@ -587,7 +596,14 @@ export async function buildAttemptSkeleton(
     }
     return [entry];
   });
-  const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq);
+  // A room's request reads its thread, with each person's name on what they said.
+  const room = row.audience === 'room' ? await roomTranscript(tx, row) : null;
+  const history = assembleHistory(
+    usableEvents,
+    attempts.filter(contextMatches),
+    afterSeq,
+    room?.names,
+  );
   // A decision names an action id; the attempt needs to know what that action
   // is. The row is this job's own, and the payload is the one the owner read.
   const decided = history.inputs.approval_results.map((entry) => entry.action_id);
@@ -709,12 +725,21 @@ export async function buildAttemptSkeleton(
         .from(agent)
         .where(and(eq(agent.id, personaId), eq(agent.spaceId, row.spaceId)))
     : [];
+  const [parentSpace] = room
+    ? await tx.select({ name: space.name }).from(space).where(eq(space.id, row.spaceId))
+    : [];
   const [profile] = await tx
     .select({ timeZone: experienceProfile.timeZone })
     .from(experienceProfile)
     .where(eq(experienceProfile.spaceId, row.spaceId));
   return responsibilityAttemptBundle.parse({
-    ...(persona ? { identity: agentIdentity(agentView(persona)) } : {}),
+    ...(persona
+      ? {
+          identity: room
+            ? roomIdentity(agentView(persona), parentSpace?.name ?? 'this room')
+            : agentIdentity(agentView(persona)),
+        }
+      : {}),
     ...(profile?.timeZone ? { time_zone: canonicalTimeZone(profile.timeZone) } : {}),
     ...(access.principalId
       ? { principal_id: access.principalId, membership_generation: access.generation }
@@ -723,7 +748,15 @@ export async function buildAttemptSkeleton(
     attempt: { ...attemptIdentity, job_id: row.id },
     job: {
       title: row.title,
-      objective: [row.objective, await situation(tx, row)].filter(Boolean).join('\n\n'),
+      objective: [
+        row.objective,
+        await situation(tx, row),
+        room
+          ? `Asked by ${room.requester}. Only ${room.requester} can answer this request's questions.`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
       constraints,
       progress_summary: [history.progressSummary, earlierWork].filter(Boolean).join('\n\n'),
       unresolved_questions: wait.kind === 'user_input' ? [wait.question] : [],
@@ -732,7 +765,9 @@ export async function buildAttemptSkeleton(
     },
     inputs: { ...history.inputs, ...(cancelledWait ? { cancelled_wait: cancelledWait } : {}) },
     since_last: delta,
-    transcript: history.transcript,
+    transcript: room
+      ? boundTranscript([...room.thread, ...history.transcript])
+      : history.transcript,
     tools: [],
     skills: mergeSkills(procedures, context.skills),
     knowledge: context.knowledge,

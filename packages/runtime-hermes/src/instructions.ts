@@ -207,8 +207,14 @@ export function renderInput(bundle: AttemptBundle): string {
   for (const event of bundle.inputs.trigger_events) {
     lines.push('', '## Something happened', '', JSON.stringify(event));
   }
+  // In a room each message names who said it; anywhere else it is the owner's.
   for (const message of bundle.inputs.new_user_messages) {
-    lines.push('', '## From the owner', '', message.content);
+    lines.push(
+      '',
+      message.name ? `## From ${message.name}` : '## From the owner',
+      '',
+      message.content,
+    );
   }
 
   return lines.join('\n');

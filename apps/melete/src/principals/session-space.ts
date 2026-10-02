@@ -88,6 +88,9 @@ export async function selectedSpace(
     const access = await spaceAuthority(db, selection.spaceId, principalId);
     const kind = access.space.kind === 'shared' ? 'shared' : 'personal';
     if (kind === 'shared' && access.generation !== selection.generation) return undefined;
+    // Only an owner or a member works in a selected space; any other role
+    // (a room's own principal) is treated as no selection.
+    if (access.role !== 'owner' && access.role !== 'member') return undefined;
     return {
       spaceId: selection.spaceId,
       kind,

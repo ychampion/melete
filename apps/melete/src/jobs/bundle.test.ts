@@ -522,3 +522,30 @@ describe('work an earlier attempt already did', () => {
     expect(summary).not.toContain('<melete-earlier-');
   });
 });
+
+describe("a room request's history", () => {
+  test('each message carries the name of the person who said it, and only when names are given', () => {
+    const events = [
+      {
+        seq: 1,
+        type: 'notice',
+        payload: { kind: 'user_message', text: 'Book the room.', principal_id: 'own_alice' },
+        createdAt: new Date(at),
+      },
+      {
+        seq: 2,
+        type: 'notice',
+        payload: { kind: 'user_message', text: 'For six.', principal_id: 'own_alice' },
+        createdAt: new Date(later),
+      },
+    ];
+    const named = assembleHistory(events, [], 1, new Map([['own_alice', 'Alice']]));
+    expect(named.transcript.map((message) => message.name)).toEqual(['Alice', 'Alice']);
+    expect(named.inputs.new_user_messages).toEqual([
+      { role: 'user', content: 'For six.', name: 'Alice', at: later },
+    ]);
+    expect(assembleHistory(events, [], 1).transcript.every((message) => !('name' in message))).toBe(
+      true,
+    );
+  });
+});

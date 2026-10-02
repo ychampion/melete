@@ -23,9 +23,10 @@ import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { inConversation, withdrawPermissions } from '../jobs/withdraw.ts';
-import { ownJob } from '../principals/authority.ts';
+import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import { agentValues, agentView } from './agents.ts';
 import { answerStream } from './answer-filter.ts';
+import type { ExperienceEvents } from './events.ts';
 import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
 
 /** Turn statuses whose answer may still grow. */
@@ -80,6 +81,8 @@ export async function withdrawPendingPermissions(
 }
 
 export class ExperienceService {
+  /** The conversation projector the routes mounted beside this service, for the rooms routes. */
+  events?: ExperienceEvents;
   constructor(
     readonly db: Database,
     readonly jobs?: JobService,
@@ -105,15 +108,20 @@ export class ExperienceService {
         const text = (input?.payload as { text?: string })?.text;
         if (!text) throw new Error('Accepted conversation message is missing.');
         const turnId = newId('turn');
+        const author = requestPrincipal() ?? row.principalId;
         await tx.insert(experienceTurn).values({
           id: turnId,
           jobId: row.id,
           agentId: row.agentId,
           submissionId: receipt.submission_id,
+          authorPrincipalId: author,
           text,
         });
         await tx.update(job).set({ currentTurnId: turnId }).where(eq(job.id, row.id));
-        await withdrawPendingPermissions(tx, row.id, SUPERSEDED_NOTE);
+        // A new message replaces what its own author asked for. In a room only the
+        // person who asked a request supersedes it; nobody else's words reach it.
+        if (row.audience !== 'room' || author === row.requestedByPrincipalId)
+          await withdrawPendingPermissions(tx, row.id, SUPERSEDED_NOTE);
       };
     }
   }

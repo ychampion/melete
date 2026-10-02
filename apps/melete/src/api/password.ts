@@ -73,7 +73,8 @@ async function setPassword(
 
 /** Operator command and routes share this: an account by its sign-in address. */
 export async function principalByEmail(sql: Sql | TransactionSql, email: string) {
-  const [row] = await sql`select id, email from principal where email = ${email.toLowerCase()}`;
+  const [row] = await sql`select id, email from principal
+    where email = ${email.toLowerCase()} and kind in ('person', 'guest')`;
   return row ? { id: String(row.id), email: String(row.email) } : null;
 }
 

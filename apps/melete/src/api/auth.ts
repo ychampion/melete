@@ -7,7 +7,7 @@ import {
   spaceListResponse,
   unavailable,
 } from '@melete/contracts';
-import { and, eq, gt, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
@@ -59,6 +59,9 @@ export const credentials = z.object({
 });
 
 export type SessionOwner = { id: string; email: string; created_at: string };
+
+/** The kinds of account that may hold a session. A room's own principal never does. */
+export const SIGN_IN_KINDS = ['person', 'guest'];
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -172,7 +175,14 @@ export async function activeSession(db: Database, token: string) {
       principal,
       eq(principal.id, sql`coalesce(${session.principalId}, ${session.ownerId})`),
     )
-    .where(and(eq(session.tokenHash, tokenHash(token)), gt(session.expiresAt, new Date())))
+    .where(
+      and(
+        eq(session.tokenHash, tokenHash(token)),
+        gt(session.expiresAt, new Date()),
+        // A room's own principal holds no session, however one came to be written.
+        inArray(principal.kind, SIGN_IN_KINDS),
+      ),
+    )
     .limit(1);
   return active;
 }
@@ -232,7 +242,7 @@ export function mountAuth(
       const [person] = await db
         .select()
         .from(principal)
-        .where(eq(principal.id, actor.principalId))
+        .where(and(eq(principal.id, actor.principalId), inArray(principal.kind, SIGN_IN_KINDS)))
         .limit(1);
       if (!person) {
         return c.json({ error: { code: 'unauthorized', message: 'The access has ended.' } }, 401);
@@ -474,10 +484,12 @@ export function mountAuth(
     }
     const retryAfter = known ? deviceThrottle.admit(known.nonce) : accountThrottle.admit(account);
     if (retryAfter > 0) return rateLimited(c, retryAfter, 'login');
+    // An account that cannot sign in (a room's own principal) is looked up as if
+    // the email were unknown, before any password is checked, so it costs the same.
     const [found] = await db
       .select()
       .from(principal)
-      .where(eq(principal.email, input.email))
+      .where(and(eq(principal.email, input.email), inArray(principal.kind, SIGN_IN_KINDS)))
       .limit(1);
     const verified = await Bun.password.verify(
       input.password,
