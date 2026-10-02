@@ -345,6 +345,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   paired_device: 'operational',
   device_pairing: 'operational',
   question: 'operational',
+  sandbox_process: 'operational',
   sandbox_session: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
@@ -645,6 +646,11 @@ describe.if(handle !== null)('removing a space', () => {
       values (${`sbx_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'fake',
         ${`sbx_provider_${seeded.spaceId}`}, 'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'closed',
         now(), now())`;
+    // A background process that ran in the agent's computer and was stopped.
+    await sql`insert into sandbox_process (id, space_id, agent_id, connection_id, session_id,
+        command_redacted, command_digest, cwd, name, state, expires_at, ended_at)
+      values (${`prc_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.agentId}, ${seeded.connectionId},
+        ${`sbx_${seeded.spaceId}`}, 'npm test', 'digest', '.', 'tests', 'stopped', now(), now())`;
     // The privacy router's rows: settings, a sealed vault, a conversation's state, an audit row.
     const conversation = `job_privacy_${seeded.spaceId}`;
     await sql`insert into privacy_settings (space_id, settings) values (${seeded.spaceId}, '{}'::jsonb)`;

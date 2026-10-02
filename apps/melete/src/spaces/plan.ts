@@ -107,6 +107,8 @@ export async function sweepOperational(
     // went in the sandboxes phase, which finished on what the provider still
     // held rather than on these rows, so the rows can go now; their command
     // records go with them.
+    // Its processes went with its sandboxes; their rows name the sessions.
+    await tx`delete from sandbox_process where space_id = ${spaceId}`;
     await tx`delete from sandbox_session where space_id = ${spaceId}`;
     // A paired computer names its connection too, and a pairing code its space.
     await tx`delete from paired_device where space_id = ${spaceId}`;
