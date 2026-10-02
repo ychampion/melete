@@ -21,6 +21,7 @@ import type { AppDeps } from './app.ts';
 import { MockBeliefError, MockBeliefs } from './beliefs.ts';
 import { ComputerMock } from './computer.ts';
 import { DEMO_AGENTS } from './demo-agents.ts';
+import { MockRunError, MockRuns } from './runs.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { newId } from './store.ts';
 
@@ -57,6 +58,12 @@ type Chat = {
   follow?: { from: string; settle?: () => void };
   /** A command under way on the agent's computer, finished with its tool entry. */
   openCommand?: () => void;
+  /**
+   * The agent is in the middle of a message: the next text adds to it. Any
+   * work in between ends the message, and the saved answer keeps only the
+   * last one, as the service's does.
+   */
+  saying?: boolean;
 };
 type Proposal = {
   ref: string;
@@ -154,6 +161,8 @@ export class ExperienceMock {
     () => this.deps.store.now(),
     () => this.profile.time_zone,
   );
+  /** Long work in the background, seeded at three stages. */
+  readonly runs = new MockRuns(() => this.deps.store.now());
   /** Answers given during setup, by key, so the first message can refer to one. */
   readonly answers = new Map<string, string>();
   /** Set once the welcome scenario has played; every later message picks by text. */
@@ -560,6 +569,7 @@ export class ExperienceMock {
     japan.conversation_ids = [kyoto.id];
     this.start('Passport renewal', atlas.id, 'Which documents do I need to renew in person?');
     this.beliefs.seed(kyoto.id);
+    this.runs.seed(kyoto.id, nova.id);
   }
   /**
    * Every experience event is also a store event on the conversation's job, so
@@ -763,6 +773,8 @@ export class ExperienceMock {
       this.finish(chat, 'Your request is ready.');
       return;
     }
+    if (step.step !== 'text' && step.step !== 'reason' && step.step !== 'react')
+      chat.saying = false;
     if (step.step === 'tool') {
       const command = this.computer.command(chat.view.id, step, 'running');
       if (command) chat.openCommand = () => this.computer.finish(chat.view.id, command, step);
@@ -778,6 +790,17 @@ export class ExperienceMock {
                 ? 'web'
                 : 'connector';
       const title = plainText(step.title, 'Used a tool', C.TOOL_TITLE_LIMIT);
+      // A screenshot step shows the picture its computer holds now.
+      const shot =
+        step.detail?.type === 'artifact' && step.detail.id === 'screenshot'
+          ? this.computer.shot(chat.view.id)
+          : undefined;
+      const detail =
+        shot === undefined
+          ? (step.detail ?? null)
+          : shot
+            ? { type: 'artifact' as const, id: shot }
+            : null;
       this.tool(
         chat,
         {
@@ -788,7 +811,7 @@ export class ExperienceMock {
           input_summary: step.input ?? null,
           output_summary:
             step.output ?? (step.meta ? { text: step.meta.slice(0, C.TOOL_SUMMARY_LIMIT) } : null),
-          detail: step.detail ?? null,
+          detail,
           parent: null,
           ...(step.input_excerpt ? { input_excerpt: step.input_excerpt } : {}),
           ...(step.output_excerpt ? { output_excerpt: step.output_excerpt } : {}),
@@ -1003,7 +1026,8 @@ export class ExperienceMock {
       const text = answerText(this.fill(step.text));
       if (text) {
         const turn = chat.turns.at(-1);
-        if (turn) turn.answer += text;
+        if (turn) turn.answer = chat.saying ? turn.answer + text : text;
+        chat.saying = true;
         this.event(chat, { type: 'text_delta', text });
         this.state(chat, 'streaming');
       }
@@ -1572,6 +1596,13 @@ export class ExperienceMock {
     } catch (error) {
       if (error instanceof MockBeliefError)
         throw new MockExperienceError(error.status, error.message);
+      throw error;
+    }
+    try {
+      const answered = this.runs.handle(key, id, input, c.req.query());
+      if (answered !== undefined) return answered;
+    } catch (error) {
+      if (error instanceof MockRunError) throw new MockExperienceError(error.status, error.message);
       throw error;
     }
     switch (key) {

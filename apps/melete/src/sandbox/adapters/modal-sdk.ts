@@ -47,6 +47,7 @@ const CHANNEL_IDLE_MS = 30_000;
 const THROTTLE_WAIT_SECONDS = 60;
 /** The SDK refuses a command line of 2^16 bytes or more before sending it. */
 const ARGV_LIMIT = 60_000;
+const GRPC_INVALID_ARGUMENT = 3;
 const GRPC_NOT_FOUND = 5;
 const TOKEN_SHAPE = /\b(?:ak|as)-[A-Za-z0-9]{8,}\b/g;
 const SILENT = { debug() {}, info() {}, warn() {}, error() {} };
@@ -116,10 +117,15 @@ export function scrubModalError(error: unknown, secrets: readonly string[]): str
   return text.replace(TOKEN_SHAPE, '[redacted]').slice(0, 2_000);
 }
 
+// Modal answers an id that is not in its shape with INVALID_ARGUMENT rather
+// than NOT_FOUND; no sandbox can have such an id, so it is gone all the same.
 const notFound = (error: unknown) =>
   error instanceof Error &&
   (error.name === 'NotFoundError' ||
-    (error.name === 'ClientError' && (error as { code?: unknown }).code === GRPC_NOT_FOUND));
+    (error.name === 'ClientError' &&
+      ((error as { code?: unknown }).code === GRPC_NOT_FOUND ||
+        ((error as { code?: unknown }).code === GRPC_INVALID_ARGUMENT &&
+          /is not a valid sandbox ID/.test(error.message)))));
 
 function aborted(signal: AbortSignal) {
   return new Promise<never>((_, reject) => {

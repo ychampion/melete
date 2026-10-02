@@ -24,6 +24,7 @@ import { OnboardingScreen, SignInScreen } from './screens/Onboarding.tsx';
 import { PasswordResetScreen } from './screens/PasswordReset.tsx';
 import { PlansScreen } from './screens/Plans.tsx';
 import { SettingsScreen } from './screens/Settings.tsx';
+import { WorkScreen } from './screens/Work.tsx';
 import { toast } from './shell/Shell.tsx';
 import { TimeZonePrompt } from './shell/TimeZonePrompt.tsx';
 import { useTheme } from './theme.ts';
@@ -317,6 +318,8 @@ export function App() {
     screen = <PlansScreen selected={second ?? null} />;
   } else if (head === 'companies') {
     screen = <CompaniesScreen />;
+  } else if (head === 'runs') {
+    screen = <WorkScreen key={second ?? 'all'} id={second ?? null} />;
   } else if (head === 'automations') {
     screen = <AutomationsScreen />;
   } else if (head === 'settings') {

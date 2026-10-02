@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   type Action,
   type ActionStatus,
@@ -24,6 +24,7 @@ import {
   type ProposeActionRequest,
   type ReactRequest,
   type Receipt,
+  RUN_TOOLS,
   reactRequest,
   repairCounters,
   repairTrace,
@@ -35,6 +36,8 @@ import { Ajv, type ValidateFunction } from 'ajv';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
+import { ZodError } from 'zod';
+import { ServiceError } from '../api/errors.ts';
 import { REACT_TOOL, supersededExecution } from '../connectors/catalog.ts';
 import {
   asConnectorFault,
@@ -53,6 +56,7 @@ import { plainText, tooLongToAsk } from '../experience/projectors.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
+import type { SandboxRun, TrySandbox } from '../runs/try.ts';
 import { closedComputerStep } from '../sandbox/closed-step.ts';
 import { readWorkspaceFile } from '../sandbox/workspace.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
@@ -169,6 +173,12 @@ export type BrokerOptions = {
   recordStandingScope?: (tx: Query, action: Action) => Promise<void>;
   /** A chase's covered follow-up, offered as `chase.follow_up` while its scope holds. */
   chaseFollowUp?: ChaseFollowUpPort;
+  /** Long work's tools, offered to the jobs whose kind they belong to. */
+  runs?: {
+    call(claims: CapabilityClaims, name: string, input: unknown): Promise<unknown>;
+    /** `run.try`: the commands run through `sandbox`, the record is written from their output. */
+    measure?(claims: CapabilityClaims, input: unknown, sandbox: TrySandbox): Promise<unknown>;
+  };
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
   /**
@@ -250,6 +260,9 @@ const uncertainResult = (
 const ownerAnswered = (action: Action) =>
   ['succeeded', 'failed'].includes(action.status) &&
   (action.reconciliation as Record<string, unknown> | null)?.decided_by === 'owner';
+
+/** The sandbox tool a measured try's commands are proposed as. */
+const TRY_TOOL_KIND = 'terminal.run';
 
 /** Job states after which none of the job's actions can run. */
 const ENDED_JOB_STATES = new Set(['cancelled', 'failed', 'completed']);
@@ -367,6 +380,7 @@ export class BrokerService implements BrokerOperations {
         SKILL_READ_TOOL,
         ...(options.composeExecutor ? [COMPOSE_TOOL] : []),
         ...(options.chaseFollowUp ? [CHASE_FOLLOW_UP_TOOL] : []),
+        ...(options.runs ? RUN_TOOLS : []),
       ],
       ...(options.chaseFollowUp ? { followable: options.chaseFollowUp.available } : {}),
     });
@@ -490,6 +504,106 @@ export class BrokerService implements BrokerOperations {
 
   askPerson(claims: CapabilityClaims, input: unknown) {
     return requestPersonQuestion(this.sql, claims, input);
+  }
+
+  /**
+   * A run tool. The service writes the record and decides between shifts; a
+   * refusal comes back as a broker fault the model can read and correct.
+   */
+  async runTool(claims: CapabilityClaims, name: string, input: unknown): Promise<unknown> {
+    if (!this.options.runs) throw new BrokerFault('unknown_tool');
+    try {
+      if (name === 'run.try') {
+        const runs = this.options.runs;
+        if (!runs.measure) throw new BrokerFault('unknown_tool');
+        if (!claims.scopes.includes(name)) throw new BrokerFault('scope_denied');
+        const connectionId = await this.trySandbox(claims);
+        return await runs.measure(claims, input, (command) =>
+          this.runInSandbox(claims, connectionId, command),
+        );
+      }
+      return await this.options.runs.call(claims, name, input);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        const issue = error.issues[0];
+        throw new BrokerFault(
+          'payload_invalid',
+          issue ? `${issue.path.join('.') || 'input'}: ${issue.message}` : 'Invalid input.',
+        );
+      }
+      if (error instanceof ServiceError)
+        throw new BrokerFault(
+          ['stale_epoch', 'scope_denied', 'revision_mismatch'].includes(error.code)
+            ? (error.code as 'stale_epoch' | 'scope_denied' | 'revision_mismatch')
+            : 'payload_invalid',
+          error.message,
+        );
+      throw error;
+    }
+  }
+
+  /** The space's sandbox a measured try runs in, or a refusal the model can act on. */
+  private async trySandbox(claims: CapabilityClaims): Promise<string> {
+    const rows = await this.sql`select id from connection
+      where space_id = ${claims.space_id} and provider = 'sandbox' and status = 'active'
+      order by id`;
+    const found = rows
+      .map((row) => String(row.id))
+      .find((id) =>
+        this.options.connectors.get(id)?.manifest.tools.some((tool) => tool.name === TRY_TOOL_KIND),
+      );
+    if (!found)
+      throw new BrokerFault(
+        'connector_unavailable',
+        'This space has no sandbox to run tries in. Do the work with your usual tools and record each try with run.log kind "experiment", citing the action that shows its value.',
+      );
+    return found;
+  }
+
+  /**
+   * One command of a measured try, proposed exactly as the model's own
+   * terminal command is: the same admission, approval rules, egress, receipt
+   * and sandbox settings. Each try is named afresh, so running the same
+   * command again measures again; a command still waiting on the person is
+   * picked up again by its exact payload rather than asked a second time.
+   */
+  private async runInSandbox(
+    claims: CapabilityClaims,
+    connectionId: string,
+    command: { command: string; timeout_ms: number },
+  ): Promise<SandboxRun> {
+    const [waiting] = await this.sql`select canonical_payload from action
+      where job_id = ${claims.job_id} and connection_id = ${connectionId}
+        and kind = ${TRY_TOOL_KIND} and status in ('needs_approval', 'approved')
+        and canonical_payload->>'command' = ${command.command}
+        and (canonical_payload->>'timeout_ms')::int = ${command.timeout_ms}
+        and canonical_payload->>'run' like 'try-%'
+      order by created_at desc limit 1`;
+    const payload = (waiting?.canonical_payload as JsonObject | undefined) ?? {
+      command: command.command,
+      timeout_ms: command.timeout_ms,
+      run: `try-${randomBytes(12).toString('hex')}`,
+    };
+    const proposed = await this.propose(claims, {
+      connection_id: connectionId,
+      kind: TRY_TOOL_KIND,
+      payload,
+    });
+    const action = await loadAction(this.sql, proposed.action_id);
+    if (['proposed', 'needs_approval', 'approved'].includes(action.status))
+      return { status: 'waiting', action_id: action.id, message: proposed.message };
+    const detail = (action.receipt?.detail ?? {}) as Record<string, unknown>;
+    if (action.status !== 'succeeded' || typeof detail.output !== 'string')
+      return { status: 'failed', action_id: action.id, reason: proposed.message };
+    return {
+      status: 'ran',
+      action_id: action.id,
+      exit_code: typeof detail.exit_code === 'number' ? detail.exit_code : null,
+      timed_out: detail.timed_out === true,
+      duration_ms: typeof detail.duration_ms === 'number' ? detail.duration_ms : 0,
+      output: detail.output,
+      truncated: detail.truncated === true,
+    };
   }
 
   /**

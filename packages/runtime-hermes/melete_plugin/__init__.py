@@ -28,8 +28,19 @@ from typing import Any, Callable, Dict, List, Optional
 from .broker import ATTEMPT_TOKEN_ENV, BROKER_URL_ENV, BrokerClient, BrokerError
 from .execution import ExecRefused, run_in_cell
 from .results import SUCCEEDED, from_error, from_response, needs_approval
-from .terminal_backend import TERMINAL_TOOL, command_wait_seconds, register_terminal_backend
+from .terminal_backend import (
+    ANSWER_SLACK_SECONDS,
+    MAX_TIMEOUT_MS,
+    SESSION_MARGIN_SECONDS,
+    TERMINAL_TOOL,
+    command_wait_seconds,
+    register_terminal_backend,
+)
 from .vision import attach as attach_picture
+
+#: `run.try` runs its first command, then its variants side by side, each up
+#: to the command limit plus the time the broker allows around a sandbox command.
+RUN_TRY_WAIT_SECONDS = 2 * (MAX_TIMEOUT_MS / 1000 + SESSION_MARGIN_SECONDS) + ANSWER_SLACK_SECONDS
 
 logger = logging.getLogger("melete.plugin")
 
@@ -172,9 +183,12 @@ def build_handler(
             # ask_person records a question for the person; the broker decides
             # whether it may be asked and the service makes the job wait on it.
             if connection_id is None and (
-                name.startswith("skills.") or name in ("compose", "chase.follow_up", "ask_person")
+                name.startswith(("skills.", "run."))
+                or name in ("compose", "chase.follow_up", "ask_person")
             ):
-                return client.call_native(name, arguments)
+                # A measured try runs its commands in the sandbox before it answers.
+                wait = RUN_TRY_WAIT_SECONDS if name == "run.try" else None
+                return client.call_native(name, arguments, wait)
         except BrokerError as error:
             return refuse(error)
         if name == "learning.propose" and connection_id is None:

@@ -413,6 +413,7 @@ function sdkDouble(behaviour: {
   exec?: (argv: string[]) => Promise<unknown>;
   create?: () => Promise<unknown>;
   missingImage?: boolean;
+  poll?: () => Promise<number | null>;
 }) {
   const calls: { method: string; args: unknown[] }[] = [];
   /** The token id each client was built with, in order. */
@@ -429,6 +430,7 @@ function sdkDouble(behaviour: {
   const sandbox = (id: string) => ({
     sandboxId: id,
     detach() {},
+    poll: async () => (behaviour.poll ? behaviour.poll() : null),
     snapshotFilesystem: async (params: unknown) => {
       calls.push({ method: 'snapshotFilesystem', args: [params] });
       return { imageId: 'im-double' };
@@ -780,6 +782,37 @@ test('with no Modal environment and no config file, the SDK client takes everyth
     await rm(home, { recursive: true, force: true });
   }
 }, 60_000);
+
+test('an id Modal says is not in its shape is a sandbox that is gone', async () => {
+  // The installation probe asks about an id no sandbox can have; Modal answers
+  // INVALID_ARGUMENT for it rather than NOT_FOUND.
+  const clientError = (code: number, message: string) =>
+    Object.assign(new Error(message), { name: 'ClientError', code });
+  const invalid = sdkDouble({
+    poll: () =>
+      Promise.reject(
+        clientError(
+          3,
+          '/modal.client.ModalClient/SandboxWaitV2 INVALID_ARGUMENT: "sb-x" is not a valid sandbox ID',
+        ),
+      ),
+  });
+  const transport = createModalSdkTransport({
+    credential: (use) => use(TOKEN),
+    load: invalid.load,
+  });
+  expect(await transport.poll('sb-melete-installation-probe', signal())).toBe('gone');
+  transport.close();
+  // Any other bad argument is still an error, not a missing sandbox.
+  const other = sdkDouble({
+    poll: () => Promise.reject(clientError(3, 'INVALID_ARGUMENT: timeout out of range')),
+  });
+  const second = createModalSdkTransport({ credential: (use) => use(TOKEN), load: other.load });
+  expect(await second.poll('sb-double', signal()).catch((error: unknown) => error)).toBeInstanceOf(
+    ModalUnavailable,
+  );
+  second.close();
+});
 
 test('a Modal connection without the optional modal package is refused in one plain sentence', async () => {
   const transport = createModalSdkTransport({

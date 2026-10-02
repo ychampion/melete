@@ -19,6 +19,17 @@ import {
 import { memoryKey } from './memory.ts';
 import { privacyOperations } from './privacy.ts';
 import { messageId } from './reactions.ts';
+import {
+  runCreateRequest,
+  runExportResponse,
+  runLimitRequest,
+  runListQuery,
+  runListResponse,
+  runMessageRequest,
+  runRecordQuery,
+  runRecordResponse,
+  runResponse,
+} from './runs.ts';
 
 const id = z.string().min(1).max(240);
 const text = z.string().min(1).max(4000);
@@ -1208,6 +1219,21 @@ export const experienceOperations = {
     }),
     response: automationResponse,
   },
+  /** Long work going on in the background, newest first; one conversation's when asked. */
+  'GET /runs': { query: runListQuery, response: runListResponse },
+  'POST /runs': { request: runCreateRequest, response: runResponse },
+  'GET /runs/{id}': { response: runResponse },
+  /** The full record, oldest first, a page at a time. */
+  'GET /runs/{id}/record': { query: runRecordQuery, response: runRecordResponse },
+  /** The full record as one Markdown document. */
+  'GET /runs/{id}/export': { response: runExportResponse },
+  /** Words for the work: answers its question, or is read at its next shift. */
+  'POST /runs/{id}/message': { request: runMessageRequest, response: runResponse },
+  'POST /runs/{id}/pause': { response: runResponse },
+  'POST /runs/{id}/resume': { response: runResponse },
+  /** Stops the work and its helpers for good. */
+  'POST /runs/{id}/stop': { response: runResponse },
+  'PUT /runs/{id}/limit': { request: runLimitRequest, response: runResponse },
   'GET /experience/connections': { response: experienceConnectionList },
   /**
    * What was done in the person's name by chats and plans they have since
