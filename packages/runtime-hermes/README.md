@@ -66,10 +66,11 @@ The broker filters tools by scopes and serves a token-budgeted core (750
 estimated tokens, discovery tools included) plus `search_tools` and `load_tool`;
 the contract's tool-count constant is advisory and the catalog is bounded by the
 token budget rather than by a fixed number of tools.
-`renderInstructions` orders identity, skills and knowledge; named client tests
-include `the identity is short enough to be a prefix, not a personality`,
-`the instructions are identity, then skills, then knowledge`, and
-`every knowledge excerpt carries where it came from`. The engine adds its own
+The identity is the engine home's `SOUL.md`, and `renderInstructions` orders
+skills and then knowledge after it; named client tests include `the identity is
+short enough to be a prefix, not a personality`, `the identity is the engine
+home's SOUL.md, whole, and the instructions do not repeat it`, and `every
+knowledge excerpt carries where it came from`. The engine adds its own
 prompt on top of these instructions, so the measurement below is of the whole
 assembled request.
 
@@ -103,8 +104,9 @@ Unexpected shell approval notifications are denied
 
 The plugin forwards broker proposals and returns their dispositions, carries
 out `in_cell` execution tools itself, and registers a schema the broker loads on
-demand. Its Python test suite (`tests/`) runs with `bun run test:plugin`; a
-local TypeScript adapter pass does not imply container execution passed.
+demand. Its Python test suite (`tests/`) runs with `bun run test:plugin` from
+the repository root; a local TypeScript adapter pass does not imply container
+execution passed.
 
 Compose declares an internal-only runtime, read-only root, non-root UID and
 dropped capabilities. Each attempt's container mounts only its job's `work/<job>`
