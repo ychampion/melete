@@ -428,21 +428,43 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     // No workspace root yet means no attempt has ever left anything in it.
     if (!(await lstat(resolve(this.options.workRoot)).catch(() => undefined))) return;
     const root = await this.workspaceRoot();
-    // `<prefix><instance>.<name>`, or `<prefix><name>` from before instances were named.
+    // `<prefix><instance>.<name>`, or `<prefix><name>` from before instances were
+    // named; `<instance>~<claim>` is a set-aside that instance claimed to restore.
     const owner = (rest: string) => {
       const dot = rest.indexOf('.');
-      return dot < 0 ? { name: rest } : { instance: rest.slice(0, dot), name: rest.slice(dot + 1) };
+      return dot < 0
+        ? { name: rest }
+        : { instance: rest.slice(0, dot).split('~')[0], name: rest.slice(dot + 1) };
     };
+    const gone = (error: unknown) =>
+      error instanceof Error && 'code' in error && error.code === 'ENOENT';
     for (const entry of await readdir(root)) {
       if (entry.startsWith(ADOPTING)) {
         const found = owner(entry.slice(ADOPTING.length));
         if (!(await removable(found.instance))) continue;
         const jobId = prefixedId('job').parse(found.name);
-        await this.restoreSetAside(join(root, entry), join(root, jobId));
+        // Claimed by one atomic rename first: of two runners restoring the same
+        // set-aside, the one that loses the rename (ENOENT on Linux, where the
+        // service runs) leaves it to the other.
+        const claimed = join(
+          root,
+          `${ADOPTING}${this.options.instance?.id ?? 'local'}~${randomBytes(6).toString('hex')}.${jobId}`,
+        );
+        try {
+          await rename(join(root, entry), claimed);
+        } catch (error) {
+          if (gone(error)) continue;
+          throw error;
+        }
+        await this.restoreSetAside(claimed, join(root, jobId));
       } else if (entry.startsWith(SPARE_DIRECTORY)) {
         if (!(await removable(owner(entry.slice(SPARE_DIRECTORY.length)).instance))) continue;
         const path = join(root, entry);
-        if ((await lstat(path)).isDirectory()) await rm(path, { recursive: true, force: true });
+        const found = await lstat(path).catch((error: unknown) => {
+          if (gone(error)) return undefined;
+          throw error;
+        });
+        if (found?.isDirectory()) await rm(path, { recursive: true, force: true });
       }
     }
   }

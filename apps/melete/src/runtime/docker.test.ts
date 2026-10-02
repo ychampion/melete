@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, readdir, rm, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -140,8 +140,9 @@ async function setup(
   pendingWait?: () => Promise<WaitSpec | null>,
   brokerPort?: number,
   instance?: InstanceView,
+  shared?: string,
 ) {
-  const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-test-'));
+  const root = shared ?? (await mkdtemp(join(tmpdir(), 'melete-supervisor-test-')));
   const daemon = new Daemon();
   const httpCalls: string[] = [];
   const events: RuntimeEvent[] = [];
@@ -502,6 +503,41 @@ describe('Docker attempt supervision', () => {
       f.daemon.calls.filter((call) => call.method === 'DELETE').map((call) => call.path),
     ).toContain('/containers/cell-of-stalled?force=true');
   });
+
+  // The claim is an atomic rename by path, as on Linux, where the service runs.
+  // Bun on Windows renames a directory through an open handle, so two renames
+  // of one directory both succeed there.
+  test.skipIf(process.platform === 'win32')(
+    'two instances restoring the same set-aside workspaces at once lose no file',
+    async () => {
+      // Each sees the other running; the instance that set the workspaces aside has stopped.
+      const first = await setup(undefined, undefined, {
+        id: 'first',
+        running: async () => new Set(['second']),
+      });
+      const second = await setup(
+        undefined,
+        undefined,
+        { id: 'second', running: async () => new Set(['first']) },
+        first.root,
+      );
+      const jobs = Array.from({ length: 10 }, (_, index) => identity('job', index));
+      for (const job of jobs) {
+        // A job's workspace, and what a stopped instance set aside while a spare took it over.
+        await mkdir(join(first.root, job));
+        await writeFile(join(first.root, job, 'kept.txt'), job);
+        await mkdir(join(first.root, `.adopt-stopped.${job}`));
+        await writeFile(join(first.root, `.adopt-stopped.${job}`, 'set-aside.txt'), job);
+      }
+      await Promise.all([first.runtime.removeStopped(), second.runtime.removeStopped()]);
+      expect((await readdir(first.root)).filter((entry) => entry.startsWith('.'))).toEqual([]);
+      for (const job of jobs)
+        expect((await readdir(join(first.root, job))).sort()).toEqual([
+          'kept.txt',
+          'set-aside.txt',
+        ]);
+    },
+  );
 
   test('every cell an instance starts carries its name', async () => {
     const f = await setup(undefined, undefined, {

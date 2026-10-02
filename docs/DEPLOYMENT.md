@@ -1260,7 +1260,9 @@ unlabelled ones from before this label existed, and those of instances that
 stopped. An instance counts as stopped when it stopped cleanly, when its
 heartbeat is older than ten minutes, or when its heartbeat is older than two
 minutes and no container by its name runs on the engine; an instance whose
-database link stalls keeps its cells while its container runs. While they run,
+database link stalls keeps its cells while its container runs. A configured
+`MELETE_INSTANCE_ID` that names no container on the engine has none to find, so
+such an instance counts as stopped two minutes after its heartbeat stops. While they run,
 one instance removes what a stopped instance left, once a minute.
 
 The instance name is `MELETE_INSTANCE_ID` when set (lower-case letters, digits
@@ -1268,7 +1270,8 @@ and hyphens), otherwise the container's host name, which Docker keeps across a
 restart of the same container. Set `MELETE_INSTANCE_ID` only where each
 instance has its own environment; replicas started from one Compose service
 share theirs and should use their host names. An instance refuses to start
-when another running process already uses its name, and says so in its log.
+when another running process already uses its name, including when both start
+at the same moment, and says so in its log.
 After a crash, a restarted container waits up to 45 seconds at start to tell
 its own earlier run from another process.
 

@@ -89,20 +89,26 @@ export class InstanceRegistry {
   async start(): Promise<void> {
     // Rows of instances that ended without stopping are kept a day, then dropped.
     await this.sql`delete from ops_instance where heartbeat_at < now() - interval '1 day'`;
-    const fresh = await this.fresh();
-    if (fresh && fresh.nonce !== this.nonce) {
-      // Left by this name's last run, or used by another running process: a
-      // running one beats again within one heartbeat period.
-      await Bun.sleep((this.options.heartbeatMs ?? HEARTBEAT_MS) * 1.5);
-      const again = await this.fresh();
-      if (again && again.nonce === fresh.nonce && again.beat > fresh.beat)
-        throw new Error(
-          `Another running Melete service instance is named "${this.id}". Give each instance its own MELETE_INSTANCE_ID, or leave it unset so each uses its container's host name.`,
-        );
+    const refuse = () =>
+      new Error(
+        `Another running Melete service instance is named "${this.id}". Give each instance its own MELETE_INSTANCE_ID, or leave it unset so each uses its container's host name.`,
+      );
+    // The name is claimed in one statement: of two processes starting at once
+    // under one name, exactly one gets it.
+    if (!(await this.claim())) {
+      const fresh = await this.fresh();
+      if (fresh) {
+        // Left by this name's last run, or used by another running process: a
+        // running one beats again within one heartbeat period.
+        await Bun.sleep((this.options.heartbeatMs ?? HEARTBEAT_MS) * 1.5);
+        const again = await this.fresh();
+        if (again && (again.nonce !== fresh.nonce || again.beat > fresh.beat)) throw refuse();
+      }
+      // Taken over only from the run it waited out; of two waiting, one wins.
+      if (!(await this.claim(fresh?.nonce))) throw refuse();
     }
-    await this.beat(true);
     this.timer ??= setInterval(() => {
-      void this.beat(false).catch(() => this.say('instance heartbeat failed'));
+      void this.beat().catch(() => this.say('instance heartbeat failed'));
     }, this.options.heartbeatMs ?? HEARTBEAT_MS);
     this.timer.unref?.();
   }
@@ -115,15 +121,33 @@ export class InstanceRegistry {
     return row;
   }
 
-  private async beat(starting: boolean) {
+  /**
+   * Writes this process's row when the name is free: no row, a row of this
+   * process, a stopped heartbeat, or the row of the run `replacing` names.
+   */
+  private async claim(replacing?: string): Promise<boolean> {
     const host = this.options.host ?? hostname();
-    const [row] = await this.sql<{ previous: string | null }[]>`
-      with previous as (select nonce from ops_instance where id = ${this.id})
+    const staleSeconds = (this.options.staleAfterMs ?? STALE_AFTER_MS) / 1000;
+    const rows = await this.sql`
       insert into ops_instance (id, host, nonce) values (${this.id}, ${host}, ${this.nonce})
       on conflict (id) do update set host = excluded.host, nonce = excluded.nonce,
-        heartbeat_at = now() ${starting ? this.sql`, started_at = now()` : this.sql``}
-      returning (select nonce from previous) as previous`;
-    if (!starting && row?.previous && row.previous !== this.nonce)
+        heartbeat_at = now(), started_at = now()
+      where ops_instance.nonce = excluded.nonce
+        or ops_instance.heartbeat_at <= now() - make_interval(secs => ${staleSeconds})
+        or ops_instance.nonce = ${replacing ?? null}
+      returning id`;
+    return rows.length > 0;
+  }
+
+  /** Refreshes this process's row; a row another process has taken stays theirs, said loudly. */
+  private async beat() {
+    const host = this.options.host ?? hostname();
+    const rows = await this.sql`
+      insert into ops_instance (id, host, nonce) values (${this.id}, ${host}, ${this.nonce})
+      on conflict (id) do update set host = excluded.host, heartbeat_at = now()
+      where ops_instance.nonce = excluded.nonce
+      returning id`;
+    if (!rows.length)
       this.say(
         `WARNING: another running service instance is also named "${this.id}"; give each its own MELETE_INSTANCE_ID`,
       );

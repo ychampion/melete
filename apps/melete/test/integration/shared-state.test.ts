@@ -275,6 +275,23 @@ describeWithDb('two service instances on one database', () => {
     }
   });
 
+  test('of two processes starting at once under one instance name, exactly one runs', async () => {
+    const [one, two] = pools();
+    const first = new InstanceRegistry(one.sql, 'twin', { host: 'a', heartbeatMs: 100 });
+    const second = new InstanceRegistry(two.sql, 'twin', { host: 'b', heartbeatMs: 100 });
+    try {
+      const started = await Promise.allSettled([first.start(), second.start()]);
+      expect(started.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      const refused = started.find((result) => result.status === 'rejected');
+      expect(String((refused as PromiseRejectedResult | undefined)?.reason)).toContain(
+        'Another running Melete service instance',
+      );
+    } finally {
+      await first.stop();
+      await second.stop();
+    }
+  });
+
   test('each instance sees the others while their heartbeat is fresh', async () => {
     const [one, two] = pools();
     const first = new InstanceRegistry(one.sql, 'first', { host: 'a' });
