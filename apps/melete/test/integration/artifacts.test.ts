@@ -858,6 +858,49 @@ databaseTest(
 );
 
 databaseTest(
+  'a save nobody was asked about never replaces a file that appeared in the meantime',
+  async () => {
+    const context = await setup();
+    await context.broker.propose(context.claims, {
+      kind: 'files.write',
+      connection_id: context.connectionId,
+      payload: { path: 'race.csv', content: csv('12.00'), expect: totalsExpectation },
+      client_ref: 'write-race',
+    });
+    const saved = await context.broker.propose(context.claims, {
+      kind: 'artifact.publish',
+      connection_id: context.publishConnection,
+      payload: { path: 'race.csv', destination: { kind: 'space_artifacts', path: null } },
+      client_ref: 'save-race',
+    });
+    expect(saved.status).toBe('succeeded');
+    const action = await context.broker.get(context.claims, saved.action_id);
+    expect(action.authorization_ref).toBeNull();
+    const connector = createArtifactsConnector({
+      sql: context.sql,
+      workRoot: context.workRoot,
+      spacesRoot: context.spacesRoot,
+    });
+    const run = () =>
+      connector.execute(action, {
+        job_id: context.claims.job_id,
+        space_id: context.claims.space_id,
+        idempotency_key: action.idempotency_key,
+        constraints: {} as never,
+      });
+    const target = path.join(context.spacesRoot, context.claims.space_id, 'artifacts', 'race.csv');
+    // Run again over its own bytes, as a retry would: done, nothing changed.
+    await run();
+    expect(await readFile(target, 'utf8')).toBe(csv('12.00').trim());
+    // Someone else's file under that name since: left as it is.
+    await Bun.write(target, 'theirs');
+    expect(await run().catch((error: unknown) => String(error))).toContain('needs the person');
+    expect(await readFile(target, 'utf8')).toBe('theirs');
+  },
+  SLOW,
+);
+
+databaseTest(
   'a publish by email attaches the recorded bytes, not payload bytes',
   async () => {
     const context = await setup();

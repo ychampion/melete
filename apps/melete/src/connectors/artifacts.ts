@@ -20,7 +20,7 @@
  */
 import { createHash } from 'node:crypto';
 import { constants, existsSync } from 'node:fs';
-import { mkdir, open, realpath } from 'node:fs/promises';
+import { mkdir, open, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import {
   type Action,
@@ -345,20 +345,35 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
         const segments = [ctx.space_id, 'artifacts', ...segmentsFor(target)];
         await mkdir(path.join(base, ctx.space_id, 'artifacts'), { recursive: true });
         const resolved = await noLinks(base, segments, true);
+        // Nobody was asked because the file was new, so it must still be new:
+        // one that appeared since is someone's, and is not replaced unasked.
+        const unasked = !action.authorization_ref;
         const file = await open(
           resolved,
-          constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW,
+          constants.O_WRONLY |
+            constants.O_CREAT |
+            constants.O_NOFOLLOW |
+            (unasked ? constants.O_EXCL : 0),
           0o600,
-        );
-        try {
-          const stat = await file.stat();
-          if (!stat.isFile()) throw new Error('the publish target is not a regular file');
-          await file.truncate(0);
-          await file.writeFile(bytes);
-          await file.sync();
-        } finally {
-          await file.close();
-        }
+        ).catch(async (error: unknown) => {
+          if (!unasked || (error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          // A retry of this same save finds its own bytes there and is done.
+          const there = await readFile(resolved).catch(() => null);
+          if (there && digest(there) === hash) return null;
+          throw new Error(
+            'the space already has a file with that name; saving over it needs the person to approve',
+          );
+        });
+        if (file)
+          try {
+            const stat = await file.stat();
+            if (!stat.isFile()) throw new Error('the publish target is not a regular file');
+            await file.truncate(0);
+            await file.writeFile(bytes);
+            await file.sync();
+          } finally {
+            await file.close();
+          }
         externalRef = target;
         detail = { destination: 'space_artifacts', path: target, bytes: bytes.byteLength };
       } else {
