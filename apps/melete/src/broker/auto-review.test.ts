@@ -160,6 +160,52 @@ describe('reviewTier', () => {
   });
 });
 
+describe('publishing apps', () => {
+  const publish = tool('apps.publish', 'write_external', true);
+  const rollback = tool('apps.rollback', 'write_external', true);
+
+  test('a publish or rollback that raises no risk is decided by the apps rule', () => {
+    for (const t of [publish, rollback])
+      expect(tier(t, 'apps', { risks: [] })).toMatchObject({ tier: 'apps', actionClass: 'apps' });
+  });
+
+  test('each risk the connector bound sends it to the person, with the reason', () => {
+    const widen = 'New people could open it: bo@example.test.';
+    expect(tier(publish, 'apps', { risks: [widen] })).toEqual({
+      tier: 'person',
+      actionClass: null,
+      reason: widen,
+    });
+    const webrtc = 'Its code can open direct connections to other servers (WebRTC).';
+    expect(tier(rollback, 'apps', { risks: [webrtc] })).toMatchObject({
+      tier: 'person',
+      reason: webrtc,
+    });
+    // The connection warning asks on its own, even with the reasons left out.
+    expect(tier(publish, 'apps', { risks: [], opens_connections: ['app.js'] })).toMatchObject({
+      tier: 'person',
+      reason: webrtc,
+    });
+  });
+
+  test('a payload the connector never checked asks', () => {
+    for (const payload of [{}, { risks: 'none' }, { risks: [1] }] as JsonObject[])
+      expect(tier(publish, 'apps', payload)).toMatchObject({ tier: 'person', actionClass: null });
+  });
+
+  test('the same names from any other connection are not publishing apps', () => {
+    for (const provider of ['mcp', 'app', 'files', 'exec'])
+      expect(tier(publish, provider, { risks: [] }).tier).not.toBe('apps');
+    expect(tier(tool('apps.delete', 'write_external', true), 'apps', { risks: [] }).tier).toBe(
+      'person',
+    );
+  });
+
+  test('a doubt about a value still keeps it with the person', () => {
+    expect(tier(publish, 'apps', { risks: [] }, [doubt])).toMatchObject({ tier: 'person' });
+  });
+});
+
 describe('verdicts', () => {
   test('only an explicit low-risk approval lets an action go ahead', () => {
     expect(reviewerApproves({ verdict: 'approve', risk: 'low', reason: 'ok' })).toBe(true);

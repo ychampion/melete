@@ -498,6 +498,22 @@ export function webrtcUse(files: readonly BundleFile[]): string[] {
     .slice(0, MAX_NAMED);
 }
 
+/**
+ * `webrtcUse` over a version already stored: its pages and scripts are read
+ * back from the blob store, each checked against its hash as it is read.
+ */
+export async function storedWebrtcUse(blobs: BlobStore, manifest: AppManifest): Promise<string[]> {
+  const files: BundleFile[] = [];
+  for (const [filePath, file] of Object.entries(manifest.files)) {
+    if (!SCRIPT_OR_PAGE.test(filePath)) continue;
+    const bytes = new Uint8Array(
+      await new Response(await blobs.get(blobKey(file.sha256))).arrayBuffer(),
+    );
+    files.push({ path: filePath, bytes, sha256: file.sha256, size: file.size, mime: file.mime });
+  }
+  return webrtcUse(files);
+}
+
 /** Every blob a manifest names. */
 export function manifestKeys(manifest: AppManifest): BlobKey[] {
   return [...new Set(Object.values(manifest.files).map((file) => blobKey(file.sha256)))];

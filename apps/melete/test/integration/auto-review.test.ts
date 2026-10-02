@@ -871,7 +871,17 @@ describe('approval settings', () => {
         classes: { sandbox: false, calendar: true, app_changes: true },
       } as const;
       await saveApprovalSettings(fixture.sql, claims.space_id, saved);
-      expect(await loadApprovalSettings(fixture.sql, claims.space_id)).toEqual(saved);
+      // A class the caller does not name keeps its stored value, here the default.
+      expect(await loadApprovalSettings(fixture.sql, claims.space_id)).toEqual({
+        ...saved,
+        classes: { ...saved.classes, apps: true },
+      });
+      await saveApprovalSettings(fixture.sql, claims.space_id, {
+        ...saved,
+        classes: { ...saved.classes, apps: false },
+      });
+      await saveApprovalSettings(fixture.sql, claims.space_id, saved);
+      expect((await loadApprovalSettings(fixture.sql, claims.space_id)).classes.apps).toBe(false);
       await rejectionOf(
         saveApprovalSettings(fixture.sql, claims.space_id, {
           mode: 'yolo',

@@ -390,6 +390,17 @@ const dataFact = (shown: unknown) => {
   };
 };
 
+/**
+ * Why this publish or rollback came to the person rather than going ahead on
+ * its own: the reasons the service bound before asking, in plain words.
+ */
+const risksFact = (risks: unknown) => {
+  const lines = Array.isArray(risks) ? risks.map(String).filter(Boolean) : [];
+  return lines.length
+    ? [{ label: 'Why you are asked', value: plainText(lines.join(' '), 'It needs your yes.') }]
+    : [];
+};
+
 const collectionsFact = (names: string[]) =>
   names.length
     ? [{ label: 'Responses it collects', value: plainText(names.join(', '), 'None') }]
@@ -406,6 +417,7 @@ function appFacts(kind: string, payload: Record<string, unknown>) {
     const at = typeof payload.version_published_at === 'string' ? payload.version_published_at : '';
     const viewers = typeof payload.viewers_now === 'string' ? payload.viewers_now : 'only you';
     return [
+      ...risksFact(payload.risks),
       ...(typeof payload.name === 'string'
         ? [{ label: 'App', value: plainText(payload.name, 'App', 200) }]
         : []),
@@ -437,6 +449,7 @@ function appFacts(kind: string, payload: Record<string, unknown>) {
   const current =
     typeof payload.current_name === 'string' ? plainText(payload.current_name, 'App', 200) : null;
   return [
+    ...risksFact(payload.risks),
     ...(current
       ? [
           { label: 'App', value: current },
