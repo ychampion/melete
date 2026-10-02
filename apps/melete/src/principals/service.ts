@@ -5,10 +5,10 @@ import {
   type JobState,
   spaceMembership as membershipContract,
 } from '@melete/contracts';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { job, owner, principal, space, spaceMembership, trigger } from '../db/schema.ts';
+import { attempt, job, owner, principal, space, spaceMembership, trigger } from '../db/schema.ts';
 import { serviceTransaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { PolicyService } from '../jobs/policy.ts';
@@ -178,8 +178,12 @@ export class PrincipalService {
         .where(and(eq(job.spaceId, spaceId), eq(job.principalId, memberId)))
         .orderBy(job.id);
       const cancelled: string[] = [];
-      for (const row of affected) {
-        if (isTerminal(row.state as JobState)) continue;
+      for (const listed of affected) {
+        // A turn under way ends as Stop ends it, so the chat does not go on
+        // showing it as working; then the job is cancelled and its attempts end.
+        if (listed.kind === 'chat') await jobs.stopTurn?.(tx, listed);
+        const [row] = await tx.select().from(job).where(eq(job.id, listed.id));
+        if (!row || isTerminal(row.state as JobState)) continue;
         await jobs.move(
           tx,
           row,
@@ -187,6 +191,16 @@ export class PrincipalService {
           { payload: { reason: 'membership_revoked' } },
         );
         await tx.update(trigger).set({ enabled: false }).where(eq(trigger.jobId, row.id));
+        await tx
+          .update(attempt)
+          .set({
+            outcome: 'fenced',
+            outcomeDetail: { kind: 'cancelled', reason: 'membership_revoked' },
+            endedAt: new Date(),
+            leaseExpiresAt: null,
+            leaseStatus: 'ended',
+          })
+          .where(and(eq(attempt.jobId, row.id), isNull(attempt.endedAt)));
         cancelled.push(row.id);
       }
       if (!updated) throw new Error('Locked membership disappeared');

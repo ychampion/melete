@@ -27,17 +27,20 @@ import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
+import { listActivity } from './activity.ts';
 import { AGENT_TEMPLATES } from './agents.ts';
 import { ExperienceBeliefs } from './beliefs.ts';
 import { type ComputerBinding, projectComputer } from './computer.ts';
 import { ExperienceEffects } from './effects.ts';
 import { type EventChanges, ExperienceEvents } from './events.ts';
 import { ExperienceHome } from './home.ts';
+import { listMembers, removeMember } from './members.ts';
 import { ExperienceMemory } from './memory.ts';
 import { ExperiencePermissions } from './permissions.ts';
 import { ExperiencePlanning } from './planning.ts';
 import { draftForReview, projectArtifact, projectCards, projectReceipt } from './projectors.ts';
 import { ExperienceQuestions } from './questions.ts';
+import { memorySourcesOf, removeJobs } from './removal.ts';
 import { ExperienceService } from './service.ts';
 
 export type ExperienceDeps = {
@@ -84,6 +87,7 @@ const SPACE_OWNER_SURFACES = new Set([
   'PUT /approval-settings',
   'POST /agents',
   'PATCH /agents/{id}',
+  'DELETE /space/members/{id}',
 ]);
 
 export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
@@ -159,6 +163,18 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       home.saveTask(spaceId, input, c.req.param('id') ?? ''),
     'DELETE /tasks/{id}': (spaceId, c) => home.deleteTask(spaceId, c.req.param('id') ?? ''),
     'GET /experience/connections': (spaceId) => home.connections(spaceId),
+    'GET /activity': (spaceId, c) =>
+      deps.sql
+        ? listActivity(deps.sql, spaceId, c.get('owner').id)
+        : unavailable('Activity is not connected yet.'),
+    'GET /space/members': (spaceId, c) =>
+      deps.sql
+        ? listMembers(deps.sql, spaceId, c.get('owner').id)
+        : unavailable('People in this space are not connected yet.'),
+    'DELETE /space/members/{id}': (spaceId, c) =>
+      deps.jobs
+        ? removeMember(deps.db, deps.jobs, spaceId, c.get('owner').id, c.req.param('id') ?? '')
+        : unavailable('People in this space are not connected yet.'),
     'GET /search': (spaceId, c) =>
       home.search(spaceId, c.req.query('q') ?? '', c.get('sessionSpace')?.role !== 'member'),
     'GET /plans': (spaceId) => planning.plans(spaceId),
@@ -166,6 +182,8 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'GET /plans/{id}': async (spaceId, c) => ({
       plan: await planning.view(await planning.requirePlan(spaceId, c.req.param('id') ?? '')),
     }),
+    'DELETE /plans/{id}': (spaceId, c) =>
+      planning.remove(spaceId, c.req.param('id') ?? '', deps.sql),
     'PATCH /plans/{id}/milestones/{milestoneId}': (spaceId, c, input) =>
       planning.complete(
         spaceId,
@@ -406,6 +424,31 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         await service.requireThread(spaceId, c.req.param('id') ?? ''),
       ),
     }),
+    'PATCH /conversations/{id}': (spaceId, c, input) =>
+      service.rename(spaceId, c.req.param('id') ?? '', input),
+    'DELETE /conversations/{id}': async (spaceId, c) => {
+      const id = c.req.param('id') ?? '';
+      await service.requireConversation(spaceId, id);
+      if (!deps.jobs || !deps.sql) return unavailable('Deleting chats is not connected yet.');
+      const ids = await conversationJobs(spaceId, id);
+      const ownerId = c.get('owner').id;
+      let forget: ((sources: readonly string[]) => Promise<number>) | undefined;
+      if (c.req.query('forget_memory') === 'true') {
+        // Checked before anything goes: a chat is never deleted on the promise
+        // of a forgetting that cannot happen here.
+        const ready = await memory?.forgetReady(spaceId, ownerId);
+        if (!ready && (await memorySourcesOf(deps.sql, ids)).length)
+          return unavailable('Forgetting is not connected yet, so nothing was deleted.');
+        if (ready)
+          forget = async (sources) => (await memory?.forgetSources(spaceId, ownerId, sources)) ?? 0;
+      }
+      const removal = await removeJobs(
+        { jobs: deps.jobs, sql: deps.sql, runner: deps.runner },
+        ids,
+        forget,
+      );
+      return { id, ...removal };
+    },
     'PATCH /conversations/{id}/agent': (spaceId, c, input) =>
       service.switchAgent(spaceId, c.req.param('id') ?? '', String(input.agent_id)),
     'GET /conversations/{id}/messages': (spaceId, c) =>

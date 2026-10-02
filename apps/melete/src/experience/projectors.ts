@@ -351,6 +351,10 @@ function sandboxFacts(kind: string, payload: Record<string, unknown>) {
   ];
 }
 
+/** How a finished action of this kind reads, when the kind is a known one. */
+export const doneLabel = (kind: string): string | undefined =>
+  LABELS[kind] ?? ACTION_VERBS[kind]?.[1];
+
 export function actionLabel(row: ActionRow, connection?: ConnectionRow): string {
   return (
     LABELS[row.kind] ??

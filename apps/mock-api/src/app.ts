@@ -108,6 +108,8 @@ export type AppDeps = {
   voice?: boolean | 'private';
   /** The agent's browser and sandbox. On unless a demonstration of a fresh install turns it off. */
   computer?: boolean;
+  /** A shared space the person owns, with others in it (`MELETE_MOCK_SPACE=shared`). */
+  space?: 'personal' | 'shared';
 };
 
 type ErrorBody = z.infer<typeof errorResponse>;

@@ -236,6 +236,15 @@ survives an old database snapshot`, `source and space revocation invalidate
 delivered context and block stale serving`, and `deletion hides synchronously,
 cleanup failures retry, and startup refuses a missing journal`.
 
+Deleting a chat keeps what Melete learned from it. The person can choose to
+forget that too: each source the chat's own messages became is removed through
+the same source deletion "forget that" uses, right after the chat goes, so
+nothing captured from it in between is left behind, and a detail another source
+also supports stays. If forgetting cannot be reached, the chat is not deleted. Evidence: `deleting a chat mid-turn stops
+it, withdraws its permission, cancels it and keeps memory` and `asked to,
+deleting a chat also forgets what it taught, through source deletion` in
+[tidy-up.test.ts](../apps/melete/test/integration/tidy-up.test.ts).
+
 The retained restriction journal records memory removals for replay; actions
 are recorded in Postgres, not in this journal. `restoreMemory` gates spaces
 before replay, then opens eligible spaces. The break test

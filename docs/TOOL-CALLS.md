@@ -119,6 +119,22 @@ A summary is safe to show the person whose conversation it is:
 
 Entries are stored with the rest of the conversation's events. Reconnecting with `Last-Event-ID` (or `?since=`) continues the exact sequence, and reading from zero again returns the same items in the same order.
 
+## When a chat or plan is deleted
+
+Deleting a chat (`DELETE /conversations/{id}`) or a plan (`DELETE /plans/{id}`) removes its entries with its other events. Before that, the deletion does three things:
+
+- It waits for anything still on its way out. While one of the chat's actions is `admitted` or `dispatched`, the delete answers 409 `still_sending` and nothing is removed. The broker still has to settle the send and reconcile a late receipt against that action's row. While an action is `unknown` or `unresolved`, the answer is 409 `outcome_unclear` until the person settles it.
+- It keeps a record of what was done in the person's name. Each `succeeded` action with an outward effect (`write_external`, `write_reversible` or `spend`) is copied to `activity_record`, which belongs to the space rather than the job. The copy holds:
+  - the kind;
+  - the connection's label and provider;
+  - the destination (the recipients of a message, the path of a file);
+  - the receipt's `external_ref`;
+  - the outcome and when it happened;
+  - the title of the chat or plan it came from.
+
+  It never holds a subject, a body or file contents. `GET /activity` lists these records, newest first, for the person whose work it was, and Settings shows them under Activity.
+- It removes the rows that name the job without a foreign key: delivered memory context, prepared outputs, repair briefs and the privacy router's per-conversation records. It also clears pointers to the job from company items and files. The files themselves stay.
+
 ## Adding work to the stream
 
 Work that happens inside Melete becomes an entry by writing a `notice` on the job, in the transaction that does the work or in a short one right after it commits. Memory writes it afterwards, so an event write never runs under the space lock:

@@ -9,6 +9,7 @@ import {
   unavailable,
 } from '@melete/contracts';
 import { and, desc, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm';
+import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import {
   artifact,
@@ -25,6 +26,7 @@ import type { JobRow } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 import { ownJob } from '../principals/authority.ts';
 import { answerText, object, plainText } from './projectors.ts';
+import { removeJobs } from './removal.ts';
 import { type ExperienceService, experienceMissing } from './service.ts';
 
 export const stateLabel = (
@@ -245,6 +247,27 @@ export class ExperiencePlanning {
       await tx.update(job).set({ updatedAt: new Date() }).where(eq(job.id, id));
     });
     return { plan: await this.view(await this.requirePlan(spaceId, id)) };
+  }
+  /**
+   * Delete a plan and its steps. Work on a step is stopped first, the way a
+   * deleted chat's is; chats started from the plan stay, no longer linked.
+   */
+  async remove(spaceId: string, id: string, raw: Sql | undefined) {
+    await this.requirePlan(spaceId, id);
+    const jobs = this.service.jobs;
+    if (!jobs || !raw) return unavailable('Plans are not connected yet.');
+    const steps = await this.db
+      .select({ id: job.id })
+      .from(job)
+      .where(
+        and(eq(job.planId, id), eq(job.spaceId, spaceId), eq(job.kind, 'milestone'), ownJob()),
+      );
+    await removeJobs({ jobs, sql: raw, runner: this.service.runner }, [
+      id,
+      ...steps.map((step) => step.id),
+    ]);
+    await this.triggers?.syncSchedules();
+    return { status: 'ok' as const };
   }
   async conversation(spaceId: string, id: string, agentId: string) {
     const plan = await this.requirePlan(spaceId, id);

@@ -7,6 +7,7 @@ import {
   conversationCreate,
   conversationListQuery,
   conversationMessage,
+  conversationRename,
   conversationTurn,
   decodeConversationCursor,
   encodeConversationCursor,
@@ -305,6 +306,14 @@ export class ExperienceService {
       ),
     );
     return { conversation: await this.view(row) };
+  }
+
+  /** A new title. When the chat was last active does not change, so it keeps its place in the list. */
+  async rename(spaceId: string, id: string, raw: unknown) {
+    const { title } = conversationRename.parse(raw);
+    const row = await this.requireConversation(spaceId, id);
+    await this.db.update(job).set({ title }).where(eq(job.id, id));
+    return { conversation: await this.view({ ...row, title }) };
   }
 
   async switchAgent(spaceId: string, id: string, agentId: string) {

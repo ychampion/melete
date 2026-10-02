@@ -170,6 +170,8 @@ export type ConversationState = {
   local: (text: string, agentId: string, delivery: Turn['delivery']) => string;
   accepted: (localId: string, turnId: string, receivedAt: string) => void;
   settle: (localId: string, delivery: Turn['delivery']) => void;
+  /** Show the conversation as the service now has it, after a rename. */
+  renamed: (conversation: Conversation) => void;
 };
 
 /**
@@ -311,7 +313,18 @@ export function useConversation(id: string | null): ConversationState {
     [],
   );
 
-  return { conversation, transcript, setTranscript, live, error, loading, local, accepted, settle };
+  return {
+    conversation,
+    transcript,
+    setTranscript,
+    live,
+    error,
+    loading,
+    local,
+    accepted,
+    settle,
+    renamed: setConversation,
+  };
 }
 
 /** A small clock for elapsed-time labels that tick while a turn is running. */

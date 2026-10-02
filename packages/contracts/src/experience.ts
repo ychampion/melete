@@ -519,6 +519,66 @@ export const messageAcceptance = z.strictObject({
   receipt: z.strictObject({ id, status: z.enum(['accepted', 'failed_retry']), received_at: date }),
 });
 export const conversationResponse = z.strictObject({ conversation });
+/** A new name for a chat. It changes only the title, not when the chat was last active. */
+export const conversationRename = z.strictObject({ title: z.string().trim().min(1).max(200) });
+/**
+ * Deleting a chat. What Melete learned from the chat stays unless
+ * `forget_memory` is `true`; then it is forgotten the same way "forget that"
+ * removes it, source and all.
+ */
+export const conversationDeleteQuery = z.strictObject({
+  forget_memory: z.enum(['true', 'false']).optional(),
+});
+export const conversationDeleted = z.strictObject({
+  id,
+  /** A turn was under way and was stopped first. */
+  stopped: z.boolean(),
+  /** Permissions still waiting in the chat, withdrawn before it went. */
+  withdrawn: count,
+  /** Things Melete had learned from the chat that were forgotten with it. */
+  forgotten: count,
+});
+export type ConversationDeleted = z.infer<typeof conversationDeleted>;
+/** A person in the space the session is using. */
+export const spaceMember = z.strictObject({
+  principal_id: id,
+  email: z.string().max(320),
+  role: z.enum(['owner', 'member']),
+  /** True for the person asking. */
+  you: z.boolean(),
+});
+export type SpaceMember = z.infer<typeof spaceMember>;
+export const spaceMembers = z.strictObject({
+  space: z.strictObject({
+    id,
+    name: text,
+    kind: z.enum(['personal', 'shared']),
+    /** The asking person's place in it; only an owner removes people. */
+    role: z.enum(['owner', 'member']),
+  }),
+  members: z.array(spaceMember),
+});
+export type SpaceMembers = z.infer<typeof spaceMembers>;
+/**
+ * Something done in the person's name whose chat or plan was later deleted:
+ * what it was, where it went and when. Never what it said.
+ */
+export const activityEntry = z.strictObject({
+  id,
+  what: text,
+  /** The connection it went through. */
+  where: text,
+  /** The recipient or place, where the effect has one. */
+  destination: z.string().max(500).nullable(),
+  /** The destination's own reference for it. */
+  reference: z.string().max(500).nullable(),
+  outcome: z.enum(['succeeded']),
+  /** The title of the chat or plan it came from. */
+  source: z.string().max(200),
+  happened_at: date,
+});
+export type ActivityEntry = z.infer<typeof activityEntry>;
+export const activityList = z.strictObject({ activity: z.array(activityEntry) });
 /**
  * The chats list, most recently active first. `next_cursor` continues after the
  * last one returned, and is null when there are no more.
@@ -873,6 +933,14 @@ export const experienceOperations = {
   'GET /conversations': { query: conversationListQuery, response: conversationList },
   'POST /conversations': { request: conversationCreate, response: conversationResponse },
   'GET /conversations/{id}': { response: conversationResponse },
+  /** Renames the chat. */
+  'PATCH /conversations/{id}': { request: conversationRename, response: conversationResponse },
+  /**
+   * Deletes the chat: a turn under way is stopped, waiting permissions are
+   * withdrawn, its work is cancelled and its messages are removed. Files on its
+   * computer stay. Memory stays unless `forget_memory=true`.
+   */
+  'DELETE /conversations/{id}': { query: conversationDeleteQuery, response: conversationDeleted },
   'PATCH /conversations/{id}/agent': {
     request: conversationSwitchAgent,
     response: conversationResponse,
@@ -949,6 +1017,11 @@ export const experienceOperations = {
   'GET /plans': { response: planList },
   'POST /plans': { request: planCreate, response: planResponse },
   'GET /plans/{id}': { response: planResponse },
+  /**
+   * Deletes the plan and its steps. Work on a step is stopped; chats started
+   * from the plan stay, no longer linked to it.
+   */
+  'DELETE /plans/{id}': { response: experienceOk },
   'PATCH /plans/{id}/milestones/{milestoneId}': {
     request: milestoneUpdate,
     response: planResponse,
@@ -978,6 +1051,18 @@ export const experienceOperations = {
     response: automationResponse,
   },
   'GET /experience/connections': { response: experienceConnectionList },
+  /**
+   * What was done in the person's name by chats and plans they have since
+   * deleted, newest first.
+   */
+  'GET /activity': { response: activityList },
+  /** Who is in the space this session uses. */
+  'GET /space/members': { response: spaceMembers },
+  /**
+   * The space's owner removes someone from a shared space. Their sessions in it
+   * end and their work there is stopped; what they made stays with the space.
+   */
+  'DELETE /space/members/{id}': { response: experienceOk },
   'POST /signin/magic-link': { request: magicLinkRequest, response: experienceOk },
   'POST /signin/magic-link/consume': { request: magicLinkConsume, response: experienceOk },
   'POST /signin/google': { response: notAvailable },

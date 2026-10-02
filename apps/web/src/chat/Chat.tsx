@@ -55,6 +55,7 @@ import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { shownBlocks } from './blocks.ts';
 import { CasePanel, useCase } from './CasePanel.tsx';
+import { ChatActions } from './ChatActions.tsx';
 import { Composer } from './Composer.tsx';
 import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
 import { Markdown } from './Markdown.tsx';
@@ -411,6 +412,21 @@ export function ChatScreen({ id }: { id: string | null }) {
   const conversationId = id && id !== 'new' ? id : null;
   const state = useConversation(conversationId);
   const { conversation, transcript, setTranscript } = state;
+  const chatActions = (size?: number) =>
+    conversation ? (
+      <ChatActions
+        chat={conversation}
+        size={size}
+        onRenamed={(renamed) => {
+          state.renamed(renamed);
+          refreshConversations();
+        }}
+        onDeleted={() => {
+          refreshConversations();
+          navigate('/chats');
+        }}
+      />
+    ) : null;
   const [text, setText] = useState('');
   const [agentId, setAgentId] = useState<string | null>(null);
   const [stuck, setStuck] = useState(true);
@@ -805,6 +821,7 @@ export function ChatScreen({ id }: { id: string | null }) {
         <>
           {voiceButton(44)}
           {computerToggle(44)}
+          {chatActions(44)}
         </>
       }
       panel={
@@ -840,6 +857,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             <div className="grow" />
             {touch ? null : voiceButton(32)}
             {computerToggle()}
+            {chatActions()}
             {found ? (
               <IconButton
                 name="panelRight"

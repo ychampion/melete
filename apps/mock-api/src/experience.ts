@@ -106,7 +106,7 @@ const NO_RESULT = { conversation_id: null, turn_id: null, summary: null, reason:
 
 class MockExperienceError extends Error {
   constructor(
-    readonly status: 400 | 401 | 404 | 409,
+    readonly status: 400 | 401 | 403 | 404 | 409,
     message: string,
     readonly code = 'experience_request_refused',
   ) {
@@ -166,6 +166,10 @@ export class ExperienceMock {
   /** Setup finished or skipped, and a time zone chosen, as the service records them. */
   onboarded = false;
   timeZoneConfirmed = false;
+  /** The people in the session's space. Only a shared space has anyone but the person. */
+  readonly members = new Map<string, C.SpaceMember>();
+  /** What deleted chats did in the person's name, newest first. */
+  readonly activity: C.ActivityEntry[] = [];
   /** Checks and replaces the account's password; set by the account routes. */
   changePassword: ((current: string, next: string) => boolean) | null = null;
   constructor(readonly deps: AppDeps & { experienceSpeed?: number }) {
@@ -181,6 +185,23 @@ export class ExperienceMock {
       });
       this.agents.set(agent.id, agent);
     }
+    const you = C.spaceMember.parse({
+      principal_id: newId('own'),
+      email: 'jamie.davis@fastmail.example',
+      role: 'owner',
+      you: true,
+    });
+    this.members.set(you.principal_id, you);
+    if (deps.space === 'shared')
+      for (const email of ['sam.okafor@example.com', 'priya.raman@example.com']) {
+        const member = C.spaceMember.parse({
+          principal_id: newId('own'),
+          email,
+          role: 'member',
+          you: false,
+        });
+        this.members.set(member.principal_id, member);
+      }
     for (const entry of deps.store.knowledge.values()) {
       if (entry.space_id !== deps.spaceId || entry.frontmatter.status !== 'active') continue;
       this.memories.set(
@@ -1427,6 +1448,11 @@ export class ExperienceMock {
     const body = new ReadableStream<Uint8Array>({
       start: (controller) => {
         const push = () => {
+          // A deleted chat's stream ends; there is nothing more to follow.
+          if (id && !this.chats.has(id)) {
+            stop();
+            return;
+          }
           for (const event of this.eventPage(id, since).events) {
             since = event.seq;
             controller.enqueue(
@@ -1578,6 +1604,43 @@ export class ExperienceMock {
         return this.create(input);
       case 'GET /conversations/{id}':
         return { conversation: required(this.chats, id).view };
+      case 'PATCH /conversations/{id}': {
+        const chat = required(this.chats, id);
+        chat.view.title = C.conversationRename.parse(input).title;
+        return { conversation: chat.view };
+      }
+      case 'DELETE /conversations/{id}': {
+        const chat = required(this.chats, id);
+        // Stopped first, its permissions withdrawn, as the service does.
+        clearTimeout(chat.timer);
+        const stopped = ['queued', 'working', 'streaming'].includes(chat.view.status);
+        const withdrawn = [...this.permissions.values()].filter(
+          (permission) => permission.conversation_id === id,
+        ).length;
+        chat.stopped = true;
+        this.closePending(chat, 'withdrawn');
+        for (const [key, question] of this.questions)
+          if (question.conversation_id === id) this.questions.delete(key);
+        for (const plan of this.plans.values())
+          plan.conversation_ids = plan.conversation_ids.filter((entry) => entry !== id);
+        // What the chat did outside Melete stays on record after it goes.
+        for (const receipt of chat.receipts)
+          this.activity.unshift(
+            C.activityEntry.parse({
+              id: newId('act'),
+              what: receipt.what,
+              where: receipt.where,
+              destination: null,
+              reference: null,
+              outcome: 'succeeded',
+              source: chat.view.title,
+              happened_at: receipt.when,
+            }),
+          );
+        this.chats.delete(id);
+        // The mock keeps no record of which saved details came from which chat.
+        return { id, stopped, withdrawn, forgotten: 0 };
+      }
       case 'PATCH /conversations/{id}/agent': {
         const chat = required(this.chats, id);
         required(this.agents, String(input.agent_id));
@@ -1794,6 +1857,14 @@ export class ExperienceMock {
       }
       case 'GET /plans/{id}':
         return { plan: required(this.plans, id) };
+      case 'DELETE /plans/{id}': {
+        required(this.plans, id);
+        this.plans.delete(id);
+        // Chats started from the plan stay, no longer linked to it.
+        for (const chat of this.chats.values())
+          if (chat.view.plan_id === id) chat.view.plan_id = null;
+        return { status: 'ok' };
+      }
       case 'PATCH /plans/{id}/milestones/{milestoneId}': {
         const plan = required(this.plans, id);
         const step = plan.milestones.find((item) => item.id === c.req.param('milestoneId'));
@@ -1855,6 +1926,25 @@ export class ExperienceMock {
       case 'PUT /web/settings':
         this.webReads = input.enabled === true;
         return { enabled: this.webReads, available: true };
+      case 'GET /activity':
+        return { activity: this.activity };
+      case 'GET /space/members':
+        return {
+          space: {
+            id: this.deps.spaceId,
+            name: this.deps.space === 'shared' ? 'Household' : 'Personal',
+            kind: this.deps.space === 'shared' ? 'shared' : 'personal',
+            role: 'owner',
+          },
+          members: [...this.members.values()],
+        };
+      case 'DELETE /space/members/{id}': {
+        const member = required(this.members, id);
+        if (this.deps.space !== 'shared' || member.role === 'owner')
+          throw new MockExperienceError(403, 'A shared-space owner may remove a member.');
+        this.members.delete(id);
+        return { status: 'ok' };
+      }
       case 'GET /search': {
         const q = (c.req.query('q') ?? '').toLowerCase();
         const results = [
