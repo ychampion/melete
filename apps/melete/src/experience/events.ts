@@ -51,6 +51,23 @@ import {
   traceCall,
 } from './tools.ts';
 
+/**
+ * What a person reads when the space's awake time for the day stopped this
+ * conversation's background processes, e.g. "Your computer's awake time for
+ * today is used up (6 of 6 hours). Processes stopped at 14:02 UTC."
+ */
+export function awakeAllowanceNote(payload: Record<string, unknown>): string {
+  const seconds = Number(payload.allowance_seconds);
+  const hours = Number.isFinite(seconds) && seconds > 0 ? seconds / 3600 : null;
+  const amount =
+    hours === null
+      ? ''
+      : ` (${Number.isInteger(hours) ? hours : hours.toFixed(1)} of ${Number.isInteger(hours) ? hours : hours.toFixed(1)} hours)`;
+  const at = typeof payload.stopped_at === 'string' ? new Date(payload.stopped_at) : null;
+  const when = at && !Number.isNaN(at.getTime()) ? ` at ${at.toISOString().slice(11, 16)} UTC` : '';
+  return `Your computer's awake time for today is used up${amount}. Processes stopped${when}.`;
+}
+
 type EventRow = typeof event.$inferSelect;
 /** Resolves privacy placeholders in a value against its conversation's vault. */
 export type Rehydrate = (jobId: string, attemptId: string, value: unknown) => Promise<unknown>;
@@ -702,6 +719,12 @@ export class ExperienceEvents {
                 ? `Waiting for the agent's computer: it is in use by "${holder}".`
                 : "Waiting for the agent's computer: another conversation is using it.",
             });
+          } else if (
+            source.type === 'notice' &&
+            payload.kind === 'processes_stopped' &&
+            payload.reason === 'awake_allowance_used'
+          ) {
+            await emit(source, { type: 'note', text: awakeAllowanceNote(payload) });
           }
         }
         await tx

@@ -98,6 +98,7 @@ export function e2bCapabilities(plan: 'hobby' | 'pro' = 'hobby'): SandboxCapabil
     billing: 'per_second',
     regions: [],
     maxUploadBytes: 8 * MiB,
+    keepAwake: true,
   };
 }
 
@@ -828,6 +829,27 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
       }
       remember(answer.json as Record<string, unknown>);
       return { providerSandboxId: id, imageDigest: null, region: null };
+    },
+
+    async keepAlive(handle, seconds, signal): Promise<void> {
+      const id = sandboxId(handle);
+      if (!Number.isInteger(seconds) || seconds <= 0)
+        throw new SandboxAdapterRefusal('a sandbox is kept running for a whole number of seconds');
+      try {
+        // Replaces the sandbox's timeout, counted from now; E2B holds it to the
+        // plan's continuous runtime.
+        await rest(
+          'POST',
+          `/sandboxes/${id}/timeout`,
+          { timeout: Math.min(seconds, capabilities.maxLifetimeSeconds) },
+          [204],
+          signal,
+        );
+      } catch (error) {
+        if (error instanceof E2bApiError && error.status === 404)
+          throw new SandboxGone(`E2B has no sandbox ${id} to keep running`);
+        throw error;
+      }
     },
 
     async destroy(handle, signal): Promise<void> {

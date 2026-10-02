@@ -52,6 +52,7 @@ export const FAKE_CAPABILITIES: SandboxCapabilities = {
   billing: 'per_second',
   regions: [],
   maxUploadBytes: 8 * 1024 * 1024,
+  keepAwake: true,
 };
 
 // ---------------------------------------------------------------------------

@@ -100,6 +100,7 @@ export function modalCapabilities(): SandboxCapabilities {
     billing: 'per_second',
     regions: [],
     maxUploadBytes: 8 * MiB,
+    keepAwake: false,
   };
 }
 

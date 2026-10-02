@@ -144,6 +144,8 @@ const SPACE_KEYED_OPERATIONAL = [
   'learned_change',
   // Held while a procedure is evaluated in the space; a removal ends it.
   'learning_evaluation_lease',
+  // How long the space's computers were kept running by their processes, by day.
+  'sandbox_awake_day',
   // The privacy router's sealed vaults, its settings and its audit rows.
   'privacy_vault',
   'privacy_settings',

@@ -432,6 +432,33 @@ test("a pause restarts E2B's continuous runtime, so a resumed sandbox is given i
   await provider.destroy(resumed, signal());
 });
 
+test('a sandbox kept alive for its processes runs past the timeout it was created with', async () => {
+  const standin = createE2bStandin({ maxContinuousSeconds: 30 });
+  const timeouts: unknown[] = [];
+  const provider = createE2bProvider({
+    credential: (use) => use(AUTHORING_KEY),
+    fetch: async (input, init) => {
+      if (new URL(String(input)).pathname.endsWith('/timeout'))
+        timeouts.push(JSON.parse(String(init?.body)));
+      return standin.fetch(input, init);
+    },
+  });
+  const keepAlive = provider.keepAlive as NonNullable<typeof provider.keepAlive>;
+  const handle = await openSandbox(provider, { ...spec(), lifetimeSeconds: 1 }, signal());
+  await keepAlive(handle, 3, signal());
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  // Past the second it was created with, it still runs.
+  expect(await provider.inspect(handle, signal())).toBe('running');
+  expect(timeouts).toEqual([{ timeout: 3 }]);
+  // Never past what the plan allows.
+  await keepAlive(handle, 7_200, signal());
+  expect(timeouts.at(-1)).toEqual({ timeout: 3_600 });
+  await provider.destroy(handle, signal());
+  expect(await keepAlive(handle, 3, signal()).catch((error: unknown) => error)).toBeInstanceOf(
+    SandboxGone,
+  );
+});
+
 test('a second pause is not an error, a refused pause says the sandbox keeps running, and a missing sandbox is gone', async () => {
   const standin = createE2bStandin();
   const provider = createE2bProvider({

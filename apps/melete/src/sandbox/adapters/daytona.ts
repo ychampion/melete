@@ -153,6 +153,7 @@ export function daytonaCapabilities(): SandboxCapabilities {
     billing: 'per_second',
     regions: [],
     maxUploadBytes: 8 * MiB,
+    keepAwake: false,
   };
 }
 

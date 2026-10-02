@@ -466,8 +466,9 @@ const variables = z.object({
   ),
   /**
    * How long a space's background processes may keep its computers running
-   * in one day (UTC). Past it they are stopped and new ones refused until
-   * the next day.
+   * in one day (UTC), after the turns that used them ended, added up over its
+   * computers. Past it they are stopped and new ones refused until the next
+   * day.
    */
   MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY: unsetWhenBlank(
     z.coerce.number().int().positive().default(PROCESS_LIMITS.awake_seconds_per_day),
