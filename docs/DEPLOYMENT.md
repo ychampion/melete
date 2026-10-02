@@ -258,8 +258,8 @@ bun run melete remote vm1 logs melete --since 1h
 ```
 
 Before each command, one SSH call checks that the machine has Bun and a Docker
-engine the account can reach, and that the checkout and its `deploy/` are
-writable only by their owner; if any check fails, the command is refused and
+engine the account can reach, and that no other account there can write the
+checkout or its `deploy/`; if any check fails, the command is refused and
 nothing on the machine changes. The command then runs in that checkout,
 against its `deploy/`, and its output and exit code come back. Quote a path
 that starts with `~` (`--path '~/melete'`), so your own shell leaves it for the

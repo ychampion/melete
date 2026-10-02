@@ -76,9 +76,9 @@ describe('melete remote: arguments', () => {
       'not a command melete remote runs',
     );
     expect(
-      parseRemote(['claude@vm-1.example', '--path', '~/melete', 'deploy', '--tag', 'v1.2.0']),
+      parseRemote(['ops@vm-1.example', '--path', '~/melete', 'deploy', '--tag', 'v1.2.0']),
     ).toEqual({
-      target: 'claude@vm-1.example',
+      target: 'ops@vm-1.example',
       path: '~/melete',
       command: 'deploy',
       args: ['--tag', 'v1.2.0'],

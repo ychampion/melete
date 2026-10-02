@@ -333,7 +333,7 @@ jobs:
           backup=$(ls -d "$RUNNER_TEMP"/backups/melete-* | tail -1)
           # A new host: the stack and every volume go. A new, empty database at the provider.
           $COMPOSE down --volumes
-          docker exec cloud-db psql -U melete -d postgres -c 'drop database melete' -c 'create database melete owner melete'
+          docker exec cloud-db psql -U melete -d postgres -c 'drop database melete' -c 'create database melete'
           bun run melete restore "$backup" --plan --json > restore.json
           jq -e '[.results[] | .level] | all(. == "ok")' restore.json
           # The steps an operator runs, as printed; the closing status is judged below instead.
