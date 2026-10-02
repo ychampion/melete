@@ -21,7 +21,6 @@ describe('the queue connection', () => {
 
   test('every other mode, and a URL without one, is passed as written', () => {
     for (const url of [
-      'postgres://melete:p@db.example.net:5432/melete?sslmode=verify-full',
       'postgres://melete:p@postgres:5432/melete',
       'postgres://melete:p@db.example.net:5432/melete?sslmode=disable',
     ])
@@ -34,13 +33,23 @@ describe('the queue connection', () => {
     expect(queueConnection(url)).toEqual({ connectionString: url });
   });
 
-  test('sslrootcert=system leaves the URL, so the driver checks the public authorities instead of reading a file named system', () => {
-    const connection = queueConnection(
-      'postgres://melete:p@db.example.net:5432/melete?sslmode=verify-full&sslrootcert=system',
-    );
-    expect(connection.ssl).toBeUndefined();
-    const url = new URL(connection.connectionString);
-    expect(url.searchParams.get('sslmode')).toBe('verify-full');
-    expect(url.searchParams.has('sslrootcert')).toBe(false);
+  test('verify-full and sslrootcert=system leave the URL, and the server is checked against its own host, an address included', () => {
+    for (const query of ['sslmode=verify-full', 'sslmode=verify-full&sslrootcert=system']) {
+      const connection = queueConnection(`postgres://melete:p@10.1.0.5:5432/melete?${query}`);
+      const url = new URL(connection.connectionString);
+      // The driver would read sslrootcert=system as a file, and sslmode over these options.
+      expect(url.searchParams.has('sslmode')).toBe(false);
+      expect(url.searchParams.has('sslrootcert')).toBe(false);
+      const ssl = connection.ssl as {
+        rejectUnauthorized: boolean;
+        checkServerIdentity: (name: string, cert: unknown) => Error | undefined;
+      };
+      expect(ssl.rejectUnauthorized).toBe(true);
+      const cert = (san: string) => ({ subject: { CN: 'x' }, subjectaltname: san });
+      expect(ssl.checkServerIdentity('localhost', cert('IP Address:10.1.0.5'))).toBeUndefined();
+      expect(ssl.checkServerIdentity('localhost', cert('IP Address:10.1.0.6'))).toBeInstanceOf(
+        Error,
+      );
+    }
   });
 });
