@@ -174,6 +174,7 @@ passwords. `POST /connections` takes exactly one configuration block:
 | MCP over HTTP | `mcp` | `mcp`: see [Installed MCP servers](#installed-mcp-servers) | optional token fields | declared in the block |
 | MCP from a package or image | `mcp` | `mcp_stdio`: see [the advanced path](#the-advanced-path) | `mcp_stdio.secret_env` | declared in the block |
 | GitHub for the agent's computer | `command_line` | `command_line`: `{ "adapter": "github" }` | `credentials.token`, a fine-grained token; GitHub is asked whose it is before it is kept | `egress.github_read`, `egress.github_write` (asks each time); see [COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github) |
+| AWS for the agent's computer | `command_line` | `command_line`: `{ "adapter": "aws", "region": "us-east-1" }`, with an optional `role_arn` and `external_id` | `credentials.access_key_id` and `credentials.secret_access_key`; AWS is asked whose the key is, through the role, before it is kept | `egress.aws_read`, `egress.aws_write` (asks each time); see [COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#aws) |
 
 `scopes` may narrow the grants of the first three kinds; left empty it means all
 of them, and a scope outside the kind is refused. `space_id` may be left out, in

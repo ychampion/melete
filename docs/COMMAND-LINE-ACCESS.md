@@ -177,6 +177,93 @@ private repositories, reach the computer as GitHub sends them. Each opens one
 object for a few minutes, an object the computer could already read with the
 account.
 
+## AWS
+
+Connect it in Settings, under Connections, as **AWS for the agent's
+computer**, with an access key of an IAM user that has only the permissions
+the work needs, a default region, and optionally a role to assume (with its
+external ID, if the role's trust policy asks for one). Melete asks AWS whose
+key it is (STS `GetCallerIdentity`, after assuming the role when one is named)
+before keeping it, and the connection shows that identity's ARN. It has two
+grants: reading, and making changes, which asks each time. The connection's
+own check asks AWS the same question again.
+
+The computer has the `aws` command line (version 2.37.8, pinned by checksum in
+the image). Each command gets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
+set to placeholders and `AWS_REGION` set to the default region; the AWS SDKs
+read the same variables.
+
+**Signing.** AWS requests are signed with the key itself (Signature Version 4),
+so the account cannot simply be added as a header. Commands in the computer
+sign with the placeholder key. For every host under `amazonaws.com`, the relay
+reads that signature for the service and region it names, removes it, and
+signs the same request again: with the stored key, or, with a role, with a
+session of that role that the service assumes for each command and names after
+it (`melete-<command id>`), so CloudTrail shows which command made each call.
+The session lasts fifteen minutes and its keys stay in the service. The
+signature is made with `@smithy/signature-v4` (Apache-2.0), the signer of the
+AWS SDK for JavaScript; a test checks it against the signatures the AWS SDK for
+Python makes for the same requests.
+
+- A request signed with any other key, carrying its own session token, or
+  presigned in its query, is refused and never sent: the computer may hold
+  other AWS keys, and they are never mixed with the account.
+- A request with no AWS signature goes out as it is, without the account, as it
+  would to any other host.
+- Uploads whose body is signed chunk by chunk
+  (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`) are refused with a plain message. The
+  `aws` command line signs uploads whole or sends them unsigned with a trailing
+  checksum (`STREAMING-UNSIGNED-PAYLOAD-TRAILER`), which goes through.
+
+**What reads and what asks.**
+
+- Query, JSON and CBOR services are read by their operation (the `Action`
+  parameter, the `X-Amz-Target` header, or the operation in the path).
+  Operations whose names begin with Get, List, Describe, Head, Query, Scan,
+  BatchGet, Select, Lookup, Search or Filter read; everything else asks. A
+  request that names its operation twice, or names none, asks.
+- **S3** reads with `GET` and `HEAD`. Every other request asks, named as the
+  operation it is (`s3:PutObject`, `s3:DeleteObjects`, `s3:PutBucketPolicy` and
+  so on) with the bucket and key; a delete of many objects lists them. The
+  parts of a multipart upload pass without asking, because nothing anyone can
+  see changes until the upload is completed: starting the upload asks (it
+  carries the object's settings, such as its ACL), and completing it asks.
+- Other REST services read with `GET` and `HEAD` where they are known to:
+  Lambda, EKS, Route 53, CloudFront, API Gateway's own API, EFS, AppSync and
+  Glacier. Any other REST host asks for everything.
+- Reading a stored secret asks like a change: Secrets Manager
+  `GetSecretValue`, a Systems Manager parameter read with decryption, and EC2
+  `GetPasswordData`.
+- Operations that hand out credentials are refused, because their answer would
+  put a secret in the computer: assuming a role or getting a session or
+  federation token from STS, creating an access key or service credential in
+  IAM, SSO role credentials, Cognito identity credentials, ECR and CodeArtifact
+  authorization tokens, Redshift database credentials, Lightsail access
+  details, and S3 Express sessions.
+
+Each card names the operation, the bucket and key or the region, and the
+request; a delete or overwrite says so, and `RunInstances`,
+`CreateDBInstance`, `CreateCluster`, `PurchaseReserved…` and similar
+operations say they may cost money. The approval is bound to the request as it
+will be sent, as above; the signing date, the SDK's request id and retry count
+(`amz-sdk-invocation-id`, `amz-sdk-request`) and trace ids are left out, since
+they change on every run of the same command. Where the SDK makes up an
+idempotency token for each call (`ClientToken` on `RunInstances` and the like),
+the approval binds the body with that one token blanked and its name kept, so
+the same command run again after approval is the same change.
+
+If the person answers while a change is held, it completes inside the command.
+If not, `aws` prints the reason as AWS's own error:
+
+```
+An error occurred (ApprovalRequired) when calling the DeleteObject operation: Waiting for your approval in Melete: s3:DeleteObject on reports/2026.csv. Run the same command again once it is approved.
+```
+
+After approval, the same command sends the change once. A receipt keeps the
+service, region, bucket and key, AWS's request id and, for S3, the object's
+ETag and version. S3 can answer a copy or the completion of an upload with
+`200` and an error in the body; that is recorded as possibly landed.
+
 ## Limits
 
 - Docker computers only, as above.
@@ -192,3 +279,15 @@ account.
   against; every change still asks the same person.
 - A tool that keeps its own list of trusted certificates and ignores the
   variables above cannot use a connected account.
+- AWS: the commercial partition only (hosts under `amazonaws.com`, roles in
+  `arn:aws:`). A presigned URL made in the computer is signed with the
+  placeholder, so it works only through the relay and is refused there; share
+  objects another way. Chunk-signed uploads and S3 directory buckets (S3
+  Express One Zone) are refused. Some answers carry short-lived links of their
+  own (Lambda's `GetFunction` returns a link to the function's code); they
+  reach the computer as AWS sends them, each opening one object for minutes.
+- AWS: a service the classifier does not list is read by its operation's name
+  alone; an operation named like a read that changes something would read
+  without asking. The operations known to hand out credentials or stored
+  secrets are refused or ask, as above. Give the key, or the role, only the
+  permissions the work needs.
