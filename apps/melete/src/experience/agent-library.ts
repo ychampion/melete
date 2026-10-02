@@ -1,4 +1,5 @@
 import { type AgentTemplate, agentTemplateList } from '@melete/contracts';
+import { AGENT_DAYS } from './agent-days.ts';
 
 /**
  * The agent library: ready-made agents, each with a brief, what it does and
@@ -8,7 +9,7 @@ import { type AgentTemplate, agentTemplateList } from '@melete/contracts';
  * No template grants a connection: each starts with none, and the person
  * ticks what it may use when they review the draft.
  */
-type Entry = Omit<AgentTemplate, 'agent' | 'featured' | 'relies_on'> & {
+type Entry = Omit<AgentTemplate, 'agent' | 'featured' | 'relies_on' | 'day'> & {
   featured?: boolean;
   relies_on?: AgentTemplate['relies_on'];
   agent: Omit<AgentTemplate['agent'], 'allowed_connection_ids'>;
@@ -1268,6 +1269,7 @@ export const AGENT_TEMPLATES = agentTemplateList.parse({
     ...entry,
     featured,
     relies_on,
+    day: AGENT_DAYS[entry.id],
     // Shown as "works best with", never granted: the person picks.
     agent: { ...agent, allowed_connection_ids: [] },
   })),

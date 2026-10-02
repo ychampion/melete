@@ -230,9 +230,24 @@ export class ExperienceService {
       .from(job)
       .where(and(eq(job.spaceId, spaceId), eq(job.kind, 'chat'), ownJob()))
       .groupBy(job.agentId);
+    // Routines run as an agent, counted as the Automations screen lists them.
+    const routines = await this.db
+      .select({ agentId: job.agentId, count: sql<number>`count(*)::int` })
+      .from(trigger)
+      .innerJoin(job, eq(job.id, trigger.jobId))
+      .where(
+        and(
+          eq(job.spaceId, spaceId),
+          eq(job.kind, 'routine'),
+          eq(trigger.kind, 'schedule'),
+          ownJob(),
+        ),
+      )
+      .groupBy(job.agentId);
     const view = (row: (typeof rows)[number]) => {
       const use = stats.find((item) => item.agentId === row.id);
-      return agentView(row, use?.count ?? 0, use?.last ? new Date(use.last) : null, shared);
+      const runs = routines.find((item) => item.agentId === row.id)?.count ?? 0;
+      return agentView(row, use?.count ?? 0, use?.last ? new Date(use.last) : null, shared, runs);
     };
     return {
       agents: rows.filter((row) => !row.deletedAt).map(view),
