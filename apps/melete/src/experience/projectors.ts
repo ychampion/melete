@@ -130,6 +130,8 @@ const LABELS: Record<string, string> = {
   'browser.select': 'Chose an option in its browser',
   'browser.submit': 'Submitted a form',
 };
+/** What an open that left the window where it was reads as. */
+export const NOT_OPENED = 'Tried to open a page in its computer; the window did not change';
 /** How each connector verb reads while it runs and once it is done. */
 export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'calendar.list': ['Checking your calendar', 'Checked your calendar'],
@@ -511,7 +513,12 @@ function sandboxFacts(kind: string, payload: Record<string, unknown>) {
 export const doneLabel = (kind: string): string | undefined =>
   LABELS[kind] ?? ACTION_VERBS[kind]?.[1];
 
+/** An open on its computer whose window never moved to the address says so. */
+export const openDidNotNavigate = (row: Pick<ActionRow, 'kind' | 'receipt'>): boolean =>
+  row.kind === 'computer.open' && object(object(row.receipt).detail).navigated === false;
+
 export function actionLabel(row: ActionRow, connection?: ConnectionRow): string {
+  if (openDidNotNavigate(row)) return NOT_OPENED;
   return (
     LABELS[row.kind] ??
     ACTION_VERBS[row.kind]?.[1] ??

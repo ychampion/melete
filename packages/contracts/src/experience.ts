@@ -750,6 +750,13 @@ export const agentTemplate = z.strictObject({
   /** What it never does, in plain words. */
   wont: z.array(z.string().min(1).max(160)).min(1).max(4),
   works_best_with: z.array(agentWorksWith).max(5),
+  /**
+   * The connections its job rests on, each with what it can do without one,
+   * in plain words. The draft says it when the person leaves one unticked.
+   */
+  relies_on: z
+    .array(z.strictObject({ kind: agentWorksWith, without: z.string().min(1).max(200) }))
+    .max(2),
   starter_routine: starterRoutine.nullable(),
   questions: z.array(templateQuestion).max(4),
   /** Built-in skills that fit its work. Skills are chosen per request; this only names them. */

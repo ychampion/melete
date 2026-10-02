@@ -38,6 +38,7 @@ import {
   appName,
   BACKEND_VOCABULARY,
   type ConnectionRow,
+  NOT_OPENED,
   object,
   plainText,
   safeUrl,
@@ -510,6 +511,13 @@ export function actionPhrase(row: ActionRow, app: string): Phrase {
         ? phrase(`Opening ${page} in the browser`, `Opened ${page} in the browser`)
         : base;
     case 'computer.open':
+      if (detail.navigated === false)
+        return page
+          ? phrase(
+              `Opening ${page} in its computer`,
+              `Tried to open ${page} in its computer; the window did not change`,
+            )
+          : phrase('Opening a page in its computer', NOT_OPENED);
       return page
         ? phrase(`Opening ${page} in its computer`, `Opened ${page} in its computer`)
         : phrase('Opening a page in its computer', 'Opened a page in its computer');

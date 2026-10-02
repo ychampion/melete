@@ -59,3 +59,23 @@ export { kindsOfApp, suggestedConnections } from '@melete/contracts/agent-librar
 /** Whether a connection is one of the kinds this template works best with. */
 export const suggests = (kinds: readonly WorksWith[], app: string) =>
   kindsOfApp(app).some((kind) => kinds.includes(kind));
+
+/**
+ * What a library agent's job rests on that none of the connections it may
+ * reach provides, so the draft can say what it cannot do without it. A null
+ * list of allowed connections reaches every one.
+ */
+export function missingNeeds(
+  needs: AgentTemplate['relies_on'],
+  connections: readonly { id: string; app: string }[],
+  allowed: string[] | null,
+): AgentTemplate['relies_on'] {
+  return needs.filter(
+    (need) =>
+      !connections.some(
+        (connection) =>
+          (allowed === null || allowed.includes(connection.id)) &&
+          kindsOfApp(connection.app).includes(need.kind),
+      ),
+  );
+}

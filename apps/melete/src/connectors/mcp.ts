@@ -62,7 +62,11 @@ const serverTool = z.object({
       (schema) => !Object.hasOwn(schema, '$async'),
       'MCP asynchronous schemas ($async) are unsupported',
     ),
-  // Server annotations, including readOnlyHint, are deliberately not policy inputs.
+  // Server annotations, including readOnlyHint, are deliberately not policy
+  // inputs: the operator's policy sets each tool's effect. A declared
+  // readOnlyHint only lets a read whose answer never came be settled as failed
+  // rather than asked about, which never widens what a tool may do.
+  annotations: z.object({ readOnlyHint: z.boolean().optional() }).optional(),
 });
 const toolPage = z.object({
   tools: z.array(serverTool).max(256),
@@ -82,6 +86,12 @@ export type McpWorker = {
   tools: ConnectorTool[];
   /** The server's definitions of the tools the policy names, from which `tools` was built. */
   definitions: McpToolDefinition[];
+  /**
+   * Tools the running server declares read-only (`readOnlyHint`), by brokered
+   * name. Read from the live session only: the hint is never recorded with the
+   * installed definitions, so a worker with no session yet declares none.
+   */
+  readonly readOnly: string[];
   catalog: { source: 'mcp' };
   execute(action: Action, context: McpExecutionContext): Promise<DispatchResult>;
   verify(): Promise<VerifyResult>;
@@ -130,6 +140,9 @@ export async function openMcpWorker(
   return {
     tools: structuredClone(initial.tools),
     definitions: structuredClone(initial.definitions),
+    get readOnly() {
+      return [...(current?.readOnly ?? [])];
+    },
     catalog: { source: 'mcp' },
     execute: (action, context) =>
       current ? current.execute(action, context) : Promise.reject(notRunning()),
@@ -186,11 +199,14 @@ function policyTools(config: McpServerConfig, discovered: Map<string, McpToolDef
   const healthNotes: string[] = [];
   const rawNames = new Map<string, string>();
   const definitions: McpToolDefinition[] = [];
+  const readOnly: string[] = [];
   const tools = config.tools
     .flatMap((policy) => {
       const definition = discovered.get(policy.name);
       if (!definition) throw new Error(`Configured MCP tool is unavailable: ${policy.name}`);
-      definitions.push(definition);
+      // What is recorded is the tool, never the server's own annotations.
+      const { annotations, ...recorded } = definition;
+      definitions.push(recorded);
       const name = `mcp_${config.id}.${policy.alias}`;
       const inputSchema = {
         $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -201,6 +217,7 @@ function policyTools(config: McpServerConfig, discovered: Map<string, McpToolDef
         return [];
       }
       rawNames.set(name, policy.name);
+      if (annotations?.readOnlyHint === true) readOnly.push(name);
       return connectorTool.parse({
         name,
         description:
@@ -217,7 +234,7 @@ function policyTools(config: McpServerConfig, discovered: Map<string, McpToolDef
     })
     .sort((a, b) => a.name.localeCompare(b.name, 'en'));
   definitions.sort((a, b) => a.name.localeCompare(b.name, 'en'));
-  return { tools, definitions, rawNames, healthNotes };
+  return { tools, definitions, readOnly: readOnly.sort(), rawNames, healthNotes };
 }
 
 async function openMcpSession(
@@ -265,12 +282,13 @@ async function openMcpSession(
       if (cursors.has(cursor)) throw new Error('Repeated MCP pagination cursor');
       cursors.add(cursor);
     }
-    const { tools, definitions, rawNames, healthNotes } = policyTools(config, discovered);
+    const { tools, definitions, readOnly, rawNames, healthNotes } = policyTools(config, discovered);
     // A caller receives a copy; mutating presentation cannot alter execution policy.
     const authoritative = new Map(tools.map((tool) => [tool.name, structuredClone(tool)]));
     return {
       tools,
       definitions,
+      readOnly,
       catalog: { source: 'mcp' },
       async execute(action, context) {
         const tool = authoritative.get(action.kind);

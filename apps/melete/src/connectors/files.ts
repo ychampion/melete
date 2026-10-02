@@ -55,6 +55,27 @@ type SavedElsewhere = {
 };
 const digest = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 
+const PICTURE = /\.(?:png|jpe?g|gif|webp|bmp|tiff?|heic|avif|ico)$/i;
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/**
+ * What a read hands back: the file as text. A file with a NUL byte or bytes
+ * that are not UTF-8 is a picture or another binary file, which a read cannot
+ * hand back as text and a record cannot hold. It fails plainly and at once,
+ * so the agent hears why instead of waiting on a read that never settles.
+ */
+export function readableText(content: Buffer, relative: string): string {
+  if (!content.includes(0)) {
+    try {
+      return UTF8.decode(content);
+    } catch {
+      // Not UTF-8: told below.
+    }
+  }
+  const what = PICTURE.test(relative) ? 'a picture' : 'not a text file';
+  throw new Error(`${JSON.stringify(relative)} is ${what}; files.read reads UTF-8 text only`);
+}
+
 function requiredString(payload: Record<string, JsonValue>, key: string): string {
   const value = payload[key];
   if (typeof value !== 'string') throw new Error(`${key} must be a string`);
@@ -187,7 +208,8 @@ export const filesManifest: ConnectorManifest = {
     },
     {
       name: 'files.read',
-      description: 'Read a UTF-8 file and its content hash.',
+      description:
+        'Read a UTF-8 text file and its content hash. Pictures and other binary files cannot be read this way.',
       input_schema: inputSchema({ path: pathSchema, area: areaSchema }, ['path']),
       effect_class: 'read',
       required_scopes: ['files.read'],
@@ -489,7 +511,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
           detail = {
             path: relative,
             area,
-            content: content.toString('utf8'),
+            content: readableText(content, relative),
             content_hash: hash,
             chat: entry.chat,
           };
@@ -526,7 +548,12 @@ export function createFilesConnector(options: FilesOptions): Connector {
             throw new Error(`there is no file ${JSON.stringify(relative)} in ${area}`);
           });
           hash = digest(content);
-          detail = { path: relative, area, content: content.toString('utf8'), content_hash: hash };
+          detail = {
+            path: relative,
+            area,
+            content: readableText(content, relative),
+            content_hash: hash,
+          };
         } else if (action.kind === 'files.write') {
           const content = requiredString(payload, 'content');
           if (Buffer.byteLength(content) > limit)

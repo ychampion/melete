@@ -394,6 +394,35 @@ if (!live) {
         expect([frame[0], frame[1]]).toEqual([0xff, 0xd8]);
         break;
       }
+      // An address that answers with a picture opens in the same window, and
+      // the answer says the window moved to it.
+      async function* picture() {
+        yield { path: '/work/site/pic.png', bytes: shot, mode: 0o644 };
+      }
+      await host.putFiles(handle, picture(), signal());
+      const shown = JSON.parse(
+        text(
+          await host.computer(
+            handle,
+            { kind: 'open', url: 'http://127.0.0.1:8765/pic.png' },
+            signal(),
+          ),
+        ),
+      ) as { navigated: boolean; window: string };
+      expect(shown.navigated).toBe(true);
+      expect(shown.window).toStartWith('pic.png');
+      // Opening what the window already shows moves nothing, and says so.
+      const again = JSON.parse(
+        text(
+          await host.computer(
+            handle,
+            { kind: 'open', url: 'http://127.0.0.1:8765/pic.png' },
+            signal(),
+          ),
+        ),
+      ) as { navigated: boolean; window: string };
+      expect(again.navigated).toBe(false);
+      expect(again.window).toStartWith('pic.png');
     });
   });
 

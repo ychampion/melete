@@ -709,6 +709,84 @@ ${JSON.stringify({
     expect(done).toMatchObject({ status: 'done', error_code: null });
   });
 
+  test('a second link for the reading list is kept beside the first, not over it', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const links = [
+      'https://en.wikipedia.org/wiki/Container_ship',
+      'https://en.wikipedia.org/wiki/Suez_Canal',
+    ];
+    // The third message sends the first link again.
+    for (const [index, link] of [...links, links[0] ?? ''].entries()) {
+      const text = `Add ${link} to my reading list.`;
+      const identity = `reading-${index}`;
+      await ingest(db.sql, scope, {
+        stream: 'chat',
+        source_identity: identity,
+        source_version: '1',
+        source_type: 'message',
+        author: 'owner',
+        event_at: new Date(Date.now() + index * 1000).toISOString(),
+        text,
+      });
+      const [work] =
+        await db.sql`select w.id from memory_work w join memory_sources s on s.id = w.source_id
+        where s.space_id = ${scope.spaceId} and s.source_identity = ${identity}`;
+      // The model puts every item on the list's one key, as a live model did.
+      const gateway: ExtractionGateway = {
+        async chat({ messages }) {
+          const input = JSON.parse(messages[1]?.content ?? '{}') as {
+            evidence: { source: { source_id: string } };
+          };
+          return JSON.stringify({
+            proposals: [
+              {
+                op: 'add',
+                expected_revision: null,
+                domain_key: 'reading_list',
+                content: `Reading list: ${link}`,
+                kind: 'user_statement',
+                factual_status: 'attributed',
+                valid_from: new Date().toISOString(),
+                valid_until: null,
+                sources: [
+                  {
+                    source_id: input.evidence.source.source_id,
+                    source_version: '1',
+                    start: 0,
+                    end: text.length,
+                    quote: text,
+                  },
+                ],
+              },
+            ],
+          });
+        },
+      };
+      const errors: string[] = [];
+      await runExtractionWork(
+        {
+          sql: db.sql,
+          boss: db.boss,
+          journal: await journalFor(identity),
+          gateway,
+          onError: (code) => errors.push(code),
+        },
+        String(work?.id),
+      );
+      expect(errors).toEqual([]);
+    }
+    // Both links are kept, each once, and neither is in dispute.
+    const beliefs = await listBeliefs(db.sql, scope, 'UTC');
+    expect(beliefs.map((belief) => belief.value).sort()).toEqual(
+      links.map((link) => `Reading list: ${link}`).sort(),
+    );
+    expect(beliefs.map((belief) => [belief.disputed, belief.earlier])).toEqual([
+      [false, 0],
+      [false, 0],
+    ]);
+  });
+
   test('an answer with nothing readable is tried once more, then set aside with its reason', async () => {
     if (!db) return;
     const scope = await createScope(db);

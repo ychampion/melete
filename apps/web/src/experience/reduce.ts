@@ -226,16 +226,22 @@ export const unreadTurns = (transcript: Transcript): string[] =>
 
 /**
  * Take the saved answers of turns that have finished, read once they end: the
- * saved copy keeps only the final message, which replaces what streamed.
+ * saved copy keeps only the final message, which replaces what streamed. A
+ * turn waiting on the person has stopped writing too, and its saved copy is
+ * what it said up to there, whole: it replaces what streamed, which can start
+ * part way through a sentence, and anything said after it resumes is added.
  */
 export function fillAnswers(transcript: Transcript, saved: Turn[]): Transcript {
   return {
     ...transcript,
     turns: transcript.turns.map((turn) => {
       const copy = saved.find((entry) => entry.id === turn.id);
-      return copy?.answer && FINAL.has(copy.status) && FINAL.has(turn.status)
-        ? { ...turn, finished: true, turn: { ...turn.turn, answer: copy.answer } }
-        : turn;
+      if (!copy?.answer) return turn;
+      if (FINAL.has(copy.status) && FINAL.has(turn.status))
+        return { ...turn, finished: true, turn: { ...turn.turn, answer: copy.answer } };
+      if (copy.status === 'needs_you' && turn.status === 'needs_you')
+        return { ...turn, streamed: '', turn: { ...turn.turn, answer: copy.answer } };
+      return turn;
     }),
   };
 }

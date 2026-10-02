@@ -55,6 +55,20 @@ A person can say these in plain words:
 A request to forget is never itself kept. The first objective of a job the
 person typed themselves is read the same way as a message.
 
+A list the person adds to over time, such as a reading list or gift ideas, is
+kept one item per detail. One key holds one value at a time, so a whole list on
+one key would keep only one item. When the extractor adds an item on a list's
+own key and the list already holds one, the new item gets a key of its own
+inside the list's, so the earlier items stay. An item already there in the same
+wording is not added again. A `supersede` is kept as one: the model is saying
+the person replaced what was there. A key marked as a preference or a setting
+(`preferences.mailing_list`) is one answer, never a list (`keepListItems` in
+[extract.ts](../apps/melete/src/memory/extract.ts)). An agent that keeps a list
+for the person keeps it in a file when it can reach Files, reading the file and
+writing it back with the new item added. Memory remembering what the person
+said is not the agent saving it, and an agent says it saved something only when
+a tool call did it.
+
 Each change is shown in the conversation as a tool entry ("Remembered",
 "Updated", "Forgot"). It is written as a
 `notice` with payload kind `memory_tool` and operation `write`, `correct` or

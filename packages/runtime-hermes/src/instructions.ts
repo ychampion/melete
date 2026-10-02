@@ -107,6 +107,18 @@ export const PLAIN_WORDS: readonly string[] = [
 ];
 
 /**
+ * Saying something was done only when it was. A list kept for the owner with
+ * no tool to keep it in is not kept, and memory remembering what the owner
+ * said is not the agent saving it.
+ */
+export const DONE_WORDS: readonly string[] = [
+  'Say you saved, added, sent or changed something only when a tool call in this task did',
+  'it and succeeded. If the tool it needs is not in your catalog, say plainly that you could',
+  'not do it and what would let you (the owner can give you that connection); never say it',
+  'was done. Melete remembers what the owner says on its own; that is not you saving it.',
+];
+
+/**
  * When to stop and ask the person, and when to carry on. Asking is for a real
  * ambiguity or a choice that belongs to the person; an approval is never asked
  * this way, because proposing the action is what asks for it.
@@ -138,6 +150,7 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
     'Every tool call is checked and recorded before it runs, and some need the',
     "owner's approval. A tool that answers `needs_approval` has NOT happened: stop,",
     'say what you are waiting on, and end your turn.',
+    ...DONE_WORDS,
     ...ASKING,
     ...PLAIN_WORDS,
     'Reusable owner corrections go through learning.propose when it is in the catalog.',

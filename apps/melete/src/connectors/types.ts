@@ -47,6 +47,12 @@ export interface Connector {
   capability?: CapabilityManifest;
   /** Trusted discovery metadata: source, examples and core priorities. Never from a tool result. */
   catalog?: CatalogMetadata;
+  /**
+   * For an installed MCP server: whether the server declares this tool
+   * read-only. Only then is a read of it whose answer never came settled as
+   * failed; without it, the person is asked, as for any other effect.
+   */
+  readOnlyDeclared?(kind: string): boolean;
   execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
   verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult>;
   /**

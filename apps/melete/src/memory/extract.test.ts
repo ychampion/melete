@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import type { ExtractionProposal } from '@melete/contracts';
 import { MemoryError } from './db.ts';
-import { findQuote, readExtractionReply } from './extract.ts';
+import { findQuote, isCollectionKey, keepListItems, readExtractionReply } from './extract.ts';
 
 const span = {
   source_id: 'src_01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -176,5 +177,76 @@ describe('finding a quote', () => {
     const text = 'Back from İstanbul. My sister Maya lives in Lisbon now.';
     const found = findQuote(text, 'my sister maya lives in lisbon');
     expect(found && text.slice(found.start, found.end)).toBe('My sister Maya lives in Lisbon');
+  });
+});
+
+describe('a list the person adds to', () => {
+  const CLAIM = 'k_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+  const item = (content: string, op: 'add' | 'supersede' = 'add', domain = 'reading_list') =>
+    ({
+      ...add,
+      ...(op === 'supersede' ? { op, claim_id: CLAIM, expected_revision: 1 } : {}),
+      domain_key: domain,
+      key: domain,
+      content,
+    }) as ExtractionProposal;
+  const keyOf = (proposal: ExtractionProposal | undefined) =>
+    proposal && 'domain_key' in proposal ? proposal.domain_key : null;
+  const first = 'Reading list: https://en.wikipedia.org/wiki/Container_ship';
+  const second = 'Reading list: https://en.wikipedia.org/wiki/Suez_Canal';
+  const held = [{ domain_key: 'reading_list', content: first }];
+
+  test('a list is named by its key; a setting or a preference is one answer', () => {
+    for (const key of ['reading_list', 'user.reading_list', 'gift_ideas', 'travel.wishlist'])
+      expect(isCollectionKey(key)).toBe(true);
+    for (const key of [
+      'preferences.mailing_list',
+      'pref.reading.list',
+      'settings.watchlist',
+      'pref.coffee.order',
+      'person.maya.city',
+      'reading_list.item_x1',
+      'user.reading-list',
+    ])
+      expect(isCollectionKey(key)).toBe(false);
+  });
+
+  test('the first item stays where it was put; a second gets a key of its own beside it', () => {
+    const [kept] = keepListItems([item(first)]);
+    expect(kept).toEqual(item(first));
+    const [added] = keepListItems([item(second)], held);
+    expect(added?.op).toBe('add');
+    expect(keyOf(added)).toStartWith('reading_list.en_wikipedia_org_wiki_suez_canal_');
+    expect(added && 'key' in added).toBe(false);
+    // Two in one message: the first takes the list's key, the second its own.
+    const both = keepListItems([item(first), item(second)]);
+    expect(keyOf(both[0])).toBe('reading_list');
+    expect(keyOf(both[1])).toStartWith('reading_list.en_wikipedia_org_wiki_suez_canal_');
+  });
+
+  test('a supersede on a list key stays a supersede', () => {
+    const replaced = item(second, 'supersede');
+    expect(keepListItems([replaced], held)).toEqual([replaced]);
+  });
+
+  test('the same item in the same wording is not added twice', () => {
+    expect(keepListItems([item(`  ${first.toUpperCase()}. `)], held)).toEqual([
+      { op: 'no-op', sources: add.sources },
+    ]);
+    const twice = keepListItems([item(second), item(`${second}.`)], held);
+    expect(twice[0]?.op).toBe('add');
+    expect(twice[1]).toEqual({ op: 'no-op', sources: add.sources });
+    // Already kept under its own item key, it is not added again either.
+    const itemKey = keyOf(twice[0]) ?? '';
+    expect(
+      keepListItems([item(second)], [...held, { domain_key: itemKey, content: second }]),
+    ).toEqual([{ op: 'no-op', sources: add.sources }]);
+  });
+
+  test('a preference that names a list is never split, even when it already has a value', () => {
+    const answer = item('Keep me off every mailing list', 'add', 'preferences.mailing_list');
+    expect(
+      keepListItems([answer], [{ domain_key: 'preferences.mailing_list', content: 'None' }]),
+    ).toEqual([answer]);
   });
 });
