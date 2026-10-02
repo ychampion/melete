@@ -135,7 +135,7 @@
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "c9f3c851295e6242127af7386142ee1714d83589d966c16bb4f37ec4bef5d7db",
+        "bodySha256": "4f531d3657a7f3be3937e9be0688f072848c012ae9aa0a8052227a0bd642fc66",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -151,7 +151,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0E2BENV00000000000000\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ ( 'sh' '-c' 'printf \"%s|%s\" \"$GH_PROMPT_DISABLED\" \"$TZ\"' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | setsid -w sh -c 'head -c \"$1\" > \"$2\"; exec cat > /dev/null' melete-keep 4194305 \"$d/out\"\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0E2BENV00000000000000\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ { ( 'sh' '-c' 'printf \"%s|%s\" \"$GH_PROMPT_DISABLED\" \"$TZ\"' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | setsid -w sh -c 'head -c \"$1\"; exec cat > /dev/null' melete-keep 4194305; } > \"$d/out\"\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work",
               "envs": {
@@ -174,11 +174,11 @@
             "base64": "AAAAACB7ImV2ZW50Ijp7InN0YXJ0Ijp7InBpZCI6MTAwMn19fQ=="
           },
           {
-            "atMs": 1,
+            "atMs": 0,
             "base64": "AAAAADp7ImV2ZW50Ijp7ImVuZCI6eyJleGl0ZWQiOnRydWUsInN0YXR1cyI6ImV4aXQgc3RhdHVzIDAifX19"
           },
           {
-            "atMs": 1,
+            "atMs": 0,
             "base64": "AgAAAAJ7fQ=="
           }
         ],
@@ -208,7 +208,7 @@
     },
     {
       "request": {
-        "atMs": 3,
+        "atMs": 2,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -236,7 +236,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 3,
+        "atMs": 2,
         "body": {
           "entries": [
             {
@@ -263,7 +263,7 @@
     },
     {
       "request": {
-        "atMs": 3,
+        "atMs": 2,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0E2BENV00000000000000%2Fout&username=user",
@@ -285,7 +285,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 3,
+        "atMs": 2,
         "body": {
           "bytes": 14
         }
@@ -297,7 +297,7 @@
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "dbb4bd029c5ec77b621b3acc4fba0f1520a2b725ccaa93de0d75c0215304977b",
+        "bodySha256": "c879dc52572c6ad103273d3f6b39912a157c663a553bbcdb95340f86810a76a1",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -313,7 +313,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0E2BENV00000000000001\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ ( 'sh' '-c' 'printf \"%s|%s\" \"$GH_PROMPT_DISABLED\" \"$TZ\"' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | setsid -w sh -c 'head -c \"$1\" > \"$2\"; exec cat > /dev/null' melete-keep 4194305 \"$d/out\"\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0E2BENV00000000000001\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ { ( 'sh' '-c' 'printf \"%s|%s\" \"$GH_PROMPT_DISABLED\" \"$TZ\"' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | setsid -w sh -c 'head -c \"$1\"; exec cat > /dev/null' melete-keep 4194305; } > \"$d/out\"\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work"
             },
@@ -332,11 +332,11 @@
             "base64": "AAAAACB7ImV2ZW50Ijp7InN0YXJ0Ijp7InBpZCI6MTAwM319fQ=="
           },
           {
-            "atMs": 1,
+            "atMs": 0,
             "base64": "AAAAADp7ImV2ZW50Ijp7ImVuZCI6eyJleGl0ZWQiOnRydWUsInN0YXR1cyI6ImV4aXQgc3RhdHVzIDAifX19"
           },
           {
-            "atMs": 1,
+            "atMs": 0,
             "base64": "AgAAAAJ7fQ=="
           }
         ],
@@ -366,7 +366,7 @@
     },
     {
       "request": {
-        "atMs": 5,
+        "atMs": 4,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -394,7 +394,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 5,
+        "atMs": 4,
         "body": {
           "entries": [
             {
@@ -421,7 +421,7 @@
     },
     {
       "request": {
-        "atMs": 5,
+        "atMs": 4,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0E2BENV00000000000001%2Fout&username=user",
@@ -451,7 +451,7 @@
     },
     {
       "request": {
-        "atMs": 6,
+        "atMs": 5,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -463,7 +463,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 6
+        "atMs": 5
       }
     }
   ]

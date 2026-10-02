@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 22,
+        "atMs": 21,
         "method": "POST",
         "url": "https://app.daytona.io/api/sandbox",
         "path": "/api/sandbox",
@@ -45,7 +45,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 23,
+        "atMs": 21,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -82,7 +82,7 @@
     },
     {
       "request": {
-        "atMs": 23,
+        "atMs": 21,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -101,7 +101,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 23,
+        "atMs": 21,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -138,7 +138,7 @@
     },
     {
       "request": {
-        "atMs": 64,
+        "atMs": 58,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -157,7 +157,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 64,
+        "atMs": 58,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -194,7 +194,7 @@
     },
     {
       "request": {
-        "atMs": 65,
+        "atMs": 58,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -219,7 +219,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 65,
+        "atMs": 58,
         "body": {
           "exitCode": 0,
           "result": "PATH=/usr/local/bin:/usr/bin:/bin\nHOME=/home/user\nUSER=user\nLOGNAME=user\nDAYTONA_SANDBOX_ID=fake-sbx-0001\nDAYTONA_SANDBOX_SNAPSHOT=daytona-small\nDAYTONA_SANDBOX_USER=daytona\nDAYTONA_ORGANIZATION_ID=org_authoring\nDAYTONA_REGION_ID=us\n"
@@ -228,7 +228,7 @@
     },
     {
       "request": {
-        "atMs": 72,
+        "atMs": 65,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -247,7 +247,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 72,
+        "atMs": 65,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -284,7 +284,7 @@
     },
     {
       "request": {
-        "atMs": 72,
+        "atMs": 65,
         "method": "POST",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001/stop",
         "path": "/api/sandbox/fake-sbx-0001/stop",
@@ -303,7 +303,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 72,
+        "atMs": 65,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -340,7 +340,7 @@
     },
     {
       "request": {
-        "atMs": 72,
+        "atMs": 65,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -359,7 +359,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 72,
+        "atMs": 65,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -396,7 +396,7 @@
     },
     {
       "request": {
-        "atMs": 112,
+        "atMs": 105,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -415,7 +415,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 112,
+        "atMs": 105,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -452,7 +452,7 @@
     },
     {
       "request": {
-        "atMs": 190,
+        "atMs": 160,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -471,7 +471,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 190,
+        "atMs": 160,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -508,7 +508,7 @@
     },
     {
       "request": {
-        "atMs": 190,
+        "atMs": 160,
         "method": "POST",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001/start",
         "path": "/api/sandbox/fake-sbx-0001/start",
@@ -527,7 +527,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 190,
+        "atMs": 160,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -564,7 +564,7 @@
     },
     {
       "request": {
-        "atMs": 190,
+        "atMs": 160,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -583,7 +583,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 190,
+        "atMs": 160,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -620,7 +620,7 @@
     },
     {
       "request": {
-        "atMs": 223,
+        "atMs": 185,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -639,7 +639,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 223,
+        "atMs": 185,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -676,7 +676,7 @@
     },
     {
       "request": {
-        "atMs": 224,
+        "atMs": 185,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -701,7 +701,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 224,
+        "atMs": 185,
         "body": {
           "exitCode": 0,
           "result": "PATH=/usr/local/bin:/usr/bin:/bin\nHOME=/home/user\nUSER=user\nLOGNAME=user\nDAYTONA_SANDBOX_ID=fake-sbx-0001\nDAYTONA_SANDBOX_SNAPSHOT=daytona-small\nDAYTONA_SANDBOX_USER=daytona\nDAYTONA_ORGANIZATION_ID=org_authoring\nDAYTONA_REGION_ID=us\n"
@@ -710,7 +710,7 @@
     },
     {
       "request": {
-        "atMs": 227,
+        "atMs": 188,
         "method": "DELETE",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -729,7 +729,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 227,
+        "atMs": 188,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
