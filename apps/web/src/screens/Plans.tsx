@@ -5,7 +5,6 @@
  * milestone later) is not offered.
  */
 import { useMemo, useState } from 'react';
-import { AgentFace } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
 import {
@@ -22,8 +21,9 @@ import {
   Select,
   TabsUnderline,
 } from '../design/primitives.tsx';
+import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { agentById, lookOf, useApp, useLoad } from '../experience/hooks.ts';
+import { agentById, defaultAgentOf, useApp, useLoad } from '../experience/hooks.ts';
 import type { Plan } from '../experience/types.ts';
 import { href, navigate, useRoute } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
@@ -235,16 +235,83 @@ export function PlanTable({
   );
 }
 
+/**
+ * Deleting a plan. Its steps go with it, and work on a step is stopped; chats
+ * started from it stay where they are.
+ */
+function DeletePlanDialog({
+  plan,
+  open,
+  onClose,
+  onDeleted,
+}: {
+  plan: Plan;
+  open: boolean;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const [working, setWorking] = useState(false);
+  const chats = plan.conversation_ids.length;
+  const remove = async () => {
+    setWorking(true);
+    const result = await adapter.deletePlan(plan.id);
+    setWorking(false);
+    if (result.data === null) {
+      toast({ kind: 'err', title: 'Couldn’t delete', sub: result.error ?? result.unavailable });
+      return;
+    }
+    onClose();
+    onDeleted();
+    toast({ kind: 'ok', title: 'Plan deleted', sub: plan.title });
+  };
+  return (
+    <Dialog
+      open={open}
+      onClose={working ? () => {} : onClose}
+      icon="trash"
+      tone="danger"
+      title="Delete this plan?"
+      sub={
+        <>
+          “{plan.title}” and its {plan.milestones.length === 1 ? 'step' : 'steps'} are deleted for
+          good, and any step an agent is working on stops.{' '}
+          {chats
+            ? `The ${chats === 1 ? 'chat' : `${chats} chats`} you started from it stay in Chats.`
+            : ''}
+        </>
+      }
+      footer={
+        <>
+          <Button variant="outline" disabled={working} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            loading={working}
+            disabled={working}
+            onClick={() => void remove()}
+          >
+            Delete plan
+          </Button>
+        </>
+      }
+    />
+  );
+}
+
 function PlanSheet({
   plan,
   onChange,
   onClose,
+  onDeleted,
 }: {
   plan: Plan;
   onChange: (next: Plan) => void;
   onClose: () => void;
+  onDeleted: () => void;
 }) {
   const { agents, conversations } = useApp();
+  const [deleting, setDeleting] = useState(false);
   const done = plan.milestones.filter((m) => m.done).length;
   const r = 28;
   const circ = 2 * Math.PI * r;
@@ -276,9 +343,16 @@ function PlanSheet({
                 })
               }
             />
+            <IconButton name="trash" label="Delete plan" onClick={() => setDeleting(true)} />
             <IconButton name="x" label="Close" onClick={onClose} />
           </div>
         </div>
+        <DeletePlanDialog
+          plan={plan}
+          open={deleting}
+          onClose={() => setDeleting(false)}
+          onDeleted={onDeleted}
+        />
         <div className="col" style={{ gap: 6 }}>
           <h2 style={{ fontSize: 20, fontWeight: 600, lineHeight: '26px' }}>{plan.title}</h2>
         </div>
@@ -378,8 +452,8 @@ function PlanSheet({
                       style={{ gap: 6, fontSize: 12, color: 'var(--muted)' }}
                       title={`${agent.name} does this step`}
                     >
-                      <AgentFace
-                        look={lookOf(agent)}
+                      <AgentAvatar
+                        agent={agent}
                         size={20}
                         state={
                           milestone.done
@@ -457,7 +531,7 @@ function PlanSheet({
           icon="chat"
           block
           onClick={() => {
-            const agent = agents[0];
+            const agent = defaultAgentOf(agents);
             if (!agent) return;
             void adapter.planConversation(plan.id, agent.id).then((r) => {
               if (r.data) navigate(`/chat/${r.data.conversation.id}`);
@@ -603,7 +677,15 @@ export function PlansScreen({ selected }: { selected: string | null }) {
       rail={false}
       panel={
         current ? (
-          <PlanSheet plan={current} onChange={update} onClose={() => navigate('/plans')} />
+          <PlanSheet
+            plan={current}
+            onChange={update}
+            onClose={() => navigate('/plans')}
+            onDeleted={() => {
+              data.set({ plans: plans.filter((p) => p.id !== current.id) });
+              navigate('/plans');
+            }}
+          />
         ) : undefined
       }
     >

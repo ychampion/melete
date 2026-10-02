@@ -1,11 +1,8 @@
 import { expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import type { JsonObject } from '@melete/contracts';
 import { mcpFixtureConfig } from '../../test/fixtures/mcp-config.ts';
-import { type McpExecutionContext, mcpServerConfig, openMcpWorker, readMcpConfig } from './mcp.ts';
+import { type McpExecutionContext, mcpServerConfig, openMcpWorker } from './mcp.ts';
 import {
   filteredMcpEnvironment,
   MCP_PROTOCOL_VERSION,
@@ -21,7 +18,7 @@ function context(action: ReturnType<typeof connectorAction>): McpExecutionContex
   return { ...connectorContext(action), audience: 'owner', scopes };
 }
 
-test('MCP config is strict, operator scoped, and defaults unclassified tools to external writes', async () => {
+test('MCP config is strict, operator scoped, and defaults unclassified tools to external writes', () => {
   const config = mcpFixtureConfig();
   expect(config.tools[1]?.effect_class).toBe('write_external');
   expect(() => mcpServerConfig.parse({ ...config, audience: 'public' })).toThrow();
@@ -43,16 +40,6 @@ test('MCP config is strict, operator scoped, and defaults unclassified tools to 
   expect(() =>
     mcpServerConfig.parse({ ...config, tools: [...config.tools, config.tools[0]] }),
   ).toThrow('unique');
-  const directory = await mkdtemp(join(tmpdir(), 'melete-mcp-config-'));
-  try {
-    const path = join(directory, 'servers.json');
-    await writeFile(path, JSON.stringify([config]));
-    expect(await readMcpConfig(path)).toEqual([config]);
-    await writeFile(path, JSON.stringify([config, config]));
-    expect(await readMcpConfig(path).catch((error: Error) => error.message)).toContain('Duplicate');
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
 });
 
 test('MCP worker launch drops secrets, profile paths, and language startup hooks', () => {

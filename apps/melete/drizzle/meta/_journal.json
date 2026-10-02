@@ -482,14 +482,56 @@
       "idx": 68,
       "version": "7",
       "when": 1789232400048,
-      "tag": "0068_runs",
+      "tag": "0068_voice_asides",
       "breakpoints": true
     },
     {
       "idx": 69,
       "version": "7",
       "when": 1789232400049,
-      "tag": "0069_run_checks",
+      "tag": "0069_activity_record",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1789232400050,
+      "tag": "0070_default_agent",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1789232400051,
+      "tag": "0071_question_why",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1789232400052,
+      "tag": "0072_agent_deleted_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1789232400053,
+      "tag": "0073_model_vision",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1789232400054,
+      "tag": "0074_device_cloud_screenshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1789232400055,
+      "tag": "0075_runs",
       "breakpoints": true
     }
   ]

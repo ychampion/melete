@@ -338,6 +338,11 @@ export const attemptBundle = z.object({
     provider: z.string(),
     model: z.string(),
     fallback: z.object({ provider: z.string(), model: z.string() }).nullable(),
+    /**
+     * Whether the model is shown the agent's screenshots as pictures. Absent,
+     * the model catalog decides (`modelSupportsVision`).
+     */
+    vision: z.boolean().optional(),
   }),
 });
 export type AttemptBundle = z.infer<typeof attemptBundle>;

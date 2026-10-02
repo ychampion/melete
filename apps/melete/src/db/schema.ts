@@ -174,6 +174,8 @@ export const modelDefault = pgTable(
     id: text('id').primaryKey().default('installation'),
     provider: text('provider').notNull(),
     model: text('model').notNull(),
+    /** The owner's word on whether this model reads images; null leaves it to the catalog. */
+    supportsVision: boolean('supports_vision'),
     ownerId: text('owner_id')
       .notNull()
       .references(() => owner.id, { onDelete: 'cascade' }),
@@ -210,24 +212,39 @@ export const connection = pgTable(
   (t) => [index('connection_space_idx').on(t.spaceId)],
 );
 
-export const agent = pgTable('agent', {
-  id: text('id').primaryKey(),
-  spaceId: text('space_id')
-    .notNull()
-    .references(() => space.id, { onDelete: 'cascade' }),
-  name: text('name').notNull(),
-  role: text('role').notNull(),
-  colour: text('colour').notNull(),
-  surface: text('surface').notNull(),
-  eyeColour: text('eye_colour').notNull(),
-  tone: text('tone').notNull(),
-  standingInstruction: text('standing_instruction').notNull(),
-  /** Null reaches every connection in the space, including ones added later; a list narrows it. */
-  allowedConnectionIds: jsonb('allowed_connection_ids').$type<string[] | null>(),
-  asksBeforeActing: boolean('asks_before_acting').notNull().default(true),
-  faceImage: text('face_image'),
-  createdAt: created(),
-});
+export const agent = pgTable(
+  'agent',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    role: text('role').notNull(),
+    colour: text('colour').notNull(),
+    surface: text('surface').notNull(),
+    eyeColour: text('eye_colour').notNull(),
+    tone: text('tone').notNull(),
+    standingInstruction: text('standing_instruction').notNull(),
+    /** Null reaches every connection in the space, including ones added later; a list narrows it. */
+    allowedConnectionIds: jsonb('allowed_connection_ids').$type<string[] | null>(),
+    asksBeforeActing: boolean('asks_before_acting').notNull().default(true),
+    /** The browser, the terminal and code in the workspace. */
+    usesComputer: boolean('uses_computer').notNull().default(true),
+    readsMemory: boolean('reads_memory').notNull().default(true),
+    writesMemory: boolean('writes_memory').notNull().default(true),
+    /** Melete, the agent every space has: one per space, never removed. */
+    isDefault: boolean('is_default').notNull().default(false),
+    faceImage: text('face_image'),
+    /**
+     * Set when the person deleted it. The row stays so the turns it answered
+     * keep naming it; it is no longer listed, picked or mentioned.
+     */
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [uniqueIndex('agent_default_space_idx').on(t.spaceId).where(sql`is_default`)],
+);
 
 export const job = pgTable(
   'job',
@@ -793,6 +810,8 @@ export const question = pgTable(
     key: text('key'),
     text: text('text').notNull(),
     because: jsonb('because').$type<string[]>().notNull(),
+    /** Why the agent asked, in its own words, when it said. */
+    why: text('why'),
     ifIgnored: text('if_ignored').notNull(),
     blocksExternalEffect: boolean('blocks_external_effect').notNull().default(false),
     deadlineAt: timestamp('deadline_at', { withTimezone: true }),
@@ -1042,7 +1061,8 @@ export const experienceDraftSend = pgTable('experience_draft_send', {
 
 /**
  * What each person has used of their daily voice allowance: seconds
- * transcribed, characters read aloud, voice sessions opened. Keyed by person
+ * transcribed, characters read aloud, voice sessions opened, words with the
+ * agent while it works. Keyed by person
  * and nothing else, because the allowance follows the person across spaces.
  * No audio or text is kept here, only the amount.
  */
@@ -1057,7 +1077,7 @@ export const voiceUsage = pgTable(
   },
   (t) => [
     index('voice_usage_principal').on(t.principalId, t.kind, t.createdAt),
-    check('voice_usage_kind', sql`${t.kind} in ('transcribe', 'speech', 'session')`),
+    check('voice_usage_kind', sql`${t.kind} in ('transcribe', 'speech', 'session', 'aside')`),
     check('voice_usage_amount', sql`${t.amount} > 0`),
   ],
 );
@@ -1120,6 +1140,44 @@ export const actionReview = pgTable(
   ],
 );
 
+/**
+ * What was done in the person's name, kept after the chat or plan that did it
+ * is deleted. One row per succeeded action whose effect reached outside
+ * Melete. It names the effect and where it went, never what it said: no
+ * subject, body or file contents.
+ */
+export const activityRecord = pgTable(
+  'activity_record',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    /** Whose work it was; null on work from before principals. */
+    principalId: text('principal_id'),
+    /** The action this was, kept as a plain value: the action row is gone. */
+    actionId: text('action_id').notNull(),
+    kind: text('kind').notNull(),
+    effectClass: text('effect_class').notNull(),
+    connectionId: text('connection_id'),
+    connectionLabel: text('connection_label').notNull(),
+    provider: text('provider').notNull(),
+    /** The recipient or place it went, where the effect has one. */
+    destination: text('destination'),
+    /** The destination's own reference for it, from the receipt. */
+    externalRef: text('external_ref'),
+    outcome: text('outcome').notNull(),
+    /** The title of the chat or plan it came from. */
+    source: text('source').notNull(),
+    happenedAt: timestamp('happened_at', { withTimezone: true }).notNull(),
+    recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('activity_record_action_idx').on(t.actionId),
+    index('activity_record_space_idx').on(t.spaceId, t.happenedAt),
+  ],
+);
+
 export const schema = {
   owner,
   principal,
@@ -1158,4 +1216,5 @@ export const schema = {
   experienceDraftSend,
   approvalReviewPolicy,
   actionReview,
+  activityRecord,
 };

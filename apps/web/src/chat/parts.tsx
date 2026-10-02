@@ -21,7 +21,9 @@ import {
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
+import { lastActivity, spanOf } from '../experience/duration.ts';
 import { lookOf } from '../experience/hooks.ts';
+import { plainTitle } from '../experience/plain.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
 import { OPEN_TEXT_LIMIT_BYTES } from '../experience/text-prefix.ts';
 import { toolOf } from '../experience/trace.ts';
@@ -49,12 +51,14 @@ import { ActivityRow, ThinkingBlock } from './activity.tsx';
 export const timeOf = (iso: string) =>
   new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
-/** The logo for an app the contract names in plain words. */
+/**
+ * The logo for an app the contract names in plain words. Only a named product
+ * wears its logo: a mailbox, calendar or file store of no particular brand is
+ * drawn with its own icon (see `appIcon`).
+ */
 const LOGO_BY_APP: Record<string, LogoName> = {
   'google calendar': 'gcal',
-  calendar: 'gcal',
   gmail: 'gmail',
-  mail: 'gmail',
   'google maps': 'gmaps',
   whatsapp: 'whatsapp',
   messages: 'imessage',
@@ -63,7 +67,6 @@ const LOGO_BY_APP: Record<string, LogoName> = {
   notion: 'notion',
   spotify: 'spotify',
   'google drive': 'gdrive',
-  files: 'gdrive',
   uber: 'uber',
   zoom: 'zoom',
   linear: 'linear',
@@ -76,6 +79,31 @@ const LOGO_BY_APP: Record<string, LogoName> = {
   tripadvisor: 'tripadvisor',
 };
 export const logoFor = (app: string): LogoName | null => LOGO_BY_APP[app.toLowerCase()] ?? null;
+
+/** The icon for a connection of no particular brand, by the kind of thing it reaches. */
+const ICON_BY_APP: Record<string, IconName> = {
+  mail: 'mail',
+  calendar: 'calendar',
+  files: 'files',
+  'saved results': 'bookmark',
+  'finished work': 'bookmark',
+  web: 'globe',
+  browser: 'globe',
+  computer: 'monitor',
+  'code runner': 'terminal',
+  'code in the workspace': 'terminal',
+  voice: 'voice',
+  speech: 'voice',
+  'voice to text': 'mic',
+  transcription: 'mic',
+  phone: 'messages',
+  messages: 'messages',
+  device: 'laptop',
+  devices: 'laptop',
+  mcp: 'connectors',
+};
+export const appIcon = (app: string, label?: string): IconName =>
+  ICON_BY_APP[(label ?? '').toLowerCase()] ?? ICON_BY_APP[app.toLowerCase()] ?? 'connectors';
 
 const KIND_ICON: Record<Source['kind'], IconName> = {
   event: 'calendar',
@@ -231,6 +259,18 @@ function GroupStep({
  * reply and the follow-up), which stays open so what it did after the send is
  * in view.
  */
+/**
+ * The line under a stopped turn's header: how many steps it took, the same
+ * count the header shows, and the last of them.
+ */
+export function stoppedLine(tools: { title: string }[]): string {
+  const last = tools.at(-1);
+  if (!last) return 'Stopped before it got to work. Ask again when you’re ready.';
+  return `Stopped before it finished, after ${tools.length} step${
+    tools.length === 1 ? '' : 's'
+  }. Last: ${last.title}. Ask it to carry on when you’re ready.`;
+}
+
 export function Trail({
   turn,
   now,
@@ -259,21 +299,33 @@ export function Trail({
   const hasRows = tools.length > 0;
   const expandable = steps.length > 0;
   const expanded = expandable && (open ?? (running ? !answering : continued));
+  // A turn that ended without a closing step ended where its last tool entry did, so
+  // its time stops there instead of counting on for as long as the chat is open.
+  const ended = running || doneStep ? null : lastActivity(tools);
+  const started = new Date(turn.turn.created_at).getTime();
   const elapsed = doneStep
-    ? Math.max(1, Math.round(doneStep.elapsed_ms / 1000))
-    : Math.max(0, Math.round((now - new Date(turn.turn.created_at).getTime()) / 1000));
+    ? Math.max(1, doneStep.elapsed_ms / 1000)
+    : running
+      ? Math.max(0, (now - started) / 1000)
+      : ended !== null
+        ? Math.max(1, (ended - started) / 1000)
+        : null;
+  const took = elapsed === null ? null : spanOf(elapsed);
   const failures = tools.filter((tool) => tool.status === 'failed').length;
-  const rest = doneStep
-    ? [
-        tools.length ? `${tools.length} step${tools.length === 1 ? '' : 's'}` : '',
-        failures ? `${failures} didn’t work` : '',
-        !hasRows && doneStep.source_count
-          ? `${doneStep.source_count} source${doneStep.source_count === 1 ? '' : 's'}`
-          : '',
-      ]
-        .filter(Boolean)
-        .join(' · ')
-    : '';
+  const rest =
+    doneStep || turn.status === 'stopped'
+      ? [
+          tools.length ? `${tools.length} step${tools.length === 1 ? '' : 's'}` : '',
+          failures ? `${failures} didn’t work` : '',
+          doneStep && !hasRows && doneStep.source_count
+            ? `${doneStep.source_count} source${doneStep.source_count === 1 ? '' : 's'}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : '';
+  // What a stopped turn got done, counted the way the header counts its steps.
+  const stoppedSummary = turn.status === 'stopped' ? stoppedLine(tools) : null;
   const underWay = [...tools].reverse().find((tool) => tool.status === 'running');
   const currentTitle = turn.live?.title ?? underWay?.title;
   const head = running ? (
@@ -283,7 +335,7 @@ export function Trail({
         <span className="pulse" style={{ animationDelay: '.2s' }} />
         <span className="pulse" style={{ animationDelay: '.4s' }} />
       </span>
-      <span>{turn.status === 'paused' ? `Paused · ${elapsed}s` : `Working · ${elapsed}s`}</span>
+      <span>{turn.status === 'paused' ? `Paused · ${took}` : `Working · ${took}`}</span>
       {!expanded && currentTitle ? (
         <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
           · {currentTitle}
@@ -293,13 +345,13 @@ export function Trail({
   ) : (
     <>
       {turn.status === 'stopped' ? (
-        <span>Stopped after {elapsed}s</span>
+        <span>{took ? `Stopped after ${took}` : 'Stopped'}</span>
       ) : turn.status === 'needs_you' ? (
-        <span>Waiting for you · {elapsed}s</span>
+        <span>Waiting for you</span>
       ) : turn.status === 'failed' ? (
         <span>Stopped without finishing</span>
       ) : (
-        <span>Worked for {elapsed}s</span>
+        <span>{took ? `Worked for ${took}` : 'Done'}</span>
       )}
       {rest ? (
         <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
@@ -330,6 +382,19 @@ export function Trail({
           {head}
         </div>
       )}
+      {stoppedSummary ? (
+        <p
+          style={{
+            margin: '2px 0 0 20px',
+            fontFamily: 'var(--font-body)',
+            fontSize: 13,
+            lineHeight: '19px',
+            color: 'var(--muted)',
+          }}
+        >
+          {stoppedSummary}
+        </p>
+      ) : null}
       {expanded ? (
         <ol className="trail-steps act-list" id={stepsId} aria-label="What it did">
           {steps.map((step, index) => {
@@ -635,7 +700,17 @@ export function ResultCard({
           ) : (
             <>
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>{card.meta}</span>
-              <h3 style={{ fontSize: 20, fontWeight: 600, lineHeight: '26px' }}>{card.title}</h3>
+              <h3
+                style={{
+                  fontSize: 15,
+                  fontWeight: 600,
+                  lineHeight: '22px',
+                  color: 'var(--heading)',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {plainTitle(card.title)}
+              </h3>
             </>
           )}
           {isDraft ? (
@@ -699,17 +774,18 @@ export function ResultCard({
 /* ---------- why an action was taken ---------- */
 
 /**
- * "Because: …" under a receipt or a permission card, linking each belief to its
- * place in Memory. When the agent did not say which belief it used, the links
- * are what memory handed that turn, and the line says so.
+ * "Because: …" under a receipt or a permission card, linking each belief the
+ * action relied on to its place in Memory. Only beliefs the agent named and
+ * rules the person set are listed: what memory merely offered the turn is not
+ * a reason, so it is left out rather than shown as one.
  */
 export function BecauseLine({ because }: { because?: BecauseLink[] }) {
-  if (!because?.length) return null;
-  const recalled = because.some((link) => link.basis === 'recalled');
+  const cited = (because ?? []).filter((link) => link.basis !== 'recalled');
+  if (!cited.length) return null;
   return (
     <span className="because">
       <span>Because:</span>
-      {because.map((link) => (
+      {cited.map((link) => (
         <a
           key={`${link.kind}:${link.id}`}
           href={href(
@@ -719,9 +795,6 @@ export function BecauseLine({ because }: { because?: BecauseLink[] }) {
           {link.label}
         </a>
       ))}
-      {recalled ? (
-        <span>(what I remembered for this; the agent didn’t say which it used)</span>
-      ) : null}
     </span>
   );
 }
@@ -860,7 +933,7 @@ export function FilePreview({ file }: { file: NonNullable<Permission['file']> })
 
 /** What a decided permission card says it came to; null while it waits. */
 export function permissionOutcome(
-  decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null,
+  decided: PermissionOption | 'replaced' | 'withdrawn' | 'outdated' | 'closed' | null,
 ): string | null {
   return decided === 'allow_once'
     ? 'Allowed once'
@@ -872,9 +945,24 @@ export function permissionOutcome(
           ? 'Replaced by your new message'
           : decided === 'withdrawn'
             ? 'Withdrawn when you stopped'
-            : decided === 'closed'
-              ? 'Decided'
-              : null;
+            : decided === 'outdated'
+              ? 'Withdrawn because something it relied on changed'
+              : decided === 'closed'
+                ? 'Decided'
+                : null;
+}
+
+/** The tile at the head of a permission card: a lock while it waits, then what came of it. */
+export function permissionTile(
+  decided: PermissionOption | 'replaced' | 'withdrawn' | 'outdated' | 'closed' | null,
+): { icon: IconName; outcome: 'pending' | 'allowed' | 'denied' | 'withdrawn' | 'decided' } {
+  if (decided === null) return { icon: 'lock', outcome: 'pending' };
+  if (decided === 'allow_once' || decided === 'always')
+    return { icon: 'check', outcome: 'allowed' };
+  if (decided === 'deny') return { icon: 'x', outcome: 'denied' };
+  if (decided === 'replaced' || decided === 'withdrawn' || decided === 'outdated')
+    return { icon: 'clock', outcome: 'withdrawn' };
+  return { icon: 'circleCheck', outcome: 'decided' };
 }
 
 export function PermissionCard({
@@ -886,7 +974,7 @@ export function PermissionCard({
   busy = false,
 }: {
   permission: Permission;
-  decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null;
+  decided: PermissionOption | 'replaced' | 'withdrawn' | 'outdated' | 'closed' | null;
   onDecide: (option: PermissionOption, bounds?: RuleBounds) => void;
   touch?: boolean;
   /** Drawn without its footer, when the phone carries the decision in a bottom bar. */
@@ -900,6 +988,7 @@ export function PermissionCard({
   const [reconsent, setReconsent] = useState('7');
   const pending = decided === null;
   const outcome = permissionOutcome(decided);
+  const tile = permissionTile(decided);
   const can = (option: PermissionOption) => permission.options.includes(option);
   // When a decision made here collapses the card, focus stays on it rather
   // than falling to the page with the buttons that were pressed.
@@ -919,9 +1008,11 @@ export function PermissionCard({
   }, [decided]);
   // "Label: value" lines are fields; any other reason ("For your request.") reads as a sentence.
   const reasons = permission.why.slice(1);
-  const notes = reasons.filter((line) => !line.includes(': '));
+  // "For <request>" names the request, and a title can hold a colon of its own.
+  const isNote = (line: string) => !line.includes(': ') || line.startsWith('For ');
+  const notes = reasons.filter(isNote);
   const fields = reasons
-    .filter((line) => line.includes(': '))
+    .filter((line) => !isNote(line))
     .map((line) => {
       const [label = '', ...value] = line.split(': ');
       return { label, value: value.join(': ') };
@@ -959,23 +1050,33 @@ export function PermissionCard({
       onKeyDown={onKey}
     >
       <div className="permission-head">
-        <span className="permission-lock" data-done={pending ? undefined : 'true'}>
-          <Icon name={pending ? 'lock' : 'check'} size={16} />
+        <span className="permission-lock" data-outcome={tile.outcome}>
+          <Icon name={tile.icon} size={16} stroke={tile.outcome === 'denied' ? 2.25 : undefined} />
         </span>
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
           <span className="permission-what">{permission.what}</span>
-          <span className="permission-why">{permission.why[0]}</span>
-          {notes.map((note) => (
-            <span key={note} className="permission-why">
-              {note}
-            </span>
-          ))}
+          {/* Once decided the card is its head and the outcome: the request's
+              reasons were for the decision, which has been made. */}
+          {pending ? (
+            <>
+              <span className="permission-why">{permission.why[0]}</span>
+              {notes.map((note) =>
+                note.startsWith('For ') ? (
+                  <span key={note} className="permission-why permission-for" title={note}>
+                    {note}
+                  </span>
+                ) : (
+                  <span key={note} className="permission-why">
+                    {note}
+                  </span>
+                ),
+              )}
+            </>
+          ) : null}
           <BecauseLine because={permission.because} />
         </div>
         {outcome ? (
-          <Status tone={decided === 'allow_once' || decided === 'always' ? 'settled' : 'kind'}>
-            {outcome}
-          </Status>
+          <Status tone={tile.outcome === 'allowed' ? 'settled' : 'kind'}>{outcome}</Status>
         ) : null}
       </div>
       {pending ? (
@@ -1171,6 +1272,8 @@ export function Questionnaire({
           <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
             Press 1–{options.length + 1}
           </span>
+        ) : answered === 'withdrawn' ? (
+          <Status tone="kind">Withdrawn</Status>
         ) : null}
       </div>
       {options.map((option, index) => {
@@ -1257,8 +1360,27 @@ export function describeAction(action: LedgerAction): string {
   if (Array.isArray(to) && to.length) return `a message to ${to.map(String).join(', ')}`;
   if (typeof to === 'string' && to) return `a message to ${to}`;
   if (typeof payload.title === 'string' && payload.title) return `“${payload.title}”`;
-  return 'the change';
+  if (typeof payload.summary === 'string' && payload.summary) return `“${payload.summary}”`;
+  const kind = typeof action.kind === 'string' ? action.kind : '';
+  const path = typeof payload.path === 'string' ? payload.path : null;
+  if (path && /^files\./.test(kind)) return `saving “${plainTitle(path.split('/').pop() ?? path)}”`;
+  if (typeof payload.command === 'string' || /^(?:exec|sandbox|device)\./.test(kind))
+    return 'a command on its computer';
+  return 'one step of this task';
 }
+
+/**
+ * A step on the agent's own computer: a command or a desktop step there. Its
+ * open outcome is the agent's to check, so the person is never asked about it.
+ */
+export const ownComputerStep = (action: Pick<LedgerAction, 'kind'>): boolean =>
+  /^(?:terminal\.run|computer\.)/.test(action.kind);
+
+/** Whether a step that went unconfirmed was a message to someone, which "arrives". */
+const isMessage = (action: LedgerAction): boolean => {
+  const to = (action.canonical_payload as Record<string, unknown>).to;
+  return (Array.isArray(to) && to.length > 0) || (typeof to === 'string' && to.length > 0);
+};
 
 /** What "It did not" leads to: the effect is open to another attempt. */
 export const RETRY_HINT = 'Melete may try again, and asks you first.';
@@ -1274,6 +1396,9 @@ export function UnknownCard({
     action.status === 'succeeded' || action.status === 'failed' ? action.status : null;
   const unsure = action.status === 'unresolved';
   const retryHint = useId();
+  const message = isMessage(action);
+  const yes = message ? 'It arrived' : 'It worked';
+  const no = message ? 'It did not' : 'It didn’t';
   return (
     <div className="card-pad">
       <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
@@ -1293,11 +1418,15 @@ export function UnknownCard({
         </span>
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
           <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-            I sent this once and never heard back.
+            {message
+              ? 'I sent this once and never heard back.'
+              : 'I tried this once and couldn’t confirm it finished.'}
           </span>
           <span style={{ fontSize: 13, color: 'var(--secondary)' }}>
-            It may or may not have arrived. I have not sent it again. What I tried:{' '}
-            {describeAction(action)}.
+            {message
+              ? 'It may or may not have arrived. I have not sent it again.'
+              : 'I haven’t tried it again.'}{' '}
+            What I tried: {describeAction(action)}.
           </span>
           {settled === 'failed' ? (
             <span style={{ fontSize: 13, color: 'var(--secondary)' }}>{RETRY_HINT}</span>
@@ -1305,7 +1434,7 @@ export function UnknownCard({
         </div>
         {settled ? (
           <Badge tone={settled === 'succeeded' ? 'success' : 'neutral'}>
-            {settled === 'succeeded' ? 'It arrived' : 'It did not'}
+            {settled === 'succeeded' ? yes : no}
           </Badge>
         ) : unsure ? (
           <Badge tone="neutral">Still unsure</Badge>
@@ -1314,7 +1443,7 @@ export function UnknownCard({
       {!settled ? (
         <div className="card-actions">
           <Button size="sm" onClick={() => onResolve('succeeded')}>
-            It arrived
+            {yes}
           </Button>
           <Button
             size="sm"
@@ -1322,7 +1451,7 @@ export function UnknownCard({
             aria-describedby={retryHint}
             onClick={() => onResolve('failed')}
           >
-            It did not
+            {no}
           </Button>
           {unsure ? null : (
             <Button size="sm" variant="ghost" onClick={() => onResolve('unresolved')}>
@@ -1330,7 +1459,7 @@ export function UnknownCard({
             </Button>
           )}
           <span id={retryHint} style={{ fontSize: 12, color: 'var(--muted)' }}>
-            If it did not, Melete may try again, and asks you first.
+            If {message ? 'it did not' : 'it didn’t'}, Melete may try again, and asks you first.
           </span>
         </div>
       ) : null}
@@ -1421,7 +1550,7 @@ export function ActionBar({
 /* ---------- avatars ---------- */
 
 export function TurnAvatar({ agent, status }: { agent: Agent | null; status: TurnStatus }) {
-  if (!agent) return <MeleteAvatar size={28} />;
+  if (!agent || agent.is_default) return <MeleteAvatar size={28} />;
   const mapped =
     status === 'working'
       ? 'running'

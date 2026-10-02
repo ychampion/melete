@@ -116,6 +116,19 @@ const LABELS: Record<string, string> = {
   'web.fetch': 'Read a web page',
   'test.read': 'Checked the connected app',
   'test.send': 'Sent a message',
+  'computer.open': 'Opened a page in its computer',
+  'computer.screenshot': 'Looked at the screen of its computer',
+  'computer.click': 'Clicked in its computer',
+  'computer.type': 'Typed in its computer',
+  'computer.key': 'Pressed keys in its computer',
+  'computer.scroll': 'Scrolled in its computer',
+  'browser.open': 'Opened a page in its browser',
+  'browser.observe': 'Read the page in its browser',
+  'browser.read': 'Read the page in its browser',
+  'browser.click': 'Clicked in its browser',
+  'browser.fill': 'Filled in a field in its browser',
+  'browser.select': 'Chose an option in its browser',
+  'browser.submit': 'Submitted a form',
 };
 /** How each connector verb reads while it runs and once it is done. */
 export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
@@ -209,6 +222,149 @@ const DEVICE_ASKS: Record<string, string> = {
   'device.browser_click': 'Click in your browser',
   'device.browser_type': 'Fill in a field in your browser',
 };
+
+/** A page's host, as a title names it: "example.com". */
+function hostOf(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const host = new URL(value).hostname.replace(/^www\./, '');
+    return host ? showInvisible(host) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Words from the request inside a title: trimmed, short, in quotation marks. */
+function named(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const text = showInvisible(value.trim());
+  return `“${text.length > 60 ? `${text.slice(0, 59)}…` : text}”`;
+}
+
+const AGENT = "the agent's";
+
+/**
+ * What a permission card asks for a step in a browser or on a computer, in
+ * the present tense and with its target, so nobody approves without knowing
+ * what: the page it opens, the control it clicks, the keys it presses.
+ */
+export function stepAsk(kind: string, payload: Record<string, unknown>): string | null {
+  const intent =
+    payload.intent && typeof payload.intent === 'object'
+      ? (payload.intent as Record<string, unknown>)
+      : {};
+  const keys = Array.isArray(payload.keys)
+    ? payload.keys.filter((key): key is string => typeof key === 'string').join('+')
+    : '';
+  const page = (where: string, url: unknown) => {
+    const host = hostOf(url);
+    return host ? `Open ${host} ${where}` : `Open a page ${where}`;
+  };
+  switch (kind) {
+    case 'computer.open':
+    case 'browser.open':
+      return page(`in ${AGENT} browser`, payload.url);
+    case 'computer.screenshot':
+      return `Look at ${AGENT} screen`;
+    case 'computer.click':
+      return `Click on ${AGENT} screen`;
+    case 'computer.type':
+      return `Type on ${AGENT} computer`;
+    case 'computer.key':
+      return keys
+        ? `Press ${showInvisible(keys)} on ${AGENT} computer`
+        : `Press keys on ${AGENT} computer`;
+    case 'computer.scroll':
+      return `Scroll on ${AGENT} screen`;
+    case 'browser.observe':
+    case 'browser.read':
+      return `Read the page in ${AGENT} browser`;
+    case 'browser.click': {
+      const control = named(payload.name);
+      return control ? `Click ${control} in ${AGENT} browser` : `Click in ${AGENT} browser`;
+    }
+    case 'browser.fill': {
+      const field = named(payload.label);
+      return field ? `Fill in ${field} in ${AGENT} browser` : `Fill in a field in ${AGENT} browser`;
+    }
+    case 'browser.select': {
+      const field = named(payload.label);
+      return field
+        ? `Choose an option for ${field} in ${AGENT} browser`
+        : `Choose an option in ${AGENT} browser`;
+    }
+    case 'browser.submit': {
+      const host = hostOf(intent.url);
+      return `Submit ${named(intent.name) ?? 'a form'}${host ? ` to ${host}` : ''}`;
+    }
+    case 'device.open_url':
+      return page('on your computer', payload.url);
+    case 'device.browser_open':
+      return page('in your browser', payload.url);
+    case 'device.browser_read':
+      return 'Read a page in your browser';
+    case 'device.browser_screenshot':
+      return 'Look at a page in your browser';
+    case 'device.list_files':
+      return 'Look through a folder on your computer';
+    case 'device.read_file':
+      return 'Read a file on your computer';
+    case 'device.status':
+      return 'Check your computer is connected';
+    default:
+      return null;
+  }
+}
+
+/** The target of a step in a browser or on the agent's computer, whole, for the card's facts. */
+function stepFacts(kind: string, payload: Record<string, unknown>) {
+  if (!kind.startsWith('computer.') && !kind.startsWith('browser.')) return [];
+  const intent =
+    payload.intent && typeof payload.intent === 'object'
+      ? (payload.intent as Record<string, unknown>)
+      : {};
+  const limit = DEVICE_LIMITS.max_command_chars;
+  const fact = (label: string, value: unknown) =>
+    typeof value === 'string' && value.length
+      ? [
+          {
+            label,
+            value: showInvisible(value.length > limit ? `${value.slice(0, limit)}…` : value),
+          },
+        ]
+      : [];
+  const fields =
+    intent.fields && typeof intent.fields === 'object'
+      ? Object.entries(intent.fields as Record<string, unknown>).flatMap(([name, value]) =>
+          fact(name, value),
+        )
+      : [];
+  return [
+    ...fact('Page', payload.url),
+    ...fact('Page', intent.url),
+    ...(typeof payload.x === 'number' && typeof payload.y === 'number'
+      ? [{ label: 'Where', value: `${payload.x}, ${payload.y} on the screen` }]
+      : []),
+    ...(typeof payload.amount === 'number'
+      ? [
+          {
+            label: 'Scroll',
+            value: `${Math.abs(payload.amount)} steps ${payload.amount < 0 ? 'up' : 'down'}`,
+          },
+        ]
+      : []),
+    ...fact('Text', payload.text),
+    ...(Array.isArray(payload.keys)
+      ? fact('Keys', payload.keys.filter((key) => typeof key === 'string').join(' then '))
+      : []),
+    ...fact('Control', payload.name),
+    ...fact('Control', intent.name),
+    ...fact('Field', payload.label),
+    ...fact('Value', payload.value),
+    ...fields,
+    { label: 'Computer', value: "The agent's own computer, not yours" },
+  ];
+}
 
 /**
  * Characters that change how text around them reads without showing
@@ -351,6 +507,10 @@ function sandboxFacts(kind: string, payload: Record<string, unknown>) {
   ];
 }
 
+/** How a finished action of this kind reads, when the kind is a known one. */
+export const doneLabel = (kind: string): string | undefined =>
+  LABELS[kind] ?? ACTION_VERBS[kind]?.[1];
+
 export function actionLabel(row: ActionRow, connection?: ConnectionRow): string {
   return (
     LABELS[row.kind] ??
@@ -402,7 +562,7 @@ export function actionSources(row: ActionRow, connection: ConnectionRow): Experi
     case 'files.list':
       return array(detail.entries)
         .filter((item) => object(item).kind === 'file')
-        .map((item) => source('file', object(item).name, 'File'));
+        .map((item) => source('file', filename(object(item).name), 'File'));
     case 'files.read':
     case 'files.write':
     case 'files.move':
@@ -412,7 +572,7 @@ export function actionSources(row: ActionRow, connection: ConnectionRow): Experi
       return [
         source(
           'page',
-          pageTitle(detail) ?? safeUrl(detail.final_url ?? detail.url),
+          pageTitle(detail) ?? hostname(safeUrl(detail.final_url ?? detail.url)),
           'Web page',
           detail.final_url ?? detail.url,
         ),
@@ -423,6 +583,20 @@ export function actionSources(row: ActionRow, connection: ConnectionRow): Experi
 }
 const filename = (value: unknown) =>
   typeof value === 'string' ? value.replaceAll('\\', '/').split('/').pop() : undefined;
+/** A page with no title is named by its site: "open-meteo.com", not the whole address. */
+const hostname = (url: string | undefined) => {
+  if (!url) return undefined;
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return undefined;
+  }
+};
+/**
+ * Looking through files or reading one makes nothing new: what was looked at
+ * stays in the turn's activity, and only what an action made becomes a card.
+ */
+const LOOKED_AT = new Set(['files.list', 'files.read']);
 /** A read page names its title; a receipt from before that carries the page itself. */
 const pageTitle = (detail: Record<string, unknown>) =>
   typeof detail.title === 'string' && detail.title.trim()
@@ -491,6 +665,7 @@ export function projectCards(
   connection: ConnectionRow,
   draft?: ExperienceDraft['status'],
 ): ResultCard[] {
+  if (LOOKED_AT.has(row.kind)) return [];
   const send = sendAction(row, draft);
   const sources = actionSources(row, connection);
   const payload = object(row.canonicalPayload);
@@ -628,9 +803,11 @@ export function projectPermissionDecision(input: {
       input.decision === 'denied'
         ? input.note === SUPERSEDED_NOTE
           ? 'replaced'
-          : input.note === STOPPED_NOTE || input.note === ENDED_NOTE || input.note === OUTDATED_NOTE
-            ? 'withdrawn'
-            : 'deny'
+          : input.note === OUTDATED_NOTE
+            ? 'outdated'
+            : input.note === STOPPED_NOTE || input.note === ENDED_NOTE
+              ? 'withdrawn'
+              : 'deny'
         : input.ruleSaved
           ? 'always'
           : 'allow_once',
@@ -712,7 +889,10 @@ export function projectPermission(input: {
     ? `${base} to ${recipientText(payload)}`
     : file
       ? `Save ${file.path}`
-      : (DEVICE_ASKS[input.action.kind] ?? SANDBOX_ASKS[input.action.kind] ?? base);
+      : (stepAsk(input.action.kind, payload) ??
+        DEVICE_ASKS[input.action.kind] ??
+        SANDBOX_ASKS[input.action.kind] ??
+        base);
   const facts = [
     ...(file
       ? [
@@ -722,6 +902,7 @@ export function projectPermission(input: {
       : []),
     ...deviceFacts(input.action.kind, payload),
     ...sandboxFacts(input.action.kind, payload),
+    ...stepFacts(input.action.kind, payload),
     ...(draft
       ? [
           ...(input.connection.sender ? [{ label: 'From', value: input.connection.sender }] : []),

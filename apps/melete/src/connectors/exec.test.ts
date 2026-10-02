@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { type ConnectorTool, connectorManifest } from '@melete/contracts';
+import { type ConnectorTool, connectorManifest, EXEC_LIMITS } from '@melete/contracts';
 import { createExecConnector, execManifest } from './exec.ts';
 import { ConnectorRegistry } from './registry.ts';
 import { connectorAction, connectorContext } from './test-fixtures.ts';
@@ -146,7 +146,7 @@ test('a stored output is declared as an artifact of this job', async () => {
     size: content.length,
     content_hash: digest(content),
   });
-  expect(detail.expectation).toMatchObject({ kind: 'text', render: false, human: false });
+  expect(detail.expectation).toMatchObject({ kind: 'text', render: false });
   const validations = detail.validations as Array<{ name: string; status: string }>;
   expect(validations.map((v) => v.name)).toEqual(['text.parses']);
   expect(validations[0]?.status).toBe('passed');
@@ -194,7 +194,7 @@ test('a symbolic link planted in the workspace does not widen the next execution
 });
 
 test('a duration past the cell time cap is not a credible record', async () => {
-  const refused = await run(record({ duration_ms: 600_000 }));
+  const refused = await run(record({ duration_ms: EXEC_LIMITS.max_timeout_ms + 60_000 }));
   expect(refused.outcome).toBe('failed');
   if (refused.outcome !== 'failed') throw new Error('unreachable');
   expect(refused.reason).toContain('time cap');

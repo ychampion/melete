@@ -152,7 +152,6 @@ const expectSchema = {
     checks: { type: 'array', maxItems: 25, items: { type: 'object' } },
     render: { type: 'boolean' },
     critique: { type: ['string', 'null'], maxLength: 2000 },
-    human: { type: 'boolean' },
     template: { type: ['string', 'null'], maxLength: 200 },
   },
 };

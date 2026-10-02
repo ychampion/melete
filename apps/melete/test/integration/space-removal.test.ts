@@ -333,6 +333,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   experience_rule: 'operational',
   approval_review_policy: 'operational',
   action_review: 'operational',
+  activity_record: 'operational',
   knowledge_record: 'operational',
   learning_evaluation_lease: 'operational',
   learning_job: 'operational',

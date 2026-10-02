@@ -201,5 +201,10 @@ export const effectProposalResponse = proposeActionResponse.extend({
   /** Plain words, built from the record. Never model text. */
   message: z.string().min(1),
   origin_warnings: originWarnings.default([]),
+  /**
+   * The action runs on the agent's own computer. An outcome left open is the
+   * agent's to check before any retry, and the person is not asked about it.
+   */
+  own_computer: z.boolean().default(false),
 });
 export type EffectProposalResponse = z.infer<typeof effectProposalResponse>;

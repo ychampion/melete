@@ -97,7 +97,8 @@ address read off a page is refused as untrusted_recipient_origin` in
 Schema existence is checked by `every entity in the contract has a table`.
 Authentication tests include `racing setup requests atomically create one owner,
 space, and session`, `a second service instance recognizes the persisted
-session`, and `all other routes require a valid cookie while health stays public`.
+session`, and `all other routes require a valid cookie while health and setup
+status stay public`.
 
 The knowledge file-view routes select a space from the `x-melete-space` header
 or a query parameter after session authentication, with a single-space
@@ -174,6 +175,18 @@ proposes nothing it settles `waiting_for_input`, and a parked action still wins
 parks`, `an ask that still proposes nothing settles waiting for input, never
 completed`, `a finished send, a closing offer or a plain question completes in
 one run`).
+
+The agent asks the person something with `ask_person(question, choices?,
+why?)`, a broker tool served beside `job.wait`. The broker records the question
+against the attempt (one per attempt, none while the job already has an open
+question, none beside a wait) and tells the model to end its turn. When the
+attempt settles, the service turns a completion into `waiting_for_input` and
+asks exactly that question ahead of anything deferred; a routine rests on its
+schedule instead, with the question open, and answering it writes the person's
+message and fires a run of its own. A job that ends, and a conversation that is
+stopped, withdraws its open question. The instructions say to ask only on real
+ambiguity or a choice that is the person's to make, and never to ask permission
+this way: approvals stay in the broker.
 
 The attempt input renders the job's constraints as one short line each and
 writes no default down: a declared deliverable says what done means, a domain

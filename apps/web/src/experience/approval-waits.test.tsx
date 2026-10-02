@@ -111,6 +111,28 @@ test('the decision reported by the service settles the card, wherever it was mad
   expect(html).not.toContain('Allow once');
 });
 
+test('a request withdrawn because what it relied on changed says so, not that anyone stopped', () => {
+  const block = permissionBlock([
+    ...asked(),
+    event({
+      type: 'decision',
+      decision: {
+        kind: 'permission',
+        id: 'apr_1',
+        outcome: 'outdated',
+        answer: null,
+        decided_at: AT,
+      },
+    }),
+  ]);
+  expect(block?.decided).toBe('outdated');
+  const html = renderToStaticMarkup(
+    <PermissionCard permission={PERMISSION} decided={block?.decided ?? null} onDecide={() => {}} />,
+  );
+  expect(html).toContain('Withdrawn because something it relied on changed');
+  expect(html).not.toContain('when you stopped');
+});
+
 test('the waiting action finishing without a decision item closes the card', () => {
   expect(
     permissionBlock([
@@ -144,4 +166,21 @@ test('a long file shows its first lines with Show all, and says when the text wa
   expect(html).not.toContain('line 13');
   expect(html).toContain('Show all');
   expect(html).toContain('aria-expanded="false"');
+});
+
+test('the request a card is for stays one line, even when its title holds a colon', () => {
+  const html = renderToStaticMarkup(
+    <PermissionCard
+      permission={{
+        ...PERMISSION,
+        why: [...PERMISSION.why, 'For [ftE] impossible: open the page and…'],
+      }}
+      decided={null}
+      onDecide={() => {}}
+    />,
+  );
+  expect(html).toContain('class="permission-why permission-for"');
+  expect(html).toContain('For [ftE] impossible: open the page and…');
+  // Not split into a "label" and a "value" column.
+  expect(html).not.toContain('>For [ftE] impossible<');
 });

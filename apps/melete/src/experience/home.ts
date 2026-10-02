@@ -9,6 +9,7 @@ import {
   unavailable,
 } from '@melete/contracts';
 import { and, desc, eq, ilike, inArray, ne, sql } from 'drizzle-orm';
+import { builtinLabel } from '../connectors/builtin.ts';
 import { describeDate } from '../dates.ts';
 import type { Database } from '../db/client.ts';
 import { action, agent, connection, experienceProfile, job, task } from '../db/schema.ts';
@@ -73,7 +74,8 @@ export class ExperienceHome {
         await this.db
           .select({ id: agent.id })
           .from(agent)
-          .where(eq(agent.spaceId, spaceId))
+          // Melete is in every space from the start, so only an agent the person made counts.
+          .where(and(eq(agent.spaceId, spaceId), eq(agent.isDefault, false)))
           .limit(1)
       ).length > 0;
     return {
@@ -194,7 +196,7 @@ export class ExperienceHome {
         experienceConnection.parse({
           id: row.id,
           app: appName(row),
-          label: plainText(row.label, appName(row)),
+          label: builtinLabel(row.configuration) ?? plainText(row.label, appName(row)),
           status:
             row.setupState === 'connecting' || row.setupState === 'available'
               ? row.setupState

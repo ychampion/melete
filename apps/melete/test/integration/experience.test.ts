@@ -38,7 +38,6 @@ import {
 } from '../../src/db/schema.ts';
 import { EVENT_ORDER_LOCK } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
-import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
 import { BACKEND_VOCABULARY } from '../../src/experience/projectors.ts';
 import { newId } from '../../src/ids.ts';
@@ -53,6 +52,7 @@ import { ingest } from '../../src/memory/evidence.ts';
 import { recordOutput } from '../../src/memory/outputs.ts';
 import type { RestrictionJournal, RestrictionRecord } from '../../src/memory/restore.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -115,7 +115,7 @@ async function request(path: string, method = 'GET', body?: unknown, key?: strin
   });
 }
 async function createConversation() {
-  const response = await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent);
+  const response = await request('/agents', 'POST', freshAgent());
   expect(response.status).toBe(200);
   const persona = agentResponse.parse(await response.json()).agent;
   const created = await request('/conversations', 'POST', {
@@ -188,7 +188,7 @@ withDb('experience rows and authenticated scope', () => {
   });
   test('plans project real child completion and preserve context in a linked conversation', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     const saved = planResponse.parse(
       await (
@@ -242,7 +242,7 @@ withDb('experience rows and authenticated scope', () => {
   });
   test('a scheduled routine completes twice with separate spending and attempt bounds', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     const routine = automationResponse.parse(
       await (
@@ -413,7 +413,7 @@ withDb('experience rows and authenticated scope', () => {
       reason: 'input',
     });
     expect(claimed).not.toBeNull();
-    expect(required(claimed).bundle.identity).toContain('Nova');
+    expect(required(claimed).bundle.identity).toContain('In this conversation you are ');
     await required(runner).commitOutcome(required(claimed).claims, {
       kind: 'completed',
       summary: 'Dinner is ready.',
@@ -665,7 +665,8 @@ withDb('experience rows and authenticated scope', () => {
     const turns = turnList.parse(
       await (await request(`/conversations/${chat.id}/messages`)).json(),
     );
-    expect(turns.turns.filter((turn) => turn.text === 'Cook at home')).toHaveLength(1);
+    // A picked option is recorded as a choice the agent offered, not as the person's words.
+    expect(turns.turns.filter((turn) => turn.text === 'You chose: Cook at home')).toHaveLength(1);
     // The answer rides the conversation stream once, so a reload shows it answered.
     const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id, 200);
     expect(
@@ -1148,9 +1149,10 @@ withDb('experience rows and authenticated scope', () => {
     const result = experienceOperations['GET /conversations/{id}/cards'].response.parse(
       await (await request(`/conversations/${chat.id}/cards`)).json(),
     );
-    expect(result.cards).toHaveLength(5);
+    // Reading a file makes nothing new, so it stays in the activity and is not a card.
+    expect(result.cards).toHaveLength(4);
     expect(result.cards.map((card) => card.title).sort()).toEqual(
-      ['Dinner event', 'Dinner invitation', 'Dinner menu', 'dinner-notes.txt', 'menu.txt'].sort(),
+      ['Dinner event', 'Dinner invitation', 'Dinner menu', 'dinner-notes.txt'].sort(),
     );
     expect(
       result.cards.find((card) => card.title === 'Dinner event')?.facts.map((fact) => fact.label),
@@ -1165,12 +1167,12 @@ withDb('experience rows and authenticated scope', () => {
         .filter((card) => card.source_connection)
         .map((card) => card.source_connection)
         .sort(),
-    ).toEqual(ids.sort());
+    ).toEqual(ids.filter((_, index) => entries[index]?.kind !== 'files.read').sort());
     expect(JSON.stringify(result)).not.toMatch(BACKEND_VOCABULARY);
     expect(JSON.stringify(result)).not.toContain('private details stay inside');
     expect(JSON.stringify(result)).not.toContain('foreign-secret');
     const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
-    expect(page.events.filter((event) => event.item.type === 'card')).toHaveLength(5);
+    expect(page.events.filter((event) => event.item.type === 'card')).toHaveLength(4);
     expect(JSON.stringify(page)).not.toMatch(BACKEND_VOCABULARY);
   });
 

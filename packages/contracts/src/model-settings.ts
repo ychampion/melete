@@ -77,6 +77,16 @@ export const activeModel = z
         'MELETE_DEFAULT_PROVIDER and MELETE_DEFAULT_MODEL, used while nothing is chosen in the app.',
     }),
     connected: z.boolean().meta({ description: 'The active provider has a credential' }),
+    vision: z.boolean().meta({
+      description:
+        'Whether the model is shown the screenshots the agent takes, as pictures. Otherwise ' +
+        'it reads their text receipt: where each was saved, its size and digest.',
+    }),
+    vision_source: z.enum(['catalog', 'app', 'operator']).meta({
+      description:
+        '`catalog`: Melete’s list of models that read images. `app`: the owner said so when ' +
+        'choosing the model. `operator`: MELETE_DEFAULT_MODEL_VISION.',
+    }),
     updated_at: timestamp.nullable(),
   })
   .strict();
@@ -161,6 +171,15 @@ export const setDefaultModelRequest = z
   .object({
     provider: modelProvider,
     model: z.string().trim().min(1).max(300),
+    supports_vision: z
+      .boolean()
+      .nullable()
+      .optional()
+      .meta({
+        description:
+          'Whether this model reads images. Left out or null, Melete’s model catalog decides; ' +
+          'set it for a model the catalog does not know.',
+      }),
   })
   .strict();
 

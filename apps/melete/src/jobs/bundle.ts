@@ -58,8 +58,9 @@ import { asKnowledge, attemptRecallQuery, recall } from '../memory/recall.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { selectedContext } from '../principals/context.ts';
 import { runBrief } from '../runs/record.ts';
+import { closedComputerStepColumn } from '../sandbox/closed-step.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
-import { PRIVACY_DECISION, questionView, readDeferred } from './questions.ts';
+import { PRIVACY_DECISION, pickedForAgent, questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
 
 export const TRANSCRIPT_MAX_MESSAGES = 100;
@@ -303,7 +304,7 @@ export function assembleHistory(
     ) {
       const message: CanonicalMessage = {
         role: 'user',
-        content: payload.text,
+        content: pickedForAgent(payload.text, payload.chosen),
         at: row.createdAt.toISOString(),
       };
       transcript.push(message);
@@ -638,6 +639,16 @@ export async function buildAttemptSkeleton(
     ];
   });
   const constraints = jobConstraints.parse(row.constraints);
+  const [activeTurn] = row.currentTurnId
+    ? await tx.select().from(experienceTurn).where(eq(experienceTurn.id, row.currentTurnId))
+    : [];
+  const personaId = activeTurn?.agentId ?? row.agentId;
+  const [persona] = personaId
+    ? await tx
+        .select()
+        .from(agent)
+        .where(and(eq(agent.id, personaId), eq(agent.spaceId, row.spaceId)))
+    : [];
   const procedures = await selectProcedureSkills(tx, row, model, runtimeVersion);
   const context = await selectedContext(
     tx,
@@ -647,6 +658,8 @@ export async function buildAttemptSkeleton(
     history.inputs.new_user_messages.at(-1)?.content ?? '',
     constraints.public_compartment,
     await procedureReach(tx, procedures),
+    // An agent that keeps no memory is not offered a skill that promises to.
+    persona?.writesMemory !== false,
   );
   const wait = waitSpec.parse(row.wait);
   // A transition into queued clears the wait. A queued job that still holds an
@@ -702,16 +715,6 @@ export async function buildAttemptSkeleton(
     previous ? { id: previous.id, endedAt: previous.endedAt } : null,
     readDeferred(row),
   );
-  const [activeTurn] = row.currentTurnId
-    ? await tx.select().from(experienceTurn).where(eq(experienceTurn.id, row.currentTurnId))
-    : [];
-  const personaId = activeTurn?.agentId ?? row.agentId;
-  const [persona] = personaId
-    ? await tx
-        .select()
-        .from(agent)
-        .where(and(eq(agent.id, personaId), eq(agent.spaceId, row.spaceId)))
-    : [];
   const [profile] = await tx
     .select({ timeZone: experienceProfile.timeZone })
     .from(experienceProfile)
@@ -761,6 +764,8 @@ export type BundleAssembly = {
   catalog: (bundle: AttemptBundle) => Promise<AttemptBundle['tools']>;
   /** Recall what was learned in private conversations: only for an attempt that stays on the person's own model. */
   privateOrigin?: boolean;
+  /** The agent answering may not read memory. */
+  withheld?: boolean;
 };
 
 /** Complete the bundle after the lease commits, before any model request. */
@@ -779,7 +784,11 @@ export async function buildBundle(
       mode: 'current',
       max_tokens: CONTEXT_LIMITS.knowledge_tokens,
     },
-    { includeProfile: true, privateOrigin: options.privateOrigin === true },
+    {
+      includeProfile: true,
+      privateOrigin: options.privateOrigin === true,
+      withheld: options.withheld === true,
+    },
   );
   const tools = (await options.catalog(skeleton)).slice(0, CONTEXT_LIMITS.max_tools);
   const repairBriefs = await pendingRepairBriefs(sql, scope, jobId);
@@ -823,7 +832,11 @@ type CompletedOutcome = Extract<AttemptOutcome, { kind: 'completed' }>;
 type CompletionAction = Pick<
   typeof action.$inferSelect,
   'id' | 'jobId' | 'connectionId' | 'kind' | 'effectClass' | 'status' | 'receipt'
-> & { spaceId: string | null };
+> & {
+  spaceId: string | null;
+  /** It ran on an agent's computer that could reach nothing outside. */
+  closedStep?: boolean;
+};
 type CompletionArtifact = Pick<
   typeof artifact.$inferSelect,
   'id' | 'jobId' | 'spaceId' | 'path' | 'contentHash' | 'size'
@@ -930,13 +943,21 @@ export function evaluateCompletion(
         referencedActions.length + referencedArtifacts.length + referencedKnowledge.length > 0;
       break;
   }
+  const open = (candidate: CompletionAction) =>
+    candidate.status === 'unknown' || candidate.status === 'unresolved';
+  // A step on the agent's own computer, one that could reach nothing outside,
+  // whose outcome is open was the agent's to check, and it was told so. It
+  // neither holds the turn open nor asks the person; a late receipt still
+  // lands on the action. With network access it reconciles like any effect.
+  const checkedByAgent = (candidate: CompletionAction) =>
+    open(candidate) && candidate.closedStep === true;
   return {
-    all_actions_terminal: actions.every((candidate) =>
-      (TERMINAL_ACTION_STATUSES as readonly string[]).includes(candidate.status),
+    all_actions_terminal: actions.every(
+      (candidate) =>
+        (TERMINAL_ACTION_STATUSES as readonly string[]).includes(candidate.status) ||
+        checkedByAgent(candidate),
     ),
-    has_unknown_action: actions.some(
-      (candidate) => candidate.status === 'unknown' || candidate.status === 'unresolved',
-    ),
+    has_unknown_action: actions.some((candidate) => open(candidate) && !checkedByAgent(candidate)),
     deliverable_declared: declared.kind !== 'none',
     deliverable_satisfied: satisfied,
     // Nothing is known about artifacts from records alone; the caller that
@@ -962,6 +983,7 @@ export async function completionFacts(
       status: action.status,
       receipt: action.receipt,
       spaceId: connection.spaceId,
+      closedStep: closedComputerStepColumn,
     })
     .from(action)
     .leftJoin(connection, eq(connection.id, action.connectionId))

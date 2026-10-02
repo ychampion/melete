@@ -9,6 +9,7 @@ import {
   actionListQuery,
   actionListResponse,
   actionResponse,
+  actionSummaryListResponse,
   approvalDecisionResponse,
   approvalListResponse,
   attemptListResponse,
@@ -237,6 +238,8 @@ import {
   spaceRemovalReport,
 } from './spaces.ts';
 import {
+  voiceAside,
+  voiceAsideRequest,
   voiceContextQuery,
   voiceSession,
   voiceSpeechRequest,
@@ -1861,8 +1864,16 @@ export function buildOpenApiDocument() {
           get: {
             tags: ['actions'],
             summary: 'The action ledger',
+            description:
+              'Every field of each action, or with `view=summary` only what a person is shown of ' +
+              'it. GET /actions/{actionId} always returns the full record.',
             requestParams: { query: actionListQuery },
-            responses: { '200': jsonResponse('Actions', actionListResponse) },
+            responses: {
+              '200': jsonResponse(
+                'Actions',
+                z.union([actionListResponse, actionSummaryListResponse]),
+              ),
+            },
           },
         },
 
@@ -3074,6 +3085,31 @@ export function buildOpenApiDocument() {
               '404': problem('No such conversation, or voice mode is not set up'),
               '429': problem('The daily allowance for reading aloud is used up'),
               '502': problem('The speech provider could not speak it'),
+            },
+          },
+        },
+        '/conversations/{id}/voice/aside': {
+          post: {
+            tags: ['voice'],
+            summary: 'Talk with Melete while the conversation’s turn runs',
+            description:
+              'A light model call alongside the running turn. It sees the conversation, the ' +
+              'activity sent with the request and the agent’s name, and goes through the privacy ' +
+              'router like every model call. It has no tools and acts on nothing: it answers, ' +
+              'says how the work is going, or says that what was heard is an instruction for ' +
+              'the work (`steer`) or a request to stop it (`stop`), which the caller carries ' +
+              'out through the ordinary routes. The words are not kept; like every model call ' +
+              'it leaves a privacy log entry and adds any redacted details to the ' +
+              'conversation’s vault. Each aside counts against the person’s daily voice ' +
+              'allowance.',
+            requestParams: idParam('id', 'Conversation id'),
+            requestBody: json(voiceAsideRequest),
+            responses: {
+              '200': jsonResponse('What to say, and what was meant', voiceAside),
+              '400': problem('Invalid request'),
+              '403': problem('Voice is off in a private space, agent or sensitive conversation'),
+              '404': problem('No such conversation, or voice mode is not set up'),
+              '429': problem('Too many asides in a short time, or the daily allowance is used up'),
             },
           },
         },

@@ -83,10 +83,21 @@
     line-height: 26px;
   }
 }
-.home-error {
-  margin-top: 12px;
+.brief-ask {
+  align-self: flex-start;
+  margin-top: 2px;
   font-size: 13px;
-  color: var(--danger);
+  font-weight: 500;
+  color: var(--primary);
+  border-radius: 6px;
+}
+.brief-ask:hover {
+  text-decoration: underline;
+}
+.brief-name {
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
 }
 
 /* ---------- composer and suggestions ---------- */
@@ -118,6 +129,20 @@
   white-space: nowrap;
   max-width: 100%;
   transition: border-color 0.15s;
+}
+.home-agents {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.home-agents-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+a.suggestion:hover {
+  text-decoration: none;
+  border-color: var(--blue-line);
 }
 .suggestion > span {
   min-width: 0;
@@ -404,28 +429,6 @@
 .motion-line {
   font-size: 13px;
   color: var(--muted);
-}
-/* Steps done and the one under way: counted steps, never a percentage. */
-.motion-track {
-  display: inline-flex;
-  flex-direction: row;
-  gap: 3px;
-  flex-shrink: 0;
-}
-.motion-track > span {
-  width: 6px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--primary);
-}
-.motion-track > span[data-state="now"] {
-  background: var(--blue-line);
-  animation: pulse 1.6s ease-in-out infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-  .motion-track > span[data-state="now"] {
-    animation: none;
-  }
 }
 .motion-when {
   width: 64px;

@@ -16,7 +16,6 @@ export const TASK_PREFIX =
   'Arrange the supplied records by the declared key, type and direction. Return only JSON with columns and rows.\n';
 export const taskObjective = (task: RecordTask) => TASK_PREFIX + JSON.stringify(task);
 export const recordOutput = z.strictObject({ columns: z.array(z.string()), rows: z.array(row) });
-export type RecordOutput = z.infer<typeof recordOutput>;
 
 /** Fixed expected row identities are fixture data; the grader does not reuse the runtime's sorting code. */
 export function gradeRecords(value: RecordCase, summary: string): boolean {

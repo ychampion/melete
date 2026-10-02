@@ -62,7 +62,6 @@ export const extractedItem = z.strictObject({
 export type ExtractedItem = z.infer<typeof extractedItem>;
 
 export const extractionReply = z.strictObject({ items: z.array(extractedItem).max(12) });
-export type ExtractionReply = z.infer<typeof extractionReply>;
 
 /** The seam. Everything above the provider speaks this and nothing else. */
 export interface CompanyExtractor {

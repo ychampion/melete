@@ -1,9 +1,11 @@
 /**
- * Agents: a face for each job. Profiles, a wall of faces to pick from,
- * templates, and an editor with Look, Behaviour and Access, all on the
- * contract's agent record. The nine face states derive from turn status.
+ * Agents: Melete, who is always here and can use everything, and a face for
+ * each specialist job. Profiles, a wall of faces to pick from, templates, and
+ * an editor with Look, Behaviour and Access, all on the contract's agent
+ * record. The nine face states derive from turn status.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { freeAgentName } from '@melete/contracts/mention';
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { logoFor } from '../chat/parts.tsx';
 import {
   AgentFace,
@@ -15,10 +17,12 @@ import {
 import { Icon } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
+import { MeleteAvatar } from '../design/mark.tsx';
 import {
   Badge,
   Button,
   Checkbox,
+  Dialog,
   Field,
   IconButton,
   Input,
@@ -27,12 +31,15 @@ import {
   Select,
   Toggle,
 } from '../design/primitives.tsx';
+import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { lookOf, useApp, useLoad } from '../experience/hooks.ts';
 import type { Agent, AgentInput, AgentTemplate, Connection } from '../experience/types.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
+import { LibraryShelf, TemplateSheet, WelcomeSheet } from './AgentLibrary.tsx';
 import { draftKey, followSaved } from './agent-draft.ts';
+import { suggestedConnections, suggests, WORKS_WITH, type WorksWith } from './agent-library.ts';
 
 const ROLES = [
   'Concierge',
@@ -65,7 +72,23 @@ export const blankAgent = (): AgentInput => ({
   standing_instruction: '',
   allowed_connection_ids: null,
   asks_before_acting: true,
+  uses_computer: true,
+  reads_memory: true,
+  writes_memory: true,
 });
+
+/** What an agent may use besides its connections, in a few words. */
+export function reachWords(agent: Pick<Agent, 'uses_computer' | 'reads_memory' | 'writes_memory'>) {
+  const memory =
+    agent.reads_memory && agent.writes_memory
+      ? 'remembers'
+      : agent.reads_memory
+        ? 'reads memory only'
+        : agent.writes_memory
+          ? 'keeps memory, reads none'
+          : 'no memory';
+  return `${agent.uses_computer ? 'uses the computer' : 'no computer'} · ${memory}`;
+}
 
 /** Null reaches every connection, including ones connected later. */
 export const reaches = (ids: string[] | null, id: string) => ids === null || ids.includes(id);
@@ -99,11 +122,9 @@ const inkOn = (hex: string) => {
 export function LookFields({
   draft,
   onChange,
-  compact = false,
 }: {
   draft: AgentInput;
   onChange: (next: AgentInput) => void;
-  compact?: boolean;
 }) {
   const shapeOf = (surface: AgentInput['surface']): FaceShape =>
     surface === 'rounded' ? 'square' : surface;
@@ -117,10 +138,7 @@ export function LookFields({
     <>
       <fieldset className="field-group col" style={{ gap: 8 }}>
         <legend className="overline">Colour</legend>
-        <div
-          className="look-swatches"
-          style={{ gridTemplateColumns: `repeat(${compact ? 12 : 6}, minmax(0, 1fr))` }}
-        >
+        <div className="look-swatches" style={{ gridTemplateColumns: 'repeat(6, minmax(0, 1fr))' }}>
           {colours.map((color) => {
             const on = color === current;
             return (
@@ -130,11 +148,10 @@ export function LookFields({
                 aria-label={`Colour ${color}`}
                 aria-pressed={on}
                 className="look-swatch"
-                data-compact={compact ? 'true' : undefined}
                 style={{ background: color, color: inkOn(color) }}
                 onClick={() => onChange({ ...draft, colour: color })}
               >
-                {on ? <Icon name="check" size={compact ? 12 : 14} stroke={2.5} /> : null}
+                {on ? <Icon name="check" size={14} stroke={2.5} /> : null}
               </button>
             );
           })}
@@ -155,10 +172,7 @@ export function LookFields({
                 className="look-tile"
                 onClick={() => onChange({ ...draft, surface: toSurface(key) })}
               >
-                <AgentFace
-                  look={{ color: draft.colour, eyes: 'none', shape: key }}
-                  size={compact ? 22 : 26}
-                />
+                <AgentFace look={{ color: draft.colour, eyes: 'none', shape: key }} size={26} />
               </button>
             );
           })}
@@ -190,7 +204,7 @@ export function LookFields({
                     eyeColor: ink,
                     shape: shapeOf(draft.surface),
                   }}
-                  size={compact ? 22 : 26}
+                  size={26}
                 />
                 <span>{label}</span>
               </button>
@@ -202,16 +216,56 @@ export function LookFields({
   );
 }
 
+/** A switch on its own row: a title, one line of what it means, and the toggle. */
+function SwitchRow({
+  title,
+  hint,
+  on,
+  onChange,
+}: {
+  title: string;
+  hint: string;
+  on: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  return (
+    <div
+      className="row"
+      style={{
+        gap: 12,
+        padding: '12px 14px',
+        borderRadius: 12,
+        background: 'var(--soft)',
+        border: '1px solid var(--line)',
+      }}
+    >
+      <div className="col grow" style={{ gap: 1 }}>
+        <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>{title}</span>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{hint}</span>
+      </div>
+      <Toggle on={on} label={title} onChange={onChange} />
+    </div>
+  );
+}
+
 function AgentEditor({
   agentId,
+  isDefault = false,
+  fixedReach = false,
   initial,
   connections,
   connectionsError = null,
   onRetryConnections,
   onSaved,
   onClose,
+  onDelete,
+  worksWith,
 }: {
   agentId: string | null;
+  /** Melete: its name and reach are fixed, so only how it sounds is edited. */
+  isDefault?: boolean;
+  /** Melete in a personal space: it reaches everything, and that is not edited. */
+  fixedReach?: boolean;
   initial: AgentInput;
   connections: Connection[];
   /** Why the connections could not be read; the Access tab says so instead of "none". */
@@ -219,9 +273,32 @@ function AgentEditor({
   onRetryConnections?: () => void;
   onSaved: (agent: Agent) => void;
   onClose: () => void;
+  /** Asks to delete this agent; given for agents other than Melete. */
+  onDelete?: () => void;
+  /** For a library agent: the kinds it works best with, marked on its connections, never ticked. */
+  worksWith?: readonly WorksWith[];
 }) {
   const [draft, setDraft] = useState<AgentInput>(initial);
-  const [tab, setTab] = useState<'look' | 'behaviour' | 'access'>('look');
+  const panelRef = useRef<HTMLElement>(null);
+  // Focus moves into the drawer when it opens: to the name on a new agent, so
+  // it can be named straight away, otherwise to the drawer itself.
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const name = agentId
+      ? null
+      : panel.querySelector<HTMLInputElement>('input[aria-label="Agent name"]');
+    (name ?? panel).focus({ preventScroll: true });
+    name?.select();
+  }, [agentId]);
+  const onPanelKey = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    // A list open inside the drawer takes the first Escape itself.
+    if (panelRef.current?.querySelector('[aria-expanded="true"]')) return;
+    event.preventDefault();
+    onClose();
+  };
+  const [tab, setTab] = useState<'look' | 'behaviour' | 'access'>(isDefault ? 'behaviour' : 'look');
   const [state, setState] = useState<(typeof FACE_STATES)[number][0]>('idle');
   const [busy, setBusy] = useState(false);
   // A background refresh hands a new copy of the same agent; only a real change
@@ -253,9 +330,12 @@ function AgentEditor({
 
   return (
     <aside
+      ref={panelRef}
       className="side-panel"
       style={{ width: 420, maxWidth: '100%' }}
       aria-label={agentId ? `Edit ${draft.name}` : 'New agent'}
+      tabIndex={-1}
+      onKeyDown={onPanelKey}
     >
       <div
         className="row"
@@ -282,7 +362,7 @@ function AgentEditor({
           value={tab}
           onChange={setTab}
           options={[
-            { value: 'look', label: 'Look' },
+            ...(isDefault ? [] : [{ value: 'look' as const, label: 'Look' }]),
             { value: 'behaviour', label: 'Behaviour' },
             { value: 'access', label: 'Access' },
           ]}
@@ -405,6 +485,15 @@ function AgentEditor({
           </>
         ) : tab === 'behaviour' ? (
           <>
+            {isDefault ? (
+              <div className="row" style={{ gap: 12 }}>
+                <MeleteAvatar size={40} />
+                <p style={{ fontSize: 13, color: 'var(--secondary)', lineHeight: '19px' }}>
+                  Melete is always here. It takes every chat, routine and message from Home unless
+                  you choose another agent, and its name stays Melete.
+                </p>
+              </div>
+            ) : null}
             <Field label="Tone">
               <Select
                 label="Tone"
@@ -418,12 +507,13 @@ function AgentEditor({
               />
             </Field>
             <Field
-              label="One standing instruction"
-              hint="It applies to every chat this agent handles. Up to 200 characters."
+              label="Standing instruction"
+              hint="Its brief for every chat it handles. Up to 500 characters."
             >
               <textarea
                 className="textarea"
-                maxLength={200}
+                maxLength={500}
+                rows={6}
                 value={draft.standing_instruction}
                 onChange={(event) =>
                   setDraft({ ...draft, standing_instruction: event.target.value })
@@ -431,37 +521,50 @@ function AgentEditor({
                 placeholder="One option first, not five. Confirm before paying."
               />
             </Field>
-            <div
-              className="row"
-              style={{
-                gap: 12,
-                padding: '12px 14px',
-                borderRadius: 12,
-                background: 'var(--soft)',
-                border: '1px solid var(--line)',
-              }}
-            >
-              <div className="col grow" style={{ gap: 1 }}>
-                <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
-                  Asks before acting
-                </span>
-                <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                  Anything that sends, books or pays waits for your yes.
-                </span>
-              </div>
-              <Toggle
-                on={draft.asks_before_acting}
-                label="Asks before acting"
-                onChange={(on) => setDraft({ ...draft, asks_before_acting: on })}
-              />
-            </div>
+            <SwitchRow
+              title="Asks before acting"
+              hint="Anything that sends, books or pays waits for your yes."
+              on={draft.asks_before_acting}
+              onChange={(on) => setDraft({ ...draft, asks_before_acting: on })}
+            />
           </>
+        ) : fixedReach ? (
+          <p style={{ fontSize: 13, color: 'var(--secondary)', lineHeight: '19px' }}>
+            Melete can use everything you connect, including what you connect later, the computer
+            and what it remembers about you. To keep something narrower, make an agent for that job
+            and choose what it can use.
+          </p>
         ) : (
           <>
+            <SwitchRow
+              title="Uses the computer"
+              hint="The agent's computer and your paired computers."
+              on={draft.uses_computer ?? true}
+              onChange={(on) => setDraft({ ...draft, uses_computer: on })}
+            />
+            <SwitchRow
+              title="Reads memory"
+              hint="What Melete remembers about you is brought into its work."
+              on={draft.reads_memory ?? true}
+              onChange={(on) => setDraft({ ...draft, reads_memory: on })}
+            />
+            <SwitchRow
+              title="Keeps memory"
+              hint="What you tell it is remembered for later."
+              on={draft.writes_memory ?? true}
+              onChange={(on) => setDraft({ ...draft, writes_memory: on })}
+            />
             <p style={{ fontSize: 13, color: 'var(--muted)' }}>
-              Access is per agent. Tick what this one may look at; with everything ticked, it also
-              reaches what you connect later.
+              Connections are per agent. Tick what this one may look at; with everything ticked, it
+              also reaches what you connect later.
             </p>
+            {worksWith?.length ? (
+              <p style={{ fontSize: 13, color: 'var(--secondary)' }}>
+                Works best with{' '}
+                {worksWith.map((kind) => WORKS_WITH[kind].label.toLowerCase()).join(', ')}. The
+                matching connections are ticked; untick any you would rather it left alone.
+              </p>
+            ) : null}
             <div className="col" style={{ gap: 6 }}>
               {connections.map((connection) => {
                 const on = reaches(draft.allowed_connection_ids, connection.id);
@@ -496,8 +599,14 @@ function AgentEditor({
                       </span>
                     )}
                     <span className="col grow" style={{ minWidth: 0 }}>
-                      <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
+                      <span
+                        className="row"
+                        style={{ gap: 6, fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
+                      >
                         {connection.label}
+                        {worksWith && suggests(worksWith, connection.app) ? (
+                          <span className="library-suggested">Suggested</span>
+                        ) : null}
                       </span>
                       <span className="clamp1" style={{ fontSize: 12, color: 'var(--muted)' }}>
                         {connection.app} ·{' '}
@@ -545,9 +654,14 @@ function AgentEditor({
         className="row"
         style={{ gap: 8, padding: '12px 20px 16px', borderTop: '1px solid var(--line)' }}
       >
+        {agentId && !isDefault && onDelete ? (
+          <Button variant="ghost" icon="trash" onClick={onDelete}>
+            Delete
+          </Button>
+        ) : null}
         <div className="grow" />
         <Button loading={busy} onClick={save}>
-          Save agent
+          {agentId ? 'Save agent' : 'Create agent'}
         </Button>
       </div>
     </aside>
@@ -573,7 +687,7 @@ const WALL = [
   ['#5ab4a0', 'gear'],
 ] as const;
 
-const inputOf = (agent: Agent): AgentInput => ({
+export const inputOf = (agent: Agent): AgentInput => ({
   name: agent.name,
   role: agent.role,
   colour: agent.colour,
@@ -583,6 +697,9 @@ const inputOf = (agent: Agent): AgentInput => ({
   standing_instruction: agent.standing_instruction,
   allowed_connection_ids: agent.allowed_connection_ids,
   asks_before_acting: agent.asks_before_acting,
+  uses_computer: agent.uses_computer,
+  reads_memory: agent.reads_memory,
+  writes_memory: agent.writes_memory,
   ...(agent.face_image ? { face_image: agent.face_image } : {}),
 });
 
@@ -605,6 +722,15 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
     AgentInput,
     'colour' | 'surface' | 'eye_colour'
   > | null>(null);
+  // A template the person chose opens as a draft to name and review; nothing
+  // is made until they save it.
+  const [seed, setSeed] = useState<AgentTemplate | null>(null);
+  const [deleting, setDeleting] = useState<Agent | null>(null);
+  const [removing, setRemoving] = useState(false);
+  // A library template being read before it is added, and an agent just made
+  // from one, whose routine and questions are offered next.
+  const [viewing, setViewing] = useState<AgentTemplate | null>(null);
+  const [welcome, setWelcome] = useState<{ agent: Agent; template: AgentTemplate } | null>(null);
 
   const wall = useMemo(() => {
     const items = WALL.map(([colour, shape], i) => ({
@@ -620,37 +746,137 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
     selected === 'new' ? null : (agents.find((agent) => agent.id === selected) ?? null);
   const key = draftKey(
     selected,
-    selected === 'new' ? { ...blankAgent(), ...(picked ?? {}) } : current ? inputOf(current) : null,
+    selected === 'new'
+      ? { ...blankAgent(), ...(seed?.agent ?? {}), ...(picked ?? {}) }
+      : current
+        ? inputOf(current)
+        : null,
   );
   const initial = useMemo(
     () => (key === null ? null : (JSON.parse(key) as [string, AgentInput])[1]),
     [key],
   );
 
-  const panel = initial ? (
+  // Back to the card that opened the drawer, so the keyboard picks up where it was.
+  const closeTo = (id: string | null) => {
+    navigate('/agents');
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLElement>(id ? `[data-agent-card="${id}"]` : '[data-new-agent]')
+        ?.focus(),
+    );
+  };
+
+  const remove = () => {
+    if (!deleting) return;
+    const gone = deleting;
+    setRemoving(true);
+    void adapter.deleteAgent(gone.id).then((result) => {
+      setRemoving(false);
+      if (result.data === null) {
+        toast({ kind: 'err', title: 'Couldn’t delete', sub: result.error ?? result.unavailable });
+        return;
+      }
+      setDeleting(null);
+      const { conversations, routines, routines_paused: paused } = result.data;
+      const moved = [
+        conversations ? `${conversations} chat${conversations === 1 ? '' : 's'}` : '',
+        routines ? `${routines} routine${routines === 1 ? '' : 's'}` : '',
+      ].filter(Boolean);
+      toast({
+        kind: 'ok',
+        title: `${gone.name} deleted`,
+        sub: moved.length
+          ? `Melete now looks after its ${moved.join(' and ')}.${paused ? ` ${paused === 1 ? 'The routine is' : 'They are'} paused until you turn ${paused === 1 ? 'it' : 'them'} back on.` : ''}`
+          : undefined,
+      });
+      refreshAgents();
+      templates.reload();
+      closeTo(null);
+    });
+  };
+
+  const editor = initial ? (
     <AgentEditor
-      key={current?.id ?? 'new'}
+      key={current?.id ?? `new-${seed?.id ?? 'blank'}`}
       agentId={current?.id ?? null}
+      isDefault={current?.is_default === true}
+      fixedReach={current?.fixed_reach === true}
       initial={initial}
       connections={connections.data?.connections.filter((c) => c.status === 'connected') ?? []}
       connectionsError={connections.error}
       onRetryConnections={connections.reload}
       onSaved={(agent) => {
         refreshAgents();
-        toast({ kind: 'ok', title: `${agent.name} is ready.` });
+        templates.reload();
+        // A new agent from the library goes on to its routine and questions.
+        const from = !current && seed ? seed : null;
+        setSeed(null);
+        if (from && (from.starter_routine || from.questions.length))
+          setWelcome({ agent, template: from });
+        else toast({ kind: 'ok', title: `${agent.name} is ready.` });
         navigate(`/agents/${agent.id}`);
       }}
-      onClose={() => navigate('/agents')}
+      onClose={() => closeTo(current?.id ?? null)}
+      onDelete={current && !current.is_default ? () => setDeleting(current) : undefined}
+      worksWith={!current && seed ? seed.works_best_with : undefined}
     />
   ) : undefined;
 
-  const fromTemplate = (template: AgentTemplate) =>
-    void adapter.createAgent(template.agent).then((r) => {
-      if (r.data) {
-        refreshAgents();
-        navigate(`/agents/${r.data.agent.id}`);
-      } else toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t create the agent' });
+  const closeSheet = (id: string) => {
+    setViewing(null);
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>(`[data-library-card="${id}"]`)?.focus(),
+    );
+  };
+
+  const panel = welcome ? (
+    <WelcomeSheet
+      key={welcome.agent.id}
+      agent={welcome.agent}
+      template={welcome.template}
+      onOpenAgent={() => {
+        setWelcome(null);
+        navigate(`/agents/${welcome.agent.id}`);
+      }}
+      onClose={() => {
+        setWelcome(null);
+        closeTo(welcome.agent.id);
+      }}
+    />
+  ) : viewing && selected === null ? (
+    <TemplateSheet
+      key={viewing.id}
+      template={viewing}
+      onAdd={() => {
+        setViewing(null);
+        fromTemplate(viewing);
+      }}
+      onClose={() => closeSheet(viewing.id)}
+    />
+  ) : (
+    editor
+  );
+
+  const fromTemplate = (template: AgentTemplate) => {
+    // The suggested name is one no agent here has, so "@name" stays clear.
+    const taken = agents.map((agent) => agent.name);
+    setPicked(null);
+    // The connections it works best with start ticked, so the draft shows
+    // exactly what it will reach; the person can untick any before creating it.
+    setSeed({
+      ...template,
+      agent: {
+        ...template.agent,
+        name: freeAgentName(template.agent.name, taken),
+        allowed_connection_ids: suggestedConnections(
+          template.works_best_with,
+          connections.data?.connections ?? [],
+        ),
+      },
     });
+    navigate('/agents/new');
+  };
 
   return (
     <Shell title="Agents" rail={false} panel={panel}>
@@ -659,13 +885,17 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
           <div className="col" style={{ gap: 4 }}>
             <h1>Agents</h1>
             <p style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 520 }}>
-              Give Melete a face for each job. Each agent keeps its own tone, tools and memory.
+              Melete handles everything by default. Give it a face for a particular job, with its
+              own tone and only the tools it needs. Type @ and a name in any chat to ask one.
             </p>
           </div>
           <Button
             icon="plus"
+            data-new-agent=""
             onClick={() => {
               setPicked(null);
+              setSeed(null);
+              setViewing(null);
               navigate('/agents/new');
             }}
           >
@@ -687,6 +917,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
             return (
               <a
                 key={agent.id}
+                data-agent-card={agent.id}
                 className="card hoverable col"
                 href={href(`/agents/${agent.id}`)}
                 style={{
@@ -700,16 +931,20 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
                 }}
               >
                 <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
-                  <AgentFace look={lookOf(agent)} size={48} />
+                  <AgentAvatar agent={agent} size={48} />
                   <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
                     <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--heading)' }}>
                       {agent.name}{' '}
                       <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· {agent.role}</span>
                     </span>
                     <span style={{ fontSize: 13, color: 'var(--secondary)', lineHeight: '18px' }}>
-                      {agent.standing_instruction || agent.tone}
+                      {agent.is_default
+                        ? agent.standing_instruction ||
+                          'Takes every chat unless you choose another agent.'
+                        : agent.standing_instruction || agent.tone}
                     </span>
                   </div>
+                  {agent.is_default ? <Badge>Always here</Badge> : null}
                 </div>
                 <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                   <span className="row" style={{ gap: 4 }}>
@@ -737,10 +972,12 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
                     })}
                   </span>
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                    {allowed.length
-                      ? `reaches ${allowed.map((c) => c.label).join(', ')}`
-                      : 'reaches nothing yet'}{' '}
-                    · {agent.tone.toLowerCase()}
+                    {agent.fixed_reach
+                      ? 'reaches everything you connect'
+                      : allowed.length
+                        ? `reaches ${allowed.map((c) => c.label).join(', ')}`
+                        : 'reaches nothing yet'}{' '}
+                    · {reachWords(agent)}
                   </span>
                   <div className="grow" />
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>{usedWhen(agent)}</span>
@@ -749,6 +986,17 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
             );
           })}
         </div>
+        {templates.data?.templates.length ? (
+          <LibraryShelf
+            templates={templates.data.templates}
+            open={viewing && selected === null ? viewing.id : null}
+            onOpen={(template) => {
+              setWelcome(null);
+              setViewing(template);
+              if (selected !== null) navigate('/agents');
+            }}
+          />
+        ) : null}
         <div
           className="col"
           style={{
@@ -809,6 +1057,8 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
                   }}
                   onClick={() => {
                     setPicked(look);
+                    setSeed(null);
+                    setViewing(null);
                     navigate('/agents/new');
                   }}
                 >
@@ -822,45 +1072,30 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
             })}
           </div>
         </div>
-        {templates.data?.templates.length ? (
-          <div className="col" style={{ gap: 12 }}>
-            <div className="section-head">
-              <h2>Start from a template</h2>
-            </div>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: 12,
-              }}
-            >
-              {templates.data.templates.map((template) => (
-                <button
-                  key={template.id}
-                  type="button"
-                  className="card-12 hoverable row"
-                  style={{ gap: 12, padding: '12px 14px', textAlign: 'left' }}
-                  onClick={() => fromTemplate(template)}
-                >
-                  <AgentFace look={lookOf(template.agent)} size={36} state="inactive" />
-                  <span className="col grow" style={{ gap: 1 }}>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-                      {template.title}
-                    </span>
-                    <span className="clamp1" style={{ fontSize: 12, color: 'var(--muted)' }}>
-                      {template.agent.standing_instruction}
-                    </span>
-                  </span>
-                  <span style={{ color: 'var(--muted)', display: 'flex' }}>
-                    <Icon name="plus" size={16} />
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
         {templates.error ? <Badge tone="danger">{templates.error}</Badge> : null}
       </div>
+      <Dialog
+        open={deleting !== null}
+        onClose={removing ? () => {} : () => setDeleting(null)}
+        icon="trash"
+        tone="danger"
+        title={`Delete ${deleting?.name ?? 'this agent'}?`}
+        sub={
+          agents.find((agent) => agent.is_default)?.fixed_reach
+            ? `Its chats move to Melete, which can use everything you've connected. Its routines are paused until you turn them back on. What ${deleting?.name ?? 'it'} said stays in those chats.`
+            : `Its chats and routines move to Melete, which can use only what you've chosen for it here. What ${deleting?.name ?? 'it'} said stays in those chats.`
+        }
+        footer={
+          <>
+            <Button variant="outline" disabled={removing} onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" loading={removing} disabled={removing} onClick={remove}>
+              Delete {deleting?.name ?? 'agent'}
+            </Button>
+          </>
+        }
+      />
     </Shell>
   );
 }

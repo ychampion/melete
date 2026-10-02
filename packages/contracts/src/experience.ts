@@ -150,9 +150,21 @@ export const experienceQuestion = z.strictObject({
   why: z.array(text),
   if_ignored: text,
   options: quickOptions,
+  /**
+   * Whether an answer in the person's own words is accepted beside the
+   * options. A question about which revision of a fact to keep, or whether a
+   * conversation may leave the device, takes one of its options only.
+   */
+  free_text: z.boolean(),
   /** When it was asked; the queue is oldest first. */
   created_at: date,
 });
+/** One of the offered answers by its id, or an answer in the person's own words. */
+export const quickAnswerRequest = z.union([
+  z.strictObject({ option_id: id }),
+  z.strictObject({ text: z.string().trim().min(1).max(2000) }),
+]);
+export type QuickAnswerRequest = z.infer<typeof quickAnswerRequest>;
 
 /** Every bound is required. The recipient is resolved from trusted evidence by the service. */
 export const standingRuleBounds = z.strictObject({
@@ -447,9 +459,18 @@ export const experienceDecision = z.strictObject({
    * `replaced` is a permission a later message in the same conversation made
    * stale: it can no longer be allowed, and nothing it covered is sent. On a
    * permission, `withdrawn` means the person stopped the turn while it waited,
-   * with the same effect.
+   * with the same effect, and `outdated` means something it relied on (a fact
+   * it rested on, or the request itself) changed before anyone answered.
    */
-  outcome: z.enum(['allow_once', 'always', 'deny', 'replaced', 'answered', 'withdrawn']),
+  outcome: z.enum([
+    'allow_once',
+    'always',
+    'deny',
+    'replaced',
+    'answered',
+    'withdrawn',
+    'outdated',
+  ]),
   /** The chosen answer, for an answered question. */
   answer: z.string().max(4000).nullable(),
   decided_at: date,
@@ -463,7 +484,15 @@ export const experienceEvent = z.strictObject({
   created_at: date,
   item: z.union([
     trailStep,
-    z.strictObject({ type: z.literal('text_delta'), text: z.string() }),
+    z.strictObject({
+      type: z.literal('text_delta'),
+      text: z.string(),
+      /**
+       * The turn's answer so far is replaced by this text rather than added
+       * to: the attempt that wrote it was lost and the turn is running again.
+       */
+      restart: z.literal(true).optional(),
+    }),
     /** The model's reasoning as it writes it, for the trail; never part of the answer. */
     z.strictObject({ type: z.literal('reasoning'), text: z.string() }),
     z.strictObject({ type: z.literal('card'), card: resultCard }),
@@ -516,7 +545,8 @@ export const conversationTurn = z.strictObject({
 });
 export const conversationCreate = z.strictObject({
   title: text,
-  agent_id: id,
+  /** Left out, the chat goes to Melete, the agent every space has. */
+  agent_id: id.optional(),
   plan_id: id.optional(),
 });
 export const conversationSwitchAgent = z.strictObject({ agent_id: id });
@@ -530,6 +560,66 @@ export const messageAcceptance = z.strictObject({
   receipt: z.strictObject({ id, status: z.enum(['accepted', 'failed_retry']), received_at: date }),
 });
 export const conversationResponse = z.strictObject({ conversation });
+/** A new name for a chat. It changes only the title, not when the chat was last active. */
+export const conversationRename = z.strictObject({ title: z.string().trim().min(1).max(200) });
+/**
+ * Deleting a chat. What Melete learned from the chat stays unless
+ * `forget_memory` is `true`; then it is forgotten the same way "forget that"
+ * removes it, source and all.
+ */
+export const conversationDeleteQuery = z.strictObject({
+  forget_memory: z.enum(['true', 'false']).optional(),
+});
+export const conversationDeleted = z.strictObject({
+  id,
+  /** A turn was under way and was stopped first. */
+  stopped: z.boolean(),
+  /** Permissions still waiting in the chat, withdrawn before it went. */
+  withdrawn: count,
+  /** Things Melete had learned from the chat that were forgotten with it. */
+  forgotten: count,
+});
+export type ConversationDeleted = z.infer<typeof conversationDeleted>;
+/** A person in the space the session is using. */
+export const spaceMember = z.strictObject({
+  principal_id: id,
+  email: z.string().max(320),
+  role: z.enum(['owner', 'member']),
+  /** True for the person asking. */
+  you: z.boolean(),
+});
+export type SpaceMember = z.infer<typeof spaceMember>;
+export const spaceMembers = z.strictObject({
+  space: z.strictObject({
+    id,
+    name: text,
+    kind: z.enum(['personal', 'shared']),
+    /** The asking person's place in it; only an owner removes people. */
+    role: z.enum(['owner', 'member']),
+  }),
+  members: z.array(spaceMember),
+});
+export type SpaceMembers = z.infer<typeof spaceMembers>;
+/**
+ * Something done in the person's name whose chat or plan was later deleted:
+ * what it was, where it went and when. Never what it said.
+ */
+export const activityEntry = z.strictObject({
+  id,
+  what: text,
+  /** The connection it went through. */
+  where: text,
+  /** The recipient or place, where the effect has one. */
+  destination: z.string().max(500).nullable(),
+  /** The destination's own reference for it. */
+  reference: z.string().max(500).nullable(),
+  outcome: z.enum(['succeeded']),
+  /** The title of the chat or plan it came from. */
+  source: z.string().max(200),
+  happened_at: date,
+});
+export type ActivityEntry = z.infer<typeof activityEntry>;
+export const activityList = z.strictObject({ activity: z.array(activityEntry) });
 /**
  * The chats list, most recently active first. `next_cursor` continues after the
  * last one returned, and is null when there are no more.
@@ -563,22 +653,135 @@ export const agentInput = z.strictObject({
   surface: z.enum(['rounded', 'blob', 'diamond', 'octagon', 'gear']),
   eye_colour: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   tone: z.string().max(80),
-  standing_instruction: z.string().max(200),
+  /**
+   * A short brief the agent follows in every chat it handles. Sized so the
+   * whole persona, with the longest name, tone and memory note, stays within
+   * the 250-token identity cap.
+   */
+  standing_instruction: z.string().max(500),
   /** Null means every connection in the space, including ones connected later. */
   allowed_connection_ids: z.array(id).max(50).nullable(),
   asks_before_acting: z.boolean(),
+  /** Whether it may use the computer: the browser, the terminal and code in the workspace. */
+  uses_computer: z.boolean().default(true),
+  /** Whether what Melete remembers about the person is brought into its work. */
+  reads_memory: z.boolean().default(true),
+  /** Whether what the person tells it is kept in memory. */
+  writes_memory: z.boolean().default(true),
   face_image: url.optional(),
 });
 export const experienceAgent = agentInput.extend({
   id,
   space_id: id,
+  /**
+   * True for Melete, the agent every space has. It keeps its name and cannot
+   * be removed.
+   */
+  is_default: z.boolean(),
+  /**
+   * True for Melete in a personal space, where it reaches every connection,
+   * the computer and memory, and that cannot be narrowed. In a shared space
+   * Melete starts with no connections and its owner chooses what it may use.
+   */
+  fixed_reach: z.boolean(),
   usage: z.strictObject({ conversations: count, last_used: date.nullable() }),
 });
 export type ExperienceAgent = z.infer<typeof experienceAgent>;
-export const agentTemplate = z.strictObject({ id, title: text, agent: agentInput });
-export const agentList = z.strictObject({ agents: z.array(experienceAgent) });
+/** The shelves of the agent library, in the order a client shows them. */
+export const AGENT_CATEGORIES = [
+  'Personal',
+  'Home & family',
+  'Money',
+  'Work & email',
+  'Research',
+  'Writing',
+  'Travel',
+  'Health & routines',
+  'Learning',
+  'Code & projects',
+  'Small business',
+  'Shopping & subscriptions',
+] as const;
+export const agentCategory = z.enum(AGENT_CATEGORIES);
+/**
+ * The kinds of thing an agent works best with. They are shown, never granted:
+ * the person chooses an agent's connections and switches themselves.
+ * `computer` is the agent's own computer; `devices` are the person's paired
+ * computers; `browser` is the browser the agent drives with takeover; `web`
+ * is reading public pages.
+ */
+export const AGENT_WORKS_WITH = [
+  'mail',
+  'calendar',
+  'files',
+  'web',
+  'browser',
+  'computer',
+  'devices',
+  'mcp',
+] as const;
+export const agentWorksWith = z.enum(AGENT_WORKS_WITH);
+/** A routine the library offers after an agent is added. Nothing runs until the person sets it up. */
+export const starterRoutine = z.strictObject({
+  title: z.string().min(1).max(80),
+  instruction: z.string().min(1).max(600),
+  weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+  at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+});
+/**
+ * A question asked once after an agent is added. The answer is saved as the
+ * person's own statement on `memory_key`, a `pref.<purpose>.<name>` key, so it
+ * stays tied to what the agent is for.
+ */
+export const templateQuestion = z.strictObject({
+  id: z.string().regex(/^[a-z0-9-]{1,40}$/),
+  question: z.string().min(1).max(160),
+  placeholder: z.string().max(120),
+  memory_key: memoryKey.refine((key) => key.startsWith('pref.'), 'Use a pref. key.'),
+});
+export const agentTemplate = z.strictObject({
+  id,
+  title: text,
+  category: agentCategory,
+  /** One line on what it does for the person. */
+  benefit: z.string().min(1).max(120),
+  /** What it does, in a few plain lines. */
+  does: z.array(z.string().min(1).max(160)).min(1).max(5),
+  /** What it never does, in plain words. */
+  wont: z.array(z.string().min(1).max(160)).min(1).max(4),
+  works_best_with: z.array(agentWorksWith).max(5),
+  starter_routine: starterRoutine.nullable(),
+  questions: z.array(templateQuestion).max(4),
+  /** Built-in skills that fit its work. Skills are chosen per request; this only names them. */
+  skills: z.array(z.string().regex(/^[a-z0-9-]{1,64}$/)).max(4),
+  /** Offered during setup as well as in the library. */
+  featured: z.boolean(),
+  agent: agentInput,
+});
+export type AgentTemplate = z.infer<typeof agentTemplate>;
+export const agentList = z.strictObject({
+  agents: z.array(experienceAgent),
+  /**
+   * Agents deleted from the space, only to name the turns they answered. They
+   * are never offered to pick or to @mention.
+   */
+  removed: z.array(experienceAgent).optional(),
+});
 export const agentResponse = z.strictObject({ agent: experienceAgent });
 export const agentTemplateList = z.strictObject({ templates: z.array(agentTemplate) });
+/** What deleting an agent did: its chats and routines now belong to Melete. */
+export const agentDeleted = z.strictObject({
+  id,
+  /** Melete, which now answers where the deleted agent did. */
+  moved_to: id,
+  conversations: z.number().int().nonnegative(),
+  routines: z.number().int().nonnegative(),
+  /**
+   * Routines paused on the move, because Melete can reach more than the
+   * deleted agent could. The person turns each back on themselves.
+   */
+  routines_paused: z.number().int().nonnegative(),
+});
 
 export const memoryItem = z.strictObject({
   id,
@@ -773,7 +976,7 @@ export const experienceAutomation = z.strictObject({
   title: text,
   schedule: text,
   enabled: z.boolean(),
-  /** Stopped for good: it cannot be resumed, only deleted. */
+  /** Stopped for good: it cannot be resumed, only started again or deleted. */
   ended: z.boolean(),
   /** The thread every run of this routine writes into. */
   conversation_id: id,
@@ -785,7 +988,8 @@ export const automationCreate = z.strictObject({
   instruction: text,
   weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
   at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-  agent_id: id,
+  /** Left out, the routine runs as Melete. */
+  agent_id: id.optional(),
 });
 export const automationResponse = z.strictObject({ automation: experienceAutomation });
 
@@ -884,6 +1088,14 @@ export const experienceOperations = {
   'GET /conversations': { query: conversationListQuery, response: conversationList },
   'POST /conversations': { request: conversationCreate, response: conversationResponse },
   'GET /conversations/{id}': { response: conversationResponse },
+  /** Renames the chat. */
+  'PATCH /conversations/{id}': { request: conversationRename, response: conversationResponse },
+  /**
+   * Deletes the chat: a turn under way is stopped, waiting permissions are
+   * withdrawn, its work is cancelled and its messages are removed. Files on its
+   * computer stay. Memory stays unless `forget_memory=true`.
+   */
+  'DELETE /conversations/{id}': { query: conversationDeleteQuery, response: conversationDeleted },
   'PATCH /conversations/{id}/agent': {
     request: conversationSwitchAgent,
     response: conversationResponse,
@@ -925,13 +1137,19 @@ export const experienceOperations = {
   'DELETE /rules/{id}': { response: experienceOk },
   'GET /quick-answers': { response: z.strictObject({ questions: z.array(experienceQuestion) }) },
   'POST /quick-answers/{id}': {
-    request: z.strictObject({ option_id: id }),
+    request: quickAnswerRequest,
     response: experienceOk,
   },
   'GET /agents': { response: agentList },
   'POST /agents': { request: agentInput, response: agentResponse },
   'GET /agents/templates': { response: agentTemplateList },
   'PATCH /agents/{id}': { request: agentInput, response: agentResponse },
+  /**
+   * Deletes an agent other than Melete. Its chats, routines and plan steps move
+   * to Melete; the turns it answered keep its name. In a personal space its
+   * routines are paused. Refused while any of its work is still running.
+   */
+  'DELETE /agents/{id}': { response: agentDeleted },
   'GET /memory/items': {
     query: z.strictObject({ after: id.optional() }),
     response: memoryItemList,
@@ -960,6 +1178,11 @@ export const experienceOperations = {
   'GET /plans': { response: planList },
   'POST /plans': { request: planCreate, response: planResponse },
   'GET /plans/{id}': { response: planResponse },
+  /**
+   * Deletes the plan and its steps. Work on a step is stopped; chats started
+   * from the plan stay, no longer linked to it.
+   */
+  'DELETE /plans/{id}': { response: experienceOk },
   'PATCH /plans/{id}/milestones/{milestoneId}': {
     request: milestoneUpdate,
     response: planResponse,
@@ -982,10 +1205,18 @@ export const experienceOperations = {
   /** Stops the schedule; nothing runs until it is resumed. */
   'POST /automations/{id}/pause': { response: automationResponse },
   'POST /automations/{id}/resume': { response: automationResponse },
+  /**
+   * Starts an ended routine again with the same settings. The new routine takes
+   * the ended one's place on the list; one that has not ended is refused.
+   */
+  'POST /automations/{id}/restart': { response: automationResponse },
   /** Stops the routine for good and takes it off the list. */
   'DELETE /automations/{id}': { response: experienceOk },
   'POST /automations/morning-brief': {
-    request: z.strictObject({ agent_id: id, at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/) }),
+    request: z.strictObject({
+      agent_id: id.optional(),
+      at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    }),
     response: automationResponse,
   },
   /** Long work going on in the background, newest first; one conversation's when asked. */
@@ -1004,6 +1235,18 @@ export const experienceOperations = {
   'POST /runs/{id}/stop': { response: runResponse },
   'PUT /runs/{id}/limit': { request: runLimitRequest, response: runResponse },
   'GET /experience/connections': { response: experienceConnectionList },
+  /**
+   * What was done in the person's name by chats and plans they have since
+   * deleted, newest first.
+   */
+  'GET /activity': { response: activityList },
+  /** Who is in the space this session uses. */
+  'GET /space/members': { response: spaceMembers },
+  /**
+   * The space's owner removes someone from a shared space. Their sessions in it
+   * end and their work there is stopped; what they made stays with the space.
+   */
+  'DELETE /space/members/{id}': { response: experienceOk },
   'POST /signin/magic-link': { request: magicLinkRequest, response: experienceOk },
   'POST /signin/magic-link/consume': { request: magicLinkConsume, response: experienceOk },
   'POST /signin/google': { response: notAvailable },

@@ -1,26 +1,29 @@
 /**
  * Sign-in and the guided setup on the contract: a magic link (Google and Apple
  * only when the service says they work), the tour (only stages this instance
- * can do), plugging in apps, meeting the first agent, and saving four answers
+ * can do), plugging in apps, meeting Melete, and saving four answers
  * as memory before opening a conversation that refers to one of them.
  */
+
+import { suggestedConnections } from '@melete/contracts/agent-library';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
 import { Logo } from '../design/logos.tsx';
-import { MeleteMark } from '../design/mark.tsx';
-import { Button, Chip, Field, Input, Segmented, Toggle } from '../design/primitives.tsx';
+import { MeleteAvatar, MeleteMark } from '../design/mark.tsx';
+import { Button, Chip, Field, Input, Segmented, Select, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { lookOf, messageKey, useApp, useLoad, useMedia } from '../experience/hooks.ts';
-import { givenName, onboardedProfile } from '../experience/profile.ts';
+import { zoneName } from '../experience/plain.ts';
+import { givenName, onboardedProfile, UNNAMED } from '../experience/profile.ts';
 import { keptAnswer, SETUP_QUESTIONS, SKIP_REPLY } from '../experience/setup-answers.ts';
-import { browserTimeZone, setupTimeZone } from '../experience/timezone.ts';
-import type { AgentInput, MemoryItem, TourStage } from '../experience/types.ts';
+import { browserTimeZone, setupTimeZone, timeZoneChoices } from '../experience/timezone.ts';
+import type { AgentTemplate, MemoryItem, TourStage } from '../experience/types.ts';
 import { models } from '../models/api.ts';
 import { ActiveModel, ModelConnect } from '../models/ModelConnect.tsx';
 import { navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
-import { blankAgent, LookFields, reaches, toggleReach } from './Agents.tsx';
+import { inputOf } from './Agents.tsx';
 import { ConnectionCard } from './Settings.tsx';
 
 const studio = {
@@ -52,8 +55,8 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [google, setGoogle] = useState<boolean | null>(null);
   const [apple, setApple] = useState<boolean | null>(null);
-  // ChatGPT is always offered; its panel says when this installation has no client.
-  const [chatgpt, setChatgpt] = useState<{ ready: boolean; reason: string | null } | null>(null);
+  // ChatGPT is offered, like Google and Apple, only when this server is set up for it.
+  const [chatgpt, setChatgpt] = useState(false);
   const [chatgptOpen, setChatgptOpen] = useState(false);
   const phone = useMedia('(max-width: 900px)');
 
@@ -61,16 +64,13 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
     void adapter.setupStatus().then((r) => setCreating(r.data?.needed === true));
   }, []);
 
-  // Google and Apple are drawn only when the service says they work.
+  // Google, Apple and ChatGPT are drawn only when the service says they work.
   useEffect(() => {
     void adapter.signInGoogle().then((r) => setGoogle(r.unavailable === null && r.error === null));
     void adapter.signInApple().then((r) => setApple(r.unavailable === null && r.error === null));
-    void adapter.signInChatGPT().then((r) =>
-      setChatgpt({
-        ready: r.unavailable === null && r.error === null,
-        reason: r.unavailable ?? r.error,
-      }),
-    );
+    void adapter
+      .signInChatGPT()
+      .then((r) => setChatgpt(r.unavailable === null && r.error === null));
   }, []);
 
   // A magic link lands here with its token in the fragment; consume it once.
@@ -163,10 +163,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
       {inner}
     </div>
   );
-  const kchip = (
-    name: 'gcal' | 'slack' | 'imessage' | 'gmaps' | 'notion' | 'linear',
-    label: string,
-  ) => (
+  const kchip = (name: 'gcal' | 'gmail', label: string) => (
     <span
       className="row"
       style={{
@@ -269,7 +266,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 </div>
                 <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
                   {kchip('gcal', 'Pricing sync · Tue 3:00 PM')}
-                  {kchip('slack', 'Sam · to approve')}
+                  {kchip('gmail', 'Sam · to approve')}
                 </div>
               </>,
               1,
@@ -303,8 +300,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 </div>
                 <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
                   {kchip('gcal', 'Tonight 7:30 PM')}
-                  {kchip('imessage', 'Alex · to approve')}
-                  {kchip('gmaps', '12 min walk')}
+                  {kchip('gmail', 'Alex · to approve')}
                 </div>
               </>,
               2,
@@ -323,8 +319,8 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                   Following up with legal on the pricing page review, as Sam asked.
                 </span>
                 <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                  {kchip('notion', 'Pricing page launch · brief')}
-                  {kchip('linear', 'PRC-114 · Legal review')}
+                  {kchip('gmail', 'Legal · follow-up sent')}
+                  {kchip('gcal', 'Review · Thursday 2:00 PM')}
                 </div>
               </>,
               3,
@@ -341,25 +337,14 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 color: 'var(--studio-muted)',
               }}
             >
-              Works with the apps you already use
+              Works with your mail and calendar
             </span>
-            <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
-              {(
-                [
-                  'gcal',
-                  'gmail',
-                  'slack',
-                  'notion',
-                  'gdrive',
-                  'whatsapp',
-                  'zoom',
-                  'linear',
-                  'github',
-                  'spotify',
-                ] as const
-              ).map((name) => (
-                <Logo key={name} name={name} size={28} />
-              ))}
+            <div className="row" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+              <Logo name="gmail" size={28} />
+              <Logo name="gcal" size={28} />
+              <span style={{ fontSize: 13, color: 'var(--studio-muted)' }}>
+                Gmail, Google Calendar, Outlook, iCloud, Fastmail and any IMAP or CalDAV account
+              </span>
             </div>
           </div>
         </div>
@@ -457,18 +442,20 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                       <span>Continue with Apple</span>
                     </button>
                   ) : null}
-                  <button
-                    type="button"
-                    className="btn btn-xl btn-outline"
-                    style={{ width: '100%', gap: 10, fontSize: 14 }}
-                    aria-expanded={chatgptOpen}
-                    aria-controls="signin-chatgpt"
-                    onClick={() => setChatgptOpen((open) => !open)}
-                  >
-                    <Icon name="chat" size={18} />
-                    <span>Sign in with ChatGPT</span>
-                  </button>
-                  {chatgptOpen ? (
+                  {chatgpt ? (
+                    <button
+                      type="button"
+                      className="btn btn-xl btn-outline"
+                      style={{ width: '100%', gap: 10, fontSize: 14 }}
+                      aria-expanded={chatgptOpen}
+                      aria-controls="signin-chatgpt"
+                      onClick={() => setChatgptOpen((open) => !open)}
+                    >
+                      <Icon name="chat" size={18} />
+                      <span>Sign in with ChatGPT</span>
+                    </button>
+                  ) : null}
+                  {chatgpt && chatgptOpen ? (
                     <section
                       id="signin-chatgpt"
                       aria-label="Sign in with ChatGPT"
@@ -478,65 +465,32 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                       <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
                         Sign in with your ChatGPT account
                       </span>
-                      {chatgpt?.ready ? (
-                        <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
-                          OpenAI confirms who you are and shares your name, email address and
-                          profile picture with this installation. Your ChatGPT password stays with
-                          OpenAI.
-                        </span>
-                      ) : null}
-                      {chatgpt?.ready ? (
-                        <Button
-                          icon="arrowUpRight"
-                          block
-                          onClick={() =>
-                            void adapter
-                              .signInChatGPT()
-                              .then((r) =>
-                                r.data
-                                  ? refreshProfile()
-                                  : setNotice(r.error ?? r.unavailable ?? ''),
-                              )
-                          }
-                        >
-                          Continue to ChatGPT
-                        </Button>
-                      ) : (
-                        <div
-                          className="row"
-                          style={{
-                            gap: 8,
-                            alignItems: 'flex-start',
-                            padding: '10px 12px',
-                            borderRadius: 10,
-                            background: 'var(--sand)',
-                            color: 'var(--sand-ink)',
-                            fontSize: 13,
-                            lineHeight: '19px',
-                          }}
-                        >
-                          <span style={{ display: 'flex', paddingTop: 2 }}>
-                            <Icon name="info" size={14} />
-                          </span>
-                          <span>
-                            {chatgpt?.reason ??
-                              'This installation hasn’t set up ChatGPT sign-in yet.'}
-                          </span>
-                        </div>
-                      )}
-                      {chatgpt?.ready ? null : (
-                        <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
-                          When it’s set up, OpenAI shares your name and email with Melete. Your
-                          ChatGPT password stays with OpenAI.
-                        </span>
-                      )}
+                      <span style={{ fontSize: 13, lineHeight: '19px', color: 'var(--muted)' }}>
+                        OpenAI confirms who you are and shares your name, email address and profile
+                        picture with this installation. Your ChatGPT password stays with OpenAI.
+                      </span>
+                      <Button
+                        icon="arrowUpRight"
+                        block
+                        onClick={() =>
+                          void adapter
+                            .signInChatGPT()
+                            .then((r) =>
+                              r.data ? refreshProfile() : setNotice(r.error ?? r.unavailable ?? ''),
+                            )
+                        }
+                      >
+                        Continue to ChatGPT
+                      </Button>
                     </section>
                   ) : null}
-                  <div className="row" style={{ gap: 12 }}>
-                    <span className="grow hairline" />
-                    <span style={{ fontSize: 12, color: 'var(--muted)' }}>or with email</span>
-                    <span className="grow hairline" />
-                  </div>
+                  {google || apple || chatgpt ? (
+                    <div className="row" style={{ gap: 12 }}>
+                      <span className="grow hairline" />
+                      <span style={{ fontSize: 12, color: 'var(--muted)' }}>or with email</span>
+                      <span className="grow hairline" />
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               <form
@@ -1058,6 +1012,10 @@ const exchange = (who: Exchange['who'], text: string): Exchange => ({
   text,
 });
 
+/** The templates the person picked, in the order the service lists them. */
+export const chosenTemplates = (templates: AgentTemplate[], picked: string[]) =>
+  templates.filter((template) => picked.includes(template.id));
+
 export function OnboardingScreen() {
   const { capabilities, profile, setOnboarded, refreshProfile, refreshAgents } = useApp();
   const stages = (['calendar', 'drafting', 'browser', 'plans', 'memory'] as TourStage[]).filter(
@@ -1080,13 +1038,18 @@ export function OnboardingScreen() {
   const [stage, setStage] = useState(0);
   const [name, setName] = useState(givenName(profile));
   const [brief, setBrief] = useState(true);
-  const [agent, setAgent] = useState<AgentInput>({
-    ...blankAgent(),
-    name: 'Nova',
-    role: 'Concierge',
+  // The zone the person chose before, or this browser's: never the account's default.
+  const [zone, setZone] = useState(() => setupTimeZone(profile, browserTimeZone()));
+  const [zoneOpen, setZoneOpen] = useState(false);
+  // Setup tunes Melete, the agent every space has. Specialists are only an
+  // extra the person picks; none is made unless they choose one.
+  const [voice, setVoice] = useState({
     tone: 'Warm',
-    standing_instruction: 'One option first, not five. Confirm before paying.',
+    standing_instruction: '',
+    asks_before_acting: true,
   });
+  const templates = useLoad(() => adapter.agentTemplates(), []);
+  const [picked, setPicked] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [asked, setAsked] = useState(0);
   const [log, setLog] = useState<Exchange[]>(() => [exchange('agent', QUESTIONS[0]?.ask ?? '')]);
@@ -1097,7 +1060,13 @@ export function OnboardingScreen() {
   const [unsaved, setUnsaved] = useState<{ choice: string; reason: string } | null>(null);
   // Keep accepted steps across a failed welcome request so retrying cannot
   // create a second agent, conversation, or first message.
-  const completed = useRef({ agentId: '', chatId: '', messageKey: messageKey(), brief: false });
+  const completed = useRef({
+    agentId: '',
+    made: [] as string[],
+    chatId: '',
+    messageKey: messageKey(),
+    brief: false,
+  });
   const total = 5;
 
   const [typed, setTyped] = useState('');
@@ -1149,6 +1118,34 @@ export function OnboardingScreen() {
     setAsked(asked + 1);
   };
 
+  const saveProfile = () =>
+    adapter.saveProfile({
+      // No name given stays unnamed, so the greeting never calls the person "You".
+      name: name.trim() || profile?.name || UNNAMED,
+      time_zone: zone,
+      day_hours: profile?.day_hours ?? { start: '08:00', end: '22:00' },
+      time_zone_confirmed: true,
+      onboarded: true,
+    });
+
+  /** Setup put off: only the name and time zone are kept. No agent, routine or chat is made. */
+  const later = async () => {
+    if (busy || saving) return;
+    setBusy(true);
+    const saved = await saveProfile();
+    setBusy(false);
+    if (!saved.data) {
+      toast({
+        kind: 'err',
+        title: saved.error ?? saved.unavailable ?? 'Couldn’t save your profile',
+      });
+      return;
+    }
+    refreshProfile();
+    setOnboarded(true);
+    navigate('/');
+  };
+
   const finish = async () => {
     if (busy || saving) return;
     setBusy(true);
@@ -1156,23 +1153,34 @@ export function OnboardingScreen() {
       toast({ kind: 'err', title });
       setBusy(false);
     };
-    // The zone the person chose before, or this browser's: never the account's default.
-    const savedProfile = await adapter.saveProfile({
-      name: name.trim() || profile?.name || 'You',
-      time_zone: setupTimeZone(profile, browserTimeZone()),
-      day_hours: profile?.day_hours ?? { start: '08:00', end: '22:00' },
-      time_zone_confirmed: true,
-      onboarded: true,
-    });
+    const savedProfile = await saveProfile();
     if (!savedProfile.data)
       return fail(savedProfile.error ?? savedProfile.unavailable ?? 'Couldn’t save your profile');
     let agentId = completed.current.agentId;
     if (!agentId) {
-      if (!agent.name.trim()) return fail('Give your agent a name first.');
-      const saved = await adapter.createAgent({ ...agent, name: agent.name.trim() });
-      if (!saved.data) return fail(saved.error ?? saved.unavailable ?? 'Couldn’t create the agent');
-      agentId = saved.data.agent.id;
+      const listed = await adapter.agents();
+      if (!listed.data) return fail(listed.error ?? listed.unavailable ?? 'Couldn’t reach Melete');
+      const melete = listed.data.agents.find((candidate) => candidate.is_default);
+      if (!melete) return fail('Couldn’t reach Melete');
+      const saved = await adapter.updateAgent(melete.id, { ...inputOf(melete), ...voice });
+      if (!saved.data) return fail(saved.error ?? saved.unavailable ?? 'Couldn’t save Melete');
+      agentId = melete.id;
       completed.current.agentId = agentId;
+    }
+    // Each specialist the person picked is made once, even across a retry.
+    for (const template of chosenTemplates(templates.data?.templates ?? [], picked)) {
+      if (completed.current.made.includes(template.id)) continue;
+      // It reaches the connections it works best with, as the list under the chips shows.
+      const made = await adapter.createAgent({
+        ...template.agent,
+        allowed_connection_ids: suggestedConnections(
+          template.works_best_with,
+          connections.data?.connections ?? [],
+        ),
+      });
+      if (!made.data)
+        return fail(made.error ?? made.unavailable ?? `Couldn’t add ${template.agent.name}`);
+      completed.current.made.push(template.id);
     }
     if (brief && !completed.current.brief) {
       const routine = await adapter.morningBrief(agentId, '08:30');
@@ -1242,7 +1250,7 @@ export function OnboardingScreen() {
     card = (
       <Card
         title="Connect a model"
-        sub="Choose the model your agents answer with: paste an API key from your provider, or sign in to ChatGPT. You can change it any time in Settings › Models."
+        sub="Choose the model your agents answer with. You can change it any time in Settings › Models."
         footer={
           <>
             <div className="grow" />
@@ -1273,7 +1281,7 @@ export function OnboardingScreen() {
           <>
             {stepLabel}
             <div className="grow" />
-            <Button variant="ghost" onClick={() => void finish()}>
+            <Button variant="ghost" disabled={busy} onClick={() => void later()}>
               Maybe later
             </Button>
             <Button iconRight="chevronRight" onClick={() => setStep(2)}>
@@ -1343,6 +1351,38 @@ export function OnboardingScreen() {
                 placeholder="Jamie Davis"
               />
             </Field>
+          </div>
+          <div className="col setup-zone" style={{ gap: 6, width: 520, maxWidth: '100%' }}>
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <Icon name="clock" size={15} />
+              <span style={{ fontSize: 14, color: 'var(--heading)' }}>
+                Your time zone: <strong style={{ fontWeight: 600 }}>{zoneName(zone)}</strong>
+              </span>
+              {zoneOpen ? null : (
+                <Button variant="ghost" size="sm" onClick={() => setZoneOpen(true)}>
+                  Change
+                </Button>
+              )}
+            </div>
+            {zoneOpen ? (
+              <Select
+                label="Time zone"
+                value={zone}
+                onChange={(next) => {
+                  setZone(next);
+                  setZoneOpen(false);
+                }}
+                width="100%"
+                options={timeZoneChoices(zone).map((value) => ({
+                  value,
+                  label: zoneName(value),
+                }))}
+              />
+            ) : (
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                Taken from this browser. Routines and reminders run on this clock.
+              </span>
+            )}
           </div>
           <div
             className="row"
@@ -1488,7 +1528,7 @@ export function OnboardingScreen() {
     const question = QUESTIONS[asked];
     card = (
       <Card
-        title={`Let ${agent.name || 'your agent'} get to know you`}
+        title="Let Melete get to know you"
         sub="Four quick questions, so it can help from day one. Answer in your own words or skip any of them. What you say is kept under Settings › Memory and can be changed there."
         footer={
           <>
@@ -1534,7 +1574,7 @@ export function OnboardingScreen() {
             {log.slice(-6).map((entry) =>
               entry.who === 'agent' ? (
                 <div key={entry.id} className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
-                  <AgentFace look={lookOf(agent)} size={24} />
+                  <MeleteAvatar size={24} />
                   <p style={{ fontSize: 14, lineHeight: '21px', textWrap: 'pretty' }}>
                     {entry.text}
                   </p>
@@ -1607,7 +1647,7 @@ export function OnboardingScreen() {
             ) : null}
           </div>
           <div className="col" style={{ gap: 8, width: 220, flexShrink: 0 }}>
-            <span className="overline">What {agent.name || 'your agent'} will remember</span>
+            <span className="overline">What Melete will remember</span>
             {kept.length === 0 ? (
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>
                 Nothing yet. Each answer appears here as it is saved.
@@ -1654,21 +1694,16 @@ export function OnboardingScreen() {
       </Card>
     );
   } else {
-    const list = connections.data?.connections.filter((c) => c.status === 'connected') ?? [];
     card = (
       <Card
-        title="Meet your first agent"
-        sub="Give it a name, a look and one standing instruction. Change anything later in Agents. Anything Melete learns about you shows up under Settings › Memory."
+        title="Meet Melete"
+        sub="Melete is your assistant. It can use every app you connect, its own computer and what you tell it to remember. Set how it sounds; change anything later in Agents."
         footer={
           <>
             {back}
             <div className="grow" />
             {stepLabel}
-            <Button
-              iconRight="chevronRight"
-              disabled={!agent.name.trim()}
-              onClick={() => setStep(5)}
-            >
+            <Button iconRight="chevronRight" onClick={() => setStep(5)}>
               Continue
             </Button>
           </>
@@ -1682,47 +1717,23 @@ export function OnboardingScreen() {
               gap: 10,
               alignItems: 'center',
               width: 236,
-              height: 246,
+              height: 200,
               flexShrink: 0,
               borderRadius: 14,
               justifyContent: 'center',
             }}
           >
-            <AgentFace look={lookOf(agent)} size={116} glow />
+            <MeleteAvatar size={88} />
             <span style={{ fontSize: 12, color: 'var(--studio-muted)' }}>
-              Idle · blinks now and then
+              Calls you {name.trim() || 'by your name'}
             </span>
           </div>
           <div className="col grow" style={{ gap: 14, minWidth: 260 }}>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-                gap: 12,
-              }}
-            >
-              <Field label="Name">
-                <Input
-                  value={agent.name}
-                  onChange={(event) => setAgent({ ...agent, name: event.target.value })}
-                  width="100%"
-                  maxLength={40}
-                />
-              </Field>
-              <Field label="Job">
-                <Input
-                  value={agent.role}
-                  onChange={(event) => setAgent({ ...agent, role: event.target.value })}
-                  width="100%"
-                />
-              </Field>
-            </div>
-            <LookFields draft={agent} onChange={setAgent} compact />
             <Field label="Tone">
               <Segmented
                 label="Tone"
-                value={agent.tone}
-                onChange={(tone) => setAgent({ ...agent, tone })}
+                value={voice.tone}
+                onChange={(tone) => setVoice({ ...voice, tone })}
                 options={[
                   { value: 'Warm', label: 'Warm' },
                   { value: 'Direct', label: 'Direct' },
@@ -1730,44 +1741,17 @@ export function OnboardingScreen() {
                 ]}
               />
             </Field>
-            <Field label="One standing instruction">
+            <Field label="One standing instruction" hint="Optional. Up to 200 characters.">
               <Input
-                value={agent.standing_instruction}
+                value={voice.standing_instruction}
                 onChange={(event) =>
-                  setAgent({ ...agent, standing_instruction: event.target.value })
+                  setVoice({ ...voice, standing_instruction: event.target.value })
                 }
+                placeholder="One option first, not five. Confirm before paying."
                 width="100%"
                 maxLength={200}
               />
             </Field>
-            {list.length ? (
-              <Field label="May use">
-                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                  {list.map((connection) => {
-                    const on = reaches(agent.allowed_connection_ids, connection.id);
-                    return (
-                      <Chip
-                        key={connection.id}
-                        on={on}
-                        onClick={() =>
-                          setAgent({
-                            ...agent,
-                            allowed_connection_ids: toggleReach(
-                              agent.allowed_connection_ids,
-                              connection.id,
-                              !on,
-                              list.map((item) => item.id),
-                            ),
-                          })
-                        }
-                      >
-                        {connection.label}
-                      </Chip>
-                    );
-                  })}
-                </div>
-              </Field>
-            ) : null}
             <div className="row" style={{ gap: 12 }}>
               <div className="col grow" style={{ gap: 1 }}>
                 <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
@@ -1778,11 +1762,65 @@ export function OnboardingScreen() {
                 </span>
               </div>
               <Toggle
-                on={agent.asks_before_acting}
+                on={voice.asks_before_acting}
                 label="Asks before acting"
-                onChange={(on) => setAgent({ ...agent, asks_before_acting: on })}
+                onChange={(on) => setVoice({ ...voice, asks_before_acting: on })}
               />
             </div>
+            {templates.data?.templates.some((template) => template.featured) ? (
+              <fieldset className="field-group col" style={{ gap: 8 }}>
+                <legend className="overline">Add a specialist too? Optional</legend>
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                  A specialist keeps to one job and only the tools it needs. Each one you pick
+                  reaches the connections listed for it; change that later on the Agents screen,
+                  where the full library is too. Ask one in any chat with @ and its name.
+                </span>
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                  {templates.data.templates
+                    .filter((template) => template.featured)
+                    .map((template) => {
+                      const on = picked.includes(template.id);
+                      return (
+                        <Chip
+                          key={template.id}
+                          on={on}
+                          aria-pressed={on}
+                          onClick={() =>
+                            setPicked(
+                              on
+                                ? picked.filter((id) => id !== template.id)
+                                : [...picked, template.id],
+                            )
+                          }
+                        >
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                            <AgentFace look={lookOf(template.agent)} size={16} />
+                            {template.agent.name} · {template.title}
+                          </span>
+                        </Chip>
+                      );
+                    })}
+                </div>
+                {chosenTemplates(templates.data.templates, picked).length ? (
+                  <ul className="col" style={{ gap: 4, listStyle: 'none', padding: 0, margin: 0 }}>
+                    {chosenTemplates(templates.data.templates, picked).map((template) => {
+                      const reach = (connections.data?.connections ?? []).filter(
+                        (connection) =>
+                          suggestedConnections(template.works_best_with, [connection]).length,
+                      );
+                      return (
+                        <li key={template.id} style={{ fontSize: 12, color: 'var(--secondary)' }}>
+                          {template.agent.name} will reach{' '}
+                          {reach.length
+                            ? reach.map((connection) => connection.label).join(', ')
+                            : 'nothing yet, until you connect what it works best with'}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : null}
+              </fieldset>
+            ) : null}
           </div>
         </div>
       </Card>

@@ -1,6 +1,8 @@
 import { CONTEXT_LIMITS, type ToolSpec } from '@melete/contracts';
+import { SANDBOX_TERMINAL_TOOL } from '@melete/runtime-hermes';
 import { chooseSkills, indexSkills } from '@melete/skills';
 import { and, eq } from 'drizzle-orm';
+import { ASK_PERSON_TOOL_NAME } from '../broker/ask-person.ts';
 import { RUNTIME_WAIT_TOOL } from '../broker/runtime-wait.ts';
 import { type ConnectorLookup, grantedToolCatalog } from '../connectors/catalog.ts';
 import type { Database } from '../db/client.ts';
@@ -8,18 +10,19 @@ import { connection } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { RunnerOptions } from '../jobs/runner.ts';
 import { learnedSkills, procedureReach } from '../learning/selection.ts';
-import { skillPayloadOf, usableSkills } from '../principals/context.ts';
+import { skillPayloadOf, turnAgentKeepsMemory, usableSkills } from '../principals/context.ts';
 
 /**
  * Every tool name an attempt can reach: all it was granted, not the first few
- * by name, since discovery loads the rest, and the lifecycle wait, which is the
- * broker's own tool rather than a connection's.
+ * by name, since discovery loads the rest, and the lifecycle wait and the
+ * question for the person, which are the broker's own tools rather than a
+ * connection's.
  */
 export function reachableToolNames(
   granted: readonly ToolSpec[],
   scopes: readonly string[],
 ): Set<string> {
-  const names = new Set(granted.map((tool) => tool.name));
+  const names = new Set([...granted.map((tool) => tool.name), ASK_PERSON_TOOL_NAME]);
   if (scopes.includes(RUNTIME_WAIT_TOOL.name)) names.add(RUNTIME_WAIT_TOOL.name);
   return names;
 }
@@ -45,7 +48,21 @@ export class RuntimeCatalog {
 
   forAttempt: NonNullable<RunnerOptions['loadCatalog']> = async (tx, claims, bundle) => {
     const granted = await this.toolsForSpace(claims.space_id, claims.scopes, tx);
-    const tools = granted.slice(0, CONTEXT_LIMITS.max_tools);
+    // The engine builds its own terminal from the sandbox's terminal.run in this
+    // list, and the plugin hands the terminal to it whenever the broker serves
+    // that tool. So it keeps its place ahead of the cut: sorted by name, a
+    // paired computer's device tools would push it out, and the engine would
+    // start with no terminal while the plugin still expected one.
+    const terminal = granted.filter(
+      (tool) => tool.name === SANDBOX_TERMINAL_TOOL && tool.connection_id !== null,
+    );
+    const kept = new Set(
+      [...terminal, ...granted.filter((tool) => !terminal.includes(tool))].slice(
+        0,
+        CONTEXT_LIMITS.max_tools,
+      ),
+    );
+    const tools = granted.filter((tool) => kept.has(tool));
     const reachable = reachableToolNames(granted, claims.scopes);
     // The same selection bundle construction made, with its audience rules, now
     // over only the skills this attempt can use: one it cannot would otherwise
@@ -65,6 +82,7 @@ export class RuntimeCatalog {
       bundle.job.constraints.public_compartment === true,
       (needed) => needed.every((tool) => reachable.has(tool)),
       await procedureReach(tx, procedures),
+      await turnAgentKeepsMemory(tx, bundle.attempt.job_id),
     );
     // Triggers now only rank: the likeliest few are given in full, and every
     // other usable skill is named in the index for the attempt to read itself.

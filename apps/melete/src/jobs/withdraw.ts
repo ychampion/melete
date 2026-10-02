@@ -6,7 +6,7 @@
  */
 import { APPROVAL_OUTDATED_NOTE } from '@melete/contracts';
 import { and, eq, isNull, ne, or, type SQL } from 'drizzle-orm';
-import { action, approval, job } from '../db/schema.ts';
+import { action, approval, job, question } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 
@@ -69,6 +69,40 @@ export async function withdrawPermissions(tx: Transaction, which: SQL | undefine
  */
 export function withdrawEndedJobPermissions(tx: Transaction, jobId: string) {
   return withdrawPermissions(tx, eq(action.jobId, jobId), ENDED_NOTE);
+}
+
+/**
+ * Take back the job's open question: nobody can usefully answer it once the job
+ * ended or its turn was stopped. The conversation's card closes with it. A
+ * question about an effect whose outcome is unknown ("did it arrive?") stays:
+ * stopping the work does not settle what already left, so it waits for the
+ * person whatever happens to the job.
+ */
+export async function withdrawOpenQuestion(tx: Transaction, jobId: string, reason: string) {
+  const [closed] = await tx
+    .update(question)
+    .set({ state: 'withdrawn', answer: null, answerSubmissionId: null, answeredAt: new Date() })
+    .where(
+      and(
+        eq(question.jobId, jobId),
+        eq(question.state, 'open'),
+        eq(question.blocksExternalEffect, false),
+      ),
+    )
+    .returning();
+  if (!closed) return;
+  await appendEvent(tx, {
+    jobId,
+    type: 'notice',
+    payload: {
+      kind: 'question_closed',
+      question_id: closed.id,
+      state: closed.state,
+      reason,
+      submission_id: null,
+    },
+    dedupKey: `${closed.id}:closed`,
+  });
 }
 
 /** Every permission in this conversation, or the command jobs it started. */

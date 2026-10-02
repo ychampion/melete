@@ -5,28 +5,30 @@
  * state and what each may do, the person's own computers, and standing rules
  * with their limits and revoke.
  */
-import { type ReactNode, useState } from 'react';
-import { logoFor } from '../chat/parts.tsx';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { appIcon, logoFor } from '../chat/parts.tsx';
 import { Icon } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
 import { Badge, Button, TabsUnderline, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { useApp, useLoad } from '../experience/hooks.ts';
-import { givenName } from '../experience/profile.ts';
+import { useLoad } from '../experience/hooks.ts';
 import type { Connection, Rule } from '../experience/types.ts';
 import { FeedbackTab } from '../feedback/FeedbackTab.tsx';
 import { models } from '../models/api.ts';
-import { ModelLine, ModelsTab } from '../models/ModelConnect.tsx';
+import { ModelsTab } from '../models/ModelConnect.tsx';
 import { navigate } from '../router.ts';
-import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { Shell, toast } from '../shell/Shell.tsx';
 import { AccountSettings } from './AccountSettings.tsx';
+import { ActivityTab } from './Activity.tsx';
 import { ApprovalsTab } from './Approvals.tsx';
 import { MemoryPanel } from './Beliefs.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 import { DevicesTab } from './Devices.tsx';
 import { NotificationsTab } from './Notifications.tsx';
+import { PeopleTab } from './People.tsx';
 import { PrivacyTab } from './Privacy.tsx';
+import './settings.css';
 
 const dateOf = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
@@ -90,7 +92,7 @@ export function ConnectionCard({
               color: 'var(--blue-ink)',
             }}
           >
-            <Icon name="connectors" size={20} />
+            <Icon name={appIcon(connection.app, connection.label)} size={20} />
           </span>
         )}
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
@@ -246,91 +248,124 @@ const ruleWhen = (rule: Rule) => {
   return `${rule.used} of ${rule.bounds.count_cap} used · until ${expires} · asks again after ${rule.bounds.reconsent_after_days} day${rule.bounds.reconsent_after_days === 1 ? '' : 's'}`;
 };
 
+/** The Settings pages in the order the tabs show them. Memory has its own page in the nav. */
+const TABS = [
+  'account',
+  'notifications',
+  'people',
+  'connections',
+  'devices',
+  'approvals',
+  'rules',
+  'activity',
+  'models',
+  'privacy',
+  'feedback',
+] as const;
+type Tab = (typeof TABS)[number] | 'memory';
+
 export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: string | null }) {
-  const { profile, signOut } = useApp();
-  const [leaving, setLeaving] = useState(false);
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
   const model = useLoad(() => models.settings(), []);
-  const current =
-    tab === 'connections' ||
-    tab === 'devices' ||
-    tab === 'rules' ||
-    tab === 'notifications' ||
-    tab === 'feedback' ||
-    tab === 'models' ||
-    tab === 'approvals' ||
-    tab === 'privacy' ||
-    tab === 'account'
-      ? tab
-      : 'memory';
+  const people = useLoad(() => adapter.spaceMembers(), []);
+  // People is a shared space's page; a personal space has only its owner.
+  const shared = people.data?.space.kind === 'shared';
+  const current: Tab =
+    tab === 'memory'
+      ? 'memory'
+      : (((TABS as readonly string[]).includes(tab) ? tab : 'account') as Tab);
   const [deviceCount, setDeviceCount] = useState<number | undefined>(undefined);
   const list = connections.data?.connections ?? [];
   const byId = new Map(list.map((c) => [c.id, c]));
+  const memory = current === 'memory';
+  // The chosen tab stays in view when the strip is wider than the page.
+  const tabsRef = useRef<HTMLDivElement>(null);
+  // The strip itself is scrolled, not the page, and again whenever its tabs
+  // change width: the counts beside earlier tabs arrive after the first paint
+  // and push a tab near the end, such as Activity, back out of view.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a change of tab is what moves it
+  useEffect(() => {
+    const strip = tabsRef.current?.querySelector<HTMLElement>('[role="tablist"]');
+    if (!strip) return;
+    const reveal = () => {
+      const tab = strip.querySelector<HTMLElement>('[aria-selected="true"]');
+      if (!tab) return;
+      const start = tab.getBoundingClientRect().left - strip.getBoundingClientRect().left;
+      const end = start + tab.offsetWidth;
+      if (start < 0) strip.scrollLeft += start - 16;
+      else if (end > strip.clientWidth) strip.scrollLeft += end - strip.clientWidth + 16;
+    };
+    reveal();
+    if (typeof ResizeObserver === 'undefined') return;
+    const watch = new ResizeObserver(reveal);
+    for (const child of strip.children) watch.observe(child);
+    return () => watch.disconnect();
+  }, [current]);
 
   return (
-    <Shell title="Settings">
+    <Shell title={memory ? 'Memory' : 'Settings'} rail={false}>
       <div className="page">
         <div className="page-head">
           <div className="col" style={{ gap: 4 }}>
-            <h1>Settings</h1>
+            <h1>{memory ? 'Memory' : 'Settings'}</h1>
             <p style={{ fontSize: 14, color: 'var(--muted)' }}>
-              What Melete remembers, what it may reach, and what it may do without asking.
+              {memory
+                ? 'What Melete has learned about you, where it learned it, and how to change it.'
+                : 'What Melete may reach, what it may do without asking, and your account.'}
             </p>
           </div>
-          <RailToggle />
         </div>
-        <div className="card-12 row" style={{ gap: 12, padding: '12px 16px', flexWrap: 'wrap' }}>
-          <div className="col grow" style={{ gap: 2, minWidth: 200 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-              Signed in as {givenName(profile) || 'you'}
-            </span>
-            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-              Signing out ends this session on every open tab; nothing saved here is lost.
-            </span>
-            {model.data ? <ModelLine settings={model.data} /> : null}
+        {memory ? null : (
+          <div ref={tabsRef} className="settings-tabs">
+            <TabsUnderline
+              label="Settings"
+              value={current}
+              onChange={(next) => navigate(`/settings/${next}`)}
+              tabs={[
+                { value: 'account', label: 'Account' },
+                { value: 'notifications', label: 'Notifications' },
+                ...(shared
+                  ? [
+                      {
+                        value: 'people' as const,
+                        label: 'People',
+                        count: people.data?.members.length,
+                      },
+                    ]
+                  : []),
+                {
+                  value: 'connections',
+                  label: 'Connections',
+                  count: connections.error
+                    ? undefined
+                    : list.filter((c) => c.status === 'connected').length,
+                },
+                { value: 'devices', label: 'Devices', count: deviceCount },
+                { value: 'approvals', label: 'Approvals' },
+                {
+                  value: 'rules',
+                  label: 'Rules',
+                  count: rules.error ? undefined : rules.data?.rules.length,
+                },
+                { value: 'activity', label: 'Activity' },
+                { value: 'models', label: 'Models' },
+                { value: 'privacy', label: 'Privacy' },
+                { value: 'feedback', label: 'Feedback' },
+              ]}
+            />
           </div>
-          <Button
-            variant="outline"
-            icon="logout"
-            loading={leaving}
-            disabled={leaving}
-            onClick={() => {
-              setLeaving(true);
-              void signOut().finally(() => setLeaving(false));
-            }}
-          >
-            Sign out
-          </Button>
-        </div>
-        <TabsUnderline
-          label="Settings"
-          value={current}
-          onChange={(next) => navigate(`/settings/${next}`)}
-          tabs={[
-            { value: 'memory', label: 'Memory' },
-            { value: 'notifications', label: 'Notifications' },
-            {
-              value: 'connections',
-              label: 'Connections',
-              count: connections.error
-                ? undefined
-                : list.filter((c) => c.status === 'connected').length,
-            },
-            { value: 'devices', label: 'Devices', count: deviceCount },
-            { value: 'approvals', label: 'Approvals' },
-            {
-              value: 'rules',
-              label: 'Rules',
-              count: rules.error ? undefined : rules.data?.rules.length,
-            },
-            { value: 'feedback', label: 'Feedback' },
-            { value: 'models', label: 'Models' },
-            { value: 'privacy', label: 'Privacy' },
-            { value: 'account', label: 'Account' },
-          ]}
-        />
+        )}
         {current === 'privacy' ? <PrivacyTab /> : null}
+        {current === 'activity' ? <ActivityTab /> : null}
+        {current === 'people' ? (
+          <PeopleTab
+            people={people.data}
+            error={people.error}
+            onRetry={people.reload}
+            onChanged={people.set}
+          />
+        ) : null}
         {current === 'memory' ? (
           <MemoryPanel />
         ) : current === 'approvals' ? (
@@ -381,7 +416,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
             <AddConnection onInstalled={connections.reload} />
             <ConnectedAssistants />
           </div>
-        ) : current === 'privacy' ? null : (
+        ) : current === 'privacy' || current === 'people' || current === 'activity' ? null : (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
               Each rule came from an “Always allow” you chose. It has a limit and an expiry; revoke

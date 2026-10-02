@@ -1,0 +1,2 @@
+ALTER TABLE "voice_usage" DROP CONSTRAINT "voice_usage_kind";--> statement-breakpoint
+ALTER TABLE "voice_usage" ADD CONSTRAINT "voice_usage_kind" CHECK ("voice_usage"."kind" in ('transcribe', 'speech', 'session', 'aside'));

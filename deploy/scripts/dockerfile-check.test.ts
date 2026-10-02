@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   checkDockerfileWorkspaces,
@@ -20,6 +21,20 @@ describe('the shipped Dockerfiles', () => {
     expect(installingDockerfiles(root)).toEqual(
       expect.arrayContaining(['deploy/Dockerfile.melete', 'deploy/Dockerfile.web']),
     );
+  });
+
+  test('keep downloads in a build cache and retry an install that stalls', () => {
+    for (const file of installingDockerfiles(root)) {
+      const text = readFileSync(join(root, file), 'utf8');
+      const cached = text.includes('RUN --mount=type=cache,target=/var/cache/bun');
+      const retried = /for attempt in 1 2 3; do[\s\\]+timeout \d+ bun install /.test(text);
+      expect([file, cached, retried]).toEqual([file, true, true]);
+    }
+  });
+
+  test('the web image installs only the root tooling and the web client', () => {
+    const text = readFileSync(join(root, 'deploy/Dockerfile.web'), 'utf8');
+    expect(text).toContain('bun install --frozen-lockfile --filter ./ --filter @melete/web');
   });
 
   test('copy every workspace manifest before a frozen install', () => {

@@ -5,6 +5,7 @@
  * breaks every caller that needs to know about it.
  */
 
+export * from './agent-library.ts';
 export * from './api.ts';
 export * from './artifacts.ts';
 export * from './beliefs.ts';
@@ -33,8 +34,10 @@ export * from './learning.ts';
 export * from './mcp.ts';
 export * from './mcp-server.ts';
 export * from './memory.ts';
+export * from './mention.ts';
 export * from './model-budget.ts';
 export * from './model-settings.ts';
+export * from './model-vision.ts';
 export { buildOpenApiDocument, OPENAPI_VERSION, openApiJson } from './openapi.ts';
 export * from './plugins.ts';
 export * from './principals.ts';

@@ -300,7 +300,10 @@ export class PushService {
         and a.requested_at >= ${since.toISOString()}::timestamptz
       union all
       select 'question:' || q.id, j.id, q.text,
-             coalesce('Because ' || lower(left(q.because->>0, 1)) || substr(q.because->>0, 2),
+             coalesce(q.why,
+                      -- A handle such as attempt:… names a record, not a reason a person reads.
+                      case when q.because->>0 !~ '^[a-z]+:[A-Za-z0-9]'
+                        then 'Because ' || lower(left(q.because->>0, 1)) || substr(q.because->>0, 2) end,
                       'Because it asked you something only you can answer.'),
              q.created_at
       from question q

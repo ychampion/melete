@@ -17,6 +17,7 @@ type Step = {
   uses?: string;
   run?: string;
   if?: string;
+  'timeout-minutes'?: number;
   env?: Record<string, string>;
   with?: Record<string, unknown>;
 };
@@ -121,10 +122,36 @@ describe('the continuous integration workflow', () => {
     );
     expect(pointed).toContain('.bun-version');
     for (const file of pointed) expect(existsSync(join(root, file))).toBe(true);
-    expect(commands).toContain('bun install --frozen-lockfile');
-    expect(commands.filter((line) => /^bun install\b/.test(line))).toEqual(
-      commands.filter((line) => line === 'bun install --frozen-lockfile'),
+    const installs = commands.filter((line) => /\bbun install\b/.test(line));
+    expect(installs.length).toBeGreaterThan(0);
+    for (const line of installs)
+      expect(line).toBe('timeout 120 bun install --frozen-lockfile && exit 0');
+  });
+
+  test('every install is cached, cut off when it stalls, and retried', () => {
+    const workflows = [ci, conformance, load('.github/workflows/images.yml')];
+    const installing = workflows.flatMap(({ named }) =>
+      named.flatMap(([name, job]) => {
+        const jobSteps = job.steps ?? [];
+        const index = jobSteps.findIndex((step) => /\bbun install\b/.test(step.run ?? ''));
+        return index < 0 ? [] : [{ name, jobSteps, index }];
+      }),
     );
+    expect(installing.length).toBeGreaterThan(0);
+    for (const { name, jobSteps, index } of installing) {
+      const install = jobSteps[index];
+      // A step limit well inside the job's, so a hang fails in minutes rather than at the job's.
+      expect([name, install?.['timeout-minutes']]).toEqual([name, 8]);
+      expect([name, install?.run]).toEqual([name, expect.stringContaining('for attempt in 1 2 3')]);
+      const cache = jobSteps
+        .slice(0, index)
+        .find((step) => step.uses?.startsWith('actions/cache@'));
+      expect([name, cache?.with?.path]).toEqual([name, '~/.bun/install/cache']);
+      expect([name, String(cache?.with?.key)]).toEqual([
+        name,
+        expect.stringContaining("hashFiles('bun.lock')"),
+      ]);
+    }
   });
 
   test('every package script it runs exists', () => {

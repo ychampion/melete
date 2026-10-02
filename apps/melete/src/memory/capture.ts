@@ -140,6 +140,8 @@ type Pending = {
   speaker_id: string | null;
   text: string;
   created_at: Date;
+  /** False when the agent it was said to keeps nothing in memory; null with no agent. */
+  writes_memory: boolean | null;
 };
 
 /**
@@ -158,9 +160,13 @@ export async function captureChat(options: CaptureOptions, limit = 50): Promise<
     select e.seq, e.job_id, e.created_at, j.space_id,
       coalesce(j.principal_id, (select id from owner limit 1)) as principal_id,
       case when e.type = 'job_created' then j.objective else e.payload->>'text' end as text,
-      case when e.type = 'job_created' then j.principal_id else e.payload->>'principal_id' end as speaker_id
+      case when e.type = 'job_created' then j.principal_id else e.payload->>'principal_id' end as speaker_id,
+      a.writes_memory
     from fresh f join event e on e.seq = f.seq join job j on j.id = e.job_id
-    where (e.type = 'notice' and e.payload->>'kind' = 'user_message')
+    -- The agent the message was said to; an older message names none and was said to the chat's.
+    left join agent a on a.id = coalesce(e.payload->>'agent_id', j.agent_id) and a.space_id = j.space_id
+    -- An option the agent offered and the person picked is a choice, not their own words.
+    where (e.type = 'notice' and e.payload->>'kind' = 'user_message' and e.payload->'chosen' is null)
       -- A job's first objective is the person's own words only when they typed it.
       or (e.type = 'job_created' and j.kind <> 'chat' and j.objective_origin = 'owner_request')
     order by e.seq limit ${limit}`;
@@ -230,6 +236,8 @@ async function captureOne(
   const [settings] =
     await sql`select capture from memory_settings where principal_id = ${row.principal_id}`;
   if (settings && !settings.capture) return { outcome: 'skipped:off', sourceId: null };
+  // An agent the person set not to keep memory keeps nothing said to it.
+  if (row.writes_memory === false) return { outcome: 'skipped:agent', sourceId: null };
   // Read before anything is kept, so a message is never stored without it.
   const privateOrigin = await options.privacyOrigin(row.job_id, text);
   const evidence = await sql.begin(async (tx) => {

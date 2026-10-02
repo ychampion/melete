@@ -1,7 +1,7 @@
 /**
  * One thin row: the text and a single state button. The button is Send when
- * it is the person's turn, Pause while an agent works, Resume after a pause,
- * and Stop while an answer streams. The state comes from the conversation
+ * it is the person's turn, Stop while an agent works or an answer streams,
+ * and Resume after a pause. Stopping keeps what the turn already did. The state comes from the conversation
  * itself, never guessed here. Attachments have no contract yet, so nothing
  * offers them.
  *
@@ -12,9 +12,36 @@
 import { type KeyboardEvent, useEffect, useRef } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { IconButton } from '../design/primitives.tsx';
+import { useLoad } from '../experience/hooks.ts';
 import type { ComposerState } from '../experience/types.ts';
 import { openFeedback } from '../feedback/FeedbackPanel.tsx';
+import { models } from '../models/api.ts';
+import { href } from '../router.ts';
 import { elapsed, useNowTick, useRecorder, type VoicePlace } from './voice.ts';
+import './composer.css';
+
+/**
+ * Said above the box while no model is connected, since nothing sent could be
+ * answered: why, and the one step that fixes it.
+ */
+export function ModelMissing({ canEdit }: { canEdit: boolean }) {
+  return (
+    <div className="composer-missing" role="status">
+      <Icon name="info" size={15} />
+      <span className="grow">
+        {canEdit
+          ? 'Melete needs a model to answer. Connect one and you can start.'
+          : 'Melete needs a model to answer. The person who runs this server can connect one.'}
+      </span>
+      {canEdit ? (
+        <a className="composer-missing-link" href={href('/settings/models')}>
+          Connect a model
+          <Icon name="chevronRight" size={13} />
+        </a>
+      ) : null}
+    </div>
+  );
+}
 
 export function Composer({
   value,
@@ -24,7 +51,8 @@ export function Composer({
   onResume,
   onStop,
   state = 'send',
-  placeholder = 'Message Melete',
+  agentName = 'Melete',
+  placeholder = `Message ${agentName}`,
   disabled = false,
   autoFocus = false,
   working = false,
@@ -37,6 +65,8 @@ export function Composer({
   onResume?: () => void;
   onStop?: () => void;
   state?: ComposerState;
+  /** Who answers here: Melete unless the chat or the turn under way has another agent. */
+  agentName?: string;
   placeholder?: string;
   disabled?: boolean;
   autoFocus?: boolean;
@@ -62,7 +92,10 @@ export function Composer({
     if (autoFocus) textRef.current?.focus();
   }, [autoFocus]);
 
-  const canSend = value.trim().length > 0;
+  // Read on each mount, so a model connected in Settings counts at once on return.
+  const model = useLoad(() => models.settings(), []);
+  const noModel = model.data !== null && !model.data.active.connected;
+  const canSend = value.trim().length > 0 && !noModel;
   const latest = useRef(value);
   latest.current = value;
   const recorder = useRecorder({
@@ -95,22 +128,16 @@ export function Composer({
     }
   };
 
+  // Pausing mid-step is not something the assistant can do, so a working turn offers Stop.
   const stateButton =
-    state === 'pause' ? (
+    state === 'pause' || state === 'stop' ? (
       <button
         type="button"
         className="state-btn"
-        aria-label="Pause"
-        title="Pause"
-        onClick={onPause}
+        aria-label="Stop"
+        title="Stop"
+        onClick={onStop ?? onPause}
       >
-        <span style={{ display: 'flex', gap: 3 }}>
-          <span style={{ width: 3, height: 12, borderRadius: 1.5, background: 'currentColor' }} />
-          <span style={{ width: 3, height: 12, borderRadius: 1.5, background: 'currentColor' }} />
-        </span>
-      </button>
-    ) : state === 'stop' ? (
-      <button type="button" className="state-btn" aria-label="Stop" title="Stop" onClick={onStop}>
         <span style={{ width: 12, height: 12, borderRadius: 2, background: 'currentColor' }} />
       </button>
     ) : state === 'resume' ? (
@@ -130,12 +157,14 @@ export function Composer({
         label="Send"
         variant={canSend ? 'primary' : 'mutedFill'}
         disabled={!canSend}
+        title={noModel ? 'Connect a model to send' : undefined}
         onClick={send}
       />
     );
 
   return (
     <div className="composer" data-disabled={disabled ? 'true' : undefined}>
+      {noModel && model.data ? <ModelMissing canEdit={model.data.can_edit} /> : null}
       <div className="composer-card">
         {working ? <div className="rim" aria-hidden="true" /> : null}
         <div className="composer-row" style={{ paddingLeft: 6 }}>
@@ -143,7 +172,7 @@ export function Composer({
             ref={textRef}
             rows={1}
             value={value}
-            placeholder={working && state !== 'send' ? 'Melete is working…' : placeholder}
+            placeholder={working && state !== 'send' ? `${agentName} is working…` : placeholder}
             disabled={disabled}
             aria-label={placeholder}
             onChange={(event) => onChange(event.target.value)}

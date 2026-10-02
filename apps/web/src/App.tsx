@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChatScreen } from './chat/Chat.tsx';
 import { MeleteMark } from './design/mark.tsx';
 import { Button } from './design/primitives.tsx';
 import { Sheet } from './design/Sheet.tsx';
 import { adapter } from './experience/adapter.ts';
+import { agentIdsIn, throttled, unknownAgentIds } from './experience/agent-freshness.ts';
 import {
   AppContext,
   type AppContextValue,
@@ -69,6 +70,20 @@ function Unreachable({ error, onRetry }: { error: string; onRetry: () => void })
   );
 }
 
+/** The shell's frame with nothing in it yet, so a load never opens on blank paper. */
+function BootFrame() {
+  return (
+    <div className="shell" aria-busy="true">
+      <aside className="sidebar" aria-label="Sections" />
+      <div className="shell-main">
+        <div className="shell-body">
+          <main className="shell-content" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const route = useRoute();
   useTheme();
@@ -82,6 +97,8 @@ export function App() {
     return result;
   }, []);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [removedAgents, setRemovedAgents] = useState<Agent[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationsError, setConversationsError] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<Decisions>(NO_DECISIONS);
@@ -98,9 +115,14 @@ export function App() {
   const refreshAgents = useCallback(() => {
     // A list that failed to load keeps what was last read; it never decides setup.
     void adapter.agents().then((result) => {
-      if (result.data) setAgents(result.data.agents);
+      if (!result.data) return;
+      setAgents(result.data.agents);
+      setRemovedAgents(result.data.removed ?? []);
+      setAgentsLoaded(true);
     });
   }, []);
+  // One read for a burst of reasons (sign-in, a view change, focus).
+  const refreshAgentsSoon = useMemo(() => throttled(refreshAgents, 2000), [refreshAgents]);
   // One refresh reads the conversations and what waits on the person, so the
   // sidebar's dots, Home's count and the queue always agree.
   const refreshConversations = useCallback(() => {
@@ -132,7 +154,7 @@ export function App() {
   }, [profile.reload]);
   useEffect(() => {
     if (!signedIn) return;
-    refreshAgents();
+    refreshAgentsSoon();
     refreshConversations();
     // Capabilities are learned from the calls that would serve them.
     void adapter.home().then((home) => {
@@ -147,7 +169,40 @@ export function App() {
         browser: session.unavailable === null && session.error === null,
       }));
     });
-  }, [signedIn, refreshAgents, refreshConversations]);
+  }, [signedIn, refreshAgentsSoon, refreshConversations]);
+
+  // Agents are made elsewhere too (the API, another tab), so the list is read
+  // again when the view changes and when the person comes back to the window.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the view changing is the reason to read again
+  useEffect(() => {
+    if (signedIn) refreshAgentsSoon();
+  }, [route.path, signedIn, refreshAgentsSoon]);
+  useEffect(() => {
+    if (!signedIn) return;
+    const back = () => {
+      if (document.visibilityState === 'visible') refreshAgentsSoon();
+    };
+    window.addEventListener('focus', back);
+    document.addEventListener('visibilitychange', back);
+    return () => {
+      window.removeEventListener('focus', back);
+      document.removeEventListener('visibilitychange', back);
+    };
+  }, [signedIn, refreshAgentsSoon]);
+  // A link, a new chat or a chat in the list that names an agent this app has
+  // not read yet: read the list again, once for that agent.
+  const askedAgents = useRef(new Set<string>());
+  useEffect(() => {
+    if (!signedIn || !agentsLoaded) return;
+    const unknown = unknownAgentIds(
+      agentIdsIn(route, conversations),
+      [...agents, ...removedAgents],
+      askedAgents.current,
+    );
+    if (!unknown.length) return;
+    for (const id of unknown) askedAgents.current.add(id);
+    refreshAgents();
+  }, [signedIn, agentsLoaded, route, conversations, agents, removedAgents, refreshAgents]);
 
   // Conversations move while the person is elsewhere; keep the sidebar honest.
   useEffect(() => {
@@ -176,6 +231,7 @@ export function App() {
       return;
     }
     setAgents([]);
+    setAgentsLoaded(false);
     setConversations([]);
     setConversationsError(null);
     setDecisions(NO_DECISIONS);
@@ -201,6 +257,7 @@ export function App() {
       onboarded,
       setOnboarded,
       agents,
+      removedAgents,
       conversations,
       conversationsError,
       decisions,
@@ -218,6 +275,7 @@ export function App() {
       onboarded,
       setOnboarded,
       agents,
+      removedAgents,
       conversations,
       conversationsError,
       decisions,
@@ -238,7 +296,8 @@ export function App() {
 
   if (!signedOut && profile.error && !profile.data)
     return <Unreachable error={profile.error} onRetry={profile.reload} />;
-  if (!signedOut && profile.loading && !profile.data) return null;
+  // While the profile loads, the frame is already there: paper, the sidebar's place and a sheet.
+  if (!signedOut && profile.loading && !profile.data) return <BootFrame />;
 
   const [head, second] = route.parts;
 
@@ -268,7 +327,7 @@ export function App() {
     if (second === 'learned') window.location.replace('#/settings/memory');
     screen = (
       <SettingsScreen
-        tab={second === 'learned' ? 'memory' : (second ?? 'memory')}
+        tab={second === 'learned' ? 'memory' : (second ?? 'account')}
         detail={route.parts[2] ?? null}
       />
     );

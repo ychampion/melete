@@ -8,12 +8,15 @@
  * here rather than a surprise in the real service later.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
   type ApiEvent,
   type ApprovalRequestView,
   actionListQuery,
   actionListResponse,
   actionResponse,
+  actionSummaryListResponse,
+  actionSummaryOf,
   approvalDecisionRequest,
   approvalDecisionResponse,
   approvalListResponse,
@@ -108,6 +111,8 @@ export type AppDeps = {
   voice?: boolean | 'private';
   /** The agent's browser and sandbox. On unless a demonstration of a fresh install turns it off. */
   computer?: boolean;
+  /** A shared space the person owns, with others in it (`MELETE_MOCK_SPACE=shared`). */
+  space?: 'personal' | 'shared';
 };
 
 type ErrorBody = z.infer<typeof errorResponse>;
@@ -116,6 +121,16 @@ const fail = (code: string, message: string, detail?: Record<string, unknown>): 
   detail ? { error: { code, message, detail } } : { error: { code, message } };
 
 const KEEPALIVE_MS = 20_000;
+
+/** The pictures scenario cards show, as the paths this server answers them on. */
+export function scenarioPictures(scenarios: Scenario[]): string[] {
+  const paths = new Set<string>();
+  for (const scenario of scenarios)
+    for (const step of scenario.steps)
+      if (step.step === 'card' && step.image && /^\/[a-z0-9-]+\.jpg$/.test(step.image.src))
+        paths.add(step.image.src);
+  return [...paths];
+}
 
 export function createMockApp(deps: AppDeps) {
   const { store, runner, scenarios } = deps;
@@ -282,6 +297,20 @@ export function createMockApp(deps: AppDeps) {
     });
     return send(spaceListResponse, { spaces: [...store.spaces.values()] });
   });
+
+  // A scenario's card points at its picture by a path on this server.
+  for (const src of scenarioPictures(scenarios))
+    app.get(src, () => {
+      const bytes = readFileSync(new URL(`../fixtures/pictures${src}`, import.meta.url));
+      return new Response(Uint8Array.from(bytes), {
+        headers: {
+          'content-type': 'image/jpeg',
+          'content-length': String(bytes.length),
+          'cache-control': 'public, max-age=3600',
+          'x-content-type-options': 'nosniff',
+        },
+      });
+    });
 
   app.get('/artifacts/:id/content', (c) => {
     if (getCookie(c, 'melete_mock_session') !== mockSession)
@@ -626,6 +655,8 @@ export function createMockApp(deps: AppDeps) {
       .filter((action) => !query.effect_class || action.effect_class === query.effect_class)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, query.limit);
+    if (query.view === 'summary')
+      return send(actionSummaryListResponse, { actions: actions.map(actionSummaryOf) });
     return send(actionListResponse, { actions });
   });
 

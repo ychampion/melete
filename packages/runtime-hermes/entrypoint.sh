@@ -1,6 +1,6 @@
 #!/bin/sh
-# Two things the image cannot bake in, done at boot because the container is one
-# attempt and both values belong to that attempt.
+# What the image cannot bake in, done at boot because the container is one
+# attempt and these values belong to that attempt.
 #
 # 1. HERMES_HOME has to be writable. The API server's run-idempotency
 #    reservations are a SQLite file under it; without a writable path the store
@@ -76,8 +76,6 @@ def whole(variable):
     return int(raw)
 
 
-# The pinned resolver reads model.provider, not a top-level provider field.
-config.pop("provider", None)
 model_config = config.get("model")
 model_section = {**(model_config if isinstance(model_config, dict) else {}), "provider": "melete-gateway", "default": model}
 context_length = whole("MELETE_ENGINE_CONTEXT_LENGTH")
@@ -86,6 +84,14 @@ if context_length:
 threshold = whole("MELETE_ENGINE_COMPACTION_THRESHOLD")
 if threshold:
     config.setdefault("compression", {})["threshold_tokens"] = threshold
+# Whether the model is shown screenshots as pictures. Only the two spellings
+# the renderer writes are read; anything else stops the boot rather than leave
+# the image's default in place while the plugin acts on another answer.
+vision = os.environ.get("MELETE_ENGINE_SUPPORTS_VISION", "")
+if vision not in ("", "0", "1"):
+    raise SystemExit("MELETE_ENGINE_SUPPORTS_VISION must be 0 or 1")
+if vision:
+    model_section["supports_vision"] = vision == "1"
 max_turns = whole("MELETE_ENGINE_MAX_TURNS")
 if max_turns:
     config.setdefault("agent", {})["max_turns"] = max_turns

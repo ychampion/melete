@@ -140,6 +140,10 @@ model:
   # number here means compacting a conversation that still fits, or not
   # compacting one that no longer does.
   context_length: 1000000
+  # Whether a screenshot tool's picture goes to the model, read ahead of any
+  # catalog the engine cannot reach from here. The image's default model reads
+  # text only; the entrypoint sets this for the model the attempt was granted.
+  supports_vision: false
 
 providers:
   # The only endpoint the runtime may reach for inference is Melete's model

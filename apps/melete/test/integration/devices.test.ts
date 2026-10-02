@@ -9,7 +9,13 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type CapabilityClaims, DEVICE_LIMITS, type RuntimeAdapter } from '@melete/contracts';
+import {
+  type CapabilityClaims,
+  DEVICE_LIMITS,
+  type DeviceView,
+  type RuntimeAdapter,
+} from '@melete/contracts';
+import { attemptEngineFeatures } from '@melete/runtime-hermes';
 import { BrowserBridge } from '../../../../packages/device/src/browser.ts';
 import {
   type AgentOptions,
@@ -22,6 +28,7 @@ import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorFactory, useConnectorFactory } from '../../src/connectors/configured.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
+import { sandboxExecManifest } from '../../src/connectors/sandbox-exec.ts';
 import { sharedDeviceHub } from '../../src/devices/hub.ts';
 import { PUBLIC_ONLY_NOTE, routedDescription, SIGNED_IN_NOTE } from '../../src/devices/routing.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -30,6 +37,9 @@ import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { RuntimeCatalog } from '../../src/knowledge/catalog.ts';
+import { PostgresPrivacyStore } from '../../src/privacy/store.ts';
+import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -174,7 +184,19 @@ async function harness() {
   };
 
   const broker = new BrokerService({ sql: fixture.sql, connectors: registry });
-  return { app, as, cookie, address, code, computer, job, broker, jobs, sql: fixture.sql };
+  return {
+    app,
+    as,
+    cookie,
+    address,
+    code,
+    computer,
+    job,
+    broker,
+    jobs,
+    sql: fixture.sql,
+    db: fixture.db,
+  };
 }
 
 const h = fixture ? await harness() : null;
@@ -474,6 +496,50 @@ withDb('the agent uses the computer through the broker', () => {
     const [after] = await s.sql`select scopes from connection where id = ${connectionId}`;
     expect(after?.scopes).toContain('device.screenshot');
     expect(after?.scopes).not.toContain('device.run');
+    expect(((await changed.json()) as { device: DeviceView }).device.cloud_screenshots).toBeNull();
+
+    // Whose screen a screenshot shows is read from the job's own succeeded
+    // screenshot action and the computer behind its connection, never from
+    // the picture; letting cloud models see it is that computer's own answer.
+    const store = new PostgresPrivacyStore(s.sql);
+    const deviceId = localOff.config.device_id;
+    const screenshot = async (job: typeof claims, kind: string, status: string) => {
+      const id = recordId('act');
+      await s.sql`insert into action (id, job_id, attempt_id, connection_id, kind,
+        effect_class, canonical_payload, payload_hash, idempotency_key, status)
+        values (${id}, ${job.job_id}, ${job.attempt_id}, ${connectionId}, ${kind}, 'read',
+          '{}'::jsonb, ${'d'.repeat(64)}, ${id}, ${status})`;
+      return id;
+    };
+    const shot = await screenshot(claims, 'device.screenshot', 'succeeded');
+    expect(await store.screenshotSource(claims.job_id, shot)).toEqual({
+      kind: 'device',
+      deviceId,
+      cloudScreenshots: null,
+    });
+    const shown = await s.app.request(
+      `/devices/${deviceId}`,
+      s.as(s.cookie, 'PATCH', { cloud_screenshots: true }),
+    );
+    expect(shown.status).toBe(200);
+    expect(((await shown.json()) as { device: DeviceView }).device.cloud_screenshots).toBe(true);
+    expect(await store.screenshotSource(claims.job_id, shot)).toEqual({
+      kind: 'device',
+      deviceId,
+      cloudScreenshots: true,
+    });
+    // Its grants are untouched by it.
+    const [kept] = await s.sql`select scopes from connection where id = ${connectionId}`;
+    expect(kept?.scopes).toContain('device.screenshot');
+    // Another job's screenshot, an action that is not a screenshot, or one that
+    // did not succeed names nothing.
+    const otherJob = await s.job(tools);
+    expect(await store.screenshotSource(otherJob.job_id, shot)).toBeNull();
+    const listing = await screenshot(claims, 'device.list_files', 'succeeded');
+    expect(await store.screenshotSource(claims.job_id, listing)).toBeNull();
+    const failed = await screenshot(claims, 'device.browser_screenshot', 'failed');
+    expect(await store.screenshotSource(claims.job_id, failed)).toBeNull();
+    expect(await store.screenshotSource(claims.job_id, recordId('act'))).toBeNull();
   }, 60_000);
 
   test('work for an offline computer waits, and goes when it connects again', async () => {
@@ -933,5 +999,83 @@ withDb('what waited for the computer, when the person stops or time runs out', (
       await Bun.sleep(300);
     });
     expect(log.some((line) => line.includes('→ list_files'))).toBe(false);
+  }, 60_000);
+});
+
+withDb("the agent's own terminal beside a paired computer", () => {
+  test('a computer that answers, with commands off, leaves the engine its terminal', async () => {
+    const s = need();
+    // The agent's own sandbox, with its terminal and desktop.
+    const [personal] = await s.sql`select id from space where kind = 'personal'`;
+    const spaceId = String(personal?.id);
+    const sandboxId = recordId('conn');
+    const sandboxScopes = sandboxExecManifest.tools.map((tool) => tool.name);
+    await s.sql`insert into connection (id, space_id, provider, label, scopes, status)
+      values (${sandboxId}, ${spaceId}, 'sandbox', 'Sandbox', ${JSON.stringify(sandboxScopes)}::jsonb, 'active')`;
+    registry.register(sandboxId, {
+      manifest: sandboxExecManifest,
+      execute: () => Promise.reject(new Error('not dispatched in this test')),
+      verify: () => Promise.reject(new Error('not dispatched in this test')),
+      health: () => Promise.reject(new Error('not checked in this test')),
+    });
+    const deviceScopes = [
+      'device.status',
+      'device.list_files',
+      'device.read_file',
+      'device.write_file',
+      'device.open_url',
+      'device.screenshot',
+      'device.browser_open',
+      'device.browser_read',
+      'device.browser_click',
+      'device.browser_type',
+      'device.browser_screenshot',
+      'device.run',
+    ];
+    const { config, agent } = await s.computer({
+      grant: { commands: false, files: true, open_url: true, screenshot: true, browser: true },
+      local: { ...ALL, commands: false },
+    });
+    const [paired] =
+      await s.sql`select connection_id from paired_device where id = ${config.device_id}`;
+    const connectionId = String(paired?.connection_id);
+    const runner = new AttemptRunner(s.jobs, new StubRuntimeAdapter(), {
+      key: 'paired-device-terminal-key-32-chars-long',
+      scopes: [...sandboxScopes, ...deviceScopes],
+      loadCatalog: new RuntimeCatalog(s.db, registry).forAttempt,
+    });
+    await connected(agent, async () => {
+      // The computer is online and answers.
+      const status = await s.broker.propose(await s.job(['device.status']), {
+        kind: 'device.status',
+        connection_id: connectionId,
+        payload: {},
+      });
+      expect(status.status).toBe('succeeded');
+      const job = await s.jobs.create({
+        space_id: spaceId,
+        title: 'Terminal',
+        objective: 'run in your terminal: sleep 50 && echo done-long',
+      });
+      const claim = await runner.claim({
+        job_id: job.id,
+        expected_epoch: job.leaseEpoch,
+        expected_version: job.stateVersion,
+        reason: 'created',
+      });
+      if (!claim) throw new Error('No claimed attempt');
+      // Commands off: the computer's own terminal is not offered.
+      expect(claim.bundle.tools.map((tool) => tool.name)).not.toContain('device.run');
+      // The container deployment builds the engine from this bundle.
+      expect(attemptEngineFeatures(claim.bundle.tools)).toEqual({
+        toolsets: ['melete', 'terminal_tools'],
+        terminalBackend: 'melete_sandbox',
+      });
+      // The plugin is served the same terminal, which it hands to the engine.
+      const served = (await s.broker.catalog(claim.claims)).map((tool) => tool.name);
+      expect(served).toContain('terminal.run');
+      // Other tests' computers share this space, so a name may carry its account.
+      expect(served.some((name) => name.startsWith('device.status'))).toBe(true);
+    });
   }, 60_000);
 });

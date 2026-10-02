@@ -30,11 +30,7 @@ import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { AttentionService } from '../../src/jobs/attention.ts';
 import { buildAttemptSkeleton as buildBundle } from '../../src/jobs/bundle.ts';
-import {
-  requireConnectionGeneration,
-  withCapability,
-  withConnectionCapability,
-} from '../../src/jobs/fence.ts';
+import { withCapability } from '../../src/jobs/fence.ts';
 import { OperationService } from '../../src/jobs/operations.ts';
 import { PolicyService } from '../../src/jobs/policy.ts';
 import { attemptQueue, QUEUES, startQueue } from '../../src/jobs/queue.ts';
@@ -418,9 +414,7 @@ withDb('responsibility protocol', () => {
         dispatchedAt: index === 0 ? null : new Date(),
       });
     let admitted = 0;
-    expect(
-      await withConnectionCapability(jobs, oldToken, key, connectionId, async () => ++admitted),
-    ).toBe(1);
+    expect(await withCapability(jobs, oldToken, key, async () => ++admitted)).toBe(1);
     const policy = new PolicyService(jobs, runner);
     expect(
       await policy.changeConnection(connectionId, { kind: 'revoke', expected_generation: 0 }),
@@ -456,9 +450,6 @@ withDb('responsibility protocol', () => {
     expect(next.bundle.transcript.some((message) => message.tool_call_id === 'account-read')).toBe(
       true,
     );
-    await expect(
-      jobs.transaction((tx) => requireConnectionGeneration(tx, next.claims, connectionId)),
-    ).rejects.toMatchObject({ code: 'context_invalidated' });
     const invalidations = await handle.db
       .select()
       .from(event)
@@ -541,13 +532,7 @@ withDb('responsibility protocol', () => {
     expect(fresh.bundle.connection_generations[connectionId]).toBe(2);
     expect(JSON.stringify(fresh.bundle)).not.toContain('sealed-fixture');
     expect(
-      await withConnectionCapability(
-        jobs,
-        fresh.bundle.attempt.token,
-        key,
-        connectionId,
-        async () => 'admitted',
-      ),
+      await withCapability(jobs, fresh.bundle.attempt.token, key, async () => 'admitted'),
     ).toBe('admitted');
     expect(await policy.changePolicy(spaceId, 1)).toMatchObject({ policy_generation: 2 });
     await expect(

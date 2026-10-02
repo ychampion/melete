@@ -16,6 +16,14 @@
     "./redact": {
       "types": "./src/redact.ts",
       "default": "./src/redact.ts"
+    },
+    "./agent-library": {
+      "types": "./src/agent-library.ts",
+      "default": "./src/agent-library.ts"
+    },
+    "./mention": {
+      "types": "./src/mention.ts",
+      "default": "./src/mention.ts"
     }
   },
   "scripts": {
@@ -24,7 +32,6 @@
   },
   "dependencies": {
     "re2js": "2.8.6",
-    "ulid": "3.0.2",
     "zod": "4.6.2",
     "zod-openapi": "6.0.2"
   }

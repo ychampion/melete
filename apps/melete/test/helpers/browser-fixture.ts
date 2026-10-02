@@ -6,7 +6,6 @@ export const BROWSER_VARIANTS = [
   'ambiguous_save',
   'takeover',
 ] as const;
-export type BrowserVariant = (typeof BROWSER_VARIANTS)[number];
 
 /** Local, independent native forms. The effect ledger lives at the destination, outside the controller. */
 export function startBrowserFixture() {

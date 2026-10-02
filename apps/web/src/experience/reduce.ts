@@ -30,15 +30,19 @@ export type TurnBlock =
   /**
    * `decided` is the option chosen, here or as the stream's decision reports
    * it; `replaced` means a later message made the request stale; `withdrawn`
-   * means the person stopped the turn while it waited; `closed`
+   * means the person stopped the turn while it waited; `outdated` means
+   * something it relied on changed before anyone answered; `closed`
    * means its action moved on past approval without a decision item saying which way.
    */
   | {
       type: 'permission';
       permission: Permission;
-      decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null;
+      decided: PermissionOption | 'replaced' | 'withdrawn' | 'outdated' | 'closed' | null;
     }
-  /** `answered` is the option id, or `closed` when the turn moved on after an answer given elsewhere. */
+  /**
+   * `answered` is the option id, `withdrawn` when the person stopped the turn
+   * while it waited, or `closed` when the turn moved on after an answer given elsewhere.
+   */
   | { type: 'question'; question: Question; answered: string | null };
 
 export type TranscriptTurn = {
@@ -59,6 +63,12 @@ export type TranscriptTurn = {
   live: { id: string; title: string } | null;
   /** Started elsewhere and drawn from its events; its saved text is still to be read. */
   unread?: boolean;
+  /**
+   * The saved copy said the turn had finished. Its events, replayed in order,
+   * pass through "working" on the way to that end, and none of them makes a
+   * finished turn read as working again.
+   */
+  finished?: boolean;
 };
 
 export type ReactionMessage = {
@@ -105,7 +115,18 @@ const fromTurn = (turn: Turn): TranscriptTurn => ({
   delivery: turn.delivery,
   messageSeq: null,
   live: null,
+  ...(FINAL.has(turn.status) ? { finished: true } : {}),
 });
+
+/**
+ * A replayed status of a turn whose saved copy already finished: it is history,
+ * and says nothing about whether the conversation is working now.
+ */
+export function replayedStatus(transcript: Transcript, event: ExperienceEvent): boolean {
+  if (event.item.type !== 'status' || FINAL.has(event.item.status)) return false;
+  const turn = transcript.turns.find((entry) => entry.id === event.turn_id);
+  return turn?.finished === true;
+}
 
 export function fromTurns(turns: Turn[], composer: ComposerState, status: TurnStatus): Transcript {
   return { ...emptyTranscript(), turns: turns.map(fromTurn), composer, status };
@@ -127,11 +148,26 @@ function patchTurn(
   return { ...transcript, turns };
 }
 
-/** The saved answer plus what streamed after it was read, never doubled. */
-export const answerOf = (turn: TranscriptTurn): string =>
-  turn.streamed && turn.turn.answer.endsWith(turn.streamed)
-    ? turn.turn.answer
-    : turn.turn.answer + turn.streamed;
+/**
+ * The saved answer plus what streamed after it was read, never doubled. The
+ * stream can carry the whole answer again, or more than the saved copy around
+ * it, so when one holds the other only the longer one is shown. A finished
+ * turn's saved answer is the whole of it: what was written before an approval
+ * ("Waiting on your approval…") is not shown above the final answer.
+ */
+export function answerOf(turn: TranscriptTurn): string {
+  const answer = turn.turn.answer;
+  const streamed = turn.streamed;
+  if (answer && FINAL.has(turn.status)) return answer;
+  if (!streamed) return answer;
+  if (!answer) return streamed;
+  if (streamed.includes(answer)) return streamed;
+  if (answer.includes(streamed)) return answer;
+  return answer + streamed;
+}
+
+/** A turn the service has finished: its saved answer is the whole of it. */
+const FINAL = new Set<TurnStatus>(['done', 'failed', 'stopped']);
 
 /** A card, receipt, permission or question already drawn is not drawn twice. */
 const blockId = (block: TurnBlock): string =>
@@ -172,6 +208,22 @@ function ensureTurn(transcript: Transcript, event: ExperienceEvent): Transcript 
 export const unreadTurns = (transcript: Transcript): string[] =>
   transcript.turns.filter((turn) => turn.unread).map((turn) => turn.id);
 
+/**
+ * Take the saved answers of turns that have finished, read once they end: the
+ * saved copy keeps only the final message, which replaces what streamed.
+ */
+export function fillAnswers(transcript: Transcript, saved: Turn[]): Transcript {
+  return {
+    ...transcript,
+    turns: transcript.turns.map((turn) => {
+      const copy = saved.find((entry) => entry.id === turn.id);
+      return copy?.answer && FINAL.has(copy.status) && FINAL.has(turn.status)
+        ? { ...turn, finished: true, turn: { ...turn.turn, answer: copy.answer } }
+        : turn;
+    }),
+  };
+}
+
 /** Fill in turns started elsewhere from their saved copies: the message, and who answers it. */
 export function fillTurns(transcript: Transcript, saved: Turn[]): Transcript {
   return {
@@ -195,6 +247,10 @@ export function fillTurns(transcript: Transcript, saved: Turn[]): Transcript {
 }
 
 export function applyEvent(transcript: Transcript, event: ExperienceEvent): Transcript {
+  // An event already applied is not applied again: a stream reopened after
+  // the history was read, or read twice, replays events this page has, and
+  // their text would be added a second time.
+  if (transcript.lastSeq > 0 && event.seq <= transcript.lastSeq) return transcript;
   transcript = ensureTurn(transcript, event);
   const lastSeq = Math.max(transcript.lastSeq, event.seq);
   const item = event.item;
@@ -339,11 +395,18 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         };
       });
     case 'text_delta':
-      return patchTurn(base, event.turn_id, (turn) => ({
-        ...turn,
-        streamed: turn.streamed + item.text,
-        streaming: true,
-      }));
+      return patchTurn(base, event.turn_id, (turn) =>
+        // A finished turn read with its saved answer already holds this text,
+        // and it is not working again.
+        FINAL.has(turn.status) && turn.turn.answer
+          ? turn
+          : {
+              ...turn,
+              // A retried turn's answer replaces the lost attempt's partial one.
+              streamed: item.restart ? item.text : turn.streamed + item.text,
+              streaming: true,
+            },
+      );
     case 'card':
       return patchTurn(base, event.turn_id, (turn) => ({
         ...turn,
@@ -378,6 +441,7 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         blocks: [...turn.blocks, { type: 'question', question: item.question, answered: null }],
       }));
     case 'status': {
+      if (replayedStatus(base, event)) return base;
       // A status replayed for an earlier turn says nothing about the conversation
       // now: a long history opened mid-replay would otherwise read as working.
       const index = event.turn_id ? base.turns.findIndex((t) => t.id === event.turn_id) : -1;
@@ -415,6 +479,81 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
 
 export function applyEvents(transcript: Transcript, events: ExperienceEvent[]): Transcript {
   return events.reduce(applyEvent, transcript);
+}
+
+/** A turn read from the service's saved copy, rather than drawn from events or sent here. */
+const savedTurn = (transcript: Transcript, turnId: string | null): TranscriptTurn | undefined => {
+  const turn = turnId ? transcript.turns.find((entry) => entry.id === turnId) : undefined;
+  return turn && !turn.unread && !turn.id.startsWith('local_') ? turn : undefined;
+};
+
+/**
+ * Replay a conversation's history over its saved turns. The saved copy and the
+ * conversation's own status are the latest known state, so a status the history
+ * passes through ("working" on the way to "needs you") never shows: the turn and
+ * the composer keep what the service said. Everything else a status implies, such
+ * as a question it shows was answered elsewhere, is kept. Statuses of turns the
+ * saved copy did not have are applied as they come.
+ */
+export function applyHistory(transcript: Transcript, events: ExperienceEvent[]): Transcript {
+  return events.reduce((current, event) => {
+    const held = event.item.type === 'status' ? savedTurn(current, event.turn_id) : undefined;
+    const next = applyEvent(current, event);
+    if (!held || next === current) return next;
+    return {
+      ...next,
+      composer: current.composer,
+      status: current.status,
+      turns: next.turns.map((turn) =>
+        turn.id === held.id
+          ? {
+              ...turn,
+              status: held.status,
+              streaming: held.streaming,
+              live: held.live,
+              delivery: held.delivery,
+              turn: held.turn,
+            }
+          : turn,
+      ),
+    };
+  }, transcript);
+}
+
+/**
+ * Take the statuses of a fresh read of the saved turns and the conversation,
+ * once the history has been replayed: anything that changed while it was read
+ * is in this copy.
+ */
+export function adoptSaved(
+  transcript: Transcript,
+  saved: Turn[],
+  composer: ComposerState,
+  status: TurnStatus,
+): Transcript {
+  return {
+    ...transcript,
+    composer,
+    status,
+    turns: transcript.turns.map((turn) => {
+      const copy = saved.find((entry) => entry.id === turn.id);
+      if (!copy || turn.unread) return turn;
+      return {
+        ...turn,
+        status: copy.status,
+        streaming: false,
+        live: UNDER_WAY.has(copy.status) ? turn.live : null,
+        delivery: copy.delivery,
+        turn: {
+          ...turn.turn,
+          status: copy.status,
+          delivery: copy.delivery,
+          answer: copy.answer || turn.turn.answer,
+        },
+        ...(FINAL.has(copy.status) ? { finished: true } : {}),
+      };
+    }),
+  };
 }
 
 export function applyGap(transcript: Transcript, gap: StreamGap): Transcript {
@@ -499,7 +638,7 @@ export function setDelivery(
 export function markPermission(
   transcript: Transcript,
   id: string,
-  option: PermissionOption | 'replaced' | 'withdrawn',
+  option: PermissionOption | 'replaced' | 'withdrawn' | 'outdated',
 ): Transcript {
   return {
     ...transcript,
@@ -525,7 +664,8 @@ export function applyDecision(transcript: Transcript, decision: ExperienceDecisi
       decision.outcome === 'always' ||
       decision.outcome === 'deny' ||
       decision.outcome === 'replaced' ||
-      decision.outcome === 'withdrawn'
+      decision.outcome === 'withdrawn' ||
+      decision.outcome === 'outdated'
       ? markPermission(transcript, decision.id, decision.outcome)
       : transcript;
   }
@@ -539,7 +679,12 @@ export function applyDecision(transcript: Transcript, decision: ExperienceDecisi
             option.label === decision.answer || option.label.split(' · ')[0] === decision.answer,
         )
       : undefined;
-  return markQuestion(transcript, decision.id, chosen?.id ?? 'closed');
+  // A question withdrawn by a stop says so, rather than reading as answered elsewhere.
+  return markQuestion(
+    transcript,
+    decision.id,
+    chosen?.id ?? (decision.outcome === 'withdrawn' ? 'withdrawn' : 'closed'),
+  );
 }
 
 export function markQuestion(transcript: Transcript, id: string, optionId: string): Transcript {

@@ -15,6 +15,7 @@ import {
 import { Hono } from 'hono';
 import { ZodError, z } from 'zod';
 import { redactSecrets } from '../connectors/faults.ts';
+import { ASK_PERSON_TOOL_NAME } from './ask-person.ts';
 import { AuthenticationError, matchesServiceKey, verifyCapability } from './capability.ts';
 import type { ToolCatalog } from './catalog.ts';
 import type { ComposeService } from './compose.ts';
@@ -26,6 +27,8 @@ export interface BrokerOperations {
   compose?: Pick<ComposeService, 'run'>;
   authorize(claims: CapabilityClaims): Promise<void>;
   requestWait?(claims: CapabilityClaims, input: unknown): Promise<unknown>;
+  /** Record a question for the person; the job waits for the answer once the turn ends. */
+  askPerson?(claims: CapabilityClaims, input: unknown): Promise<unknown>;
   /** Long work's own tools: its record, helpers, handoffs and finish. */
   runTool?(claims: CapabilityClaims, name: string, input: unknown): Promise<unknown>;
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
@@ -191,6 +194,10 @@ export function createBrokerApp(options: {
       // Whatever the model passed is dropped: the service writes the follow-up.
       return c.json(await options.broker.followUp(claims));
     }
+    if (body.name === ASK_PERSON_TOOL_NAME) {
+      if (!options.broker.askPerson) throw new BrokerFault('unknown_tool');
+      return c.json(await options.broker.askPerson(c.get('claims'), body.arguments));
+    }
     if (body.name.startsWith('run.')) {
       const claims = c.get('claims');
       const catalog = await options.broker.catalog(claims);
@@ -270,13 +277,4 @@ export function createBrokerApp(options: {
     });
   }
   return app;
-}
-
-/** Bind explicitly to loopback locally, or the internal interface in the container. */
-export function serveBroker(
-  app: ReturnType<typeof createBrokerApp>,
-  hostname = '127.0.0.1',
-  port = 3112,
-) {
-  return Bun.serve({ hostname, port, maxRequestBodySize: 1_048_576, fetch: app.fetch });
 }

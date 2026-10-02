@@ -12,10 +12,10 @@ import type { LiveVoice } from '../../src/connectors/elevenlabs.ts';
 import { fakeTranscriptionAdapter } from '../../src/connectors/transcribe.ts';
 import { silentWav } from '../../src/connectors/wav.ts';
 import { loadEnv } from '../../src/env.ts';
-import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -85,7 +85,7 @@ const call = (cookie: string, path: string, method = 'GET', body?: unknown) =>
 
 async function conversationOf(cookie: string, title: string): Promise<string> {
   const persona = agentResponse.parse(
-    await (await call(cookie, '/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+    await (await call(cookie, '/agents', 'POST', freshAgent())).json(),
   ).agent;
   const created = await call(cookie, '/conversations', 'POST', { title, agent_id: persona.id });
   expect(created.status).toBe(200);
@@ -220,7 +220,7 @@ withDb('voice through the API', () => {
     const sql = handle?.sql;
     if (!sql) throw new Error('Postgres unavailable');
     const persona = agentResponse.parse(
-      await (await call(owner, '/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await call(owner, '/agents', 'POST', freshAgent())).json(),
     ).agent;
     const created = await call(owner, '/conversations', 'POST', {
       title: 'Kept here',

@@ -15,6 +15,7 @@ import {
   useId,
   useRef,
 } from 'react';
+import { modKey } from '../experience/plain.ts';
 import { Icon, type IconName } from './icons.tsx';
 
 export type ButtonVariant =
@@ -230,16 +231,14 @@ export function Badge({
   );
 }
 
-export function Count({ n, active = false }: { n: number | string; active?: boolean }) {
-  return (
-    <span className="count" data-active={active ? 'true' : undefined}>
-      {n}
-    </span>
-  );
+export function Count({ n }: { n: number | string }) {
+  return <span className="count">{n}</span>;
 }
 
 export function Kbd({ children }: { children: ReactNode }) {
-  return <span className="kbd">{children}</span>;
+  // Written with the Mac's ⌘; elsewhere the same keys read Ctrl.
+  const keys = typeof children === 'string' ? children.replace('⌘', modKey()) : children;
+  return <span className="kbd">{keys}</span>;
 }
 
 export function Avatar({
@@ -351,7 +350,7 @@ export function Select({
   icon?: IconName;
   value: string;
   onChange: (value: string) => void;
-  options: readonly { value: string; label: string }[];
+  options: readonly { value: string; label: string; title?: string }[];
   height?: number;
   width?: number | string;
   label: string;
@@ -371,7 +370,7 @@ export function Select({
         onChange={(event) => onChange(event.target.value)}
       >
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <option key={option.value} value={option.value} title={option.title}>
             {option.label}
           </option>
         ))}
@@ -518,10 +517,6 @@ export function Overline({ children, style }: { children: ReactNode; style?: CSS
       {children}
     </div>
   );
-}
-
-export function Hairline() {
-  return <div className="hairline" />;
 }
 
 /**

@@ -189,6 +189,8 @@ export function PrivacyTab() {
       | 'private_agent_ids'
       | 'local_detection'
       | 'model_on_device'
+      | 'screenshots_own_computer'
+      | 'screenshots_paired_devices'
     >,
   ) => {
     setSettings((current) => (current ? { ...current, ...change } : current));
@@ -260,12 +262,7 @@ export function PrivacyTab() {
           }}
         />
         <div className="row" style={{ gap: 8 }}>
-          <Button
-            size="sm"
-            onClick={() => void runPreview()}
-            loading={previewing}
-            disabled={previewing}
-          >
+          <Button onClick={() => void runPreview()} loading={previewing} disabled={previewing}>
             Preview
           </Button>
         </div>
@@ -417,11 +414,10 @@ export function PrivacyTab() {
             />
           </Field>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <Button size="sm" type="submit" disabled={saving || !baseUrl.trim() || !model.trim()}>
+            <Button type="submit" disabled={saving || !baseUrl.trim() || !model.trim()}>
               Save
             </Button>
             <Button
-              size="sm"
               variant="outline"
               type="button"
               disabled={!baseUrl.trim() || !model.trim()}
@@ -472,6 +468,29 @@ export function PrivacyTab() {
           disabled={!settings.local_model}
           onChange={(next) => flip({ local_detection: next })}
         />
+      </Section>
+
+      <Section
+        title="Screenshots sent to cloud models"
+        sub="When the agent works on a computer it can look at the screen. A cloud model that reads images is shown those screenshots in ordinary conversations only if you allow it here."
+      >
+        <SwitchRow
+          label="The agent's own computer and browser"
+          hint="Its own sandbox, where it browses and works for you."
+          on={settings.screenshots_own_computer}
+          onChange={(next) => flip({ screenshots_own_computer: next })}
+        />
+        <SwitchRow
+          label="Your paired computers"
+          hint="Your own screens. Each computer can say otherwise under Devices."
+          on={settings.screenshots_paired_devices}
+          onChange={(next) => flip({ screenshots_paired_devices: next })}
+        />
+        <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0 }}>
+          Screenshots are pictures, so nothing in them is swapped for a placeholder: the details
+          above and your Always protect list apply to text only. Private conversations never send
+          screenshots to a cloud model; your local model sees them only if it reads images.
+        </p>
       </Section>
 
       <Section
@@ -547,7 +566,7 @@ export function PrivacyTab() {
               />
             </Field>
           </div>
-          <Button size="sm" type="submit" disabled={saving || !settings.sealed_vault}>
+          <Button type="submit" disabled={saving || !settings.sealed_vault}>
             Add
           </Button>
         </form>

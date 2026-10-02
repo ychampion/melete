@@ -78,6 +78,8 @@ export async function settingsView(
       !!settings.onDeviceUrl &&
       sameAddress(settings.onDeviceUrl, providerUrl),
     sealed_vault: router.store.sealing,
+    screenshots_own_computer: settings.screenshotsOwn,
+    screenshots_paired_devices: settings.screenshotsDevices,
   };
 }
 
@@ -101,6 +103,10 @@ export async function updateSettings(
   if (input.private_space !== undefined) plain.private_space = input.private_space;
   if (input.private_agent_ids) plain.private_agent_ids = [...new Set(input.private_agent_ids)];
   if (input.local_detection !== undefined) plain.local_detection = input.local_detection;
+  if (input.screenshots_own_computer !== undefined)
+    plain.screenshots_own_computer = input.screenshots_own_computer;
+  if (input.screenshots_paired_devices !== undefined)
+    plain.screenshots_paired_devices = input.screenshots_paired_devices;
   if (input.model_on_device === false) plain.model_on_device_url = null;
   else if (input.model_on_device === true) {
     // Only the address the service is set to use now, and only while it is local.

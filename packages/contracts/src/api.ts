@@ -160,8 +160,78 @@ export const actionListQuery = z.object({
   status: actionStatus.optional(),
   effect_class: effectClass.optional(),
   limit: z.coerce.number().int().positive().max(200).default(50),
+  /**
+   * `summary` lists each action by what a person is shown of it: its state,
+   * what it was (who it went to, its title, the file or command) and whether
+   * the person settled it. The full record stays on GET /actions/{actionId}.
+   */
+  view: z.enum(['full', 'summary']).default('full'),
 });
 export const actionListResponse = z.object({ actions: z.array(action) });
+
+/** The payload fields a summary keeps, each clipped: enough to name the effect, never its body. */
+const SUMMARY_PAYLOAD = ['to', 'title', 'summary', 'path', 'command'] as const;
+const SUMMARY_TEXT = 300;
+/** The reconciliation fields a summary keeps: who settled it, and how. */
+const SUMMARY_RECONCILIATION = ['decided_by', 'decision'] as const;
+
+export const actionSummary = z
+  .object({
+    id: prefixedId(ID_PREFIXES.action),
+    job_id: prefixedId(ID_PREFIXES.job),
+    kind: z.string().min(1),
+    effect_class: effectClass,
+    status: actionStatus,
+    /** Only `to`, `title`, `summary`, `path` and `command`, each at most 300 characters. */
+    canonical_payload: jsonObject,
+    /** Only `decided_by` and `decision`. */
+    reconciliation: jsonObject.nullable(),
+    dispatched_at: timestamp.nullable(),
+    resolved_at: timestamp.nullable(),
+    created_at: timestamp,
+  })
+  .meta({ id: 'ActionSummary' });
+export type ActionSummary = z.infer<typeof actionSummary>;
+export const actionSummaryListResponse = z.object({ actions: z.array(actionSummary) });
+
+const clipped = (value: unknown): unknown => {
+  if (typeof value === 'string') return value.slice(0, SUMMARY_TEXT);
+  if (Array.isArray(value))
+    return value
+      .slice(0, 20)
+      .filter((item) => typeof item === 'string')
+      .map((item: string) => item.slice(0, SUMMARY_TEXT));
+  return undefined;
+};
+
+/** An action as the lean list shows it. */
+export function actionSummaryOf(full: z.infer<typeof action>): ActionSummary {
+  const payload: Record<string, unknown> = {};
+  for (const key of SUMMARY_PAYLOAD) {
+    const value = clipped(full.canonical_payload[key]);
+    if (value !== undefined) payload[key] = value;
+  }
+  const reconciliation = full.reconciliation
+    ? Object.fromEntries(
+        SUMMARY_RECONCILIATION.flatMap((key) => {
+          const value = full.reconciliation?.[key];
+          return typeof value === 'string' ? [[key, value]] : [];
+        }),
+      )
+    : null;
+  return actionSummary.parse({
+    id: full.id,
+    job_id: full.job_id,
+    kind: full.kind,
+    effect_class: full.effect_class,
+    status: full.status,
+    canonical_payload: payload,
+    reconciliation,
+    dispatched_at: full.dispatched_at,
+    resolved_at: full.resolved_at,
+    created_at: full.created_at,
+  });
+}
 export const actionResponse = z.object({ action });
 
 /** Used when an action came back `unknown` and a person settles it by hand. */

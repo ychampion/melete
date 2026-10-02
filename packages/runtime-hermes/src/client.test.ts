@@ -10,8 +10,6 @@ import {
   HERMES_APPROVAL_ANSWERS,
   HERMES_ROUTES,
   HermesClient,
-  hermesApprovalRequest,
-  hermesRunStatus,
   IDENTITY,
   parseSse,
 } from './client.ts';
@@ -19,6 +17,7 @@ import { HERMES_PINNED_TAG, RUNTIME_VERSION } from './index.ts';
 import {
   instructionTokens,
   measureRenderedInput,
+  PLAIN_WORDS,
   renderInput,
   renderInstructions,
   renderSoul,
@@ -102,8 +101,7 @@ describe('request building', () => {
     expect(client.capabilities().method).toBe('GET');
   });
 
-  test('status and stop address the run by id', () => {
-    expect(client.status('run_1').url).toBe('http://runtime:8790/v1/runs/run_1');
+  test('stop addresses the run by id', () => {
     expect(client.stop('run_1').url).toBe('http://runtime:8790/v1/runs/run_1/stop');
     expect(client.stop('run_1').method).toBe('POST');
   });
@@ -125,7 +123,7 @@ describe('request building', () => {
 
   test('no token means no authorization header, rather than an empty one', () => {
     const anonymous = new HermesClient({ baseUrl: 'http://runtime:8790' });
-    expect(anonymous.status('run_1').headers.authorization).toBeUndefined();
+    expect(anonymous.stop('run_1').headers.authorization).toBeUndefined();
   });
 });
 
@@ -378,6 +376,17 @@ describe('context assembly', () => {
     expect(renderInstructions(bundle)).not.toContain('time zone');
   });
 
+  test('the model is told the plain words to use for how it works', () => {
+    const text = renderInstructions(bundle);
+    expect(text).toContain('"my computer"');
+    expect(text).toContain('"your approval"');
+    expect(text).toContain('Never say sandbox, broker, capability, attempt');
+    // The instructions themselves speak the same way outside that one list.
+    const rest = text.replace(PLAIN_WORDS.join('\n'), '');
+    for (const word of ['sandbox', 'broker', 'capability', 'attempt'])
+      expect(rest.toLowerCase()).not.toContain(word);
+  });
+
   test("the run names the workspace it is given in place of the bundle's", () => {
     const current = 'the current directory (.)';
     const placed = new HermesClient({ baseUrl: 'http://127.0.0.1:1', workspace: current });
@@ -433,41 +442,6 @@ describe('context assembly', () => {
     expect(input).toContain('any news?');
     expect(input).toContain('was denied');
     expect(input).toContain('One message sent on Tuesday.');
-  });
-});
-
-describe('response schemas', () => {
-  test('a run status parses', () => {
-    expect(hermesRunStatus.parse({ run_id: 'r1', status: 'running' }).status).toBe('running');
-  });
-
-  test('an unknown status falls back to running rather than losing the run', () => {
-    // A status this build does not know about still names a live run; refusing
-    // the parse would drop the run id with it.
-    expect(hermesRunStatus.parse({ run_id: 'r1', status: 'thinking' }).status).toBe('running');
-  });
-
-  test('interrupted and cancelled are statuses, not surprises', () => {
-    for (const status of ['interrupted', 'cancelled', 'waiting_for_approval'] as const) {
-      expect(hermesRunStatus.parse({ run_id: 'r1', status }).status).toBe(status);
-    }
-  });
-
-  test('an approval notification carries the fields the probe recorded', () => {
-    const parsed = hermesApprovalRequest.parse({
-      request_id: '4ea455eb1c1745bb8761c66d81237bad',
-      command: 'rm -rf ~/Documents',
-      description: 'recursive delete',
-      pattern_key: 'rm -rf',
-      pattern_keys: ['rm -rf'],
-      allow_session: true,
-      allow_permanent: true,
-    });
-    expect(parsed.request_id).toHaveLength(32);
-  });
-
-  test('a notification with no request id is refused, because nothing could answer it', () => {
-    expect(hermesApprovalRequest.safeParse({ command: 'ls' }).success).toBe(false);
   });
 });
 

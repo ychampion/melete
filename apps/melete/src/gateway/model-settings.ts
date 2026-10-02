@@ -24,6 +24,7 @@
  * for, the operator's or the owner's, and is only ever sent there.
  */
 import {
+  effectiveVision,
   MODEL_PROVIDERS,
   type ModelConnectionTest,
   type ModelProvider,
@@ -209,18 +210,38 @@ export class ModelSettingsService {
    * The model the next attempt runs on: the one chosen in the app, or the
    * server's default. Read inside the claim transaction.
    */
-  async activeChoice(db: Runner = this.options.db): Promise<{ provider: string; model: string }> {
-    const row = await this.chosen(db);
-    return row
-      ? { provider: row.provider, model: row.model }
-      : { provider: this.env.MELETE_DEFAULT_PROVIDER, model: this.env.MELETE_DEFAULT_MODEL };
+  async activeChoice(
+    db: Runner = this.options.db,
+  ): Promise<{ provider: string; model: string; vision: boolean }> {
+    const { provider, model, vision } = this.active(await this.chosen(db));
+    return { provider, model, vision };
+  }
+
+  /**
+   * The model in use and whether it is shown pictures: the owner's word for a
+   * model chosen in the app, the operator's for the server default, and the
+   * catalog's when neither said.
+   */
+  private active(chosen: Awaited<ReturnType<ModelSettingsService['chosen']>>) {
+    const provider = chosen?.provider ?? this.env.MELETE_DEFAULT_PROVIDER;
+    const model = chosen?.model ?? this.env.MELETE_DEFAULT_MODEL;
+    const stated = chosen ? chosen.supportsVision : this.env.MELETE_DEFAULT_MODEL_VISION;
+    return {
+      provider,
+      model,
+      vision: effectiveVision(provider, model, stated),
+      vision_source:
+        typeof stated === 'boolean'
+          ? chosen
+            ? ('app' as const)
+            : ('operator' as const)
+          : ('catalog' as const),
+    };
   }
 
   async view(canEdit: boolean): Promise<ModelSettings> {
     const [rows, chosen] = await Promise.all([this.keyRows(), this.chosen()]);
-    const active = chosen
-      ? { provider: chosen.provider, model: chosen.model }
-      : { provider: this.env.MELETE_DEFAULT_PROVIDER, model: this.env.MELETE_DEFAULT_MODEL };
+    const active = this.active(chosen);
     const providers = await Promise.all(
       MODEL_PROVIDERS.map(async (provider) => {
         const row = this.usableRow(provider, rows);
@@ -337,7 +358,12 @@ export class ModelSettingsService {
     await this.options.db.delete(modelProviderKey).where(eq(modelProviderKey.provider, provider));
   }
 
-  async setDefault(provider: string, model: string, ownerId: string): Promise<void> {
+  async setDefault(
+    provider: string,
+    model: string,
+    ownerId: string,
+    supportsVision: boolean | null = null,
+  ): Promise<void> {
     if (!isModelProvider(provider))
       throw new ServiceError(
         'provider_not_available',
@@ -356,6 +382,8 @@ export class ModelSettingsService {
       id: 'installation',
       provider,
       model: model.trim(),
+      // Belongs to this model: choosing another one starts from the catalog again.
+      supportsVision,
       ownerId,
       updatedAt: new Date(),
     };

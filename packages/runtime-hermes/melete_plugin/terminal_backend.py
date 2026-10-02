@@ -42,7 +42,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from .broker import BrokerClient, BrokerError
-from .results import END_TURN_INSTRUCTION, FAILURE_INSTRUCTION, SUCCEEDED, UNCERTAIN_INSTRUCTION
+from .results import END_TURN_INSTRUCTION, FAILURE_INSTRUCTION, OWN_COMPUTER_INSTRUCTION, SUCCEEDED
 
 logger = logging.getLogger("melete.plugin.terminal")
 
@@ -60,7 +60,8 @@ WORK_DIR = "/work"
 #: Mirrors EXEC_LIMITS in packages/contracts/src/execution.ts: the broker
 #: refuses a timeout outside these bounds.
 MIN_TIMEOUT_MS = 100
-MAX_TIMEOUT_MS = 120_000
+DEFAULT_TIMEOUT_MS = 300_000
+MAX_TIMEOUT_MS = 600_000
 
 #: Mirrors SANDBOX_SYNC_ALLOWANCE_MS in apps/melete/src/env.ts plus
 #: WORKSPACE_WAIT_MS in apps/melete/src/connectors/sandbox-exec.ts: the
@@ -138,6 +139,21 @@ def workspace_relative(cwd: Optional[str]) -> Optional[str]:
     return relative
 
 
+def command_wait_seconds(timeout_ms: Any) -> float:
+    """How long to wait for the broker's answer to one `terminal.run`.
+
+    The broker runs the command, and may first wait for the sandbox and sync
+    the workspace, before it answers; it settles the action itself if that
+    takes longer than its budget. Giving up sooner here leaves the action
+    dispatched with nobody waiting on it, and the model reading "unknown" for a
+    command that is still running.
+    """
+    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, (int, float)) or timeout_ms <= 0:
+        timeout_ms = DEFAULT_TIMEOUT_MS
+    timeout_ms = max(MIN_TIMEOUT_MS, min(float(timeout_ms), MAX_TIMEOUT_MS))
+    return timeout_ms / 1000 + SESSION_MARGIN_SECONDS + ANSWER_SLACK_SECONDS
+
+
 def _with_stdin(command: str, stdin_data: Optional[str]) -> str:
     """Stdin travels inside the command as a heredoc, so the ledger shows it.
 
@@ -158,7 +174,7 @@ def _unknown(reason: str, action_id: Optional[str] = None) -> Dict[str, Any]:
     named = f" (action {action_id})" if action_id else ""
     return _result(
         f"[outcome unknown{named}] {reason}. The command may have run in the sandbox, "
-        "and no output came back for it. " + UNCERTAIN_INSTRUCTION,
+        "and no output came back for it. " + OWN_COMPUTER_INSTRUCTION,
         UNKNOWN_STATUS,
     )
 
@@ -198,7 +214,7 @@ class SandboxTerminal:
         relative = workspace_relative(cwd)
         if relative is None:
             return _refused(f"commands run inside the job workspace {WORK_DIR}, not in {cwd!r}")
-        requested_ms = int(float(timeout_seconds or MAX_TIMEOUT_MS / 1000) * 1000)
+        requested_ms = int(float(timeout_seconds or DEFAULT_TIMEOUT_MS / 1000) * 1000)
         timeout_ms = max(MIN_TIMEOUT_MS, min(requested_ms, MAX_TIMEOUT_MS))
         run = self._run_name()
         payload: Dict[str, Any] = {
@@ -221,7 +237,7 @@ class SandboxTerminal:
 
     def _propose(self, payload: Dict[str, Any], client_ref: str, timeout_ms: int) -> Dict[str, Any]:
         """Send once and wait, watching for an interrupt. Never re-sent."""
-        wait_seconds = timeout_ms / 1000 + SESSION_MARGIN_SECONDS + ANSWER_SLACK_SECONDS
+        wait_seconds = command_wait_seconds(timeout_ms)
         box: Dict[str, Any] = {}
         done = threading.Event()
 
@@ -249,7 +265,7 @@ class SandboxTerminal:
                 return {
                     "result": _result(
                         "[Command interrupted] The command was already sent to the sandbox and "
-                        "its outcome is unknown here. " + UNCERTAIN_INSTRUCTION,
+                        "its outcome is unknown here. " + OWN_COMPUTER_INSTRUCTION,
                         INTERRUPTED_STATUS,
                     )
                 }

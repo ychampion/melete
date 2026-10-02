@@ -496,8 +496,7 @@ function render(kind: ArtifactKind, parsed: Parsed, bytes: Uint8Array): Result {
 
 /**
  * Run everything that can be decided without asking anyone. A critique is
- * declared here as `pending` and left for the recorder to resolve; a human
- * acceptance is declared as `pending` and left for a person.
+ * declared here as `pending` and left for the recorder to resolve.
  */
 export function validateArtifact(
   expectation: ArtifactExpectation,
@@ -536,16 +535,6 @@ export function validateArtifact(
       detail: expectation.critique,
       evidence: {},
       advisory: true,
-    });
-  }
-  if (expectation.human) {
-    results.push({
-      class: 'human',
-      name: 'human',
-      status: 'pending',
-      detail: 'waiting for the person to look over the file',
-      evidence: {},
-      advisory: false,
     });
   }
   // Names are unique by construction: `artifactExpectation` refuses two checks

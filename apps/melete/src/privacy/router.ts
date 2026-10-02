@@ -25,13 +25,14 @@
 import { createHash } from 'node:crypto';
 import {
   type AttemptBundle,
-  PRIVACY_CATEGORY_NAMES,
+  modelSupportsVision,
   type PrivacyCategory,
   type PrivacyPreview,
   type PrivacyReceipt,
   type QuestionSpecInput,
   type SensitiveTopic,
 } from '@melete/contracts';
+import { countImages, imageMark, inlineImages, withoutImages } from '../gateway/images.ts';
 import { GatewayError, type GatewayPrincipal, type GatewayProvider } from '../gateway/types.ts';
 import {
   authoredParts,
@@ -48,10 +49,35 @@ import {
   type ResolvedSettings,
   resolveSettings,
   type Scope,
+  type ScreenshotSource,
   sameAddress,
 } from './store.ts';
 import { Rehydrator } from './stream.ts';
 import { type KnownValue, placeholderCategory, Vault } from './vault.ts';
+
+/**
+ * What a private conversation's screenshot becomes when the request leaves
+ * redacted for a cloud model: a picture cannot have its details swapped for
+ * placeholders, so it does not go.
+ */
+export const IMAGE_WITHHELD_PRIVATE =
+  '[A screenshot was taken here. It is not shown to this model because this conversation is private and a picture cannot be redacted.]';
+
+/** The agent's own screenshot, when the owner turned those off for cloud models. */
+export const IMAGE_WITHHELD_OWN =
+  '[A screenshot of your own computer was taken here. It is not shown to cloud models: that is turned off in Settings > Privacy. The receipt says where it was saved.]';
+
+/** A paired computer's screenshot, unless that computer or the privacy setting allows it. */
+export const IMAGE_WITHHELD_DEVICE =
+  "[A screenshot of the person's paired computer was taken here. It is not shown to cloud models unless that computer allows it in Settings > Devices. The receipt says where it was saved.]";
+
+/** A picture whose source is not marked, treated as the most private kind. */
+export const IMAGE_WITHHELD_UNKNOWN =
+  '[A picture was here. It is not shown to cloud models because where it came from is not known.]';
+
+/** What a screenshot becomes for a local model that does not read images. */
+export const IMAGE_WITHHELD_LOCAL =
+  '[A screenshot was taken here. It is not shown because the local model does not read images.]';
 
 export type PreparedRequest = {
   body: Record<string, unknown>;
@@ -230,6 +256,39 @@ export class PrivacyRouter {
     return state;
   }
 
+  /**
+   * An ordinary conversation's pictures as a cloud model may see them. The
+   * agent's own computer and browser go unless the owner turned that off; a
+   * paired computer's screen goes only when that computer, or failing its own
+   * answer the privacy setting, allows it; a picture of unknown source never.
+   */
+  private async screenshotsForCloud(
+    jobId: string | null,
+    settings: ResolvedSettings,
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const images = inlineImages(body);
+    if (!images.length) return body;
+    // A picture names the action it came from; the action says whose screen it
+    // is. Only a job's own requests carry its screenshots.
+    const sources = new Map<string, ScreenshotSource | null>();
+    for (const image of images) {
+      const action = imageMark(image);
+      if (action && jobId && !sources.has(action))
+        sources.set(action, await this.store.screenshotSource(jobId, action));
+    }
+    return withoutImages(body, (image) => {
+      const action = imageMark(image);
+      const source = action ? (sources.get(action) ?? null) : null;
+      if (source?.kind === 'computer') return settings.screenshotsOwn ? null : IMAGE_WITHHELD_OWN;
+      if (source?.kind === 'device')
+        return (source.cloudScreenshots ?? settings.screenshotsDevices)
+          ? null
+          : IMAGE_WITHHELD_DEVICE;
+      return IMAGE_WITHHELD_UNKNOWN;
+    });
+  }
+
   /** The destination and body for one outbound request. Throws to refuse it. */
   async prepare(input: {
     principal: GatewayPrincipal;
@@ -262,8 +321,14 @@ export class PrivacyRouter {
       if (local) {
         const receipt = emptyReceipt('local');
         await this.log(scope, receipt);
+        // The person's own model sees the conversation as it is, pictures
+        // included, when it reads them.
+        const seen =
+          countImages(body) && !modelSupportsVision('openai-compatible', local.model)
+            ? withoutImages(body, IMAGE_WITHHELD_LOCAL)
+            : body;
         return {
-          body: { ...body, model: local.model },
+          body: { ...seen, model: local.model },
           route: 'local',
           local,
           rehydrator: null,
@@ -273,21 +338,32 @@ export class PrivacyRouter {
       if (decision.consent !== 'allowed')
         throw new GatewayError(409, 'privacy_confirmation_required');
     }
-    // What memory learned in private conversations is swapped out of every
-    // cloud request, wherever it appears: recall already leaves it out, and
-    // this catches any other way it could arrive.
+    // Pictures are not redacted: nothing below reads them. In a private
+    // conversation the person let go redacted, they stay behind; in an ordinary
+    // one each goes only as far as its source's switch allows.
+    const outbound = decision.private
+      ? withoutImages(body, IMAGE_WITHHELD_PRIVATE)
+      : await this.screenshotsForCloud(
+          principal.privacy.kind === 'job' ? principal.jobId : null,
+          settings,
+          body,
+        );
+    // What memory learned in private conversations is swapped out of the text
+    // of every cloud request, wherever it appears: recall already leaves it
+    // out, and this catches any other way it could arrive as text. Pictures are
+    // not read for it; they follow the screenshot switches above.
     const remembered = scope.spaceId ? await this.store.privateMemory(scope.spaceId) : [];
     const state = await this.state(scope, settings, `${settings.version}:${digest(remembered)}`);
     let localDetection: PrivacyReceipt['local_detection'] = 'off';
     if (settings.localDetection && settings.local)
-      localDetection = await this.detectLocally(state, body, protocol, settings.local);
+      localDetection = await this.detectLocally(state, outbound, protocol, settings.local);
     const redactor = new Redactor(state.vault, {
       enabled: settings.enabled,
       known: [...settings.known, ...memoryValues(remembered)],
       cache: state.cache,
       extra: (text) => state.ner.get(text),
     });
-    const redacted = redactor.body(body, protocol);
+    const redacted = redactor.body(outbound, protocol);
     const receipt = receiptFor('cloud', redactor.used, localDetection);
     if (state.vault.changed && scope.conversationId && scope.spaceId) {
       state.vault.changed = false;
@@ -700,6 +776,3 @@ function receiptFor(
 function declinedText(): string {
   return 'Nothing was sent. To work on this privately, add a local model in Settings → Privacy and ask again.';
 }
-
-/** For the settings screen: a readable name per category. */
-export const categoryName = (category: PrivacyCategory) => PRIVACY_CATEGORY_NAMES[category];

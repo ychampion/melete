@@ -4,6 +4,7 @@
  * thread that holds the whole answer.
  */
 import { Icon } from '../design/icons.tsx';
+import { plainRunReason } from '../experience/plain.ts';
 import type { Home } from '../experience/types.ts';
 import { href } from '../router.ts';
 
@@ -68,7 +69,9 @@ export function RoutineResults({ results, now }: { results: RoutineResult[]; now
                   {result.title} · {runHeadline(result.run)}
                 </span>
                 <span className="motion-line" style={{ whiteSpace: 'normal' }}>
-                  {result.run.summary ?? result.run.reason ?? 'Open it to read what it did.'}
+                  {result.run.summary ??
+                    (result.run.reason ? plainRunReason(result.run.reason) : null) ??
+                    'Open it to read what it did.'}
                 </span>
               </span>
               <span className="motion-when">{clockTime(result.run.started_at, now)}</span>

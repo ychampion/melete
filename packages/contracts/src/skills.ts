@@ -15,6 +15,11 @@ export const skillFrontmatter = z.object({
   triggers: z.array(z.string().min(1)).min(1),
   /** Tool names this skill expects, for example `email.search`. */
   tools: z.array(z.string()).default([]),
+  /**
+   * The skill is about keeping something in memory. An agent that keeps no
+   * memory is not offered it, so it never promises to remember.
+   */
+  keeps_memory: z.boolean().optional(),
   /** Skills are short by contract; the loader refuses anything longer. */
   max_tokens: z.number().int().positive().max(400).default(400),
 });

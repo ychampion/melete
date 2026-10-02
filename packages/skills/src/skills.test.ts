@@ -194,3 +194,12 @@ describe('parsing one skill file', () => {
     if (!parsed.ok) expect(parsed.issues[0]).toContain('its own cap is 50');
   });
 });
+
+test('remember-this is marked as keeping memory, so an agent that keeps none is not offered it', () => {
+  const skills = loadBuiltInSkills().skills;
+  const remember = skills.find((skill) => skill.frontmatter.name === 'remember-this');
+  expect(remember?.frontmatter.keeps_memory).toBe(true);
+  expect(
+    skills.filter((skill) => skill.frontmatter.keeps_memory).map((skill) => skill.frontmatter.name),
+  ).toEqual(['remember-this']);
+});

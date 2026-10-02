@@ -22,7 +22,6 @@ import { action, connection, job, owner, space } from '../../src/db/schema.ts';
 import { serviceTransaction } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
 import { appendEvent } from '../../src/events/store.ts';
-import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
@@ -31,6 +30,7 @@ import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner, LOST_NOTE } from '../../src/jobs/runner.ts';
 import { CONVERSATION_BUDGET, DEFAULT_BUDGET, JobService } from '../../src/jobs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -86,7 +86,7 @@ async function request(path: string, method = 'GET', body?: unknown) {
 }
 
 async function createConversation() {
-  const response = await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent);
+  const response = await request('/agents', 'POST', freshAgent());
   expect(response.status).toBe(200);
   const persona = agentResponse.parse(await response.json()).agent;
   const created = await request('/conversations', 'POST', { title: 'Tea', agent_id: persona.id });
@@ -161,6 +161,62 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
     const [ended] = await sql`select payload from event
       where attempt_id = ${claimed.claims.attempt_id} and type = 'attempt_ended'`;
     expect(ended?.payload).toMatchObject({ kind: 'lost', turn_status: 'failed' });
+  });
+
+  test('a turn run again after a lost attempt shows one answer, not two glued together', async () => {
+    const chat = await createConversation();
+    expect((await send(chat.id, 'How did tea reach Europe?')).status).toBe(200);
+    const say = async (claims: CapabilityClaims, seq: number, text: string) =>
+      required(runner).emit(claims, {
+        type: 'text_delta',
+        attempt_id: claims.attempt_id,
+        local_seq: seq,
+        dedup_key: dedupKey(claims.attempt_id, seq),
+        at: new Date().toISOString(),
+        text,
+      });
+    const claimNext = async () => {
+      const row = await required(jobs).get(chat.id);
+      return required(
+        await required(runner).claim({
+          job_id: row.id,
+          expected_epoch: row.leaseEpoch,
+          expected_version: row.stateVersion,
+          reason: 'input',
+        }),
+      ).claims;
+    };
+    const first = await claimNext();
+    await say(first, 0, 'Dutch traders brought it in the early sev');
+    // The attempt is lost part way; the turn runs again.
+    expect(await required(runner).loseAttempt(first.attempt_id, 'runtime_crashed')).toBe(true);
+    expect((await required(jobs).get(chat.id)).state).toBe('queued');
+    const second = await claimNext();
+    await say(second, 0, 'Dutch traders brought tea to Europe ');
+    await say(second, 1, 'in the early 1600s.');
+    const whole = 'Dutch traders brought tea to Europe in the early 1600s.';
+    const turns = turnList.parse(
+      await (await request(`/conversations/${chat.id}/messages`)).json(),
+    );
+    // While it streams, the saved answer is the second attempt's alone (its
+    // last word is held back until the attempt ends).
+    expect(turns.turns.at(-1)?.answer).toBe('Dutch traders brought tea to Europe in the early ');
+    // Ended, so the stream has let go of the last word it held back.
+    await required(runner).commitOutcome(second, {
+      kind: 'completed',
+      summary: whole,
+      evidence: [],
+    });
+    // The stream says the same: the second attempt's text replaces the first's.
+    const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
+    let streamed = '';
+    for (const event of page.events)
+      if (event.item.type === 'text_delta')
+        streamed = event.item.restart ? event.item.text : streamed + event.item.text;
+    expect(
+      page.events.some((event) => event.item.type === 'text_delta' && event.item.restart),
+    ).toBe(true);
+    expect(streamed).toBe(whole);
   });
 
   test('after a failed turn the next message starts a new turn', async () => {

@@ -10,14 +10,17 @@
  */
 import { createMeleteClient, errorMessage, readSse, subscribeEvents } from '@melete/client';
 import { recordingFetch } from '../feedback/diagnostics.ts';
+import { plainError } from './plain.ts';
 import { markValueMoment } from './push.ts';
 import { readTextPrefix } from './text-prefix.ts';
 import type {
   AccountSignInStart,
   AccountSignInStatus,
   ActionResolution,
+  ActivityList,
   Agent,
   AgentComputer,
+  AgentDeleted,
   AgentInput,
   AgentTemplate,
   ApprovalSettings,
@@ -40,6 +43,7 @@ import type {
   ConnectionKind,
   Conversation,
   ConversationCreate,
+  ConversationDeleted,
   ConversationPrivacy,
   Device,
   DeviceCapabilities,
@@ -98,10 +102,13 @@ import type {
   SearchResult,
   SendOutcome,
   SensitiveTopic,
+  SpaceMembers,
   StreamGap,
   Task,
   TaskInput,
   Turn,
+  VoiceAside,
+  VoiceAsideRequest,
   VoiceSession,
   VoiceStatus,
   VoiceTranscription,
@@ -152,7 +159,7 @@ function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Respon
   }
   return {
     data: null,
-    error: errorMessage(outcome.error, OFFLINE),
+    error: plainError(errorMessage(outcome.error, OFFLINE)),
     unavailable: null,
     unauthorized: outcome.response?.status === 401,
   };
@@ -254,6 +261,17 @@ export const adapter = {
     guard<{ conversation: Conversation }>(() => api.POST('/conversations/{id}/resume', path(id))),
   stop: (id: string) =>
     guard<{ conversation: Conversation }>(() => api.POST('/conversations/{id}/stop', path(id))),
+  rename: (id: string, title: string) =>
+    guard<{ conversation: Conversation }>(() =>
+      api.PATCH('/conversations/{id}', { ...path(id), body: { title } }),
+    ),
+  /** Stops the chat's work and deletes it; what Melete learned stays unless `forget` is set. */
+  deleteConversation: (id: string, forget: boolean) =>
+    guard<ConversationDeleted>(() =>
+      api.DELETE('/conversations/{id}', {
+        params: { path: { id }, query: { forget_memory: forget ? 'true' : 'false' } },
+      }),
+    ),
   setAgent: (id: string, agent_id: string) =>
     guard<{ conversation: Conversation }>(() =>
       api.PATCH('/conversations/{id}/agent', { ...path(id), body: { agent_id } }),
@@ -304,9 +322,13 @@ export const adapter = {
     }
   },
   questions: () => guard<{ questions: Question[] }>(() => api.GET('/quick-answers')),
-  answer: (id: string, option_id: string) =>
+  /** One of the offered answers by its id, or `{ text }` for an answer in the person's words. */
+  answer: (id: string, answer: string | { text: string }) =>
     guard<{ status: 'ok' }>(() =>
-      api.POST('/quick-answers/{id}', { ...path(id), body: { option_id } }),
+      api.POST('/quick-answers/{id}', {
+        ...path(id),
+        body: typeof answer === 'string' ? { option_id: answer } : { text: answer.text },
+      }),
     ).then(worthHearing),
 
   /* ---------- phone presence ---------- */
@@ -341,7 +363,7 @@ export const adapter = {
   /* ---------- the broker's ledger: effects the connector never confirmed ---------- */
   unknownActions: (jobId: string) =>
     guard<{ actions: LedgerAction[] }>(() =>
-      api.GET('/actions', { params: { query: { job_id: jobId } } }),
+      api.GET('/actions', { params: { query: { job_id: jobId, view: 'summary' } } }),
     ),
   resolveAction: (id: string, resolution: ActionResolution, note?: string) =>
     guard<{ action: LedgerAction }>(() =>
@@ -359,6 +381,11 @@ export const adapter = {
   changeDevice: (id: string, capabilities: Partial<DeviceCapabilities>) =>
     guard<{ device: Device }>(() =>
       api.PATCH('/devices/{id}', { ...path(id), body: { capabilities } }),
+    ),
+  /** Let cloud models see this computer's screen, or not; null follows Settings → Privacy. */
+  changeDeviceScreens: (id: string, cloud_screenshots: boolean | null) =>
+    guard<{ device: Device }>(() =>
+      api.PATCH('/devices/{id}', { ...path(id), body: { cloud_screenshots } }),
     ),
   revokeDevice: (id: string) =>
     guard<{ device: Device }>(() => api.POST('/devices/{id}/revoke', path(id))),
@@ -431,11 +458,13 @@ export const adapter = {
     ),
 
   /* ---------- agents, memory ---------- */
-  agents: () => guard<{ agents: Agent[] }>(() => api.GET('/agents')),
+  agents: () => guard<{ agents: Agent[]; removed?: Agent[] }>(() => api.GET('/agents')),
   agentTemplates: () => guard<{ templates: AgentTemplate[] }>(() => api.GET('/agents/templates')),
   createAgent: (body: AgentInput) => guard<{ agent: Agent }>(() => api.POST('/agents', { body })),
   updateAgent: (id: string, body: AgentInput) =>
     guard<{ agent: Agent }>(() => api.PATCH('/agents/{id}', { ...path(id), body })),
+  /** Melete can't be deleted; another agent's chats and routines move to Melete. */
+  deleteAgent: (id: string) => guard<AgentDeleted>(() => api.DELETE('/agents/{id}', path(id))),
   memory: () => guard<{ items: MemoryItem[] }>(() => api.GET('/memory/items')),
   /** A detail the person states outright; the same key again replaces the value. */
   createMemoryItem: (body: MemoryItemCreate) =>
@@ -511,6 +540,15 @@ export const adapter = {
     guard<{ conversation: Conversation }>(() =>
       api.POST('/plans/{id}/conversation', { ...path(id), body: { agent_id } }),
     ),
+  /** Deletes the plan and its steps; chats started from it stay. */
+  deletePlan: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/plans/{id}', path(id))),
+  /** What deleted chats and plans did in the person's name. */
+  activity: () => guard<ActivityList>(() => api.GET('/activity')),
+  /** Who is in the space this session uses. */
+  spaceMembers: () => guard<SpaceMembers>(() => api.GET('/space/members')),
+  /** The space's owner removes someone from a shared space. */
+  removeMember: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.DELETE('/space/members/{id}', path(id))),
   sharePlan: (id: string) => guard<never>(() => api.POST('/plans/{id}/share', path(id))),
 
   /* ---------- long work in the background ---------- */
@@ -548,6 +586,8 @@ export const adapter = {
     guard<{ automation: Automation }>(() => api.POST('/automations/{id}/pause', path(id))),
   resumeAutomation: (id: string) =>
     guard<{ automation: Automation }>(() => api.POST('/automations/{id}/resume', path(id))),
+  restartAutomation: (id: string) =>
+    guard<{ automation: Automation }>(() => api.POST('/automations/{id}/restart', path(id))),
   deleteAutomation: (id: string) =>
     guard<{ status: 'ok' }>(() => api.DELETE('/automations/{id}', path(id))),
   morningBrief: (agent_id: string, at: string) =>
@@ -692,6 +732,12 @@ export const adapter = {
   /** A realtime transcription address with a single-use token, for voice mode. */
   voiceSession: (id: string) =>
     guard<VoiceSession>(() => api.POST('/conversations/{id}/voice/session', path(id))),
+  /**
+   * A word with Melete while the turn runs: an answer, a progress word, or a
+   * note that what was heard is meant for the work. It never acts.
+   */
+  voiceAside: (id: string, body: VoiceAsideRequest) =>
+    guard<VoiceAside>(() => api.POST('/conversations/{id}/voice/aside', { ...path(id), body })),
   /** Part of a reply, read aloud. The audio arrives whole and is played from memory. */
   speak: (id: string, text: string, signal?: AbortSignal) =>
     binary(
@@ -760,8 +806,6 @@ async function binary<T>(
     return { data: null, error: OFFLINE, unavailable: null };
   }
 }
-
-export type Adapter = typeof adapter;
 
 export type StreamItem =
   | { type: 'open' }

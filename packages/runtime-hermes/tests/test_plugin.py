@@ -23,6 +23,7 @@ from melete_plugin import TOOLSET, build_handler, register, tool_schema  # noqa:
 from melete_plugin.broker import BrokerClient, BrokerError  # noqa: E402
 from melete_plugin.results import (  # noqa: E402
     END_TURN_INSTRUCTION,
+    OWN_COMPUTER_INSTRUCTION,
     UNCERTAIN_INSTRUCTION,
 )
 
@@ -313,6 +314,13 @@ def test_a_chase_follow_up_is_forwarded_to_the_broker_native_gate(client, broker
     assert broker.requests[0]["body"] == {"name": "chase.follow_up", "arguments": {}}
 
 
+def test_a_question_for_the_person_is_forwarded_to_the_broker_native_gate(client, broker):
+    arguments = {"question": "Which day suits you?", "choices": ["Tuesday", "Thursday"]}
+    build_handler(client, {"name": "ask_person", "connection_id": None})(arguments)
+    assert broker.requests[0]["path"] == "/tools/call"
+    assert broker.requests[0]["body"] == {"name": "ask_person", "arguments": arguments}
+
+
 # -- calling ------------------------------------------------------------------
 
 
@@ -383,6 +391,15 @@ def test_an_unknown_dispatch_is_never_presented_as_either_outcome(client, broker
     assert result["status"] == "unknown"
     assert result["instruction"] == UNCERTAIN_INSTRUCTION
     assert "receipt" not in result
+
+
+def test_an_unknown_step_on_its_own_computer_is_checked_not_put_to_the_owner(client, broker):
+    broker.propose_response = {"action_id": ACTION, "status": "unknown", "own_computer": True}
+    result = build_handler(client, CATALOG[0])(to=["a@example.com"], subject="s", body="b")
+
+    assert result["status"] == "unknown"
+    assert result["instruction"] == OWN_COMPUTER_INSTRUCTION
+    assert "Check first" in result["instruction"] and "not asked" in result["instruction"]
 
 
 def test_a_failed_dispatch_says_so(client, broker):
@@ -626,3 +643,33 @@ def test_resume_keeps_the_brokers_refusal_and_needs_an_action_id(client, broker)
     refused = handler({"action_id": ACTION})
     assert refused["status"] == "failed"
     assert refused["error"]["code"] == "revision_mismatch"
+
+
+def test_a_sandbox_command_waits_for_the_brokers_whole_budget():
+    """terminal.run is run by the broker before it answers; the ordinary
+    round-trip timeout would give up while the command still runs."""
+    from melete_plugin.terminal_backend import ANSWER_SLACK_SECONDS, SESSION_MARGIN_SECONDS
+
+    class Recording:
+        def __init__(self) -> None:
+            self.calls: List[Dict[str, Any]] = []
+
+        def propose(self, **call: Any) -> Dict[str, Any]:
+            self.calls.append(call)
+            return {"action_id": "act_1", "status": "failed", "message": "no"}
+
+        def action(self, action_id: str) -> Dict[str, Any]:
+            return {}
+
+    recording = Recording()
+    tool = {"name": "terminal.run", "connection_id": "con_sandbox", "effect_class": "write_reversible"}
+    handler = build_handler(recording, tool)  # type: ignore[arg-type]
+    handler({"command": "bun install"})
+    handler({"command": "make", "timeout_ms": 540_000})
+    default, asked = (call["timeout"] for call in recording.calls)
+    assert default == 300 + SESSION_MARGIN_SECONDS + ANSWER_SLACK_SECONDS
+    assert asked == 540 + SESSION_MARGIN_SECONDS + ANSWER_SLACK_SECONDS
+
+    other = Recording()
+    build_handler(other, {"name": "email.send", "connection_id": "con_mail"})({"to": "a"})  # type: ignore[arg-type]
+    assert other.calls[0]["timeout"] is None

@@ -21,6 +21,8 @@
 import { randomUUID } from 'node:crypto';
 import {
   VOICE_LIMITS,
+  voiceAside,
+  voiceAsideRequest,
   voiceContextQuery,
   voiceSession,
   voiceSpeechRequest,
@@ -28,7 +30,7 @@ import {
   voiceTranscription,
   voiceTranscriptionQuery,
 } from '@melete/contracts';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
 import {
@@ -39,14 +41,21 @@ import {
 import type { TranscriptionAdapter } from '../connectors/transcribe.ts';
 import { wavDurationMs } from '../connectors/wav.ts';
 import type { Database } from '../db/client.ts';
-import { job } from '../db/schema.ts';
+import { agent, experienceTurn, job, question } from '../db/schema.ts';
 import type { Env } from '../env.ts';
+import { answerStream, answerText } from '../experience/answer-filter.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { ownJob } from '../principals/authority.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
 import { ServiceError } from './errors.ts';
+import {
+  COMPANION_LIMITS,
+  type CompanionContext,
+  pointToQuestion,
+  type VoiceCompanion,
+} from './voice-companion.ts';
 
-export type VoiceUsageKind = 'transcribe' | 'speech' | 'session';
+export type VoiceUsageKind = 'transcribe' | 'speech' | 'session' | 'aside';
 
 /** A person's daily voice allowance: taken before a provider call, given back if it failed. */
 export interface VoiceAllowance {
@@ -94,7 +103,16 @@ export type VoiceProviders = {
   live: LiveVoice | null;
 };
 
-export type VoiceLimits = { seconds: number; characters: number; sessions: number };
+export type VoiceLimits = {
+  seconds: number;
+  characters: number;
+  sessions: number;
+  /** Words with the agent while it works, each one short model call. */
+  asides: number;
+};
+
+/** Asides one person may have in a day: a long working day of calls, never an open tap. */
+export const DAILY_ASIDES = 600;
 
 /** Why voice may not be used here, or null when it may. */
 export type VoicePrivacyReason = 'private' | 'sensitive' | null;
@@ -149,6 +167,7 @@ export const voiceLimitsFromEnv = (env: Env): VoiceLimits => ({
   seconds: env.MELETE_VOICE_DAILY_SECONDS,
   characters: env.MELETE_VOICE_DAILY_CHARACTERS,
   sessions: env.MELETE_VOICE_DAILY_SESSIONS,
+  asides: DAILY_ASIDES,
 });
 
 /** The recording types push-to-talk reads, and the file name the provider is given. */
@@ -172,6 +191,8 @@ const DAILY: Record<VoiceUsageKind, string> = {
   transcribe: 'You have used today’s allowance for voice messages. It frees up over the next day.',
   speech: 'You have used today’s allowance for replies read aloud. It frees up over the next day.',
   session: 'You have used today’s allowance of voice conversations. It frees up over the next day.',
+  aside:
+    'You have used today’s allowance for talking while Melete works. It frees up over the next day.',
 };
 
 const providerFailed = (what: string) =>
@@ -190,9 +211,19 @@ export function mountVoice(
     limits: VoiceLimits;
     /** Required: a route that sends words to the provider must know where it is. */
     privacy: VoicePrivacy;
+    /** The light conversation alongside a running turn. Left out, asides are not offered. */
+    companion?: VoiceCompanion | null;
+    /** What the companion is shown of a conversation. Left out, read from the database. */
+    context?: (conversationId: string, agentId: string | null) => Promise<CompanionContext>;
+    /** The clock the aside rate limit reads; tests supply one. */
+    now?: () => number;
   },
 ): void {
   const { db, allowance, providers, limits, privacy } = deps;
+  const now = deps.now ?? Date.now;
+  /** When each person's recent asides were asked, held in memory only. */
+  const asides = new Map<string, number[]>();
+  const context = deps.context ?? ((id, agentId) => conversationContext(db, id, agentId));
   const pushToTalk = Boolean(providers.transcription && allowance);
   const voiceMode = Boolean(providers.live && allowance);
 
@@ -368,6 +399,50 @@ export function mountVoice(
     return c.json(voiceSession.parse({ ...opened, sample_rate: REALTIME_SAMPLE_RATE }), 201);
   });
 
+  app.post('/conversations/:id/voice/aside', async (c) => {
+    const { principalId, ...scope } = await conversation(c);
+    const companion = deps.companion;
+    if (!providers.live || !allowance || !companion)
+      throw new ServiceError(
+        'voice_unavailable',
+        'Talking while Melete works is not set up here.',
+        404,
+      );
+    // The same refusal as every voice route: a private place's words go nowhere.
+    await refuseWhenPrivate(scope);
+    const parsed = voiceAsideRequest.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success)
+      throw new ServiceError('invalid_request', 'Check the request and try again.', 400);
+    const at = now();
+    const recent = (asides.get(principalId) ?? []).filter((time) => at - time < ASIDE_WINDOW_MS);
+    if (recent.length >= ASIDES_PER_WINDOW)
+      throw new ServiceError(
+        'voice_aside_limit',
+        'That is a lot of talking in a short time. Give it a moment.',
+        429,
+      );
+    recent.push(at);
+    asides.set(principalId, recent);
+    // Counted against the day like every voice call; a refusal that generated nothing is given back.
+    const reservation = await allowance.take(principalId, 'aside', 1, limits.asides);
+    if (!reservation) throw new ServiceError('voice_daily_limit', DAILY.aside, 429);
+    const known = await context(scope.conversationId, scope.agentId);
+    const result = await companion
+      .answer({
+        spaceId: scope.spaceId,
+        conversationId: scope.conversationId,
+        request: parsed.data,
+        context: known,
+        signal: c.req.raw.signal,
+      })
+      .catch(() => ({ failed: 'unanswered' as const }));
+    if ('failed' in result) {
+      if (result.failed === 'refused') await allowance.giveBack(reservation).catch(() => undefined);
+      throw new ServiceError('voice_aside_failed', 'Melete could not answer that just now.', 502);
+    }
+    return c.json(voiceAside.parse(pointToQuestion(parsed.data, known, result.answer)));
+  });
+
   app.post('/conversations/:id/voice/speech', async (c) => {
     const { principalId, ...scope } = await conversation(c);
     const live = providers.live;
@@ -390,4 +465,44 @@ export function mountVoice(
       },
     });
   });
+}
+
+/** Asides one person may ask within the window: a word every few seconds, never a flood. */
+const ASIDES_PER_WINDOW = 20;
+const ASIDE_WINDOW_MS = 60_000;
+
+/**
+ * What the companion is shown: the agent's name and the conversation's latest
+ * turns, as the chat shows them. The last is the turn that is running.
+ */
+async function conversationContext(
+  db: Database,
+  conversationId: string,
+  agentId: string | null,
+): Promise<CompanionContext> {
+  const [named] = agentId
+    ? await db.select({ name: agent.name }).from(agent).where(eq(agent.id, agentId))
+    : [];
+  const rows = await db
+    .select()
+    .from(experienceTurn)
+    .where(eq(experienceTurn.jobId, conversationId))
+    .orderBy(desc(experienceTurn.createdAt), desc(experienceTurn.id))
+    .limit(COMPANION_LIMITS.turns);
+  const [open] = await db
+    .select({ id: question.id })
+    .from(question)
+    .where(and(eq(question.jobId, conversationId), eq(question.state, 'open')))
+    .limit(1);
+  return {
+    agentName: named?.name?.trim() || 'Melete',
+    asking: open !== undefined,
+    turns: rows.reverse().map((row) => ({
+      said: row.text,
+      answer: (['queued', 'working', 'streaming'].includes(row.status)
+        ? answerStream(row.answer)
+        : answerText(row.answer)
+      ).trim(),
+    })),
+  };
 }

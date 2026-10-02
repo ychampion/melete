@@ -342,6 +342,17 @@ const variables = z.object({
   /** The identifier the provider serves, which for Fireworks is the full account path. */
   MELETE_DEFAULT_MODEL: z.string().default('accounts/fireworks/models/deepseek-v4p1-flash'),
   /**
+   * Whether the server's default model reads images: `true` or `false`. Left
+   * blank, Melete's model catalog decides. A model chosen in the app carries the
+   * owner's own answer instead.
+   */
+  MELETE_DEFAULT_MODEL_VISION: unsetWhenBlank(
+    z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) => (v === undefined ? undefined : v === 'true')),
+  ),
+  /**
    * The output limit the gateway gives a model request that names none. The
    * engine names none by default, so this is the usual ceiling on one reply.
    */
@@ -605,9 +616,3 @@ export function demonstrationWarnings(env: Env): string[] {
       : []),
   ];
 }
-
-/**
- * Secret writes require the master key; parsing and decryption stay in the
- * service-owned sealed store.
- */
-export const canSealSecrets = (env: Env): boolean => Boolean(env.MELETE_MASTER_KEY);

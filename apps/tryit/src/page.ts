@@ -189,7 +189,6 @@ textarea::placeholder { color: var(--muted); }
   display: flex; gap: 10px; align-items: flex-start; padding: 14px 16px; border-radius: 14px;
   background: var(--sand); color: var(--sand-ink); font-size: 14px; line-height: 21px;
 }
-.notice.hard { background: var(--danger-soft); color: var(--danger); }
 
 .case { margin-top: 24px; }
 .case-top {

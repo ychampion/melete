@@ -51,13 +51,15 @@ import {
   type ConnectorContext,
   connectorAllowsAudience,
 } from '../connectors/types.ts';
-import { agentAccess, directSend } from '../experience/access.ts';
+import { agentAccess, computerTool, directSend } from '../experience/access.ts';
 import { plainText, tooLongToAsk } from '../experience/projectors.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import type { SandboxRun, TrySandbox } from '../runs/try.ts';
+import { closedComputerStep } from '../sandbox/closed-step.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
+import { ASK_PERSON_TOOL, requestPersonQuestion } from './ask-person.ts';
 import {
   bindEffect,
   type EffectAuthorityResolver,
@@ -165,16 +167,6 @@ export type BrokerOptions = {
    * existing is never a delivery, and nothing here invents a revision.
    */
   reviseOutput?: (input: { action: Action; fault: ConnectorFault }) => Promise<JsonObject | null>;
-  /**
-   * How the jobs module parks a responsibility: end the attempt, release the
-   * worker, and put the job on a timer, all inside the broker's transaction.
-   * Without one the broker performs the equivalent itself, which is correct on
-   * its own but does not know about anything the service layer adds later.
-   */
-  parkAttempt?: (
-    tx: Query,
-    input: { job_id: string; attempt_id: string; wake_at: string; reason: string },
-  ) => Promise<void>;
   catalog?: Pick<CatalogOptions, 'coreTokenBudget' | 'skills'>;
   /** The execution cell supplies this; omission keeps composition unavailable. */
   composeExecutor?: ComposeExecutor;
@@ -273,7 +265,7 @@ const NO_GUESTS: GuestCounts = new Map();
 const guestKey = (connectionId: string, payload: unknown) =>
   `${connectionId}:${JSON.stringify((payload as { uid?: unknown } | null)?.uid ?? null)}`;
 /** The longest a connector may ask one dispatch to take. */
-const MAX_DISPATCH_BUDGET_MS = 10 * 60_000;
+const MAX_DISPATCH_BUDGET_MS = 15 * 60_000;
 /** The limits a caller set, so an unset one keeps its default. */
 const definedOnly = (options: AutoReviewOptions) => ({
   ...(options.hourlyLimit === undefined ? {} : { hourlyLimit: options.hourlyLimit }),
@@ -293,7 +285,16 @@ const untrustedOrigin = (warnings: OriginWarning[]) =>
  * proposal of a send that already happened names the receipt, and a second
  * proposal of a send nobody can confirm says exactly that instead of retrying.
  */
-export function dispositionMessage(action: Action, repeated: boolean): string {
+/** What the agent is told about a step on its own computer whose outcome is not known. */
+export const OWN_COMPUTER_UNKNOWN =
+  "Its result did not come back from the agent's own computer, so whether it happened is not known. It was not run again, and the person is not asked. Check before trying again: take a screenshot, read the page, or look for the files or output the command would have left.";
+
+export function dispositionMessage(
+  action: Action,
+  repeated: boolean,
+  /** The action ran on the agent's own computer, so the agent checks an open outcome itself. */
+  ownComputer = false,
+): string {
   const receiptRef = (action.receipt?.external_ref as string | null | undefined) ?? action.id;
   const already = repeated ? 'already ' : '';
   switch (action.status) {
@@ -323,8 +324,10 @@ export function dispositionMessage(action: Action, repeated: boolean): string {
       return `This effect ${already}failed at ${action.resolved_at ?? action.created_at}${why}. Nothing was sent again.${again}`;
     }
     case 'unknown':
+      if (ownComputer) return OWN_COMPUTER_UNKNOWN;
       return `${question} It was ${already}attempted at ${action.dispatched_at ?? action.created_at} and was not sent again.`;
     case 'unresolved':
+      if (ownComputer) return OWN_COMPUTER_UNKNOWN;
       return `${question} Verification could not decide, and it was not sent again.`;
   }
 }
@@ -352,6 +355,7 @@ export class BrokerService implements BrokerOperations {
       nativeTools: [
         REACT_TOOL,
         RUNTIME_WAIT_TOOL,
+        ASK_PERSON_TOOL,
         RESUME_ACTION_TOOL,
         SKILL_READ_TOOL,
         ...(options.composeExecutor ? [COMPOSE_TOOL] : []),
@@ -432,6 +436,8 @@ export class BrokerService implements BrokerOperations {
       throw new BrokerFault('scope_denied');
     const tool = resolveToolAlias(connector, connectionId, kind);
     if (!tool) throw new BrokerFault('unknown_tool');
+    // An agent set not to use the computer is refused it here, whatever the catalog offered.
+    if (!access.usesComputer && computerTool(tool.name)) throw new BrokerFault('scope_denied');
     const required = new Set([...tool.required_scopes, tool.name]);
     if (!grantsConnectionScopes(claims, connection.scopes, [...required])) {
       throw new BrokerFault('scope_denied');
@@ -474,6 +480,10 @@ export class BrokerService implements BrokerOperations {
 
   requestWait(claims: CapabilityClaims, input: unknown) {
     return requestRuntimeWait(this.sql, claims, input);
+  }
+
+  askPerson(claims: CapabilityClaims, input: unknown) {
+    return requestPersonQuestion(this.sql, claims, input);
   }
 
   /**
@@ -658,7 +668,7 @@ export class BrokerService implements BrokerOperations {
    * why, and tells the agent to wait rather than find another way round.
    */
   private async reviewedMessage(action: Action, repeated: boolean): Promise<string> {
-    const message = dispositionMessage(action, repeated);
+    const message = dispositionMessage(action, repeated, await this.ownComputer(this.sql, action));
     if (action.status !== 'needs_approval' || !this.options.autoReview) return message;
     const review = await actionReviewView(this.sql, action.id);
     if (review?.outcome !== 'escalated') return message;
@@ -685,6 +695,7 @@ export class BrokerService implements BrokerOperations {
       repeated,
       message: await this.reviewedMessage(action, repeated),
       origin_warnings: originWarnings.parse(approval?.origin_warnings ?? []),
+      own_computer: await this.ownComputer(this.sql, action),
     };
   }
 
@@ -1389,7 +1400,7 @@ export class BrokerService implements BrokerOperations {
       : proposal.action;
     // Repeated proposals retrieve the durable disposition; unknown is never replayed.
     if (action.status === 'proposed' || action.status === 'approved') {
-      await this.admit(claims, action.id, action.payload_hash);
+      await this.admitOnce(claims, action.id, action.payload_hash, repeated);
       return this.proposalView(await this.dispatch(action.id), key, repeated);
     }
     // A crash between the two durable steps has not sent anything yet.
@@ -1600,6 +1611,22 @@ export class BrokerService implements BrokerOperations {
   }
 
   async admit(claims: CapabilityClaims, id: string, expectedHash: string): Promise<Action> {
+    return this.admitOnce(claims, id, expectedHash, false);
+  }
+
+  /**
+   * Admission itself. A repeated proposal reads its action before the first
+   * proposer has admitted it, so both can reach here for the same action. The
+   * job lock puts them in turn, and the one that comes second, finding the
+   * action already past admission, is handed that action rather than refused:
+   * it is the same effect, admitted once and sent at most once.
+   */
+  private async admitOnce(
+    claims: CapabilityClaims,
+    id: string,
+    expectedHash: string,
+    repeated: boolean,
+  ): Promise<Action> {
     const guests = await this.guestsAhead(claims.job_id, id);
     const result = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
@@ -1627,6 +1654,8 @@ export class BrokerService implements BrokerOperations {
         }
         this.validatePayload(tool, action.canonical_payload);
         if (action.status === 'denied') throw new BrokerFault('approval_denied');
+        if (repeated && !['proposed', 'approved'].includes(action.status))
+          return { action, error: null };
         judgingApproval = true;
         const classified = await this.classify(tx, job, action, tool, 'admission', guests);
         let authorization: string | null = null;
@@ -2177,8 +2206,38 @@ export class BrokerService implements BrokerOperations {
         where action_id = ${id} and state = 'evaluated' and safe = true`;
     }
     const settled = await this.recordResult(id, run.result as DispatchResult);
-    if (run.question) await this.escalate(settled, run);
+    // A step on the agent's own computer that never answered is for the agent
+    // to check, not a question for the person.
+    const ownStep =
+      run.disposition === 'needs_reconciliation' && (await this.ownComputer(this.sql, action));
+    if (run.question && !ownStep) await this.escalate(settled, run);
     return settled;
+  }
+
+  /**
+   * Whether the action ran on the agent's own computer, so an outcome left open
+   * is the agent's to check (a screenshot, the page, what a command left
+   * behind) and never a question put to the person.
+   */
+  private async ownComputer(
+    q: Query,
+    action: Pick<Action, 'id' | 'connection_id'>,
+  ): Promise<boolean> {
+    if (this.options.connectors.get(action.connection_id)?.ownComputer !== true) return false;
+    // A computer with network access may have reached outside it; only one that
+    // could reach nothing keeps an open step the agent's alone.
+    return closedComputerStep(q, action.id);
+  }
+
+  /** What the person is asked about an effect nobody could confirm. */
+  private reconcileQuestion(action: Action): string {
+    if (this.options.connectors.get(action.connection_id)?.ownComputer !== true) return question;
+    const command = (action.canonical_payload as { command?: unknown }).command;
+    const what =
+      typeof command === 'string'
+        ? `The command \`${command.length > 200 ? `${command.slice(0, 200)}…` : command}\``
+        : `A ${action.kind} step`;
+    return `${what} ran on the agent's computer and its result did not come back. That computer had network access, so the command may have reached outside it, for example by sending or uploading something. Check what it may have changed, then mark it.`;
   }
 
   /**
@@ -2201,18 +2260,6 @@ export class BrokerService implements BrokerOperations {
       });
       if (['cancelled', 'failed', 'completed'].includes(job.state))
         return loadAction(tx, action.id);
-      if (this.options.parkAttempt) {
-        // The jobs module owns attempt and worker lifecycle. Where it has
-        // supplied its own release, the broker asks for the wait and stays out
-        // of the state machine entirely.
-        await this.options.parkAttempt(tx, {
-          job_id: job.id,
-          attempt_id: current.attempt_id,
-          wake_at: wakeAt,
-          reason: 'rate_limited',
-        });
-        return loadAction(tx, action.id);
-      }
       await this.moveJob(tx, job, 'waiting_for_event_or_time', { kind: 'timer', wake_at: wakeAt });
       await tx`update job set next_wake_at = ${wakeAt},
         substrate_disposition = 'timer_or_event' where id = ${job.id}`;
@@ -2443,9 +2490,13 @@ export class BrokerService implements BrokerOperations {
       if (
         result.outcome === 'unknown' &&
         !late &&
+        !(await this.ownComputer(tx, action)) &&
         !['cancelled', 'failed', 'completed'].includes(job.state)
       ) {
-        await this.moveJob(tx, job, 'needs_reconciliation', { kind: 'user_input', question });
+        await this.moveJob(tx, job, 'needs_reconciliation', {
+          kind: 'user_input',
+          question: this.reconcileQuestion(action),
+        });
       }
       if (
         wasUncertain &&
@@ -2533,10 +2584,14 @@ export class BrokerService implements BrokerOperations {
           and status in ('unknown', 'unresolved', 'dispatched')`;
         if (pending?.count === 0 && !late && currentJob.state === 'needs_reconciliation')
           await this.wake(tx, currentJob, 'recovery');
-      } else if (!late && !['cancelled', 'failed', 'completed'].includes(currentJob.state)) {
+      } else if (
+        !late &&
+        !(await this.ownComputer(tx, current)) &&
+        !['cancelled', 'failed', 'completed'].includes(currentJob.state)
+      ) {
         await this.moveJob(tx, currentJob, 'needs_reconciliation', {
           kind: 'user_input',
-          question,
+          question: this.reconcileQuestion(current),
         });
       }
       return loadAction(tx, id);
@@ -2697,6 +2752,32 @@ export class BrokerService implements BrokerOperations {
       recovered += 1;
     }
     return recovered;
+  }
+
+  /**
+   * Settle what an attempt left dispatched once its runtime has stopped
+   * waiting. An action this process is still sending is left to finish and
+   * settle itself. Any other one has no sender: a command the cell claimed and
+   * never reported, or a call whose waiter gave up. It is recorded as unknown
+   * with the reason, so the attempt can end on it instead of waiting for a
+   * recovery sweep. A result that
+   * arrives later still lands on the record.
+   */
+  async settleAbandoned(attemptId: string): Promise<number> {
+    const rows = await this.sql`select id from action
+      where attempt_id = ${attemptId} and status = 'dispatched'`;
+    let settled = 0;
+    for (const row of rows) {
+      if (this.inFlight.has(row.id as string)) continue;
+      // Unknown whatever its effect class: only a verify that shows it never
+      // started may call it failed.
+      await this.recordResult(row.id as string, {
+        outcome: 'unknown',
+        reason: 'The tool call ended before this action reported back',
+      });
+      settled += 1;
+    }
+    return settled;
   }
 
   /** The broker's own timeout, or longer where the connector says this action needs it. */

@@ -26,10 +26,13 @@ export type ExecutionMode = z.infer<typeof executionMode>;
  * attempt's whole wall clock and filling the workspace volume.
  */
 export const EXEC_LIMITS = {
-  /** Default wall clock for one command when the caller names none. */
-  default_timeout_ms: 30_000,
+  /**
+   * Default wall clock for one command when the caller names none: long
+   * enough for an install, a build or a test run.
+   */
+  default_timeout_ms: 300_000,
   /** The most a caller may ask for. A longer job is several commands. */
-  max_timeout_ms: 120_000,
+  max_timeout_ms: 600_000,
   /** How much combined output the model is shown before truncation. */
   max_output_bytes: 16_384,
   /** How much output is captured at all. Past this the tail is dropped. */

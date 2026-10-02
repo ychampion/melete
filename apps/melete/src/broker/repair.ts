@@ -1046,11 +1046,3 @@ export async function runRepair(
     }
   }
 }
-
-/**
- * Counters split the only two ways that matter: an effect that happened, and a
- * stop that kept the world unchanged. A safe stop is never counted as a
- * completion and never shown as a failure.
- */
-export const isCompletion = (disposition: RepairDisposition): boolean =>
-  disposition === 'completed';

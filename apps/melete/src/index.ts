@@ -5,8 +5,7 @@
  * Modules register their API surfaces against injected durable dependencies.
  * The public API serves /health, the job and account surfaces, and the
  * knowledge surface; the effect listener serves broker, API action reads, and
- * model traffic on its own internal port. The remaining modules are
- * directories with a README describing the contract they will implement.
+ * model traffic on its own internal port.
  */
 
 import type { AttemptBundle, RuntimeAdapter } from '@melete/contracts';
@@ -43,6 +42,7 @@ import {
   voicePrivacyFrom,
   voiceProvidersFromEnv,
 } from './api/voice.ts';
+import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-companion.ts';
 import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
@@ -208,6 +208,8 @@ export type AppDeps = {
   providerSignIn?: ProviderSignIn;
   /** The voice providers. Left out, whatever the environment configures. */
   voice?: VoiceProviders;
+  /** The light conversation voice mode keeps up while a turn runs. Left out, none. */
+  voiceCompanion?: VoiceCompanion | null;
   /** The router every model gateway of this service uses; Settings → Privacy edits it. */
   privacy?: PrivacyRouter;
   /** The model connected in the app. Left out, built from `db` and the sign-ins. */
@@ -333,6 +335,7 @@ export function createApp(deps: AppDeps) {
       limits: voiceLimitsFromEnv(deps.env),
       // Voice goes to its provider directly, so it follows the router's private marks.
       privacy: voicePrivacyFrom(privacy),
+      companion: deps.voiceCompanion ?? null,
     });
   if (deps.db) mountPush(app, deps.push ?? new PushService(deps.db, pushConfig(deps.env)));
   if (deps.db)
@@ -517,6 +520,7 @@ export async function bootstrap(
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
   let removals: SpaceRemovalService | undefined;
   let memoryGateway: Awaited<ReturnType<typeof configuredMemoryGateway>> | undefined;
+  let voiceCompanion: Awaited<ReturnType<typeof configuredVoiceCompanion>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
@@ -556,6 +560,7 @@ export async function bootstrap(
       },
       () => memory?.stop(),
       () => memoryGateway?.close(),
+      () => voiceCompanion?.close(),
       () => deploymentMemory?.close(),
       () => effectBoundary?.close(),
       // After the registry: each server's container is removed by its connector first.
@@ -685,6 +690,13 @@ export async function bootstrap(
         privacy,
         { settings: modelSettings, signIn },
       );
+    // Voice mode's companion: a short model call through the gateway, so the
+    // privacy router reads it like any other. Only where voice mode exists.
+    if (handle && voiceProvidersFromEnv(env).live)
+      voiceCompanion = await configuredVoiceCompanion(env, options.fakeProvider, privacy, {
+        settings: modelSettings,
+        signIn,
+      });
     if (handle && queue && env.MELETE_RUNTIME_ADAPTER === 'docker') {
       deploymentMemory = await startDeploymentMemory({
         sql: handle.sql,
@@ -887,6 +899,10 @@ export async function bootstrap(
       // are provider calls, and that transaction holds the event order lock.
       if (runs) attachRuns(runner, runs);
       if (sandboxes) runner.onSettled.push((attemptId) => sandboxes?.afterAttempt(attemptId));
+      // Where the broker runs here, what a finished attempt left dispatched with
+      // nobody waiting on it is settled before the attempt commits.
+      runner.settleAbandoned = async (attemptId) =>
+        effectBoundary?.broker.settleAbandoned(attemptId);
       if (browser)
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
@@ -1063,6 +1079,7 @@ export async function bootstrap(
     sql: handle?.sql,
     providerSignIn: signIn,
     modelSettings,
+    voiceCompanion: voiceCompanion?.companion ?? null,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';

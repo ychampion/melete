@@ -264,6 +264,16 @@ export function withMemoryRuntime(
       let assembled: AttemptBundle | undefined;
       const privateOrigin =
         (await options.recallsPrivateMemory?.(bundle.attempt.job_id, bundle.attempt.id)) ?? false;
+      // An agent the person set not to read memory is given none of it: nothing
+      // is recalled or recorded as used, no correction is briefed, and no handle
+      // to a remembered source is passed on. The turn's own agent decides, the
+      // way it decides which connections are offered.
+      const [persona] = await sql`select a.reads_memory from job j
+        left join experience_turn t on t.id = j.current_turn_id
+        join agent a on a.id = coalesce(t.agent_id, j.agent_id) and a.space_id = j.space_id
+        where j.id = ${bundle.attempt.job_id}`;
+      const readsMemory = persona?.reads_memory !== false;
+      const withheld = !readsMemory;
       const prepare = async () => {
         if (!options.catalog)
           return assembleAttemptKnowledge(
@@ -272,7 +282,7 @@ export function withMemoryRuntime(
             bundle.attempt.id,
             bundle.attempt.job_id,
             attemptRecallQuery(bundle),
-            { ...options, privateOrigin },
+            { ...options, privateOrigin, withheld },
           );
         for (let retry = 0; retry < 3; retry++) {
           const startedAt = new Date();
@@ -281,6 +291,7 @@ export function withMemoryRuntime(
             scope,
             catalog: options.catalog,
             privateOrigin,
+            withheld,
           });
           try {
             const context = await recordAttemptContext(
@@ -312,10 +323,13 @@ export function withMemoryRuntime(
       // E1. What a correction broke since the last attempt, named precisely: the
       // handle that moved, the value before and after, and the outputs that cited
       // it. This is the reason the next attempt does not start from zero.
-      const briefs =
-        assembled?.inputs.repair_briefs ??
-        (await pendingRepairBriefs(sql, scope, bundle.attempt.job_id));
+      // They stay pending for an agent that may read memory.
+      const briefs = !readsMemory
+        ? []
+        : (assembled?.inputs.repair_briefs ??
+          (await pendingRepairBriefs(sql, scope, bundle.attempt.job_id)));
       // Accepted action constraints come directly from job state, outside optional memory trimming.
+      const since = (assembled ?? bundle).since_last;
       const next: AttemptBundle = {
         ...(assembled ?? bundle),
         job: { ...bundle.job, constraints: job.constraints },
@@ -323,8 +337,14 @@ export function withMemoryRuntime(
         // The delta brief carries the same briefs as the inputs. The delta is
         // what an attempt reads to say what it did last time, and a correction
         // is the most important thing that can have happened since.
-        since_last: { ...(assembled ?? bundle).since_last, repair_briefs: briefs },
-        knowledge: prepared.knowledge,
+        since_last: {
+          ...since,
+          repair_briefs: briefs,
+          evidence: readsMemory
+            ? since.evidence
+            : since.evidence.filter((item) => item.kind !== 'source'),
+        },
+        knowledge: readsMemory ? prepared.knowledge : [],
       };
       const controller = new AbortController();
       const unregister = registerMemoryAttempt(bundle.attempt.id, controller, () => {

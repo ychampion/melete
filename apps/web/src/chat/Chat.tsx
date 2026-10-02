@@ -5,13 +5,14 @@
  * the event stream: reload and the saved answers come back; reconnect and a
  * gap marker says where streamed text may be missing.
  */
+
+import { mentionedAgent } from '@melete/contracts/mention';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { amountWords } from '../companies/format.ts';
-import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
-import { MeleteAvatar } from '../design/mark.tsx';
 import {
   Button,
+  Dialog,
   IconButton,
   Menu,
   MenuItem,
@@ -19,18 +20,20 @@ import {
   Overline,
   Popover,
 } from '../design/primitives.tsx';
+import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useInFlight, useTapOnce } from '../experience/decide.ts';
 import {
   agentById,
-  lookOf,
+  defaultAgentOf,
   messageKey,
+  turnAgent,
   useApp,
   useConversation,
   useMedia,
   useNow,
 } from '../experience/hooks.ts';
-import { inlineSpans } from '../experience/inline.ts';
+import { Outbox } from '../experience/outbox.ts';
 import {
   answerOf,
   latestTurn,
@@ -52,16 +55,20 @@ import type {
   RuleBounds,
   TurnStatus,
 } from '../experience/types.ts';
-import { navigate } from '../router.ts';
+import { navigate, useRoute } from '../router.ts';
 import { RunChatCards } from '../runs/RunCards.tsx';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { shownBlocks } from './blocks.ts';
 import { CasePanel, useCase } from './CasePanel.tsx';
+import { ChatActions } from './ChatActions.tsx';
 import { Composer } from './Composer.tsx';
 import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
+import { Markdown } from './Markdown.tsx';
 import { PrivateTopic } from './PrivateTopic.tsx';
 import { Protected } from './Protected.tsx';
 import {
   ActionBar,
+  ownComputerStep,
   PermissionCard,
   Questionnaire,
   ReceiptRow,
@@ -115,6 +122,50 @@ async function pauseTurn(id: string) {
     toast({ kind: 'err', title: 'Couldn’t pause', sub: result.reason });
 }
 
+/** Each agent that can handle the chat, the current one ticked. */
+function AgentOptions({
+  agentId,
+  onPick,
+}: {
+  agentId: string | null;
+  onPick: (id: string) => void;
+}) {
+  const { agents } = useApp();
+  return (
+    <>
+      {agents.map((candidate) => (
+        <button
+          key={candidate.id}
+          type="button"
+          className="menu-item"
+          style={{ height: 44 }}
+          aria-current={candidate.id === agentId ? 'true' : undefined}
+          onClick={() => onPick(candidate.id)}
+        >
+          <AgentAvatar agent={candidate} size={28} />
+          <span className="col grow" style={{ gap: 0, alignItems: 'flex-start', minWidth: 0 }}>
+            <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--heading)' }}>
+              {candidate.name}
+              <span style={{ fontWeight: 400, color: 'var(--muted)' }}> · {candidate.role}</span>
+            </span>
+            <span
+              className="clamp1"
+              style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 400, maxWidth: '100%' }}
+            >
+              {candidate.fixed_reach
+                ? 'Uses everything you connect'
+                : `${candidate.tone} · @${candidate.name} in any chat`}
+            </span>
+          </span>
+          {candidate.id === agentId ? (
+            <Icon name="check" size={14} stroke={2.25} style={{ color: 'var(--heading)' }} />
+          ) : null}
+        </button>
+      ))}
+    </>
+  );
+}
+
 function AgentChip({
   agentId,
   onChange,
@@ -143,45 +194,20 @@ function AgentChip({
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        {agent ? <AgentFace look={lookOf(agent)} size={20} /> : <MeleteAvatar size={20} />}
+        <AgentAvatar agent={agent} size={20} />
         {agent?.name ?? 'Melete'}
         <Icon name="chevronDown" size={13} />
       </button>
       <Popover open={open} onClose={() => setOpen(false)}>
         <Menu label="Who handles this chat" width={300}>
           <Overline style={{ padding: '6px 8px 4px' }}>Who handles this chat</Overline>
-          {agents.map((candidate) => (
-            <button
-              key={candidate.id}
-              type="button"
-              className="menu-item"
-              style={{ height: 44 }}
-              onClick={() => {
-                setOpen(false);
-                onChange(candidate.id);
-              }}
-            >
-              <AgentFace look={lookOf(candidate)} size={28} />
-              <span className="col grow" style={{ gap: 0, alignItems: 'flex-start', minWidth: 0 }}>
-                <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--heading)' }}>
-                  {candidate.name}
-                  <span style={{ fontWeight: 400, color: 'var(--muted)' }}>
-                    {' '}
-                    · {candidate.role}
-                  </span>
-                </span>
-                <span
-                  className="clamp1"
-                  style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 400, maxWidth: '100%' }}
-                >
-                  {candidate.tone}
-                </span>
-              </span>
-              {candidate.id === agentId ? (
-                <Icon name="check" size={14} stroke={2.25} style={{ color: 'var(--heading)' }} />
-              ) : null}
-            </button>
-          ))}
+          <AgentOptions
+            agentId={agentId}
+            onPick={(id) => {
+              setOpen(false);
+              onChange(id);
+            }}
+          />
           <MenuSep />
           <MenuItem icon="plus" onSelect={() => navigate('/agents/new')}>
             New agent
@@ -192,6 +218,52 @@ function AgentChip({
         </Menu>
       </Popover>
     </div>
+  );
+}
+
+/**
+ * The phone has no room for the chip, so the agent's name under the title
+ * opens the same choice as a sheet.
+ */
+function AgentSheet({
+  open,
+  agentId,
+  onClose,
+  onChange,
+}: {
+  open: boolean;
+  agentId: string | null;
+  onClose: () => void;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Who handles this chat"
+      sub="Or type @ and an agent’s name to ask it for one message."
+      footer={
+        <>
+          <Button variant="ghost" icon="sliders" onClick={() => navigate('/agents')}>
+            Manage agents
+          </Button>
+          <div className="grow" />
+          <Button variant="outline" onClick={onClose}>
+            Done
+          </Button>
+        </>
+      }
+    >
+      <div className="col" style={{ gap: 2 }}>
+        <AgentOptions
+          agentId={agentId}
+          onPick={(id) => {
+            onClose();
+            onChange(id);
+          }}
+        />
+      </div>
+    </Dialog>
   );
 }
 
@@ -217,6 +289,7 @@ function TurnView({
   reactions = [],
   onReact,
   busy,
+  onRetry,
 }: {
   turn: TranscriptTurn;
   now: number;
@@ -225,7 +298,8 @@ function TurnView({
   onDecide: (id: string, option: PermissionOption, version: string, bounds?: RuleBounds) => void;
   onSendDraft: (handle: string) => void;
   onUndo: (id: string) => void;
-  onAnswer: (questionId: string, optionId: string) => void;
+  /** An offered answer by its id, or `{ text }` for one in the person's words. */
+  onAnswer: (questionId: string, answer: string | { text: string }) => void;
   onOwn: (text: string) => void;
   /** Effects from the broker's ledger that never confirmed; drawn on the newest turn only. */
   unknown?: LedgerAction[];
@@ -236,16 +310,18 @@ function TurnView({
   onReact?: (emoji: string) => void;
   /** Whether a decision's request is in flight. */
   busy: (id: string) => boolean;
+  /** Resend this turn's message when it failed to send. */
+  onRetry?: (localId: string) => void;
 }) {
-  const { agents } = useApp();
+  const { agents, removedAgents } = useApp();
   const { transcript } = useTranscript();
-  const agent = agentById(agents, turn.turn.agent_id);
+  const agent = turnAgent(agents, removedAgents, turn.turn.agent_id);
   const finished = FINISHED.includes(turn.status);
   const text = answerOf(turn);
   const open = openQuestion(transcript);
   const showText = text.length > 0 || turn.streaming;
 
-  const rendered = turn.blocks.map((block) => {
+  const rendered = shownBlocks(turn.blocks).map((block) => {
     switch (block.type) {
       case 'card': {
         const handle =
@@ -296,7 +372,11 @@ function TurnView({
             busy={busy(block.question.id)}
             active={latest && open?.id === block.question.id}
             onAnswer={(optionId) => onAnswer(block.question.id, optionId)}
-            onOwn={onOwn}
+            // A question that takes free text is answered in it; one that does
+            // not takes the words as the next message instead.
+            onOwn={(text) =>
+              block.question.free_text ? onAnswer(block.question.id, { text }) : onOwn(text)
+            }
           />
         );
       default:
@@ -313,7 +393,11 @@ function TurnView({
   const hasBlocks = rendered.length > 0 || unconfirmed.length > 0;
   return (
     <>
-      <UserBubble turn={turn} reactions={reactions.filter((r) => r.by === 'assistant')} />
+      <UserBubble
+        turn={turn}
+        reactions={reactions.filter((r) => r.by === 'assistant')}
+        onRetry={onRetry ? () => onRetry(turn.id) : undefined}
+      />
       <div className="turn">
         <div className="turn-text">
           <TurnAvatar agent={agent} status={turn.status} />
@@ -356,58 +440,9 @@ function TurnView({
   );
 }
 
-/** A line with its bold, italic and code spans drawn; everything else stays plain text. */
-function Line({ line }: { line: string }) {
-  return (
-    <>
-      {inlineSpans(line).map((span, index) => {
-        // The spans are a cut of one line, in order, so their place is their key.
-        const key = `${index}:${span.kind}`;
-        if (span.kind === 'strong') return <strong key={key}>{span.text}</strong>;
-        if (span.kind === 'em') return <em key={key}>{span.text}</em>;
-        if (span.kind === 'code')
-          return (
-            <code key={key} className="answer-code">
-              {span.text}
-            </code>
-          );
-        return <span key={key}>{span.text}</span>;
-      })}
-    </>
-  );
-}
-
-/** The answer as paragraphs: a blank line is a gap, a single break stays a break. */
+/** The answer, drawn from its Markdown. */
 function Answer({ text, streaming }: { text: string; streaming: boolean }) {
-  const paragraphs = text.split(/\n\s*\n/).filter((part) => part.trim().length > 0);
-  if (paragraphs.length === 0) paragraphs.push('');
-  return (
-    <div className="answer">
-      {paragraphs.map((paragraph, index) =>
-        /^\s*(?:-{3,}|\*{3,})\s*$/.test(paragraph) ? (
-          // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are a cut of one string, in order
-          <hr key={index} className="answer-rule" />
-        ) : (
-          // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are a cut of one string, in order
-          <p key={index}>
-            {paragraph
-              .trim()
-              .split('\n')
-              .map((line, at) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: lines of one paragraph, in order
-                <span key={at}>
-                  {at > 0 ? <br /> : null}
-                  <Line line={line} />
-                </span>
-              ))}
-            {streaming && index === paragraphs.length - 1 ? (
-              <span className="caret pulse" aria-hidden="true" />
-            ) : null}
-          </p>
-        ),
-      )}
-    </div>
-  );
+  return <Markdown text={text} streaming={streaming} />;
 }
 
 /** The transcript reaches the turn views through a tiny context, to keep props short. */
@@ -457,9 +492,28 @@ let voiceOnArrival: string | null = null;
 
 export function ChatScreen({ id }: { id: string | null }) {
   const { agents, refreshConversations } = useApp();
+  const route = useRoute();
   const conversationId = id && id !== 'new' ? id : null;
+  // A new chat started from an agent (Home, the sidebar) begins with that agent.
+  const asked = conversationId ? null : agentById(agents, route.query.get('agent'));
+  const fallback = asked ?? defaultAgentOf(agents);
   const state = useConversation(conversationId);
   const { conversation, transcript, setTranscript } = state;
+  const chatActions = (size?: number) =>
+    conversation ? (
+      <ChatActions
+        chat={conversation}
+        size={size}
+        onRenamed={(renamed) => {
+          state.renamed(renamed);
+          refreshConversations();
+        }}
+        onDeleted={() => {
+          refreshConversations();
+          navigate('/chats');
+        }}
+      />
+    ) : null;
   const [text, setText] = useState('');
   const [agentId, setAgentId] = useState<string | null>(null);
   const [stuck, setStuck] = useState(true);
@@ -470,6 +524,9 @@ export function ChatScreen({ id }: { id: string | null }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const touch = useMedia('(max-width: 767px)');
   const flight = useInFlight();
+  // A message that failed to send keeps its request, so Retry resends that message once.
+  const outbox = useRef<Outbox | null>(null);
+  if (outbox.current === null) outbox.current = new Outbox();
   // A quick edit is sent once: its chips stay disabled until the conversation moves on.
   const quick = useTapOnce<string>();
   const wide = useMedia('(min-width: 1180px)');
@@ -478,7 +535,7 @@ export function ChatScreen({ id }: { id: string | null }) {
   // The conversation's own agent counts once it exists; before that, the one a new chat gets.
   const voicePlace = {
     conversationId,
-    agentId: conversationId ? null : (agentId ?? agents[0]?.id ?? null),
+    agentId: conversationId ? null : (agentId ?? fallback?.id ?? null),
   };
   const voice = useVoiceStatus(voicePlace);
   const [voiceOpen, setVoiceOpen] = useState(() => {
@@ -486,6 +543,10 @@ export function ChatScreen({ id }: { id: string | null }) {
     if (arriving) voiceOnArrival = null;
     return arriving;
   });
+  /** The call shrunk to a bar, so the chat can be used while it goes on. */
+  const [voiceMin, setVoiceMin] = useState(false);
+  /** The phone's agent sheet, opened from the name under the title. */
+  const [agentSheet, setAgentSheet] = useState(false);
   /** The agent's computer is opened by the person and stays as they left it. */
   const [computerOpen, setComputerOpen] = useState(false);
 
@@ -497,8 +558,8 @@ export function ChatScreen({ id }: { id: string | null }) {
   const now = useNow(Boolean(last && WORKING.includes(last.status)));
 
   useEffect(() => {
-    setAgentId(conversation?.agent_id ?? agents[0]?.id ?? null);
-  }, [conversation?.agent_id, agents]);
+    setAgentId(conversation?.agent_id ?? fallback?.id ?? null);
+  }, [conversation?.agent_id, fallback?.id]);
 
   // Effects the connector never confirmed rest in the broker's ledger, not in
   // the conversation's events; the ledger is read whenever the turn settles.
@@ -522,6 +583,8 @@ export function ChatScreen({ id }: { id: string | null }) {
       if (!live || result.data === null) return;
       // Resting at unknown, or settled by a person: the ledger keeps that decision.
       const shown = result.data.actions
+        // A step on the agent's own computer is the agent's to check, never the person's.
+        .filter((action) => !ownComputerStep(action))
         .filter(
           (action) =>
             action.status === 'unknown' ||
@@ -590,19 +653,12 @@ export function ChatScreen({ id }: { id: string | null }) {
       const clean = body.trim();
       if (!clean) return false;
       setText('');
-      const agent = agentId ?? agents[0]?.id;
-      if (!agent) {
-        toast({
-          kind: 'err',
-          title: 'Create an agent first',
-          sub: 'Every chat is handled by one.',
-        });
-        return false;
-      }
+      // With no agent chosen the service hands the chat to Melete.
+      const agent = agentId ?? fallback?.id;
       if (!conversationId) {
         const created = await adapter.createConversation({
           title: titleFor(clean),
-          agent_id: agent,
+          ...(agent ? { agent_id: agent } : {}),
         });
         if (created.data === null) {
           toast({
@@ -624,9 +680,15 @@ export function ChatScreen({ id }: { id: string | null }) {
         navigate(`/chat/${created.data.conversation.id}`);
         return accepted.data !== null;
       }
-      const localId = state.local(clean, agent, navigator.onLine ? 'sending' : 'queued_offline');
+      // "@Scout …" is answered by Scout; the drawn message says so before the service does.
+      const speaker = mentionedAgent(clean, agents)?.id ?? agent ?? '';
+      const localId = state.local(clean, speaker, navigator.onLine ? 'sending' : 'queued_offline');
+      // Every try of this message carries this key, so the service keeps one copy.
       const key = messageKey();
-      const attempt = async (): Promise<boolean> => {
+      const box = outbox.current;
+      if (!box) return false;
+      const post = async (): Promise<boolean> => {
+        state.settle(localId, 'sending');
         const accepted = await adapter.send(conversationId, clean, key);
         if (accepted.data === null) {
           state.settle(localId, 'failed_retry');
@@ -635,7 +697,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             title: 'Couldn’t send',
             sub: accepted.error ?? accepted.unavailable ?? '',
             action: 'Retry',
-            onAction: () => void attempt(),
+            onAction: () => void box.retry(localId),
           });
           return false;
         }
@@ -646,16 +708,17 @@ export function ChatScreen({ id }: { id: string | null }) {
       if (!navigator.onLine) {
         const onOnline = () => {
           window.removeEventListener('online', onOnline);
-          state.settle(localId, 'sending');
-          void attempt();
+          void box.send(localId, post);
         };
         window.addEventListener('online', onOnline);
         return true;
       }
-      return attempt();
+      return box.send(localId, post);
     },
-    [conversationId, agentId, agents, state, refreshConversations],
+    [conversationId, agentId, fallback, agents, state, refreshConversations],
   );
+
+  const retry = (localId: string) => void outbox.current?.retry(localId);
 
   // One request per decision: a second press while the first is in flight is refused.
   const decide = (id: string, option: PermissionOption, version: string, bounds?: RuleBounds) =>
@@ -714,12 +777,15 @@ export function ChatScreen({ id }: { id: string | null }) {
     });
 
   const answer = useCallback(
-    (questionId: string, optionId: string) =>
+    (questionId: string, answer: string | { text: string }) =>
       void flight.run(questionId, async () => {
-        const result = await adapter.answer(questionId, optionId);
+        const result = await adapter.answer(questionId, answer);
         if (result.data === null)
           toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t answer' });
-        else setTranscript((previous) => markQuestion(previous, questionId, optionId));
+        else
+          setTranscript((previous) =>
+            markQuestion(previous, questionId, typeof answer === 'string' ? answer : answer.text),
+          );
       }),
     [flight, setTranscript],
   );
@@ -744,12 +810,11 @@ export function ChatScreen({ id }: { id: string | null }) {
       setVoiceOpen(true);
       return;
     }
-    const agent = agentId ?? agents[0]?.id;
-    if (!agent) {
-      toast({ kind: 'err', title: 'Create an agent first', sub: 'Every chat is handled by one.' });
-      return;
-    }
-    const created = await adapter.createConversation({ title: 'Voice chat', agent_id: agent });
+    const agent = agentId ?? fallback?.id;
+    const created = await adapter.createConversation({
+      title: 'Voice chat',
+      ...(agent ? { agent_id: agent } : {}),
+    });
     if (created.data === null) {
       toast({
         kind: 'err',
@@ -804,7 +869,11 @@ export function ChatScreen({ id }: { id: string | null }) {
         iconSize={size > 32 ? 20 : 16}
         on={voiceOpen}
         aria-pressed={voiceOpen}
-        onClick={() => (voiceOpen ? setVoiceOpen(false) : void startVoice())}
+        onClick={() => {
+          setVoiceMin(false);
+          if (voiceOpen) setVoiceOpen(false);
+          else void startVoice();
+        }}
       />
     ) : null;
   // A new tool entry on the stream is when the computer most likely changed.
@@ -835,8 +904,18 @@ export function ChatScreen({ id }: { id: string | null }) {
       phoneSub={
         agent ? (
           <>
-            <AgentFace look={lookOf(agent)} size={14} />
-            {agent.name}
+            <button
+              type="button"
+              className="phone-agent"
+              aria-haspopup="dialog"
+              aria-expanded={agentSheet}
+              aria-label={`${agent.name} handles this chat. Choose another agent`}
+              onClick={() => setAgentSheet(true)}
+            >
+              <AgentAvatar agent={agent} size={14} />
+              {agent.name}
+              <Icon name="chevronDown" size={12} />
+            </button>
             {amount
               ? ` · ${amount.figure} ${found?.item.status === 'settled' ? 'settled' : amount.direction}`
               : ''}
@@ -848,6 +927,7 @@ export function ChatScreen({ id }: { id: string | null }) {
         <>
           {voiceButton(44)}
           {computerToggle(44)}
+          {chatActions(44)}
         </>
       }
       panel={
@@ -857,6 +937,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             computer={computer.computer}
             desktop={computer.desktop}
             error={computer.error}
+            working={working}
             onClose={() => setComputerOpen(false)}
             onChanged={() => void computer.refresh()}
           />
@@ -874,6 +955,12 @@ export function ChatScreen({ id }: { id: string | null }) {
         ) : undefined
       }
     >
+      <AgentSheet
+        open={agentSheet}
+        agentId={agentId}
+        onClose={() => setAgentSheet(false)}
+        onChange={setConversationAgent}
+      />
       <TranscriptContext.Provider value={{ transcript }}>
         <div className="chat">
           <div className="chat-head">
@@ -882,6 +969,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             <div className="grow" />
             {touch ? null : voiceButton(32)}
             {computerToggle()}
+            {chatActions()}
             {found ? (
               <IconButton
                 name="panelRight"
@@ -918,11 +1006,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                     textAlign: 'center',
                   }}
                 >
-                  {agent ? (
-                    <AgentFace look={lookOf(agent)} size={64} state="idle" />
-                  ) : (
-                    <MeleteAvatar size={56} />
-                  )}
+                  <AgentAvatar agent={agent} size={agent && !agent.is_default ? 64 : 56} />
                   <span
                     style={{
                       fontSize: 20,
@@ -931,7 +1015,9 @@ export function ChatScreen({ id }: { id: string | null }) {
                       color: 'var(--heading)',
                     }}
                   >
-                    {agent ? `${agent.name} is listening.` : 'What do you want to get done?'}
+                    {agent && !agent.is_default
+                      ? `${agent.name} is listening.`
+                      : 'What do you want to get done?'}
                   </span>
                   <span style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 420 }}>
                     {agent
@@ -955,6 +1041,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   unknown={turn.id === lastId ? unknown : undefined}
                   onResolve={resolve}
                   busy={(id) => flight.has(id)}
+                  onRetry={retry}
                   reactions={reactions.filter((r) => turnIndexForReaction(transcript, r) === index)}
                   onReact={
                     reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
@@ -974,14 +1061,27 @@ export function ChatScreen({ id }: { id: string | null }) {
             </div>
           </div>
           {voiceOpen && conversationId ? (
-            <div className="chat-foot">
+            <div className="chat-foot" data-call={voiceMin ? 'minimised' : 'open'}>
               <div className="chat-foot-inner">
                 <VoicePanel
                   conversationId={conversationId}
                   transcript={transcript}
+                  agentName={agent?.name?.trim() || 'Melete'}
+                  avatar={<AgentAvatar agent={agent} size={28} />}
+                  minimised={voiceMin}
+                  onMinimise={setVoiceMin}
                   onSend={send}
+                  onDraft={(words) =>
+                    setText((current) =>
+                      current.trim()
+                        ? `${current.trimEnd()}
+${words}`
+                        : words,
+                    )
+                  }
                   onEnd={() => {
                     setVoiceOpen(false);
+                    setVoiceMin(false);
                     // Back to the control that opened it, for a keyboard user.
                     requestAnimationFrame(() =>
                       document.querySelector<HTMLElement>('[aria-label="Voice mode"]')?.focus(),
@@ -1023,7 +1123,7 @@ export function ChatScreen({ id }: { id: string | null }) {
               ) : null}
             </div>
           ) : null}
-          <div className="chat-foot" hidden={Boolean(pending) || voiceOpen}>
+          <div className="chat-foot" hidden={Boolean(pending) || (voiceOpen && !voiceMin)}>
             <div className="chat-foot-inner">
               {!stuck ? (
                 <button
@@ -1067,6 +1167,17 @@ export function ChatScreen({ id }: { id: string | null }) {
                   value={text}
                   onChange={setText}
                   onSend={() => void send(text)}
+                  agentName={
+                    // A turn handed to another agent with @Name is that agent's while it works.
+                    (working ? agentById(agents, last?.turn.agent_id) : null)?.name ??
+                    agent?.name ??
+                    'Melete'
+                  }
+                  placeholder={
+                    agents.length > 1
+                      ? `Message ${agent?.name ?? 'Melete'}, or @name`
+                      : `Message ${agent?.name ?? 'Melete'}`
+                  }
                   state={conversationId ? composerState : 'send'}
                   working={working}
                   autoFocus={!touch}

@@ -15,7 +15,6 @@ import {
 import { session } from '../../src/db/auth-schema.ts';
 import { owner, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
-import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { buildBundle } from '../../src/jobs/bundle.ts';
@@ -27,6 +26,7 @@ import { recordOutput } from '../../src/memory/outputs.ts';
 import type { RestrictionJournal, RestrictionRecord } from '../../src/memory/restore.ts';
 import { buildViews } from '../../src/memory/views.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -197,7 +197,7 @@ withDb('setup answers as saved details', () => {
 
   test('the first message after setup carries the answer it is about', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     const chat = conversationResponse.parse(
       await (

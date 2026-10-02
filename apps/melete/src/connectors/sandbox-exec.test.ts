@@ -8,7 +8,12 @@ import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { SandboxConnectionConfig } from '@melete/contracts';
-import { type Action, canonicalizePayload, connectorManifest } from '@melete/contracts';
+import {
+  type Action,
+  canonicalizePayload,
+  connectorManifest,
+  EXEC_LIMITS,
+} from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
 import { sandboxSpecFor } from '../sandbox/connection.ts';
@@ -89,11 +94,11 @@ test('a dispatch may take the command timeout, the wait for the computer and the
     sandboxDispatchBudgetMs({ canonical_payload: { command: 'true', timeout_ms: 90_000 } }),
   ).toBe(90_000 + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS);
   expect(sandboxDispatchBudgetMs({ canonical_payload: { command: 'true' } })).toBe(
-    120_000 + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS,
+    EXEC_LIMITS.default_timeout_ms + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS,
   );
   // A payload the connector refuses still gets a bounded budget.
   expect(sandboxDispatchBudgetMs({ canonical_payload: { command: 'true', timeout_ms: -1 } })).toBe(
-    120_000 + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS,
+    EXEC_LIMITS.default_timeout_ms + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS,
   );
 });
 
@@ -643,7 +648,7 @@ withDb('a command in a remote sandbox', () => {
     expect(result.receipt.detail.command).toBe('echo $TZ');
   }, 60_000);
 
-  test('a command cut off by a restart is read back from its marker, or failed with the reason', async () => {
+  test('a command cut off by a restart is read back from its marker, or left unknown with the reason', async () => {
     if (!handle) throw new Error('Postgres is unavailable');
     const s = await setup();
     s.provider.loseNextAcknowledgement('after_start');
@@ -659,7 +664,8 @@ withDb('a command in a remote sandbox', () => {
     const cut = await s.run({ command: 'sleep 20; printf late' });
     expect(cut.result.outcome).toBe('unknown');
     const lost = await s.connector.abandoned?.(cut.action, s.context(cut.action));
-    expect(lost).toEqual({ outcome: 'failed', reason: INTERRUPTED, retryable: false });
+    // Still open, not failed: a late answer can still land.
+    expect(lost).toEqual({ outcome: 'unknown', reason: INTERRUPTED });
   }, 60_000);
 
   test('a command cut off in a computer with network access is not said to have stayed inside it', async () => {
@@ -669,8 +675,8 @@ withDb('a command in a remote sandbox', () => {
     const cut = await s.run({ command: 'sleep 20; curl -sd @notes.md https://example.test/' });
     expect(cut.result.outcome).toBe('unknown');
     const lost = await s.connector.abandoned?.(cut.action, s.context(cut.action));
-    expect(lost).toEqual({ outcome: 'failed', reason: INTERRUPTED_WITH_NETWORK, retryable: false });
-    if (lost?.outcome !== 'failed') throw new Error(JSON.stringify(lost));
+    expect(lost).toEqual({ outcome: 'unknown', reason: INTERRUPTED_WITH_NETWORK });
+    if (lost?.outcome !== 'unknown') throw new Error(JSON.stringify(lost));
     expect(lost.reason).not.toContain('inside that computer');
     expect(lost.reason).toContain('may also have reached outside');
   }, 60_000);

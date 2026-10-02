@@ -9,6 +9,7 @@
  * asks for one. Otherwise the server's default provider has an operator key.
  */
 import {
+  effectiveVision,
   MODEL_PROVIDERS,
   type ModelProvider,
   type ModelSettings,
@@ -52,7 +53,12 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
   const connected = options.connected ?? process.env.MELETE_MOCK_MODELS !== 'none';
   const operatorKeys = new Set<string>(connected ? ['fireworks'] : []);
   const keys = new Map<string, { lastFour: string; baseUrl: string | null; at: string }>();
-  let chosen: { provider: string; model: string; at: string } | null = null;
+  let chosen: {
+    provider: string;
+    model: string;
+    at: string;
+    vision: boolean | null;
+  } | null = null;
   let signedIn = false;
   let pending: string | null = null;
 
@@ -71,6 +77,8 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
         model: active.model,
         source: chosen ? 'app' : 'operator',
         connected: isConnected(active.provider),
+        vision: effectiveVision(active.provider, active.model, chosen?.vision),
+        vision_source: typeof chosen?.vision === 'boolean' ? 'app' : 'catalog',
         updated_at: chosen?.at ?? null,
       },
       operator_default: OPERATOR_DEFAULT,
@@ -197,7 +205,12 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
         'model_not_connected',
         `Add a key for ${LABELS[input.data.provider]} before choosing one of its models.`,
       );
-    chosen = { provider: input.data.provider, model: input.data.model, at: now() };
+    chosen = {
+      provider: input.data.provider,
+      model: input.data.model,
+      at: now(),
+      vision: input.data.supports_vision ?? null,
+    };
     return send(c, modelSettingsResponse, view());
   });
 

@@ -8,14 +8,32 @@ import {
   THUMBS_UP,
 } from '@melete/contracts';
 import { PgBoss } from 'pg-boss';
+import type { Sql } from 'postgres';
 import type { EffectAuthority } from '../../src/broker/authority.ts';
 import { loadAction, recordId } from '../../src/broker/records.ts';
 import type { BrokerOptions } from '../../src/broker/service.ts';
-import { BrokerService } from '../../src/broker/service.ts';
+import { BrokerService, OWN_COMPUTER_UNKNOWN } from '../../src/broker/service.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
+
+/** Record that an action runs on an agent's computer that reaches nothing outside. */
+async function onClosedComputer(
+  sql: Sql,
+  claims: { job_id: string; attempt_id: string; space_id: string },
+  connectionId: string,
+  actionId: string,
+) {
+  const sessionId = `session_${actionId}`;
+  await sql`insert into sandbox_session (id, connection_id, space_id, job_id, attempt_id,
+      adapter, provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at)
+    values (${sessionId}, ${connectionId}, ${claims.space_id}, ${claims.job_id}, ${claims.attempt_id},
+      'fake', ${sessionId}, 'image', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'ready',
+      now() + interval '10 minutes')`;
+  await sql`insert into sandbox_command (action_id, session_id, marker)
+    values (${actionId}, ${sessionId}, ${actionId})`;
+}
 
 const fixture = await createPostgresFixture();
 const databaseTest = fixture ? test : test.skip;
@@ -499,6 +517,106 @@ describe('durable action lifecycle', () => {
   );
 
   databaseTest(
+    'a step on the agent’s own computer that never answered stays unknown, for the agent to check',
+    async () => {
+      const s = await setup(async () => ({
+        outcome: 'unknown',
+        reason: 'the desktop did not answer',
+      }));
+      s.connector.ownComputer = true;
+      const request = { kind: 'test.send', connection_id: s.connectionId, payload: {} };
+      const proposal = await s.broker.propose(s.claims, request);
+      await onClosedComputer(s.sql, s.claims, s.connectionId, proposal.action_id);
+      await s.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+      const open = await s.broker.dispatch(proposal.action_id);
+      // Never settled as failed: whether it happened is not known.
+      expect(open.status).toBe('unknown');
+      // The person is not asked.
+      const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
+      expect(job?.state).not.toBe('needs_reconciliation');
+      const asked = await s.sql`select id from question where job_id = ${s.claims.job_id}`;
+      expect(asked).toHaveLength(0);
+      // The agent is told to check before any retry, and nothing is sent again.
+      const told = await s.broker.propose(s.claims, request);
+      expect(told.own_computer).toBe(true);
+      expect(told.message).toBe(OWN_COMPUTER_UNKNOWN);
+      expect(told.message).toContain('Check before trying again');
+      expect(told.message).not.toMatch(/fail/i);
+      expect(s.calls()).toBe(1);
+    },
+  );
+
+  databaseTest(
+    'a command on the agent’s own computer that outruns its budget lands when it finishes',
+    async () => {
+      const s = await setup(
+        async (action) => {
+          await Bun.sleep(600);
+          return {
+            outcome: 'succeeded',
+            receipt: {
+              action_id: action.id,
+              connection_id: action.connection_id,
+              external_ref: 'ran',
+              received_at: new Date().toISOString(),
+              late: false,
+              detail: { output: 'built' },
+            },
+          };
+        },
+        { dispatchTimeoutMs: 200 },
+      );
+      s.connector.ownComputer = true;
+      const proposal = await s.broker.propose(s.claims, {
+        kind: 'test.send',
+        connection_id: s.connectionId,
+        payload: {},
+      });
+      await onClosedComputer(s.sql, s.claims, s.connectionId, proposal.action_id);
+      await s.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+      expect((await s.broker.dispatch(proposal.action_id)).status).toBe('unknown');
+      const [waiting] = await s.sql`select state from job where id = ${s.claims.job_id}`;
+      expect(waiting?.state).not.toBe('needs_reconciliation');
+      // The late receipt still lands, with its output.
+      let landed = await loadAction(s.sql, proposal.action_id);
+      for (let tries = 0; tries < 40 && landed.status === 'unknown'; tries++) {
+        await Bun.sleep(100);
+        landed = await loadAction(s.sql, proposal.action_id);
+      }
+      expect(landed.status).toBe('succeeded');
+      expect(landed.receipt?.detail).toMatchObject({ output: 'built' });
+      const asked = await s.sql`select id from question where job_id = ${s.claims.job_id}`;
+      expect(asked).toHaveLength(0);
+      expect(s.calls()).toBe(1);
+    },
+  );
+
+  databaseTest('an outside effect that never answered is still put to the person', async () => {
+    const s = await setup(async () => ({ outcome: 'unknown', reason: 'the provider timed out' }));
+    const proposal = await s.broker.propose(s.claims, {
+      kind: 'test.send',
+      connection_id: s.connectionId,
+      payload: {},
+    });
+    await s.broker.decide(proposal.action_id, {
+      decision: 'approved',
+      payload_hash: proposal.payload_hash,
+    });
+    await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+    expect((await s.broker.dispatch(proposal.action_id)).status).toBe('unknown');
+    const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
+    expect(job?.state).toBe('needs_reconciliation');
+  });
+
+  databaseTest(
     'a dispatch whose attempt stopped heartbeating is unknown at once without a connector account',
     async () => {
       const s = await setup();
@@ -639,11 +757,12 @@ describe('durable action lifecycle', () => {
         payload: {},
       });
       await s.sql`update connection set scopes = '["test.read"]'::jsonb where id = ${s.connectionId}`;
-      // `react` is always there: it belongs to no connection and needs no scope;
-      // the discovery tools lead the core the catalog serves.
+      // `react` and `ask_person` are always there: they belong to no connection
+      // and need no scope; the discovery tools lead the core the catalog serves.
       expect((await s.broker.catalog(s.claims)).map((tool) => tool.name)).toEqual([
         'search_tools',
         'load_tool',
+        'ask_person',
         'react',
         'test.read',
       ]);
@@ -822,6 +941,67 @@ describe('full effect authority binding', () => {
       },
     );
   }
+});
+
+describe('a connection changed under a running attempt', () => {
+  // These are the writes a connection lifecycle change commits in one
+  // transaction: the connection's generation moves, and so does the space's
+  // policy generation, which every attempt captured when it started.
+  const changes = {
+    revoked: 'revoked',
+    'switched to another key': 'active',
+  } as const;
+  for (const [change, status] of Object.entries(changes)) {
+    databaseTest(`a proposal from the old attempt is refused once it is ${change}`, async () => {
+      const s = await setup();
+      await s.sql`update connection set generation = generation + 1, status = ${status}
+        where id = ${s.connectionId}`;
+      await s.sql`update space set policy_generation = policy_generation + 1
+        where id = ${s.claims.space_id}`;
+      expect(
+        await rejectionOf(
+          s.broker.propose(s.claims, {
+            kind: 'test.read',
+            connection_id: s.connectionId,
+            payload: { q: 'inbox' },
+          }),
+        ),
+      ).toMatchObject({ code: 'scope_denied' });
+      expect(await s.sql`select id from action where job_id = ${s.claims.job_id}`).toHaveLength(0);
+      expect(s.calls()).toBe(0);
+    });
+  }
+
+  databaseTest(
+    'a revoked connection is refused even to an attempt on the current policy',
+    async () => {
+      const s = await setup();
+      await s.sql`update connection set status = 'revoked' where id = ${s.connectionId}`;
+      expect(
+        await rejectionOf(
+          s.broker.propose(s.claims, {
+            kind: 'test.read',
+            connection_id: s.connectionId,
+            payload: { q: 'inbox' },
+          }),
+        ),
+      ).toMatchObject({ code: 'unknown_connection' });
+      expect(s.calls()).toBe(0);
+    },
+  );
+
+  databaseTest('a tool whose scope the attempt was not granted is refused', async () => {
+    const s = await setup();
+    expect(
+      await rejectionOf(
+        s.broker.propose(
+          { ...s.claims, scopes: ['test.read'] },
+          { kind: 'test.send', connection_id: s.connectionId, payload: { to: 'a@example.com' } },
+        ),
+      ),
+    ).toMatchObject({ code: 'scope_denied' });
+    expect(await s.sql`select id from action where job_id = ${s.claims.job_id}`).toHaveLength(0);
+  });
 });
 
 describe('a command shown for approval', () => {

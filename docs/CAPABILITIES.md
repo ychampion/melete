@@ -51,6 +51,7 @@ own words.
 | Skill choice on a first-week request set | implemented-and-tested | [selection-eval.ts](../packages/skills/src/selection-eval.ts) holds 59 requests a person makes in their first week, each with the skill that should reach the model or none. Over the tools of an installation with mail, a CalDAV calendar and speech, the built-ins deliver precision 0.98 (48 of 49 picks) and recall 1.00 (48 of 48); `is delivered with high precision and recall` in `selection-eval.test.ts` holds that line. The triggers were written against this set. A second set of 32 requests, written afterwards and never used to change a trigger, measures wording the triggers were not written for: 1 of its 28 expected skills is delivered, and 1 of 3 picks is right. Trigger phrases reach the wording they list, so every attempt also carries a skill index naming each skill it may use: on the held-out set all 28 expected skills are visible to the attempt, given in full or named in its index (`every held-out expected skill is visible to the attempt, given in full or in its index`). The set counts what the attempt can see; which skill a model then reads depends on the model. The index names every usable built-in today: the 16 built-ins take 423 of its 500 estimated tokens. With ten skills of a person's own beside them, it names 19 of the 26 and the rest are found through `search_tools`. A learned procedure's precedence decides what is given in full and what the index names; `skills.read` and tool search serve any skill the attempt may read. `skills.read reads an indexed skill by name, once per read, with a tool entry` in [catalog.test.ts](../apps/melete/test/integration/catalog.test.ts) covers reading one. Triggers match whole words, so "chase" is not found in "purchase" (`a trigger matches whole words, never the inside of another word`). |
 | Core catalog chosen from the job's own words | implemented-and-tested | `the core is chosen from the objective, the latest owner message and the registered trigger`, `relevance to the objective and the latest owner message outranks usage` and `the lifecycle wait and the reaction are pinned when the turn needs them` in `catalog.test.ts`. The ranking is deterministic and involves no model call; these tests measure the ranking itself. |
 | Tool search matches any term and explains an empty result | implemented-and-tested | `search matches any term, stems it, and reads identifier segments` and `a search with no match names what can be loaded instead of returning nothing` in `catalog.test.ts`. |
+| The agent asks the person and waits | implemented-and-tested | `ask_person` is a broker tool in the Melete toolset; the broker records one question per attempt and refuses a second, one while another is open, and one beside a wait. The attempt then settles `waiting_for_input` with the question in the queue; a routine rests on its schedule instead and the answer wakes it. [ask-person.test.ts](../apps/melete/test/integration/ask-person.test.ts): `a chat waits for input, shows the choices, and resumes with the chosen answer`, `an answer in the person’s own words is accepted; an unknown choice is not`, `stopping the conversation withdraws its question`, `deleting the conversation takes its question with it`, `a cancelled responsibility withdraws its open question`, `a routine rests on its schedule while its question waits, and the answer wakes it`, `a question about an unconfirmed send outlives a stop and a cancel`, `a question asked in a turn that parked for approval is kept beside the approval`, `answering a routine with no agent of its own still opens a turn`; `test_a_question_for_the_person_is_forwarded_to_the_broker_native_gate` in the Python suite. Whether a given model asks only when it should is **not claimed**. |
 | An ask that proposes nothing is not a completion | implemented-and-tested | The adapter gives one continuation, then settles `waiting_for_input`: `a drafted reply that asks to send gets one continuation, and its proposal parks` and `an ask that still proposes nothing settles waiting for input, never completed` in the adapter suite. After a refusal in the same wake there is no continuation, only the question: `an effect the owner refused in this wake is not asked for again`. The detection is a documented pattern, not a model. |
 | A wait names its trigger by id or event name | implemented-and-tested | The attempt input lists the job's enabled triggers (`the job's enabled triggers arrive with their event name and a plain description`); `resolves the event name to the enabled trigger of this job, broker-side` and `an unknown, disabled or ambiguous name is refused, and nothing is recorded` in `runtime-wait.test.ts`. |
 | A wait cancelled by a correction is named and restored | implemented-and-tested | `the next attempt is told, and completing without a new wait restores it`, `an event delivered between the correction and the completion wakes the restored wait at once`, `a retryable failure hands the cancelled wait to the retry, and only once it is restored does it stop` and `a replaced wait, a disabled trigger or a lapsed timer is not restored; a future timer is` in `waits.test.ts`. The service restores the wait whether or not the model asks for it again. |
@@ -58,7 +59,7 @@ own words.
 | `react` without a message target | implemented-and-tested | `a reaction with no target lands on the owner's latest message, and only this job's` in `broker.test.ts`, which covers the targeting rule with a fixture reaction. |
 | Audience-qualified skills | implemented-and-tested | `preserves a qualified audience and refuses a different container` in `packages/contracts/src/principals.test.ts`; the integration test excludes private and incorrectly qualified files. |
 | Existing account upgrade | implemented-and-tested | `additive migration preserves the setup guard, login and an issued personal-space capability` now upgrades through production `migrateDatabase`. `production migration upgrades the integration schema with MCP setup and procedure promotion` starts with a real ledger through 0032, verifies all three new columns, and checks a second startup is idempotent. Migrations 0033/0034 have increasing timestamps after 0032. |
-| Adapter sequencing and prompt assembly | implemented-and-tested | `every event carries the one dedup key format` and `the instructions are identity, then skills, then knowledge` in the runtime adapter and client suites, with recorded HTTP responses. |
+| Adapter sequencing and prompt assembly | implemented-and-tested | `every event carries the one dedup key format` and `the identity is the engine home's SOUL.md, whole, and the instructions do not repeat it` in the runtime adapter and client suites, with recorded HTTP responses. |
 | Whole end-to-end capability proof against the real engine | implemented-and-tested | `real Hermes capability chain: discovery, hooks, learning, teammate context and revocation` passes all five stages. It runs pinned Hermes with a scripted HTTP provider and verifies actual provider requests, broker receipts, learning, member context and revocation, so it establishes the chain rather than a model's answers. |
 
 ## Authority and observer behaviour
@@ -134,6 +135,78 @@ private. Selection rechecks membership under the existing revocation lock;
 revocation cancels queued reuse and fences already delivered context. Rollback
 removes subsequent procedure delivery.
 
+## Agents
+
+Every space has Melete, its default agent. It takes a new chat, a message from
+Home and a routine whenever no other agent is named. Its name is fixed and it
+cannot be removed; its tone, standing instruction and "asks before acting" can
+change. In a personal space it reaches every connection, including ones
+connected later, the computer and memory, and that cannot be narrowed. In a
+shared space it starts with no connections, and the space's owner chooses what
+it may use; members cannot change any agent. Migration `0070_default_agent`
+gives every existing space its Melete and hands chats and routines without an
+agent in personal spaces to it; in a shared space they stay without one, as
+before. A space made later receives Melete the first time its agents are read
+or a chat is started.
+
+A specialist (one added from the agent library, or one made from scratch)
+has its own name, role, look, tone and standing instruction, and four limits
+the service enforces:
+
+- **Connections.** `allowed_connection_ids` lists what it may use; null means
+  every connection. The catalog offers nothing else and the broker refuses
+  anything else (`scope_denied`).
+- **Computer.** With `uses_computer` off, the agent's own computer and the
+  person's paired computers (`browser.*`, `computer.*`, `terminal.*`, `exec.*`,
+  `device.*`) are neither offered nor admitted.
+- **Reading memory.** With `reads_memory` off, nothing is recalled or recorded
+  as used, no correction is briefed (it stays pending for an agent that reads
+  memory), and no handle to a remembered source is passed on.
+- **Keeping memory.** With `writes_memory` off, nothing said to it is captured
+  into memory. A request to forget is still carried out.
+
+A message that starts with an agent's name after `@` ("@Scout find trains to
+Porto") is answered by that agent for that one turn; the chat keeps its own
+agent for the next message. In a shared space only the owner's mention does
+this; a member's message stays with the chat's agent. Each turn records the agent that answered it, and
+that agent's limits apply to the turn.
+[agents.test.ts](../apps/melete/test/integration/agents.test.ts) covers each
+of these.
+
+### Agent library
+
+`GET /agents/templates` lists ready-made agents on twelve shelves, from
+Personal to Shopping & subscriptions. Each template carries a one-line
+benefit, what it does and what it won't do, the kinds of thing it works best
+with (mail, calendar, files, web pages, a browser, its own computer, your
+computer, apps you connect), a brief of up to 500 characters, and its
+switches. Adding one opens a draft to name and review; saving it makes that
+one agent.
+
+- **Nothing is granted by the template.** Every template carries no
+  connections. The draft starts with the person's connected connections that
+  match "works best with" ticked and marked as suggested, so they see exactly
+  what it will reach and can untick any before creating it; setup does the
+  same for the agents picked there and lists what each will reach. An agent without the computer is never
+  offered as working with a browser, its own computer or your computer.
+- **The starter routine is offered, not made.** After the agent is saved its
+  routine is shown with its schedule; `POST /automations` runs only when the
+  person presses Set it up, and the routine then runs as that agent.
+- **Getting-to-know-you answers are the person's own statements.** Each
+  answer is saved through `POST /memory/items` on the question's
+  `pref.<purpose>.<name>` key, with the question and answer as its statement;
+  a blank answer saves nothing. Only templates whose agent reads memory ask.
+
+The library promises only what the connectors, the browser worker, the
+agent's computer and paired computers do today; health and money templates
+organise and remind, and give no medical, financial or tax advice.
+[agent-library.test.ts](../apps/melete/src/experience/agent-library.test.ts)
+checks every template (unique names, known kinds, no granted connection, a
+brief within the persona cap, built-in skills, one memory purpose each), and
+[the integration test](../apps/melete/test/integration/agent-library.test.ts)
+adds one: exactly one agent, no routine until asked, and the answers saved on
+their keys.
+
 ## Auto-review
 
 Auto-review decides some actions that would otherwise wait for the person.
@@ -197,7 +270,7 @@ bun run compose:check
 ```
 
 The combined real-engine proof runs with the pinned local engine prepared as
-the root README describes:
+CONTRIBUTING.md describes under "Run the agent runtime locally":
 
 ```sh
 MELETE_CAPABILITY_PROOF=1 bun test apps/melete/test/integration/capability-proof.test.ts --max-concurrency=1

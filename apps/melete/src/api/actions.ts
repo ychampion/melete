@@ -1,7 +1,10 @@
 import {
+  type Action,
   actionListQuery,
   actionListResponse,
   actionResponse,
+  actionSummaryListResponse,
+  actionSummaryOf,
   resolveActionRequest,
 } from '@melete/contracts';
 import { sql as query } from 'drizzle-orm';
@@ -12,6 +15,12 @@ import type { BrokerService } from '../broker/service.ts';
 import type { Database } from '../db/client.ts';
 import { requestPrincipal, visibleJob } from '../principals/authority.ts';
 import { ServiceError } from './errors.ts';
+
+/** The list in the shape asked for: every field, or the lean summary a person is shown. */
+const listed = (actions: Action[], view: 'full' | 'summary') =>
+  view === 'summary'
+    ? actionSummaryListResponse.parse({ actions: actions.map(actionSummaryOf) })
+    : actionListResponse.parse({ actions });
 
 /**
  * The same ledger read on the owner API, for a conversation's unconfirmed
@@ -54,7 +63,7 @@ export function mountActions(app: Hono, db: Database, broker?: BrokerService) {
         ${own ? query`and ${own}` : query``}
       order by (a.status in ('unknown', 'unresolved')) desc, a.created_at desc, a.id
       limit ${filter.limit}`);
-    return c.json(actionListResponse.parse({ actions: [...rows].map(actionFromRow) }));
+    return c.json(listed([...rows].map(actionFromRow), filter.view));
   });
 }
 
@@ -83,7 +92,7 @@ export function createActionReadApi(options: {
         and (${query.effect_class ?? null}::text is null or a.effect_class = ${query.effect_class ?? null})
       order by (a.status in ('unknown', 'unresolved')) desc, a.created_at desc, a.id
       limit ${query.limit}`;
-    return c.json(actionListResponse.parse({ actions: rows.map(actionFromRow) }));
+    return c.json(listed(rows.map(actionFromRow), query.view));
   });
   return app;
 }

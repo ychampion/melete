@@ -45,9 +45,7 @@ in `OPENAI_COMPAT_BASE_URL` may be plain HTTP; every built-in upstream is HTTPS,
 and `OPENAI_API_KEY` stands in for that endpoint's key only when it is HTTPS.
 
 The fixtures use fake transports/providers and local TLS. General real-provider
-compatibility and real-model quality are **not claimed**. The optional Fireworks
-smoke helper in `smoke.ts` needs a configured gateway, capability and key; it is
-not part of the test suite.
+compatibility and real-model quality are **not claimed**.
 
 The effect listener loads configured connections and optional operator-provided
 TLS termination certificates. Certificates under `fixtures/` are test-only.

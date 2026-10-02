@@ -489,6 +489,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
           provider: model.provider,
           model: model.model,
           brokerUrl: broker,
+          vision: model.vision,
           ...engineSettingsFromEnvironment(),
           // TERMINAL_ENV, when the space has a sandbox; the boot script
           // writes the terminal section from it and refuses any other.

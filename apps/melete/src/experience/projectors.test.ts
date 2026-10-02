@@ -1,7 +1,11 @@
 import { expect, test } from 'bun:test';
-import { PERMISSION_FILE_PREVIEW_CHARS } from '@melete/contracts';
+import { APPROVAL_OUTDATED_NOTE, PERMISSION_FILE_PREVIEW_CHARS } from '@melete/contracts';
 import { estimateTokens } from '@melete/skills';
+import { browserManifest } from '../connectors/browser.ts';
+import { COMPUTER_TOOLS } from '../connectors/sandbox-computer.ts';
+import { DEVICE_TOOL_SHAPES } from '../devices/connector.ts';
 import { AGENT_TEMPLATES, agentIdentity } from './agents.ts';
+import { forLine } from './permissions.ts';
 import {
   type ActionRow,
   answerText,
@@ -287,6 +291,18 @@ test('a permission a stop withdrew reads as withdrawn, not as a refusal', () => 
   ).toBe('withdrawn');
 });
 
+test('a permission withdrawn because what it relied on changed says so, not that anyone stopped', () => {
+  expect(
+    projectPermissionDecision({
+      approvalId: 'apr_one',
+      decision: 'denied',
+      ruleSaved: false,
+      note: APPROVAL_OUTDATED_NOTE,
+      at: new Date('2026-09-25T09:00:00.000Z'),
+    }).outcome,
+  ).toBe('outdated');
+});
+
 test('a draft card offers sending only while its draft can still be sent', () => {
   const mail = { id: 'mail-connection', label: 'My mail', provider: 'imap' };
   const draft: ActionRow = {
@@ -539,4 +555,73 @@ test('a saved file card opens text in the app and offers anything else as a down
     label: 'Download',
     handle: 'art_01ABC',
   });
+});
+
+test('every step in a browser or on a computer is asked for by name, with its target', () => {
+  const kinds = [
+    ...COMPUTER_TOOLS.map((tool) => tool.name),
+    ...browserManifest.tools.map((tool) => tool.name),
+    ...Object.keys(DEVICE_TOOL_SHAPES).map((tool) => `device.${tool}`),
+  ];
+  const payload = {
+    step: 1,
+    url: 'https://ftE-round3-nowhere.invalid/form',
+    path: 'notes/plan.md',
+    command: 'ls -la',
+    text: 'hello there',
+    keys: ['ctrl+l'],
+    x: 10,
+    y: 20,
+    amount: 3,
+    name: 'Send',
+    label: 'Email',
+    value: 'jo@example.test',
+    intent: {
+      url: 'https://shop.example.test/checkout',
+      method: 'POST',
+      role: 'button',
+      name: 'Place order',
+      fields: { Email: 'jo@example.test' },
+    },
+  };
+  for (const kind of kinds) {
+    const shown = projectPermission({
+      id: 'apr_step',
+      version: 'v1',
+      action: {
+        ...base,
+        kind,
+        effectClass: 'write_reversible',
+        connectionId: 'x',
+        canonicalPayload: payload,
+        receipt: null,
+        status: 'needs_approval',
+      },
+      connection: { id: 'x', label: 'Computer', provider: 'sandbox' },
+      reasons: ['This change needs your permission before it happens.'],
+      canAlways: false,
+      requestedAt: new Date('2026-10-02T08:00:00.000Z'),
+    });
+    expect(shown.what).not.toBe('Completed a step');
+    expect(shown.what).not.toMatch(/^Used /);
+    // Asked in the present tense, before anything has happened.
+    expect(shown.what).not.toMatch(/^(Opened|Clicked|Typed|Pressed|Looked|Submitted|Used) /);
+    const facts = JSON.stringify(shown.preview?.facts ?? []);
+    if (/open|open_url/.test(kind)) {
+      expect(shown.what).toContain('ftE-round3-nowhere.invalid'.toLowerCase());
+      expect(facts).toContain('https://ftE-round3-nowhere.invalid/form');
+    }
+    if (kind === 'browser.submit') {
+      expect(shown.what).toBe('Submit “Place order” to shop.example.test');
+      expect(facts).toContain('https://shop.example.test/checkout');
+    }
+    if (kind === 'computer.type') expect(facts).toContain('hello there');
+    if (kind === 'computer.key') expect(shown.what).toBe("Press ctrl+l on the agent's computer");
+  }
+});
+
+test('the line naming the request ends with one stop, never two', () => {
+  expect(forLine('Plan the trip')).toBe('For Plan the trip.');
+  expect(forLine('[ftE] impossible / open…')).toBe('For [ftE] impossible / open…');
+  expect(forLine('Is it done?')).toBe('For Is it done?');
 });

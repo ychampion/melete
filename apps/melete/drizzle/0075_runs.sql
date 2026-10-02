@@ -25,6 +25,8 @@ CREATE TABLE "run_state" (
 	"waiting_on_steps" boolean DEFAULT false NOT NULL,
 	"last_report_at" timestamp with time zone,
 	"finished_at" timestamp with time zone,
+	"check_result" boolean DEFAULT true NOT NULL,
+	"checking" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint

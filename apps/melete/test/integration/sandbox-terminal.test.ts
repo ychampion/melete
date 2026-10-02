@@ -254,6 +254,9 @@ databaseTest(
       s.provider.loseNextAcknowledgement('after_start');
       const [inSandbox] = await s.run([{ command: 'sleep 1' }]);
       expect(inSandbox?.output).toStartWith('[outcome unknown');
+      // The agent checks before any retry; the person is not asked.
+      expect(inSandbox?.output).toContain('Check first');
+      expect(inSandbox?.output).not.toContain('[failed]');
       expect(inSandbox?.returncode).not.toBe(0);
       expect(s.provider.calls.exec).toBe(2);
 
@@ -264,7 +267,7 @@ databaseTest(
       expect(recorded[0]?.status).toBe('succeeded');
       expect(recorded[1]?.status).toBe('unknown');
       const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
-      expect(job?.state).toBe('needs_reconciliation');
+      expect(job?.state).not.toBe('needs_reconciliation');
     } finally {
       s.server.stop();
     }

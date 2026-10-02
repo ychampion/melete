@@ -1,0 +1,242 @@
+/* The agent library: shelves, search, cards and the detail sheet. */
+
+.library {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.library-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+.library-head p {
+  font-family: var(--font-voice);
+  font-size: 17px;
+  line-height: 26px;
+  letter-spacing: -0.012em;
+  color: var(--secondary);
+  max-width: 560px;
+}
+.library-shelves {
+  border: 0;
+  min-width: 0;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 2px 6px;
+  margin: 0 -2px;
+  scrollbar-width: thin;
+}
+.library-shelves .chip {
+  flex-shrink: 0;
+}
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+  gap: 12px;
+}
+.library-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: var(--radius-card, 16px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  text-align: left;
+  color: inherit;
+  min-width: 0;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+.library-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-lift);
+}
+.library-card[data-on="true"] {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.library-card:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.library-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.library-name span {
+  font-weight: 400;
+  color: var(--muted);
+}
+.library-shelf-word {
+  font-size: 12px;
+  color: var(--muted);
+}
+.library-benefit {
+  font-family: var(--font-voice);
+  font-size: 16px;
+  line-height: 23px;
+  letter-spacing: -0.012em;
+  color: var(--heading);
+}
+.works-with {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.works-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--secondary);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.library-empty {
+  padding: 20px;
+  border-radius: var(--radius-block, 12px);
+  background: var(--soft);
+  border: 1px solid var(--line);
+  font-size: 14px;
+  color: var(--secondary);
+}
+
+/* The detail sheet and the welcome after adding. */
+.library-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 12px 0 20px;
+  border-bottom: 1px solid var(--line);
+}
+.library-sheet-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.library-sheet-body {
+  overflow-y: auto;
+  padding-bottom: 20px;
+}
+.library-hero {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+.library-voice {
+  font-family: var(--font-voice);
+  font-size: 20px;
+  line-height: 28px;
+  letter-spacing: -0.012em;
+  color: var(--heading);
+}
+.library-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.library-section h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.library-list li {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--secondary);
+}
+.library-list li > span:first-child {
+  display: inline-flex;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+.library-list[data-tone="does"] li > span:first-child {
+  color: var(--success);
+}
+.library-list[data-tone="wont"] li > span:first-child {
+  color: var(--sand-ink);
+}
+.library-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: var(--radius-block, 12px);
+  background: var(--soft);
+  border: 1px solid var(--line);
+}
+.library-block strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.library-meta {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.library-text {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--secondary);
+}
+.library-sheet-foot {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--line);
+}
+.library-suggested {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: var(--blue-ink);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+@media (max-width: 767px) {
+  .library-head p {
+    font-size: 16px;
+    line-height: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .library-card {
+    transition: none;
+  }
+}

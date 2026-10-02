@@ -147,6 +147,36 @@ describe('durable attempt context', () => {
     expect(assembleHistory(events, [], 6).inputs.new_user_messages).toEqual([]);
   });
 
+  test("a picked option reads to the agent as a pick from its own options, not the person's words", () => {
+    const result = assembleHistory(
+      [
+        {
+          seq: 1,
+          type: 'notice',
+          payload: {
+            kind: 'user_message',
+            text: 'You chose: Window',
+            chosen: { question_id: 'qst_1', option_id: 'choice_2', offered_by: 'agent' },
+          },
+          createdAt: new Date(at),
+        },
+        {
+          seq: 2,
+          type: 'notice',
+          payload: { kind: 'user_message', text: 'You chose: I always prefer an aisle seat' },
+          createdAt: new Date(later),
+        },
+      ],
+      [],
+      0,
+    );
+    expect(result.inputs.new_user_messages.map((entry) => entry.content)).toEqual([
+      'The person picked your option: Window',
+      // Typed by the person, whatever it starts with, it stays their own words.
+      'You chose: I always prefer an aisle seat',
+    ]);
+  });
+
   test('retains durable tool results and only committed, unfenced summaries or drafts', () => {
     const result = assembleHistory(
       [
@@ -289,6 +319,25 @@ describe('persisted completion evidence', () => {
       artifact_failures: [],
     });
   });
+
+  test.each(['unknown', 'unresolved'])(
+    'an open %s step on a computer that reaches nothing neither holds the turn nor reconciles; any other does',
+    (status) => {
+      const open = { ...records(), actions: [{ ...storedAction, status }] };
+      const own = evaluateCompletion(subject(), completed, {
+        ...records(),
+        actions: [{ ...storedAction, status, closedStep: true }],
+      });
+      expect(own.has_unknown_action).toBe(false);
+      expect(own.all_actions_terminal).toBe(true);
+      const outside = evaluateCompletion(subject(), completed, {
+        ...records(),
+        actions: [{ ...storedAction, status, closedStep: false }],
+      });
+      expect(outside.has_unknown_action).toBe(true);
+      expect(evaluateCompletion(subject(), completed, open).has_unknown_action).toBe(true);
+    },
+  );
 
   test.each(['proposed', 'admitted', 'dispatched'])(
     'an action in %s prevents all-actions-terminal',

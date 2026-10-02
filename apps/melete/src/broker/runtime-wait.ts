@@ -108,6 +108,13 @@ export async function requestRuntimeWait(sql: Sql, claims: CapabilityClaims, inp
         'payload_invalid',
         'Resolve the pending action before waiting for another event.',
       );
+    const [asked] =
+      await tx`SELECT 1 FROM event WHERE dedup_key=${`${claims.attempt_id}:ask-person`}`;
+    if (asked)
+      throw new BrokerFault(
+        'payload_invalid',
+        'This turn asked the person a question. End it; their answer wakes this job.',
+      );
     const key = `${claims.attempt_id}:runtime-wait`;
     const [existing] = await tx`SELECT payload FROM event WHERE dedup_key=${key}`;
     if (

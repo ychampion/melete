@@ -35,7 +35,6 @@ export const procedureChange = z
       !(value.steps.includes('sort-typed-values') && value.steps.includes('sort-text-values')),
     'Choose one ordering rule',
   );
-export type ProcedureChange = z.infer<typeof procedureChange>;
 
 export function compileProcedure(raw: unknown) {
   const change = procedureChange.parse(raw);

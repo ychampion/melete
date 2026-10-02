@@ -14,7 +14,6 @@ import { eq } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
 import { owner, space, trigger } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
-import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { buildAttemptSkeleton } from '../../src/jobs/bundle.ts';
@@ -23,6 +22,7 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -135,7 +135,7 @@ withDb('routines, time zone and setup as the person sees them', () => {
 
   test('each run writes its answer into the routine thread, the list and Home', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     const routine = automationResponse.parse(
       await (
@@ -215,7 +215,7 @@ withDb('routines, time zone and setup as the person sees them', () => {
 
   test('changing the time zone moves every routine and keeps its local hour across DST', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     const routine = automationResponse.parse(
       await (
@@ -268,7 +268,7 @@ withDb('routines, time zone and setup as the person sees them', () => {
 
   test('a routine can be paused, resumed and deleted, and a failed or stopped one says so', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     const create = async (title: string) =>
       automationResponse.parse(
@@ -368,9 +368,84 @@ withDb('routines, time zone and setup as the person sees them', () => {
     expect(await listed(stopped.id)).toBeUndefined();
   });
 
+  test('a stopped routine starts again with the same settings in the old one’s place', async () => {
+    const persona = agentResponse.parse(
+      await (await request('/agents', 'POST', freshAgent())).json(),
+    ).agent;
+    const created = automationResponse.parse(
+      await (
+        await request('/automations', 'POST', {
+          title: 'Weekday brief',
+          instruction: 'Summarize my day',
+          weekdays: [1, 2, 3, 4, 5],
+          at: '06:45',
+          agent_id: persona.id,
+        })
+      ).json(),
+    ).automation;
+    const listed = async () =>
+      experienceOperations['GET /automations'].response.parse(
+        await (await request('/automations')).json(),
+      ).automations;
+    const scheduled = async (id: string) =>
+      (await required(queue).boss.getSchedules(QUEUES.triggerSchedule, id)).length > 0;
+
+    // One that has not ended is resumed, not started again.
+    const early = await request(`/automations/${created.id}/restart`, 'POST');
+    expect(early.status).toBe(409);
+    expect(((await early.json()) as { error: { code: string } }).error.code).toBe(
+      'routine_not_ended',
+    );
+    expect(await scheduled(created.id)).toBe(true);
+
+    await run(created.id, { kind: 'completed', summary: 'A quiet day.', evidence: [] });
+    await required(jobs).cancel(created.conversation_id);
+    expect((await listed()).find((row) => row.id === created.id)?.ended).toBe(true);
+
+    const restarted = await request(`/automations/${created.id}/restart`, 'POST');
+    expect(restarted.status).toBe(200);
+    const fresh = automationResponse.parse(await restarted.json()).automation;
+    expect(fresh).toMatchObject({
+      title: 'Weekday brief',
+      schedule: created.schedule,
+      enabled: true,
+      ended: false,
+      runs: [],
+    });
+    expect(fresh.id).not.toBe(created.id);
+    expect(fresh.conversation_id).not.toBe(created.conversation_id);
+    expect(await required(jobs).get(fresh.conversation_id)).toMatchObject({
+      objective: 'Summarize my day',
+      agentId: persona.id,
+      state: 'waiting_for_event_or_time',
+    });
+    const [registration] = await required(handle)
+      .db.select()
+      .from(trigger)
+      .where(eq(trigger.id, fresh.id));
+    expect(triggerSpec.parse(required(registration).spec)).toMatchObject({
+      kind: 'schedule',
+      cron: '45 6 * * 1,2,3,4,5',
+    });
+    expect(await scheduled(fresh.id)).toBe(true);
+
+    // The person sees one routine; the ended one's thread stays as it was.
+    const rows = await listed();
+    expect(rows.find((row) => row.id === created.id)).toBeUndefined();
+    expect(rows.filter((row) => row.title === 'Weekday brief')).toHaveLength(1);
+    expect(await scheduled(created.id)).toBe(false);
+    expect((await required(jobs).get(created.conversation_id)).state).toBe('cancelled');
+    expect((await request(`/automations/${created.id}/restart`, 'POST')).status).toBe(404);
+
+    // The new routine runs like any other.
+    await run(fresh.id, { kind: 'completed', summary: 'Back on.', evidence: [] });
+    expect((await listed()).find((row) => row.id === fresh.id)?.runs[0]?.summary).toBe('Back on.');
+    expect((await request(`/automations/${fresh.id}`, 'DELETE')).status).toBe(200);
+  });
+
   test('a routine is told the open tasks, and a plan’s chat and steps are told the plan', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     expect(
       (await request('/tasks', 'POST', { title: 'Renew the passport', due_at: null })).status,

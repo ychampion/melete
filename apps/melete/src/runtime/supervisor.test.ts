@@ -130,6 +130,7 @@ server.serve_forever()
         provider: 'melete-gateway',
         default: 'scripted',
         context_length: 128_000,
+        supports_vision: false,
         extra_headers: { 'x-melete-capability': bundle.attempt.token },
       });
       expect(Object.keys(config.providers)).toEqual(['melete-gateway']);

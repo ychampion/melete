@@ -3,13 +3,11 @@
  * requests and parses responses; it never opens a socket, so the whole thing is
  * testable without a container.
  *
- * The six calls Melete uses, all read from the tag rather than assumed
- * (`gateway/platforms/api_server_runs.py:101`,
- * `gateway/platforms/api_server.py:1503`):
+ * The five calls Melete uses, all read from the tag rather than assumed
+ * (`gateway/platforms/api_server_runs.py`, `gateway/platforms/api_server.py`):
  *
  *   GET  /v1/capabilities          what this build supports
  *   POST /v1/runs                  start one bounded attempt
- *   GET  /v1/runs/{id}             status
  *   GET  /v1/runs/{id}/events      the SSE stream, consumed exactly once
  *   POST /v1/runs/{id}/approval    answer a shell-command notification
  *   POST /v1/runs/{id}/stop        cancel
@@ -25,7 +23,6 @@ import { renderInput, renderInstructions } from './instructions.ts';
 export const HERMES_ROUTES = {
   capabilities: '/v1/capabilities',
   runs: '/v1/runs',
-  status: (runId: string) => `/v1/runs/${runId}`,
   events: (runId: string) => `/v1/runs/${runId}/events`,
   approval: (runId: string) => `/v1/runs/${runId}/approval`,
   stop: (runId: string) => `/v1/runs/${runId}/stop`,
@@ -38,33 +35,7 @@ export type HermesRequest = {
   body?: string;
 };
 
-/**
- * The statuses a run can hold. `interrupted` and `cancelled` are terminal on the
- * engine's side (`api_server_run_idempotency.py:17`); `stopping` is what a run
- * shows between `/stop` and the executor noticing.
- */
-export const HERMES_RUN_STATUSES = [
-  'queued',
-  'started',
-  'running',
-  'stopping',
-  'waiting_for_approval',
-  'completed',
-  'failed',
-  'cancelled',
-  'interrupted',
-] as const;
-export const hermesRunStatus = z.object({
-  run_id: z.string(),
-  status: z.enum(HERMES_RUN_STATUSES).catch('running'),
-  error: z.string().nullable().optional(),
-  output: z.string().optional(),
-  usage: z.record(z.string(), z.unknown()).optional(),
-  last_event: z.string().optional(),
-});
-export type HermesRunStatus = z.infer<typeof hermesRunStatus>;
-
-/** `POST /v1/runs` answers 202 with this (`api_server_runs.py:288`). */
+/** `POST /v1/runs` answers 202 with this (`api_server_runs.py`). */
 export const hermesRunAccepted = z.object({
   run_id: z.string().min(1),
   status: z.string(),
@@ -97,22 +68,6 @@ export const hermesCapabilities = z.object({
     .default({}),
 });
 export type HermesCapabilities = z.infer<typeof hermesCapabilities>;
-
-/**
- * What the gateway notifier sends when a shell command needs a decision. Melete
- * does not route its own tool approvals through this; it exists so that a shell
- * command, if one ever appears, surfaces instead of silently denying.
- */
-export const hermesApprovalRequest = z.object({
-  request_id: z.string(),
-  command: z.string().optional(),
-  description: z.string().optional(),
-  pattern_key: z.string().optional(),
-  pattern_keys: z.array(z.string()).optional(),
-  allow_session: z.boolean().optional(),
-  allow_permanent: z.boolean().optional(),
-});
-export type HermesApprovalRequest = z.infer<typeof hermesApprovalRequest>;
 
 /**
  * Melete answers `once` or `deny` and nothing else. A session-wide or permanent
@@ -174,8 +129,7 @@ export class HermesClient {
    * Nothing here configures the engine. Toolsets, memory, context files and the
    * provider all come from the image's `config.yaml`, because the `/v1/runs`
    * body has no fields for them: `_create_agent` reads them from config
-   * (`gateway/platforms/api_server.py:2087`). Sending `toolsets: []` in this
-   * body, as the skeleton did, has no effect at all.
+   * (`gateway/platforms/api_server.py`).
    */
   startRun(bundle: AttemptBundle, continuation: HermesContinuation = {}): HermesRequest {
     const body = {
@@ -198,17 +152,9 @@ export class HermesClient {
     };
   }
 
-  status(runId: string): HermesRequest {
-    return {
-      url: `${this.baseUrl}${HERMES_ROUTES.status(runId)}`,
-      method: 'GET',
-      headers: this.headers(),
-    };
-  }
-
   /**
    * The event stream. It is an in-memory queue with no replay
-   * (`api_server_runs.py:154`), so there is no reconnecting to catch up: Melete
+   * (`api_server_runs.py`), so there is no reconnecting to catch up: Melete
    * consumes it once, persists before fan-out, and treats a dropped stream as a
    * dead attempt. `Last-Event-ID` is not sent, because nothing would honour it.
    */
@@ -296,7 +242,7 @@ export function parseSse(buffer: string): { messages: SseMessage[]; rest: string
 
 /**
  * One frame off the run stream. `event` is the name and the rest is flat
- * (`api_server_runs.py:64`), which is why this is a loose record rather than a
+ * (`api_server_runs.py`), which is why this is a loose record rather than a
  * discriminated union: a future engine event must not fail the parse and lose
  * the frames around it.
  */

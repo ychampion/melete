@@ -34,6 +34,7 @@ const QUESTION: Question = {
   text: 'Want me to hold the ryokan?',
   why: ['Your answer decides the next step.'],
   if_ignored: 'This conversation waits for your answer.',
+  free_text: true,
   options: [
     { id: 'hold', label: 'Hold it · Ask before paying the deposit' },
     { id: 'later', label: 'Not yet · Come back to it next week' },
@@ -84,12 +85,12 @@ test('an answered question shows the option whose words were chosen', () => {
   expect(block?.type === 'question' && block.answered).toBe('hold');
 });
 
-test('a withdrawn question, or one answered in the person’s own words, closes without an option', () => {
+test('a withdrawn question says so, and one answered in the person’s own words closes without an option', () => {
   const [withdrawn] = blocks([
     event({ type: 'question', question: QUESTION }),
     decided('question', 'q_1', 'withdrawn'),
   ]);
-  expect(withdrawn?.type === 'question' && withdrawn.answered).toBe('closed');
+  expect(withdrawn?.type === 'question' && withdrawn.answered).toBe('withdrawn');
   const [own] = blocks([
     event({ type: 'question', question: { ...QUESTION, id: 'q_2' } }),
     decided('question', 'q_2', 'answered', 'Only if it has a garden'),

@@ -9,6 +9,7 @@ import {
   unavailable,
 } from '@melete/contracts';
 import { and, desc, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm';
+import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import {
   artifact,
@@ -25,6 +26,7 @@ import type { JobRow } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 import { ownJob } from '../principals/authority.ts';
 import { answerText, object, plainText } from './projectors.ts';
+import { removeJobs } from './removal.ts';
 import { type ExperienceService, experienceMissing } from './service.ts';
 
 export const stateLabel = (
@@ -74,8 +76,13 @@ export function excerpt(answer: string, limit = 280): string | null {
 function runReason(status: string, outcome: string | null, detail: unknown): string | null {
   if (status === 'done' || status === 'working' || status === 'queued') return null;
   const value = object(detail);
-  if (outcome === 'failed')
-    return `It failed: ${plainText(value.reason, 'the run stopped with an error.', 300)}`;
+  if (outcome === 'failed') {
+    const reason = plainText(value.reason, 'the run stopped with an error.', 300);
+    // The model gateway's allowance is the usual cause, and it is reported by code.
+    if (/token_cap_exceeded|\b429\b/.test(reason))
+      return 'Today’s model allowance ran out, so it stopped. It runs again at its next time, or you can choose another model in Settings › Models.';
+    return `It failed: ${reason}`;
+  }
   if (outcome === 'budget_exhausted') return 'It ran out of time or allowance before it finished.';
   if (outcome === 'fenced') return 'It was stopped before it finished.';
   if (outcome === 'completed')
@@ -240,6 +247,27 @@ export class ExperiencePlanning {
       await tx.update(job).set({ updatedAt: new Date() }).where(eq(job.id, id));
     });
     return { plan: await this.view(await this.requirePlan(spaceId, id)) };
+  }
+  /**
+   * Delete a plan and its steps. Work on a step is stopped first, the way a
+   * deleted chat's is; chats started from the plan stay, no longer linked.
+   */
+  async remove(spaceId: string, id: string, raw: Sql | undefined) {
+    await this.requirePlan(spaceId, id);
+    const jobs = this.service.jobs;
+    if (!jobs || !raw) return unavailable('Plans are not connected yet.');
+    const steps = await this.db
+      .select({ id: job.id })
+      .from(job)
+      .where(
+        and(eq(job.planId, id), eq(job.spaceId, spaceId), eq(job.kind, 'milestone'), ownJob()),
+      );
+    await removeJobs({ jobs, sql: raw, runner: this.service.runner }, [
+      id,
+      ...steps.map((step) => step.id),
+    ]);
+    await this.triggers?.syncSchedules();
+    return { status: 'ok' as const };
   }
   async conversation(spaceId: string, id: string, agentId: string) {
     const plan = await this.requirePlan(spaceId, id);
@@ -422,7 +450,7 @@ export class ExperiencePlanning {
     const input = automationCreate.parse(raw);
     if (!this.triggers || !this.service.jobs)
       return unavailable('Scheduled routines are not connected yet.');
-    await this.service.requireAgent(spaceId, input.agent_id);
+    const runner = await this.service.agentOrDefault(spaceId, input.agent_id);
     const [profile] = await this.db
       .select()
       .from(experienceProfile)
@@ -434,22 +462,45 @@ export class ExperiencePlanning {
       cron: `${minute} ${hour} * * ${days}`,
       timezone: profile?.timeZone ?? 'UTC',
     });
+    return this.register(spaceId, {
+      title: input.title,
+      objective: input.instruction,
+      agentId: runner.id,
+      spec,
+    });
+  }
+  /**
+   * Saves a routine: its own thread, resting until its schedule fires. A
+   * routine started again from an ended one takes the old one's place, so the
+   * ended registration goes in the same transaction.
+   */
+  private async register(
+    spaceId: string,
+    routine: {
+      title: string;
+      objective: string;
+      agentId: string;
+      spec: ReturnType<typeof triggerSpec.parse>;
+    },
+    replaces?: string,
+  ) {
     const jobs = this.service.jobs;
+    if (!this.triggers || !jobs) return unavailable('Scheduled routines are not connected yet.');
     const registration = await jobs.transaction(async (tx) => {
       const row = await jobs.createInTransaction(
         tx,
         {
           space_id: spaceId,
-          title: input.title,
-          objective: input.instruction,
+          title: routine.title,
+          objective: routine.objective,
           scheduling_class: 'background',
           importance: 'routine',
         },
-        { kind: 'routine', agentId: input.agent_id, dormant: true },
+        { kind: 'routine', agentId: routine.agentId, dormant: true },
       );
       const [registration] = await tx
         .insert(trigger)
-        .values({ id: newId('trg'), jobId: row.id, kind: 'schedule', spec })
+        .values({ id: newId('trg'), jobId: row.id, kind: 'schedule', spec: routine.spec })
         .returning();
       if (!registration) throw new Error('Routine was not saved.');
       await tx
@@ -460,11 +511,19 @@ export class ExperiencePlanning {
           nextWakeAt: null,
         })
         .where(eq(job.id, row.id));
+      if (replaces) {
+        // A second start of the same ended routine finds it gone and saves nothing.
+        const gone = await tx
+          .delete(trigger)
+          .where(eq(trigger.id, replaces))
+          .returning({ id: trigger.id });
+        if (!gone.length) throw experienceMissing();
+      }
       return registration;
     });
     await this.triggers.syncSchedules();
     return {
-      automation: await this.automation(registration, input.title, 'waiting_for_event_or_time'),
+      automation: await this.automation(registration, routine.title, 'waiting_for_event_or_time'),
     };
   }
   private async requireAutomation(spaceId: string, id: string) {
@@ -525,6 +584,31 @@ export class ExperiencePlanning {
     return {
       automation: await this.automation({ ...row.trigger, enabled }, row.job.title, row.job.state),
     };
+  }
+  /**
+   * Starts an ended routine again: a new routine with the same title,
+   * instruction, assistant and schedule takes the ended one's place on the
+   * list. The ended one's thread and runs stay as they were.
+   */
+  async restartAutomation(spaceId: string, id: string) {
+    const row = await this.requireAutomation(spaceId, id);
+    if (!isTerminal(jobState.parse(row.job.state)))
+      throw new ServiceError(
+        'routine_not_ended',
+        'This routine has not ended. Resume it instead of starting it again.',
+        409,
+      );
+    const runner = await this.service.agentOrDefault(spaceId, row.job.agentId ?? undefined);
+    return this.register(
+      spaceId,
+      {
+        title: row.job.title,
+        objective: row.job.objective,
+        agentId: runner.id,
+        spec: triggerSpec.parse(row.trigger.spec),
+      },
+      row.trigger.id,
+    );
   }
   /** Stops the routine, a run under way included, and takes it off the list. */
   async deleteAutomation(spaceId: string, id: string) {

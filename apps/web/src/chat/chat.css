@@ -597,15 +597,6 @@ button.act-line:focus-visible,
     flex: 1;
   }
 }
-.result-facts {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--secondary);
-}
 .receipt {
   display: flex;
   flex-direction: row;
@@ -710,6 +701,7 @@ button.act-line:focus-visible,
 .permission-head {
   display: flex;
   flex-direction: row;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 12px;
   padding: 16px 16px 0;
@@ -717,6 +709,18 @@ button.act-line:focus-visible,
 .permission:not([data-pending="true"]) .permission-head {
   align-items: center;
   padding-bottom: 16px;
+}
+/* The outcome pill never squeezes the title: a long one wraps onto its own
+   line, and its words wrap inside it. */
+.permission-head > .col.grow {
+  flex: 1 1 180px;
+}
+.permission-head > .status-pill {
+  max-width: 100%;
+  height: auto;
+  min-height: 22px;
+  padding-block: 3px;
+  white-space: normal;
 }
 .permission-lock {
   display: inline-flex;
@@ -729,9 +733,15 @@ button.act-line:focus-visible,
   color: var(--sand-ink);
   flex-shrink: 0;
 }
-.permission-lock[data-done="true"] {
+.permission-lock[data-outcome="allowed"] {
   background: var(--success-soft);
   color: var(--success);
+}
+.permission-lock[data-outcome="denied"],
+.permission-lock[data-outcome="withdrawn"],
+.permission-lock[data-outcome="decided"] {
+  background: var(--chip-bg);
+  color: var(--secondary);
 }
 .permission-what {
   font-size: 14px;
@@ -744,6 +754,14 @@ button.act-line:focus-visible,
   font-size: 13px;
   line-height: 18px;
   color: var(--muted);
+}
+/* The request a card is for, on one line: a long chat title ends in an ellipsis. */
+.permission-for {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 /* What auto-review decided: on a receipt it let through, or a card it sent to the person. */
 .review-note {
@@ -857,6 +875,13 @@ button.act-line:focus-visible,
 @media (max-width: 767px) {
   .permission-head {
     padding: 14px 14px 0;
+  }
+  /* On a phone the outcome sits under the title, lined up with it. */
+  .permission-head > .col.grow {
+    flex-basis: calc(100% - 46px);
+  }
+  .permission-head > .status-pill {
+    margin-left: 46px;
   }
   .permission-body {
     padding: 12px 14px 14px;
@@ -1548,13 +1573,16 @@ button.act-line:focus-visible,
   display: none;
 }
 
-/* ---------- voice mode: the panel where the composer was ---------- */
+/* ---------- voice mode: the call, where the composer was ---------- */
 .voice-panel {
-  display: flex;
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "head actions"
+    "body body";
   align-items: center;
-  gap: 14px;
-  padding: 14px 14px 14px 16px;
+  gap: 10px 14px;
+  padding: 12px 12px 14px 14px;
   border-radius: 16px;
   background: var(--surface);
   border: 1px solid var(--line-strong);
@@ -1567,20 +1595,34 @@ button.act-line:focus-visible,
   border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--ring);
 }
-.voice-orb {
+.voice-head {
+  grid-area: head;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.voice-face {
   position: relative;
-  width: 40px;
-  height: 40px;
+  display: inline-flex;
   flex-shrink: 0;
+}
+/* The call's state, as a dot on the agent's face. */
+.voice-orb {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 14px;
+  height: 14px;
   border-radius: 999px;
-  background: var(--soft);
+  background: var(--surface);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 .voice-orb > span {
-  width: 14px;
-  height: 14px;
+  width: 8px;
+  height: 8px;
   border-radius: 999px;
   background: var(--control);
   transition: transform 0.2s;
@@ -1599,32 +1641,90 @@ button.act-line:focus-visible,
 }
 @keyframes voice-breathe {
   50% {
-    transform: scale(1.5);
+    transform: scale(1.4);
   }
 }
-.voice-body {
-  flex: 1;
+.voice-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
 }
 .voice-phase {
   font-size: 12px;
   font-weight: 600;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.voice-timer {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.voice-body {
+  grid-area: body;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .voice-caption {
   margin: 0;
-  font-family: var(--font-voice);
-  font-size: 17px;
-  line-height: 24px;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+.voice-caption[data-who="problem"] {
+  display: block;
+  font-size: 15px;
+  line-height: 22px;
   color: var(--heading);
+}
+.voice-speaker {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.voice-words {
+  font-family: var(--font-voice);
+  font-size: 16px;
+  line-height: 23px;
+  color: var(--text);
   overflow-wrap: anywhere;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.voice-caption[data-who="agent"] .voice-words {
+  color: var(--heading);
+  -webkit-line-clamp: 3;
+}
+.voice-kept {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 0;
+}
+.voice-kept-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .voice-link {
   align-self: flex-start;
@@ -1637,6 +1737,7 @@ button.act-line:focus-visible,
   text-underline-offset: 2px;
 }
 .voice-actions {
+  grid-area: actions;
   display: flex;
   flex-direction: row;
   gap: 6px;
@@ -1645,6 +1746,7 @@ button.act-line:focus-visible,
 .voice-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   height: 36px;
   padding: 0 12px;
@@ -1669,18 +1771,49 @@ button.act-line:focus-visible,
   outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
+/* Minimised: one slim bar above the composer while the call goes on. */
+.chat-foot[data-call="minimised"] {
+  padding-bottom: 8px;
+}
+/* The jump pill sits above the call bar, not on it. */
+.chat-foot[data-call="minimised"] ~ .chat-foot .jump-pill {
+  bottom: calc(100% + 62px);
+}
+.voice-panel[data-minimised] {
+  grid-template-areas: "head actions";
+  padding: 6px 6px 6px 10px;
+  border-radius: 12px;
+}
+.voice-panel[data-minimised] .voice-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.voice-panel[data-minimised] .voice-btn-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
 @media (max-width: 767px) {
-  .voice-panel {
-    flex-wrap: wrap;
-    gap: 10px 12px;
+  .voice-panel:not([data-minimised]) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "head"
+      "body"
+      "actions";
   }
-  .voice-actions {
-    width: 100%;
-  }
-  .voice-btn {
+  .voice-panel:not([data-minimised]) .voice-btn {
     flex: 1;
-    justify-content: center;
     height: 44px;
+  }
+  .voice-panel[data-minimised] .voice-phase {
+    display: none;
+  }
+  .voice-caption {
+    grid-template-columns: 52px minmax(0, 1fr);
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1707,11 +1840,204 @@ button.act-line:focus-visible,
   text-decoration: underline;
 }
 .answer-code {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.86em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82em;
   padding: 1px 5px;
   border-radius: 5px;
-  background: var(--line);
+  background: var(--chip-bg);
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- answer Markdown: prose in the voice face, structure in the UI face ---------- */
+.answer-link {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.answer-link:hover {
+  text-decoration-thickness: 2px;
+}
+.answer-heading {
+  font-family: var(--font-body);
+  font-weight: 600;
+  color: var(--heading);
+  letter-spacing: -0.01em;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.answer-heading[data-level="1"] {
+  font-size: 17px;
+  line-height: 24px;
+}
+.answer-heading[data-level="2"] {
+  font-size: 15px;
+  line-height: 22px;
+}
+.answer-heading[data-level="3"] {
+  font-size: 14px;
+  line-height: 20px;
+}
+.answer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 22px;
+  font-family: var(--font-voice);
+  font-size: 17px;
+  line-height: 28px;
+  letter-spacing: -0.012em;
+  color: var(--heading);
+}
+ul.answer-list {
+  list-style: disc;
+}
+ol.answer-list {
+  list-style: decimal;
+}
+.answer-list .answer-list {
+  margin-top: 6px;
+}
+.answer-list li {
+  padding-left: 2px;
+  overflow-wrap: anywhere;
+}
+.answer-list li::marker {
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+.answer-list li[data-task="true"] {
+  list-style: none;
+  margin-left: -20px;
+}
+.answer-list li > p {
+  margin-top: 6px;
+}
+.answer-task {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  color: var(--surface);
+}
+.answer-task[data-done="true"] {
+  background: var(--primary);
+  box-shadow: none;
+}
+.answer-quote {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--line-strong);
+}
+.turn-text .answer-quote p {
+  color: var(--secondary);
+}
+.answer-pre {
+  border-radius: 10px;
+  background: var(--soft);
+  box-shadow: inset 0 0 0 1px var(--line);
+  min-width: 0;
+  overflow: hidden;
+}
+.answer-pre-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 0 14px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 28px;
+  color: var(--muted);
+}
+.answer-pre-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.answer-pre-copy:hover {
+  background: var(--chip-bg);
+  color: var(--heading);
+}
+.answer-pre pre {
+  margin: 0;
+  padding: 6px 14px 12px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--heading);
+  white-space: pre;
+  tab-size: 4;
+}
+.answer-pre pre:focus-visible,
+.answer-table:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ring);
+}
+.answer-pre[data-terminal="true"] {
+  background: #17181b;
+  box-shadow: inset 0 0 0 1px #2b2e33;
+}
+.answer-pre[data-terminal="true"] pre {
+  color: #e6e7ea;
+}
+.answer-pre[data-terminal="true"] .answer-pre-head,
+.answer-pre[data-terminal="true"] .answer-pre-copy {
+  color: #a4a9b2;
+}
+.answer-pre[data-terminal="true"] .answer-pre-copy:hover {
+  background: #2b2e33;
+  color: #f3f4f6;
+}
+.answer-table {
+  overflow-x: auto;
+  min-width: 0;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.answer-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text);
+}
+.answer-table th,
+.answer-table td {
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+.answer-table th {
+  font-weight: 600;
+  color: var(--heading);
+  background: var(--soft);
+  white-space: nowrap;
+}
+.answer-table tr:last-child td {
+  border-bottom: 0;
 }
 
 /* Under the header: this chat is kept private because of what was said in it. */

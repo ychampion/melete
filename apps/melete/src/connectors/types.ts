@@ -51,11 +51,19 @@ export interface Connector {
   verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult>;
   /**
    * What a dispatch is settled as when the process that sent it ended before
-   * its answer came back, for a connector that can say more than "unknown": a
-   * command in the agent's own sandbox can read its marker, and anything it
-   * did stays inside that sandbox. Without it, such a dispatch is unknown.
+   * its answer came back. Called only for such orphaned dispatches, and only
+   * for a connector that opts in by defining it: a command in the agent's own
+   * sandbox can read its marker. It returns `failed` only when that record
+   * shows the step never started; anything still open stays `unknown`, so a
+   * late receipt can still land. Without it, such a dispatch is unknown.
    */
   abandoned?(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
+  /**
+   * Its steps run on the agent's own computer. An outcome left open stays
+   * `unknown`, but it is the agent's to check (a screenshot, the page, what a
+   * command left behind), so the person is never asked whether it worked.
+   */
+  ownComputer?: boolean;
   /**
    * How long one dispatch of this action may take before its outcome is
    * unknown, for a connector whose work may outlast the broker's own dispatch

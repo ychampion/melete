@@ -33,8 +33,10 @@ from .terminal_backend import (
     MAX_TIMEOUT_MS,
     SESSION_MARGIN_SECONDS,
     TERMINAL_TOOL,
+    command_wait_seconds,
     register_terminal_backend,
 )
+from .vision import attach as attach_picture
 
 #: `run.try` runs its first command, then its variants side by side, each up
 #: to the command limit plus the time the broker allows around a sandbox command.
@@ -178,8 +180,11 @@ def build_handler(
                     "schema_fingerprint": loaded.get("schema_fingerprint"),
                     "instruction": "The tool is loaded. This run will continue with its schema.",
                 }
+            # ask_person records a question for the person; the broker decides
+            # whether it may be asked and the service makes the job wait on it.
             if connection_id is None and (
-                name.startswith(("skills.", "run.")) or name in ("compose", "chase.follow_up")
+                name.startswith(("skills.", "run."))
+                or name in ("compose", "chase.follow_up", "ask_person")
             ):
                 # A measured try runs its commands in the sandbox before it answers.
                 wait = RUN_TRY_WAIT_SECONDS if name == "run.try" else None
@@ -227,12 +232,17 @@ def build_handler(
         display = None
         payload = {"intent": arguments} if language is not None else arguments
 
+        # A sandbox command is run by the broker before it answers, for as long
+        # as the command's own timeout and the sandbox's setup allow. The
+        # ordinary round-trip timeout would stop waiting while it still runs.
+        wait = command_wait_seconds(arguments.get("timeout_ms")) if name == TERMINAL_TOOL else None
         try:
             response = client.propose(
                 kind=name,
                 connection_id=str(connection_id),
                 payload=payload,
                 client_ref=_client_ref(name, payload, read=tool.get("effect_class") == "read"),
+                timeout=wait,
             )
         except BrokerError as error:
             return refuse(error)
@@ -316,10 +326,23 @@ def _client_ref(name: str, arguments: Dict[str, Any], *, read: bool = False) -> 
     return f"{scope}:{name}:{digest}"
 
 
-def engine_handler(handler: Callable[..., Dict[str, Any]]) -> Callable[..., str]:
+def engine_result(name: str, result: Dict[str, Any]) -> Any:
+    """What the engine's registry is handed for one result.
+
+    A JSON string (tools/registry.py:792), except for a screenshot shown to a
+    model that reads images: then the engine's multimodal envelope, which the
+    registry passes through as it is (``_normalize_handler_result``).
+    """
+    shaped = attach_picture(name, result)
+    if isinstance(shaped, dict) and shaped.get("_multimodal") is True:
+        return shaped
+    return json.dumps(result, ensure_ascii=False)
+
+
+def engine_handler(handler: Callable[..., Dict[str, Any]], name: str = "") -> Callable[..., Any]:
     """Serialize results; engine keyword metadata is not a connector payload."""
-    def forward(args: Optional[Dict[str, Any]] = None, **_runtime_context: Any) -> str:
-        return json.dumps(handler(dict(args or {})), ensure_ascii=False)
+    def forward(args: Optional[Dict[str, Any]] = None, **_runtime_context: Any) -> Any:
+        return engine_result(name, handler(dict(args or {})))
 
     return forward
 
@@ -379,11 +402,12 @@ def register_tools(ctx: Any, client: BrokerClient) -> List[str]:
             return False
         forward = build_handler(client, tool, register_one)
 
-        def wire_handler(args: Optional[Dict[str, Any]] = None, **_metadata: Any) -> str:
+        def wire_handler(args: Optional[Dict[str, Any]] = None, **_metadata: Any) -> Any:
             # model_tools supplies task/session/user_task as keyword metadata;
             # none belongs in the proposed payload. Registry results must be
-            # JSON strings (tools/registry.py:792), not ordinary Python dicts.
-            return json.dumps(forward(args), ensure_ascii=False)
+            # JSON strings (tools/registry.py:792), not ordinary Python dicts,
+            # or the engine's multimodal envelope for a screenshot.
+            return engine_result(name, forward(args))
 
         ctx.register_tool(
             name=name,
