@@ -532,6 +532,12 @@ withDb('room memory', () => {
     const { sql, memory: started } = database();
     const roomId = await makeRoom('Calls', [bob, carol]);
     const opened = await startThread(carol, roomId, 'Planning the calls for Friday.');
+    const aside = await post(
+      carol,
+      roomId,
+      opened.thread.id,
+      'Ring her office line in Porto first.',
+    );
     const asked = await post(
       bob,
       roomId,
@@ -544,9 +550,18 @@ withDb('room memory', () => {
     expect((await roomMemory(bob, roomId)).items.map((item) => item.content)).toContain(
       '+351 914 141 414',
     );
-    // The request is under way, holding the thread as it was.
+    // A request under way read the whole thread. Carol deletes her aside, which
+    // taught memory nothing: the request still starts again without it.
+    const reading = await attemptOf(jobId);
+    expect(JSON.stringify(reading.bundle)).toContain('office line in Porto');
+    await ok(send(carol.cookie, `/rooms/${roomId}/messages/${aside.message.id}`, 'DELETE'));
+    const [stopped] =
+      await sql`select outcome from attempt where id = ${reading.bundle.attempt.id}`;
+    expect(stopped?.outcome).toBe('fenced');
+    // The request is under way again, holding the thread as it now is.
     const running = await attemptOf(jobId);
     expect(JSON.stringify(running.bundle)).toContain('914 141 414');
+    expect(JSON.stringify(running.bundle)).not.toContain('office line in Porto');
     const restoreBackup = await backup(roomId);
 
     // Only the person who wrote it deletes it.

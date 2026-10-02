@@ -152,6 +152,11 @@ const SPACE_KEYED_OPERATIONAL = [
   // configuration left go here, since an emptied space keeps its row and the
   // cascade from it never fires.
   'browser_site_profile',
+  // A room's threads, the messages said in them and who was looking. An
+  // emptied room keeps its space row, so the cascade from it never fires.
+  'room_presence',
+  'room_message',
+  'room_thread',
 ] as const;
 
 /**
