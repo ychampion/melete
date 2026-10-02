@@ -630,7 +630,7 @@ describeWithDb('the model, connected in the app', () => {
     const cookie = await owner(api);
     await api.call('/model-settings/keys/fireworks', cookie, put({ api_key: FIREWORKS_KEY }));
     const tested = await api.call('/model-settings/test', cookie, post({ provider: 'fireworks' }));
-    expect(tested.body).toMatchObject({ ok: true, models: [BLIND, SEES] });
+    expect(tested.body).toMatchObject({ ok: true, models: [SEES, BLIND] });
     const choose = async (model: string, supports_vision?: boolean | null) => {
       const chosen = await api.call(
         '/model-settings/default',

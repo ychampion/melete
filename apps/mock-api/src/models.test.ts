@@ -24,21 +24,23 @@ test("the owner's answer on images is kept with the model, and cleared with it",
     modelSettingsResponse.parse(await (await app.request('/model-settings')).json()).active;
   const model = 'accounts/fireworks/models/deepseek-v4p1-flash';
 
-  expect(await read()).toMatchObject({ vision: false, vision_source: 'catalog' });
-  expect(await call('PUT', { provider: 'fireworks', model, supports_vision: true })).toMatchObject({
-    vision: true,
-    vision_source: 'app',
-    source: 'app',
-  });
+  expect(await read()).toMatchObject({ vision: true, vision_source: 'catalog' });
+  expect(await call('PUT', { provider: 'fireworks', model, supports_vision: false })).toMatchObject(
+    {
+      vision: false,
+      vision_source: 'app',
+      source: 'app',
+    },
+  );
   expect(await call('PUT', { provider: 'fireworks', model, supports_vision: null })).toMatchObject({
-    vision: false,
+    vision: true,
     vision_source: 'catalog',
   });
-  await call('PUT', { provider: 'fireworks', model, supports_vision: true });
+  await call('PUT', { provider: 'fireworks', model, supports_vision: false });
   // Choosing a model again without an answer starts from the catalog.
   expect(await call('PUT', { provider: 'fireworks', model })).toMatchObject({
-    vision: false,
+    vision: true,
     vision_source: 'catalog',
   });
-  expect(await call('DELETE')).toMatchObject({ vision: false, source: 'operator' });
+  expect(await call('DELETE')).toMatchObject({ vision: true, source: 'operator' });
 });

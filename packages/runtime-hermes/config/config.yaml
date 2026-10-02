@@ -104,7 +104,7 @@ compression:
   # to three quarters below 512,000 tokens and floored at 64,000; this caps that
   # so a large window does not accumulate a fortune of context before the first
   # summary, and keeps every request inside the body the gateway accepts.
-  threshold_tokens: 200000
+  threshold_tokens: 131072
 
 auxiliary:
   # Melete owns job titles and learning. These side calls must not enter an
@@ -142,8 +142,8 @@ model:
   context_length: 1000000
   # Whether a screenshot tool's picture goes to the model, read ahead of any
   # catalog the engine cannot reach from here. The image's default model reads
-  # text only; the entrypoint sets this for the model the attempt was granted.
-  supports_vision: false
+  # images; the entrypoint sets this for the model the attempt was granted.
+  supports_vision: true
 
 providers:
   # The only endpoint the runtime may reach for inference is Melete's model
