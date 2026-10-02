@@ -525,10 +525,14 @@ export class SandboxProcesses {
           continue;
         }
         // Stopped under a session that says it runs: whatever ran in it ended
-        // with it. A suspended computer is not that: it was meant to stop.
-        if (where !== 'running' && session.status === 'ready') {
+        // with it. Suspended where a suspend ends processes: the same. A
+        // computer that keeps its processes through a suspend is not that.
+        const ends = session.status === 'ready' || !held.provider.capabilities.keepAwake;
+        if (where !== 'running' && ends) {
+          const reason =
+            session.status === 'ready' ? END_REASONS.computer_stopped : END_REASONS.suspended;
           for (const { row } of members) {
-            await this.close(row.id, 'lost', END_REASONS.computer_stopped);
+            await this.close(row.id, 'lost', reason);
             ended.push(row.id);
           }
           continue;

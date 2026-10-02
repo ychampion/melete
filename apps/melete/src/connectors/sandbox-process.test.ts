@@ -960,4 +960,33 @@ withDb('background processes in the agent computer', () => {
       expect.objectContaining({ status: 'paused', held_by: null }),
     ]);
   }, 60_000);
+
+  test('an attempt that ended without settling its computer leaves it held by its processes', async () => {
+    const s = await setup();
+    const id = String(s.detail(await s.run('process.start', { command: 'serve' })).process_id);
+    // The service stopped as the attempt ended: nothing settled its computer.
+    await db()`update attempt set ended_at = now() where id = ${s.firstAttempt}`;
+    await wiringFor(s).sweep(AbortSignal.timeout(10_000));
+    expect([...(await sessionRows(s.scope.agentId))]).toEqual([
+      expect.objectContaining({ status: 'ready', attempt_id: null, held_by: 'processes' }),
+    ]);
+    expect(s.provider.calls.pause).toBe(0);
+    expect((await s.processes.get(id))?.state).toBe('running');
+  }, 60_000);
+
+  test('a suspend that ends processes closes their records, even when nothing stopped them first', async () => {
+    const s = await setup({ capabilities: { keepAwake: false } });
+    const id = String(s.detail(await s.run('process.start', { command: 'serve' })).process_id);
+    await db()`update attempt set ended_at = now() where id = ${s.firstAttempt}`;
+    // The sweep suspends the computer, which on this provider ends what ran in it.
+    await wiringFor(s).sweep(AbortSignal.timeout(10_000));
+    expect([...(await sessionRows(s.scope.agentId))]).toEqual([
+      expect.objectContaining({ status: 'paused' }),
+    ]);
+    await s.processes.sweep(s.providers, AbortSignal.timeout(10_000));
+    expect(await s.processes.get(id)).toMatchObject({
+      state: 'lost',
+      endReason: END_REASONS.suspended,
+    });
+  }, 60_000);
 });

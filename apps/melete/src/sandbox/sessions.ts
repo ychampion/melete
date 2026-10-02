@@ -670,14 +670,16 @@ export class SandboxSessions {
    * At the end of its attempt, keep a workspace running for the processes
    * still in it instead of suspending it: the attempt lets go, and the
    * processes hold it. Returns the row, or null when it is not a ready
-   * workspace of this attempt with live processes.
+   * workspace of this attempt with live processes. A null attempt is the
+   * sweep's: whatever attempt the row names, it is gone.
    */
-  async holdForProcesses(id: string, attemptId: string): Promise<SessionRow | null> {
+  async holdForProcesses(id: string, attemptId: string | null): Promise<SessionRow | null> {
     const [row] = await this.sql`update sandbox_session set attempt_id = null,
         held_by = 'processes',
         lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds}),
         seconds_charged = extract(epoch from now() - opened_at)
-      where id = ${id} and attempt_id = ${attemptId} and status = 'ready'
+      where id = ${id} and status = 'ready' and held_by is distinct from 'processes'
+        and ${attemptId === null ? this.sql`true` : this.sql`attempt_id = ${attemptId}`}
         and agent_id is not null and persistence <> 'ephemeral'
         and ${liveProcesses(this.sql)}
       returning *`;
@@ -1192,6 +1194,10 @@ export class SandboxSessions {
       if (!provider) continue;
       const workspace = candidate.agentId !== null && candidate.persistence !== 'ephemeral';
       if (workspace && candidate.status === 'ready') {
+        // An attempt that ended without settling its computer (the service
+        // stopped, say) leaves its processes to hold it, as its end would have.
+        if (provider.capabilities.keepAwake && (await this.holdForProcesses(candidate.id, null)))
+          continue;
         // A workspace outlives its attempt: it is suspended, not destroyed.
         await this.suspendWorkspace(candidate.id, provider, signal).catch(() => {
           // Recorded on the row, which keeps running; the next sweep tries again.
