@@ -260,11 +260,7 @@ export function PrivacyTab() {
           }}
         />
         <div className="row" style={{ gap: 8 }}>
-          <Button
-            onClick={() => void runPreview()}
-            loading={previewing}
-            disabled={previewing}
-          >
+          <Button onClick={() => void runPreview()} loading={previewing} disabled={previewing}>
             Preview
           </Button>
         </div>

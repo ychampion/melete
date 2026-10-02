@@ -164,12 +164,7 @@ export function NotificationsTab() {
           }
         >
           {pushSupported() && configured && !here ? (
-            <Button
-              icon="bell"
-              loading={busy}
-              disabled={busy}
-              onClick={() => void turnOn()}
-            >
+            <Button icon="bell" loading={busy} disabled={busy} onClick={() => void turnOn()}>
               Turn on here
             </Button>
           ) : null}
