@@ -145,6 +145,8 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'browser.read': ['Reading the page', 'Read the page'],
   'browser.submit': ['Submitting a form', 'Submitted a form'],
   'artifact.publish': ['Publishing a file', 'Published a file'],
+  'apps.publish': ['Publishing an app', 'Published an app'],
+  'apps.rollback': ['Changing the version of an app', 'Changed the version of an app'],
   'audio.synthesize': ['Making audio', 'Made audio'],
   'audio.transcribe': ['Transcribing a recording', 'Transcribed a recording'],
   'test.read': ['Checking the connected app', 'Checked the connected app'],
@@ -174,6 +176,7 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
 /** The past-tense verbs of the labels above, as a permission card asks for them. */
 const ASKED: Record<string, string> = {
   Added: 'Add',
+  Changed: 'Change',
   Chose: 'Choose',
   Clicked: 'Click',
   Created: 'Create',
@@ -348,6 +351,74 @@ function sandboxFacts(kind: string, payload: Record<string, unknown>) {
       label: 'Computer',
       value: "The agent's own computer, not yours",
     },
+  ];
+}
+
+const KB = 1024;
+const appBytes = (bytes: number) =>
+  bytes < KB
+    ? `${bytes} bytes`
+    : bytes < KB * KB
+      ? `${Math.round(bytes / KB)} KB`
+      : `${(bytes / KB / KB).toFixed(1)} MB`;
+
+/** What a permission card asks for an app: its name, never only "an app". */
+function appAsk(kind: string, payload: Record<string, unknown>): string | null {
+  const name = typeof payload.name === 'string' ? plainText(payload.name, '', 200) : '';
+  if (kind === 'apps.publish')
+    return name ? `Publish ${name}${payload.create === true ? '' : ' (a new version)'}` : null;
+  if (kind === 'apps.rollback') return name ? `Change which version of ${name} people see` : null;
+  return null;
+}
+
+/**
+ * Everything a person needs to decide on publishing an app: how much it is,
+ * who will be able to open it, and which data it shows them, all bound into
+ * the payload before the question was asked.
+ */
+function appFacts(kind: string, payload: Record<string, unknown>) {
+  if (kind === 'apps.rollback') {
+    const at = typeof payload.version_published_at === 'string' ? payload.version_published_at : '';
+    return [
+      ...(typeof payload.name === 'string'
+        ? [{ label: 'App', value: plainText(payload.name, 'App', 200) }]
+        : []),
+      { label: 'Version', value: at ? `The one published ${at}` : 'An earlier version' },
+    ];
+  }
+  if (kind !== 'apps.publish') return [];
+  const audience = object(payload.audience);
+  const emails = Array.isArray(audience.emails) ? audience.emails.map(String) : [];
+  const viewers =
+    audience.kind === 'everyone'
+      ? 'Everyone with an account here'
+      : audience.kind === 'people' && emails.length
+        ? `You and ${emails.join(', ')}`
+        : audience.kind === 'unchanged' && typeof audience.now === 'string'
+          ? `Unchanged: ${audience.now}`
+          : 'Only you';
+  const shown = Array.isArray(payload.data_shown) ? payload.data_shown.map(String) : [];
+  const collections = Object.keys(object(payload.collections));
+  const files = typeof payload.file_count === 'number' ? payload.file_count : 0;
+  const bytes = typeof payload.total_bytes === 'number' ? payload.total_bytes : 0;
+  return [
+    ...(typeof payload.name === 'string'
+      ? [{ label: 'App', value: plainText(payload.name, 'App', 200) }]
+      : []),
+    {
+      label: 'Files',
+      value: `${files} ${files === 1 ? 'file' : 'files'}, ${appBytes(bytes)}`,
+    },
+    { label: 'Viewers', value: plainText(viewers, 'Only you') },
+    {
+      label: 'Data it shows',
+      value: shown.length
+        ? plainText(`${shown.join('; ')}. Viewers see each new version automatically.`, 'None')
+        : 'None',
+    },
+    ...(collections.length
+      ? [{ label: 'Responses it collects', value: plainText(collections.join(', '), 'None') }]
+      : []),
   ];
 }
 
@@ -727,7 +798,10 @@ export function projectPermission(input: {
     ? `${base} to ${recipientText(payload)}`
     : file
       ? `Save ${file.path}`
-      : (DEVICE_ASKS[input.action.kind] ?? SANDBOX_ASKS[input.action.kind] ?? base);
+      : (DEVICE_ASKS[input.action.kind] ??
+        SANDBOX_ASKS[input.action.kind] ??
+        appAsk(input.action.kind, payload) ??
+        base);
   const facts = [
     ...(file
       ? [
@@ -737,6 +811,7 @@ export function projectPermission(input: {
       : []),
     ...deviceFacts(input.action.kind, payload),
     ...sandboxFacts(input.action.kind, payload),
+    ...appFacts(input.action.kind, payload),
     ...(draft
       ? [
           ...(input.connection.sender ? [{ label: 'From', value: input.connection.sender }] : []),

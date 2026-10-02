@@ -329,6 +329,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   // space holds apart from its jobs.
   job: 'operational',
   artifact: 'operational',
+  app: 'operational',
   // The bytes are files: they go in the files phase, and their references after them.
   blob_ref: 'files',
   browser_recipe_candidate: 'operational',
