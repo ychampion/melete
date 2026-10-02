@@ -30202,9 +30202,7 @@
         "required": [
           "approvers",
           "agent_turns",
-          "guests_may_ask",
-          "requests_per_hour",
-          "requests_per_person_hour"
+          "guests_may_ask"
         ],
         "additionalProperties": false
       },
@@ -30451,9 +30449,7 @@
           "status",
           "turns",
           "cards",
-          "receipts",
-          "permissions",
-          "decisions"
+          "receipts"
         ],
         "additionalProperties": false
       },

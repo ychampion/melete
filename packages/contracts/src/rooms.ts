@@ -63,8 +63,8 @@ export const roomPolicy = z.strictObject({
   /** `asked`: the agent answers when asked. `every_message`: every message asks it, which uses more of the model. */
   agent_turns: z.enum(['asked', 'every_message']),
   guests_may_ask: z.boolean(),
-  requests_per_hour: z.number().int().min(1).max(1000),
-  requests_per_person_hour: z.number().int().min(1).max(1000),
+  requests_per_hour: z.number().int().min(1).max(1000).optional(),
+  requests_per_person_hour: z.number().int().min(1).max(1000).optional(),
 });
 export type RoomPolicy = z.infer<typeof roomPolicy>;
 /** A change to how a room works; what it leaves out stays as it is. Owners only. */
@@ -168,9 +168,9 @@ export const roomRequest = z.strictObject({
   cards: z.array(resultCard),
   receipts: z.array(experienceReceipt),
   /** Permissions waiting now, each naming who may answer it. */
-  permissions: z.array(permissionCard),
+  permissions: z.array(permissionCard).optional(),
   /** Permissions answered, with who answered each. */
-  decisions: z.array(roomDecision),
+  decisions: z.array(roomDecision).optional(),
 });
 export type RoomRequest = z.infer<typeof roomRequest>;
 

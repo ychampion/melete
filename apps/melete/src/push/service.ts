@@ -146,6 +146,9 @@ function roomDecisions(principalId: string, since: Date) {
       and (parent.audience = 'room' or j.audience = 'room' or holder.kind = 'room')
       and case coalesce(rp.approvers, 'requester')
         when 'requester' then r.requested_by_principal_id = m.principal_id
+          -- A guest never answers: the owners answer a guest's request.
+          or (m.role = 'owner' and exists (select 1 from principal g
+            where g.id = r.requested_by_principal_id and g.kind = 'guest'))
         when 'any_member' then true
         when 'owners' then m.role = 'owner'
         else false end

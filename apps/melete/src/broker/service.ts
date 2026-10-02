@@ -700,8 +700,12 @@ export class BrokerService implements BrokerOperations {
             : // An agent set to ask before acting promises that sends, bookings and payments
               // wait for the person, so its calendar changes do. A reversible app change is
               // none of those, and the person switched that class on themselves.
+              // A room's permission is answered by the people its rule names,
+              // never by the reviewer; work in the room's own workspace stays
+              // under the sandbox rule, as it does for a person.
               tier.tier === 'reviewable' &&
                 allowed &&
+                !roomWork &&
                 (!agentAsks || tier.actionClass === 'app_changes')
               ? 'review'
               : 'person',

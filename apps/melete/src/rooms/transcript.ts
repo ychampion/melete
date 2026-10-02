@@ -142,7 +142,16 @@ export async function roomTranscript(
     .select({ approvers: roomPolicy.approvers })
     .from(roomPolicy)
     .where(eq(roomPolicy.spaceId, row.spaceId));
+  // A guest never answers a permission: their request is answered by the owners.
+  const [asker] = row.requestedByPrincipalId
+    ? await tx
+        .select({ kind: principal.kind })
+        .from(principal)
+        .where(eq(principal.id, row.requestedByPrincipalId))
+    : [];
+  const rule = (policy?.approvers ?? 'requester') as RoomApprovers;
   const approvers =
-    APPROVERS_LINE[(policy?.approvers ?? 'requester') as RoomApprovers] ?? APPROVERS_LINE.requester;
+    APPROVERS_LINE[rule === 'requester' && asker?.kind === 'guest' ? 'owners' : rule] ??
+    APPROVERS_LINE.requester;
   return { thread, names, requester, approvers };
 }

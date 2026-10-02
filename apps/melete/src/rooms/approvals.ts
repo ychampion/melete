@@ -91,8 +91,22 @@ export async function roomAuthorityOf(tx: Query, jobId: string): Promise<RoomAut
     requestJobId: request.id,
     threadId: request.threadId,
     requestedBy: request.requestedBy,
-    approvers: policy.approvers,
+    approvers:
+      policy.approvers === 'requester' && (await guestAsked(tx, request.requestedBy))
+        ? 'owners'
+        : policy.approvers,
   };
+}
+
+/**
+ * Whether a request was asked by a guest. A guest never answers a permission,
+ * so where the room's rule is "the person who asked", a guest's request is
+ * answered by the room's owners instead.
+ */
+async function guestAsked(tx: Query, requestedBy: string | null): Promise<boolean> {
+  if (!requestedBy) return false;
+  const [asker] = await tx`select kind from principal where id = ${requestedBy}`;
+  return asker?.kind === 'guest';
 }
 
 /**

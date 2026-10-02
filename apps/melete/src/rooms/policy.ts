@@ -11,11 +11,14 @@ import type { Transaction } from '../db/transaction.ts';
 import { ROOM_POLICY_DEFAULTS } from './approvals.ts';
 import { roomMessage, roomPolicy } from './schema.ts';
 
+/** A room's settings with every value filled in, as stored or by default. */
+export type FullPolicy = Required<RoomPolicy>;
+
 /** A room's settings, or the defaults for a room that never changed them. */
 export async function readRoomPolicy(
   reader: Database | Transaction,
   spaceId: string,
-): Promise<RoomPolicy> {
+): Promise<FullPolicy> {
   const [row] = await reader.select().from(roomPolicy).where(eq(roomPolicy.spaceId, spaceId));
   return roomPolicyContract.parse(
     row
@@ -27,7 +30,7 @@ export async function readRoomPolicy(
           requests_per_person_hour: row.requestsPerPersonHour,
         }
       : ROOM_POLICY_DEFAULTS,
-  );
+  ) as FullPolicy;
 }
 
 /** Change some of a room's settings. The caller has checked the actor owns the room. */
@@ -36,7 +39,7 @@ export async function writeRoomPolicy(
   spaceId: string,
   actor: string,
   patch: Partial<RoomPolicy>,
-): Promise<RoomPolicy> {
+): Promise<FullPolicy> {
   const next = { ...(await readRoomPolicy(tx, spaceId)), ...patch };
   if (next.requests_per_person_hour > next.requests_per_hour)
     throw new ServiceError(
@@ -57,7 +60,7 @@ export async function writeRoomPolicy(
     .insert(roomPolicy)
     .values({ spaceId, ...values })
     .onConflictDoUpdate({ target: roomPolicy.spaceId, set: values });
-  return roomPolicyContract.parse(next);
+  return roomPolicyContract.parse(next) as FullPolicy;
 }
 
 /**
@@ -69,7 +72,7 @@ export async function askLimitReached(
   tx: Transaction,
   spaceId: string,
   actor: string,
-  policy: RoomPolicy,
+  policy: FullPolicy,
 ): Promise<'room' | 'person' | null> {
   const since = sql`now() - interval '1 hour'`;
   const [counts] = await tx

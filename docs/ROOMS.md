@@ -64,7 +64,12 @@ Allow or Deny. Who may answer is the room's rule:
 - `any_member`: anyone in the room who is not a guest;
 - `owners`: the room's owners.
 
-Guests never answer a permission, and nor does the room's agent. An answer is
+Guests never answer a permission, and nor does the room's agent. Where the
+rule is `requester` and a guest asked, the room's owners answer instead.
+Auto-review never answers a room's permission either: whatever the room's
+settings, the people the rule names decide. Work that stays in the room's own
+workspace (its files, its computer) follows the same sandbox rule as a
+person's own work. An answer is
 given at `POST /rooms/{id}/approvals/{approval}` with the card's `version` and
 the exact content's `payload_hash`; if either has changed, it is refused and
 the card is shown again. The answer is checked against the rule and the room's
@@ -110,8 +115,9 @@ A room's requests act only through the connections marked for the room. Its own
 tools (files, the web, its computer) are marked so from the start. Any other
 connection in the room's space serves only the owner's own work there until an
 owner marks it for the room (`PUT /rooms/{id}/connections/{connection}` with
-`shared_use: "room"`); everyone in the room can see which connections there are
-and what each serves (`GET /rooms/{id}/connections`). Changing what a connection
+`shared_use: "room"`); everyone in the room can see the connections
+that serve the room (`GET /rooms/{id}/connections`); owners also see the ones
+kept for them. Changing what a connection
 serves starts work under way in the room again and withdraws the permissions
 waiting in it.
 

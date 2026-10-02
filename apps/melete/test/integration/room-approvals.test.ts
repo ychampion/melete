@@ -21,7 +21,7 @@ import {
   roomPolicyResponse,
   roomThreadView,
 } from '@melete/contracts';
-import { reviewInput } from '../../src/broker/auto-review.ts';
+import { reviewInput, saveApprovalSettings } from '../../src/broker/auto-review.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { reviewPrompt } from '../../src/broker/reviewer.ts';
 import { BrokerService } from '../../src/broker/service.ts';
@@ -140,6 +140,31 @@ const notesManifest: ConnectorManifest = {
       required_scopes: ['notes.post'],
       verify: false,
       requires_approval: true,
+    },
+  ],
+};
+/** A change in a connected app that can be undone: one a reviewer may judge. */
+const tasksManifest: ConnectorManifest = {
+  name: 'tasks',
+  version: '0.1.0',
+  provider: 'test',
+  description: 'Keep a task list.',
+  credentials: [],
+  health: false,
+  tools: [
+    {
+      name: 'tasks.create',
+      description: 'Add a task to the list.',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title'],
+        properties: { title: { type: 'string' } },
+      },
+      effect_class: 'write_reversible',
+      required_scopes: ['tasks.create'],
+      verify: false,
+      requires_approval: false,
     },
   ],
 };
@@ -264,7 +289,7 @@ async function card(person: Person, roomId: string, threadId: string, approvalId
     await ok(send(person.cookie, `/rooms/${roomId}/threads/${threadId}`)),
   );
   const found = view.requests
-    .flatMap((request) => request.permissions)
+    .flatMap((request) => request.permissions ?? [])
     .find((p) => p.id === approvalId);
   if (!found) throw new Error('The permission is not on the thread');
   return { card: found, view };
@@ -333,7 +358,7 @@ withDb('room approvals', () => {
   }, 60_000);
 
   test('only the requester decides under the requester policy, and a guest never decides', async () => {
-    const { sql, broker } = database();
+    const { broker } = database();
     const { roomId, notes } = await makeRoom('Launch');
     const asked = await askAndWait(world.bob, roomId, notes);
     // Everyone in the room sees the card, who asked, and who may answer: Bob alone.
@@ -413,26 +438,29 @@ withDb('room approvals', () => {
     const request = after.requests.find((entry) => entry.job_id === asked.requestId);
     expect(request?.permissions).toEqual([]);
     expect(
-      request?.decisions.map((entry) => [entry.decision, entry.decided_by?.display_name]),
+      request?.decisions?.map((entry) => [entry.decision, entry.decided_by?.display_name]),
     ).toEqual([['approved', world.bob.label]]);
 
-    // A guest's own request asks too, and nobody can answer it for them: a guest never decides.
+    // A guest's own request asks too. A guest never decides, so under this
+    // rule the room's owners answer it, and the card says so.
     const guests = await askAndWait(world.dan, roomId, notes);
     const { card: theirs } = await card(world.dan, roomId, guests.threadId, guests.approvalId);
-    expect(theirs.eligible_approvers).toEqual([]);
-    for (const person of [world.dan, world.alice, world.bob])
-      expect(
-        (
-          await answer(person, roomId, guests.approvalId, {
-            option: 'deny',
-            version: theirs.version,
-            payload_hash: guests.hash,
-          })
-        ).status,
-      ).toBe(403);
-    expect(await decision(guests.approvalId)).toEqual({ decision: null, decided_by: null });
-    const [state] = await sql`select state from job where id = ${asked.requestId}`;
-    expect(state?.state).not.toBe('waiting_for_approval');
+    expect(theirs.eligible_approvers).toEqual([
+      { principal_id: world.alice.id, display_name: world.alice.label },
+    ]);
+    expect(theirs.why.join(' ')).toContain("Waiting for one of the room's owners to answer it.");
+    const theirAnswer = {
+      option: 'deny' as const,
+      version: theirs.version,
+      payload_hash: guests.hash,
+    };
+    for (const person of [world.dan, world.bob])
+      expect((await answer(person, roomId, guests.approvalId, theirAnswer)).status).toBe(403);
+    await ok(answer(world.alice, roomId, guests.approvalId, theirAnswer));
+    expect(await decision(guests.approvalId)).toEqual({
+      decision: 'denied',
+      decided_by: world.alice.id,
+    });
   }, 90_000);
 
   test('any member decides under the any-member policy, and owners under the owners policy', async () => {
@@ -625,7 +653,7 @@ withDb('room approvals', () => {
     );
     const shown = view.requests.find((entry) => entry.job_id === asked.requestId);
     expect(shown?.permissions).toEqual([]);
-    expect(shown?.decisions.map((entry) => [entry.decision, entry.decided_by])).toEqual([
+    expect(shown?.decisions?.map((entry) => [entry.decision, entry.decided_by])).toEqual([
       ['denied', null],
     ]);
   }, 90_000);
@@ -654,6 +682,13 @@ withDb('room approvals', () => {
     // The rule changed: those it no longer names are not told after all.
     await setPolicy(roomId, { approvers: 'owners' });
     expect((await told()).who).toEqual(sorted(world.alice));
+    // Under the asker's rule, a guest's request is told to the owners.
+    await setPolicy(roomId, { approvers: 'requester' });
+    const guests = await askAndWait(world.dan, roomId, notes);
+    for (const person of Object.values(world)) await push.collectDecisions(person.id, since);
+    const guestTold = await sql`select principal_id from push_intent
+      where dedup_key like ${`decision:approval:${guests.approvalId}:%`} and dropped_at is null`;
+    expect(guestTold.map((row) => String(row.principal_id))).toEqual([world.alice.id]);
   }, 90_000);
 
   test("a room's settings are read by its people, changed by its owners, and hold its asks to them", async () => {
@@ -708,7 +743,12 @@ withDb('room approvals', () => {
     const listed = roomConnectionList.parse(
       await ok(send(world.bob.cookie, `/rooms/${roomId}/connections`)),
     );
-    expect(listed.connections.find((entry) => entry.id === calendar)?.shared_use).toBe('owner');
+    // A connection kept for the owner is listed to the owner alone.
+    expect(listed.connections.map((entry) => entry.id)).not.toContain(calendar);
+    const owned = roomConnectionList.parse(
+      await ok(send(world.alice.cookie, `/rooms/${roomId}/connections`)),
+    );
+    expect(owned.connections.find((entry) => entry.id === calendar)?.shared_use).toBe('owner');
     const opened = await startThread(world.bob, roomId, '@Melete when is the offsite?');
     const requestId = opened.request_job_id ?? '';
     const catalog = new RuntimeCatalog(db, registry);
@@ -737,6 +777,10 @@ withDb('room approvals', () => {
       }),
     );
     expect(await offered()).toContain(calendar);
+    const shared = roomConnectionList.parse(
+      await ok(send(world.bob.cookie, `/rooms/${roomId}/connections`)),
+    );
+    expect(shared.connections.find((entry) => entry.id === calendar)?.shared_use).toBe('room');
     // What the request may act through changed, so the attempt in flight is fenced.
     const [attempt] = await sql`select outcome from attempt where id = ${claims.attempt_id}`;
     expect(attempt?.outcome).toBe('fenced');
@@ -752,5 +796,46 @@ withDb('room approvals', () => {
       payload: { summary: 'Offsite', start: '2026-10-13T09:00:00Z', end: '2026-10-13T17:00:00Z' },
     });
     expect(proposed.requires_approval).toBe(true);
+  }, 90_000);
+
+  test("auto-review never answers a room's permission, whoever the room's rule names", async () => {
+    const { sql } = database();
+    const { roomId } = await makeRoom('Reviewed');
+    await setPolicy(roomId, { approvers: 'owners' });
+    const tasks = await install(roomId, tasksManifest, 'room');
+    // The room's owner lets the reviewer decide app changes in this space.
+    await saveApprovalSettings(sql, roomId, {
+      mode: 'auto_review',
+      classes: { sandbox: true, calendar: true, app_changes: true },
+    });
+    let reviews = 0;
+    const reviewing = new BrokerService({
+      sql,
+      connectors: registry,
+      resolveTrust: createMemoryTrustResolver(),
+      autoReview: {
+        reviewer: {
+          model: 'fake/approves',
+          async review() {
+            reviews += 1;
+            return { verdict: 'approve', risk: 'low', reason: 'Looks fine.' };
+          },
+        },
+      },
+    });
+    const opened = await startThread(world.bob, roomId, '@Melete add a task to book the venue');
+    const { claims } = await claim(opened.request_job_id ?? '');
+    const proposed = await reviewing.propose(claims as CapabilityClaims, {
+      connection_id: tasks,
+      kind: 'tasks.create',
+      payload: { title: 'Book the venue' },
+    });
+    // It waits for the room's owner; the reviewer was never asked.
+    expect(proposed.requires_approval).toBe(true);
+    expect(reviews).toBe(0);
+    expect(await decision(proposed.approval_id ?? '')).toEqual({
+      decision: null,
+      decided_by: null,
+    });
   }, 90_000);
 });

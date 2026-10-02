@@ -490,7 +490,9 @@ owners. The broker checks the rule when it records an answer, whichever route
 the answer came by, against the room's people at that moment: an answer that
 names nobody, the service's own approval key, a guest, the room's principal,
 anyone the rule leaves out and anyone outside the room are all refused, a Deny
-included. An answer names the card's version and the exact content's hash, so
+included. A guest's request is answered by the room's owners. Auto-review
+never answers a room's permission, and no standing rule or scope covers room
+work. An answer names the card's version and the exact content's hash, so
 it covers only what the person saw, and it is recorded as theirs. A room never
 makes a standing rule. A recipient, address or amount counts as the asker's
 only when they typed it in their own request; a value another member typed is

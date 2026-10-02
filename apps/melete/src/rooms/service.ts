@@ -19,7 +19,15 @@ import {
 import { and, asc, desc, eq, gt, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { connection, event, job, principal, space, spaceMembership } from '../db/schema.ts';
+import {
+  approval,
+  connection,
+  event,
+  job,
+  principal,
+  space,
+  spaceMembership,
+} from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import type { ExperienceEvents } from '../experience/events.ts';
 import type { ExperiencePermissions } from '../experience/permissions.ts';
@@ -618,6 +626,18 @@ export class RoomService {
     const permissions = this.deps.permissions;
     if (!permissions) return unavailable('Answering is not connected to the agent yet.');
     await permissions.decideInRoom(spaceId, approvalId, input, actor);
+    // An answer to a card that changed meanwhile withdraws it rather than
+    // answering it; that is said, not reported as this person's answer.
+    const [recorded] = await this.deps.db
+      .select({ decidedBy: approval.decidedBy })
+      .from(approval)
+      .where(eq(approval.id, approvalId));
+    if (recorded?.decidedBy !== actor)
+      throw new ServiceError(
+        'permission_withdrawn',
+        'This request changed before you answered, so it was withdrawn.',
+        409,
+      );
     const names = await namesOf(this.deps.db, [actor]);
     return {
       status: 'ok' as const,
@@ -628,11 +648,19 @@ export class RoomService {
 
   /** The connections in the room's space, and which of them serve the room's requests. */
   async connections(spaceId: string, actor: string) {
-    await this.access(this.deps.db, spaceId, actor);
+    const { role } = await this.access(this.deps.db, spaceId, actor);
+    // Owners see every connection in the room's space; everyone else sees only
+    // those that serve the room. One kept for the owner (a mailbox, say) stays theirs.
     const rows = await this.deps.db
       .select()
       .from(connection)
-      .where(and(eq(connection.spaceId, spaceId), ne(connection.status, 'revoked')))
+      .where(
+        and(
+          eq(connection.spaceId, spaceId),
+          ne(connection.status, 'revoked'),
+          role === 'owner' ? undefined : eq(connection.sharedUse, 'room'),
+        ),
+      )
       .orderBy(asc(connection.createdAt), asc(connection.id));
     return { connections: rows.map(connectionView) };
   }

@@ -18583,8 +18583,8 @@ export interface components {
             /** @enum {string} */
             approvers: "requester" | "any_member" | "owners";
             guests_may_ask: boolean;
-            requests_per_hour: number;
-            requests_per_person_hour: number;
+            requests_per_hour?: number;
+            requests_per_person_hour?: number;
         };
         __schema306: {
             archived_at: components["schemas"]["__schema160"] | null;
@@ -18621,7 +18621,7 @@ export interface components {
         };
         __schema311: {
             cards: components["schemas"]["__schema240"][];
-            decisions: {
+            decisions?: {
                 approval_id: components["schemas"]["__schema307"];
                 decided_at: components["schemas"]["__schema160"];
                 decided_by: components["schemas"]["__schema308"] | null;
@@ -18629,7 +18629,7 @@ export interface components {
                 decision: "approved" | "denied";
             }[];
             job_id: components["schemas"]["__schema307"];
-            permissions: components["schemas"]["__schema248"][];
+            permissions?: components["schemas"]["__schema248"][];
             receipts: components["schemas"]["__schema243"][];
             requested_by: components["schemas"]["__schema308"];
             status: components["schemas"]["__schema227"];
