@@ -844,7 +844,8 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
       return 0;
     }
     case 'setsid':
-      return program(args, shell, io);
+      // `-w` waits for the program, which is all the fake does anyway.
+      return program(args[0] === '-w' ? args.slice(1) : args, shell, io);
     case 'head': {
       const operands = args.filter((arg) => arg !== '--');
       if (operands[0] !== '-c' || operands[1] === undefined)

@@ -125,6 +125,9 @@ export function envFileBody(env: Readonly<Record<string, string>>): Uint8Array {
 export const SOURCE_ENV_FILE =
   'e="$1"; shift; [ "$e" = - ] || { [ -f "$e" ] || exit 112; . "$e"; rm -f "$e"; }';
 
+/** Keep the first `$1` bytes of the output in `$2`; read and drop the rest. */
+const KEEP_STAGE = 'head -c "$1" > "$2"; exec cat > /dev/null';
+
 /** What the wrapper says when no marker root it may use can be made. */
 export const ROOT_UNUSABLE_MESSAGE = 'melete_exec_root_unusable';
 
@@ -178,7 +181,10 @@ export function markCommand(
     // A directory already there is this action's own marker; anything else
     // that stops the directory being made means the command never started.
     `mkdir "$d" 2>/dev/null || { [ -e "$d" ] && { echo ${REENTERED_MESSAGE} >&2; exit ${REENTERED_EXIT}; }; echo ${ROOT_UNUSABLE_MESSAGE} >&2; exit ${MARKER_SETUP_EXIT}; }`,
-    `{ ( ${command} ) 2>&1; printf '%s\\n' "$?" > "$d/status"; } | { head -c ${keepBytes} > "$d/out"; cat > /dev/null; }`,
+    // The keeping stage is a session of its own, so a kill sent to the
+    // command's process group at its timeout leaves it to write what the
+    // command printed before it died. It ends when the pipe closes.
+    `{ ( ${command} ) 2>&1; printf '%s\\n' "$?" > "$d/status"; } | setsid -w sh -c ${shellQuote(KEEP_STAGE)} melete-keep ${keepBytes} "$d/out"`,
     'ec=',
     `read ec < "$d/status" 2>/dev/null`,
     'rm -f "$d/status"',

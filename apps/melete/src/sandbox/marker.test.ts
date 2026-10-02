@@ -445,3 +445,13 @@ test('every command prunes markers untouched for the retention period, and never
   expect(script).not.toContain(`"$r/${MARKER}" 2>/dev/null`);
   expect(() => markCommand(MARKER_ROOT, MARKER, ['true'], { forget: ['../home'] })).toThrow();
 });
+
+test("the stage that keeps a command's output runs in a session of its own, so a timeout's kill spares it", () => {
+  const [, , script] = markCommand(MARKER_ROOT, MARKER, ['sleep', '9'], { keepBytes: 10 });
+  const line = (script ?? '').split('\n').find((each) => each.includes('"$d/status"; }'));
+  expect(line).toBeDefined();
+  // The command and its status on the left; the keeping stage, in a new session, on the right.
+  expect(line?.split(' | ')[1]).toBe(
+    `setsid -w sh -c 'head -c "$1" > "$2"; exec cat > /dev/null' melete-keep 10 "$d/out"`,
+  );
+});
