@@ -60,7 +60,10 @@ if (!live) {
   await sql`update connection set provider = 'sandbox' where id = ${scope.connectionId}`;
   await sql`update job set agent_id = ${scope.agentId} where id = ${scope.jobId}`;
   const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-docker-processes-'));
-  const sessions = new SandboxSessions(sql, { leaseSeconds: 600, workspaceRetentionSeconds: 3_600 });
+  const sessions = new SandboxSessions(sql, {
+    leaseSeconds: 600,
+    workspaceRetentionSeconds: 3_600,
+  });
   const processes = new SandboxProcesses(sql, {
     limits: {
       maxPerComputer: PROCESS_LIMITS.max_per_computer,
@@ -138,7 +141,11 @@ if (!live) {
         job_id: job,
         space_id: scope.spaceId,
         idempotency_key: id,
-        constraints: { deliverable: { kind: 'none' }, allowed_domains: [], public_compartment: false },
+        constraints: {
+          deliverable: { kind: 'none' },
+          allowed_domains: [],
+          public_compartment: false,
+        },
       };
       const result = await connector.execute(action, ctx);
       if (result.outcome !== 'succeeded') throw new Error(`${kind}: ${JSON.stringify(result)}`);
@@ -148,7 +155,8 @@ if (!live) {
     const end = async () => {
       const [row] = await sql`select id from sandbox_session
         where attempt_id = ${attempt} and status = 'ready'`;
-      if (row) await sessions.suspendWorkspace(String(row.id), provider, AbortSignal.timeout(60_000));
+      if (row)
+        await sessions.suspendWorkspace(String(row.id), provider, AbortSignal.timeout(60_000));
     };
     return { run, end };
   };
