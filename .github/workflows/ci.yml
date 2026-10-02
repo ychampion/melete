@@ -25,8 +25,24 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
+      # Downloads are kept between runs, so a run fetches only what the lockfile changed.
+      - name: Cache Bun's downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      # A stalled registry download is cut off and retried rather than holding the job until
+      # its own limit; a normal install takes seconds.
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        timeout-minutes: 8
+        run: |
+          for attempt in 1 2 3; do
+            timeout 120 bun install --frozen-lockfile && exit 0
+            echo "::warning::dependency install attempt $attempt of 3 did not finish"
+            [ "$attempt" = 3 ] || sleep $((attempt * 10))
+          done
+          exit 1
       - name: Typecheck
         run: bun run typecheck
       - name: Lint
@@ -78,8 +94,24 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libpq5
+      # Downloads are kept between runs, so a run fetches only what the lockfile changed.
+      - name: Cache Bun's downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      # A stalled registry download is cut off and retried rather than holding the job until
+      # its own limit; a normal install takes seconds.
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        timeout-minutes: 8
+        run: |
+          for attempt in 1 2 3; do
+            timeout 120 bun install --frozen-lockfile && exit 0
+            echo "::warning::dependency install attempt $attempt of 3 did not finish"
+            [ "$attempt" = 3 ] || sleep $((attempt * 10))
+          done
+          exit 1
       # Names a missing prerequisite once: a non-root user, a writable temporary
       # directory, DATABASE_URL on Linux, and uv.
       - name: Check test prerequisites
@@ -100,8 +132,24 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
+      # Downloads are kept between runs, so a run fetches only what the lockfile changed.
+      - name: Cache Bun's downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      # A stalled registry download is cut off and retried rather than holding the job until
+      # its own limit; a normal install takes seconds.
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        timeout-minutes: 8
+        run: |
+          for attempt in 1 2 3; do
+            timeout 120 bun install --frozen-lockfile && exit 0
+            echo "::warning::dependency install attempt $attempt of 3 did not finish"
+            [ "$attempt" = 3 ] || sleep $((attempt * 10))
+          done
+          exit 1
       - name: Report the Docker versions
         run: |
           docker version
@@ -137,8 +185,24 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
+      # Downloads are kept between runs, so a run fetches only what the lockfile changed.
+      - name: Cache Bun's downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      # A stalled registry download is cut off and retried rather than holding the job until
+      # its own limit; a normal install takes seconds.
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        timeout-minutes: 8
+        run: |
+          for attempt in 1 2 3; do
+            timeout 120 bun install --frozen-lockfile && exit 0
+            echo "::warning::dependency install attempt $attempt of 3 did not finish"
+            [ "$attempt" = 3 ] || sleep $((attempt * 10))
+          done
+          exit 1
       # The scenario runs in a container with the Docker socket, as the service does, because a
       # server with named destinations reaches them through the proxy in that container.
       - name: Start real servers through the Docker launcher
@@ -170,8 +234,24 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
+      # Downloads are kept between runs, so a run fetches only what the lockfile changed.
+      - name: Cache Bun's downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      # A stalled registry download is cut off and retried rather than holding the job until
+      # its own limit; a normal install takes seconds.
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        timeout-minutes: 8
+        run: |
+          for attempt in 1 2 3; do
+            timeout 120 bun install --frozen-lockfile && exit 0
+            echo "::warning::dependency install attempt $attempt of 3 did not finish"
+            [ "$attempt" = 3 ] || sleep $((attempt * 10))
+          done
+          exit 1
       # The image just built: a spare engine loads without its attempt, takes it over its
       # port and serves with its capability, sooner than an engine started with it.
       - name: Hand a spare engine its attempt
@@ -204,8 +284,24 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
+      # Downloads are kept between runs, so a run fetches only what the lockfile changed.
+      - name: Cache Bun's downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      # A stalled registry download is cut off and retried rather than holding the job until
+      # its own limit; a normal install takes seconds.
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        timeout-minutes: 8
+        run: |
+          for attempt in 1 2 3; do
+            timeout 120 bun install --frozen-lockfile && exit 0
+            echo "::warning::dependency install attempt $attempt of 3 did not finish"
+            [ "$attempt" = 3 ] || sleep $((attempt * 10))
+          done
+          exit 1
       - name: Report the Docker versions
         run: docker version
       - name: Build the sandbox image
