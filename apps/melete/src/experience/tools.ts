@@ -788,6 +788,11 @@ const UNSHOWN = new Set([
 const NATIVE: Record<string, [ToolKind, doing: string, done: string]> = {
   compose: ['tool', 'Working through several steps', 'Worked through several steps'],
   'job.wait': ['tool', 'Scheduling a follow-up', 'Scheduled a follow-up'],
+  'run.start': ['tool', 'Starting work in the background', 'Started work in the background'],
+  'run.log': ['tool', 'Noting progress', 'Noted progress'],
+  'run.delegate': ['tool', 'Handing part to a helper', 'Handed part to a helper'],
+  'run.checkpoint': ['tool', 'Saving where it got to', 'Saved where it got to'],
+  'run.finish': ['tool', 'Wrapping up', 'Wrapped up'],
   web_search: ['web', 'Searching the web', 'Searched the web'],
   web_extract: ['web', 'Reading a web page', 'Read a web page'],
   execute_code: ['sandbox', 'Running code', 'Ran code'],

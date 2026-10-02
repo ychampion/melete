@@ -2,6 +2,7 @@ import {
   CONTINUABLE_STATES,
   type CreateResponsibilityRequest,
   createResponsibilityRequest,
+  isRunKind,
   type JobBudget,
   type JobConstraints,
   type JobState,
@@ -190,7 +191,7 @@ export class JobService {
     tx: Transaction,
     input: CreateResponsibilityRequest,
     experience?: {
-      kind: 'chat' | 'plan' | 'routine' | 'milestone';
+      kind: 'chat' | 'plan' | 'routine' | 'milestone' | 'run' | 'run_step';
       agentId?: string;
       planId?: string;
       scheduledAt?: Date;
@@ -294,7 +295,8 @@ export class JobService {
   ): Promise<JobRow> {
     const result = transition(row.state as JobState, input);
     if (!result.ok) throw new ServiceError(result.error.code, result.error.message);
-    if (result.value === 'queued' && row.state !== 'running') {
+    // A run counts failed shifts in a row instead, when each shift ends.
+    if (result.value === 'queued' && row.state !== 'running' && !isRunKind(row.kind)) {
       const [used] = await tx
         .select({ count: sql<number>`count(*)::int` })
         .from(attempt)

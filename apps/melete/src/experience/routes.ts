@@ -2,6 +2,7 @@ import {
   type ExperienceDraft,
   experienceOperations,
   experienceResult,
+  runLimitRequest,
   unavailable,
 } from '@melete/contracts';
 import { and, eq, inArray } from 'drizzle-orm';
@@ -27,6 +28,7 @@ import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
+import type { RunService } from '../runs/service.ts';
 import { AGENT_TEMPLATES } from './agents.ts';
 import { ExperienceBeliefs } from './beliefs.ts';
 import { type ComputerBinding, projectComputer } from './computer.ts';
@@ -59,6 +61,8 @@ export type ExperienceDeps = {
   browser?: boolean;
   /** Resolves privacy placeholders for the conversation's own stream. */
   privacy?: Pick<PrivacyRouter, 'resolvePayload'>;
+  /** Long work in the background. */
+  runs?: RunService;
 };
 /**
  * Rows these routes keep for the space as a whole rather than for one job: the
@@ -67,6 +71,7 @@ export type ExperienceDeps = {
  * them; a member keeps to conversations, plans and routines of their own.
  */
 const NOT_CONNECTED = 'Your saved details are not connected yet.';
+const RUNS_UNAVAILABLE = 'Long work is not connected yet.';
 const SPACE_OWNER_SURFACES = new Set([
   'GET /profile',
   'PATCH /profile',
@@ -158,6 +163,72 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'PATCH /tasks/{id}': (spaceId, c, input) =>
       home.saveTask(spaceId, input, c.req.param('id') ?? ''),
     'DELETE /tasks/{id}': (spaceId, c) => home.deleteTask(spaceId, c.req.param('id') ?? ''),
+    'GET /runs': (spaceId, c) => {
+      if (!deps.runs) return unavailable(RUNS_UNAVAILABLE);
+      return deps.runs.list(spaceId, c.req.query('conversation_id') || undefined);
+    },
+    'POST /runs': async (spaceId, _c, input) => {
+      const runs = deps.runs;
+      const jobs = deps.jobs;
+      if (!runs || !jobs) return unavailable(RUNS_UNAVAILABLE);
+      const agentId = typeof input.agent_id === 'string' ? input.agent_id : undefined;
+      if (agentId) await service.requireAgent(spaceId, agentId);
+      const row = await jobs.transaction((tx) =>
+        runs.create(tx, spaceId, input, { agentId: agentId ?? null }),
+      );
+      return { run: await runs.view(row) };
+    },
+    'GET /runs/{id}': async (spaceId, c) => {
+      if (!deps.runs) return unavailable(RUNS_UNAVAILABLE);
+      return {
+        run: await deps.runs.view(await deps.runs.requireRun(spaceId, c.req.param('id') ?? '')),
+      };
+    },
+    'GET /runs/{id}/record': async (spaceId, c) => {
+      if (!deps.runs) return unavailable(RUNS_UNAVAILABLE);
+      const row = await deps.runs.requireRun(spaceId, c.req.param('id') ?? '');
+      return deps.runs.record(row, c.req.query('after'));
+    },
+    'GET /runs/{id}/export': async (spaceId, c) => {
+      if (!deps.runs) return unavailable(RUNS_UNAVAILABLE);
+      const row = await deps.runs.requireRun(spaceId, c.req.param('id') ?? '');
+      return { markdown: await deps.runs.markdown(row) };
+    },
+    'POST /runs/{id}/message': async (spaceId, c, input) => {
+      const runs = deps.runs;
+      if (!runs) return unavailable(RUNS_UNAVAILABLE);
+      const row = await runs.requireRun(spaceId, c.req.param('id') ?? '');
+      await runs.message(row, String(input.text));
+      return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
+    },
+    'POST /runs/{id}/pause': async (spaceId, c) => {
+      const runs = deps.runs;
+      if (!runs) return unavailable(RUNS_UNAVAILABLE);
+      const row = await runs.requireRun(spaceId, c.req.param('id') ?? '');
+      await runs.setPaused(row, true);
+      return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
+    },
+    'POST /runs/{id}/resume': async (spaceId, c) => {
+      const runs = deps.runs;
+      if (!runs) return unavailable(RUNS_UNAVAILABLE);
+      const row = await runs.requireRun(spaceId, c.req.param('id') ?? '');
+      await runs.setPaused(row, false);
+      return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
+    },
+    'POST /runs/{id}/stop': async (spaceId, c) => {
+      const runs = deps.runs;
+      if (!runs) return unavailable(RUNS_UNAVAILABLE);
+      const row = await runs.requireRun(spaceId, c.req.param('id') ?? '');
+      await runs.stop(row);
+      return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
+    },
+    'PUT /runs/{id}/limit': async (spaceId, c, input) => {
+      const runs = deps.runs;
+      if (!runs) return unavailable(RUNS_UNAVAILABLE);
+      const row = await runs.requireRun(spaceId, c.req.param('id') ?? '');
+      await runs.setLimit(row, runLimitRequest.parse(input).limit);
+      return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
+    },
     'GET /experience/connections': (spaceId) => home.connections(spaceId),
     'GET /search': (spaceId, c) =>
       home.search(spaceId, c.req.query('q') ?? '', c.get('sessionSpace')?.role !== 'member'),

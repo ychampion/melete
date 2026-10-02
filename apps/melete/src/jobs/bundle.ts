@@ -11,6 +11,7 @@ import {
   type Deliverable,
   describeTrigger,
   inputTokenCeiling,
+  isRunKind,
   jobBudget,
   jobConstraints,
   jsonObject,
@@ -56,6 +57,7 @@ import { pendingRepairBriefs } from '../memory/outputs.ts';
 import { asKnowledge, attemptRecallQuery, recall } from '../memory/recall.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { selectedContext } from '../principals/context.ts';
+import { runBrief } from '../runs/record.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { PRIVACY_DECISION, questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
@@ -478,6 +480,7 @@ async function situation(tx: Transaction, row: JobRow): Promise<string> {
         : 'The person has no open tasks.',
     );
   }
+  if (isRunKind(row.kind)) parts.push(await runBrief(tx, row));
   if (row.planId) {
     const [plan] = await tx
       .select({ title: job.title })

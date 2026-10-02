@@ -24,6 +24,7 @@ import {
   type ProposeActionRequest,
   type ReactRequest,
   type Receipt,
+  RUN_TOOLS,
   reactRequest,
   repairCounters,
   repairTrace,
@@ -35,6 +36,8 @@ import { Ajv, type ValidateFunction } from 'ajv';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
+import { ZodError } from 'zod';
+import { ServiceError } from '../api/errors.ts';
 import { REACT_TOOL, supersededExecution } from '../connectors/catalog.ts';
 import {
   asConnectorFault,
@@ -147,6 +150,8 @@ export type BrokerOptions = {
   recordStandingScope?: (tx: Query, action: Action) => Promise<void>;
   /** A chase's covered follow-up, offered as `chase.follow_up` while its scope holds. */
   chaseFollowUp?: ChaseFollowUpPort;
+  /** Long work's tools, offered to the jobs whose kind they belong to. */
+  runs?: { call(claims: CapabilityClaims, name: string, input: unknown): Promise<unknown> };
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
   /**
@@ -343,6 +348,7 @@ export class BrokerService implements BrokerOperations {
         SKILL_READ_TOOL,
         ...(options.composeExecutor ? [COMPOSE_TOOL] : []),
         ...(options.chaseFollowUp ? [CHASE_FOLLOW_UP_TOOL] : []),
+        ...(options.runs ? RUN_TOOLS : []),
       ],
       ...(options.chaseFollowUp ? { followable: options.chaseFollowUp.available } : {}),
     });
@@ -460,6 +466,33 @@ export class BrokerService implements BrokerOperations {
 
   requestWait(claims: CapabilityClaims, input: unknown) {
     return requestRuntimeWait(this.sql, claims, input);
+  }
+
+  /**
+   * A run tool. The service writes the record and decides between shifts; a
+   * refusal comes back as a broker fault the model can read and correct.
+   */
+  async runTool(claims: CapabilityClaims, name: string, input: unknown): Promise<unknown> {
+    if (!this.options.runs) throw new BrokerFault('unknown_tool');
+    try {
+      return await this.options.runs.call(claims, name, input);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        const issue = error.issues[0];
+        throw new BrokerFault(
+          'payload_invalid',
+          issue ? `${issue.path.join('.') || 'input'}: ${issue.message}` : 'Invalid input.',
+        );
+      }
+      if (error instanceof ServiceError)
+        throw new BrokerFault(
+          ['stale_epoch', 'scope_denied', 'revision_mismatch'].includes(error.code)
+            ? (error.code as 'stale_epoch' | 'scope_denied' | 'revision_mismatch')
+            : 'payload_invalid',
+          error.message,
+        );
+      throw error;
+    }
   }
 
   /**

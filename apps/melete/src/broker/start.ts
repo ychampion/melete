@@ -30,7 +30,7 @@ import type { EffectAuthorityResolver } from './authority.ts';
 import type { ComposeExecutor } from './compose.ts';
 import { createInternalServer } from './internal-server.ts';
 import { configuredReviewGateway } from './review-gateway.ts';
-import type { BrokerService } from './service.ts';
+import type { BrokerOptions, BrokerService } from './service.ts';
 import type { TrustResolver } from './trust.ts';
 
 /** Start only the effect listener; the API keeps its own port and authentication surface. */
@@ -55,6 +55,8 @@ export async function startEffectBoundary(
     privacy: PrivacyRouter;
     /** The model connected in the app; left out, read from this database. */
     modelSettings?: ModelSettingsService;
+    /** Long work's tools. */
+    runs?: BrokerOptions['runs'];
   },
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -135,6 +137,7 @@ export async function startEffectBoundary(
       resolveScopedGrant: resolveChaseScopedGrant,
       recordStandingScope: recordChaseScope,
       chaseFollowUp: chaseFollowUpPort,
+      runs: dependencies.runs,
       autoReview: {
         reviewer: review?.reviewer ?? null,
         timeoutMs: env.MELETE_REVIEW_TIMEOUT_MS,
