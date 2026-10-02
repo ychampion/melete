@@ -15,7 +15,6 @@ import {
   type Connection,
   type ConnectionView,
   type EventType,
-  ID_PREFIXES,
   type Job,
   type JobState,
   type KnowledgeFrontmatter,
@@ -227,5 +226,3 @@ export class Store {
     return [...this.connections.values()].map((connection) => this.view(connection));
   }
 }
-
-export const PREFIXES = ID_PREFIXES;

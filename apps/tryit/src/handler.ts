@@ -415,7 +415,7 @@ function stream(run: (send: (stage: Stage) => Promise<void>) => Promise<Done>): 
   });
 }
 
-/** Read a whole stream back into its stages and its ending. For tests and for the page. */
+/** Read a whole stream back into its stages and its ending. For tests. */
 export async function readStream(
   response: Response,
 ): Promise<{ stages: Stage[]; done: Done | null }> {
