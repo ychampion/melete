@@ -175,6 +175,16 @@ databaseTest(
     const stillRecorded = await json(await ctx.api(ctx.alice)(`/apps/${appId}/data/deals`));
     expect(stillRecorded.value).toEqual([{ name: 'Acme' }, { name: 'Globex' }]);
 
+    // A newer recorded version whose file was overwritten before anyone read it is not served.
+    await ctx.record('data/deals.json', '[{"name":"Recorded"}]');
+    await writeFile(
+      path.join(ctx.workRoot, ctx.claims.job_id, 'data', 'deals.json'),
+      '[{"name":"Swapped"}]',
+    );
+    const swapped = await ctx.api(ctx.bo)(`/apps/${appId}/data/deals`);
+    expect(swapped.status).toBe(409);
+    expect(JSON.stringify(await swapped.json())).not.toContain('Swapped');
+
     // A name the version does not declare is no data at all.
     expect((await ctx.api(ctx.bo)(`/apps/${appId}/data/salaries`)).status).toBe(404);
   },
