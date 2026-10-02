@@ -314,7 +314,8 @@ export function databasePublicReads(options: {
       join connection c on c.id = ${options.connectionId} and c.space_id = j.space_id
       where j.id = ${scope.jobId} and j.space_id = ${scope.spaceId}`;
     // A conversation, and the long work a person started, read public pages.
-    if (!['chat', 'run', 'run_step'].includes(String(row?.kind))) return PUBLIC_READS_CHATS_ONLY;
+    if (!row || !['chat', 'run', 'run_step'].includes(String(row.kind)))
+      return PUBLIC_READS_CHATS_ONLY;
     if (!publicReadsEnabled(row.configuration)) return PUBLIC_READS_OFF;
     if (options.privateContext) {
       const agentId = row.agent_id ? String(row.agent_id) : null;

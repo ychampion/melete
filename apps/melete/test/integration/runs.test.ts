@@ -285,7 +285,8 @@ withDb('long work in shifts', () => {
       await (await request(`/runs/${run.id}/export`)).json(),
     ).markdown;
     expect(markdown).toContain('# Compare three vendors');
-    expect(markdown).toContain('step_started');
+    expect(markdown).toContain('Helper started');
+    expect(markdown).not.toMatch(/step_started|checkpoint|experiment/);
     expect(markdown).toContain('(helper: Vendor A)');
     expect(markdown).toContain('B is cheaper.');
   });

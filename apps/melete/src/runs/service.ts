@@ -891,15 +891,18 @@ export class RunService {
       const by = entry.stepJobId
         ? ` (helper: ${steps.get(entry.stepJobId) ?? entry.stepJobId})`
         : '';
-      lines.push(`## ${entry.createdAt.toISOString()} · ${entry.kind}${by}: ${entry.title}`, '');
+      lines.push(
+        `## ${entry.createdAt.toISOString()} · ${ENTRY_LABELS[entry.kind] ?? 'Note'}${by}: ${entry.title}`,
+        '',
+      );
       if (entry.body) lines.push(entry.body, '');
       const data = object(entry.data);
       if (entry.kind === 'experiment') {
         const facts = [
-          typeof data.hypothesis === 'string' ? `Hypothesis: ${data.hypothesis}` : null,
+          typeof data.hypothesis === 'string' ? `Idea: ${data.hypothesis}` : null,
           typeof data.value === 'number' ? `Value: ${data.value}` : null,
           `Outcome: ${String(data.outcome ?? '')}`,
-          `Checked against output: ${data.checked === true ? 'yes' : 'no'}`,
+          `Confirmed from its output: ${data.checked === true ? 'yes' : 'no'}`,
           Array.isArray(data.evidence) && data.evidence.length
             ? `Evidence: ${data.evidence.join(', ')}`
             : null,
@@ -1034,6 +1037,20 @@ function entryView(entry: Entry): RunEntry {
   };
 }
 
+/** How each kind of entry is named for a person reading the record. */
+const ENTRY_LABELS: Record<string, string> = {
+  plan: 'Plan',
+  note: 'Note',
+  finding: 'Found',
+  decision: 'Decided',
+  experiment: 'Tried',
+  report: 'Update',
+  checkpoint: 'Progress saved',
+  step_started: 'Helper started',
+  step_finished: 'Helper finished',
+  finished: 'Done',
+};
+
 /** One line on where the work stands, in the person's words: no shifts, no internals. */
 function statusLine(input: {
   status: RunStatus;
@@ -1050,7 +1067,7 @@ function statusLine(input: {
     input.experiments > 0
       ? `${input.experiments} ${input.experiments === 1 ? 'try' : 'tries'}${
           typeof input.best === 'number'
-            ? `, best ${input.metric ? `${input.metric} ` : ''}${input.best}`
+            ? `, best ${input.metric ? `${input.metric} ` : ''}${input.best.toLocaleString('en-US', { maximumFractionDigits: 6 })}`
             : ''
         }`
       : null;
