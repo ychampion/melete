@@ -108,7 +108,7 @@ const tool = (
 export const PROCESS_TOOLS: ToolManifest[] = [
   tool(
     'process.start',
-    "Start a command in the agent's computer in the background: a test suite, a build, a dev server, anything longer than two minutes. Never use & or nohup in a terminal command instead. It keeps running after this job until it ends, is stopped or reaches its time limit (two hours unless set). Returns its id and first output. Give port for a server listening on 0.0.0.0, so the person can preview it, and notify to be woken by it.",
+    "Start a command in the agent's computer in the background: a test suite, a build, a dev server, anything longer than two minutes. Never use & or nohup in a terminal command instead. It keeps running after this job until it ends, is stopped or reaches its time limit (two hours unless set). Returns its id and first output. Give port for a server on 0.0.0.0, and notify to be woken by it.",
     schema(
       {
         command: { type: 'string', minLength: 1, maxLength: 20000 },
