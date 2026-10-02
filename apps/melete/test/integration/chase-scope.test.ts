@@ -13,6 +13,7 @@ import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import type { Action, JsonValue } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { CHASE_FOLLOW_UP_TOOL } from '../../src/broker/chase.ts';
+import { SERVICE_DECISION } from '../../src/broker/http.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createTableTrustResolver } from '../../src/broker/trust.ts';
 import { handleLedgerItem } from '../../src/companies/handle.ts';
@@ -31,7 +32,9 @@ import {
   resolveChaseScopedGrant,
   resolvePersonGrant,
 } from '../../src/experience/chase-scope.ts';
+import { ExperienceEffects } from '../../src/experience/effects.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
+import { ExperiencePermissions } from '../../src/experience/permissions.ts';
 import { toolId } from '../../src/experience/tools.ts';
 import { newId } from '../../src/ids.ts';
 import { ApprovalService } from '../../src/jobs/approvals.ts';
@@ -39,6 +42,7 @@ import { type AttemptWake, QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner, type ClaimedAttempt } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
+import { principalContext } from '../../src/principals/authority.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
@@ -389,6 +393,46 @@ withDb('what one "Allow once" on a chase covers', () => {
     await handle.sql`insert into principal (id, email, password_hash)
       values (${stranger}, 'stranger@example.test', 'fixture')`;
     await handle.sql`update approval set decided_by = ${stranger} where id = ${proposal.approval_id}`;
+    const carrying = await claim(jobId);
+    await broker.admit(carrying.claims, proposal.action_id, proposal.payload_hash);
+    expect((await broker.dispatch(proposal.action_id)).status).toBe('succeeded');
+    expect(await handle.db.select().from(experienceRule)).toHaveLength(0);
+    expect((await send(carrying, followUp(1))).status).toBe('needs_approval');
+  });
+
+  test('an "Allow once" on the permission card opens the scope, as the person who pressed it', async () => {
+    const { handle } = fixture();
+    const jobId = await chase();
+    const proposal = await send(await claim(jobId), APPROVED);
+    const permissions = new ExperiencePermissions(
+      handle.sql,
+      broker,
+      new ExperienceEffects(handle.sql, broker, new ConnectorRegistry()),
+    );
+    await principalContext.run(ownerId, async () => {
+      const card = await permissions.card(spaceId, String(proposal.approval_id));
+      await permissions.decide(spaceId, card.id, { option: 'allow_once', version: card.version });
+    });
+    const [decided] = await handle.sql`select decided_by from approval
+      where id = ${proposal.approval_id}`;
+    expect(decided?.decided_by).toBe(ownerId);
+    const carrying = await claim(jobId);
+    await broker.admit(carrying.claims, proposal.action_id, proposal.payload_hash);
+    expect((await broker.dispatch(proposal.action_id)).status).toBe('succeeded');
+    expect(await handle.db.select().from(experienceRule)).toHaveLength(1);
+    expect((await send(carrying, followUp(1))).status).not.toBe('needs_approval');
+  });
+
+  test('an approval made with the operator key opens nothing', async () => {
+    const { handle } = fixture();
+    const jobId = await chase();
+    const proposal = await send(await claim(jobId), APPROVED);
+    await broker.decide(
+      proposal.action_id,
+      { decision: 'approved', payload_hash: proposal.payload_hash },
+      undefined,
+      SERVICE_DECISION,
+    );
     const carrying = await claim(jobId);
     await broker.admit(carrying.claims, proposal.action_id, proposal.payload_hash);
     expect((await broker.dispatch(proposal.action_id)).status).toBe('succeeded');

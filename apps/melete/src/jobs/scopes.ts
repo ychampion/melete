@@ -1,6 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { Query } from '../broker/records.ts';
-import { connection } from '../db/schema.ts';
+import { connection, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 
 /** What decides which connections a job may act through, read from durable rows. */
@@ -29,10 +29,11 @@ export function connectionServesJob(audience: JobConnectionAudience, sharedUse: 
   );
 }
 
-const audienceQuery = (jobId: string) => sql`select s.kind,
+/** One reading of the rule's inputs, shared by the typed and the raw SQL callers. */
+const AUDIENCE_SELECT = `select s.kind,
     coalesce(s.owner_principal_id, (select id from owner limit 1)) as space_owner_id,
     coalesce(j.principal_id, (select id from owner limit 1)) as principal_id
-  from job j join space s on s.id = j.space_id where j.id = ${jobId}`;
+  from job j join space s on s.id = j.space_id`;
 
 type AudienceRow = { kind: string; space_owner_id: string | null; principal_id: string | null };
 const fromRow = (row: AudienceRow | undefined): JobConnectionAudience | null =>
@@ -43,11 +44,48 @@ export async function jobConnectionAudience(
   query: Query,
   jobId: string,
 ): Promise<JobConnectionAudience | null> {
-  const [row] = await query<AudienceRow[]>`select s.kind,
-      coalesce(s.owner_principal_id, (select id from owner limit 1)) as space_owner_id,
-      coalesce(j.principal_id, (select id from owner limit 1)) as principal_id
-    from job j join space s on s.id = j.space_id where j.id = ${jobId}`;
+  const [row] = (await query.unsafe(`${AUDIENCE_SELECT} where j.id = $1`, [
+    jobId,
+  ])) as unknown as AudienceRow[];
   return fromRow(row);
+}
+
+async function typedAudience(tx: Transaction, jobId: string) {
+  const [row] = (await tx.execute(
+    sql`${sql.raw(AUDIENCE_SELECT)} where j.id = ${jobId}`,
+  )) as unknown as AudienceRow[];
+  return fromRow(row);
+}
+
+/**
+ * Whether a job may use one connection: it is active, in the job's space, and
+ * serves the job under the rule above. Events a connection reports reach only
+ * the jobs it serves, so a member's job cannot watch what the owner's mailbox
+ * receives.
+ */
+export async function jobMayUseConnection(
+  tx: Transaction,
+  jobId: string,
+  connectionId: string,
+): Promise<boolean> {
+  const audience = await typedAudience(tx, jobId);
+  const [source] = await tx
+    .select({
+      spaceId: connection.spaceId,
+      status: connection.status,
+      sharedUse: connection.sharedUse,
+    })
+    .from(connection)
+    .where(eq(connection.id, connectionId));
+  const [owner] = await tx.select({ spaceId: job.spaceId }).from(job).where(eq(job.id, jobId));
+  return Boolean(
+    audience &&
+      source &&
+      owner &&
+      source.spaceId === owner.spaceId &&
+      source.status === 'active' &&
+      connectionServesJob(audience, source.sharedUse),
+  );
 }
 
 /**
@@ -58,8 +96,7 @@ export async function connectionScopesForJob(
   tx: Transaction,
   row: { id: string; spaceId: string },
 ): Promise<string[]> {
-  const [found] = (await tx.execute(audienceQuery(row.id))) as unknown as AudienceRow[];
-  const audience = fromRow(found);
+  const audience = await typedAudience(tx, row.id);
   if (!audience) return [];
   const granted = await tx
     .select({ scopes: connection.scopes, sharedUse: connection.sharedUse })

@@ -37,7 +37,12 @@ export interface BrokerOperations {
     claims: CapabilityClaims,
     request: ReactRequest,
   ): Promise<{ message_id: string; emoji: string }>;
-  decide(id: string, request: ApprovalDecisionRequest): Promise<unknown>;
+  decide(
+    id: string,
+    request: ApprovalDecisionRequest,
+    guard?: undefined,
+    decidedBy?: string,
+  ): Promise<unknown>;
   startExecution?(claims: CapabilityClaims, id: string): Promise<{ execute: boolean }>;
   settleExecution?(
     claims: CapabilityClaims,
@@ -73,6 +78,12 @@ export function brokerFailureLine(method: string, path: string, error: unknown):
   }: ${failure.message.slice(0, 300)}${frames ? ` | ${frames}` : ''}`;
   return `${redactLogText(text.replace(/\s*\n\s*/g, ' '))}\n`;
 }
+
+/**
+ * What a decision made with the operator's approval key is recorded as. No
+ * person answered it, so it names nobody.
+ */
+export const SERVICE_DECISION = 'service';
 
 export function createBrokerApp(options: {
   broker: BrokerOperations;
@@ -249,7 +260,9 @@ export function createBrokerApp(options: {
   ] as const) {
     app.post(`/actions/:id/${verb}`, async (c) => {
       const body = approvalDecisionRequest.parse({ ...(await c.req.json()), decision });
-      return c.json(await options.broker.decide(c.req.param('id'), body));
+      return c.json(
+        await options.broker.decide(c.req.param('id'), body, undefined, SERVICE_DECISION),
+      );
     });
   }
   return app;

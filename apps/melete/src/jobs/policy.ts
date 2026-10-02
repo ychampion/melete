@@ -107,7 +107,7 @@ export class PolicyService {
         });
         const decisions = await tx
           .update(approval)
-          .set({ decision: 'denied', decidedAt: new Date(), decidedBy: 'owner' })
+          .set({ decision: 'denied', decidedAt: new Date(), decidedBy: 'policy' })
           .where(and(eq(approval.actionId, effect.id), isNull(approval.decision)))
           .returning();
         for (const decision of decisions)

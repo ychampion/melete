@@ -151,7 +151,7 @@ function resolveOwnerScope(sql: MemorySql, journal: FileRestrictionJournal) {
  * Job workers derive ownership from durable catalog rows, never bundle metadata.
  * The job's principal is the reader: the space's owner reads its private
  * memory, and a member of a shared space reads what the space shares, fenced by
- * the membership generation the job runs under. A job that names no principal
+ * their current membership generation. A job that names no principal
  * predates principals and belongs to the setup owner.
  */
 function resolveJobScope(sql: MemorySql, journal: FileRestrictionJournal) {
