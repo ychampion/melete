@@ -95,6 +95,8 @@ export type DeployOptions = {
   /** Set by rollback: the branch to return to when it points at the target commit. */
   branch?: string | null;
   command?: 'deploy' | 'rollback';
+  /** Set by rollback: recorded migrations the target ran beside before the deploy it undoes. */
+  accepted?: number[];
 };
 
 export function deployOptions(args: readonly string[]): DeployOptions {
@@ -387,6 +389,7 @@ export function gatherDeploy(
         recorded: recordedMigrations(context, compose),
         current: journalWhens(context, head),
         target: revision !== null && revisionAvailable ? journalWhens(context, revision) : null,
+        ...(options.accepted ? { accepted: options.accepted } : {}),
       },
       databaseBytes: databaseBytes(context, compose),
       backup,
@@ -589,6 +592,9 @@ export async function runDeploy(
       migrations: {
         from: facts.migrations.recorded?.length ?? null,
         to: facts.migrations.target?.length ?? null,
+        ran: migrationDelta(facts.migrations).known
+          ? migrationDelta(facts.migrations).pending
+          : null,
       },
       backup,
       result,

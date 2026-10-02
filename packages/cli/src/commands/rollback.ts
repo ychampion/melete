@@ -65,15 +65,24 @@ export async function runRollback(
 
   const installation = readInstallation(context.deployDir, context.machine.platform);
   const compose = composeCommand(context.deployDir, installation.config);
-  // Against the release being left, which is the one whose migrations may have run.
+  // What the last deploy ran is what going back must undo. Migrations recorded before it
+  // were there while the previous release ran, so it runs beside them again.
+  const recorded = recordedMigrations(context, compose);
+  const previousJournal = previous.revision ? journalWhens(context, previous.revision) : null;
+  const ran = last.migrations.ran;
   const delta = migrationDelta({
-    recorded: recordedMigrations(context, compose),
+    recorded,
     current: last.to.revision
       ? journalWhens(context, last.to.revision)
       : journalWhens(context, null),
-    target: previous.revision ? journalWhens(context, previous.revision) : null,
+    target: previousJournal,
+    ...(ran !== null && recorded !== null
+      ? { accepted: recorded.filter((when) => !ran.includes(when)) }
+      : {}),
   });
-  if (!delta.known || delta.behind.length > 0 || delta.skipped.length > 0) {
+  // With what the deploy ran known, `behind` holds only those of its migrations the
+  // previous release lacks; otherwise every recorded one the newer release has counts.
+  if (!delta.known || delta.skipped.length > 0 || delta.behind.length > 0) {
     const steps = restoreSteps({
       root: context.root,
       project: installation.config.project,
@@ -111,6 +120,9 @@ export async function runRollback(
       waitSeconds,
       branch: last.checkout?.branch ?? null,
       command: 'rollback',
+      ...(ran !== null && recorded !== null
+        ? { accepted: recorded.filter((when) => !ran.includes(when)) }
+        : {}),
     },
     json,
     dependencies,

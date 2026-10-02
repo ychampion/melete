@@ -29,7 +29,12 @@ export const historyEntrySchema = z.object({
     .object({ from: z.string(), branch: z.string().nullable(), to: z.string() })
     .nullable(),
   /** Migrations the database held before the run, and the count the target's journal has. */
-  migrations: z.object({ from: z.number().nullable(), to: z.number().nullable() }),
+  migrations: z.object({
+    from: z.number().nullable(),
+    to: z.number().nullable(),
+    /** The journal times of the migrations this run applied; null when they could not be told. */
+    ran: z.array(z.number()).nullable().default(null),
+  }),
   /** Where the backup taken before the switch is, or null when none was taken. */
   backup: z.string().nullable(),
   result: z.enum(['deployed', 'planned', 'refused', 'failed']),
@@ -39,7 +44,7 @@ export type HistoryEntry = z.infer<typeof historyEntrySchema>;
 
 export const historyPath = (deployDir: string) => join(deployDir, STATE_DIR, HISTORY_FILE);
 
-export function appendHistory(deployDir: string, entry: HistoryEntry): void {
+export function appendHistory(deployDir: string, entry: z.input<typeof historyEntrySchema>): void {
   mkdirSync(join(deployDir, STATE_DIR), { recursive: true, mode: 0o700 });
   appendFileSync(historyPath(deployDir), `${JSON.stringify(historyEntrySchema.parse(entry))}\n`, {
     mode: 0o600,

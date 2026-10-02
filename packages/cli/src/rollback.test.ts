@@ -5,7 +5,7 @@ import { runDeploy } from './commands/deploy.ts';
 import { runRollback } from './commands/rollback.ts';
 import { readHistory } from './history.ts';
 import { temporaryDeployDir } from './testing.ts';
-import { deployRig, NEW, OLD } from './testing-engine.ts';
+import { deployRig, NEW, OLD, whens } from './testing-engine.ts';
 
 const short = (commit: string) => commit.slice(0, 7);
 const env = (deployDir: string) => readFileSync(join(deployDir, '.env'), 'utf8');
@@ -82,6 +82,27 @@ describe('melete rollback', () => {
         .every((call) => !/ up | restart|pull|docker tag|checkout/.test(call)),
     ).toBe(true);
     expect(env(deployDir)).toBe(before);
+  });
+
+  test('a migration recorded before the deploy does not stop the previous release coming back', async () => {
+    const deployDir = temporaryDeployDir();
+    // Another build had already recorded the new release's migration, so the deploy ran none.
+    const rig = deployRig(deployDir, {
+      commits: new Map([
+        [OLD, 68],
+        [NEW, 69],
+      ]),
+      recorded: whens(69),
+    });
+    expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(0);
+    expect(readHistory(deployDir)[0]?.migrations.ran).toEqual([]);
+
+    expect(await runRollback(rig.context, [], false, rig.dependencies)).toBe(0);
+    expect(env(deployDir)).toContain(`\nMELETE_IMAGE_TAG=${short(OLD)}\n`);
+    expect(rig.state.head).toBe(OLD);
+    expect(rig.context.printed()).toMatch(
+      /warn\s+migrations\.unknown\s+The database records 1 migration/,
+    );
   });
 
   test('with no deploy recorded there is nothing to go back to', async () => {

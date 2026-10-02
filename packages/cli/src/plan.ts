@@ -94,6 +94,11 @@ export type MigrationFacts = {
   current: number[] | null;
   /** The journal at the target commit; null when that commit is not here to read. */
   target: number[] | null;
+  /**
+   * Recorded entries the target is known to run beside already: a rollback
+   * passes those that were recorded before the deploy it undoes.
+   */
+  accepted?: number[];
 };
 
 export type MigrationDelta = {
@@ -115,7 +120,8 @@ export function migrationDelta(facts: MigrationFacts): MigrationDelta {
     return { known: false, pending: [], skipped: [], behind: [], foreign: [] };
   const done = new Set(recorded);
   const wanted = new Set(target);
-  const running = new Set(current ?? []);
+  const accepted = new Set(facts.accepted ?? []);
+  const running = new Set((current ?? []).filter((when) => !accepted.has(when)));
   const newest = Math.max(-Infinity, ...recorded);
   const pending = target.filter((when) => !done.has(when));
   return {
