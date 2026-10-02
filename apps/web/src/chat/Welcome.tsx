@@ -20,7 +20,15 @@ import { missingNeeds, WORKS_WITH } from '../screens/agent-library.ts';
 import { toast } from '../shell/Shell.tsx';
 import { Markdown } from './Markdown.tsx';
 import { Questionnaire } from './parts.tsx';
-import { saveWelcome, type WelcomeRef, welcomeProgress, welcomeStep } from './welcome.ts';
+import {
+  restoreWelcome,
+  saveWelcome,
+  sessionWelcome,
+  type WelcomeProgress,
+  type WelcomeRef,
+  welcomeQuery,
+  welcomeStep,
+} from './welcome.ts';
 
 const asQuestion = (id: string, text: string, options: Question['options']): Question => ({
   id,
@@ -67,16 +75,20 @@ const Mine = ({ text }: { text: string }) => (
 export function AgentWelcome({
   agent,
   template,
+  initial,
+  onProgress,
   onTry,
 }: {
   agent: Agent;
   template: AgentTemplate;
+  /** Where the person got to, restored from the session or the service. */
+  initial: WelcomeProgress;
+  onProgress: (next: WelcomeProgress) => void;
   /** Puts an example request in the composer. */
   onTry: (text: string) => void;
 }) {
-  const ref: WelcomeRef = { agentId: agent.id, templateId: template.id };
   const routine = template.starter_routine;
-  const [state, setState] = useState(() => welcomeProgress(ref, routine !== null));
+  const [state, setState] = useState(initial);
   const [busy, setBusy] = useState(false);
   const section = useRef<HTMLElement>(null);
   // Each new step comes into view above the composer as the welcome moves on.
@@ -87,7 +99,7 @@ export function AgentWelcome({
   }, [moved, routine]);
   const connections = useLoad(() => adapter.connections(), []);
   const update = (next: typeof state) => {
-    saveWelcome(ref, next);
+    onProgress(next);
     setState(next);
   };
   const questions = template.questions;
@@ -261,7 +273,14 @@ export function AgentWelcome({
   );
 }
 
-/** The welcome for a chat, when there is one and its agent and template are known. */
+/** The chat's link as it stands, which the welcome keeps current without a navigation. */
+const linkQuery = () => new URLSearchParams(window.location.hash.split('?')[1] ?? '');
+
+/**
+ * The welcome for a chat, when there is one and its agent and template are
+ * known. Progress made in this session is used as it is; otherwise it is read
+ * back from the service and the chat's link, so a reload keeps the welcome.
+ */
 export function WelcomeThread({
   welcome,
   onTry,
@@ -271,8 +290,46 @@ export function WelcomeThread({
 }) {
   const { agents } = useApp();
   const templates = useLoad(() => adapter.agentTemplates(), []);
+  const automations = useLoad(() => adapter.automations(), []);
+  const memory = useLoad(() => adapter.memory(), []);
   const agent = agents.find((item) => item.id === welcome.agentId);
   const template = templates.data?.templates.find((item) => item.id === welcome.templateId);
   if (!agent || !template) return null;
-  return <AgentWelcome agent={agent} template={template} onTry={onTry} />;
+  let initial = sessionWelcome(welcome);
+  if (!initial) {
+    // Wait for what the service holds; a failed read starts from the beginning.
+    if ((automations.loading || memory.loading) && !(automations.error || memory.error))
+      return null;
+    const link = linkQuery();
+    const routine = template.starter_routine;
+    initial = restoreWelcome({
+      hasRoutine: routine !== null,
+      routineMade:
+        routine !== null &&
+        agent.usage.routines > 0 &&
+        (automations.data?.automations ?? []).some((item) => item.title === routine.title),
+      routineDeclined: link.get('routine') === 'no',
+      questions: template.questions,
+      saved: new Map((memory.data?.items ?? []).map((item) => [item.key, item.value])),
+      skipped: new Set((link.get('skipped') ?? '').split(',').filter(Boolean)),
+    });
+  }
+  return (
+    <AgentWelcome
+      key={`${welcome.agentId}:${welcome.templateId}`}
+      agent={agent}
+      template={template}
+      initial={initial}
+      onProgress={(next) => {
+        saveWelcome(welcome, next);
+        const link = linkQuery();
+        const query = new URLSearchParams(welcomeQuery(template.id, next));
+        const agentId = link.get('agent');
+        if (agentId) query.set('agent', agentId);
+        const path = window.location.hash.slice(1).split('?')[0] ?? '';
+        window.history.replaceState(window.history.state, '', `#${path}?${query.toString()}`);
+      }}
+      onTry={onTry}
+    />
+  );
 }

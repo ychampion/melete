@@ -1,37 +1,84 @@
 import { expect, test } from 'bun:test';
 import {
-  carriedWelcome,
-  carryWelcome,
+  prefLabel,
+  restoreWelcome,
   saveWelcome,
-  welcomeProgress,
+  sessionWelcome,
+  welcomeQuery,
   welcomeStep,
 } from './welcome.ts';
 
+const questions = [
+  { id: 'who', memory_key: 'pref.inbox.important-senders' },
+  { id: 'voice', memory_key: 'pref.inbox.reply-voice' },
+];
+const none = {
+  hasRoutine: true,
+  routineMade: false,
+  routineDeclined: false,
+  questions,
+  saved: new Map<string, string>(),
+  skipped: new Set<string>(),
+};
+
 test('the welcome offers the routine first, then each question, then is done', () => {
-  const ref = { agentId: 'ag_1', templateId: 'inbox-triage' };
-  const start = welcomeProgress(ref, true);
+  const start = restoreWelcome(none);
   expect(welcomeStep(start, 2)).toEqual({ kind: 'routine' });
   const declined = { ...start, routine: 'declined' as const };
   expect(welcomeStep(declined, 2)).toEqual({ kind: 'question', index: 0 });
-  const one = { ...declined, answers: [{ id: 'a', text: 'My manager' }] };
+  const one = { ...declined, answers: [{ id: 'who', text: 'My manager' }] };
   expect(welcomeStep(one, 2)).toEqual({ kind: 'question', index: 1 });
-  expect(welcomeStep({ ...one, answers: [...one.answers, { id: 'b', text: null }] }, 2)).toEqual({
-    kind: 'done',
-  });
+  expect(
+    welcomeStep({ ...one, answers: [...one.answers, { id: 'voice', text: null }] }, 2),
+  ).toEqual({ kind: 'done' });
   // No routine and no questions: nothing to ask.
-  expect(welcomeStep(welcomeProgress({ ...ref, agentId: 'ag_2' }, false), 0)).toEqual({
+  expect(welcomeStep(restoreWelcome({ ...none, hasRoutine: false, questions: [] }), 0)).toEqual({
     kind: 'done',
   });
 });
 
-test('where the person got to is kept, and the chat they start keeps the welcome', () => {
-  const ref = { agentId: 'ag_3', templateId: 'bill-tracker' };
-  saveWelcome(ref, { routine: 'made', answers: [{ id: 'bills', text: 'Rent' }] });
-  expect(welcomeProgress(ref, true)).toEqual({
-    routine: 'made',
-    answers: [{ id: 'bills', text: 'Rent' }],
+test('after a reload, the routine and saved answers come back from the service, skips from the link', () => {
+  const restored = restoreWelcome({
+    ...none,
+    routineMade: true,
+    saved: new Map([['inbox: important senders', 'My manager']]),
+    skipped: new Set(['voice']),
   });
-  expect(carriedWelcome('c_1')).toBeNull();
-  carryWelcome('c_1', ref);
-  expect(carriedWelcome('c_1')).toEqual(ref);
+  expect(restored).toEqual({
+    routine: 'made',
+    answers: [
+      { id: 'who', text: 'My manager' },
+      { id: 'voice', text: null },
+    ],
+  });
+  // A routine turned down stays turned down; questions are asked in order, so a
+  // skip after an unanswered question waits its turn.
+  expect(restoreWelcome({ ...none, routineDeclined: true, skipped: new Set(['voice']) })).toEqual({
+    routine: 'declined',
+    answers: [],
+  });
+});
+
+test('the link keeps only the noes, and this session’s progress is kept as it is', () => {
+  expect(
+    welcomeQuery('inbox-triage', { routine: 'made', answers: [{ id: 'who', text: 'x' }] }),
+  ).toBe('welcome=inbox-triage');
+  expect(
+    welcomeQuery('inbox-triage', {
+      routine: 'declined',
+      answers: [
+        { id: 'who', text: null },
+        { id: 'voice', text: null },
+      ],
+    }),
+  ).toBe('welcome=inbox-triage&routine=no&skipped=who%2Cvoice');
+  const ref = { agentId: 'ag_3', templateId: 'bill-tracker' };
+  expect(sessionWelcome(ref)).toBeNull();
+  saveWelcome(ref, { routine: 'made', answers: [] });
+  expect(sessionWelcome(ref)).toEqual({ routine: 'made', answers: [] });
+});
+
+test('a pref key reads as the memory list labels it', () => {
+  expect(prefLabel('pref.inbox.important-senders')).toBe('inbox: important senders');
+  expect(prefLabel('pref.trip-planner.home-airport')).toBe('trip planner: home airport');
 });
