@@ -184,11 +184,16 @@ const ANSWER = 'I drafted the email to Alex for you to review.';
         ),
       );
 
-      // An agent taken straight from a template reaches every connection in the space.
+      // A template grants nothing; with every connection ticked in the draft, the
+      // agent reaches every connection in the space.
       const { templates } = (await (await call('/agents/templates')).json()) as {
         templates: Array<{ agent: Record<string, unknown> }>;
       };
-      const made = await call('/agents', 'POST', templates[0]?.agent);
+      expect(templates[0]?.agent.allowed_connection_ids).toEqual([]);
+      const made = await call('/agents', 'POST', {
+        ...templates[0]?.agent,
+        allowed_connection_ids: null,
+      });
       expect(made.status).toBe(200);
       const { agent } = (await made.json()) as {
         agent: { id: string; allowed_connection_ids: string[] | null };

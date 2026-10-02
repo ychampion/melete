@@ -506,11 +506,15 @@ const skilled = late ? await database() : null;
           headers: { cookie, ...(body ? { 'content-type': 'application/json' } : {}) },
           ...(body ? { body: JSON.stringify(body) } : {}),
         });
-      // The agent a person takes straight from a template, without touching access.
+      // A template grants nothing; the person ticks every connection in the draft.
       const { templates } = (await (await call('/agents/templates')).json()) as {
         templates: Array<{ agent: Record<string, unknown> }>;
       };
-      const made = await call('/agents', 'POST', templates[0]?.agent);
+      expect(templates[0]?.agent.allowed_connection_ids).toEqual([]);
+      const made = await call('/agents', 'POST', {
+        ...templates[0]?.agent,
+        allowed_connection_ids: null,
+      });
       expect(made.status).toBeLessThan(300);
       const { agent } = (await made.json()) as { agent: { id: string } };
       if (!running.registry || !running.jobs || !running.runner) throw new Error('Missing runtime');
