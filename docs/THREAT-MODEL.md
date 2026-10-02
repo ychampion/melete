@@ -496,7 +496,7 @@ holds only placeholders, the egress CA's certificate and per-command tokens.
   DNS names and excludes every IP address (`the egress CA cannot sign for a
   host outside its constraints` checks a forged certificate against a real TLS
   client). Host certificates last a day and stay in memory.
-- **Rooms.** An account is offered only to work in the owner's own space, never
+- **Rooms.** An account is offered only to work in the person's own space, never
   in a shared space or a public compartment, and only where the conversation's
   agent may use that connection.
 - **What remains.** Reading with the account and sending what was read
