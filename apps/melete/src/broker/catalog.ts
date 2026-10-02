@@ -18,7 +18,12 @@ import { supersededExecution } from '../connectors/catalog.ts';
 import { MAX_TOOL_SCHEMA_BYTES, toolSchemaFits } from '../connectors/schema-budget.ts';
 import { type Connector, connectorAllowsAudience } from '../connectors/types.ts';
 import { offersPersonsBrowser, routedDescription } from '../devices/routing.ts';
-import { type AgentAccess, agentAccess, computerTool, directSend } from '../experience/access.ts';
+import {
+  type AgentAccess,
+  agentAccess,
+  connectionOffered,
+  toolOffered,
+} from '../experience/access.ts';
 import { appendToolTrace } from '../experience/tools.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
 import { spaceRole } from '../principals/authority.ts';
@@ -469,8 +474,7 @@ export class ToolCatalog {
     );
     for (const row of connections) {
       // A conversation's persona bounds which connections and verbs are offered.
-      if ((access.chat && !access.agentId) || (access.allowed && !access.allowed.includes(row.id)))
-        continue;
+      if (!connectionOffered(access, row.id)) continue;
       if (supersededExecution(row.provider, providers)) continue;
       const connector = this.options.connectors.get(row.id);
       if (!connector || connector.manifest.provider !== row.provider) continue;
@@ -478,8 +482,7 @@ export class ToolCatalog {
       if (connector.capability?.available === false) continue;
       if (!connectorAllowsAudience(connector, job.constraints, row.audience)) continue;
       for (const declared of connector.manifest.tools) {
-        if (access.chat && directSend(declared.name)) continue;
-        if (!access.usesComputer && computerTool(declared.name)) continue;
+        if (!toolOffered(access, declared.name)) continue;
         const scopes = [declared.name, ...declared.required_scopes];
         if (!grantsConnectionScopes(claims, row.scopes, scopes)) continue;
         if (

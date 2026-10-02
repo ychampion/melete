@@ -8,6 +8,7 @@ import { type ConnectorLookup, grantedToolCatalog } from '../connectors/catalog.
 import type { Database } from '../db/client.ts';
 import { connection } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
+import { agentAccessIn, offeredTo } from '../experience/access.ts';
 import type { RunnerOptions } from '../jobs/runner.ts';
 import { learnedSkills, procedureReach } from '../learning/selection.ts';
 import { skillPayloadOf, turnAgentKeepsMemory, usableSkills } from '../principals/context.ts';
@@ -47,7 +48,13 @@ export class RuntimeCatalog {
   }
 
   forAttempt: NonNullable<RunnerOptions['loadCatalog']> = async (tx, claims, bundle) => {
-    const granted = await this.toolsForSpace(claims.space_id, claims.scopes, tx);
+    // Only what this turn's agent may use, by the broker catalog's own rule: an
+    // agent without the computer gets no engine terminal, and a narrowed agent
+    // only its connections' tools. Anything more is offered and then refused.
+    const access = await agentAccessIn(tx, claims.job_id);
+    const granted = (await this.toolsForSpace(claims.space_id, claims.scopes, tx)).filter((tool) =>
+      offeredTo(access, tool),
+    );
     // The engine builds its own terminal from the sandbox's terminal.run in this
     // list, and the plugin hands the terminal to it whenever the broker serves
     // that tool. So it keeps its place ahead of the cut: sorted by name, a

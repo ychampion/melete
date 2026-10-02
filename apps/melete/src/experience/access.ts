@@ -1,4 +1,6 @@
+import { sql } from 'drizzle-orm';
 import type { Query } from '../broker/records.ts';
+import type { Transaction } from '../db/transaction.ts';
 
 /** The active turn pins its agent; changing the header selects the following turn. */
 export async function agentAccess(tx: Query, jobId: string) {
@@ -8,9 +10,25 @@ export async function agentAccess(tx: Query, jobId: string) {
     from job j left join experience_turn t on t.id = j.current_turn_id
     left join agent a on a.id = coalesce(t.agent_id, j.agent_id) and a.space_id = j.space_id
     where j.id = ${jobId}`;
+  return accessOf(row);
+}
+
+/** The same reading inside the runner's transaction, where the attempt's bundle is built. */
+export async function agentAccessIn(tx: Transaction, jobId: string): Promise<AgentAccess> {
+  const [row] = await tx.execute<
+    Record<string, unknown>
+  >(sql`select j.kind, j.paused, j.current_turn_id, coalesce(t.agent_id, j.agent_id) as bound_agent_id, a.id, a.allowed_connection_ids, a.asks_before_acting,
+      a.uses_computer, a.reads_memory, a.writes_memory
+    from job j left join experience_turn t on t.id = j.current_turn_id
+    left join agent a on a.id = coalesce(t.agent_id, j.agent_id) and a.space_id = j.space_id
+    where j.id = ${jobId}`);
+  return accessOf(row);
+}
+
+function accessOf(row: Record<string, unknown> | undefined) {
   return {
     chat: row?.kind === 'chat',
-    turnId: ['chat', 'routine'].includes(row?.kind)
+    turnId: ['chat', 'routine'].includes(String(row?.kind))
       ? (row?.current_turn_id as string | undefined)
       : undefined,
     paused: row?.paused === true,
@@ -25,7 +43,7 @@ export async function agentAccess(tx: Query, jobId: string) {
   };
 }
 
-export type AgentAccess = Awaited<ReturnType<typeof agentAccess>>;
+export type AgentAccess = ReturnType<typeof accessOf>;
 
 export const directSend = (kind: string) => /(?:^|[._])send(?:$|[._])/i.test(kind);
 
@@ -37,3 +55,26 @@ export const directSend = (kind: string) => /(?:^|[._])send(?:$|[._])/i.test(kin
  */
 export const computerTool = (kind: string) =>
   /^(?:browser|computer|terminal|exec|device)\./.test(kind);
+
+/**
+ * Whether the agent is offered a connection's tools at all: work in a chat with
+ * no agent is offered none, and an agent narrowed to some connections only those.
+ */
+export const connectionOffered = (access: AgentAccess, connectionId: string): boolean =>
+  !(access.chat && !access.agentId) && !(access.allowed && !access.allowed.includes(connectionId));
+
+/** Whether the agent is offered one of a connection's tools, by its name. */
+export const toolOffered = (access: AgentAccess, name: string): boolean =>
+  !(access.chat && directSend(name)) && !(!access.usesComputer && computerTool(name));
+
+/**
+ * The broker catalog's rule for one tool, for anything that must agree with it:
+ * the engine is built only with what the agent may use. A broker tool of its
+ * own (no connection) is not narrowed here.
+ */
+export const offeredTo = (
+  access: AgentAccess,
+  tool: { name: string; connection_id: string | null },
+): boolean =>
+  tool.connection_id === null ||
+  (connectionOffered(access, tool.connection_id) && toolOffered(access, tool.name));
