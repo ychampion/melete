@@ -14,8 +14,7 @@
  * internal network of the container's own whose only other member is this
  * service, and the egress guard there, which tunnels HTTPS to public addresses
  * and nothing else (see docker-egress.ts). `connected_hosts_only` is the same
- * network, with the guard letting out only the hosts of the space's connected
- * accounts and the operator's list. Each command gets its own proxy address,
+ * network, with the guard letting out only the hosts the operator lists. Each command gets its own proxy address,
  * so the guard records which command reached where.
  *
  * A workspace is the container itself. Suspending it records it idle; a
@@ -107,8 +106,8 @@ export type DockerSandboxSettings = {
   /** Where the egress guard records each tunnel and refusal. */
   egressRecords?: EgressRecordSink;
   /**
-   * Hosts every `connected_hosts_only` computer may reach besides its space's
-   * connected accounts: exact names, or `.suffix` for the names below one.
+   * The hosts every `connected_hosts_only` computer may reach: exact names, or
+   * `.suffix` for the names below one.
    */
   egressExtraHosts?: readonly string[];
 };

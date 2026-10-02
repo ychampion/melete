@@ -108,11 +108,11 @@ instead.
   browser are pointed at the guard. These are the same rules the browser worker
   follows.
 - `connected_hosts_only`: the same way out, through the same guard, to the
-  sites of the space's connected command-line accounts and the hosts listed in
-  `MELETE_SANDBOX_EGRESS_EXTRA_HOSTS` (for example a package registry), and
-  nothing else. Entries are names, or `.example.com` for every name below one.
-  The list is read again at each connection, so a newly connected account takes
-  effect without restarting the computer.
+  hosts listed in `MELETE_SANDBOX_EGRESS_EXTRA_HOSTS` (for example a package
+  registry or a code host), and nothing else. Entries are names, or
+  `.example.com` for every name below one; a suffix needs at least two labels.
+  With the list empty, the computer reaches nothing. The list is read at each
+  connection.
 - `deny_all`: no network at all.
 
 An allow-list of address ranges is not offered by this provider; asking for one
@@ -137,6 +137,11 @@ a command left running, goes out under the same rules and is recorded as
 unattributed. Processes inside one computer run as the same user, so one can
 borrow another's token; that only changes which of that computer's commands a
 connection is recorded against.
+
+The same refusal repeated within a minute is one record with a count. One
+computer adds at most 120 records a minute; past that, its further connections
+are counted on a single record for that minute, so a computer that loops cannot
+fill the database. Each command's result still counts every connection.
 
 Records are kept for `MELETE_EGRESS_RECORD_DAYS` (30 by default) and are removed
 with their space.

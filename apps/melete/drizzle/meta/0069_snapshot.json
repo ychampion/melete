@@ -1,5 +1,5 @@
 {
-  "id": "2a46cab0-c011-4493-acdc-ddd0b2cb7b24",
+  "id": "7ec3b6f5-51b5-47be-8a3d-429a0e95a60d",
   "prevId": "5d5dfa0f-9813-4c86-83e5-314c5677c8ec",
   "version": "7",
   "dialect": "postgresql",
@@ -13173,6 +13173,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "count": {
+          "name": "count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
         "connection_id": {
           "name": "connection_id",
           "type": "text",
@@ -13263,6 +13270,21 @@
           "method": "btree",
           "with": {}
         },
+        "egress_record_session_idx": {
+          "name": "egress_record_session_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "egress_record_opened_idx": {
           "name": "egress_record_opened_idx",
           "columns": [
@@ -13329,7 +13351,7 @@
       "checkConstraints": {
         "egress_record_verdict_check": {
           "name": "egress_record_verdict_check",
-          "value": "\"egress_record\".\"verdict\" in ('tunnel', 'refused', 'credentialed', 'unattributed')"
+          "value": "\"egress_record\".\"verdict\" in ('tunnel', 'refused', 'credentialed', 'unattributed', 'suppressed')"
         },
         "egress_record_token_kind_check": {
           "name": "egress_record_token_kind_check",

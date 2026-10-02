@@ -13,7 +13,11 @@ import { bigint, check, index, integer, pgTable, text, timestamp } from 'drizzle
 import { space } from '../db/schema.ts';
 import { sandboxSession } from '../sandbox/schema.ts';
 
-export type EgressVerdict = 'tunnel' | 'refused' | 'credentialed' | 'unattributed';
+/**
+ * `suppressed` counts, on one record per computer per minute, the connections
+ * past that minute's record budget.
+ */
+export type EgressVerdict = 'tunnel' | 'refused' | 'credentialed' | 'unattributed' | 'suppressed';
 
 export const egressRecord = pgTable(
   'egress_record',
@@ -35,6 +39,8 @@ export const egressRecord = pgTable(
     verdict: text('verdict').$type<EgressVerdict>().notNull(),
     /** Why a connection was refused, as the guard told the computer. */
     reason: text('reason'),
+    /** How many connections the record stands for: repeated refusals within a minute share one. */
+    count: integer('count').notNull().default(1),
     connectionId: text('connection_id'),
     reads: integer('reads').notNull().default(0),
     writes: integer('writes').notNull().default(0),
@@ -46,12 +52,14 @@ export const egressRecord = pgTable(
   (t) => [
     index('egress_record_job_idx').on(t.jobId, t.openedAt),
     index('egress_record_space_idx').on(t.spaceId, t.openedAt),
+    // The session's cascade reaches records through this.
+    index('egress_record_session_idx').on(t.sessionId),
     // The retention sweep removes by age across every space.
     index('egress_record_opened_idx').on(t.openedAt),
     index('egress_record_action_idx').on(t.actionId).where(sql`${t.actionId} is not null`),
     check(
       'egress_record_verdict_check',
-      sql`${t.verdict} in ('tunnel', 'refused', 'credentialed', 'unattributed')`,
+      sql`${t.verdict} in ('tunnel', 'refused', 'credentialed', 'unattributed', 'suppressed')`,
     ),
     check(
       'egress_record_token_kind_check',

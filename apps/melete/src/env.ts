@@ -502,8 +502,8 @@ const variables = z.object({
   ),
   /**
    * What the default sandbox may reach: `open` is public HTTPS sites through the
-   * service's egress guard, `connected_hosts_only` the sites of connected
-   * accounts and the list below, `deny_all` is nothing at all.
+   * service's egress guard, `connected_hosts_only` the hosts listed below,
+   * `deny_all` is nothing at all.
    */
   MELETE_SANDBOX_DOCKER_EGRESS: unsetWhenBlank(
     z.enum(['open', 'connected_hosts_only', 'deny_all']).default('open'),
@@ -517,9 +517,9 @@ const variables = z.object({
     z.coerce.number().int().min(1024).max(65_535).default(8791),
   ),
   /**
-   * Hosts a `connected_hosts_only` computer may reach besides its connected
-   * accounts' sites, such as a package registry: comma-separated names, or
-   * `.example.com` for every name below one.
+   * The hosts a `connected_hosts_only` computer may reach, such as a package
+   * registry: comma-separated names, or `.example.com` for every name below
+   * one. A suffix needs two labels at least, so `.com` alone is refused.
    */
   MELETE_SANDBOX_EGRESS_EXTRA_HOSTS: unsetWhenBlank(
     z
@@ -540,6 +540,10 @@ const variables = z.object({
               .regex(
                 /^\.?(?=[a-z0-9.-]*[a-z])[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/,
                 'each extra host is a DNS name, or .name for the names below it',
+              )
+              .refine(
+                (host) => !host.startsWith('.') || host.slice(1).includes('.'),
+                'a suffix covers too much with one label; name at least two, as in .example.com',
               ),
           )
           .max(64),

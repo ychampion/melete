@@ -53,6 +53,7 @@ withDb('egress records', () => {
       port: 443,
       verdict: 'tunnel',
       reason: null,
+      count: 1,
       openedAt,
     });
     recorder.closed('egr_tunnel', { bytesUp: 512, bytesDown: 70_000, closedAt: new Date() });
@@ -87,6 +88,7 @@ withDb('egress records', () => {
       port: 443,
       verdict: 'unattributed',
       reason: null,
+      count: 1,
       openedAt: new Date(),
     });
     recorder.opened({
@@ -101,6 +103,7 @@ withDb('egress records', () => {
       // Refused by the table's own check: reported, never thrown at the guard.
       verdict: 'sideways' as 'tunnel',
       reason: null,
+      count: 1,
       openedAt: new Date(),
     });
     recorder.closed('egr_nowhere', { bytesUp: 1, bytesDown: 1, closedAt: new Date() });
@@ -164,6 +167,51 @@ withDb('egress records', () => {
       await guard.close();
       await new Promise<void>((resolve) => echo.close(() => resolve()));
     }
+  });
+
+  test("a coalesced refusal's count reaches its row, and a receipt read back sums the counts", async () => {
+    const { sql, scope, attemptId, actionId, sessionId, recorder } = await setup();
+    const base = {
+      sessionId,
+      jobId: scope.jobId,
+      attemptId,
+      actionId,
+      tokenKind: 'command' as const,
+      port: 443,
+      openedAt: new Date(),
+      closedAt: new Date(),
+    };
+    recorder.opened({
+      ...base,
+      id: 'egr_refused',
+      host: 'blocked.example',
+      verdict: 'refused',
+      reason: 'host_not_connected',
+      count: 1,
+    });
+    recorder.counted('egr_refused', 40);
+    // A late, smaller count never lowers what was written.
+    recorder.counted('egr_refused', 12);
+    recorder.opened({
+      ...base,
+      id: 'egr_over',
+      host: '',
+      port: 0,
+      actionId: null,
+      verdict: 'suppressed',
+      reason: 'over_record_budget',
+      count: 1,
+    });
+    recorder.counted('egr_over', 900);
+    await recorder.flush();
+    const rows = await sql`select id, count from egress_record order by id`;
+    expect(rows.map((row) => [row.id, Number(row.count)])).toEqual([
+      ['egr_over', 900],
+      ['egr_refused', 40],
+    ]);
+    expect(await egressHostsFor(sql, actionId)).toEqual([
+      { host: 'blocked.example', tunnels: 0, refused: 40, bytes_up: 0, bytes_down: 0 },
+    ]);
   });
 
   test('records past the retention period are removed, and the rest are kept', async () => {

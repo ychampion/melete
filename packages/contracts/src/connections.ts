@@ -132,9 +132,9 @@ export const sandboxAdapterTakesKey = (adapter: SandboxAdapter): boolean => adap
 export const sandboxAdapterHasDesktop = (adapter: SandboxAdapter): boolean => adapter === 'docker';
 
 /**
- * `connected_hosts_only` lets out the hosts of the space's connected
- * command-line accounts and the operator's own list, and nothing else. It needs
- * the service's egress guard, so only the docker adapter offers it.
+ * `connected_hosts_only` lets out the hosts the operator lists in
+ * `MELETE_SANDBOX_EGRESS_EXTRA_HOSTS`, and nothing else. It needs the service's
+ * egress guard, so only the docker adapter offers it.
  */
 export const SANDBOX_EGRESS_KINDS = [
   'deny_all',
@@ -1116,7 +1116,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
           { value: 'cidr_allowlist', label: 'Only the ranges below' },
           {
             value: 'connected_hosts_only',
-            label: 'Only the sites of connected accounts (Docker)',
+            label: 'Only the sites this installation allows (Docker)',
           },
           { value: 'open', label: 'Anything (not recommended)' },
         ],

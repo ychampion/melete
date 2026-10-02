@@ -454,10 +454,13 @@ address.
 - **Records.** Every tunnel and every refusal is recorded with its host, port,
   verdict, reason, bytes each way and command. The guard never waits on the
   record: a record that cannot be written is reported in the service log and the
-  connection proceeds.
+  connection proceeds. A computer that loops on connections is held to a record
+  budget: repeated refusals share one record with a count, at most 120 records a
+  minute are written per computer with the rest counted on one record, and
+  writes beyond a bounded queue are dropped and counted.
 - **Where it can go.** `open` is any public HTTPS host. `connected_hosts_only`
-  is the hosts of the space's connected command-line accounts and the operator's
-  list, read at each connection; a list that cannot be read lets nothing out.
+  is the hosts the operator lists, read at each connection; a list that cannot
+  be read lets nothing out.
   Reading data and sending it elsewhere is limited only by that choice, so a
   person who wants a computer that reaches one site and nothing else chooses
   `connected_hosts_only`.

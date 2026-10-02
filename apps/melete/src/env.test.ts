@@ -378,6 +378,8 @@ describe('what a computer may reach', () => {
       'example.com:443',
       'https://example.com',
       '..x',
+      '.com',
+      '.io',
     ])
       expect([value, read(value).ok]).toEqual([value, false]);
   });

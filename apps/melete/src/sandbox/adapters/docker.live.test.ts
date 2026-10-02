@@ -537,7 +537,11 @@ if (!live) {
     const watched = new DockerSandboxHost(
       settings({
         egressPort: 18_792,
-        egressRecords: { opened: (record) => recorded.push(record), closed: () => {} },
+        egressRecords: {
+          opened: (record) => recorded.push(record),
+          closed: () => {},
+          counted: () => {},
+        },
         egressExtraHosts: ['example.com'],
       }),
     );

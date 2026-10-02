@@ -45,10 +45,12 @@ async function guarded(
   const dialled: { port: number; address: string }[] = [];
   const opened: EgressRecordOpen[] = [];
   const closed: (EgressRecordClose & { id: string })[] = [];
+  const counted = new Map<string, number>();
   const guard = new SandboxEgressGuard({
     records: {
       opened: (record) => opened.push(record),
       closed: (id, totals) => closed.push({ id, ...totals }),
+      counted: (id, count) => counted.set(id, count),
     },
     ...extra,
     resolve: async (host) => {
@@ -65,7 +67,7 @@ async function guarded(
   });
   const port = await guard.listen(0, '127.0.0.1');
   cleanups.push(() => guard.close());
-  return { guard, port, dialled, opened, closed };
+  return { guard, port, dialled, opened, closed, counted };
 }
 
 /** Sends a request line to the guard and reads until the status line and headers end. */
@@ -408,4 +410,114 @@ test('host lists and proxy tokens are read strictly', () => {
   expect(proxyToken(basic('nocolon'))).toBeNull();
   expect(proxyToken('Bearer abc')).toBeNull();
   expect(proxyToken(undefined)).toBeNull();
+});
+
+/** Sends `total` requests, `together` at a time, each on its own connection, and waits for every answer. */
+async function blast(port: number, request: (index: number) => string, total: number) {
+  const together = 50;
+  for (let sent = 0; sent < total; sent += together)
+    await Promise.all(
+      Array.from(
+        { length: Math.min(together, total - sent) },
+        (_, offset) =>
+          new Promise<void>((resolve) => {
+            const socket = connect(port, '127.0.0.1', () => socket.write(request(sent + offset)));
+            socket.on('data', () => {});
+            socket.on('error', () => resolve());
+            socket.on('close', () => resolve());
+          }),
+      ),
+    );
+}
+
+/** What the records stand for once every count has been written: each id's last count. */
+function countsOf(opened: EgressRecordOpen[], counted: Map<string, number>) {
+  return opened.map((record) => ({ ...record, count: counted.get(record.id) ?? record.count }));
+}
+
+test('a computer that loops on refused connections is held to its record budget', async () => {
+  const { guard, port, opened, counted } = await guarded({}, undefined, {
+    connectedHosts: () => [],
+    recordsPerMinute: 120,
+  });
+  guard.allow('127.0.0.1', 'melete-sbx-a', { mode: 'connected_hosts_only', session: 'sbx_a' });
+  // Half to one host, half each to a host of its own, so coalescing alone cannot hold it.
+  await blast(
+    port,
+    (index) => {
+      const host = index % 2 ? 'blocked.example' : `x${index}.invalid`;
+      return `CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\n\r\n`;
+    },
+    10_000,
+  );
+  guard.flushRecords();
+  // At most the budget, plus the one record that counts what was over it.
+  expect(opened.length).toBeLessThanOrEqual(121);
+  const records = countsOf(opened, counted);
+  expect(records.reduce((sum, record) => sum + record.count, 0)).toBe(10_000);
+  expect(records.filter((record) => record.verdict === 'suppressed')).toEqual([
+    expect.objectContaining({ reason: 'over_record_budget', sessionId: 'sbx_a' }),
+  ]);
+  expect(records.find((record) => record.host === 'blocked.example')?.count).toBe(5_000);
+}, 60_000);
+
+test('the same refusal within a minute is one record with a count, and the next minute starts another', async () => {
+  let now = 1_000_000;
+  const { guard, port, opened, counted } = await guarded({}, undefined, {
+    connectedHosts: () => [],
+    now: () => now,
+  });
+  guard.allow('127.0.0.1', 'melete-sbx-a', { mode: 'connected_hosts_only', session: 'sbx_a' });
+  const token = guard.mint('melete-sbx-a', attribution('act_loop'));
+  for (let each = 0; each < 5; each += 1)
+    expect((await ask(port, connectTo('blocked.example:443', token))).reason).toBe(
+      'host_not_connected',
+    );
+  // Its command's receipt still counts every one.
+  expect(guard.tokens.settle(token)).toEqual([
+    { host: 'blocked.example', tunnels: 0, refused: 5, bytes_up: 0, bytes_down: 0 },
+  ]);
+  expect(opened).toHaveLength(1);
+  guard.flushRecords();
+  expect(counted.get(opened[0]?.id ?? '')).toBe(5);
+  now += 61_000;
+  await ask(port, connectTo('blocked.example:443'));
+  expect(opened).toHaveLength(2);
+  expect(opened[1]).toMatchObject({ count: 1, actionId: null });
+});
+
+test('tunnels count against the budget too, and one past it is counted rather than recorded', async () => {
+  const { guard, port, opened, closed, counted } = await guarded(
+    { 'example.com': PUBLIC },
+    undefined,
+    { recordsPerMinute: 2 },
+  );
+  guard.allow('127.0.0.1', 'melete-sbx-a', { session: 'sbx_a' });
+  const tunnels = [];
+  for (let each = 0; each < 4; each += 1) {
+    const answer = await ask(port, connectTo('example.com:443'));
+    expect(answer.status).toBe(200);
+    tunnels.push(answer);
+  }
+  expect(opened.map((record) => record.verdict)).toEqual([
+    'unattributed',
+    'unattributed',
+    'suppressed',
+  ]);
+  for (const each of tunnels) each.socket.destroy();
+  await until(() => closed.length === 2);
+  guard.flushRecords();
+  expect(counted.get(opened[2]?.id ?? '')).toBe(2);
+});
+
+test('narrowing a computer to its listed hosts ends the tunnels it opened while open', async () => {
+  const { guard, port } = await guarded({ 'example.com': PUBLIC }, undefined, {
+    connectedHosts: () => [],
+  });
+  guard.allow('127.0.0.1', 'melete-sbx-a');
+  const wide = await ask(port, connectTo('example.com:443'));
+  expect(wide.status).toBe(200);
+  guard.allow('127.0.0.1', 'melete-sbx-a', { mode: 'connected_hosts_only' });
+  await wide.closed;
+  expect((await ask(port, connectTo('example.com:443'))).reason).toBe('host_not_connected');
 });
