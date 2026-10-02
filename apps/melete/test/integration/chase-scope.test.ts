@@ -448,13 +448,23 @@ withDb('what one "Allow once" on a chase covers', () => {
   test('two follow-ups asked for at once send one', async () => {
     const { handle } = fixture();
     const { jobId, carrying } = await allowedChase();
-    const [one, two] = await Promise.all([
+    // Both calls run to the end before anything is checked, so neither is still
+    // sending when the next test starts.
+    const settled = await Promise.allSettled([
       broker.followUp(carrying.claims),
       broker.followUp(carrying.claims),
     ]);
-    expect(one.action_id).toBe(two.action_id);
+    const [one, two] = settled.map((result) => {
+      if (result.status === 'rejected') throw result.reason;
+      return result.value;
+    });
+    // The repeat is handed the same follow-up, not refused.
+    expect(one?.action_id).toBe(two?.action_id as string);
     const actions = await handle.sql`select id from action where job_id = ${jobId}`;
     expect(actions).toHaveLength(2);
+    const refused = await handle.sql`select seq from event where job_id = ${jobId}
+      and payload->>'phase' = 'admission_rejected'`;
+    expect(refused).toHaveLength(0);
     expect(await sent()).toHaveLength(2);
     const [rule] = await handle.db
       .select()

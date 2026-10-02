@@ -1286,7 +1286,7 @@ export class BrokerService implements BrokerOperations {
       : proposal.action;
     // Repeated proposals retrieve the durable disposition; unknown is never replayed.
     if (action.status === 'proposed' || action.status === 'approved') {
-      await this.admit(claims, action.id, action.payload_hash);
+      await this.admitOnce(claims, action.id, action.payload_hash, repeated);
       return this.proposalView(await this.dispatch(action.id), key, repeated);
     }
     // A crash between the two durable steps has not sent anything yet.
@@ -1497,6 +1497,22 @@ export class BrokerService implements BrokerOperations {
   }
 
   async admit(claims: CapabilityClaims, id: string, expectedHash: string): Promise<Action> {
+    return this.admitOnce(claims, id, expectedHash, false);
+  }
+
+  /**
+   * Admission itself. A repeated proposal reads its action before the first
+   * proposer has admitted it, so both can reach here for the same action. The
+   * job lock puts them in turn, and the one that comes second, finding the
+   * action already past admission, is handed that action rather than refused:
+   * it is the same effect, admitted once and sent at most once.
+   */
+  private async admitOnce(
+    claims: CapabilityClaims,
+    id: string,
+    expectedHash: string,
+    repeated: boolean,
+  ): Promise<Action> {
     const guests = await this.guestsAhead(claims.job_id, id);
     const result = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
@@ -1524,6 +1540,8 @@ export class BrokerService implements BrokerOperations {
         }
         this.validatePayload(tool, action.canonical_payload);
         if (action.status === 'denied') throw new BrokerFault('approval_denied');
+        if (repeated && !['proposed', 'approved'].includes(action.status))
+          return { action, error: null };
         judgingApproval = true;
         const classified = await this.classify(tx, job, action, tool, 'admission', guests);
         let authorization: string | null = null;
