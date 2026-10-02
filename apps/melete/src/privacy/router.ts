@@ -398,12 +398,6 @@ export class PrivacyRouter {
   }
 
   /**
-   * Why what the person said in this job is private, when it is: the space or
-   * agent is marked private, or the conversation is about a sensitive topic.
-   * Memory records this on what it learns from the message. A topic found here
-   * is kept on the conversation, as the router would keep it.
-   */
-  /**
    * Why a message said in a room is private, or null: the room is marked
    * private, or the message is about a sensitive topic. A room message may
    * reach no request at all, so it is read by its room rather than a job.
@@ -414,6 +408,12 @@ export class PrivacyRouter {
     return classify(text, settings.topics);
   }
 
+  /**
+   * Why what the person said in this job is private, when it is: the space or
+   * agent is marked private, or the conversation is about a sensitive topic.
+   * Memory records this on what it learns from the message. A topic found here
+   * is kept on the conversation, as the router would keep it.
+   */
   async captureOrigin(jobId: string, text: string): Promise<PrivateOrigin | null> {
     const scope = await this.store.scope(jobId, '');
     if (!scope.spaceId) return null;

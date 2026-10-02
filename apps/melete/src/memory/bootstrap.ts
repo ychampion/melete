@@ -258,19 +258,15 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
     sql: options.sql,
     journal,
     markdown,
-    // The installation owner holds every space's memory on this path.
+    // The installation owner holds every space's memory on this path; the
+    // space's own person is who may have it provisioned.
     async provision(spaceId, principalId) {
-      const [row] = await options.sql`select o.id as owner_id, m.owner_id as memory_owner_id
+      const [row] = await options.sql`select m.owner_id as memory_owner_id,
+          coalesce(s.owner_principal_id, o.id) as space_owner_id
         from space s cross join owner o left join memory_spaces m on m.space_id = s.id
         where s.id = ${spaceId}`;
-      if (!row || row.owner_id !== principalId || row.memory_owner_id) return;
-      await provisionNewSpace(options.sql, journal, {
-        ownerId: principalId,
-        spaceId,
-        publisher: 'experience',
-        audience: 'private',
-        role: 'owner',
-      });
+      if (!row || row.space_owner_id !== principalId || row.memory_owner_id) return;
+      await storageScope(spaceId);
     },
     resolveScope: resolveOwnerScope(options.sql, journal),
     storageScope,

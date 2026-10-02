@@ -246,13 +246,7 @@ export async function assembleAttemptKnowledge(
       },
     );
     // A room's request is also handed what people shared into the room.
-    const recalled = await withSharedItems(
-      sql,
-      scope,
-      jobId,
-      result,
-      options.privateOrigin === true,
-    );
+    const recalled = await withSharedItems(sql, scope, jobId, result);
     try {
       const context = await recordAttemptContext(
         sql,

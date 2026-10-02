@@ -7,6 +7,8 @@
  * - the person who shared it is still in the room, and the detail is still in
  *   their own personal space;
  * - the detail is still remembered there (not forgotten, hidden or removed);
+ * - its current value rests on nothing said in a private conversation: that
+ *   stays the person's own, for every reader and every model;
  * - and, for a members-only share, no guest is in the room.
  *
  * Forgetting the detail in the person's own space therefore takes it out of
@@ -62,7 +64,9 @@ async function liveGrants(
       and coalesce(own.owner_principal_id, (select id from owner limit 1)) = g.granted_by
     join memory_spaces ms on ms.space_id = g.source_space_id and not ms.revoked and ms.restore_ready
     join memory_claims c on c.id = g.claim_id and c.space_id = g.source_space_id and not c.hidden
-    where g.room_space_id = ${roomSpaceId} and g.revoked_at is null
+    where not exists (select 1 from memory_references ref join memory_sources src on src.id = ref.source_id
+        where ref.claim_id = c.id and ref.revision = c.head_revision and src.private_origin is not null)
+      and g.room_space_id = ${roomSpaceId} and g.revoked_at is null
       and (${claimId ?? null}::text is null or g.claim_id = ${claimId ?? null})
       and (not g.members_only or not exists (select 1 from space_membership guest
         where guest.space_id = g.room_space_id and guest.role = 'guest' and guest.revoked_at is null))
@@ -83,16 +87,13 @@ export type SharedItem = { item: RecallItem; sharedBy: string };
 
 /**
  * What a room request is handed of the details people shared into its room.
- * A detail learned in a private conversation is handed only to an attempt
- * that stays on the person's own model, as with their own recall. A shared
- * detail is someone else's word to the room, so it never carries more than
+ * A shared detail is someone else's word to the room, so it never carries more than
  * `external_content` trust. Anything other than a room request gets nothing.
  */
 export async function sharedItems(
   sql: MemorySql,
   roomScope: MemoryScope,
   jobId: string,
-  options: { privateOrigin?: boolean } = {},
 ): Promise<SharedItem[]> {
   return sql.begin(async (tx) => {
     const [request] = await tx`select id from job where id = ${jobId}
@@ -108,13 +109,6 @@ export async function sharedItems(
         recallRequest.parse({ query: '', mode: 'current' }),
       );
       if (!item) continue;
-      if (!options.privateOrigin) {
-        const [privately] = await tx`select 1 from memory_references ref
-          join memory_sources s on s.id = ref.source_id
-          where ref.claim_id = ${item.claim_id} and ref.revision = ${item.revision}
-            and s.private_origin is not null limit 1`;
-        if (privately) continue;
-      }
       const capped: RecallItem = {
         ...item,
         origin_trust: minimumOriginTrust([item.origin_trust, 'external_content']),
@@ -268,9 +262,8 @@ export async function withSharedItems(
   scope: MemoryScope,
   jobId: string,
   result: RecallResult,
-  privateOrigin: boolean,
 ): Promise<{ recall: RecallResult; knowledge: KnowledgeExcerpt[] }> {
-  const shared = await sharedItems(sql, scope, jobId, { privateOrigin });
+  const shared = await sharedItems(sql, scope, jobId);
   return {
     recall: shared.length
       ? { ...result, items: [...result.items, ...shared.map((entry) => entry.item)] }

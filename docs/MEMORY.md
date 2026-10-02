@@ -110,7 +110,9 @@ stands, the person is still in the room, and the detail is still remembered
 where it lives. Forgetting it there takes it out of every room at once and
 invalidates any attempt that was handed it. A shared detail carries
 `external_content` trust and names who shared it. A detail learned in a private
-conversation stays its owner's and cannot be shared. A share is members-only by
+conversation stays its owner's: it cannot be shared, and a shared detail whose
+current value came from a private conversation is shown to nobody in the room
+and handed to none of its work, whichever model runs it. A share is members-only by
 default: while a guest is in the room, the room's work is not handed it.
 Withdrawing a share (`DELETE /rooms/{id}/shares/{share}`) is open to the person
 who shared it and to the room's owners.

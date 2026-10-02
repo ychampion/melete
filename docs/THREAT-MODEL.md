@@ -500,7 +500,8 @@ service made of them. Every such removal is journaled and replayed on restore
 
 What remains: what a member says in a room stays in the room after they leave,
 unless they delete it first or an owner forgets it. The words of a deleted
-message stay in any answer the agent already gave that quoted them.
+message stay in any answer the agent already gave that quoted them, and in the
+agent's working session for the request that read them.
 Isolation between a room and the rest of the installation is an application
 check, as it is between accounts.
 

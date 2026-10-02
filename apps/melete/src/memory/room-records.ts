@@ -36,7 +36,8 @@ export async function redactRoomMessage(
   messageId: string,
   at: string,
 ) {
-  const [message] = await tx`select id, thread_id, author_principal_id, text, redacted_at
+  const [message] =
+    await tx`select id, thread_id, author_principal_id, text, redacted_at, created_at
     from room_message where id = ${messageId} and space_id = ${spaceId} for update`;
   if (!message) return;
   const text = String(message.text ?? '');
@@ -53,6 +54,12 @@ export async function redactRoomMessage(
         and payload->>'principal_id' = ${author} and payload->>'text' = ${text}`;
     await tx`update experience_turn set text = ''
       where job_id = any(${ids}) and author_principal_id = ${author} and text = ${text}`;
+    // A thread started by the message is named by its first line; that goes too.
+    const firstLine = text.split(/\r?\n/)[0]?.trim().slice(0, 200) ?? '';
+    await tx`update room_thread set title = 'Thread'
+      where id = ${message.thread_id} and space_id = ${spaceId} and title = ${firstLine}
+        and not exists (select 1 from room_message earlier where earlier.thread_id = room_thread.id
+          and (earlier.created_at, earlier.id) < (${message.created_at}, ${messageId}))`;
     for (const request of requests) {
       if (request.objective !== text) continue;
       await tx`update job set objective = ${DELETED_REQUEST}, title = 'Request', updated_at = clock_timestamp()

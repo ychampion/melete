@@ -837,7 +837,7 @@ export async function buildBundle(
     { includeProfile: true, privateOrigin: options.privateOrigin === true },
   );
   // A room's request is also handed what people shared into the room from their own memory.
-  const recalled = await withSharedItems(sql, scope, jobId, result, options.privateOrigin === true);
+  const recalled = await withSharedItems(sql, scope, jobId, result);
   const tools = (await options.catalog(skeleton)).slice(0, CONTEXT_LIMITS.max_tools);
   const repairBriefs = await pendingRepairBriefs(sql, scope, jobId);
   // The delta was built once, in the lease transaction, from the job's own

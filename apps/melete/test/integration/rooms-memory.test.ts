@@ -219,12 +219,12 @@ async function settle(spaceId: string) {
   }
 }
 /** A person's own memory: a detail they said in their own space, kept there at owner trust. */
-async function remember(person: Person, text: string) {
+async function remember(person: Person, text: string, privately = false) {
   const { sql, memory: started } = database();
   const [own] = await sql`select id from space
     where kind = 'personal' and owner_principal_id = ${person.id}`;
   const scope: MemoryScope = await started.storageScope(own?.id as string);
-  await ingest(sql, scope, {
+  const saved = await ingest(sql, scope, {
     stream: 'chat',
     source_identity: `said:${submission()}`,
     source_version: '1',
@@ -233,6 +233,9 @@ async function remember(person: Person, text: string) {
     event_at: new Date(Date.now() - 120_000).toISOString(),
     text,
   });
+  // Said in a conversation that was private, as the privacy router marks it.
+  if (privately)
+    await sql`update memory_sources set private_origin = 'space' where id = ${saved.source.source_id}`;
   await settle(scope.spaceId);
   return scope;
 }
@@ -246,7 +249,7 @@ async function claimOf(scope: MemoryScope, key: string) {
  * Claim a request's attempt as the runner does and assemble it as the memory
  * runtime does, recording what it was handed; then finish the attempt.
  */
-async function attemptOf(jobId: string) {
+async function attemptOf(jobId: string, privateOrigin = false) {
   const { sql, runner, memory: started } = database();
   const [row] = await sql`select lease_epoch, state_version from job where id = ${jobId}`;
   const claimed = await runner.claim({
@@ -257,7 +260,12 @@ async function attemptOf(jobId: string) {
   });
   if (!claimed) throw new Error(`Request ${jobId} could not be claimed`);
   const scope = await started.scopeForJob(jobId);
-  const built = await buildBundle(claimed.bundle, { sql, scope, catalog: async () => [] });
+  const built = await buildBundle(claimed.bundle, {
+    sql,
+    scope,
+    catalog: async () => [],
+    privateOrigin,
+  });
   const context = await recordAttemptContext(
     sql,
     scope,
@@ -298,6 +306,7 @@ async function backup(roomId: string) {
     await sql.unsafe(`create table "${schema}"."${table}" as table "public"."${table}"`);
   const messages = await sql`select id, text, mentions, redacted_at, request_state
     from room_message where space_id = ${roomId}`;
+  const threads = await sql`select id, title from room_thread where space_id = ${roomId}`;
   const turns = await sql`select t.id, t.text from experience_turn t
     join job j on j.id = t.job_id where j.space_id = ${roomId}`;
   const requests = await sql`select id, title, objective from job where space_id = ${roomId}`;
@@ -315,6 +324,8 @@ async function backup(roomId: string) {
       for (const row of messages)
         await tx`update room_message set text = ${row.text}, mentions = ${JSON.stringify(row.mentions)}::text::jsonb,
           redacted_at = ${row.redacted_at}, request_state = ${row.request_state} where id = ${row.id}`;
+      for (const row of threads)
+        await tx`update room_thread set title = ${row.title} where id = ${row.id}`;
       for (const row of turns)
         await tx`update experience_turn set text = ${row.text} where id = ${row.id}`;
       for (const row of requests)
@@ -546,6 +557,9 @@ withDb('room memory', () => {
     );
     const jobId = asked.request_job_id;
     if (!jobId) throw new Error('The ask did not start a request');
+    // A thread Bob starts with the same number names the thread after it.
+    const own = await startThread(bob, roomId, 'Text Maya tonight on +351 914 141 414.');
+    expect(own.thread.title).toContain('914 141 414');
     await settle(roomId);
     expect((await roomMemory(bob, roomId)).items.map((item) => item.content)).toContain(
       '+351 914 141 414',
@@ -572,6 +586,7 @@ withDb('room memory', () => {
       send(bob.cookie, `/rooms/${roomId}/messages/${asked.message.id}`, 'DELETE'),
     );
     expect(deleted.message.text).toBeNull();
+    await ok(send(bob.cookie, `/rooms/${roomId}/messages/${own.message.id}`, 'DELETE'));
 
     const nowhere = async () => {
       const view = roomThreadView.parse(
@@ -580,12 +595,18 @@ withDb('room memory', () => {
       const deletedMessage = view.messages.find((message) => message.id === asked.message.id);
       expect(deletedMessage?.text).toBeNull();
       expect(JSON.stringify(view)).not.toContain('914 141 414');
+      const threads = await ok(send(carol.cookie, `/rooms/${roomId}/threads`));
+      expect(JSON.stringify(threads)).not.toContain('914 141 414');
+      expect(
+        JSON.stringify(await ok(send(carol.cookie, `/rooms/${roomId}/threads/${own.thread.id}`))),
+      ).not.toContain('914 141 414');
       const [copies] = await sql`select
         (select count(*)::int from room_message where space_id = ${roomId} and text like '%914 141 414%')
         + (select count(*)::int from event e join job j on j.id = e.job_id
             where j.space_id = ${roomId} and e.payload::text like '%914 141 414%')
         + (select count(*)::int from experience_turn t join job j on j.id = t.job_id
             where j.space_id = ${roomId} and t.text like '%914 141 414%')
+        + (select count(*)::int from room_thread where space_id = ${roomId} and title like '%914 141 414%')
         + (select count(*)::int from job where space_id = ${roomId}
             and (objective like '%914 141 414%' or title like '%914 141 414%')) as copies`;
       expect(copies?.copies).toBe(0);
@@ -617,6 +638,42 @@ withDb('room memory', () => {
     // Nothing captures it again.
     await settle(roomId);
     await nowhere();
+  }, 120_000);
+
+  test('a shared detail later said in a private conversation is shown to nobody in the room and handed to none of its work', async () => {
+    const roomId = await makeRoom('Private', [bob]);
+    const bobs = await remember(bob, 'Ana can be reached at ana@shared.example these days.');
+    const claimId = await claimOf(bobs, 'contact.ana.email');
+    // Bob sees and manages his own details in Settings, though he did not set the installation up.
+    const listed = await ok<{ items: { id: string; value: string }[] }>(
+      send(bob.cookie, '/memory/items'),
+    );
+    expect(listed.items.map((item) => item.value)).toContain('ana@shared.example');
+    await ok(send(bob.cookie, `/rooms/${roomId}/shares`, 'POST', { claim_id: claimId }), 201);
+    expect((await roomMemory(alice, roomId)).shares.map((share) => share.content)).toEqual([
+      'ana@shared.example',
+    ]);
+    // Bob then gives Ana's new address in a private conversation: the same detail, a new value.
+    await remember(bob, 'Her private address is ana@secret.example now.', true);
+    expect(await claimOf(bobs, 'contact.ana.email')).toBe(claimId);
+    // Nobody in the room sees it.
+    const seen = JSON.stringify(await roomMemory(alice, roomId));
+    expect(seen).not.toContain('ana@secret.example');
+    expect((await roomMemory(alice, roomId)).shares.map((share) => share.content)).toEqual([null]);
+    // No attempt is handed it, on the person's own model or any other.
+    for (const local of [true, false]) {
+      const { jobId } = await ask(alice, roomId, `Email Ana (${local ? 'local' : 'cloud'}).`);
+      const attempt = await attemptOf(jobId, local);
+      expect([local, handed(attempt.bundle).includes('ana@secret.example')]).toEqual([
+        local,
+        false,
+      ]);
+      await attempt.finish();
+    }
+    // Bob forgets his own detail from Settings.
+    await ok(send(bob.cookie, `/memory/items/${claimId}`, 'DELETE'));
+    const after = await ok<{ items: { id: string }[] }>(send(bob.cookie, '/memory/items'));
+    expect(after.items.map((item) => item.id)).not.toContain(claimId);
   }, 120_000);
 
   test('a members-only share stays out while a guest is in the room', async () => {
