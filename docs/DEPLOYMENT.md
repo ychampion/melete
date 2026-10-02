@@ -1243,8 +1243,8 @@ removing what stopped instances left behind each run on the instance that holds
 that work's lease. A lease is a Postgres advisory lock on a connection the
 instance keeps for leases. When that instance stops, or its connection to the
 database ends, another instance takes the lease the next time it checks for
-that work. Leases need a direct or session-pooled connection to Postgres; a
-transaction pooler such as PgBouncer in transaction mode cannot hold them.
+that work. Leases need a direct connection to Postgres, or a pooler that keeps
+one server connection per client; PgBouncer in transaction mode cannot hold them.
 
 **Instances on one Docker engine.** Each instance records itself in
 `ops_instance` with a heartbeat every 30 seconds and labels every attempt
