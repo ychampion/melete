@@ -3,7 +3,7 @@
  * and whether guests may ask the room's agent. Everyone in the room reads
  * them; owners change them. A change applies to permissions already waiting.
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Button, Dialog, Toggle } from '../design/primitives.tsx';
 import { toast } from '../shell/Shell.tsx';
 import { type RoomDetail, type RoomPolicy, roomsApi } from './api.ts';
@@ -50,14 +50,16 @@ export function RoomSettings({
 }) {
   const owner = detail.room.my_role === 'owner';
   const [policy, setPolicy] = useState(detail.policy);
-  const [busy, setBusy] = useState(false);
+  // Controls stay enabled while a save is out, so focus stays where the keyboard
+  // left it; only the answer to the latest save is applied.
+  const latest = useRef(0);
 
   const save = async (change: Partial<RoomPolicy>) => {
     const before = policy;
     setPolicy({ ...policy, ...change });
-    setBusy(true);
+    const turn = ++latest.current;
     const result = await roomsApi.setPolicy(detail.room.id, change);
-    setBusy(false);
+    if (turn !== latest.current) return;
     if (!result.data) {
       setPolicy(before);
       toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t save that' });
@@ -82,7 +84,7 @@ export function RoomSettings({
       footer={<Button onClick={onClose}>Done</Button>}
     >
       <div className="col" style={{ gap: 18 }}>
-        <fieldset className="settings-group" disabled={!owner || busy}>
+        <fieldset className="settings-group" disabled={!owner}>
           <legend className="people-field-label">Who answers permissions</legend>
           <span className="people-hint">
             When {detail.room.agent_name} wants to send, change or spend something through the
@@ -114,7 +116,7 @@ export function RoomSettings({
           </span>
           <Toggle
             on={policy.guests_may_ask}
-            disabled={!owner || busy}
+            disabled={!owner}
             label={`Guests may ask ${detail.room.agent_name}`}
             onChange={(next) => void save({ guests_may_ask: next })}
           />

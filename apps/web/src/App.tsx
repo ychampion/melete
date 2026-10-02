@@ -3,7 +3,7 @@ import { ChatScreen } from './chat/Chat.tsx';
 import { MeleteMark } from './design/mark.tsx';
 import { Button } from './design/primitives.tsx';
 import { Sheet } from './design/Sheet.tsx';
-import { adapter } from './experience/adapter.ts';
+import { adapter, type Result } from './experience/adapter.ts';
 import {
   AppContext,
   type AppContextValue,
@@ -12,7 +12,7 @@ import {
   useLoad,
 } from './experience/hooks.ts';
 import { onboardedProfile } from './experience/profile.ts';
-import type { Agent, Capabilities, Conversation } from './experience/types.ts';
+import type { Agent, Capabilities, Conversation, Profile } from './experience/types.ts';
 import { roomsApi } from './rooms/api.ts';
 import { InviteScreen } from './rooms/InviteScreen.tsx';
 import { RoomsRoute } from './rooms/RoomsScreen.tsx';
@@ -93,7 +93,25 @@ export function App() {
   // A guest's sign-in reaches only the rooms they were invited to and their own account.
   const [guest, setGuest] = useState(false);
   // An expired or revoked cookie needs sign-in, including after a page reload.
-  const profile = useLoad(async () => {
+  const profile = useLoad(async (): Promise<Result<{ profile: Profile }>> => {
+    // The account says first whether it is a guest's: a guest's sign-in reaches
+    // only rooms, so nothing personal, the profile included, is asked for.
+    const me = await roomsApi.me();
+    if (me.error !== null && me.unauthorized) {
+      setSignedOut(true);
+      setGuest(false);
+      return {
+        data: null,
+        error: me.error ?? 'Sign in again.',
+        unavailable: null,
+        unauthorized: true,
+      };
+    }
+    if (me.data?.owner.kind === 'guest') {
+      setSignedOut(false);
+      setGuest(true);
+      return { data: null, error: null, unavailable: 'A guest account uses rooms only.' };
+    }
     const result = await adapter.profile();
     if (result.error !== null && result.unauthorized) {
       setSignedOut(true);
@@ -101,13 +119,6 @@ export function App() {
     } else if (result.data) {
       setSignedOut(false);
       setGuest(false);
-    } else if (result.error !== null) {
-      // The personal profile refuses a guest; their account says which they are.
-      const me = await roomsApi.me();
-      if (me.data?.owner.kind === 'guest') {
-        setSignedOut(false);
-        setGuest(true);
-      }
     }
     return result;
   }, []);
@@ -161,7 +172,8 @@ export function App() {
     );
   }, []);
 
-  const signedIn = profile.data !== null && !signedOut;
+  // A guest is signed in to rooms alone; every personal surface stays closed to them.
+  const signedIn = profile.data !== null && !signedOut && !guest;
   const refreshProfile = useCallback(() => {
     profile.reload();
   }, [profile.reload]);

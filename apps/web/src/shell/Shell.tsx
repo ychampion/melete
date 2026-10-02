@@ -152,10 +152,12 @@ export function sidebarChats(chats: Conversation[], active: string | null): Conv
  * plain label rather than a menu with a single entry.
  */
 function SpaceSwitcher() {
+  // A guest has no space of their own: only the rooms they were invited to.
+  const { guest } = useApp();
   return (
     <div className="space-switch" data-static="true">
       <MeleteAvatar size={22} />
-      <span>Personal</span>
+      <span>{guest ? 'Rooms' : 'Personal'}</span>
     </div>
   );
 }

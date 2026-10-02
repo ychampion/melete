@@ -19,8 +19,6 @@ import { NewThread, Thread } from './Thread.tsx';
 /** How often an open room says the person is still looking at it. */
 const HEARTBEAT_MS = 20_000;
 
-let knownMe: Me | null = null;
-
 const peopleCount = (n: number) => (n === 1 ? '1 person' : `${n} people`);
 
 function when(iso: string): string {
@@ -36,7 +34,7 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
   const [threads, setThreads] = useState<RoomThread[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
-  const [me, setMe] = useState<Me | null>(knownMe);
+  const [me, setMe] = useState<Me | null>(null);
   const [present, setPresent] = useState<Set<string>>(new Set());
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -61,13 +59,11 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
   useEffect(() => {
     void readRoom();
     void readThreads();
-    if (!knownMe)
-      void roomsApi.me().then((result) => {
-        if (result.data) {
-          knownMe = result.data.owner;
-          setMe(result.data.owner);
-        }
-      });
+    // Read for each room, never kept across sign-ins: who is signed in decides
+    // what they may answer, delete and change here.
+    void roomsApi.me().then((result) => {
+      if (result.data) setMe(result.data.owner);
+    });
   }, [readRoom, readThreads]);
 
   // Presence: say we are here while the page is open and visible, and show who else is.

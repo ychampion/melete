@@ -691,6 +691,9 @@
   border: 0;
   min-width: 0;
 }
+.settings-group legend {
+  padding: 0;
+}
 .settings-choice {
   display: flex;
   flex-direction: row;

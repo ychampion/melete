@@ -226,6 +226,8 @@ export function Thread({
     const deleted = result.data.message;
     setView((current) => (current ? upsertMessage(current, deleted) : current));
     toast({ kind: 'ok', title: 'Deleted', sub: 'Nobody reads it now, and Melete forgets it.' });
+    // The buttons that held focus are gone; the thread keeps it.
+    log.current?.focus();
     return true;
   };
 
