@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import {
   link,
+  lstat,
   mkdir,
   mkdtemp,
   open,
@@ -238,13 +239,15 @@ test('an opened file that is not the one at its real path is refused before it c
   await writeFile(elsewhere, 'kept');
   const handle = await open(elsewhere, 'r+');
   try {
-    await expect(openedAt(handle, named)).rejects.toThrow('changed while it was opened');
+    // Where the system cannot say where a descriptor points, the path is checked again.
+    const byPath = { descriptor: async () => null, realpath, lstat };
+    await expect(openedAt(handle, named, byPath)).rejects.toThrow('changed while it was opened');
   } finally {
     await handle.close();
   }
   const own = await open(named, 'r+');
   try {
-    await openedAt(own, named);
+    await openedAt(own, named, { descriptor: async () => null, realpath, lstat });
   } finally {
     await own.close();
   }
