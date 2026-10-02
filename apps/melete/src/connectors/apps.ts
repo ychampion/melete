@@ -127,7 +127,7 @@ export const appsManifest: ConnectorManifest = {
     {
       name: 'apps.publish',
       description:
-        'Publish a folder from the workspace as an app, or as a new version of one. The folder needs index.html at its top and only html, js, mjs, css, json, svg, png, jpg, jpeg, gif, webp, ico, woff2, txt, map or wasm files (200 files, 25 MiB, 8 MiB per file at most). Bundle everything: no external scripts, fonts or images. data names files the app reads (each saved first with files.write and expect, at most 2 MiB of JSON or text); review:true asks the person before each new version reaches viewers. collections names the responses it may collect. The person is asked first.',
+        'Publish a folder from the workspace as an app, or a new version of one: index.html on top, web files only (html, js, css, json, images, woff2; 200 files, 25 MiB). Bundle everything. data names files it reads, each saved first with files.write and expect; review:true asks before each new version reaches viewers. collections names the responses it collects. The person is asked first.',
       input_schema: {
         type: 'object',
         additionalProperties: false,

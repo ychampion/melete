@@ -53,7 +53,7 @@ export type Recorded = {
   id: string;
   content_hash: string;
   size: number;
-  created_at: Date;
+  created_at: Date | string;
 };
 
 /** The newest recorded version of a binding's file, in the app's own space only, or null. */
@@ -76,7 +76,7 @@ type Release = {
   artifact_id: string;
   content_hash: string;
   size: number;
-  written_at: Date;
+  written_at: Date | string;
 };
 
 /** The newest version let through for this binding as it is now named, or null. */
@@ -201,7 +201,12 @@ export async function readData(
     if (!release) return none(name);
     if (!deps.blobs) throw new Error('released app data needs a blob store');
     const shown = interpretData(binding.path, await releasedBytes(deps.blobs, release));
-    return { name, state: 'ready', ...shown, updated_at: release.written_at.toISOString() };
+    return {
+      name,
+      state: 'ready',
+      ...shown,
+      updated_at: new Date(release.written_at).toISOString(),
+    };
   }
   const row = await newestRecorded(deps.sql, app.space_id, binding);
   if (!row) return none(name);
@@ -409,7 +414,7 @@ export async function releaseData(
             (id, app_id, binding, path, source_job_id, artifact_id, content_hash, size,
              written_at, approved_by)
           values (${id}, ${input.appId}, ${input.name}, ${binding.path}, ${binding.source_job_id},
-            ${newest.id}, ${newest.content_hash}, ${bytes.byteLength}, ${newest.created_at},
+            ${newest.id}, ${newest.content_hash}, ${bytes.byteLength}, ${new Date(newest.created_at).toISOString()},
             ${input.principalId})
           on conflict (app_id, binding, artifact_id) do nothing
           returning id`;
