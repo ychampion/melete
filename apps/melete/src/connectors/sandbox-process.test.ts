@@ -13,6 +13,7 @@ import path from 'node:path';
 import { type Action, canonicalizePayload, type SandboxConnectionConfig } from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { awakeAllowanceNote } from '../experience/events.ts';
+import { computerControls } from '../sandbox/computer-control.ts';
 import { type FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
 import {
   type ProcessComputer,
@@ -988,5 +989,101 @@ withDb('background processes in the agent computer', () => {
       state: 'lost',
       endReason: END_REASONS.suspended,
     });
+  }, 60_000);
+
+  test('a computer being suspended for its ended processes is never handed to another attempt', async () => {
+    const s = await setup();
+    const id = String(s.detail(await s.run('process.start', { command: 'serve' })).process_id);
+    const wiring = wiringFor(s);
+    await wiring.settleAttempt(s.firstAttempt, AbortSignal.timeout(10_000));
+    const [held] = await sessionRows(s.scope.agentId);
+    const sandbox = String(held?.provider_sandbox_id);
+    const process = s.computers.get(sandbox, id);
+    if (process) Object.assign(process, { state: 'exited', exitCode: 0 });
+    await s.processes.sweep(s.providers, AbortSignal.timeout(10_000));
+    // The provider's pause is held open, so another attempt asks while it runs.
+    const pause = s.provider.pause.bind(s.provider);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = () => {};
+    const pausing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    (s.provider as SandboxProvider).pause = async (handle, signal) => {
+      entered();
+      await gate;
+      return pause(handle, signal);
+    };
+    const sweeping = wiring.sweep(AbortSignal.timeout(20_000));
+    await pausing;
+    const later = await s.job();
+    const on = { jobId: later, attemptId: await s.attempt(later) };
+    const asked = await s.run('process.list', {}, on);
+    release();
+    await sweeping;
+    expect(asked.result.outcome).toBe('failed');
+    // One row, suspended; no attempt holds a computer that was paused under it.
+    expect([...(await sessionRows(s.scope.agentId))]).toEqual([
+      expect.objectContaining({ status: 'paused', held_by: null, attempt_id: null }),
+    ]);
+  }, 60_000);
+
+  test('a computer a person took over is neither handed to another attempt nor suspended under them', async () => {
+    const s = await setup();
+    const id = String(s.detail(await s.run('process.start', { command: 'serve' })).process_id);
+    const wiring = wiringFor(s);
+    await wiring.settleAttempt(s.firstAttempt, AbortSignal.timeout(10_000));
+    const [held] = await sessionRows(s.scope.agentId);
+    const sandbox = String(held?.provider_sandbox_id);
+    computerControls.change(sandbox, 'human');
+    try {
+      const later = await s.job();
+      const on = { jobId: later, attemptId: await s.attempt(later) };
+      const asked = await s.run('process.list', {}, on);
+      expect(asked.result.outcome).toBe('failed');
+      // Its process ends while the person drives it: it stays theirs.
+      const process = s.computers.get(sandbox, id);
+      if (process) Object.assign(process, { state: 'exited', exitCode: 0 });
+      await s.processes.sweep(s.providers, AbortSignal.timeout(10_000));
+      await db()`update sandbox_session set lease_expires_at = now() - interval '1 second'
+        where held_by = 'processes'`;
+      await wiring.sweep(AbortSignal.timeout(10_000));
+      expect([...(await sessionRows(s.scope.agentId))]).toEqual([
+        expect.objectContaining({
+          id: held?.id,
+          status: 'ready',
+          held_by: 'processes',
+          leased: true,
+        }),
+      ]);
+      expect(s.provider.calls.pause).toBe(0);
+    } finally {
+      computerControls.forget(sandbox);
+    }
+    // Handed back, it is suspended as usual.
+    await wiring.sweep(AbortSignal.timeout(10_000));
+    expect([...(await sessionRows(s.scope.agentId))]).toEqual([
+      expect.objectContaining({ status: 'paused', held_by: null }),
+    ]);
+  }, 60_000);
+
+  test('a held computer the provider lost is recorded lost, and uses no more awake time or place', async () => {
+    const s = await setup();
+    await s.run('process.start', { command: 'serve' });
+    const wiring = wiringFor(s);
+    await wiring.settleAttempt(s.firstAttempt, AbortSignal.timeout(10_000));
+    const [held] = await sessionRows(s.scope.agentId);
+    s.provider.engine.sandboxes.delete(String(held?.provider_sandbox_id));
+    await wiring.sweep(AbortSignal.timeout(10_000));
+    expect([...(await sessionRows(s.scope.agentId))]).toEqual([
+      expect.objectContaining({ status: 'lost' }),
+    ]);
+    const before = await s.processes.awakeSecondsToday(s.scope.spaceId);
+    await db()`update sandbox_session set opened_at = opened_at - interval '600 seconds'
+      where agent_id = ${s.scope.agentId}`;
+    await wiring.sweep(AbortSignal.timeout(10_000));
+    expect(await s.processes.awakeSecondsToday(s.scope.spaceId)).toBeLessThan(before + 1);
   }, 60_000);
 });
