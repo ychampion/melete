@@ -15,7 +15,8 @@ What the engine is told follows the ledger, not a guess:
   service kept, with the truncation, capture limit and binary marking it
   recorded.
 * A command the broker refused, or that parked for approval, returns a nonzero
-  status and says it did not run.
+  status and says it did not run. One the broker settled as failed returns a
+  nonzero status with the broker's reason, which says whether any of it ran.
 * A command whose answer never arrived -- the broker said `unknown`, the
   connection dropped, or the wait was interrupted -- is reported as unknown and
   is never sent again from here. `execute()` never raises once a command may
@@ -163,6 +164,18 @@ def _unknown(reason: str, action_id: Optional[str] = None) -> Dict[str, Any]:
     )
 
 
+#: What a failed command tells the engine: the broker's reason says whether it ran.
+FAILED_INSTRUCTION = (
+    "The reason above says whether any of it ran. Do not claim it worked, and do not "
+    "run it again until you have checked what it changed."
+)
+
+
+def _failed(message: str) -> Dict[str, Any]:
+    """A command the broker settled as failed: it may not have started, or its result was lost."""
+    return _result(f"[failed] {message}. It has no output. {FAILED_INSTRUCTION}", REFUSED_STATUS)
+
+
 def _refused(message: str) -> Dict[str, Any]:
     return _result(
         f"[not run] {message}. The command did not run, so it has no output. {FAILURE_INSTRUCTION}",
@@ -269,8 +282,10 @@ class SandboxTerminal:
         message = str(response.get("message") or status or "no reason given")
         if status == "needs_approval" or (status == "proposed" and response.get("requires_approval")):
             return _result(f"[waiting for approval, not run] {END_TURN_INSTRUCTION}", REFUSED_STATUS)
-        if status in ("failed", "denied"):
+        if status == "denied":
             return _refused(message)
+        if status == "failed":
+            return _failed(message)
         if status != SUCCEEDED or not action_id:
             return _unknown(message, str(action_id) if action_id else None)
         receipt = self._receipt(str(action_id))

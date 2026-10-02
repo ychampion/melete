@@ -251,20 +251,25 @@ databaseTest(
       expect(s.provider.calls.exec).toBe(1);
 
       // Lost between the broker and the sandbox, after the command started.
+      // The command ran in the agent's own computer, so the broker settles it
+      // from the computer's record instead of asking the person whether it
+      // worked, and the engine is told its result was not captured.
       s.provider.loseNextAcknowledgement('after_start');
       const [inSandbox] = await s.run([{ command: 'sleep 1' }]);
-      expect(inSandbox?.output).toStartWith('[outcome unknown');
+      expect(inSandbox?.output).toStartWith('[failed]');
+      expect(inSandbox?.output).toContain('not captured');
+      expect(inSandbox?.output).not.toContain('did not run');
       expect(inSandbox?.returncode).not.toBe(0);
+      // Never sent as a first run again: only the two commands started.
       expect(s.provider.calls.exec).toBe(2);
 
       const recorded = await s.actions();
       expect(recorded).toHaveLength(2);
-      // The broker's own record says the first ran; the cell was told only
-      // that it cannot say, and sent nothing more.
+      // The broker's own record says the first ran; the second is settled.
       expect(recorded[0]?.status).toBe('succeeded');
-      expect(recorded[1]?.status).toBe('unknown');
+      expect(recorded[1]?.status).toBe('failed');
       const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
-      expect(job?.state).toBe('needs_reconciliation');
+      expect(job?.state).not.toBe('needs_reconciliation');
     } finally {
       s.server.stop();
     }
