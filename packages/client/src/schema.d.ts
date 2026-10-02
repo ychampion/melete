@@ -457,6 +457,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /activity
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            activity: {
+                                destination: string | null;
+                                happened_at: components["schemas"]["__schema219"];
+                                id: components["schemas"]["__schema215"];
+                                /** @enum {string} */
+                                outcome: "succeeded";
+                                reference: string | null;
+                                source: string;
+                                what: components["schemas"]["__schema216"];
+                                where: components["schemas"]["__schema216"];
+                            }[];
+                        } | components["schemas"]["__schema221"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agents": {
         parameters: {
             query?: never;

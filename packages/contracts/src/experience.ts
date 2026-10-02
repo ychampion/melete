@@ -560,6 +560,26 @@ export const spaceMembers = z.strictObject({
 });
 export type SpaceMembers = z.infer<typeof spaceMembers>;
 /**
+ * Something done in the person's name whose chat or plan was later deleted:
+ * what it was, where it went and when. Never what it said.
+ */
+export const activityEntry = z.strictObject({
+  id,
+  what: text,
+  /** The connection it went through. */
+  where: text,
+  /** The recipient or place, where the effect has one. */
+  destination: z.string().max(500).nullable(),
+  /** The destination's own reference for it. */
+  reference: z.string().max(500).nullable(),
+  outcome: z.enum(['succeeded']),
+  /** The title of the chat or plan it came from. */
+  source: z.string().max(200),
+  happened_at: date,
+});
+export type ActivityEntry = z.infer<typeof activityEntry>;
+export const activityList = z.strictObject({ activity: z.array(activityEntry) });
+/**
  * The chats list, most recently active first. `next_cursor` continues after the
  * last one returned, and is null when there are no more.
  */
@@ -1031,6 +1051,11 @@ export const experienceOperations = {
     response: automationResponse,
   },
   'GET /experience/connections': { response: experienceConnectionList },
+  /**
+   * What was done in the person's name by chats and plans they have since
+   * deleted, newest first.
+   */
+  'GET /activity': { response: activityList },
   /** Who is in the space this session uses. */
   'GET /space/members': { response: spaceMembers },
   /**

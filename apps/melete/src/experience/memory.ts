@@ -281,6 +281,10 @@ export class ExperienceMemory {
    * detail that rests only on it. Answers how many saved details went, or null
    * when this person's memory cannot be reached here.
    */
+  /** Whether this person's memory can be reached here to forget something. */
+  async forgetReady(spaceId: string, ownerId: string) {
+    return Boolean(this.journal && (await this.scope(spaceId, ownerId)));
+  }
   async forgetSources(spaceId: string, ownerId: string, sourceIds: readonly string[]) {
     if (!sourceIds.length) return 0;
     const scope = await this.scope(spaceId, ownerId);

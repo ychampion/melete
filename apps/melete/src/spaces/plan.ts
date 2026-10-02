@@ -129,6 +129,8 @@ const SPACE_KEYED_OPERATIONAL = [
   // The decisions went with their jobs; named again so the phase is whole.
   'approval_review_policy',
   'action_review',
+  // What was done in the person's name, kept past the chats that did it.
+  'activity_record',
   'knowledge_record',
   'skill',
   'task',

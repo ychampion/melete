@@ -17,6 +17,7 @@ import type {
   AccountSignInStart,
   AccountSignInStatus,
   ActionResolution,
+  ActivityList,
   Agent,
   AgentComputer,
   AgentInput,
@@ -525,6 +526,8 @@ export const adapter = {
     ),
   /** Deletes the plan and its steps; chats started from it stay. */
   deletePlan: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/plans/{id}', path(id))),
+  /** What deleted chats and plans did in the person's name. */
+  activity: () => guard<ActivityList>(() => api.GET('/activity')),
   /** Who is in the space this session uses. */
   spaceMembers: () => guard<SpaceMembers>(() => api.GET('/space/members')),
   /** The space's owner removes someone from a shared space. */

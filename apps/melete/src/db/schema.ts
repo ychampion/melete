@@ -1053,6 +1053,44 @@ export const actionReview = pgTable(
   ],
 );
 
+/**
+ * What was done in the person's name, kept after the chat or plan that did it
+ * is deleted. One row per succeeded action whose effect reached outside
+ * Melete. It names the effect and where it went, never what it said: no
+ * subject, body or file contents.
+ */
+export const activityRecord = pgTable(
+  'activity_record',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    /** Whose work it was; null on work from before principals. */
+    principalId: text('principal_id'),
+    /** The action this was, kept as a plain value: the action row is gone. */
+    actionId: text('action_id').notNull(),
+    kind: text('kind').notNull(),
+    effectClass: text('effect_class').notNull(),
+    connectionId: text('connection_id'),
+    connectionLabel: text('connection_label').notNull(),
+    provider: text('provider').notNull(),
+    /** The recipient or place it went, where the effect has one. */
+    destination: text('destination'),
+    /** The destination's own reference for it, from the receipt. */
+    externalRef: text('external_ref'),
+    outcome: text('outcome').notNull(),
+    /** The title of the chat or plan it came from. */
+    source: text('source').notNull(),
+    happenedAt: timestamp('happened_at', { withTimezone: true }).notNull(),
+    recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('activity_record_action_idx').on(t.actionId),
+    index('activity_record_space_idx').on(t.spaceId, t.happenedAt),
+  ],
+);
+
 export const schema = {
   owner,
   principal,
@@ -1091,4 +1129,5 @@ export const schema = {
   experienceDraftSend,
   approvalReviewPolicy,
   actionReview,
+  activityRecord,
 };

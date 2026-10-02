@@ -27,6 +27,7 @@ import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
+import { listActivity } from './activity.ts';
 import { AGENT_TEMPLATES } from './agents.ts';
 import { ExperienceBeliefs } from './beliefs.ts';
 import { type ComputerBinding, projectComputer } from './computer.ts';
@@ -162,6 +163,10 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       home.saveTask(spaceId, input, c.req.param('id') ?? ''),
     'DELETE /tasks/{id}': (spaceId, c) => home.deleteTask(spaceId, c.req.param('id') ?? ''),
     'GET /experience/connections': (spaceId) => home.connections(spaceId),
+    'GET /activity': (spaceId, c) =>
+      deps.sql
+        ? listActivity(deps.sql, spaceId, c.get('owner').id)
+        : unavailable('Activity is not connected yet.'),
     'GET /space/members': (spaceId, c) =>
       deps.sql
         ? listMembers(deps.sql, spaceId, c.get('owner').id)
@@ -425,23 +430,24 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       const id = c.req.param('id') ?? '';
       await service.requireConversation(spaceId, id);
       if (!deps.jobs || !deps.sql) return unavailable('Deleting chats is not connected yet.');
-      // Asked for, what the chat taught goes first, so a chat is never gone
-      // while what the person asked to forget is still kept.
-      let forgotten = 0;
+      const ids = await conversationJobs(spaceId, id);
+      const ownerId = c.get('owner').id;
+      let forget: ((sources: readonly string[]) => Promise<number>) | undefined;
       if (c.req.query('forget_memory') === 'true') {
-        const sources = await memorySourcesOf(deps.sql, id);
-        const count = sources.length
-          ? await memory?.forgetSources(spaceId, c.get('owner').id, sources)
-          : 0;
-        if (count === null || count === undefined)
+        // Checked before anything goes: a chat is never deleted on the promise
+        // of a forgetting that cannot happen here.
+        const ready = await memory?.forgetReady(spaceId, ownerId);
+        if (!ready && (await memorySourcesOf(deps.sql, ids)).length)
           return unavailable('Forgetting is not connected yet, so nothing was deleted.');
-        forgotten = count;
+        if (ready)
+          forget = async (sources) => (await memory?.forgetSources(spaceId, ownerId, sources)) ?? 0;
       }
       const removal = await removeJobs(
         { jobs: deps.jobs, sql: deps.sql, runner: deps.runner },
-        await conversationJobs(spaceId, id),
+        ids,
+        forget,
       );
-      return { id, ...removal, forgotten };
+      return { id, ...removal };
     },
     'PATCH /conversations/{id}/agent': (spaceId, c, input) =>
       service.switchAgent(spaceId, c.req.param('id') ?? '', String(input.agent_id)),

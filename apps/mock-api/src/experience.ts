@@ -168,6 +168,8 @@ export class ExperienceMock {
   timeZoneConfirmed = false;
   /** The people in the session's space. Only a shared space has anyone but the person. */
   readonly members = new Map<string, C.SpaceMember>();
+  /** What deleted chats did in the person's name, newest first. */
+  readonly activity: C.ActivityEntry[] = [];
   /** Checks and replaces the account's password; set by the account routes. */
   changePassword: ((current: string, next: string) => boolean) | null = null;
   constructor(readonly deps: AppDeps & { experienceSpeed?: number }) {
@@ -1621,6 +1623,20 @@ export class ExperienceMock {
           if (question.conversation_id === id) this.questions.delete(key);
         for (const plan of this.plans.values())
           plan.conversation_ids = plan.conversation_ids.filter((entry) => entry !== id);
+        // What the chat did outside Melete stays on record after it goes.
+        for (const receipt of chat.receipts)
+          this.activity.unshift(
+            C.activityEntry.parse({
+              id: newId('act'),
+              what: receipt.what,
+              where: receipt.where,
+              destination: null,
+              reference: null,
+              outcome: 'succeeded',
+              source: chat.view.title,
+              happened_at: receipt.when,
+            }),
+          );
         this.chats.delete(id);
         // The mock keeps no record of which saved details came from which chat.
         return { id, stopped, withdrawn, forgotten: 0 };
@@ -1910,6 +1926,8 @@ export class ExperienceMock {
       case 'PUT /web/settings':
         this.webReads = input.enabled === true;
         return { enabled: this.webReads, available: true };
+      case 'GET /activity':
+        return { activity: this.activity };
       case 'GET /space/members':
         return {
           space: {

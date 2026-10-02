@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'node:crypto';
 import {
+  activityList,
   agentResponse,
   conversationDeleted,
   conversationList,
@@ -251,6 +252,26 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
     await db
       .insert(approval)
       .values({ id: approvalId, actionId, jobRevision: 1, payloadHash: 'c'.repeat(64) });
+    // A message the chat already sent: it stays on record after the chat goes.
+    const sentId = newId('act');
+    await db.insert(action).values({
+      id: sentId,
+      jobId: chat.id,
+      attemptId: claims.attempt_id,
+      connectionId,
+      kind: 'email.send',
+      effectClass: 'write_external',
+      canonicalPayload: {
+        to: ['ana@example.test'],
+        subject: 'SECRET_SUBJECT',
+        body: 'SECRET_BODY',
+      },
+      payloadHash: 'e'.repeat(64),
+      idempotencyKey: sentId,
+      status: 'succeeded',
+      receipt: { external_ref: 'msg-4411' },
+      resolvedAt: new Date('2026-10-01T09:00:00Z'),
+    });
     // A file the chat made stays in the space.
     const fileId = newId('art');
     await db.insert(artifact).values({
@@ -308,6 +329,73 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
     expect(await visible(claimId)).toBe(true);
     expect(journalled.some((record) => record.operation === 'delete')).toBe(false);
     expect((await call(`/conversations/${chat.id}`, 'DELETE')).status).toBe(404);
+    // What it did in the person's name is still on record, without what it said.
+    const activity = activityList.parse(await (await call('/activity')).json()).activity;
+    const sent = activity.find((entry) => entry.source === 'Dinner on Friday');
+    expect(sent).toEqual({
+      id: expect.any(String),
+      what: 'Sent a message',
+      where: 'Mail',
+      destination: 'ana@example.test',
+      reference: 'msg-4411',
+      outcome: 'succeeded',
+      source: 'Dinner on Friday',
+      happened_at: '2026-10-01T09:00:00.000Z',
+    });
+    expect(JSON.stringify(activity)).not.toContain('SECRET');
+    expect(
+      activity.some((entry) => entry.reference === null && entry.what === 'Sent a message'),
+    ).toBe(false);
+  });
+
+  test('a chat with something still being sent is not deleted until it settles', async () => {
+    const db = required(handle).db;
+    const { chat, claims } = await runningChat('Invoice reply');
+    const connectionId = newId('conn');
+    await db
+      .insert(connection)
+      .values({ id: connectionId, spaceId, label: 'Mail', provider: 'imap' });
+    const actionId = newId('act');
+    await db.insert(action).values({
+      id: actionId,
+      jobId: chat.id,
+      attemptId: claims.attempt_id,
+      connectionId,
+      kind: 'email.send',
+      effectClass: 'write_external',
+      canonicalPayload: { to: ['billing@example.test'], subject: 'Invoice', body: 'Paid.' },
+      payloadHash: 'f'.repeat(64),
+      idempotencyKey: actionId,
+      status: 'dispatched',
+      dispatchedAt: new Date(),
+    });
+    const refused = await call(`/conversations/${chat.id}`, 'DELETE');
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: { message: string } }).error.message).toBe(
+      'Something is still being sent. Try again in a moment.',
+    );
+    // Nothing went: the chat, its turn and the send are all still there.
+    expect(await listed()).toContain(chat.id);
+    const [kept] = await db.select().from(action).where(eq(action.id, actionId));
+    expect(kept?.status).toBe('dispatched');
+    // An effect whose outcome is unknown holds it too, with its own reason.
+    await db.update(action).set({ status: 'unknown' }).where(eq(action.id, actionId));
+    const unclear = await call(`/conversations/${chat.id}`, 'DELETE');
+    expect(unclear.status).toBe(409);
+    expect(((await unclear.json()) as { error: { code: string } }).error.code).toBe(
+      'outcome_unclear',
+    );
+    // Once it settles, the chat goes and the send stays on record.
+    await db
+      .update(action)
+      .set({ status: 'succeeded', receipt: { external_ref: 'msg-9' }, resolvedAt: new Date() })
+      .where(eq(action.id, actionId));
+    expect((await call(`/conversations/${chat.id}`, 'DELETE')).status).toBe(200);
+    expect(await listed()).not.toContain(chat.id);
+    const activity = activityList.parse(await (await call('/activity')).json()).activity;
+    expect(activity.find((entry) => entry.reference === 'msg-9')?.destination).toBe(
+      'billing@example.test',
+    );
   });
 
   test('asked to, deleting a chat also forgets what it taught, through source deletion', async () => {
@@ -381,6 +469,13 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
     ]);
     const theirs = await makeChat('Groceries', memberShared.value);
     expect((await required(jobs).get(theirs.id)).principalId).toBe(memberId);
+    // A turn of theirs under way.
+    const turnId = newId('turn');
+    await required(handle)
+      .sql`insert into experience_turn (id, job_id, agent_id, submission_id, text, status)
+      values (${turnId}, ${theirs.id}, ${theirs.agent_id}, ${`sub_${turnId}`}, 'Order milk', 'working')`;
+    await required(handle)
+      .sql`update job set current_turn_id = ${turnId}, state = 'running' where id = ${theirs.id}`;
     // A member cannot remove anyone, the owner included.
     expect(
       (await call(`/space/members/${ownerId}`, 'DELETE', undefined, memberShared.value)).status,
@@ -405,6 +500,11 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
     const row = await required(jobs).get(theirs.id);
     expect(row.spaceId).toBe(sharedId);
     expect(row.state).toBe('cancelled');
+    const [turn] = await required(handle)
+      .db.select()
+      .from(experienceTurn)
+      .where(eq(experienceTurn.id, turnId));
+    expect(turn?.status).toBe('stopped');
     const owners = spaceMembers.parse(
       await (await call('/space/members', 'GET', undefined, ownerShared.value)).json(),
     );

@@ -20,6 +20,7 @@ import { ModelsTab } from '../models/ModelConnect.tsx';
 import { navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { AccountSettings } from './AccountSettings.tsx';
+import { ActivityTab } from './Activity.tsx';
 import { ApprovalsTab } from './Approvals.tsx';
 import { MemoryPanel } from './Beliefs.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
@@ -256,6 +257,7 @@ const TABS = [
   'devices',
   'approvals',
   'rules',
+  'activity',
   'models',
   'privacy',
   'feedback',
@@ -331,6 +333,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                   label: 'Rules',
                   count: rules.error ? undefined : rules.data?.rules.length,
                 },
+                { value: 'activity', label: 'Activity' },
                 { value: 'models', label: 'Models' },
                 { value: 'privacy', label: 'Privacy' },
                 { value: 'feedback', label: 'Feedback' },
@@ -339,6 +342,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           </div>
         )}
         {current === 'privacy' ? <PrivacyTab /> : null}
+        {current === 'activity' ? <ActivityTab /> : null}
         {current === 'people' ? (
           <PeopleTab
             people={people.data}
@@ -397,7 +401,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
             <AddConnection onInstalled={connections.reload} />
             <ConnectedAssistants />
           </div>
-        ) : current === 'privacy' || current === 'people' ? null : (
+        ) : current === 'privacy' || current === 'people' || current === 'activity' ? null : (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
               Each rule came from an “Always allow” you chose. It has a limit and an expiry; revoke

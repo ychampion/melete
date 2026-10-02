@@ -7245,6 +7245,104 @@
         }
       }
     },
+    "/activity": {
+      "get": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "GET /activity",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "activity": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "$ref": "#/components/schemas/__schema215"
+                              },
+                              "what": {
+                                "$ref": "#/components/schemas/__schema216"
+                              },
+                              "where": {
+                                "$ref": "#/components/schemas/__schema216"
+                              },
+                              "destination": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "maxLength": 500
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reference": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "maxLength": 500
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "outcome": {
+                                "type": "string",
+                                "enum": [
+                                  "succeeded"
+                                ]
+                              },
+                              "source": {
+                                "type": "string",
+                                "maxLength": 200
+                              },
+                              "happened_at": {
+                                "$ref": "#/components/schemas/__schema219"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "what",
+                              "where",
+                              "destination",
+                              "reference",
+                              "outcome",
+                              "source",
+                              "happened_at"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "activity"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema221"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/space/members": {
       "get": {
         "tags": [
