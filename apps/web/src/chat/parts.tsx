@@ -955,11 +955,17 @@ export function Questionnaire({
   answered,
   active,
   busy = false,
+  own: ownRow = true,
+  placeholder = 'Type your own',
   onAnswer,
   onOwn,
 }: {
   question: Question;
   answered: string | null;
+  /** Whether an answer in the person's own words is offered beside the options. */
+  own?: boolean;
+  /** The hint in the own-words field. */
+  placeholder?: string;
   /** The answer's request is in flight: the options wait for it. */
   busy?: boolean;
   /** The newest open question, drawn as the one waiting on the person. */
@@ -972,7 +978,7 @@ export function Questionnaire({
   // The number keys answer only while this card has focus.
   const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
     if (answered) return;
-    const intent = decisionKey(pressOf(event), { options, own: true });
+    const intent = decisionKey(pressOf(event), { options, own: ownRow });
     if (!intent) return;
     event.preventDefault();
     if (intent.kind === 'own') document.getElementById(`own-${question.id}`)?.focus();
@@ -997,7 +1003,7 @@ export function Questionnaire({
         </span>
         {!answered ? (
           <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-            Press 1–{options.length + 1}
+            Press 1–{options.length + (ownRow ? 1 : 0)}
           </span>
         ) : answered === 'withdrawn' ? (
           <Status tone="kind">Withdrawn</Status>
@@ -1047,7 +1053,7 @@ export function Questionnaire({
           </button>
         );
       })}
-      {!answered ? (
+      {!answered && ownRow ? (
         <form
           className="question-own"
           onSubmit={(event) => {
@@ -1060,7 +1066,7 @@ export function Questionnaire({
             id={`own-${question.id}`}
             value={own}
             onChange={(event) => setOwn(event.target.value)}
-            placeholder="Type your own"
+            placeholder={placeholder}
             aria-label="Your own answer"
           />
         </form>

@@ -684,7 +684,8 @@ export const experienceAgent = agentInput.extend({
    * Melete starts with no connections and its owner chooses what it may use.
    */
   fixed_reach: z.boolean(),
-  usage: z.strictObject({ conversations: count, last_used: date.nullable() }),
+  /** Its chats, when it last answered one, and the routines that run as it. */
+  usage: z.strictObject({ conversations: count, last_used: date.nullable(), routines: count }),
 });
 export type ExperienceAgent = z.infer<typeof experienceAgent>;
 /** The shelves of the agent library, in the order a client shows them. */
@@ -739,6 +740,36 @@ export const templateQuestion = z.strictObject({
   placeholder: z.string().max(120),
   memory_key: memoryKey.refine((key) => key.startsWith('pref.'), 'Use a pref. key.'),
 });
+/** Where a piece of work in a template's example day reaches, drawn as a chat's work row. */
+export const TEMPLATE_DAY_REACH = [
+  'mail',
+  'calendar',
+  'files',
+  'web',
+  'browser',
+  'computer',
+  'memory',
+] as const;
+/**
+ * An example of one exchange with a library agent, shown before it is added so
+ * the person sees how it works in a chat: what they ask, its first message,
+ * the work it does, the one question it asks, and what it says at the end. It
+ * is an illustration, never something that ran.
+ */
+export const templateDay = z.strictObject({
+  ask: z.string().min(1).max(200),
+  opening: z.string().min(1).max(240),
+  work: z
+    .array(z.strictObject({ reach: z.enum(TEMPLATE_DAY_REACH), title: z.string().min(1).max(100) }))
+    .min(2)
+    .max(4),
+  question: z.strictObject({
+    text: z.string().min(1).max(160),
+    /** The first is the answer the example goes on with. */
+    options: z.array(z.string().min(1).max(60)).length(2),
+  }),
+  answer: z.string().min(1).max(480),
+});
 export const agentTemplate = z.strictObject({
   id,
   title: text,
@@ -763,6 +794,7 @@ export const agentTemplate = z.strictObject({
   skills: z.array(z.string().regex(/^[a-z0-9-]{1,64}$/)).max(4),
   /** Offered during setup as well as in the library. */
   featured: z.boolean(),
+  day: templateDay,
   agent: agentInput,
 });
 export type AgentTemplate = z.infer<typeof agentTemplate>;
