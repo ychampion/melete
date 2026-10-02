@@ -368,10 +368,11 @@ sent, undone or steered.
 Inside a shared space, a job's memory and connections follow the job's
 principal too. A member's job recalls what the space shares with its members,
 never what is private to the owner, on every memory deployment. A shared
-space's connections serve its owner unless marked for the room, so a member's
-own job is offered none of them and cannot act through them, and the broker
-checks this again before anything is sent. Every answer to a permission records
-the person who gave it.
+space's connections, built-in tools included, serve its owner unless marked
+for the room. A member's own job is offered none of them, cannot act through
+them, and cannot watch what they receive, and the broker checks this again
+before anything is sent. Every answer to a permission records the person who
+gave it; one made with the operator's approval key is recorded as the service's.
 [shared-space-scope.test.ts](../apps/melete/test/integration/shared-space-scope.test.ts)
 drives a member's job against the owner's private memory and connections.
 
