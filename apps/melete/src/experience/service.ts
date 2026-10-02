@@ -17,15 +17,15 @@ import {
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { agent, connection, event, experienceTurn, job, trigger } from '../db/schema.ts';
+import { agent, connection, event, experienceTurn, job, space, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { inConversation, withdrawPermissions } from '../jobs/withdraw.ts';
-import { ownJob } from '../principals/authority.ts';
-import { agentValues, agentView } from './agents.ts';
+import { ownJob, requestPrincipal, spaceAuthority } from '../principals/authority.ts';
+import { agentValues, agentView, MELETE_AGENT, mentionedAgent } from './agents.ts';
 import { answerStream } from './answer-filter.ts';
 import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
 
@@ -99,24 +99,93 @@ export class ExperienceService {
       submissions.onAccepted = async (tx, receipt, row, kind) => {
         await prior?.(tx, receipt, row, kind);
         if (row.kind !== 'chat' || kind !== 'input' || !row.agentId) return;
-        const [input] = await tx
-          .select()
-          .from(event)
-          .where(eq(event.dedupKey, `${row.id}:input:${row.stateVersion}`));
+        const dedupKey = `${row.id}:input:${row.stateVersion}`;
+        const [input] = await tx.select().from(event).where(eq(event.dedupKey, dedupKey));
         const text = (input?.payload as { text?: string })?.text;
         if (!text) throw new Error('Accepted conversation message is missing.');
+        // "@Scout find …" hands this one message to Scout; the chat keeps its agent.
+        // In a shared space only its owner hands a message on this way: a
+        // member's message stays with the chat's agent and its reach.
+        const speaker = (input?.payload as { principal_id?: string | null })?.principal_id ?? null;
+        const [place] = await tx
+          .select({ kind: space.kind, owner: space.ownerPrincipalId })
+          .from(space)
+          .where(eq(space.id, row.spaceId));
+        const mayHandOn = place?.kind !== 'shared' || (speaker !== null && speaker === place.owner);
+        const mentioned = mayHandOn
+          ? mentionedAgent(
+              text,
+              await tx
+                .select({ id: agent.id, name: agent.name })
+                .from(agent)
+                .where(eq(agent.spaceId, row.spaceId)),
+            )
+          : null;
+        const agentId = mentioned?.id ?? row.agentId;
         const turnId = newId('turn');
         await tx.insert(experienceTurn).values({
           id: turnId,
           jobId: row.id,
-          agentId: row.agentId,
+          agentId,
           submissionId: receipt.submission_id,
           text,
         });
+        // The message records who it was said to, so memory follows that agent's permission.
+        await tx
+          .update(event)
+          .set({ payload: { ...(input?.payload as object), agent_id: agentId } })
+          .where(eq(event.dedupKey, dedupKey));
         await tx.update(job).set({ currentTurnId: turnId }).where(eq(job.id, row.id));
         await withdrawPendingPermissions(tx, row.id, SUPERSEDED_NOTE);
       };
     }
+  }
+
+  /**
+   * Melete, the agent every space has. A space made after the migration that
+   * added it gets it the first time anything asks; the unique index on the
+   * space keeps two callers from making two.
+   */
+  async defaultAgent(spaceId: string) {
+    const shared = await this.sharedSpace(spaceId);
+    const find = () =>
+      this.db
+        .select()
+        .from(agent)
+        .where(and(eq(agent.spaceId, spaceId), eq(agent.isDefault, true)));
+    const [found] = await find();
+    if (found) return found;
+    await this.db
+      .insert(agent)
+      .values({
+        id: newId('agent'),
+        spaceId,
+        // In a shared space Melete reaches nothing until the owner chooses.
+        ...agentValues(
+          shared ? { ...MELETE_AGENT, allowed_connection_ids: [] } : MELETE_AGENT,
+          true,
+          !shared,
+        ),
+        isDefault: true,
+      })
+      .onConflictDoNothing();
+    const [made] = await find();
+    if (!made) throw experienceMissing();
+    return made;
+  }
+
+  /** Whether a space is shared, where Melete's reach is the owner's to choose. */
+  async sharedSpace(spaceId: string) {
+    const [row] = await this.db
+      .select({ kind: space.kind })
+      .from(space)
+      .where(eq(space.id, spaceId));
+    return row?.kind === 'shared';
+  }
+
+  /** The agent named, or Melete when none was. */
+  async agentOrDefault(spaceId: string, id: string | undefined) {
+    return id ? this.requireAgent(spaceId, id) : this.defaultAgent(spaceId);
   }
 
   async requireAgent(spaceId: string, id: string) {
@@ -129,11 +198,13 @@ export class ExperienceService {
   }
 
   async agents(spaceId: string) {
+    await this.defaultAgent(spaceId);
+    const shared = await this.sharedSpace(spaceId);
     const rows = await this.db
       .select()
       .from(agent)
       .where(eq(agent.spaceId, spaceId))
-      .orderBy(agent.createdAt, agent.id);
+      .orderBy(desc(agent.isDefault), agent.createdAt, agent.id);
     const stats = await this.db
       .select({
         agentId: job.agentId,
@@ -146,13 +217,20 @@ export class ExperienceService {
     return {
       agents: rows.map((row) => {
         const use = stats.find((item) => item.agentId === row.id);
-        return agentView(row, use?.count ?? 0, use?.last ? new Date(use.last) : null);
+        return agentView(row, use?.count ?? 0, use?.last ? new Date(use.last) : null, shared);
       }),
     };
   }
 
   async saveAgent(spaceId: string, raw: unknown, id?: string) {
-    const values = agentValues(raw);
+    // Agents belong to the space: in a shared space only its owner makes or changes one.
+    const authority = await spaceAuthority(this.db, spaceId, requestPrincipal());
+    if (authority.role !== 'owner')
+      throw new ServiceError('scope_denied', 'Only the space’s owner changes its agents.', 403);
+    const shared = authority.space.kind === 'shared';
+    const existing = id ? await this.requireAgent(spaceId, id) : null;
+    const isDefault = existing?.isDefault === true;
+    const values = agentValues(raw, isDefault, isDefault && !shared);
     const chosen = values.allowedConnectionIds ?? [];
     const found = chosen.length
       ? await this.db
@@ -173,7 +251,7 @@ export class ExperienceService {
           .values({ id: newId('agent'), spaceId, ...values })
           .returning();
     if (!row) throw experienceMissing();
-    return agentResponse.parse({ agent: agentView(row) });
+    return agentResponse.parse({ agent: agentView(row, 0, null, shared) });
   }
 
   /** A conversation is a job: it exists only for the principal who owns it. */
@@ -282,7 +360,7 @@ export class ExperienceService {
 
   async createConversation(spaceId: string, raw: unknown) {
     const value = conversationCreate.parse(raw);
-    await this.requireAgent(spaceId, value.agent_id);
+    const chosen = await this.agentOrDefault(spaceId, value.agent_id);
     if (!this.jobs) return unavailable('Conversations are not ready yet.');
     let context = '';
     if (value.plan_id) {
@@ -300,7 +378,7 @@ export class ExperienceService {
       jobs.createInTransaction(
         tx,
         { space_id: spaceId, title: value.title, objective: `${value.title}${context}` },
-        { kind: 'chat', agentId: value.agent_id, planId: value.plan_id },
+        { kind: 'chat', agentId: chosen.id, planId: value.plan_id },
         // Started from a plan, the objective carries that plan's text as well.
         value.plan_id ? 'derived' : 'owner_request',
       ),

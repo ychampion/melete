@@ -16,6 +16,10 @@
     "./redact": {
       "types": "./src/redact.ts",
       "default": "./src/redact.ts"
+    },
+    "./mention": {
+      "types": "./src/mention.ts",
+      "default": "./src/mention.ts"
     }
   },
   "scripts": {

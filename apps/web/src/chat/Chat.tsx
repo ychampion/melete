@@ -5,13 +5,14 @@
  * the event stream: reload and the saved answers come back; reconnect and a
  * gap marker says where streamed text may be missing.
  */
+
+import { mentionedAgent } from '@melete/contracts/mention';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { amountWords } from '../companies/format.ts';
-import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
-import { MeleteAvatar } from '../design/mark.tsx';
 import {
   Button,
+  Dialog,
   IconButton,
   Menu,
   MenuItem,
@@ -19,11 +20,12 @@ import {
   Overline,
   Popover,
 } from '../design/primitives.tsx';
+import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useInFlight, useTapOnce } from '../experience/decide.ts';
 import {
   agentById,
-  lookOf,
+  defaultAgentOf,
   messageKey,
   useApp,
   useConversation,
@@ -51,7 +53,7 @@ import type {
   RuleBounds,
   TurnStatus,
 } from '../experience/types.ts';
-import { navigate } from '../router.ts';
+import { navigate, useRoute } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { shownBlocks } from './blocks.ts';
 import { CasePanel, useCase } from './CasePanel.tsx';
@@ -116,6 +118,50 @@ async function pauseTurn(id: string) {
     toast({ kind: 'err', title: 'Couldn’t pause', sub: result.reason });
 }
 
+/** Each agent that can handle the chat, the current one ticked. */
+function AgentOptions({
+  agentId,
+  onPick,
+}: {
+  agentId: string | null;
+  onPick: (id: string) => void;
+}) {
+  const { agents } = useApp();
+  return (
+    <>
+      {agents.map((candidate) => (
+        <button
+          key={candidate.id}
+          type="button"
+          className="menu-item"
+          style={{ height: 44 }}
+          aria-current={candidate.id === agentId ? 'true' : undefined}
+          onClick={() => onPick(candidate.id)}
+        >
+          <AgentAvatar agent={candidate} size={28} />
+          <span className="col grow" style={{ gap: 0, alignItems: 'flex-start', minWidth: 0 }}>
+            <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--heading)' }}>
+              {candidate.name}
+              <span style={{ fontWeight: 400, color: 'var(--muted)' }}> · {candidate.role}</span>
+            </span>
+            <span
+              className="clamp1"
+              style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 400, maxWidth: '100%' }}
+            >
+              {candidate.fixed_reach
+                ? 'Uses everything you connect'
+                : `${candidate.tone} · @${candidate.name} in any chat`}
+            </span>
+          </span>
+          {candidate.id === agentId ? (
+            <Icon name="check" size={14} stroke={2.25} style={{ color: 'var(--heading)' }} />
+          ) : null}
+        </button>
+      ))}
+    </>
+  );
+}
+
 function AgentChip({
   agentId,
   onChange,
@@ -144,45 +190,20 @@ function AgentChip({
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        {agent ? <AgentFace look={lookOf(agent)} size={20} /> : <MeleteAvatar size={20} />}
+        <AgentAvatar agent={agent} size={20} />
         {agent?.name ?? 'Melete'}
         <Icon name="chevronDown" size={13} />
       </button>
       <Popover open={open} onClose={() => setOpen(false)}>
         <Menu label="Who handles this chat" width={300}>
           <Overline style={{ padding: '6px 8px 4px' }}>Who handles this chat</Overline>
-          {agents.map((candidate) => (
-            <button
-              key={candidate.id}
-              type="button"
-              className="menu-item"
-              style={{ height: 44 }}
-              onClick={() => {
-                setOpen(false);
-                onChange(candidate.id);
-              }}
-            >
-              <AgentFace look={lookOf(candidate)} size={28} />
-              <span className="col grow" style={{ gap: 0, alignItems: 'flex-start', minWidth: 0 }}>
-                <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--heading)' }}>
-                  {candidate.name}
-                  <span style={{ fontWeight: 400, color: 'var(--muted)' }}>
-                    {' '}
-                    · {candidate.role}
-                  </span>
-                </span>
-                <span
-                  className="clamp1"
-                  style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 400, maxWidth: '100%' }}
-                >
-                  {candidate.tone}
-                </span>
-              </span>
-              {candidate.id === agentId ? (
-                <Icon name="check" size={14} stroke={2.25} style={{ color: 'var(--heading)' }} />
-              ) : null}
-            </button>
-          ))}
+          <AgentOptions
+            agentId={agentId}
+            onPick={(id) => {
+              setOpen(false);
+              onChange(id);
+            }}
+          />
           <MenuSep />
           <MenuItem icon="plus" onSelect={() => navigate('/agents/new')}>
             New agent
@@ -193,6 +214,52 @@ function AgentChip({
         </Menu>
       </Popover>
     </div>
+  );
+}
+
+/**
+ * The phone has no room for the chip, so the agent's name under the title
+ * opens the same choice as a sheet.
+ */
+function AgentSheet({
+  open,
+  agentId,
+  onClose,
+  onChange,
+}: {
+  open: boolean;
+  agentId: string | null;
+  onClose: () => void;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Who handles this chat"
+      sub="Or type @ and an agent’s name to ask it for one message."
+      footer={
+        <>
+          <Button variant="ghost" icon="sliders" onClick={() => navigate('/agents')}>
+            Manage agents
+          </Button>
+          <div className="grow" />
+          <Button variant="outline" onClick={onClose}>
+            Done
+          </Button>
+        </>
+      }
+    >
+      <div className="col" style={{ gap: 2 }}>
+        <AgentOptions
+          agentId={agentId}
+          onPick={(id) => {
+            onClose();
+            onChange(id);
+          }}
+        />
+      </div>
+    </Dialog>
   );
 }
 
@@ -409,7 +476,11 @@ let voiceOnArrival: string | null = null;
 
 export function ChatScreen({ id }: { id: string | null }) {
   const { agents, refreshConversations } = useApp();
+  const route = useRoute();
   const conversationId = id && id !== 'new' ? id : null;
+  // A new chat started from an agent (Home, the sidebar) begins with that agent.
+  const asked = conversationId ? null : agentById(agents, route.query.get('agent'));
+  const fallback = asked ?? defaultAgentOf(agents);
   const state = useConversation(conversationId);
   const { conversation, transcript, setTranscript } = state;
   const chatActions = (size?: number) =>
@@ -445,7 +516,7 @@ export function ChatScreen({ id }: { id: string | null }) {
   // The conversation's own agent counts once it exists; before that, the one a new chat gets.
   const voicePlace = {
     conversationId,
-    agentId: conversationId ? null : (agentId ?? agents[0]?.id ?? null),
+    agentId: conversationId ? null : (agentId ?? fallback?.id ?? null),
   };
   const voice = useVoiceStatus(voicePlace);
   const [voiceOpen, setVoiceOpen] = useState(() => {
@@ -455,6 +526,8 @@ export function ChatScreen({ id }: { id: string | null }) {
   });
   /** The call shrunk to a bar, so the chat can be used while it goes on. */
   const [voiceMin, setVoiceMin] = useState(false);
+  /** The phone's agent sheet, opened from the name under the title. */
+  const [agentSheet, setAgentSheet] = useState(false);
   /** The agent's computer is opened by the person and stays as they left it. */
   const [computerOpen, setComputerOpen] = useState(false);
 
@@ -466,8 +539,8 @@ export function ChatScreen({ id }: { id: string | null }) {
   const now = useNow(Boolean(last && WORKING.includes(last.status)));
 
   useEffect(() => {
-    setAgentId(conversation?.agent_id ?? agents[0]?.id ?? null);
-  }, [conversation?.agent_id, agents]);
+    setAgentId(conversation?.agent_id ?? fallback?.id ?? null);
+  }, [conversation?.agent_id, fallback?.id]);
 
   // Effects the connector never confirmed rest in the broker's ledger, not in
   // the conversation's events; the ledger is read whenever the turn settles.
@@ -559,19 +632,12 @@ export function ChatScreen({ id }: { id: string | null }) {
       const clean = body.trim();
       if (!clean) return false;
       setText('');
-      const agent = agentId ?? agents[0]?.id;
-      if (!agent) {
-        toast({
-          kind: 'err',
-          title: 'Create an agent first',
-          sub: 'Every chat is handled by one.',
-        });
-        return false;
-      }
+      // With no agent chosen the service hands the chat to Melete.
+      const agent = agentId ?? fallback?.id;
       if (!conversationId) {
         const created = await adapter.createConversation({
           title: titleFor(clean),
-          agent_id: agent,
+          ...(agent ? { agent_id: agent } : {}),
         });
         if (created.data === null) {
           toast({
@@ -593,7 +659,9 @@ export function ChatScreen({ id }: { id: string | null }) {
         navigate(`/chat/${created.data.conversation.id}`);
         return accepted.data !== null;
       }
-      const localId = state.local(clean, agent, navigator.onLine ? 'sending' : 'queued_offline');
+      // "@Scout …" is answered by Scout; the drawn message says so before the service does.
+      const speaker = mentionedAgent(clean, agents)?.id ?? agent ?? '';
+      const localId = state.local(clean, speaker, navigator.onLine ? 'sending' : 'queued_offline');
       const key = messageKey();
       const attempt = async (): Promise<boolean> => {
         const accepted = await adapter.send(conversationId, clean, key);
@@ -623,7 +691,7 @@ export function ChatScreen({ id }: { id: string | null }) {
       }
       return attempt();
     },
-    [conversationId, agentId, agents, state, refreshConversations],
+    [conversationId, agentId, fallback, agents, state, refreshConversations],
   );
 
   // One request per decision: a second press while the first is in flight is refused.
@@ -713,12 +781,11 @@ export function ChatScreen({ id }: { id: string | null }) {
       setVoiceOpen(true);
       return;
     }
-    const agent = agentId ?? agents[0]?.id;
-    if (!agent) {
-      toast({ kind: 'err', title: 'Create an agent first', sub: 'Every chat is handled by one.' });
-      return;
-    }
-    const created = await adapter.createConversation({ title: 'Voice chat', agent_id: agent });
+    const agent = agentId ?? fallback?.id;
+    const created = await adapter.createConversation({
+      title: 'Voice chat',
+      ...(agent ? { agent_id: agent } : {}),
+    });
     if (created.data === null) {
       toast({
         kind: 'err',
@@ -808,8 +875,18 @@ export function ChatScreen({ id }: { id: string | null }) {
       phoneSub={
         agent ? (
           <>
-            <AgentFace look={lookOf(agent)} size={14} />
-            {agent.name}
+            <button
+              type="button"
+              className="phone-agent"
+              aria-haspopup="dialog"
+              aria-expanded={agentSheet}
+              aria-label={`${agent.name} handles this chat. Choose another agent`}
+              onClick={() => setAgentSheet(true)}
+            >
+              <AgentAvatar agent={agent} size={14} />
+              {agent.name}
+              <Icon name="chevronDown" size={12} />
+            </button>
             {amount
               ? ` · ${amount.figure} ${found?.item.status === 'settled' ? 'settled' : amount.direction}`
               : ''}
@@ -849,6 +926,12 @@ export function ChatScreen({ id }: { id: string | null }) {
         ) : undefined
       }
     >
+      <AgentSheet
+        open={agentSheet}
+        agentId={agentId}
+        onClose={() => setAgentSheet(false)}
+        onChange={setConversationAgent}
+      />
       <TranscriptContext.Provider value={{ transcript }}>
         <div className="chat">
           <div className="chat-head">
@@ -894,11 +977,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                     textAlign: 'center',
                   }}
                 >
-                  {agent ? (
-                    <AgentFace look={lookOf(agent)} size={64} state="idle" />
-                  ) : (
-                    <MeleteAvatar size={56} />
-                  )}
+                  <AgentAvatar agent={agent} size={agent && !agent.is_default ? 64 : 56} />
                   <span
                     style={{
                       fontSize: 20,
@@ -907,7 +986,9 @@ export function ChatScreen({ id }: { id: string | null }) {
                       color: 'var(--heading)',
                     }}
                   >
-                    {agent ? `${agent.name} is listening.` : 'What do you want to get done?'}
+                    {agent && !agent.is_default
+                      ? `${agent.name} is listening.`
+                      : 'What do you want to get done?'}
                   </span>
                   <span style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 420 }}>
                     {agent
@@ -955,13 +1036,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   conversationId={conversationId}
                   transcript={transcript}
                   agentName={agent?.name?.trim() || 'Melete'}
-                  avatar={
-                    agent ? (
-                      <AgentFace look={lookOf(agent)} size={28} />
-                    ) : (
-                      <MeleteAvatar size={28} />
-                    )
-                  }
+                  avatar={<AgentAvatar agent={agent} size={28} />}
                   minimised={voiceMin}
                   onMinimise={setVoiceMin}
                   onSend={send}
@@ -1061,6 +1136,17 @@ ${words}`
                   value={text}
                   onChange={setText}
                   onSend={() => void send(text)}
+                  agentName={
+                    // A turn handed to another agent with @Name is that agent's while it works.
+                    (working ? agentById(agents, last?.turn.agent_id) : null)?.name ??
+                    agent?.name ??
+                    'Melete'
+                  }
+                  placeholder={
+                    agents.length > 1
+                      ? `Message ${agent?.name ?? 'Melete'}, or @name`
+                      : `Message ${agent?.name ?? 'Melete'}`
+                  }
                   state={conversationId ? composerState : 'send'}
                   working={working}
                   autoFocus={!touch}

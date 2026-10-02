@@ -51,7 +51,8 @@ export function Composer({
   onResume,
   onStop,
   state = 'send',
-  placeholder = 'Message Melete',
+  agentName = 'Melete',
+  placeholder = `Message ${agentName}`,
   disabled = false,
   autoFocus = false,
   working = false,
@@ -64,6 +65,8 @@ export function Composer({
   onResume?: () => void;
   onStop?: () => void;
   state?: ComposerState;
+  /** Who answers here: Melete unless the chat or the turn under way has another agent. */
+  agentName?: string;
   placeholder?: string;
   disabled?: boolean;
   autoFocus?: boolean;
@@ -169,7 +172,7 @@ export function Composer({
             ref={textRef}
             rows={1}
             value={value}
-            placeholder={working && state !== 'send' ? 'Melete is working…' : placeholder}
+            placeholder={working && state !== 'send' ? `${agentName} is working…` : placeholder}
             disabled={disabled}
             aria-label={placeholder}
             onChange={(event) => onChange(event.target.value)}

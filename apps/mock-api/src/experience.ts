@@ -1,6 +1,12 @@
 import * as C from '@melete/contracts';
 import type { Context, Hono } from 'hono';
-import { AGENT_TEMPLATES } from '../../melete/src/experience/agents.ts';
+import { ServiceError } from '../../melete/src/api/errors.ts';
+import {
+  AGENT_TEMPLATES,
+  agentValues,
+  MELETE_AGENT,
+  mentionedAgent,
+} from '../../melete/src/experience/agents.ts';
 import { dayGreeting } from '../../melete/src/experience/home.ts';
 import { scheduleSentence } from '../../melete/src/experience/planning.ts';
 import {
@@ -176,11 +182,17 @@ export class ExperienceMock {
     this.computer = new ComputerMock(deps.store, deps.spaceId, deps.computer ?? true, () =>
       this.now(),
     );
-    for (const template of AGENT_TEMPLATES.templates) {
+    // Melete first, as the service lists it, then the specialists made from each template.
+    for (const [made, isDefault] of [
+      [MELETE_AGENT, true],
+      ...AGENT_TEMPLATES.templates.map((template) => [template.agent, false] as const),
+    ] as const) {
       const agent = C.experienceAgent.parse({
-        ...template.agent,
+        ...made,
         id: newId('agent'),
         space_id: deps.spaceId,
+        is_default: isDefault,
+        fixed_reach: isDefault,
         usage: { conversations: 0, last_used: null },
       });
       this.agents.set(agent.id, agent);
@@ -583,8 +595,15 @@ export class ExperienceMock {
     if (turn) turn.status = status;
     this.event(chat, { type: 'status', status, composer: chat.view.composer });
   }
+  /** Melete, the agent every space has. */
+  defaultAgent() {
+    const melete = [...this.agents.values()].find((agent) => agent.is_default);
+    if (!melete) throw new Error('Melete is missing from the mock.');
+    return melete;
+  }
   create(raw: unknown) {
-    const input = C.conversationCreate.parse(raw);
+    const parsed = C.conversationCreate.parse(raw);
+    const input = { ...parsed, agent_id: parsed.agent_id ?? this.defaultAgent().id };
     required(this.agents, input.agent_id);
     if (input.plan_id) required(this.plans, input.plan_id);
     const view = C.conversation.parse({
@@ -1107,10 +1126,12 @@ export class ExperienceMock {
     // A new message makes every permission still waiting in this conversation
     // stale, as the service does: it is replaced, and can never be allowed.
     this.closePending(chat, 'replaced');
+    // "@Scout find …" hands this one message to Scout, as the service does.
+    const mentioned = mentionedAgent(input.text, [...this.agents.values()]);
     const turn = C.conversationTurn.parse({
       id: newId('turn'),
       conversation_id: chat.view.id,
-      agent_id: chat.view.agent_id,
+      agent_id: mentioned?.id ?? chat.view.agent_id,
       text: input.text,
       answer: '',
       status: 'queued',
@@ -1494,7 +1515,8 @@ export class ExperienceMock {
       );
   }
   automation(raw: unknown) {
-    const input = C.automationCreate.parse(raw);
+    const parsed = C.automationCreate.parse(raw);
+    const input = { ...parsed, agent_id: parsed.agent_id ?? this.defaultAgent().id };
     required(this.agents, input.agent_id);
     const [hour, minute] = input.at.split(':');
     const value = C.experienceAutomation.parse({
@@ -1525,7 +1547,7 @@ export class ExperienceMock {
   profileView() {
     return {
       ...this.profile,
-      onboarded: this.onboarded || this.agents.size > 0,
+      onboarded: this.onboarded || [...this.agents.values()].some((agent) => !agent.is_default),
       time_zone_confirmed: this.timeZoneConfirmed,
       sending_address: this.sendingAddress,
     };
@@ -1566,7 +1588,13 @@ export class ExperienceMock {
         };
       case 'POST /agents':
       case 'PATCH /agents/{id}': {
-        if (id) required(this.agents, id);
+        const existing = id ? required(this.agents, id) : null;
+        try {
+          agentValues(input, existing?.is_default === true);
+        } catch (error) {
+          if (error instanceof ServiceError) throw new MockExperienceError(400, error.message);
+          throw error;
+        }
         const allowed = C.agentInput.parse(input).allowed_connection_ids ?? [];
         if (allowed.some((id) => !this.connections().some((connection) => connection.id === id)))
           throw new MockExperienceError(400, 'Choose connections from this space.');
@@ -1574,6 +1602,8 @@ export class ExperienceMock {
           ...input,
           id: id || newId('agent'),
           space_id: this.deps.spaceId,
+          is_default: existing?.is_default === true,
+          fixed_reach: existing?.fixed_reach === true,
           usage: { conversations: 0, last_used: null },
         });
         this.agents.set(agent.id, agent);

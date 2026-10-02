@@ -18,7 +18,7 @@ import {
   Select,
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { useApp, useLoad } from '../experience/hooks.ts';
+import { defaultAgentOf, useApp, useLoad } from '../experience/hooks.ts';
 import { plainRunReason, plainSchedule } from '../experience/plain.ts';
 import type { Automation, AutomationRun } from '../experience/types.ts';
 import { href } from '../router.ts';
@@ -295,9 +295,9 @@ function NewRoutineDialog({
   const [instruction, setInstruction] = useState('');
   const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [at, setAt] = useState('08:30');
-  const [agentId, setAgentId] = useState(agents[0]?.id ?? '');
+  const [agentId, setAgentId] = useState(defaultAgentOf(agents)?.id ?? '');
   const [busy, setBusy] = useState(false);
-  const agent = agentId || agents[0]?.id || '';
+  const agent = agentId || defaultAgentOf(agents)?.id || '';
   return (
     <Dialog
       open={open}

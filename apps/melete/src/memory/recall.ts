@@ -78,6 +78,8 @@ export type RecallOptions = {
    * on their own model; left out, those items are never returned.
    */
   privateOrigin?: boolean;
+  /** The agent answering may not read memory: nothing is looked up or returned. */
+  withheld?: boolean;
 };
 export const recipeFor = (options: RecallOptions) =>
   options.embedding
@@ -400,6 +402,12 @@ export async function recall(
       if (!manifest) throw new MemoryError('index_failure');
       indexGeneration = manifest.generation;
       indexed = manifest.coverage_revision;
+      if (options.withheld)
+        return {
+          ...empty(request, recipe, 'complete', 'withheld'),
+          snapshot,
+          index_generation: indexGeneration,
+        };
       if (audience.publicCompartment)
         return {
           ...empty(request, recipe, 'complete', 'public_compartment'),

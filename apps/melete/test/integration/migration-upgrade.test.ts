@@ -189,12 +189,21 @@ databaseTest(
       await agent('agt_shared', 'spc_shared', []);
 
       await migrateDatabase(fixture);
-      const rows = await fixture.sql`select id, allowed_connection_ids from agent order by id`;
+      const rows =
+        await fixture.sql`select id, allowed_connection_ids from agent where not is_default order by id`;
       expect(Object.fromEntries(rows.map((row) => [row.id, row.allowed_connection_ids]))).toEqual({
         agt_narrowed: ['conn_mail'],
         agt_personal: null,
         agt_shared: [],
       });
+      // Each space also gains Melete: everything in a personal space, nothing
+      // in a shared one until its owner chooses.
+      const melete =
+        await fixture.sql`select space_id, name, allowed_connection_ids from agent where is_default order by space_id`;
+      expect(melete.map((row) => [row.space_id, row.name, row.allowed_connection_ids])).toEqual([
+        ['spc_personal', 'Melete', null],
+        ['spc_shared', 'Melete', []],
+      ]);
     } finally {
       await fixture.close();
     }

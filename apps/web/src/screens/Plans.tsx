@@ -5,7 +5,6 @@
  * milestone later) is not offered.
  */
 import { useMemo, useState } from 'react';
-import { AgentFace } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
 import {
@@ -22,8 +21,9 @@ import {
   Select,
   TabsUnderline,
 } from '../design/primitives.tsx';
+import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { agentById, lookOf, useApp, useLoad } from '../experience/hooks.ts';
+import { agentById, defaultAgentOf, useApp, useLoad } from '../experience/hooks.ts';
 import type { Plan } from '../experience/types.ts';
 import { href, navigate, useRoute } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
@@ -452,8 +452,8 @@ function PlanSheet({
                       style={{ gap: 6, fontSize: 12, color: 'var(--muted)' }}
                       title={`${agent.name} does this step`}
                     >
-                      <AgentFace
-                        look={lookOf(agent)}
+                      <AgentAvatar
+                        agent={agent}
                         size={20}
                         state={
                           milestone.done
@@ -531,7 +531,7 @@ function PlanSheet({
           icon="chat"
           block
           onClick={() => {
-            const agent = agents[0];
+            const agent = defaultAgentOf(agents);
             if (!agent) return;
             void adapter.planConversation(plan.id, agent.id).then((r) => {
               if (r.data) navigate(`/chat/${r.data.conversation.id}`);

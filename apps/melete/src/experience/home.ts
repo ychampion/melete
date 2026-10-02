@@ -74,7 +74,8 @@ export class ExperienceHome {
         await this.db
           .select({ id: agent.id })
           .from(agent)
-          .where(eq(agent.spaceId, spaceId))
+          // Melete is in every space from the start, so only an agent the person made counts.
+          .where(and(eq(agent.spaceId, spaceId), eq(agent.isDefault, false)))
           .limit(1)
       ).length > 0;
     return {

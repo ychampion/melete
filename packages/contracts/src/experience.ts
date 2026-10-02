@@ -505,7 +505,8 @@ export const conversationTurn = z.strictObject({
 });
 export const conversationCreate = z.strictObject({
   title: text,
-  agent_id: id,
+  /** Left out, the chat goes to Melete, the agent every space has. */
+  agent_id: id.optional(),
   plan_id: id.optional(),
 });
 export const conversationSwitchAgent = z.strictObject({ agent_id: id });
@@ -616,11 +617,28 @@ export const agentInput = z.strictObject({
   /** Null means every connection in the space, including ones connected later. */
   allowed_connection_ids: z.array(id).max(50).nullable(),
   asks_before_acting: z.boolean(),
+  /** Whether it may use the computer: the browser, the terminal and code in the workspace. */
+  uses_computer: z.boolean().default(true),
+  /** Whether what Melete remembers about the person is brought into its work. */
+  reads_memory: z.boolean().default(true),
+  /** Whether what the person tells it is kept in memory. */
+  writes_memory: z.boolean().default(true),
   face_image: url.optional(),
 });
 export const experienceAgent = agentInput.extend({
   id,
   space_id: id,
+  /**
+   * True for Melete, the agent every space has. It keeps its name and cannot
+   * be removed.
+   */
+  is_default: z.boolean(),
+  /**
+   * True for Melete in a personal space, where it reaches every connection,
+   * the computer and memory, and that cannot be narrowed. In a shared space
+   * Melete starts with no connections and its owner chooses what it may use.
+   */
+  fixed_reach: z.boolean(),
   usage: z.strictObject({ conversations: count, last_used: date.nullable() }),
 });
 export type ExperienceAgent = z.infer<typeof experienceAgent>;
@@ -834,7 +852,8 @@ export const automationCreate = z.strictObject({
   instruction: text,
   weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
   at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-  agent_id: id,
+  /** Left out, the routine runs as Melete. */
+  agent_id: id.optional(),
 });
 export const automationResponse = z.strictObject({ automation: experienceAutomation });
 
@@ -1047,7 +1066,10 @@ export const experienceOperations = {
   /** Stops the routine for good and takes it off the list. */
   'DELETE /automations/{id}': { response: experienceOk },
   'POST /automations/morning-brief': {
-    request: z.strictObject({ agent_id: id, at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/) }),
+    request: z.strictObject({
+      agent_id: id.optional(),
+      at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    }),
     response: automationResponse,
   },
   'GET /experience/connections': { response: experienceConnectionList },

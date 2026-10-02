@@ -134,6 +134,44 @@ private. Selection rechecks membership under the existing revocation lock;
 revocation cancels queued reuse and fences already delivered context. Rollback
 removes subsequent procedure delivery.
 
+## Agents
+
+Every space has Melete, its default agent. It takes a new chat, a message from
+Home and a routine whenever no other agent is named. Its name is fixed and it
+cannot be removed; its tone, standing instruction and "asks before acting" can
+change. In a personal space it reaches every connection, including ones
+connected later, the computer and memory, and that cannot be narrowed. In a
+shared space it starts with no connections, and the space's owner chooses what
+it may use; members cannot change any agent. Migration `0070_default_agent`
+gives every existing space its Melete and hands chats and routines without an
+agent in personal spaces to it; in a shared space they stay without one, as
+before. A space made later receives Melete the first time its agents are read
+or a chat is started.
+
+A specialist (Scout the researcher, Quill the writer, or one made from scratch)
+has its own name, role, look, tone and standing instruction, and four limits
+the service enforces:
+
+- **Connections.** `allowed_connection_ids` lists what it may use; null means
+  every connection. The catalog offers nothing else and the broker refuses
+  anything else (`scope_denied`).
+- **Computer.** With `uses_computer` off, the agent's own computer and the
+  person's paired computers (`browser.*`, `computer.*`, `terminal.*`, `exec.*`,
+  `device.*`) are neither offered nor admitted.
+- **Reading memory.** With `reads_memory` off, nothing is recalled or recorded
+  as used, no correction is briefed (it stays pending for an agent that reads
+  memory), and no handle to a remembered source is passed on.
+- **Keeping memory.** With `writes_memory` off, nothing said to it is captured
+  into memory. A request to forget is still carried out.
+
+A message that starts with an agent's name after `@` ("@Scout find trains to
+Porto") is answered by that agent for that one turn; the chat keeps its own
+agent for the next message. In a shared space only the owner's mention does
+this; a member's message stays with the chat's agent. Each turn records the agent that answered it, and
+that agent's limits apply to the turn.
+[agents.test.ts](../apps/melete/test/integration/agents.test.ts) covers each
+of these.
+
 ## Auto-review
 
 Auto-review decides some actions that would otherwise wait for the person.

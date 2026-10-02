@@ -16,7 +16,6 @@ import {
   useRef,
   useState,
 } from 'react';
-import { AgentFace } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
@@ -34,11 +33,11 @@ import {
   Toast,
   Toggle,
 } from '../design/primitives.tsx';
+import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
 import {
   agentById,
   type Loaded,
-  lookOf,
   useApp,
   useDecisions,
   useLoad,
@@ -317,7 +316,29 @@ function Sidebar({
         ))}
       </nav>
       <div className="sidebar-recent">
-        <div className="recent-label">Chats</div>
+        {agents.length > 0 ? (
+          <>
+            <div className="recent-label">Agents</div>
+            {agents.map((agent) => (
+              <a
+                key={agent.id}
+                className="chat-row"
+                href={href(`/chat/new?agent=${agent.id}`)}
+                title={`New chat with ${agent.name}`}
+                onClick={onClose}
+              >
+                <span className="chat-face">
+                  <AgentAvatar agent={agent} size={16} />
+                </span>
+                <span className="clamp1 grow">{agent.name}</span>
+                <span className="clamp1 agent-row-role">{agent.role}</span>
+              </a>
+            ))}
+          </>
+        ) : null}
+        <div className="recent-label" data-after={agents.length > 0 ? 'agents' : undefined}>
+          Chats
+        </div>
         {recent.map((chat) => {
           const agent = agentById(agents, chat.agent_id);
           const live = LIVE.has(chat.status);
@@ -330,9 +351,7 @@ function Sidebar({
               onClick={onClose}
             >
               <span className="chat-face">
-                {agent ? (
-                  <AgentFace look={lookOf(agent)} size={16} state={live ? 'working' : 'idle'} />
-                ) : null}
+                <AgentAvatar agent={agent} size={16} state={live ? 'working' : 'idle'} />
               </span>
               <span className="clamp1 grow">{chat.title}</span>
               {chat.status === 'needs_you' ? (
@@ -858,7 +877,7 @@ export function Shell({
                     maxWidth: '100%',
                   }}
                 >
-                  {agent && !phoneSub ? <AgentFace look={lookOf(agent)} size={18} /> : null}
+                  {agent && !phoneSub ? <AgentAvatar agent={agent} size={18} /> : null}
                   <span className="clamp1">{title ?? 'Melete'}</span>
                 </span>
                 {phoneSub ? <span className="phone-sub clamp1">{phoneSub}</span> : null}

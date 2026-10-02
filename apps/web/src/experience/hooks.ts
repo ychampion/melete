@@ -113,6 +113,10 @@ export function useApp(): AppContextValue {
 export const agentById = (agents: Agent[], id: string | null | undefined): Agent | null =>
   (id ? agents.find((agent) => agent.id === id) : null) ?? null;
 
+/** Melete, the agent every space has: a new chat, Home and routines go to it unless told otherwise. */
+export const defaultAgentOf = (agents: Agent[]): Agent | null =>
+  agents.find((agent) => agent.is_default) ?? agents[0] ?? null;
+
 /**
  * What waits on the person: open permissions and open questions. `error` is
  * the service's sentence when either list could not be read; the lists keep

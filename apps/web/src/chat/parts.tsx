@@ -1531,7 +1531,7 @@ export function ActionBar({
 /* ---------- avatars ---------- */
 
 export function TurnAvatar({ agent, status }: { agent: Agent | null; status: TurnStatus }) {
-  if (!agent) return <MeleteAvatar size={28} />;
+  if (!agent || agent.is_default) return <MeleteAvatar size={28} />;
   const mapped =
     status === 'working'
       ? 'running'
