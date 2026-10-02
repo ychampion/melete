@@ -147,7 +147,7 @@ withLinux('the process helper in a computer', () => {
     await computer.stop('prc_once', 1_000, signal());
   }, 60_000);
 
-  test('a stopped process records 143, and nothing of its session is left', async () => {
+  test('a stopped process records 143, and nothing it started is left', async () => {
     const started = await start(computer, 'prc_stop', 'sleep 300 & sleep 300 & wait');
     if (started.outcome !== 'started') throw new Error('expected a start');
     expect(started.process.state).toBe('running');
