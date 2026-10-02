@@ -281,11 +281,26 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
   const memory = current === 'memory';
   // The chosen tab stays in view when the strip is wider than the page.
   const tabsRef = useRef<HTMLDivElement>(null);
+  // The strip itself is scrolled, not the page, and again whenever its tabs
+  // change width: the counts beside earlier tabs arrive after the first paint
+  // and push a tab near the end, such as Activity, back out of view.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a change of tab is what moves it
   useEffect(() => {
-    tabsRef.current
-      ?.querySelector<HTMLElement>('[aria-selected="true"]')
-      ?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    const strip = tabsRef.current?.querySelector<HTMLElement>('[role="tablist"]');
+    if (!strip) return;
+    const reveal = () => {
+      const tab = strip.querySelector<HTMLElement>('[aria-selected="true"]');
+      if (!tab) return;
+      const start = tab.getBoundingClientRect().left - strip.getBoundingClientRect().left;
+      const end = start + tab.offsetWidth;
+      if (start < 0) strip.scrollLeft += start - 16;
+      else if (end > strip.clientWidth) strip.scrollLeft += end - strip.clientWidth + 16;
+    };
+    reveal();
+    if (typeof ResizeObserver === 'undefined') return;
+    const watch = new ResizeObserver(reveal);
+    for (const child of strip.children) watch.observe(child);
+    return () => watch.disconnect();
   }, [current]);
 
   return (
