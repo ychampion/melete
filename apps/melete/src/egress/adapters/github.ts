@@ -62,14 +62,14 @@ const READS = new Set(['GET', 'HEAD']);
 const API_READ_POSTS = new Set(['/markdown', '/markdown/raw']);
 /** An owner or repository name as GitHub allows it, and nothing a path could be read two ways in. */
 const NAME = /^[A-Za-z0-9_.-]{1,100}$/;
-const plainName = (value: string) => NAME.test(value) && value !== '.' && value !== '..';
+export const plainName = (value: string) => NAME.test(value) && value !== '.' && value !== '..';
 /**
  * Paths whose segments say exactly where they go: no dot segments, empty
  * segments, backslashes or escaped dots. An escaped `/` stays inside its
  * segment (a branch name in a ref path); the owner and repository segments
  * are checked as plain names on their own.
  */
-const canonicalPath = (path: string) =>
+export const canonicalPath = (path: string) =>
   path.startsWith('/') &&
   !path.includes('//') &&
   !path.includes('\\') &&
@@ -84,14 +84,14 @@ export function refName(ref: string): string {
   if (ref.startsWith('refs/tags/')) return `tag ${ref.slice('refs/tags/'.length)}`;
   return ref;
 }
-const decoded = (segment: string) => {
+export const decoded = (segment: string) => {
   try {
     return decodeURIComponent(segment);
   } catch {
     return segment;
   }
 };
-const kib = (bytes: number) =>
+export const kib = (bytes: number) =>
   bytes < 1024
     ? `${bytes} bytes`
     : bytes < 1024 * 1024
@@ -99,7 +99,7 @@ const kib = (bytes: number) =>
       : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 
 /** The JSON object a body holds, or null. */
-function jsonObject(body: Buffer): Record<string, unknown> | null {
+export function jsonObject(body: Buffer): Record<string, unknown> | null {
   try {
     const value: unknown = JSON.parse(body.toString('utf8'));
     return value && typeof value === 'object' && !Array.isArray(value)
@@ -109,7 +109,7 @@ function jsonObject(body: Buffer): Record<string, unknown> | null {
     return null;
   }
 }
-const str = (value: unknown, max = 200) =>
+export const str = (value: unknown, max = 200) =>
   typeof value === 'string' ? value.slice(0, max) : undefined;
 const canonical = (value: unknown): JsonValue =>
   canonicalizePayload({ value: (value ?? null) as JsonValue }).canonical.value ?? null;
@@ -125,7 +125,7 @@ function generic(request: InterceptedRequest, repository?: string): Classificati
 
 const GIT_REPO = /^\/([^/]+)\/([^/]+?)(?:\.git)?(\/.*)?$/;
 
-function pushSummary(repository: string, commands: ReceivePackCommands): CardSummary {
+export function pushSummary(repository: string, commands: ReceivePackCommands): CardSummary {
   const names = commands.updates.map((update) => refName(update.ref));
   const listed =
     names.length > 5
@@ -158,7 +158,11 @@ function pushSummary(repository: string, commands: ReceivePackCommands): CardSum
 const boundCapabilities = (capabilities: string[]) =>
   capabilities.filter((cap) => !cap.startsWith('agent=') && !cap.startsWith('session-id=')).sort();
 
-function classifyPush(request: InterceptedRequest, repository: string): Classification {
+export function classifyPush(
+  request: InterceptedRequest,
+  repository: string,
+  site: string = GIT_HOST,
+): Classification {
   // A compressed or otherwise encoded body is not read here: it asks as itself.
   if (request.headers['content-encoding'] || request.query) return generic(request, repository);
   const commands = parseReceivePack(request.body);
@@ -170,7 +174,7 @@ function classifyPush(request: InterceptedRequest, repository: string): Classifi
     kind: 'write',
     operation: 'push',
     payload: {
-      site: GIT_HOST,
+      site,
       resource: repository,
       updates: commands.updates.map((update) => ({ ...update })),
       push_options: commands.pushOptions,
@@ -183,7 +187,11 @@ function classifyPush(request: InterceptedRequest, repository: string): Classifi
   };
 }
 
-function classifyLfsBatch(request: InterceptedRequest, repository: string): Classification {
+export function classifyLfsBatch(
+  request: InterceptedRequest,
+  repository: string,
+  site: string = GIT_HOST,
+): Classification {
   const batch = jsonObject(request.body);
   // A key given twice could be read either way by another parser: it asks.
   const named = request.body.toString('utf8').match(/"operation"\s*:/g)?.length ?? 0;
@@ -200,7 +208,7 @@ function classifyLfsBatch(request: InterceptedRequest, repository: string): Clas
     kind: 'write',
     operation: 'lfs_upload',
     payload: {
-      site: GIT_HOST,
+      site,
       resource: repository,
       lfs: {
         operation: 'upload',
@@ -244,7 +252,7 @@ function classifyGit(request: InterceptedRequest): Classification {
 
 type Graphql = { query: string; variables: unknown; operationName: string | null };
 
-function graphqlRequest(request: InterceptedRequest): Graphql | null {
+export function graphqlRequest(request: InterceptedRequest): Graphql | null {
   if (READS.has(request.method)) {
     const params = new URLSearchParams(request.query);
     const query = params.get('query');
@@ -276,12 +284,12 @@ function graphqlRequest(request: InterceptedRequest): Graphql | null {
 }
 
 /** The top-level fields a mutation selects, in order. */
-const rootFields = (operation: OperationDefinitionNode) =>
+export const rootFields = (operation: OperationDefinitionNode) =>
   operation.selectionSet.selections.flatMap((selection) =>
     selection.kind === Kind.FIELD ? [selection.name.value] : [],
   );
 
-function inputOf(variables: unknown): Record<string, unknown> {
+export function inputOf(variables: unknown): Record<string, unknown> {
   const all = (variables ?? {}) as Record<string, unknown>;
   const input = all.input;
   return input && typeof input === 'object' && !Array.isArray(input)

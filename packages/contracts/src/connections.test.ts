@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   ACCOUNT_CATALOG,
+  COMMAND_LINE_ADAPTERS,
   CONNECTION_CHECK_DETAIL,
   CONNECTION_KIND_DESCRIPTORS,
   CONNECTION_KIND_SCOPES,
@@ -345,10 +346,50 @@ describe('connection kind descriptors', () => {
     for (const descriptor of CONNECTION_KIND_DESCRIPTORS) {
       if (descriptor.kind === 'mcp' || descriptor.kind === 'mcp_stdio')
         expect(descriptor.scopes).toEqual([]);
-      else
+      else if (descriptor.kind === 'command_line') {
+        // Each command-line service offers its own two grants, and nothing of another service.
+        const adapter = descriptor.fixed.find(
+          (item) => item.path === 'command_line.adapter',
+        )?.value;
+        expect(descriptor.scopes.map((scope) => scope.scope)).toEqual([
+          `egress.${adapter}_read`,
+          `egress.${adapter}_write`,
+        ]);
+      } else
         expect(descriptor.scopes.map((scope) => scope.scope)).toEqual([
           ...CONNECTION_KIND_SCOPES[descriptor.kind],
         ]);
+    }
+    // Together the command-line services offer every grant the kind may hold.
+    expect(
+      CONNECTION_KIND_DESCRIPTORS.filter((kind) => kind.kind === 'command_line')
+        .flatMap((kind) => kind.scopes.map((scope) => scope.scope))
+        .sort(),
+    ).toEqual([...CONNECTION_KIND_SCOPES.command_line].sort());
+  });
+
+  test('each command-line service installs as itself, with only its own grants', () => {
+    for (const adapter of COMMAND_LINE_ADAPTERS) {
+      const request = (scopes: string[]) =>
+        connectionInstallation(
+          createConnectionRequest.parse({
+            label: adapter,
+            provider: 'command_line',
+            command_line: { adapter },
+            credentials: { token: 'token-value' },
+            scopes,
+          }),
+        );
+      const installed = request([]);
+      expect(
+        installed.ok && installed.value.kind === 'command_line' && installed.value,
+      ).toMatchObject({
+        config: { adapter },
+        scopes: [`egress.${adapter}_read`, `egress.${adapter}_write`],
+      });
+      const other = adapter === 'npm' ? 'gitlab' : 'npm';
+      const mixed = request([`egress.${adapter}_read`, `egress.${other}_write`]);
+      expect(mixed.ok).toBe(false);
     }
   });
 });
@@ -510,7 +551,10 @@ describe('a CalDAV calendar', () => {
 });
 
 describe('providers whose servers are known', () => {
-  const providers = CONNECTION_KIND_DESCRIPTORS.filter((kind) => kind.id !== kind.kind);
+  // Command-line services are told apart by their adapter, not by known servers.
+  const providers = CONNECTION_KIND_DESCRIPTORS.filter(
+    (kind) => kind.id !== kind.kind && kind.kind !== 'command_line',
+  );
 
   test('ask only for an address and an app password, or a feed address', () => {
     expect(providers.map((kind) => kind.id)).toEqual([

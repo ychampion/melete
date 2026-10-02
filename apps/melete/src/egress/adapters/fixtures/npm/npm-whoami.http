@@ -1,0 +1,9 @@
+# npm whoami
+
+### read
+GET https://registry.npmjs.org/-/whoami
+authorization: Bearer melete-proxy-adds-this
+npm-auth-type: web
+npm-command: whoami
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+accept: */*

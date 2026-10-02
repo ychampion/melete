@@ -16374,7 +16374,7 @@ export interface components {
         };
         __schema87: string;
         /** @enum {string} */
-        __schema88: "github";
+        __schema88: "github" | "gitlab" | "npm";
         __schema89: {
             client_id: string;
             client_secret?: string;

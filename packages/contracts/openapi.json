@@ -22598,7 +22598,9 @@
       "__schema88": {
         "type": "string",
         "enum": [
-          "github"
+          "github",
+          "gitlab",
+          "npm"
         ]
       },
       "__schema89": {

@@ -1,0 +1,14 @@
+# git push -o merge_request.create -o merge_request.target=main -o ci.skip origin melete/fix-login
+
+### read
+GET https://gitlab.com/alice/site.git/info/refs?service=git-receive-pack
+user-agent: git/2.53.0
+accept: */*
+
+### write base64
+POST https://gitlab.com/alice/site.git/git-receive-pack
+user-agent: git/2.53.0
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+
+MDBkYWY1ZDlhMDdkY2MwMjNkYjFjZGExYzFmZmRiZWVkZGI1ODE4YWI5ZTIgYWQwODUxODM3MjM2ZGJiYzA3ZTdjNmMxMTMxYzhhODQ4Y2MyNDZkZiByZWZzL2hlYWRzL21lbGV0ZS9maXgtbG9naW4AIHJlcG9ydC1zdGF0dXMtdjIgc2lkZS1iYW5kLTY0ayBxdWlldCBwdXNoLW9wdGlvbnMgb2JqZWN0LWZvcm1hdD1zaGExIGFnZW50PWdpdC8yLjUzLjAud2luZG93cy4yLVdpbmRvd3MwMDAwMDAxOG1lcmdlX3JlcXVlc3QuY3JlYXRlMDAxZG1lcmdlX3JlcXVlc3QudGFyZ2V0PW1haW4wMDBiY2kuc2tpcDAwMDBQQUNLAAAAAgAAAAGTDHicjcpBCsIwEEDRfU6RvSCTmKQTENFTuM5kJrRgm1JH8PjmCP7l5+khYgOhj1xT8JWSUC6QQGKghpyyR2wkEjIEs5dDNrUt8jAT1wr+wuQqF1ddazwcM0V0WCiLN+Wjcz/sw17LXb5l3V9yrn29WTdlQOcRwJ5gZMZdF1X5C5vnorPtuy59e5sfdwE58BsoeeFVT/rtPs3rmg0EusqIuxkX
