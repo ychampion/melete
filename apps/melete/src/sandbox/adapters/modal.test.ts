@@ -797,7 +797,10 @@ test('an id Modal says is not in its shape is a sandbox that is gone', async () 
         ),
       ),
   });
-  const transport = createModalSdkTransport({ credential: (use) => use(TOKEN), load: invalid.load });
+  const transport = createModalSdkTransport({
+    credential: (use) => use(TOKEN),
+    load: invalid.load,
+  });
   expect(await transport.poll('sb-melete-installation-probe', signal())).toBe('gone');
   transport.close();
   // Any other bad argument is still an error, not a missing sandbox.
