@@ -74,3 +74,26 @@ test('named skills are built in, and a starter routine is a real schedule', () =
     }
   }
 });
+
+test('a template whose job rests on a connection says so, and its brief says what to do without it', () => {
+  const byId = new Map(AGENT_TEMPLATES.templates.map((template) => [template.id, template]));
+  const reading = byId.get('reading-list');
+  expect(reading?.relies_on).toEqual([
+    {
+      kind: 'files',
+      without: 'It keeps your reading list in Files. Without Files it cannot keep the list.',
+    },
+  ]);
+  for (const template of AGENT_TEMPLATES.templates) {
+    for (const need of template.relies_on) {
+      // What it rests on is something it works best with, and so ticked by default.
+      expect(template.works_best_with).toContain(need.kind);
+      // Without it, the agent says so and never claims it kept anything.
+      expect(template.agent.standing_instruction).toContain('If you cannot use files, say so');
+      expect(template.agent.standing_instruction).toMatch(/never say (?:an item|a link) was saved/);
+    }
+  }
+  expect(reading?.agent.standing_instruction).toContain(
+    'read it, add each new link, and write it back',
+  );
+});

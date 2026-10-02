@@ -276,7 +276,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'POST /automations/{id}/restart': (spaceId, c) =>
       planning.restartAutomation(spaceId, c.req.param('id') ?? ''),
     'DELETE /automations/{id}': (spaceId, c) =>
-      planning.deleteAutomation(spaceId, c.req.param('id') ?? ''),
+      planning.deleteAutomation(spaceId, c.req.param('id') ?? '', deps.sql),
     'POST /automations/morning-brief': (spaceId, _c, input) =>
       planning.createAutomation(spaceId, {
         ...input,
@@ -507,8 +507,19 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       service.rename(spaceId, c.req.param('id') ?? '', input),
     'DELETE /conversations/{id}': async (spaceId, c) => {
       const id = c.req.param('id') ?? '';
-      await service.requireConversation(spaceId, id);
+      // A chat, or a routine's thread whose routine is gone; a routine still
+      // set up is deleted as a routine, which takes its thread with it.
+      const thread = await service.requireThread(spaceId, id);
       if (!deps.jobs || !deps.sql) return unavailable('Deleting chats is not connected yet.');
+      if (thread.kind === 'routine') {
+        const [schedule] = await deps.sql`select id from trigger where job_id = ${id} limit 1`;
+        if (schedule)
+          throw new ServiceError(
+            'routine_thread',
+            'This chat belongs to a routine. Delete the routine to remove it.',
+            409,
+          );
+      }
       const ids = await conversationJobs(spaceId, id);
       const ownerId = c.get('owner').id;
       let forget: ((sources: readonly string[]) => Promise<number>) | undefined;

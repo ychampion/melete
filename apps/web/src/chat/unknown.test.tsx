@@ -6,7 +6,7 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { LedgerAction } from '../experience/types.ts';
-import { ownComputerStep, RETRY_HINT, UnknownCard } from './parts.tsx';
+import { describeAction, ownComputerStep, RETRY_HINT, UnknownCard } from './parts.tsx';
 
 const action = (status: string) =>
   ({
@@ -40,4 +40,17 @@ test("a step on the agent's own computer is never put to the person", () => {
   expect(ownComputerStep({ kind: 'computer.click' })).toBe(true);
   expect(ownComputerStep({ kind: 'email.send' })).toBe(false);
   expect(ownComputerStep({ kind: 'device.run' })).toBe(false);
+});
+
+test('a file step says what it did to the file', () => {
+  const file = (kind: string) =>
+    describeAction({
+      id: 'act_2',
+      kind,
+      status: 'unknown',
+      canonical_payload: { path: 'device/screenshot-1.png' },
+    } as unknown as LedgerAction);
+  expect(file('files.read')).toBe('reading “screenshot-1.png”');
+  expect(file('files.write')).toBe('saving “screenshot-1.png”');
+  expect(file('files.list')).toBe('looking in “screenshot-1.png”');
 });

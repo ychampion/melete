@@ -1234,3 +1234,12 @@ export const schema = {
   actionReview,
   activityRecord,
 };
+
+/**
+ * Threads that routines deleted before a deleted routine took its thread with
+ * it left behind, listed once by a migration. The service removes each the way
+ * a deleted chat goes and takes it off this list; once empty it stays empty.
+ */
+export const orphanedRoutineThread = pgTable('orphaned_routine_thread', {
+  jobId: text('job_id').primaryKey(),
+});

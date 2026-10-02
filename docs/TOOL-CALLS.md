@@ -89,7 +89,7 @@ A running entry's title describes the work in progress ("Sending an email to sam
 - `needs_approval`: waiting on the person. `detail` is `{ "type": "permission", "id": <approval id> }`, the same id as the permission card in the stream.
 - `done`: finished.
 - `failed`: it did not happen. `output_summary` says why, in plain words ("You declined this."), and `failure` says which way: `declined` by the person, `refused` by a rule or the destination, or an `error`. A refusal's internal message is never shown.
-- `unknown`: the destination never confirmed whether it happened. Melete asks the person before anything goes again.
+- `unknown`: the destination never confirmed whether it happened. Melete asks the person before anything goes again. A read (`effect_class: read`) from a built-in connector is never `unknown`: it changed nothing, so one that did not answer is `failed` and can be tried again, and nobody is asked about it. A read left `unknown` by an earlier version is settled when the service starts, and the question it raised is withdrawn with it. A tool of an installed MCP server counts as such a read only when its server declares it read-only (`readOnlyHint`); a tool the installer's policy calls a read without that is asked about like any other effect.
 
 An action entry (`id` starting `action:`) that leaves `needs_approval` means the person decided. Any other entry can arrive while a permission or question is open without closing it.
 
@@ -119,11 +119,11 @@ A summary is safe to show the person whose conversation it is:
 
 Entries are stored with the rest of the conversation's events. Reconnecting with `Last-Event-ID` (or `?since=`) continues the exact sequence, and reading from zero again returns the same items in the same order.
 
-## When a chat or plan is deleted
+## When a chat, plan or routine is deleted
 
-Deleting a chat (`DELETE /conversations/{id}`) or a plan (`DELETE /plans/{id}`) removes its entries with its other events. Before that, the deletion does three things:
+Deleting a chat (`DELETE /conversations/{id}`), a plan (`DELETE /plans/{id}`) or a routine (`DELETE /automations/{id}`) removes its entries with its other events. A routine goes with its thread. A routine's thread can be deleted on its own only once its routine is gone (409 `routine_thread` before that). The threads deleted routines left behind before routines took their threads were listed once by a migration (`orphaned_routine_thread`); the service removes each when it starts and logs it. Before that, the deletion does three things:
 
-- It waits for anything still on its way out. While one of the chat's actions is `admitted` or `dispatched`, the delete answers 409 `still_sending` and nothing is removed. The broker still has to settle the send and reconcile a late receipt against that action's row. While an action is `unknown` or `unresolved`, the answer is 409 `outcome_unclear` until the person settles it.
+- It waits for anything still on its way out. While one of the chat's actions is `admitted` or `dispatched`, the delete answers 409 `still_sending` and nothing is removed. The broker still has to settle the send and reconcile a late receipt against that action's row. While an action is `unknown` or `unresolved`, the answer is 409 `outcome_unclear` until the person settles it. A read from a built-in connector never holds a deletion up, whatever its state.
 - It keeps a record of what was done in the person's name. Each `succeeded` action with an outward effect (`write_external`, `write_reversible` or `spend`) is copied to `activity_record`, which belongs to the space rather than the job. The copy holds:
   - the kind;
   - the connection's label and provider;

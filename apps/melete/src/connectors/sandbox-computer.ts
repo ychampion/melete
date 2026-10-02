@@ -74,7 +74,7 @@ export const COMPUTER_TOOLS: ToolManifest[] = [
   ),
   tool(
     'computer.open',
-    'Open an http or https address in the sandbox browser, starting it if needed. Public HTTPS sites load when the sandbox may reach the internet.',
+    'Open an http or https address in the sandbox browser, starting it if needed. Public HTTPS sites load when the sandbox may reach the internet. The result says whether the window moved to the address (navigated) and the title it shows; when navigated is false, the page did not open, so say so rather than describing it.',
     schema({ url: { type: 'string', minLength: 8, maxLength: 2048 } }, ['url']),
     'write_reversible',
   ),

@@ -1,6 +1,6 @@
 {
-  "id": "ff6d6c37-a05f-44d9-9b72-1fad68b6f349",
-  "prevId": "09267347-e3cb-42bd-86ea-69403a577aba",
+  "id": "b4a17169-ebaa-4289-9592-e45d11d062e2",
+  "prevId": "ff6d6c37-a05f-44d9-9b72-1fad68b6f349",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3475,6 +3475,52 @@
         }
       },
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.model_vision_report": {
+      "name": "model_vision_report",
+      "schema": "",
+      "columns": {
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "supports_vision": {
+          "name": "supports_vision",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reported_at": {
+          "name": "reported_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "model_vision_report_provider_model_pk": {
+          "name": "model_vision_report_provider_model_pk",
+          "columns": [
+            "provider",
+            "model"
+          ]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},

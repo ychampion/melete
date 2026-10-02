@@ -15,6 +15,7 @@ import {
 } from './client.ts';
 import { HERMES_PINNED_TAG, RUNTIME_VERSION } from './index.ts';
 import {
+  DONE_WORDS,
   instructionTokens,
   measureRenderedInput,
   PLAIN_WORDS,
@@ -374,6 +375,13 @@ describe('context assembly', () => {
       `The person's time zone is Asia/Kolkata. "Today", "now" and every date and time you give mean that zone, not UTC.`,
     );
     expect(renderInstructions(bundle)).not.toContain('time zone');
+  });
+
+  test('the model is told to say a thing was done only when a tool call did it', () => {
+    const text = renderInstructions(bundle);
+    expect(text).toContain(DONE_WORDS.join('\n'));
+    expect(text).toContain('never say it');
+    expect(text).toContain('that is not you saving it');
   });
 
   test('the model is told the plain words to use for how it works', () => {

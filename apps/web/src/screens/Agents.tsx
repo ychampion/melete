@@ -39,7 +39,14 @@ import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { LibraryShelf, TemplateSheet, WelcomeSheet } from './AgentLibrary.tsx';
 import { draftKey, followSaved } from './agent-draft.ts';
-import { suggestedConnections, suggests, WORKS_WITH, type WorksWith } from './agent-library.ts';
+import {
+  kindsOfApp,
+  missingNeeds,
+  suggestedConnections,
+  suggests,
+  WORKS_WITH,
+  type WorksWith,
+} from './agent-library.ts';
 
 const ROLES = [
   'Concierge',
@@ -260,6 +267,7 @@ function AgentEditor({
   onClose,
   onDelete,
   worksWith,
+  reliesOn,
 }: {
   agentId: string | null;
   /** Melete: its name and reach are fixed, so only how it sounds is edited. */
@@ -277,6 +285,8 @@ function AgentEditor({
   onDelete?: () => void;
   /** For a library agent: the kinds it works best with, marked on its connections, never ticked. */
   worksWith?: readonly WorksWith[];
+  /** For a library agent: what its job rests on, and what it cannot do without each. */
+  reliesOn?: AgentTemplate['relies_on'];
 }) {
   const [draft, setDraft] = useState<AgentInput>(initial);
   const panelRef = useRef<HTMLElement>(null);
@@ -565,6 +575,30 @@ function AgentEditor({
                 matching connections are ticked; untick any you would rather it left alone.
               </p>
             ) : null}
+            {missingNeeds(reliesOn ?? [], connections, draft.allowed_connection_ids).map((need) => (
+              <div
+                key={need.kind}
+                role="status"
+                className="row"
+                style={{
+                  gap: 8,
+                  padding: '10px 12px',
+                  borderRadius: 10,
+                  background: 'var(--sand)',
+                  color: 'var(--sand-ink)',
+                  fontSize: 13,
+                  alignItems: 'flex-start',
+                }}
+              >
+                <Icon name="info" size={14} />
+                <span>
+                  {need.without}{' '}
+                  {connections.some((connection) => kindsOfApp(connection.app).includes(need.kind))
+                    ? `Tick ${WORKS_WITH[need.kind].label} below to let it.`
+                    : `Connect ${WORKS_WITH[need.kind].label} to let it.`}
+                </span>
+              </div>
+            ))}
             <div className="col" style={{ gap: 6 }}>
               {connections.map((connection) => {
                 const on = reaches(draft.allowed_connection_ids, connection.id);
@@ -820,6 +854,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
       onClose={() => closeTo(current?.id ?? null)}
       onDelete={current && !current.is_default ? () => setDeleting(current) : undefined}
       worksWith={!current && seed ? seed.works_best_with : undefined}
+      reliesOn={!current && seed ? seed.relies_on : undefined}
     />
   ) : undefined;
 

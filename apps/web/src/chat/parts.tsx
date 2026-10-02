@@ -1090,7 +1090,13 @@ export function describeAction(action: LedgerAction): string {
   if (typeof payload.summary === 'string' && payload.summary) return `“${payload.summary}”`;
   const kind = typeof action.kind === 'string' ? action.kind : '';
   const path = typeof payload.path === 'string' ? payload.path : null;
-  if (path && /^files\./.test(kind)) return `saving “${plainTitle(path.split('/').pop() ?? path)}”`;
+  if (path && /^files\./.test(kind)) {
+    const name = `“${plainTitle(path.split('/').pop() ?? path)}”`;
+    if (kind === 'files.read') return `reading ${name}`;
+    if (kind === 'files.list') return `looking in ${name}`;
+    if (kind === 'files.move') return `moving ${name}`;
+    return `saving ${name}`;
+  }
   if (typeof payload.command === 'string' || /^(?:exec|sandbox|device)\./.test(kind))
     return 'a command on its computer';
   return 'one step of this task';
