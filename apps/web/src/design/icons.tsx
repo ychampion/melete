@@ -16,6 +16,8 @@ export const ICON_PATHS = {
     '<path d="M4 13H3V4h13v3"/><path d="M8 9h13v10h-4l-4 3v-3H8Z"/><path d="M12 13h5M12 15.5h3"/>',
   automations:
     '<path d="M6 7a8 8 0 0 1 13 1l1 2"/><path d="M18 17a8 8 0 0 1-13-1l-1-2"/><path d="M20 5v5h-5"/><path d="M4 19v-5h5"/><path d="m12.8 9.6-2.3 3.1h3l-2.3 3.1"/>',
+  progress:
+    '<path d="M21 12a9 9 0 1 1-9-9"/><path d="M12 7v5l3 2"/><path d="M16.6 4.1h.01"/><path d="M19.9 7.4h.01"/>',
   calendar:
     '<path d="M4 11V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4M8 2v4M16 2v4M4 9h16"/><rect x="8" y="13" width="3" height="3" rx=".6"/><path d="M15 14h1"/>',
   connectors:
@@ -134,6 +136,7 @@ const NAV: ReadonlySet<string> = new Set([
   'plans',
   'messages',
   'automations',
+  'progress',
   'calendar',
   'connectors',
   'files',

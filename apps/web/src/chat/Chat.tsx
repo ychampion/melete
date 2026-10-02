@@ -56,6 +56,7 @@ import type {
   TurnStatus,
 } from '../experience/types.ts';
 import { navigate, useRoute } from '../router.ts';
+import { RunChatCards } from '../runs/RunCards.tsx';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { shownBlocks } from './blocks.ts';
 import { CasePanel, useCase } from './CasePanel.tsx';
@@ -1049,6 +1050,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   }
                 />
               ))}
+              <RunChatCards conversationId={conversationId} refresh={transcript.status} />
               {transcript.gaps.map((gap) => (
                 <div key={`gap-${gap.after}`} className="marker" role="status">
                   <Icon name="info" size={14} />

@@ -11,7 +11,8 @@
  */
 import type { PushPayload } from '@melete/contracts';
 
-export type IntentKind = 'decision' | 'settled' | 'weekly';
+/** `progress` is news from long work: a report, or that it is done. */
+export type IntentKind = 'decision' | 'settled' | 'weekly' | 'progress';
 
 export type Waiting = {
   id: string;
@@ -96,6 +97,7 @@ export function composeBatch(waiting: Waiting[]): PushPayload {
   const decisions = waiting.filter((w) => w.kind === 'decision');
   const settled = waiting.filter((w) => w.kind === 'settled');
   const weekly = waiting.filter((w) => w.kind === 'weekly');
+  const progress = waiting.filter((w) => w.kind === 'progress');
   const title =
     decisions.length > 0
       ? decisions.length === 1
@@ -105,17 +107,22 @@ export function composeBatch(waiting: Waiting[]): PushPayload {
         ? settled.length === 1
           ? 'A chase settled'
           : `${counted(settled.length, 'chase', 'chases')} settled`
-        : (weekly[0]?.title ?? first.title);
+        : progress.length > 0
+          ? progress.length === 1
+            ? (progress[0]?.title ?? first.title)
+            : `${counted(progress.length, 'update', 'updates')} on your work`
+          : (weekly[0]?.title ?? first.title);
   const reasons = [
     decisions.length ? counted(decisions.length, 'decision waits', 'decisions wait') : null,
     settled.length ? counted(settled.length, 'chase settled', 'chases settled') : null,
+    progress.length ? counted(progress.length, 'work update', 'work updates') : null,
     weekly.length ? 'your weekly summary is ready' : null,
   ].filter(Boolean) as string[];
   const said = reasons.map((reason) => reason.replace(/^./, (c) => c.toLowerCase()));
   const listed =
     said.length > 1 ? `${said.slice(0, -1).join(', ')} and ${said[said.length - 1]}` : said[0];
   const because = `Because ${listed} since the last one.`;
-  const lead = decisions[0] ?? settled[0] ?? first;
+  const lead = decisions[0] ?? settled[0] ?? progress[0] ?? first;
   return {
     title,
     body: waiting

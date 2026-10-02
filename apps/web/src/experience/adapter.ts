@@ -93,6 +93,10 @@ import type {
   RewindTarget,
   Rule,
   RuleBounds,
+  Run,
+  RunCreate,
+  RunLimit,
+  RunRecordPage,
   SandboxComputer,
   SandboxControl,
   SearchResult,
@@ -546,6 +550,31 @@ export const adapter = {
   removeMember: (id: string) =>
     guard<{ status: 'ok' }>(() => api.DELETE('/space/members/{id}', path(id))),
   sharePlan: (id: string) => guard<never>(() => api.POST('/plans/{id}/share', path(id))),
+
+  /* ---------- long work in the background ---------- */
+  runs: (conversationId?: string) =>
+    guard<{ runs: Run[] }>(() =>
+      api.GET('/runs', {
+        params: { query: conversationId ? { conversation_id: conversationId } : {} },
+      }),
+    ),
+  run: (id: string) => guard<{ run: Run }>(() => api.GET('/runs/{id}', path(id))),
+  createRun: (body: RunCreate) => guard<{ run: Run }>(() => api.POST('/runs', { body })),
+  runRecord: (id: string, after: string | null) =>
+    guard<RunRecordPage>(() =>
+      api.GET('/runs/{id}/record', {
+        params: { path: { id }, query: after ? { after } : {} },
+      }),
+    ),
+  exportRun: (id: string) =>
+    guard<{ markdown: string }>(() => api.GET('/runs/{id}/export', path(id))),
+  messageRun: (id: string, text: string) =>
+    guard<{ run: Run }>(() => api.POST('/runs/{id}/message', { ...path(id), body: { text } })),
+  pauseRun: (id: string) => guard<{ run: Run }>(() => api.POST('/runs/{id}/pause', path(id))),
+  resumeRun: (id: string) => guard<{ run: Run }>(() => api.POST('/runs/{id}/resume', path(id))),
+  stopRun: (id: string) => guard<{ run: Run }>(() => api.POST('/runs/{id}/stop', path(id))),
+  setRunLimit: (id: string, limit: RunLimit | null) =>
+    guard<{ run: Run }>(() => api.PUT('/runs/{id}/limit', { ...path(id), body: { limit } })),
 
   /* ---------- routines, connections, browser, search ---------- */
   automations: () => guard<{ automations: Automation[] }>(() => api.GET('/automations')),

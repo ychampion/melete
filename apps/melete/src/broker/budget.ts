@@ -38,8 +38,9 @@ async function positionLocked(
     coalesce(sum(coalesce(settled, reserved)), 0)::float8 as job_used,
     coalesce(sum(case when attempt_id = ${claims.attempt_id} then coalesce(settled, reserved) else 0 end), 0)::float8 as attempt_used
     from budget_ledger where job_id = ${job.id} and kind = ${kind}
-    and (not exists(select 1 from job j where j.id = ${job.id} and j.kind in ('chat', 'routine'))
-      or attempt_id in (select a.id from attempt a join job j on j.id = a.job_id where j.id = ${job.id} and a.turn_id = j.current_turn_id))
+    and (not exists(select 1 from job j where j.id = ${job.id} and j.kind in ('chat', 'routine', 'run', 'run_step'))
+      or attempt_id in (select a.id from attempt a join job j on j.id = a.job_id where j.id = ${job.id} and a.turn_id = j.current_turn_id)
+      or (attempt_id = ${claims.attempt_id} and exists(select 1 from job j where j.id = ${job.id} and j.kind in ('run', 'run_step'))))
     and (${kind !== 'calls'} or (action_id is null) = ${modelCall})`;
   return {
     limit,

@@ -248,7 +248,7 @@ export class PushService {
     // A kind turned off stops what of it was still waiting.
     const off: IntentKind[] = [
       ...(next.decisions ? [] : (['decision'] as const)),
-      ...(next.settled ? [] : (['settled'] as const)),
+      ...(next.settled ? [] : (['settled', 'progress'] as const)),
       ...(next.weeklySummary ? [] : (['weekly'] as const)),
     ];
     if (off.length) await this.dropWaiting(principalId, off);
@@ -427,7 +427,7 @@ export class PushService {
     // Only the kinds turned on, whatever was recorded around the moment one went off.
     const on: IntentKind[] = [
       ...(pacing.decisions ? (['decision'] as const) : []),
-      ...(pacing.settled ? (['settled'] as const) : []),
+      ...(pacing.settled ? (['settled', 'progress'] as const) : []),
       ...(pacing.weeklySummary ? (['weekly'] as const) : []),
     ];
     const waiting = on.length

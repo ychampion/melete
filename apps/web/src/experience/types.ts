@@ -135,6 +135,13 @@ export type ProfileInput = Body<paths['/profile'], 'patch'>;
 export type Automation = Success<Ok<paths['/automations'], 'get'>>['automations'][number];
 export type AutomationRun = Automation['runs'][number];
 export type AutomationCreate = Body<paths['/automations'], 'post'>;
+/** Long work an assistant keeps at in the background, and what it has done so far. */
+export type Run = Success<Ok<paths['/runs/{id}'], 'get'>>['run'];
+export type RunStatus = Run['status'];
+export type RunEntry = Success<Ok<paths['/runs/{id}/record'], 'get'>>['entries'][number];
+export type RunRecordPage = Success<Ok<paths['/runs/{id}/record'], 'get'>>;
+export type RunCreate = Body<paths['/runs'], 'post'>;
+export type RunLimit = NonNullable<Run['limit']>;
 export type Connection = Success<
   Ok<paths['/experience/connections'], 'get'>
 >['connections'][number];

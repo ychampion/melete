@@ -9,6 +9,7 @@ import {
   dedupKey,
   inputTokenCeiling,
   isOutcomeEnvelope,
+  isRunKind,
   isTerminal,
   type JobState,
   type JsonObject,
@@ -20,6 +21,7 @@ import {
   type RuntimeAdapter,
   type RuntimeEvent,
   responsibilityAttemptOutcome,
+  runScopes,
   runtimeEvent,
   type SchedulingClass,
   type TransitionInput,
@@ -51,6 +53,7 @@ import { stopModelCalls } from '../gateway/inflight.ts';
 import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { spaceAuthority } from '../principals/authority.ts';
+import type { RunService } from '../runs/service.ts';
 import { browserEventForPersistence, isBrowserTool } from '../workers/browser/privacy.ts';
 import { type AnswerJoin, answerJoin } from './answer-join.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
@@ -150,6 +153,8 @@ export class AttemptRunner {
   onWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
   onApprovalWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
   afterRecovery?: () => Promise<void>;
+  /** Long work: decides between shifts what a run's ended attempt stands for. */
+  runs?: RunService;
   /**
    * Called once an attempt this process ran has ended, however it ended:
    * finished, stopped, fenced, lost or cut short by shutdown. Outside any
@@ -262,10 +267,14 @@ export class AttemptRunner {
         access.principalId
           ? { live_connection_scopes: true }
           : {}),
-        scopes: this.options.scopes ??
-          (await this.options.scopesForJob?.(tx, row)) ?? [
-            ...new Set(available.flatMap((item) => item.scopes)),
-          ],
+        scopes: [
+          ...new Set([
+            ...(this.options.scopes ??
+              (await this.options.scopesForJob?.(tx, row)) ??
+              available.flatMap((item) => item.scopes)),
+            ...(this.runs ? runScopes(row.kind) : []),
+          ]),
+        ],
         budget: {
           max_actions: budget.max_actions,
           max_output_tokens: budget.max_output_tokens,
@@ -354,6 +363,14 @@ export class AttemptRunner {
         payload: { epoch, revision: row.revision },
         dedupKey: `${attemptId}:started`,
       });
+      // Long work whose result has been through its check is given it here,
+      // by an attempt that only records it: nothing for a model to do.
+      const settled =
+        this.runs && isRunKind(row.kind) ? await this.runs.settle(tx, row, attemptId) : null;
+      if (settled) {
+        await this.finish(tx, row, attemptId, settled);
+        return null;
+      }
       // The skills went into the instructions, where no tool call shows them.
       const followed = skillTraceCall(attemptId, bundle.skills, await databaseNow(tx));
       if (followed)
@@ -624,10 +641,10 @@ export class AttemptRunner {
             : undefined,
         ),
       );
-    const remaining = Math.max(
-      0,
-      jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0),
-    );
+    const shifts = this.runs && isRunKind(row.kind) ? this.runs : null;
+    const remaining = shifts
+      ? await shifts.failuresRemaining(tx, row, jobBudget.parse(row.budget))
+      : Math.max(0, jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0));
     const [reconnect] = await tx
       .select({ text: question.text })
       .from(question)
@@ -685,11 +702,14 @@ export class AttemptRunner {
       });
     // A runtime's final prose cannot withdraw the broker's unanswered revocation
     // question, even on the last budgeted attempt. Only owner input resolves it.
+    // Long work decides from its record what a shift's ending stands for.
+    const shifted =
+      shifts && !brokerParked ? await shifts.shiftEnded(tx, row, attemptId, restored) : restored;
     const outcome: AttemptOutcome = reconnect
       ? { kind: 'waiting_for_input', question: reconnect.text }
-      : remaining === 0 && restored.kind.startsWith('waiting_')
+      : remaining === 0 && shifted.kind.startsWith('waiting_') && !shifts
         ? { kind: 'budget_exhausted', summary: 'The job has used its attempt budget.' }
-        : restored;
+        : shifted;
     let input: TransitionInput;
     let wait: WaitSpec = { kind: 'none' };
     let artifactFailures: string[] = [];
@@ -1064,6 +1084,16 @@ export class AttemptRunner {
     attemptId: string,
     reason: string,
   ): Promise<boolean> {
+    // Long work that gave its result before the attempt was lost is done with
+    // that result: running the shift again could only repeat it.
+    const given =
+      this.runs && isRunKind(row.kind) && row.state === 'running'
+        ? await this.runs.recordedFinish(tx, row, attemptId)
+        : null;
+    if (given) {
+      await this.finish(tx, row, attemptId, given);
+      return true;
+    }
     const [counts] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(attempt)
@@ -1086,28 +1116,50 @@ export class AttemptRunner {
       })
       .where(eq(attempt.id, attemptId));
     await this.gap(tx, attemptId, row.id, 'lost');
-    const remaining = Math.max(
-      0,
-      jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0),
-    );
+    const run = this.runs && isRunKind(row.kind) ? this.runs : null;
+    const remaining = run
+      ? await run.failuresRemaining(tx, row, jobBudget.parse(row.budget))
+      : Math.max(0, jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0));
     // A routine whose run is lost for good goes back to its schedule.
     const rest = row.state === 'running' && remaining === 0 ? await routineRest(tx, row) : null;
     const moved =
       row.state !== 'running'
         ? row
-        : rest
+        : // A helper has nobody to ask; it fails below and its run hears why.
+          run && remaining === 0 && row.kind === 'run'
           ? await this.jobs.move(
               tx,
               row,
-              { kind: 'attempt_waiting_for_event_or_time' },
-              { attemptId, wait: rest, reason: 'recovery' },
+              { kind: 'attempt_waiting_for_input' },
+              {
+                attemptId,
+                wait: {
+                  kind: 'user_input',
+                  question:
+                    'My work on this keeps getting interrupted. Say "continue" to try again.',
+                },
+                reason: 'recovery',
+              },
             )
-          : await this.jobs.move(
-              tx,
-              row,
-              { kind: 'attempt_failed', retryable: true, attempts_remaining: remaining },
-              { attemptId, reason: 'recovery' },
-            );
+          : rest
+            ? await this.jobs.move(
+                tx,
+                row,
+                { kind: 'attempt_waiting_for_event_or_time' },
+                { attemptId, wait: rest, reason: 'recovery' },
+              )
+            : await this.jobs.move(
+                tx,
+                row,
+                { kind: 'attempt_failed', retryable: true, attempts_remaining: remaining },
+                { attemptId, reason: 'recovery' },
+              );
+    if (run && moved.kind === 'run_step' && moved.state === 'failed')
+      await run.stepEnded(tx, moved, {
+        kind: 'failed',
+        retryable: false,
+        reason: 'Its work kept getting interrupted.',
+      });
     // A conversation whose last attempt was lost has ended: its turn says so,
     // in the saved copy and on the stream, instead of looking busy for ever.
     // So has a routine's run that went back to its schedule.
