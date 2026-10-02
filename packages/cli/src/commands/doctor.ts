@@ -18,14 +18,9 @@ import {
   remoteEngineHost,
 } from '../../../../apps/melete/src/runtime/docker-host.ts';
 import { freeSpace } from '../../../../deploy/scripts/status.ts';
-import type { Context } from '../context.ts';
+import type { Context, PortProbe } from '../context.ts';
 import { composeCommand, type DeployConfig } from '../deploy-config.ts';
-import {
-  type Installation,
-  isLoopback,
-  publishedPorts,
-  readInstallation,
-} from '../installation.ts';
+import { type Installation, publishedPorts, readInstallation } from '../installation.ts';
 import { EXIT, type ExitCode, type Result, renderReport, report } from '../schema.ts';
 import { judgeContract } from './check.ts';
 
@@ -33,13 +28,30 @@ const MB = 1024 ** 2;
 
 export type PortFact = {
   service: string;
+  /** The address Compose publishes on, as declared; `0.0.0.0` for every address. */
   host: string;
-  port: number;
-  /** Nothing listens there yet. */
-  free: boolean;
-  /** One of this project's containers publishes it. */
-  ours: boolean;
+  /** A port, or a range too wide to probe one by one. */
+  port: string;
+  /**
+   * What a connection found, or `ours` when one of this project's containers
+   * already publishes it, or `range` for a range that was not probed.
+   */
+  probe: PortProbe | 'ours' | 'range';
 };
+
+/** The widest published range probed port by port. */
+export const MAX_PROBED_RANGE = 64;
+
+/** `3100` or `3100-3105` as the ports in it; null for a range wider than MAX_PROBED_RANGE or for text that is not a port. */
+export function expandPublished(published: string): number[] | null {
+  const match = /^(\d+)(?:-(\d+))?$/.exec(published.trim());
+  if (!match) return null;
+  const first = Number(match[1]);
+  const last = match[2] === undefined ? first : Number(match[2]);
+  if (first <= 0 || last < first || last > 65_535 || last - first + 1 > MAX_PROBED_RANGE)
+    return null;
+  return Array.from({ length: last - first + 1 }, (_, index) => first + index);
+}
 
 export type DoctorFacts = {
   config: DeployConfig;
@@ -126,27 +138,7 @@ export function judgeDoctor(facts: DoctorFacts): Result[] {
       level: 'warn',
       detail: 'Without deploy/.env the ports are not known.',
     });
-  else
-    for (const port of facts.ports)
-      results.push(
-        port.free || port.ours
-          ? {
-              id: `ports.${port.port}`,
-              level: 'ok',
-              detail: port.ours
-                ? `${port.host}:${port.port} is ${port.service}'s, already running.`
-                : `${port.host}:${port.port} is free for ${port.service}.`,
-            }
-          : {
-              id: `ports.${port.port}`,
-              level: 'fail',
-              detail: `Another program listens on ${port.host}:${port.port}, which ${port.service} publishes.`,
-              fix:
-                port.service === 'web'
-                  ? 'Stop that program, or choose another port with bun run melete set WEB_PORT=<port>.'
-                  : 'Stop that program, or choose another port with bun run melete set MELETE_PORT=<port>.',
-            },
-      );
+  else for (const port of facts.ports) results.push(judgePort(port));
 
   if (facts.images === null)
     results.push({
@@ -183,6 +175,44 @@ export function judgeDoctor(facts: DoctorFacts): Result[] {
           },
     );
   return results;
+}
+
+function judgePort(port: PortFact): Result {
+  const id = `ports.${port.port.replace(/[^0-9]+/g, '_')}`;
+  const where = `${port.host}:${port.port}`;
+  const setting = port.service === 'web' ? 'WEB_PORT' : 'MELETE_PORT';
+  switch (port.probe) {
+    case 'ours':
+      return { id, level: 'ok', detail: `${where} is ${port.service}'s, already running.` };
+    case 'free':
+      return { id, level: 'ok', detail: `${where} is free for ${port.service}.` };
+    case 'in_use':
+      return {
+        id,
+        level: 'fail',
+        detail: `Another program listens on ${where}, which ${port.service} publishes.`,
+        fix: `Stop that program, or choose another port with bun run melete set ${setting}=<port>.`,
+      };
+    case 'no_address':
+      return {
+        id,
+        level: 'fail',
+        detail: `${port.host} is not an address of this machine, so ${port.service} cannot be published on ${where}.`,
+        fix: 'Publish it on 127.0.0.1 or an address this machine has.',
+      };
+    case 'range':
+      return {
+        id,
+        level: 'warn',
+        detail: `${port.service} publishes the range ${where}, wider than the ${MAX_PROBED_RANGE} ports probed one by one.`,
+      };
+    default:
+      return {
+        id,
+        level: 'warn',
+        detail: `Nothing answered on ${where} in time, so whether it is free is not known.`,
+      };
+  }
 }
 
 /** `docker compose ps --format json` rows' published host ports. */
@@ -248,16 +278,20 @@ export async function gatherDoctor(
       const ours = ps.code === 0 ? publishedByProject(ps.stdout) : new Set<number>();
       facts.ports = [];
       for (const port of publishedPorts(installation)) {
-        const number = Number(port.published);
-        if (!Number.isInteger(number) || number <= 0) continue;
-        const address = isLoopback(port.hostIp) ? (port.hostIp as string) : '0.0.0.0';
-        facts.ports.push({
-          service: port.service,
-          host: address === 'localhost' ? '127.0.0.1' : address,
-          port: number,
-          ours: ours.has(number),
-          free: ours.has(number) ? false : await context.portFree(address, number),
-        });
+        const host = port.hostIp === null || port.hostIp === '' ? '0.0.0.0' : port.hostIp;
+        const numbers = expandPublished(port.published);
+        if (numbers === null) {
+          if (/^\d+-\d+$/.test(port.published.trim()))
+            facts.ports.push({ service: port.service, host, port: port.published, probe: 'range' });
+          continue;
+        }
+        for (const number of numbers)
+          facts.ports.push({
+            service: port.service,
+            host,
+            port: String(number),
+            probe: ours.has(number) ? 'ours' : await context.probePort(host, number),
+          });
       }
     }
   }

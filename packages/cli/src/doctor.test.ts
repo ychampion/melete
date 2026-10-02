@@ -1,8 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { type AddressInfo, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type DoctorFacts, judgeDoctor, publishedByProject, runDoctor } from './commands/doctor.ts';
+import {
+  type DoctorFacts,
+  expandPublished,
+  judgeDoctor,
+  publishedByProject,
+  runDoctor,
+} from './commands/doctor.ts';
+import { probePort } from './context.ts';
 import { defaultDeployConfig } from './deploy-config.ts';
 import { reportSchema } from './schema.ts';
 import { changingCalls, ok, temporaryDeployDir, testContext, writeEnv } from './testing.ts';
@@ -19,8 +27,8 @@ const healthy: DoctorFacts = {
   freeBytes: 20_000 * MB,
   memoryBytes: 8192 * MB,
   ports: [
-    { service: 'melete', host: '127.0.0.1', port: 3100, free: true, ours: false },
-    { service: 'web', host: '127.0.0.1', port: 3101, free: true, ours: false },
+    { service: 'melete', host: '127.0.0.1', port: '3100', probe: 'free' },
+    { service: 'web', host: '127.0.0.1', port: '3101', probe: 'free' },
   ],
   images: [{ name: 'ghcr.io/ychampion/melete-service:main', present: true }],
   registry: {
@@ -57,8 +65,8 @@ describe('melete doctor', () => {
     const taken = {
       ...healthy,
       ports: [
-        { service: 'melete', host: '127.0.0.1', port: 3100, free: false, ours: true },
-        { service: 'web', host: '127.0.0.1', port: 3101, free: false, ours: false },
+        { service: 'melete', host: '127.0.0.1', port: '3100', probe: 'ours' as const },
+        { service: 'web', host: '127.0.0.1', port: '3101', probe: 'in_use' as const },
       ],
     };
     expect(find(taken, 'ports.3100')?.level).toBe('ok');
@@ -66,6 +74,46 @@ describe('melete doctor', () => {
       level: 'fail',
       fix: expect.stringContaining('WEB_PORT'),
     });
+  });
+
+  test('an address this machine lacks, an unanswered probe and a wide range are each named', () => {
+    const facts = {
+      ...healthy,
+      ports: [
+        { service: 'melete', host: '::1', port: '3100', probe: 'no_address' as const },
+        { service: 'web', host: '127.0.0.1', port: '3101', probe: 'unknown' as const },
+        { service: 'web', host: '0.0.0.0', port: '4000-5000', probe: 'range' as const },
+      ],
+    };
+    expect(find(facts, 'ports.3100')).toMatchObject({
+      level: 'fail',
+      detail: expect.stringContaining('::1 is not an address of this machine'),
+    });
+    expect(find(facts, 'ports.3101')?.level).toBe('warn');
+    expect(find(facts, 'ports.4000_5000')?.level).toBe('warn');
+  });
+
+  test('a published range is probed port by port up to its limit', () => {
+    expect(expandPublished('3100-3102')).toEqual([3100, 3101, 3102]);
+    expect(expandPublished('8080')).toEqual([8080]);
+    expect(expandPublished('4000-5000')).toBeNull();
+    expect(expandPublished('')).toBeNull();
+  });
+
+  test('the probe connects and never binds: a listener reads as in use, a closed port as free', async () => {
+    const server = createServer(() => {});
+    await new Promise<void>((settle) => server.listen(0, '127.0.0.1', () => settle()));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      expect(await probePort('127.0.0.1', port)).toBe('in_use');
+      // A wildcard publication is probed through loopback.
+      expect(await probePort('0.0.0.0', port)).toBe('in_use');
+    } finally {
+      await new Promise((settle) => server.close(settle));
+    }
+    expect(await probePort('127.0.0.1', port)).toBe('free');
+    // An address that is not this machine's is not connected to at all.
+    expect(await probePort('192.0.2.10', port)).toBe('no_address');
   });
 
   test('a missing image or an unreachable registry warns rather than fails', () => {
@@ -111,9 +159,9 @@ describe('melete doctor', () => {
         ['docker image inspect', ok('sha256:abc')],
       ],
       {
-        portFree: async (host, port) => {
+        probePort: async (host, port) => {
           probed.push(`${host}:${port}`);
-          return port !== 3101;
+          return port === 3101 ? 'in_use' : 'free';
         },
         fetch: async (url) => {
           fetched.push(url);

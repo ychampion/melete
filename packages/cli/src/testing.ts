@@ -114,7 +114,7 @@ export function testContext(
       exists: () => false,
       installed: () => [],
     },
-    portFree: async () => true,
+    probePort: async () => 'free',
     fetch: async () => new Response(null, { status: 401 }),
     out: (text) => out.push(text),
     err: (text) => err.push(text),
