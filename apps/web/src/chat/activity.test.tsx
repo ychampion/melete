@@ -1,15 +1,15 @@
 /**
- * The activity above an answer: tool entries become rows as they start and
- * finish in place, out-of-order copies never take a finished row back, the
- * model's reasoning closes between rows, and a failure says why in red.
+ * A turn's activity: tool entries become rows as they start and finish in
+ * place, out-of-order copies never take a finished row back, and a failure
+ * says it did not work.
  */
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { applyEvent, applyEvents, fromTurns, newerTool } from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
 import type { ExperienceEvent, Turn } from '../experience/types.ts';
-import { ActivityRow, duration, toolDuration } from './activity.tsx';
-import { Trail } from './parts.tsx';
+import { WorkGroup, WorkLine, WorkLog } from './WorkLog.tsx';
+import { layoutTurn } from './worklog.ts';
 
 const AT = '2026-10-01T09:00:00.000Z';
 const at = (seconds: number) => new Date(Date.parse(AT) + seconds * 1000).toISOString();
@@ -108,10 +108,17 @@ test('an approval waits on its row, then the row finishes when the person decide
   let transcript = fromTurns([TURN], 'pause', 'working');
   transcript = applyEvent(transcript, tool(waiting));
   expect(transcript.approvals['action:act_9']).toBe('apr_1');
+  const waitingTurn = only(transcript.turns[0]);
   const html = renderToStaticMarkup(
-    <Trail turn={only(transcript.turns[0])} now={Date.parse(at(5))} />,
+    <WorkLog
+      turn={waitingTurn}
+      now={Date.parse(at(5))}
+      items={layoutTurn(waitingTurn).log}
+      finished={false}
+      renderBlock={() => null}
+    />,
   );
-  expect(html).toContain('aria-label="Waiting for you"');
+  expect(html).toContain('>Waiting for you<');
   transcript = applyEvent(
     transcript,
     tool({
@@ -197,67 +204,58 @@ const runOf = () => {
   return { turn: only(transcript.turns[0]), rows };
 };
 
-test('a finished run closes to how long it worked and how many steps', () => {
+test('a finished run folds to how long it worked', () => {
   const { turn } = runOf();
-  const html = renderToStaticMarkup(<Trail turn={turn} now={Date.parse(at(20))} answering />);
+  const html = renderToStaticMarkup(
+    <WorkLog
+      turn={turn}
+      now={Date.parse(at(20))}
+      items={layoutTurn(turn).log}
+      finished
+      renderBlock={() => null}
+    />,
+  );
   expect(html).toContain('Worked for 12s');
-  expect(html).toContain('5 steps');
-  expect(html).toContain('1 didn’t work');
   expect(html).toContain('aria-expanded="false"');
   expect(html).not.toContain('Read page idealista.pt/rent');
 });
 
-test('opened, each row has its title, time and status, and a failure says why', () => {
-  const { turn } = runOf();
-  const opened = { ...turn, trail: turn.trail };
-  // A chase that continued after it settled stays open; here the person opens it.
-  const html = renderToStaticMarkup(
-    <Trail turn={{ ...opened, status: 'working' }} now={Date.parse(at(20))} />,
-  );
+test('opened, the work says what it was, and a failure says it did not work', () => {
+  const { rows } = runOf();
+  const work = rows.map((tool) => ({ type: 'tool' as const, tool }));
+  const html = renderToStaticMarkup(<WorkGroup work={work} live={false} initiallyOpen />);
+  expect(html).toContain('Searched the web, read pages, ran a command, edited a file');
   expect(html).toContain('Searched the web for “rent Lisbon”');
-  expect(html).toContain('Ran <code class="act-code">python report.py</code> in its computer');
-  expect(html).toContain('2 s');
-  expect(html).toContain('5 s');
-  expect(html).toContain('aria-label="Did not happen"');
-  expect(html).toContain('class="act-reason">This did not go through.');
-  // Reasoning is a closed block, not the main content.
-  expect(html).toContain('>Thinking<');
+  expect(html).toContain('Ran <code class="log-code">python report.py</code> in its computer');
+  expect(html).toContain('1 didn’t work');
+  expect(html).toContain('Didn’t work');
   expect(html).not.toContain('Search, read, run, write.');
 });
 
-test('an opened row shows input and output as plain monospace text, cut until asked', () => {
+test('an opened row shows its output as plain monospace text', () => {
   const { rows } = runOf();
   const html = renderToStaticMarkup(
-    <ActivityRow tool={only(rows[3])} now={Date.parse(at(20))} live={false} initiallyOpen />,
+    <WorkLine work={{ type: 'tool', tool: only(rows[3]) }} live={false} initiallyOpen />,
   );
-  expect(html).toContain('class="act-pre"');
+  expect(html).toContain('class="log-shell-pre"');
   expect(html).toContain('python report.py');
-  expect(html).toContain('Show more');
-  expect(html).toContain('row 5');
-  expect(html).not.toContain('row 6');
+  expect(html).toContain('row 11');
   // Outside text is never markup.
   expect(html).toContain('&lt;b&gt;ok&lt;/b&gt;');
-  // The summary's quote is not repeated when the excerpt shows it.
-  expect(html).not.toContain('<q');
   const page = renderToStaticMarkup(
-    <ActivityRow tool={only(rows[1])} now={0} live={false} initiallyOpen />,
+    <WorkLine work={{ type: 'tool', tool: only(rows[1]) }} live={false} initiallyOpen />,
   );
   expect(page).toContain('href="https://idealista.pt/rent"');
   expect(page).toContain('rel="noreferrer"');
   const file = renderToStaticMarkup(
-    <ActivityRow tool={only(rows[4])} now={0} live={false} initiallyOpen />,
+    <WorkLine work={{ type: 'tool', tool: only(rows[4]) }} live={false} initiallyOpen />,
   );
   expect(file).toContain('Download the file');
 });
 
-test('a running row counts its time and animates while the turn runs', () => {
+test('a running row spins while the turn runs', () => {
   const running = entry('call:a:1', {});
-  const html = renderToStaticMarkup(
-    <ActivityRow tool={running} now={Date.parse(at(7))} live={true} />,
-  );
-  expect(html).toContain('data-current="true"');
-  expect(html).toContain('7 s');
-  expect(toolDuration(running, Date.parse(at(7)))).toBe('7 s');
-  expect(duration(400)).toBe('0.4 s');
-  expect(duration(65_000)).toBe('1 m 5 s');
+  const html = renderToStaticMarkup(<WorkLine work={{ type: 'tool', tool: running }} live />);
+  expect(html).toContain('class="spin"');
+  expect(html).toContain('Searching the web for “rent Lisbon”');
 });

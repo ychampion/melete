@@ -1096,3 +1096,124 @@ def test_the_model_is_offered_a_terminal_beside_a_paired_computer(hermes_home, m
         terminal_env_registry._registry.reset_for_tests()
         server.shutdown()
         server.server_close()
+
+
+# --- Probe: a screenshot reaches the provider as a picture -------------------
+# agent/tool_executor.py:1025 hands each tool result to
+# agent/vision_message_prep.py:206 `_tool_result_content_for_active_model`,
+# which sends the plugin's multimodal envelope as an image part only when
+# `_model_supports_vision` (agent/image_routing.py:315, reading
+# `model.supports_vision` first) says so, and its text summary otherwise. The
+# probe runs one real engine turn: the model asks for a screenshot, the
+# plugin's own result path answers it from a broker stand-in, and a recording
+# provider shows what the engine sent next.
+
+
+class _ScriptedProvider(http.server.BaseHTTPRequestHandler):
+    """Asks for one screenshot, then ends the turn; records every request."""
+
+    def do_POST(self):  # noqa: N802 - http.server's name
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.server.captured.append(body)
+        first = len(self.server.captured) == 1
+        delta = (
+            {"role": "assistant", "tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+             "function": {"name": self.server.tool, "arguments": "{\"step\": 1}"}}]}
+            if first else {"role": "assistant", "content": "done"})
+        chunks = [
+            {"choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if first else "stop"}]},
+            {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}},
+        ]
+        frame = {"id": "probe", "object": "chat.completion.chunk", "created": 0, "model": "probe-model"}
+        out = "".join(f"data: {json.dumps({**frame, **c})}\n\n" for c in chunks) + "data: [DONE]\n\n"
+        payload = out.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args):
+        return
+
+
+class _ScreenshotBroker:
+    """The broker as the plugin sees it for one succeeded screenshot."""
+
+    def __init__(self, tool: str, picture: bytes) -> None:
+        self.tool, self.picture = tool, picture
+
+    def propose(self, **_kw):
+        return {"action_id": "act_01PROBESHOT", "status": "succeeded"}
+
+    def action(self, action_id):
+        return {"receipt": {"action_id": action_id, "connection_id": "con_probe", "external_ref": None,
+                            "detail": {"path": "device/screenshot-act_01PROBESHOT.png",
+                                       "width": 1600, "height": 1000}}}
+
+    def screenshot(self, action_id):
+        return self.picture if action_id == "act_01PROBESHOT" else None
+
+
+@pytest.mark.parametrize("tool", ["computer.screenshot", "device.screenshot"])
+@pytest.mark.parametrize(("vision", "expect_picture"), [(True, True), (False, False)])
+def test_a_screenshot_reaches_the_provider_as_a_picture_only_for_a_vision_model(
+    hermes_home, monkeypatch, tool, vision, expect_picture,
+):
+    import io
+
+    from PIL import Image
+
+    from melete_plugin import build_handler, engine_result
+    from run_agent import AIAgent
+    from tools.registry import registry
+
+    monkeypatch.setenv("MELETE_ENGINE_SUPPORTS_VISION", "1" if vision else "0")
+    monkeypatch.setenv("MELETE_MODEL_KEY", "melete-surrogate-probe")
+    out = io.BytesIO()
+    Image.new("RGB", (1600, 1000), (255, 128, 0)).save(out, format="PNG")
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _ScriptedProvider)
+    server.captured, server.tool = [], tool
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/v1"
+    try:
+        config = shipped_config()
+        # The model is one the engine's catalog does not know: only the
+        # configuration Melete writes says whether it reads images.
+        config["model"].update({"default": "probe-model", "supports_vision": vision})
+        config["providers"]["melete-gateway"].update({"base_url": base, "default_model": "probe-model"})
+        write_config(hermes_home, config)
+
+        client = _ScreenshotBroker(tool, out.getvalue())
+        spec = {"name": tool, "connection_id": "con_probe", "effect_class": "read",
+                "input_schema": {"type": "object", "properties": {"step": {"type": "integer"}}}}
+        forward = build_handler(client, spec)
+        registry.register(name=tool, toolset="melete",
+                          schema={"description": "Take a screenshot.", "parameters": spec["input_schema"]},
+                          handler=lambda args=None, **_kw: engine_result(tool, forward(args), client))
+        try:
+            agent = AIAgent(base_url=base, api_key="melete-surrogate-probe", provider="custom",
+                            requested_provider="melete-gateway", model="probe-model",
+                            api_mode="chat_completions", enabled_toolsets=["melete"], quiet_mode=True,
+                            skip_context_files=True, skip_memory=True, max_iterations=4)
+            agent.run_conversation("take a screenshot")
+        finally:
+            registry.deregister(tool)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert len(server.captured) >= 2, "the engine never sent the tool result back"
+    [result] = [m for m in server.captured[1]["messages"] if m.get("role") == "tool"]
+    content = result["content"]
+    if expect_picture:
+        assert isinstance(content, list), f"no picture was sent: {str(content)[:200]}"
+        assert [part["type"] for part in content] == ["text", "image_url"]
+        assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    else:
+        assert isinstance(content, str) and "image_url" not in content
+        assert "act_01PROBESHOT" in content

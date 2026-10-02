@@ -33,10 +33,18 @@ export const models = {
     call<ModelSettings>(`/model-settings/keys/${provider(name)}`, { method: 'PUT', body: input }),
   removeKey: (name: ModelProvider) =>
     call<ModelSettings>(`/model-settings/keys/${provider(name)}`, { method: 'DELETE' }),
-  choose: (name: ModelProvider, model: string) =>
+  /**
+   * Use a model. `supportsVision` is the owner's word on whether it reads
+   * images; null hands it back to Melete's list, and leaving it out does too.
+   */
+  choose: (name: ModelProvider, model: string, supportsVision?: boolean | null) =>
     call<ModelSettings>('/model-settings/default', {
       method: 'PUT',
-      body: { provider: name, model },
+      body: {
+        provider: name,
+        model,
+        ...(supportsVision === undefined ? {} : { supports_vision: supportsVision }),
+      },
     }),
   restoreServerDefault: () => call<ModelSettings>('/model-settings/default', { method: 'DELETE' }),
 

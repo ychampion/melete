@@ -35,7 +35,6 @@ import {
 } from '../experience/hooks.ts';
 import { Outbox } from '../experience/outbox.ts';
 import {
-  answerOf,
   latestTurn,
   markPermission,
   markQuestion,
@@ -43,6 +42,7 @@ import {
   reactionMessageSeq,
   setDrafts,
   type TranscriptTurn,
+  type TurnBlock,
   turnIndexForReaction,
 } from '../experience/reduce.ts';
 import { shortTitle } from '../experience/title.ts';
@@ -73,7 +73,6 @@ import {
   Questionnaire,
   ReceiptRow,
   ResultCard,
-  Trail,
   TurnAvatar,
   UnknownCard,
   UserBubble,
@@ -81,13 +80,14 @@ import {
 import { pauseOrStop } from './pause.ts';
 import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
+import { AgentLine, LogEntries, WorkLog } from './WorkLog.tsx';
+import { FINISHED, finalText, foldedTurns, layoutTurn } from './worklog.ts';
 import './chat.css';
 
 /** One-tap changes to a draft waiting on a decision; each is sent as the person's next message. */
 const QUICK_EDITS = ['Make it firmer', 'Shorter'] as const;
 
 const WORKING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
-const FINISHED: TurnStatus[] = ['done', 'stopped', 'failed'];
 
 function titleFor(text: string): string {
   return shortTitle(text) || 'New chat';
@@ -290,6 +290,7 @@ function TurnView({
   onReact,
   busy,
   onRetry,
+  conversationAgentId,
 }: {
   turn: TranscriptTurn;
   now: number;
@@ -312,16 +313,18 @@ function TurnView({
   busy: (id: string) => boolean;
   /** Resend this turn's message when it failed to send. */
   onRetry?: (localId: string) => void;
+  /** The agent the chat belongs to; a turn answered by another one says so. */
+  conversationAgentId: string | null;
 }) {
   const { agents, removedAgents } = useApp();
   const { transcript } = useTranscript();
   const agent = turnAgent(agents, removedAgents, turn.turn.agent_id);
   const finished = FINISHED.includes(turn.status);
-  const text = answerOf(turn);
   const open = openQuestion(transcript);
-  const showText = text.length > 0 || turn.streaming;
 
-  const rendered = shownBlocks(turn.blocks).map((block) => {
+  const shown = new Set(shownBlocks(turn.blocks));
+  const renderBlock = (block: TurnBlock) => {
+    if (!shown.has(block)) return null;
     switch (block.type) {
       case 'card': {
         const handle =
@@ -329,7 +332,6 @@ function TurnView({
         const draft = handle ? transcript.drafts[handle] : undefined;
         return (
           <ResultCard
-            key={block.card.id}
             card={block.card}
             draft={draft}
             touch={touch}
@@ -341,7 +343,6 @@ function TurnView({
       case 'receipt':
         return (
           <ReceiptRow
-            key={block.receipt.id}
             receipt={block.receipt}
             reversed={block.reversed}
             now={now}
@@ -352,7 +353,6 @@ function TurnView({
       case 'permission':
         return (
           <PermissionCard
-            key={block.permission.id}
             permission={block.permission}
             decided={block.decided}
             touch={touch}
@@ -366,7 +366,6 @@ function TurnView({
       case 'question':
         return (
           <Questionnaire
-            key={block.question.id}
             question={block.question}
             answered={block.answered}
             busy={busy(block.question.id)}
@@ -382,7 +381,7 @@ function TurnView({
       default:
         return null;
     }
-  });
+  };
   const unconfirmed = (unknown ?? []).map((action) => (
     <UnknownCard
       key={action.id}
@@ -390,7 +389,13 @@ function TurnView({
       onResolve={(resolution) => onResolve?.(action.id, resolution)}
     />
   ));
-  const hasBlocks = rendered.length > 0 || unconfirmed.length > 0;
+  const layout = layoutTurn(turn);
+  const nothingYet =
+    !finished && layout.log.length === 0 && !layout.answer && turn.trail.length === 0;
+  // A turn handed to another agent with @Name: that agent starts, and says when it is done.
+  const handedTo = agent && conversationAgentId && agent.id !== conversationAgentId ? agent : null;
+  const answer = finalText(turn);
+  const hasBody = unconfirmed.length > 0 || finished;
   return (
     <>
       <UserBubble
@@ -401,34 +406,57 @@ function TurnView({
       <div className="turn">
         <div className="turn-text">
           <TurnAvatar agent={agent} status={turn.status} />
-          {/* What the agent did sits above what it says. */}
-          <div className="col grow" style={{ gap: 6, paddingTop: 2, minWidth: 0 }}>
-            <Trail turn={turn} now={now} answering={showText} />
-            {showText ? (
-              <Answer text={text} streaming={turn.streaming} />
-            ) : turn.trail.length === 0 && !finished ? (
+          <div className="turn-main">
+            {handedTo ? (
+              <AgentLine
+                face={<AgentAvatar agent={handedTo} size={16} />}
+                text={`${handedTo.name} started working`}
+              />
+            ) : null}
+            <WorkLog
+              turn={turn}
+              now={now}
+              items={layout.log}
+              finished={layout.finished}
+              renderBlock={renderBlock}
+            />
+            {layout.answer ? <Answer text={layout.answer} /> : null}
+            {layout.after.length ? (
+              <LogEntries
+                items={layout.after}
+                live={false}
+                streaming={false}
+                renderBlock={renderBlock}
+              />
+            ) : null}
+            {nothingYet ? (
               <div className="col" style={{ gap: 10, paddingTop: 6 }}>
                 <div className="shimmer" style={{ height: 12, width: '82%', borderRadius: 6 }} />
                 <div className="shimmer" style={{ height: 12, width: '56%', borderRadius: 6 }} />
               </div>
             ) : null}
+            {handedTo && turn.status === 'done' ? (
+              <AgentLine
+                face={<AgentAvatar agent={handedTo} size={16} />}
+                text={`${handedTo.name} finished`}
+              />
+            ) : null}
           </div>
         </div>
-        {hasBlocks || finished ? (
+        {hasBody ? (
           <div className="turn-body">
-            {rendered}
             {unconfirmed}
             {finished ? (
               <Protected conversationId={turn.turn.conversation_id} turnId={turn.turn.id} />
             ) : null}
-            {finished && text.trim() ? (
+            {finished && answer ? (
               <ActionBar
                 turn={turn}
                 touch={touch}
                 reactions={reactions.filter((r) => r.by === 'person')}
                 onReact={onReact}
                 onCopy={() => {
-                  void navigator.clipboard?.writeText(text);
+                  void navigator.clipboard?.writeText(answer);
                   toast({ kind: 'ok', title: 'Copied' });
                 }}
               />
@@ -440,9 +468,13 @@ function TurnView({
   );
 }
 
-/** The answer, drawn from its Markdown. */
-function Answer({ text, streaming }: { text: string; streaming: boolean }) {
-  return <Markdown text={text} streaming={streaming} />;
+/** The final answer, drawn from its Markdown. */
+function Answer({ text }: { text: string }) {
+  return (
+    <div className="final-answer">
+      <Markdown text={text} streaming={false} />
+    </div>
+  );
 }
 
 /** The transcript reaches the turn views through a tiny context, to keep props short. */
@@ -551,6 +583,12 @@ export function ChatScreen({ id }: { id: string | null }) {
   const [computerOpen, setComputerOpen] = useState(false);
 
   const last = latestTurn(transcript);
+  // A long chat opens on its newest turns; the older ones are a tap away.
+  const [showAll, setShowAll] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each conversation opens folded
+  useEffect(() => setShowAll(false), [conversationId]);
+  const folded = foldedTurns(transcript.turns);
+  const hidden = showAll ? 0 : folded.count;
   const composerState = transcript.composer;
   // A spent quick edit comes free once the conversation moves on.
   useEffect(() => quick.settle(composerState), [quick, composerState]);
@@ -1026,30 +1064,45 @@ export function ChatScreen({ id }: { id: string | null }) {
                   </span>
                 </div>
               ) : null}
-              {transcript.turns.map((turn, index) => (
-                <TurnView
-                  key={turn.id}
-                  turn={turn}
-                  now={now}
-                  touch={touch}
-                  latest={turn.id === lastId}
-                  onDecide={decide}
-                  onSendDraft={sendDraft}
-                  onUndo={undo}
-                  onAnswer={answer}
-                  onOwn={(own) => void send(own)}
-                  unknown={turn.id === lastId ? unknown : undefined}
-                  onResolve={resolve}
-                  busy={(id) => flight.has(id)}
-                  onRetry={retry}
-                  reactions={reactions.filter((r) => turnIndexForReaction(transcript, r) === index)}
-                  onReact={
-                    reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
-                      ? (emoji) => react(turn, emoji)
-                      : undefined
-                  }
-                />
-              ))}
+              {folded.count > 0 && !showAll ? (
+                <button
+                  type="button"
+                  className="previous-messages"
+                  onClick={() => setShowAll(true)}
+                >
+                  {folded.messages} previous message{folded.messages === 1 ? '' : 's'}
+                  <Icon name="chevronRight" size={14} />
+                </button>
+              ) : null}
+              {transcript.turns.map((turn, index) =>
+                index < hidden ? null : (
+                  <TurnView
+                    key={turn.id}
+                    turn={turn}
+                    now={now}
+                    touch={touch}
+                    latest={turn.id === lastId}
+                    onDecide={decide}
+                    onSendDraft={sendDraft}
+                    onUndo={undo}
+                    onAnswer={answer}
+                    onOwn={(own) => void send(own)}
+                    unknown={turn.id === lastId ? unknown : undefined}
+                    onResolve={resolve}
+                    busy={(id) => flight.has(id)}
+                    onRetry={retry}
+                    conversationAgentId={conversation?.agent_id ?? null}
+                    reactions={reactions.filter(
+                      (r) => turnIndexForReaction(transcript, r) === index,
+                    )}
+                    onReact={
+                      reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
+                        ? (emoji) => react(turn, emoji)
+                        : undefined
+                    }
+                  />
+                ),
+              )}
               <RunChatCards conversationId={conversationId} refresh={transcript.status} />
               {transcript.gaps.map((gap) => (
                 <div key={`gap-${gap.after}`} className="marker" role="status">
@@ -1129,14 +1182,15 @@ ${words}`
                 <button
                   type="button"
                   className="jump-pill"
+                  aria-label={working ? 'Jump to latest, still working' : 'Jump to latest'}
+                  title="Jump to latest"
                   onClick={() => {
                     const node = scrollRef.current;
                     if (node) node.scrollTop = node.scrollHeight;
                     setStuck(true);
                   }}
                 >
-                  <Icon name="arrowDown" size={14} />
-                  {working ? 'Melete is working' : 'Jump to latest'}
+                  <Icon name="arrowDown" size={16} />
                 </button>
               ) : null}
               {draftWaiting && conversationId && composerState === 'send' ? (

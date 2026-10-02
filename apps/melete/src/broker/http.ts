@@ -34,6 +34,11 @@ export interface BrokerOperations {
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
   get(claims: CapabilityClaims, id: string): Promise<Action>;
+  /** A succeeded screenshot's picture, for a runtime whose model reads images. */
+  screenshot?(
+    claims: CapabilityClaims,
+    id: string,
+  ): Promise<{ media_type: 'image/png'; data: string }>;
   /** Carry out an approved action by id; the caller supplies no payload. */
   resume?(claims: CapabilityClaims, id: string): Promise<EffectProposalResponse>;
   /** Send a chase's covered follow-up; the service writes it, the caller supplies nothing. */
@@ -116,7 +121,10 @@ export function createBrokerApp(options: {
     const settlement =
       /^\/actions\/[^/]+\/execution\/settle$/.test(path) && c.req.method === 'POST';
     const runtime =
-      (c.req.method === 'GET' && (path === '/tools' || /^\/actions\/[^/]+$/.test(path))) ||
+      (c.req.method === 'GET' &&
+        (path === '/tools' ||
+          /^\/actions\/[^/]+$/.test(path) ||
+          (/^\/actions\/[^/]+\/screenshot$/.test(path) && !!options.broker.screenshot))) ||
       (c.req.method === 'POST' &&
         (path === '/actions' ||
           (path === '/attempt/wait' && !!options.broker.requestWait) ||
@@ -249,6 +257,10 @@ export function createBrokerApp(options: {
   app.get('/actions/:id', async (c) =>
     c.json({ action: await options.broker.get(c.get('claims'), c.req.param('id')) }),
   );
+  app.get('/actions/:id/screenshot', async (c) => {
+    if (!options.broker.screenshot) throw new BrokerFault('action_not_found');
+    return c.json(await options.broker.screenshot(c.get('claims'), c.req.param('id')));
+  });
   app.post('/actions/:id/resume', async (c) => {
     if (!options.broker.resume) throw new BrokerFault('unknown_tool');
     return c.json(await options.broker.resume(c.get('claims'), c.req.param('id')));

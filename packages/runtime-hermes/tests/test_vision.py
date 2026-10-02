@@ -1,7 +1,8 @@
 """Screenshots reach a model that reads images as pictures, and any other as text.
 
 Driven through the registered handler against the same loopback fake broker as
-test_plugin.py, with a real PNG in a temporary job workspace.
+test_plugin.py. The picture comes from the broker, which reads it for the
+runtime: nothing here is put in a workspace the runtime could read itself.
 """
 
 from __future__ import annotations
@@ -45,11 +46,11 @@ def png(width: int, height: int, noisy: bool = False) -> bytes:
 
 
 @pytest.fixture()
-def workspace(tmp_path, monkeypatch):
+def workspace(broker, tmp_path, monkeypatch):  # noqa: F811
+    """The broker holds the screenshot; the runtime's own workspace is empty."""
     monkeypatch.setenv("MELETE_WORK_DIR", str(tmp_path))
-    (tmp_path / ".melete" / "computer").mkdir(parents=True)
-    (tmp_path / SHOT).write_bytes(png(2560, 1600))
-    return tmp_path
+    broker.screenshots[ACTION] = png(2560, 1600)
+    return broker
 
 
 def receipt(path: str = SHOT) -> dict:
@@ -95,12 +96,18 @@ def test_a_vision_model_is_given_the_screenshot_as_a_picture(client, broker, wor
 
 
 def test_a_paired_device_screenshot_is_shown_too(client, broker, workspace, monkeypatch):  # noqa: F811
+    """A paired computer's screenshot is saved by the service as itself, and the
+    runtime (another user) may not be able to read that file; the broker reads
+    it, so the picture still arrives."""
     monkeypatch.setenv(VISION_ENV, "1")
-    (workspace / "device").mkdir()
-    (workspace / "device" / f"screenshot-{ACTION}.png").write_bytes(png(800, 600))
+    broker.screenshots[ACTION] = png(800, 600)
     result = run(client, broker, "device.screenshot", f"device/screenshot-{ACTION}.png")
     assert result["_multimodal"] is True
     assert decoded(result).size == (800, 600)
+    fetch = [r for r in broker.requests if r["path"].endswith("/screenshot")]
+    assert fetch == [
+        {"method": "GET", "path": f"/actions/{ACTION}/screenshot", "body": None, "auth": "Bearer cap-token"}
+    ]
 
 
 def test_a_model_without_vision_gets_the_text_receipt_unchanged(client, broker, workspace, monkeypatch):  # noqa: F811
@@ -115,12 +122,11 @@ def test_without_a_vision_answer_the_receipt_is_text(client, broker, workspace, 
     assert isinstance(run(client, broker), str)
 
 
-def test_a_path_outside_the_workspace_is_never_read(client, broker, workspace, monkeypatch, tmp_path_factory):  # noqa: F811
+def test_a_receipt_that_names_no_picture_asks_for_none(client, broker, workspace, monkeypatch):  # noqa: F811
     monkeypatch.setenv(VISION_ENV, "1")
-    outside = tmp_path_factory.mktemp("elsewhere") / "secret.png"
-    outside.write_bytes(png(10, 10))
-    for path in ("../secret.png", str(outside)):
+    for path in ("notes.txt", ""):
         assert isinstance(run(client, broker, path=path), str)
+    assert not [r for r in broker.requests if r["path"].endswith("/screenshot")]
 
 
 def test_only_screenshot_tools_carry_pictures(client, broker, workspace, monkeypatch):  # noqa: F811
@@ -130,9 +136,10 @@ def test_only_screenshot_tools_carry_pictures(client, broker, workspace, monkeyp
 
 def test_a_missing_or_unreadable_picture_falls_back_to_the_receipt(client, broker, workspace, monkeypatch):  # noqa: F811
     monkeypatch.setenv(VISION_ENV, "1")
-    assert isinstance(run(client, broker, path=".melete/computer/missing.png"), str)
-    (workspace / ".melete" / "computer" / "broken.png").write_bytes(b"\x89PNG not really")
-    assert isinstance(run(client, broker, path=".melete/computer/broken.png"), str)
+    broker.screenshots.clear()
+    assert isinstance(run(client, broker), str)
+    broker.screenshots[ACTION] = b"\x89PNG not really"
+    assert isinstance(run(client, broker), str)
 
 
 def test_a_hard_picture_is_shrunk_until_it_fits_the_gateway_limit():
@@ -158,8 +165,6 @@ def test_each_picture_names_the_action_it_came_from(client, broker, workspace, m
     monkeypatch.setenv(VISION_ENV, "1")
     own = decoded(run(client, broker))
     assert own.info["comment"] == f"melete-screenshot:{ACTION}".encode()
-    (workspace / "device").mkdir()
-    (workspace / "device" / f"screenshot-{ACTION}.png").write_bytes(png(800, 600))
     device = decoded(run(client, broker, "device.screenshot", f"device/screenshot-{ACTION}.png"))
     assert device.info["comment"] == f"melete-screenshot:{ACTION}".encode()
 
