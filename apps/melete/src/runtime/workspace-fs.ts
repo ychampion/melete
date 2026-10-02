@@ -10,14 +10,29 @@
  * `LocalWorkspaceFs` is the workspace volume this service shares with its cells.
  */
 import { randomBytes } from 'node:crypto';
-import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, open, readdir, realpath, rename, rm, rmdir } from 'node:fs/promises';
+import { constants, realpathSync } from 'node:fs';
+import {
+  access,
+  chmod,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  rmdir,
+} from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { prefixedId } from '@melete/contracts';
-import { noLinks, segmentsFor } from '../connectors/files.ts';
+import { noLinks, removeConfined, segmentsFor } from '../paths.ts';
 
 export interface WorkspaceFs {
-  /** The job's workspace directory on this host, or null when this host does not hold it. */
+  /**
+   * The job's workspace directory on this host, as written under the root
+   * (no link resolved), or null when this host does not hold it. `resolve`
+   * is the one that checks every component.
+   */
   root(job: string): string | null;
   /**
    * A path under the job's workspace on this host, every component checked and
@@ -29,6 +44,13 @@ export interface WorkspaceFs {
   read(job: string, relative: string, maxBytes: number): Promise<Buffer>;
   /** One regular file, written with mode 0o644 or 0o755 and never through a link. */
   write(job: string, relative: string, bytes: Uint8Array, mode: number): Promise<void>;
+  /**
+   * Removes the job's workspace and everything in it. Throws `PathHeld` when it
+   * is still held open after the retries, running `beforeRetry` before each.
+   */
+  remove(job: string, beforeRetry?: () => Promise<void>): Promise<void>;
+  /** Where the job's workspace still is, for a report, or null when it is gone. */
+  remaining(job: string): Promise<string | null>;
   /** Brings the workspace up to date from the cell, for a host that does not share it. */
   syncFromCell?(job: string, signal: AbortSignal): Promise<void>;
 }
@@ -198,6 +220,34 @@ export class LocalWorkspaceFs implements WorkspaceFs {
     } finally {
       await file.close();
     }
+  }
+
+  async remove(job: string, beforeRetry?: () => Promise<void>): Promise<void> {
+    await removeConfined(this.workRoot, job, beforeRetry);
+  }
+
+  async remaining(job: string): Promise<string | null> {
+    const path = join(this.workRoot, job);
+    try {
+      await access(path, constants.F_OK);
+      return path;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Every path a held job workspace can be reported under: below the root as
+   * written and below its real path.
+   */
+  workspacePaths(jobs: readonly string[]): Set<string> {
+    const roots = new Set([resolve(this.workRoot)]);
+    try {
+      roots.add(realpathSync(this.workRoot));
+    } catch {
+      // A work root that does not exist holds no workspace; the written form is enough.
+    }
+    return new Set(jobs.flatMap((id) => [...roots].map((root) => join(root, id))));
   }
 
   // The directories engine containers mount: a job's own, a spare's, and a

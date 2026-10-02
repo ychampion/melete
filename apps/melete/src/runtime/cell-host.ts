@@ -34,7 +34,9 @@ export type CellHandle = {
   state(): Promise<CellState>;
   /**
    * For a spare: makes its workspace the job's, with what the job already had,
-   * before the attempt is handed to it.
+   * before the attempt is handed to it. Spares need the job's workspace on the
+   * cell's own host; a host that cannot do that refuses, and the attempt
+   * starts a cell of its own.
    */
   adopt(job: string): Promise<void>;
   /** For a spare: gives its container the name a cold engine for this attempt would have. */

@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readdir, realpath, rename } from 'node:fs/promises';
-import path from 'node:path';
+import { lstat, open, readdir, realpath, rename } from 'node:fs/promises';
 import {
   type Action,
   ARTIFACT_MIME,
@@ -14,6 +13,7 @@ import {
 import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
 import { BrokerFault } from '../broker/errors.ts';
+import { noLinks, segmentsFor } from '../paths.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { ConnectorFaultError } from './faults.ts';
 import type { Connector, ConnectorContext } from './types.ts';
@@ -68,68 +68,10 @@ function areaFor(value: JsonValue | undefined): Area {
   throw new Error('area must be work or artifacts');
 }
 
-/** Reject both host and portable path syntax, including Windows device/stream names. */
-export function segmentsFor(value: string): string[] {
-  if (
-    !value ||
-    value.includes('\0') ||
-    path.posix.isAbsolute(value) ||
-    path.win32.isAbsolute(value) ||
-    value.includes('\\') ||
-    value.includes(':')
-  ) {
-    throw new Error('path must be relative to its area');
-  }
-  if (value === '.') return [];
-  const segments = value.split('/');
-  if (
-    segments.some(
-      (part) =>
-        !part ||
-        part === '.' ||
-        part === '..' ||
-        /[. ]$/.test(part) ||
-        /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part),
-    )
-  ) {
-    throw new Error('path traversal or device path is not allowed');
-  }
-  return segments;
-}
+export { noLinks, segmentsFor } from '../paths.ts';
 
 const missing = (error: unknown): boolean =>
   error instanceof Error && 'code' in error && error.code === 'ENOENT';
-
-/** Inspect every component: checking only the final realpath misses dangling links. */
-export async function noLinks(
-  base: string,
-  segments: string[],
-  createParents: boolean,
-): Promise<string> {
-  let current = base;
-  for (let index = 0; index < segments.length; index += 1) {
-    const segment = segments[index];
-    if (!segment) throw new Error('empty path component');
-    current = path.join(current, segment);
-    try {
-      const stat = await lstat(current);
-      if (stat.isSymbolicLink()) throw new Error('symbolic links are not allowed');
-      if (index < segments.length - 1 && !stat.isDirectory()) {
-        throw new Error('path parent is not a directory');
-      }
-    } catch (error) {
-      if (!missing(error)) throw error;
-      if (createParents && index < segments.length - 1) {
-        await mkdir(current);
-        const created = await lstat(current);
-        if (!created.isDirectory() || created.isSymbolicLink()) {
-          throw new Error('unsafe path parent');
-        }
-      }
-    }
-  }
-  return current;
-}
 
 const pathSchema = { type: 'string', minLength: 1 };
 const areaSchema = { type: 'string', enum: ['work', 'artifacts'] };
