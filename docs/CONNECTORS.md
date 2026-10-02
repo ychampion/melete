@@ -55,7 +55,7 @@ succeeded and the job continues`.
 | Connector | Implemented surface | Named test |
 | --- | --- | --- |
 | Files | List/read/write/move in configured work and space-artifact roots; content-hash verification | `files manifests parse and workspace/artifact writes can be read and verified` |
-| Web | HTTP(S) fetch with address, redirect and trusted-compartment checks | `redirects repeat compartment and DNS checks, with no request to the denied destination` |
+| Web | HTTP(S) fetch with address, redirect and trusted-compartment checks | `redirects are checked hop by hop and never reach a private destination` |
 | Email | IMAP search/read, local draft, SMTP send, or the same tools over the Gmail API or Microsoft Graph after a Google or Microsoft sign-in; Message-ID verification in Sent | `accepted send with lost acknowledgement is unknown, then verified without resending`; `a send is found in Sent afterwards, even when Gmail gives it a Message-ID of its own` |
 | Calendar | Read-only ICS import; CalDAV, Google Calendar or Outlook calendar list/create/update with UID and content verification | `CalDAV create uses action UID and conditional PUT; list and verify use real HTTP locally`; `an event is named by its action, so a second create cannot make a second event` |
 | Test destination | Durable acceptance with optional lost acknowledgement | `destination drops its acknowledgement only after acceptance and verify resolves it` |
@@ -329,9 +329,10 @@ while its own workspace stayed writable.
 
 Public research is still subject to SSRF restrictions; it cannot fetch
 arbitrary private or metadata addresses. Private-context requests require the
-trusted exact-host allowlist. Tests include `web validates every DNS answer,
-so a mixed public/private answer never reaches transport` and `checked DNS
-answer is passed unchanged to transport and DNS is not repeated`.
+trusted exact-host allowlist. Tests include `every private, metadata and
+encoded-address bypass is refused without a request`, which covers a name that
+answers with both a public and a private address, and `DNS rebinding: one lookup
+per hop, and the request goes to the address that was checked`.
 An address allowlist decides where a fetch may go, not what it may carry: a
 permitted destination receives the request's full address, so `web.fetch` is a
 `read` whose whole query string is recorded with its action for the owner to

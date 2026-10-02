@@ -664,6 +664,5 @@ export function resolveOverlaps(found: Detection[], fixed: Detection[] = []): De
 }
 
 /** Placeholder syntax: ⟦CATEGORY_N⟧. */
-export const PLACEHOLDER = /⟦([A-Z][A-Z_]*_\d{1,6})⟧/g;
 const PLACEHOLDER_ONLY = /^⟦[A-Z][A-Z_]*_\d{1,6}⟧$/;
 export const isPlaceholderText = (value: string): boolean => PLACEHOLDER_ONLY.test(value);

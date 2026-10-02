@@ -87,10 +87,9 @@ send it carried landed; anything ambiguous is `rejected` and the action stops.
 
 Parking a rate-limited action ends its attempt as well as moving the job onto a
 timer, because the runner's recovery sweep only fences attempts whose job is
-still running. `parkAttempt` is the seam for the jobs module to own that
-release. The due time is enforced under the dispatch row lock, and the recovery
-scan passes the instant it selected with, so two clocks cannot disagree about
-whether an action is ready.
+still running. The due time is enforced under the dispatch row lock, and the
+recovery scan passes the instant it selected with, so two clocks cannot disagree
+about whether an action is ready.
 
 Per-class counters and the disposition live on the action row, and
 `GET /jobs/{id}/repairs` reports them with the trace and the candidates.

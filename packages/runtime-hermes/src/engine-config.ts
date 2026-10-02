@@ -20,7 +20,7 @@ import {
 } from '@melete/contracts';
 
 /** Where in-cell commands run, once the native terminal toolset is turned on. */
-export type TerminalBackend = 'local' | 'melete_sandbox';
+export type TerminalBackend = 'melete_sandbox';
 
 /** The brokered tool a sandbox connection serves; its presence is what selects the sandbox. */
 export const SANDBOX_TERMINAL_TOOL = 'terminal.run';
@@ -56,17 +56,13 @@ export function attemptEngineFeatures(
 }
 
 /**
- * Engine capabilities that are switched on one at a time, each by its own
- * change. Every default here is what the runtime does today, so rendering with
- * no features named reproduces the current behaviour exactly.
+ * Engine capabilities an attempt's catalog can switch on. Every default here is
+ * what the runtime does without them, so rendering with no features named
+ * reproduces that configuration exactly.
  */
 export type EngineFeatures = {
   /** Toolsets the API-server agent is built with. Naming only the plugin's toolset is what turns every built-in off. */
   toolsets: readonly string[];
-  /** The engine's own tool-search bridge, in place of the plugin's scoped search. */
-  toolSearch: boolean;
-  /** The native skills index and viewer. */
-  skills: boolean;
   /** Absent while no terminal toolset is built. */
   terminalBackend: TerminalBackend | null;
 };
@@ -124,8 +120,6 @@ export const BUNDLED_SKILLS_DIR = '/opt/melete-runtime/no-bundled-skills';
 
 const DEFAULT_FEATURES: EngineFeatures = {
   toolsets: ['melete'],
-  toolSearch: false,
-  skills: false,
   terminalBackend: null,
 };
 
@@ -203,7 +197,6 @@ export function compactionThresholdTokens(options: {
 
 export type EngineConfig = Record<string, unknown>;
 
-/** The engine configuration these options describe, secrets included only if given. */
 /**
  * What the engine tells the model about the surface its reply reaches. Melete
  * shows replies as chat text, and files the model makes arrive as artifacts.
@@ -211,6 +204,7 @@ export type EngineConfig = Record<string, unknown>;
 export const API_SERVER_HINT =
   'Replies are shown to the person as chat text. Keep them brief and natural. Files you make reach them as artifacts, never as paths in the reply.';
 
+/** The engine configuration these options describe, secrets included only if given. */
 export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
   const features = { ...DEFAULT_FEATURES, ...options.features };
   const contextWindow =
@@ -233,7 +227,7 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
   const config: EngineConfig = {
     platform_toolsets: { api_server: [...features.toolsets] },
     plugins: { enabled: ['melete'], allow_deprecated_imports: false },
-    tools: { tool_search: { enabled: features.toolSearch ? 'on' : 'off' } },
+    tools: { tool_search: { enabled: 'off' } },
     // The two keys the engine actually reads. A store built from either one
     // loads its files out of the engine home whatever the toolset list says.
     memory: { memory_enabled: false, user_profile_enabled: false, provider: '' },
@@ -244,7 +238,7 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
     updates: { check: false },
     agent: {
       max_turns: options.maxTurns ?? DEFAULT_ENGINE_MAX_TURNS,
-      // Read under `agent:` (agent/agent_init.py:1336). The probe describes the
+      // Read under `agent:` (agent/agent_init.py). The probe describes the
       // host's Python toolchain, which no tool offered to an attempt uses.
       environment_probe: false,
       // The prompt seam in patches/observer_bridge.py: leaves out the engine's
@@ -254,7 +248,7 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
       // probes the model endpoint, here the broker, for a local model server.
       image_input_mode: 'text',
     },
-    // Read at the top level, not under `agent:` (agent/agent_init.py:1352).
+    // Read at the top level, not under `agent:` (agent/agent_init.py).
     // Replaces the engine's api_server hint, which describes MEDIA: file tags
     // no Melete surface renders.
     platform_hints: { api_server: { replace: API_SERVER_HINT } },
@@ -280,13 +274,6 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
     providers: { [GATEWAY_PROVIDER]: provider },
     gateway: { platforms: { api_server: { max_concurrent_runs: 1 } } },
   };
-  if (features.skills)
-    config.skills = {
-      project_discovery: false,
-      external_dirs: [],
-      inline_shell: false,
-      write_approval: false,
-    };
   if (features.terminalBackend)
     config.terminal = { backend: features.terminalBackend, cwd: '/work' };
   return config;

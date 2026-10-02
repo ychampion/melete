@@ -6,9 +6,8 @@ feature is **not claimed**.
 
 `registry rejects duplicate connections and returns a stable connection order`
 checks registration. `file boundary rejects parent traversal, absolute paths,
-alternate streams and device names` checks local paths; `redirects repeat
-compartment and DNS checks, with no request to the denied destination` checks
-web requests.
+alternate streams and device names` checks local paths; `redirects are checked
+hop by hop and never reach a private destination` checks web requests.
 
 File checks use portable filesystem APIs and do not establish a kernel boundary
 against another process racing directory replacement; the container mount

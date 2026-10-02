@@ -231,12 +231,8 @@ export function Badge({
   );
 }
 
-export function Count({ n, active = false }: { n: number | string; active?: boolean }) {
-  return (
-    <span className="count" data-active={active ? 'true' : undefined}>
-      {n}
-    </span>
-  );
+export function Count({ n }: { n: number | string }) {
+  return <span className="count">{n}</span>;
 }
 
 export function Kbd({ children }: { children: ReactNode }) {
@@ -521,10 +517,6 @@ export function Overline({ children, style }: { children: ReactNode; style?: CSS
       {children}
     </div>
   );
-}
-
-export function Hairline() {
-  return <div className="hairline" />;
 }
 
 /**

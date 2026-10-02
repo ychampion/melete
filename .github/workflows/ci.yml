@@ -1,5 +1,5 @@
-# Every check here also runs locally with the same command; see the README's
-# "Verify from the repository root". Nothing is pushed, published or deployed,
+# Every check here also runs locally with the same command; see CONTRIBUTING.md,
+# "Set up and verify". Nothing is pushed, published or deployed,
 # and no secret is read. deploy/scripts/ci-workflow.test.ts checks this file.
 name: CI
 

@@ -40,10 +40,10 @@ recipient, destination, amount and resource fields; free prose, and a
 destination carried in any other field, have no origin check.
 
 The web connector rejects private/metadata addresses and rechecks redirects:
-`web SSRF guard denies private, metadata, multicast and mapped private
-addresses` and `redirects repeat compartment and DNS checks, with no request to
-the denied destination`. Private-context allowlists use exact hosts
-(`private compartment allowlist is trusted context and exact-host only`).
+`web SSRF guard denies private, metadata, CGNAT, multicast and mapped private
+addresses` and `redirects are checked hop by hop and never reach a private
+destination`. Private-context allowlists use exact hosts (`a closed or private
+space reads nothing, and a listed domain still works there`).
 A calendar feed is fetched under the same public-address rules, resolved again
 on every read, with redirects refused (`ics-feed.test.ts`).
 Public-compartment context assembly is tested by `approved shared context and

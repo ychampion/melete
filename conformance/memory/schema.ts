@@ -207,7 +207,6 @@ export const askExpectation = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('unavailable') }),
   z.strictObject({ kind: z.literal('absent') }),
 ]);
-export type AskExpectation = z.infer<typeof askExpectation>;
 
 export const askStep = z.strictObject({
   step: z.literal('ask'),

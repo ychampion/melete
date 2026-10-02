@@ -4,7 +4,7 @@ import { type CommitResult, commitExtraction } from './commit.ts';
 import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import { runDigests } from './digest.ts';
 import { type ExtractionGateway, proposeExtraction } from './extract.ts';
-import { cleanupMemory, type DerivedCleanup } from './forget.ts';
+import { cleanupMemory } from './forget.ts';
 import type { MarkdownViews } from './markdown.ts';
 import { type RestrictionJournal, restoreMemory } from './restore.ts';
 import { observationProposals } from './tier0.ts';
@@ -27,7 +27,6 @@ export type MemoryServiceOptions = {
   journal: RestrictionJournal;
   gateway?: ExtractionGateway;
   embedding?: EmbeddingProvider;
-  cleanupFiles?: DerivedCleanup;
   markdown?: MarkdownViews;
   onError?: (code: string) => void;
 };
@@ -139,8 +138,7 @@ export async function runDerivedWork(options: MemoryServiceOptions) {
     await cleanupMemory(
       options.sql,
       space.space_id,
-      options.cleanupFiles ??
-        (markdown ? (spaceId, claimIds) => markdown.cleanup(spaceId, claimIds) : undefined),
+      markdown ? (spaceId, claimIds) => markdown.cleanup(spaceId, claimIds) : undefined,
     );
     if (!space.restore_ready || space.revoked) continue;
     const scope: MemoryScope = {

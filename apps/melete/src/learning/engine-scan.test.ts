@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { engineSkillName } from '@melete/contracts';
 import {
   credentialMaterial,
-  ENGINE_SKILL_NAME,
   engineDefinitionIntact,
   linkMaterial,
   runEntropy,
@@ -87,9 +87,9 @@ describe('the engine skill scan', () => {
 
   test('a skill name is lowercase words joined by single hyphens', () => {
     for (const name of ['weekly-digest', 'notes', 'a1-b2-c3'])
-      expect(ENGINE_SKILL_NAME.test(name)).toBe(true);
+      expect(engineSkillName.safeParse(name).success).toBe(true);
     for (const name of ['Weekly', 'weekly--digest', '-weekly', 'weekly-', 'weekly digest', ''])
-      expect(ENGINE_SKILL_NAME.test(name)).toBe(false);
+      expect(engineSkillName.safeParse(name).success).toBe(false);
   });
 
   test('a stored engine skill is intact only while its hash and its bytes hold', () => {

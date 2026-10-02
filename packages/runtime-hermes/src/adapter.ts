@@ -2,7 +2,7 @@
  * The `RuntimeAdapter` over a pinned Hermes API server.
  *
  * Everything difficult here is about not lying. The engine's run stream is an
- * in-memory queue with no replay (`gateway/platforms/api_server_runs.py:154`),
+ * in-memory queue with no replay (`gateway/platforms/api_server_runs.py`),
  * so a dropped connection is lost history and not a pause. An `interrupted` run
  * is a dead attempt. Neither ever becomes a completion: they become
  * `failed{retryable:true}` with a reason that says events are missing, and the
@@ -35,7 +35,7 @@ import {
   parseSse,
 } from './client.ts';
 import { asksWithoutProposing, UNPROPOSED_CONTINUATION } from './proposal.ts';
-import { HERMES_PINNED_TAG, RUNTIME_VERSION } from './version.ts';
+import { RUNTIME_VERSION } from './version.ts';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -425,7 +425,6 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
       };
     // The socket closed without a terminal frame. The engine may have finished;
     // there is no way to tell from here, and guessing would invent a result.
-    void bundle;
     return result(gap('the event stream closed before the run reported an outcome'));
   }
 
@@ -809,5 +808,3 @@ export function brokerCatalogState(options: {
     return toolSpec.array().parse(body.tools);
   };
 }
-
-export { HERMES_PINNED_TAG, RUNTIME_VERSION };

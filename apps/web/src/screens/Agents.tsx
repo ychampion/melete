@@ -118,11 +118,9 @@ const inkOn = (hex: string) => {
 export function LookFields({
   draft,
   onChange,
-  compact = false,
 }: {
   draft: AgentInput;
   onChange: (next: AgentInput) => void;
-  compact?: boolean;
 }) {
   const shapeOf = (surface: AgentInput['surface']): FaceShape =>
     surface === 'rounded' ? 'square' : surface;
@@ -136,10 +134,7 @@ export function LookFields({
     <>
       <fieldset className="field-group col" style={{ gap: 8 }}>
         <legend className="overline">Colour</legend>
-        <div
-          className="look-swatches"
-          style={{ gridTemplateColumns: `repeat(${compact ? 12 : 6}, minmax(0, 1fr))` }}
-        >
+        <div className="look-swatches" style={{ gridTemplateColumns: 'repeat(6, minmax(0, 1fr))' }}>
           {colours.map((color) => {
             const on = color === current;
             return (
@@ -149,11 +144,10 @@ export function LookFields({
                 aria-label={`Colour ${color}`}
                 aria-pressed={on}
                 className="look-swatch"
-                data-compact={compact ? 'true' : undefined}
                 style={{ background: color, color: inkOn(color) }}
                 onClick={() => onChange({ ...draft, colour: color })}
               >
-                {on ? <Icon name="check" size={compact ? 12 : 14} stroke={2.5} /> : null}
+                {on ? <Icon name="check" size={14} stroke={2.5} /> : null}
               </button>
             );
           })}
@@ -174,10 +168,7 @@ export function LookFields({
                 className="look-tile"
                 onClick={() => onChange({ ...draft, surface: toSurface(key) })}
               >
-                <AgentFace
-                  look={{ color: draft.colour, eyes: 'none', shape: key }}
-                  size={compact ? 22 : 26}
-                />
+                <AgentFace look={{ color: draft.colour, eyes: 'none', shape: key }} size={26} />
               </button>
             );
           })}
@@ -209,7 +200,7 @@ export function LookFields({
                     eyeColor: ink,
                     shape: shapeOf(draft.surface),
                   }}
-                  size={compact ? 22 : 26}
+                  size={26}
                 />
                 <span>{label}</span>
               </button>

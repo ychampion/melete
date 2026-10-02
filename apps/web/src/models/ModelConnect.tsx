@@ -64,26 +64,6 @@ export function statusLine(
   return { text: 'Not connected', tone: 'muted' };
 }
 
-/** One short line naming the active model, for places that only need to say which. */
-export function ModelLine({ settings }: { settings: ModelSettings }) {
-  const { active } = settings;
-  return (
-    <span className="models-line">
-      <Icon name="sparkles" size={13} />
-      <span className="col" style={{ gap: 1, minWidth: 0 }}>
-        <span>
-          Model:{' '}
-          <span className="models-name" title={active.model}>
-            {modelDisplayName(active.model)}
-          </span>{' '}
-          · {providerLabel(settings, active.provider)}
-          {active.connected ? '' : ' (not connected)'}
-        </span>
-      </span>
-    </span>
-  );
-}
-
 /** Which model agents answer with now, and whether it came from here or from the server. */
 export function ActiveModel({
   settings,

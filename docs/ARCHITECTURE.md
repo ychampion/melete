@@ -97,7 +97,8 @@ address read off a page is refused as untrusted_recipient_origin` in
 Schema existence is checked by `every entity in the contract has a table`.
 Authentication tests include `racing setup requests atomically create one owner,
 space, and session`, `a second service instance recognizes the persisted
-session`, and `all other routes require a valid cookie while health stays public`.
+session`, and `all other routes require a valid cookie while health and setup
+status stay public`.
 
 The knowledge file-view routes select a space from the `x-melete-space` header
 or a query parameter after session authentication, with a single-space

@@ -36,7 +36,6 @@
     "zod": "4.6.2"
   },
   "devDependencies": {
-    "@types/libsodium-wrappers": "0.8.2",
     "@types/mailparser": "3.4.6",
     "@types/nodemailer": "8.0.1",
     "drizzle-kit": "0.31.10",
