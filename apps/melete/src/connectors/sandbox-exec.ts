@@ -5,7 +5,9 @@
  * broker, so the service opens the session, syncs the job workspace in, wraps
  * the command in its marker, runs it, reads the output back, hashes it here and
  * syncs the workspace out. The sandbox holds no credential and has the egress
- * the owner chose; the model only ever asks for a command.
+ * the owner chose; the model only ever asks for a command. Where the computer
+ * leaves through this service's egress guard, each command carries its own
+ * proxy token, and its receipt lists the hosts it reached.
  *
  * Because the service wrote the output file itself, a receipt from here always
  * says `digest_verified: true`: the bytes it hashed are the bytes on disk, not
@@ -34,6 +36,8 @@ import {
 import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
 import { appendEvent } from '../broker/records.ts';
+import { egressHostsFor } from '../egress/records.ts';
+import { type EgressHostSummary, hasCommandEgress } from '../egress/tokens.ts';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
 import { isDesktopProvider } from '../sandbox/adapters/docker.ts';
 import {
@@ -461,12 +465,28 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     late,
   });
 
+  /** Whether this computer's way out is the service's guard, which sees each command. */
+  const guarded = (session: SessionRow) =>
+    session.egressPolicy.kind !== 'deny_all' && hasCommandEgress(provider);
+
+  /**
+   * The hosts one command reached, as a receipt lists them: none for a computer
+   * with no network, null where the provider's own network carried it and
+   * nothing here saw where it went.
+   */
+  const egressHosts = (
+    session: SessionRow,
+    seen: EgressHostSummary[] | null,
+  ): EgressHostSummary[] | null =>
+    session.egressPolicy.kind === 'deny_all' ? [] : guarded(session) ? (seen ?? []) : null;
+
   /** Everything the receipt says about one recorded command. */
   const detailFor = async (
     payload: Payload,
     record: ExecutionRecord,
     session: SessionRow,
     stored: Uint8Array | null,
+    hosts: EgressHostSummary[] | null,
   ): Promise<Record<string, JsonValue>> => {
     // The receipt is the only way the result travels back to the engine that
     // asked, so the preview the service kept goes on it, capped as it was.
@@ -497,6 +517,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       image_ref: session.imageRef,
       image_digest: session.imageDigest,
       egress: session.egressPolicy.kind,
+      egress_hosts: hosts,
       persistence: session.persistence,
     };
     if (stored && record.outputPath) {
@@ -529,6 +550,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     payload: Payload,
     session: SessionRow,
     result: CommandResult,
+    hosts: EgressHostSummary[] | null,
   ) => {
     await sessions.settleCommand(action.id, {
       outcome: result.outcome === 'failed' && result.retryable ? NOT_STARTED : result.outcome,
@@ -539,7 +561,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       return { outcome: 'failed' as const, reason: result.reason, retryable: result.retryable };
     if (result.outcome === 'unknown') return { outcome: 'unknown' as const, reason: result.reason };
     const stored = await workspaceFile(ctx.job_id, result.record.outputPath).catch(() => null);
-    const detail = await detailFor(payload, result.record, session, stored);
+    const detail = await detailFor(payload, result.record, session, stored, hosts);
     return {
       outcome: 'succeeded' as const,
       receipt: receiptFor(action, detail, result.record.outputDigest, result.late),
@@ -640,7 +662,15 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     });
     if (result.outcome === 'succeeded') {
       const stored = await workspaceFile(ctx.job_id, result.record.outputPath).catch(() => null);
-      const detail = await detailFor(payload, result.record, session, stored);
+      // Read back after the fact, the hosts come from the guard's records.
+      const seen = guarded(session) ? await egressHostsFor(sql, action.id).catch(() => null) : null;
+      const detail = await detailFor(
+        payload,
+        result.record,
+        session,
+        stored,
+        egressHosts(session, seen),
+      );
       const evidence: Record<string, JsonValue> = {
         output_digest: result.record.outputDigest,
         sandbox_id: session.providerSandboxId,
@@ -707,23 +737,48 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       const forget = settled.get(session.providerSandboxId) ?? [];
       settled.delete(session.providerSandboxId);
       const dispatch = await sessions.beginCommand(session.id, action.id, action.id);
-      const result = await runCommand({
-        provider,
-        handle: sessionHandle(session),
-        request: {
-          marker: action.id,
-          argv: ['sh', '-c', payload.command],
-          cwd: sandboxCwd(payload.cwd),
-          timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.default_timeout_ms,
-          dispatch,
-          env: commandEnv(timeZone),
-          forget,
-        },
-        workRoot: options.workRoot,
-        jobId: ctx.job_id,
-        signal,
-      });
-      const outcome = await finish(action, ctx, payload, session, result);
+      // A token for this command alone, ended when it settles: a process it
+      // leaves behind reaches out unattributed from then on.
+      const attributed =
+        guarded(session) && hasCommandEgress(provider)
+          ? provider.attributeCommand(sessionHandle(session), {
+              kind: 'command',
+              sessionId: session.id,
+              jobId: ctx.job_id,
+              attemptId: action.attempt_id,
+              actionId: action.id,
+            })
+          : null;
+      let result: CommandResult;
+      let seen: EgressHostSummary[] | null = null;
+      try {
+        result = await runCommand({
+          provider,
+          handle: sessionHandle(session),
+          request: {
+            marker: action.id,
+            argv: ['sh', '-c', payload.command],
+            cwd: sandboxCwd(payload.cwd),
+            timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.default_timeout_ms,
+            dispatch,
+            env: { ...commandEnv(timeZone), ...attributed?.env },
+            forget,
+          },
+          workRoot: options.workRoot,
+          jobId: ctx.job_id,
+          signal,
+        });
+      } finally {
+        seen = attributed?.settle() ?? null;
+      }
+      const outcome = await finish(
+        action,
+        ctx,
+        payload,
+        session,
+        result,
+        egressHosts(session, seen),
+      );
       // A recorded outcome no longer needs its marker; an unknown one keeps it
       // as the only evidence a later check can read. A command that never
       // started removed nothing, so what it was to remove waits for the next.

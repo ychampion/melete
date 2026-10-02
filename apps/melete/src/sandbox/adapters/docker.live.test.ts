@@ -17,6 +17,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type { EgressRecordOpen } from '../../egress/records.ts';
 import { sandboxConformance } from '../conformance.ts';
 import { serviceContainerId } from '../docker-default.ts';
 import { openSandbox, sandboxLabels } from '../manifest.ts';
@@ -558,6 +559,98 @@ if (!live) {
             await host.computer(handle, { kind: 'screenshot' }, signal()),
           );
       }
+    });
+
+    // A second host with its own guard, which records and holds a host list.
+    const recorded: EgressRecordOpen[] = [];
+    const watched = new DockerSandboxHost(
+      settings({
+        egressPort: 18_792,
+        egressRecords: {
+          opened: (record) => recorded.push(record),
+          closed: () => {},
+          counted: () => {},
+        },
+        egressExtraHosts: ['example.com'],
+      }),
+    );
+    // Its computers are destroyed with the rest, through the same engine.
+    afterAll(() => watched.guard.close());
+    const attribution = (actionId: string, sessionId: string) => ({
+      kind: 'command' as const,
+      sessionId,
+      jobId: 'job_LIVE',
+      attemptId: 'att_LIVE',
+      actionId,
+    });
+    /** One command with its own environment, answering what it printed. */
+    const run = async (handle: SandboxHandle, script: string, env: Record<string, string>) => {
+      const outcome = await watched.exec(
+        handle,
+        {
+          marker: `act_${Date.now()}`,
+          argv: ['/bin/sh', '-c', script],
+          cwd: '/work',
+          timeoutMs: 60_000,
+          maxOutputBytes: 64 * 1024,
+          env,
+        },
+        signal(),
+      );
+      return text(outcome.output);
+    };
+    const CODE = "curl -s -m 15 -o /dev/null -w '%{http_code}'";
+
+    test("each command's tunnels are recorded against it, and a token from one computer is refused from another", async () => {
+      const one = await open({ kind: 'open' }, watched);
+      const two = await open({ kind: 'open' }, watched);
+      const session = one.providerSandboxId;
+      const command = watched.attributeCommand(one, attribution('act_LIVE_one', session));
+      expect(await run(one, `${CODE} https://example.com/`, command.env)).toBe('200');
+      const reached = command.settle();
+      process.stdout.write(`docker live, egress hosts: ${JSON.stringify(reached)}\n`);
+      expect(reached).toEqual([
+        expect.objectContaining({ host: 'example.com', tunnels: 1, refused: 0 }),
+      ]);
+      expect(reached[0]?.bytes_down).toBeGreaterThan(0);
+      // Without its token the computer still gets out, unattributed.
+      expect(await run(one, `${CODE} https://example.com/`, {})).toBe('200');
+      // Another computer's live token is refused outright.
+      const borrowed = watched.attributeCommand(one, attribution('act_LIVE_borrowed', session));
+      const refused = await run(two, `${CODE} https://example.com/; echo " exit=$?"`, borrowed.env);
+      borrowed.settle();
+      expect(refused).toMatch(/exit=(56|7)\b/);
+      // The desktop may reach out on its own as well, so each record is looked for by kind.
+      const seen = recorded.map((record) => [
+        record.host,
+        record.verdict,
+        record.actionId,
+        record.reason,
+      ]);
+      expect(seen).toContainEqual(['example.com', 'tunnel', 'act_LIVE_one', null]);
+      expect(seen).toContainEqual(['example.com', 'unattributed', null, null]);
+      expect(seen).toContainEqual(['example.com', 'refused', null, 'token_refused']);
+      expect(seen.filter((record) => record[2] === 'act_LIVE_borrowed')).toEqual([]);
+    });
+
+    test('a computer held to its connected hosts reaches them and nothing else', async () => {
+      const handle = await open({ kind: 'connected_hosts_only' }, watched);
+      const probe = await run(
+        handle,
+        [
+          `echo listed=$(${CODE} https://example.com/)`,
+          'curl -s -m 15 -o /dev/null https://www.iana.org/; echo other=$?',
+          "curl -s -m 10 --noproxy '*' -o /dev/null https://example.com/; echo direct=$?",
+        ].join('; '),
+        {},
+      );
+      process.stdout.write(`docker live, connected hosts only: ${probe}\n`);
+      expect(probe).toContain('listed=200');
+      expect(probe).toMatch(/other=(56|7)\b/);
+      expect(probe).not.toContain('direct=0');
+      expect(recorded.map((record) => [record.host, record.verdict, record.reason])).toContainEqual(
+        ['www.iana.org', 'refused', 'host_not_connected'],
+      );
     });
   });
 }

@@ -26,7 +26,7 @@ export const sandboxComputer = z
       width: z.literal(LIVE_VIEWPORT.width),
       height: z.literal(LIVE_VIEWPORT.height),
     }),
-    egress: z.enum(['deny_all', 'open']),
+    egress: z.enum(['deny_all', 'connected_hosts_only', 'open']),
   })
   .meta({ id: 'SandboxComputer' });
 export type SandboxComputer = z.infer<typeof sandboxComputer>;

@@ -197,7 +197,75 @@ describe('creating a sandbox', () => {
     await expect(
       host.create(spec('sbx_one', { kind: 'cidr_allowlist', cidrs: ['1.1.1.1/32'] }), signal()),
     ).rejects.toThrow('cannot enforce cidr_allowlist');
-    expect(host.capabilities.egress).toEqual(['deny_all', 'open']);
+    expect(host.capabilities.egress).toEqual(['deny_all', 'connected_hosts_only', 'open']);
+  });
+
+  test('connected-hosts-only egress is the same one way out, held to the named hosts', async () => {
+    const { engine, host, guard } = setup({ open: true });
+    const granted: unknown[] = [];
+    const allow = guard.allow.bind(guard);
+    guard.allow = (address, sandbox, options) => {
+      granted.push(options);
+      allow(address, sandbox, options);
+    };
+    await host.create(spec('sbx_one', { kind: 'connected_hosts_only' }), signal());
+    const body = engine.containers.get(NAME)?.body as EngineBody;
+    expect(body.HostConfig.NetworkMode).toBe(`${NAME}-net`);
+    expect(body.Labels['com.melete.sandbox.egress']).toBe('connected_hosts_only');
+    expect([...(engine.networks.get(`${NAME}-net`)?.members ?? [])]).toEqual([SELF]);
+    expect(granted).toEqual([
+      { mode: 'connected_hosts_only', session: 'sbx_one', space: 'sp_one' },
+    ]);
+
+    const other = setup({ open: true });
+    const openGrants: unknown[] = [];
+    const allowOpen = other.guard.allow.bind(other.guard);
+    other.guard.allow = (address, sandbox, options) => {
+      openGrants.push(options);
+      allowOpen(address, sandbox, options);
+    };
+    await other.host.create(spec('sbx_one', { kind: 'open' }), signal());
+    expect(openGrants).toEqual([{ mode: 'open', session: 'sbx_one', space: 'sp_one' }]);
+  });
+
+  test('connected-hosts-only egress is refused when the service cannot be the way out', async () => {
+    const { engine, host } = setup();
+    await expect(
+      host.create(spec('sbx_one', { kind: 'connected_hosts_only' }), signal()),
+    ).rejects.toThrow('connected_hosts_only egress needs the service to run in a container');
+    expect(engine.volumes.size).toBe(0);
+  });
+
+  test('each command is given its own proxy address, which names it until it settles', async () => {
+    const { host, guard } = setup({ open: true });
+    const handle = await host.create(spec('sbx_one', { kind: 'open' }), signal());
+    const attribution = {
+      kind: 'command' as const,
+      sessionId: 'sbx_one',
+      jobId: 'job_one',
+      attemptId: 'att_one',
+      actionId: 'act_one',
+    };
+    const first = host.attributeCommand(handle, attribution);
+    const second = host.attributeCommand(handle, { ...attribution, actionId: 'act_two' });
+    const token = (proxy: string) =>
+      new RegExp(`^http://cmd:([A-Za-z0-9_-]{32})@${EGRESS_ALIAS}:8791$`).exec(proxy)?.[1] ?? '';
+    const one = token(first.env.HTTPS_PROXY);
+    expect(one).not.toBe('');
+    expect(token(second.env.HTTPS_PROXY)).not.toBe(one);
+    expect(first.env).toEqual({
+      HTTPS_PROXY: first.env.HTTPS_PROXY,
+      https_proxy: first.env.HTTPS_PROXY,
+      HTTP_PROXY: first.env.HTTPS_PROXY,
+      http_proxy: first.env.HTTPS_PROXY,
+    });
+    expect(guard.tokens.find(one)).toMatchObject({ sandbox: NAME, attribution });
+    expect(first.settle()).toEqual([]);
+    expect(guard.tokens.find(one)).toBeUndefined();
+    expect(guard.tokens.find(token(second.env.HTTPS_PROXY))).toBeDefined();
+    // Destroying the computer ends whatever its commands still held.
+    await host.destroy(handle, signal());
+    expect(guard.tokens.size).toBe(0);
   });
 
   test('a missing image says how to build it, before anything is made', async () => {

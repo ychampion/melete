@@ -8,6 +8,7 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { createDeviceConnector } from '../devices/connector.ts';
 import type { DeviceHub } from '../devices/hub.ts';
+import { egressRecorder } from '../egress/records.ts';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import type { DockerSandboxSettings } from '../sandbox/adapters/docker.ts';
@@ -778,7 +779,7 @@ export function connectorOptionsFromEnv(
               process.env,
               env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT,
             ),
-            docker: dockerSandboxSettings(env),
+            docker: { ...dockerSandboxSettings(env), egressRecords: egressRecorder(sql) },
           },
         }
       : {}),

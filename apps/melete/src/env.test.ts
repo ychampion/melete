@@ -358,3 +358,37 @@ describe('demonstration settings beside a real provider', () => {
     expect(demonstrationWarnings(loadEnv({ MELETE_DEFAULT_PROVIDER: 'anthropic' }))).toEqual([]);
   });
 });
+
+describe('what a computer may reach', () => {
+  test('extra hosts are DNS names or .suffixes, and anything else stops the service', () => {
+    const read = (value: string) => readEnv({ MELETE_SANDBOX_EGRESS_EXTRA_HOSTS: value });
+    const hosts = (value: string) => {
+      const result = read(value);
+      return result.ok ? result.env.MELETE_SANDBOX_EGRESS_EXTRA_HOSTS : null;
+    };
+    expect(hosts('')).toEqual([]);
+    expect(hosts('registry.npmjs.org, .PyPI.org,1.example.com')).toEqual([
+      'registry.npmjs.org',
+      '.pypi.org',
+      '1.example.com',
+    ]);
+    for (const value of [
+      '10.0.0.1',
+      '*.example.com',
+      'example.com:443',
+      'https://example.com',
+      '..x',
+      '.com',
+      '.io',
+    ])
+      expect([value, read(value).ok]).toEqual([value, false]);
+  });
+
+  test('records are kept 30 days unless told otherwise, and the default computer may hold to its hosts', () => {
+    const result = readEnv({ MELETE_SANDBOX_DOCKER_EGRESS: 'connected_hosts_only' });
+    if (!result.ok) throw new Error(result.issues.join('; '));
+    expect(result.env.MELETE_EGRESS_RECORD_DAYS).toBe(30);
+    expect(result.env.MELETE_SANDBOX_DOCKER_EGRESS).toBe('connected_hosts_only');
+    expect(readEnv({ MELETE_EGRESS_RECORD_DAYS: '0' }).ok).toBe(false);
+  });
+});

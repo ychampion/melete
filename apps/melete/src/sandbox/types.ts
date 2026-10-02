@@ -13,6 +13,8 @@ export type EgressPolicy =
   | { kind: 'deny_all' }
   | { kind: 'domain_allowlist'; domains: readonly string[] }
   | { kind: 'cidr_allowlist'; cidrs: readonly string[] }
+  /** The hosts the operator lists; read at each connection. */
+  | { kind: 'connected_hosts_only' }
   | { kind: 'open' };
 
 export type EgressKind = EgressPolicy['kind'];

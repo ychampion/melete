@@ -174,6 +174,10 @@ function networkFor(egress: EgressPolicy): {
       return { allow_internet_access: true, network: { allowPublicTraffic: false } };
     case 'domain_allowlist':
       throw new SandboxAdapterRefusal('the e2b adapter does not offer a domain allow-list');
+    case 'connected_hosts_only':
+      throw new SandboxAdapterRefusal(
+        "the e2b adapter cannot hold traffic to connected accounts' sites",
+      );
   }
 }
 

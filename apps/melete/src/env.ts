@@ -513,9 +513,12 @@ const variables = z.object({
   ),
   /**
    * What the default sandbox may reach: `open` is public HTTPS sites through the
-   * service's egress guard, `deny_all` is nothing at all.
+   * service's egress guard, `connected_hosts_only` the hosts listed below,
+   * `deny_all` is nothing at all.
    */
-  MELETE_SANDBOX_DOCKER_EGRESS: unsetWhenBlank(z.enum(['open', 'deny_all']).default('open')),
+  MELETE_SANDBOX_DOCKER_EGRESS: unsetWhenBlank(
+    z.enum(['open', 'connected_hosts_only', 'deny_all']).default('open'),
+  ),
   /** A container nothing has used for this long is stopped; it starts again when it is used. */
   MELETE_SANDBOX_DOCKER_IDLE_SECONDS: unsetWhenBlank(
     z.coerce.number().int().min(60).max(86_400).default(900),
@@ -524,6 +527,41 @@ const variables = z.object({
   MELETE_SANDBOX_EGRESS_PORT: unsetWhenBlank(
     z.coerce.number().int().min(1024).max(65_535).default(8791),
   ),
+  /**
+   * The hosts a `connected_hosts_only` computer may reach, such as a package
+   * registry: comma-separated names, or `.example.com` for every name below
+   * one. A suffix needs two labels at least, so `.com` alone is refused.
+   */
+  MELETE_SANDBOX_EGRESS_EXTRA_HOSTS: unsetWhenBlank(
+    z
+      .string()
+      .default('')
+      .transform((value) =>
+        value
+          .split(',')
+          .map((item) => item.trim().toLowerCase())
+          .filter(Boolean),
+      )
+      .pipe(
+        z
+          .array(
+            z
+              .string()
+              .max(253)
+              .regex(
+                /^\.?(?=[a-z0-9.-]*[a-z])[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/,
+                'each extra host is a DNS name, or .name for the names below it',
+              )
+              .refine(
+                (host) => !host.startsWith('.') || host.slice(1).includes('.'),
+                'a suffix covers too much with one label; name at least two, as in .example.com',
+              ),
+          )
+          .max(64),
+      ),
+  ),
+  /** How many days the record of where each computer connected is kept. */
+  MELETE_EGRESS_RECORD_DAYS: unsetWhenBlank(z.coerce.number().int().min(1).max(3650).default(30)),
 });
 
 /**

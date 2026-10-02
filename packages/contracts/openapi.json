@@ -15226,6 +15226,7 @@
                         "enum": [
                           "deny_all",
                           "cidr_allowlist",
+                          "connected_hosts_only",
                           "open"
                         ]
                       },
@@ -34034,6 +34035,7 @@
         "type": "string",
         "enum": [
           "deny_all",
+          "connected_hosts_only",
           "open"
         ]
       },
