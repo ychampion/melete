@@ -39,7 +39,10 @@ export type TurnBlock =
       permission: Permission;
       decided: PermissionOption | 'replaced' | 'withdrawn' | 'outdated' | 'closed' | null;
     }
-  /** `answered` is the option id, or `closed` when the turn moved on after an answer given elsewhere. */
+  /**
+   * `answered` is the option id, `withdrawn` when the person stopped the turn
+   * while it waited, or `closed` when the turn moved on after an answer given elsewhere.
+   */
   | { type: 'question'; question: Question; answered: string | null };
 
 export type TranscriptTurn = {
@@ -478,6 +481,81 @@ export function applyEvents(transcript: Transcript, events: ExperienceEvent[]): 
   return events.reduce(applyEvent, transcript);
 }
 
+/** A turn read from the service's saved copy, rather than drawn from events or sent here. */
+const savedTurn = (transcript: Transcript, turnId: string | null): TranscriptTurn | undefined => {
+  const turn = turnId ? transcript.turns.find((entry) => entry.id === turnId) : undefined;
+  return turn && !turn.unread && !turn.id.startsWith('local_') ? turn : undefined;
+};
+
+/**
+ * Replay a conversation's history over its saved turns. The saved copy and the
+ * conversation's own status are the latest known state, so a status the history
+ * passes through ("working" on the way to "needs you") never shows: the turn and
+ * the composer keep what the service said. Everything else a status implies, such
+ * as a question it shows was answered elsewhere, is kept. Statuses of turns the
+ * saved copy did not have are applied as they come.
+ */
+export function applyHistory(transcript: Transcript, events: ExperienceEvent[]): Transcript {
+  return events.reduce((current, event) => {
+    const held = event.item.type === 'status' ? savedTurn(current, event.turn_id) : undefined;
+    const next = applyEvent(current, event);
+    if (!held || next === current) return next;
+    return {
+      ...next,
+      composer: current.composer,
+      status: current.status,
+      turns: next.turns.map((turn) =>
+        turn.id === held.id
+          ? {
+              ...turn,
+              status: held.status,
+              streaming: held.streaming,
+              live: held.live,
+              delivery: held.delivery,
+              turn: held.turn,
+            }
+          : turn,
+      ),
+    };
+  }, transcript);
+}
+
+/**
+ * Take the statuses of a fresh read of the saved turns and the conversation,
+ * once the history has been replayed: anything that changed while it was read
+ * is in this copy.
+ */
+export function adoptSaved(
+  transcript: Transcript,
+  saved: Turn[],
+  composer: ComposerState,
+  status: TurnStatus,
+): Transcript {
+  return {
+    ...transcript,
+    composer,
+    status,
+    turns: transcript.turns.map((turn) => {
+      const copy = saved.find((entry) => entry.id === turn.id);
+      if (!copy || turn.unread) return turn;
+      return {
+        ...turn,
+        status: copy.status,
+        streaming: false,
+        live: UNDER_WAY.has(copy.status) ? turn.live : null,
+        delivery: copy.delivery,
+        turn: {
+          ...turn.turn,
+          status: copy.status,
+          delivery: copy.delivery,
+          answer: copy.answer || turn.turn.answer,
+        },
+        ...(FINAL.has(copy.status) ? { finished: true } : {}),
+      };
+    }),
+  };
+}
+
 export function applyGap(transcript: Transcript, gap: StreamGap): Transcript {
   const known = transcript.gaps.some((g) => g.after === gap.after && g.reason === gap.reason);
   return known ? transcript : { ...transcript, gaps: [...transcript.gaps, gap] };
@@ -601,7 +679,12 @@ export function applyDecision(transcript: Transcript, decision: ExperienceDecisi
             option.label === decision.answer || option.label.split(' · ')[0] === decision.answer,
         )
       : undefined;
-  return markQuestion(transcript, decision.id, chosen?.id ?? 'closed');
+  // A question withdrawn by a stop says so, rather than reading as answered elsewhere.
+  return markQuestion(
+    transcript,
+    decision.id,
+    chosen?.id ?? (decision.outcome === 'withdrawn' ? 'withdrawn' : 'closed'),
+  );
 }
 
 export function markQuestion(transcript: Transcript, id: string, optionId: string): Transcript {

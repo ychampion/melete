@@ -1,4 +1,5 @@
 import { CONTEXT_LIMITS, type ToolSpec } from '@melete/contracts';
+import { SANDBOX_TERMINAL_TOOL } from '@melete/runtime-hermes';
 import { chooseSkills, indexSkills } from '@melete/skills';
 import { and, eq } from 'drizzle-orm';
 import { ASK_PERSON_TOOL_NAME } from '../broker/ask-person.ts';
@@ -47,7 +48,21 @@ export class RuntimeCatalog {
 
   forAttempt: NonNullable<RunnerOptions['loadCatalog']> = async (tx, claims, bundle) => {
     const granted = await this.toolsForSpace(claims.space_id, claims.scopes, tx);
-    const tools = granted.slice(0, CONTEXT_LIMITS.max_tools);
+    // The engine builds its own terminal from the sandbox's terminal.run in this
+    // list, and the plugin hands the terminal to it whenever the broker serves
+    // that tool. So it keeps its place ahead of the cut: sorted by name, a
+    // paired computer's device tools would push it out, and the engine would
+    // start with no terminal while the plugin still expected one.
+    const terminal = granted.filter(
+      (tool) => tool.name === SANDBOX_TERMINAL_TOOL && tool.connection_id !== null,
+    );
+    const kept = new Set(
+      [...terminal, ...granted.filter((tool) => !terminal.includes(tool))].slice(
+        0,
+        CONTEXT_LIMITS.max_tools,
+      ),
+    );
+    const tools = granted.filter((tool) => kept.has(tool));
     const reachable = reachableToolNames(granted, claims.scopes);
     // The same selection bundle construction made, with its audience rules, now
     // over only the skills this attempt can use: one it cannot would otherwise
