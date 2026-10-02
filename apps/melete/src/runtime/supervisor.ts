@@ -19,9 +19,11 @@ import {
   attemptEngineFeatures,
   type EngineConfig,
   engineSettingsFromEnvironment,
+  engineVision,
   HERMES_PINNED_COMMIT,
   renderEngineConfig,
   renderSoul,
+  VISION_ENV,
 } from '@melete/runtime-hermes';
 import { stringify } from 'yaml';
 import { modelApiMode } from '../gateway/providers.ts';
@@ -118,6 +120,8 @@ export function attemptEnvironment(
     MELETE_MODEL_PROVIDER: bundle.model.provider,
     MELETE_MODEL_NAME: bundle.model.model,
     MELETE_MODEL_API_MODE: modelApiMode(bundle.model.provider, bundle.model.model),
+    // The plugin sends a screenshot as a picture only when the model reads them.
+    [VISION_ENV]: engineVision(bundle.model) ? '1' : '0',
     // The engine dates the conversation in this zone, read before its config.
     // A space with no profile is UTC, never the host's zone.
     HERMES_TIMEZONE: canonicalTimeZone(bundle.time_zone),
@@ -247,6 +251,7 @@ export const ATTEMPT_ENVIRONMENT_KEYS = [
   'MELETE_MODEL_PROVIDER',
   'MELETE_MODEL_NAME',
   'MELETE_MODEL_API_MODE',
+  VISION_ENV,
   'HERMES_TIMEZONE',
   'TERMINAL_CWD',
 ] as const;
@@ -350,6 +355,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
       brokerUrl: this.options.brokerUrl,
       modelApiMode: modelApiMode(model.provider, model.model),
       capability,
+      vision: model.vision,
       ...engineSettingsFromEnvironment(),
       // A space with a sandbox runs the engine's terminal there, and only there.
       features,

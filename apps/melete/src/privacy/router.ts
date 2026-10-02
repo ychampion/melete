@@ -25,6 +25,7 @@
 import { createHash } from 'node:crypto';
 import {
   type AttemptBundle,
+  modelSupportsVision,
   PRIVACY_CATEGORY_NAMES,
   type PrivacyCategory,
   type PrivacyPreview,
@@ -32,6 +33,7 @@ import {
   type QuestionSpecInput,
   type SensitiveTopic,
 } from '@melete/contracts';
+import { countImages, withoutImages } from '../gateway/images.ts';
 import { GatewayError, type GatewayPrincipal, type GatewayProvider } from '../gateway/types.ts';
 import {
   authoredParts,
@@ -52,6 +54,18 @@ import {
 } from './store.ts';
 import { Rehydrator } from './stream.ts';
 import { type KnownValue, placeholderCategory, Vault } from './vault.ts';
+
+/**
+ * What a private conversation's screenshot becomes when the request leaves
+ * redacted for a cloud model: a picture cannot have its details swapped for
+ * placeholders, so it does not go.
+ */
+export const IMAGE_WITHHELD_PRIVATE =
+  '[A screenshot was taken here. It is not shown to this model because this conversation is private and a picture cannot be redacted.]';
+
+/** What a screenshot becomes for a local model that does not read images. */
+export const IMAGE_WITHHELD_LOCAL =
+  '[A screenshot was taken here. It is not shown because the local model does not read images.]';
 
 export type PreparedRequest = {
   body: Record<string, unknown>;
@@ -262,8 +276,14 @@ export class PrivacyRouter {
       if (local) {
         const receipt = emptyReceipt('local');
         await this.log(scope, receipt);
+        // The person's own model sees the conversation as it is, pictures
+        // included, when it reads them.
+        const seen =
+          countImages(body) && !modelSupportsVision('openai-compatible', local.model)
+            ? withoutImages(body, IMAGE_WITHHELD_LOCAL)
+            : body;
         return {
-          body: { ...body, model: local.model },
+          body: { ...seen, model: local.model },
           route: 'local',
           local,
           rehydrator: null,
@@ -273,6 +293,9 @@ export class PrivacyRouter {
       if (decision.consent !== 'allowed')
         throw new GatewayError(409, 'privacy_confirmation_required');
     }
+    // The person agreed to a redacted version of a private conversation. Text
+    // is redacted below; a picture cannot be, so it stays behind.
+    const outbound = decision.private ? withoutImages(body, IMAGE_WITHHELD_PRIVATE) : body;
     // What memory learned in private conversations is swapped out of every
     // cloud request, wherever it appears: recall already leaves it out, and
     // this catches any other way it could arrive.
@@ -280,14 +303,14 @@ export class PrivacyRouter {
     const state = await this.state(scope, settings, `${settings.version}:${digest(remembered)}`);
     let localDetection: PrivacyReceipt['local_detection'] = 'off';
     if (settings.localDetection && settings.local)
-      localDetection = await this.detectLocally(state, body, protocol, settings.local);
+      localDetection = await this.detectLocally(state, outbound, protocol, settings.local);
     const redactor = new Redactor(state.vault, {
       enabled: settings.enabled,
       known: [...settings.known, ...memoryValues(remembered)],
       cache: state.cache,
       extra: (text) => state.ner.get(text),
     });
-    const redacted = redactor.body(body, protocol);
+    const redacted = redactor.body(outbound, protocol);
     const receipt = receiptFor('cloud', redactor.used, localDetection);
     if (state.vault.changed && scope.conversationId && scope.spaceId) {
       state.vault.changed = false;

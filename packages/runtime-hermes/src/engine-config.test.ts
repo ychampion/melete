@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { GATEWAY_MAX_REQUEST_BYTES } from '@melete/contracts';
+import { GATEWAY_MAX_REQUEST_BYTES, VISION_IMAGE_RESERVE_BYTES } from '@melete/contracts';
 import { parse } from 'yaml';
 import {
   API_SERVER_HINT,
@@ -96,6 +96,7 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
     provider: 'melete-gateway',
     default: base.model,
     context_length: 1_000_000,
+    supports_vision: false,
   });
 });
 
@@ -160,12 +161,41 @@ test('the numbers handed to a container are the numbers the renderer computed', 
     MELETE_ENGINE_MAX_TURNS: '150',
     MELETE_ENGINE_CONTEXT_LENGTH: '1000000',
     MELETE_ENGINE_COMPACTION_THRESHOLD: '200000',
+    MELETE_ENGINE_SUPPORTS_VISION: '0',
   });
   expect(engineConfigEnvironment({ ...base, model: 'a-model-nobody-listed' })).toEqual({
     MELETE_ENGINE_MAX_TURNS: '150',
     MELETE_ENGINE_CONTEXT_LENGTH: '128000',
     MELETE_ENGINE_COMPACTION_THRESHOLD: '96000',
+    MELETE_ENGINE_SUPPORTS_VISION: '0',
   });
+});
+
+test('a model that reads images is told so, and compacts with room left for its pictures', () => {
+  const vision = { ...base, provider: 'openai', model: 'gpt-6-astra' };
+  const config = renderEngineConfig(vision) as Record<string, Record<string, unknown>>;
+  expect(config.model?.supports_vision).toBe(true);
+  // The engine counts each kept picture as a flat 1,500 tokens, not its bytes,
+  // so the bytes its pictures can take come off the body limit first.
+  const textBytes = GATEWAY_MAX_REQUEST_BYTES - VISION_IMAGE_RESERVE_BYTES;
+  const threshold = Math.floor((0.8 * textBytes) / 4);
+  expect(config.compression?.threshold_tokens).toBe(threshold);
+  expect(threshold).toBeLessThan(200_000);
+  // The retained pictures at their largest plus the text at the trigger fit.
+  expect(threshold * 4 + VISION_IMAGE_RESERVE_BYTES).toBeLessThan(GATEWAY_MAX_REQUEST_BYTES);
+  expect(engineConfigEnvironment(vision)).toEqual({
+    MELETE_ENGINE_MAX_TURNS: '150',
+    MELETE_ENGINE_CONTEXT_LENGTH: '1050000',
+    MELETE_ENGINE_COMPACTION_THRESHOLD: String(threshold),
+    MELETE_ENGINE_SUPPORTS_VISION: '1',
+  });
+  // The owner's word beats the catalog either way.
+  expect(renderEngineConfig({ ...vision, vision: false }).model).toMatchObject({
+    supports_vision: false,
+  });
+  expect(engineConfigEnvironment({ ...base, vision: true }).MELETE_ENGINE_SUPPORTS_VISION).toBe(
+    '1',
+  );
 });
 
 test('a window an operator states decides for a model the catalog cannot', () => {
@@ -196,6 +226,7 @@ test('a window an operator states decides for a model the catalog cannot', () =>
     MELETE_ENGINE_MAX_TURNS: '150',
     MELETE_ENGINE_CONTEXT_LENGTH: '32000',
     MELETE_ENGINE_COMPACTION_THRESHOLD: '27200',
+    MELETE_ENGINE_SUPPORTS_VISION: '0',
   });
 });
 

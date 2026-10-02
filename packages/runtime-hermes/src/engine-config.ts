@@ -17,6 +17,8 @@ import {
   GATEWAY_MAX_REQUEST_BYTES,
   hasKnownContextWindow,
   modelContextWindow,
+  modelSupportsVision,
+  VISION_IMAGE_RESERVE_BYTES,
 } from '@melete/contracts';
 
 /** Where in-cell commands run, once the native terminal toolset is turned on. */
@@ -90,6 +92,12 @@ export type EngineConfigOptions = {
   compactionMaxTokens?: number;
   /** The engine's per-run iteration ceiling. */
   maxTurns?: number;
+  /**
+   * Whether the model is shown screenshots as pictures. Absent, the model
+   * catalog decides. A model that reads images has part of the gateway's body
+   * limit set aside for the pictures it keeps, so compaction starts sooner.
+   */
+  vision?: boolean;
   /** Written into the model and provider headers when the caller may hold it. */
   capability?: string;
   features?: Partial<EngineFeatures>;
@@ -110,6 +118,9 @@ export const DEFAULT_COMPACTION_MAX_TOKENS = 200_000;
 
 /** The provider entry name every rendered configuration uses. */
 export const GATEWAY_PROVIDER = 'melete-gateway';
+
+/** Says whether the attempt's model is shown screenshots as pictures: `1` or `0`. */
+export const VISION_ENV = 'MELETE_ENGINE_SUPPORTS_VISION';
 
 /** The header the model gateway meters by. */
 export const CAPABILITY_HEADER = 'x-melete-capability';
@@ -189,11 +200,13 @@ export function compactionThresholdTokens(options: {
   contextWindow: number;
   compactionMaxTokens?: number;
   gatewayMaxRequestBytes?: number;
+  vision?: boolean;
 }): number {
-  const bodyLimit = Math.floor(
-    (BODY_LIMIT_HEADROOM * (options.gatewayMaxRequestBytes ?? GATEWAY_MAX_REQUEST_BYTES)) /
-      CHARS_PER_TOKEN,
-  );
+  // The engine counts a kept picture as a flat number of tokens, not by its
+  // bytes, so the bytes its pictures can take are set aside from the body first.
+  const limit = options.gatewayMaxRequestBytes ?? GATEWAY_MAX_REQUEST_BYTES;
+  const textBytes = options.vision ? Math.max(0, limit - VISION_IMAGE_RESERVE_BYTES) : limit;
+  const bodyLimit = Math.floor((BODY_LIMIT_HEADROOM * textBytes) / CHARS_PER_TOKEN);
   return Math.min(
     engineCompactionTrigger(options.contextWindow),
     options.compactionMaxTokens ?? DEFAULT_COMPACTION_MAX_TOKENS,
@@ -211,14 +224,23 @@ export type EngineConfig = Record<string, unknown>;
 export const API_SERVER_HINT =
   'Replies are shown to the person as chat text. Keep them brief and natural. Files you make reach them as artifacts, never as paths in the reply.';
 
+/** Whether the model these options name is shown pictures. */
+export function engineVision(
+  options: Pick<EngineConfigOptions, 'provider' | 'model' | 'vision'>,
+): boolean {
+  return options.vision ?? modelSupportsVision(decodeURIComponent(options.provider), options.model);
+}
+
 export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
   const features = { ...DEFAULT_FEATURES, ...options.features };
   const contextWindow =
     options.contextWindow ?? engineContextWindow(options.model, options.contextWindowLimit);
+  const vision = engineVision(options);
   const thresholdTokens = compactionThresholdTokens({
     contextWindow,
     compactionMaxTokens: options.compactionMaxTokens,
     gatewayMaxRequestBytes: options.gatewayMaxRequestBytes,
+    vision,
   });
   const headers = options.capability
     ? { extra_headers: { [CAPABILITY_HEADER]: options.capability } }
@@ -250,8 +272,9 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
       // The prompt seam in patches/observer_bridge.py: leaves out the engine's
       // product pointer, its profile line and its host runtime block.
       host_prompt: false,
-      // An attempt's input is text. Deciding how to pass images otherwise
-      // probes the model endpoint, here the broker, for a local model server.
+      // What a person attaches arrives as text. Deciding how to pass images
+      // otherwise probes the model endpoint, here the broker, for a local model
+      // server. Screenshots the agent takes are decided by model.supports_vision.
       image_input_mode: 'text',
     },
     // Read at the top level, not under `agent:` (agent/agent_init.py:1352).
@@ -275,6 +298,11 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
       provider: GATEWAY_PROVIDER,
       default: options.model,
       context_length: contextWindow,
+      // Read first by the engine's vision lookup (agent/image_routing.py,
+      // _supports_vision_override), ahead of a catalog it cannot reach from
+      // here. True: a screenshot tool's picture goes to the model; false: its
+      // text summary does (agent/vision_message_prep.py).
+      supports_vision: vision,
       ...headers,
     },
     providers: { [GATEWAY_PROVIDER]: provider },
@@ -308,6 +336,7 @@ export function engineConfigEnvironment(options: EngineConfigOptions): Record<st
   const contextWindow =
     options.contextWindow ?? engineContextWindow(options.model, options.contextWindowLimit);
   const terminal = options.features?.terminalBackend;
+  const vision = engineVision(options);
   return {
     // The engine reads its backend from here as well as from the file; the
     // boot script writes the terminal section from it and refuses any other.
@@ -319,8 +348,12 @@ export function engineConfigEnvironment(options: EngineConfigOptions): Record<st
         contextWindow,
         compactionMaxTokens: options.compactionMaxTokens,
         gatewayMaxRequestBytes: options.gatewayMaxRequestBytes,
+        vision,
       }),
     ),
+    // The boot script writes model.supports_vision from it, and the plugin reads
+    // it to decide whether a screenshot is sent as a picture at all.
+    [VISION_ENV]: vision ? '1' : '0',
   };
 }
 

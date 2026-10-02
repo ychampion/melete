@@ -174,6 +174,8 @@ export const modelDefault = pgTable(
     id: text('id').primaryKey().default('installation'),
     provider: text('provider').notNull(),
     model: text('model').notNull(),
+    /** The owner's word on whether this model reads images; null leaves it to the catalog. */
+    supportsVision: boolean('supports_vision'),
     ownerId: text('owner_id')
       .notNull()
       .references(() => owner.id, { onDelete: 'cascade' }),

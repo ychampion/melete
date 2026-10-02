@@ -9,7 +9,7 @@ import {
   type GatewayProvider,
   type GatewaySettlement,
 } from '../gateway/index.ts';
-import { PrivacyRouter } from './router.ts';
+import { IMAGE_WITHHELD_LOCAL, IMAGE_WITHHELD_PRIVATE, PrivacyRouter } from './router.ts';
 import { MemoryPrivacyStore } from './store.ts';
 
 const PROVIDERS: GatewayProvider[] = [
@@ -1079,4 +1079,122 @@ test('a space or agent the person marked private is reported as such, and a chan
   router.invalidate('spc_1');
   expect(await router.marksPrivate('spc_1', null)).toBe(true);
   expect(await router.marksPrivate('spc_2', null)).toBe(false);
+});
+
+describe('screenshots follow the conversation', () => {
+  // Base64 that happens to read like an account number: as text it would be
+  // swapped for a placeholder and the picture broken.
+  const data = `AAAA${SAM.account}AAAA`;
+  const screenshot = { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${data}` } };
+  const messages = [
+    { role: 'user', content: `Pay from account ${SAM.account}` },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        { id: 'c1', type: 'function', function: { name: 'computer.screenshot', arguments: '{}' } },
+      ],
+    },
+    { role: 'tool', tool_call_id: 'c1', content: [{ type: 'text', text: 'saved' }, screenshot] },
+  ];
+  const inPrivateSpace = async (local?: string, consent?: boolean) => {
+    const store = new MemoryPrivacyStore();
+    store.scopes.set('job_chat', {
+      spaceId: 'spc_1',
+      conversationId: 'job_chat',
+      agentId: 'agt_1',
+      turnId: 'trn_1',
+    });
+    await store.saveSettings(
+      'spc_1',
+      {
+        private_agent_ids: ['agt_1'],
+        ...(local ? { local_model: { base_url: 'http://127.0.0.1:11434/v1', model: local } } : {}),
+      },
+      null,
+    );
+    if (consent) await store.updateConversation('job_chat', 'spc_1', { consent: 'allowed' });
+    return store;
+  };
+  const sentContent = (captured: Captured[]) =>
+    JSON.parse(captured[0]?.body ?? '{}').messages[2].content as unknown[];
+
+  test('an ordinary conversation sends the picture to the cloud model untouched, the text redacted', async () => {
+    const { captured, post } = await start({});
+    expect(
+      (await post('/providers/fireworks/v1/chat/completions', { stream: true, messages })).status,
+    ).toBe(200);
+    const body = JSON.parse(captured[0]?.body ?? '{}');
+    expect(body.messages[0].content).toBe('Pay from account ⟦ACCOUNT_1⟧');
+    expect(body.messages[2].content[1]).toEqual(screenshot);
+  });
+
+  test('a private conversation on a local model that reads images shows it the picture', async () => {
+    const { captured, post } = await start({ store: await inPrivateSpace('qwen2.5vl:7b') });
+    expect(
+      (await post('/providers/fireworks/v1/chat/completions', { stream: true, messages })).status,
+    ).toBe(200);
+    expect(captured[0]?.url).toBe('http://127.0.0.1:11434/v1/chat/completions');
+    expect(sentContent(captured)[1]).toEqual(screenshot);
+  });
+
+  test('a local model that reads text only is told a screenshot was taken, without it', async () => {
+    const { captured, post } = await start({ store: await inPrivateSpace('llama3.3') });
+    expect(
+      (await post('/providers/fireworks/v1/chat/completions', { stream: true, messages })).status,
+    ).toBe(200);
+    expect(captured[0]?.url).toBe('http://127.0.0.1:11434/v1/chat/completions');
+    expect(sentContent(captured)[1]).toEqual({ type: 'text', text: IMAGE_WITHHELD_LOCAL });
+    expect(captured[0]?.body).not.toContain(data);
+  });
+
+  test('with no local model a private conversation sends nothing, screenshot included', async () => {
+    const { captured, post, reserved } = await start({ store: await inPrivateSpace() });
+    expect(
+      (await post('/providers/fireworks/v1/chat/completions', { stream: true, messages })).status,
+    ).toBe(409);
+    expect(captured).toHaveLength(0);
+    expect(reserved).toHaveLength(0);
+  });
+
+  test('a private conversation the person let go redacted keeps its pictures behind, in every protocol', async () => {
+    const { captured, post } = await start({ store: await inPrivateSpace(undefined, true) });
+    expect(
+      (await post('/providers/fireworks/v1/chat/completions', { stream: true, messages })).status,
+    ).toBe(200);
+    expect(sentContent(captured)[1]).toEqual({ type: 'text', text: IMAGE_WITHHELD_PRIVATE });
+    const responses = await post('/providers/openai/v1/responses', {
+      input: [
+        {
+          type: 'function_call_output',
+          call_id: 'c1',
+          output: [{ type: 'input_image', image_url: `data:image/png;base64,${data}` }],
+        },
+      ],
+    });
+    // The provider's own answer is beside the point here: only what left is.
+    await responses.body?.cancel();
+    const anthropic = await post('/providers/anthropic/v1/messages', {
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'c1',
+              content: [
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data } },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    await anthropic.body?.cancel();
+    expect(captured).toHaveLength(3);
+    for (const request of captured) {
+      expect(request.body).not.toContain(data);
+      expect(request.body).toContain('a picture cannot be redacted');
+    }
+  });
 });

@@ -8,6 +8,7 @@
  * the model name, roles, types, ids, tool names, and opaque or signed reasoning.
  */
 import type { PrivacyCategory } from '@melete/contracts';
+import { isInlineImage } from '../gateway/images.ts';
 import { type Detection, detect, resolveOverlaps } from './detect.ts';
 import { type KnownValue, knownPattern, startsCleanly, type Vault } from './vault.ts';
 
@@ -187,6 +188,9 @@ export class Redactor {
     }
     // Signed thinking must reach the provider byte for byte; redacted thinking is opaque.
     if (node.type === 'redacted_thinking') return node;
+    // A picture's bytes are not text: read as text, base64 can look like a card
+    // or an account and be mangled. The router decides whether it goes at all.
+    if (isInlineImage(node)) return node;
     if (node.type === 'thinking' && typeof node.thinking === 'string')
       return { ...node, thinking: this.text(node.thinking, 'vault') };
     if (node.type === 'reasoning' && protocol === 'responses') return this.reasoning(node);

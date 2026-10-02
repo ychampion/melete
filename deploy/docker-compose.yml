@@ -104,6 +104,7 @@ services:
       MELETE_WORK_VOLUME: ${COMPOSE_PROJECT_NAME:-melete}_work
       MELETE_DEFAULT_PROVIDER: ${MELETE_DEFAULT_PROVIDER:-fireworks}
       MELETE_DEFAULT_MODEL: ${MELETE_DEFAULT_MODEL:-accounts/fireworks/models/deepseek-v4p1-flash}
+      MELETE_DEFAULT_MODEL_VISION: ${MELETE_DEFAULT_MODEL_VISION:-}
       MELETE_DEFAULT_MAX_OUTPUT_TOKENS: ${MELETE_DEFAULT_MAX_OUTPUT_TOKENS:-4096}
       # Left empty, the service's own defaults apply (docs/DEPLOYMENT.md, "Engine limits").
       MELETE_ENGINE_MAX_TURNS: ${MELETE_ENGINE_MAX_TURNS:-}

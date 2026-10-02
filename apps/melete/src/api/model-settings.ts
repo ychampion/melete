@@ -67,7 +67,7 @@ export function mountModelSettings(
   app.put('/model-settings/default', async (c) => {
     const ownerId = await requireOwner(c);
     const input = setDefaultModelRequest.parse(await c.req.json());
-    await settings.setDefault(input.provider, input.model, ownerId);
+    await settings.setDefault(input.provider, input.model, ownerId, input.supports_vision ?? null);
     return view(c);
   });
 

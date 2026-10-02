@@ -237,8 +237,19 @@ Redaction reduces what a cloud model sees. It is not anonymisation.
 - Replayed reasoning that a provider signed is only mapped through the vault, so
   its bytes match what was signed; a new detail the model wrote there itself is
   left as it wrote it.
-- Images and files a provider would read directly are refused by the gateway,
-  which only forwards text.
+- Files, audio, and pictures a provider would fetch from an address are
+  refused by the gateway. The one kind of picture it forwards is a screenshot
+  the agent took of its own computer or a paired device, carried inside the
+  request. Its pixels cannot be redacted, so a screenshot goes only where the
+  conversation goes, and only when nothing has to be hidden from that model:
+  - an ordinary conversation sends it to the cloud model with the request,
+    while the text beside it is redacted as usual. What is on the screen is
+    sent as it is;
+  - a private or sensitive conversation shows it to your local model when that
+    model reads images, and otherwise tells it a screenshot was taken;
+  - a private conversation you let go to the cloud redacted never sends it: the
+    picture is replaced by a line saying it was withheld;
+  - with no local model and no answer from you, nothing is sent at all.
 - The local model's context window may be smaller than the cloud model's, and
   local routing needs the chat completions protocol; with another protocol,
   Melete asks first instead.

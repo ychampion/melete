@@ -37,6 +37,7 @@ def boot(tmp_path, monkeypatch, template_config, environment):
         "MELETE_ENGINE_COMPACTION_THRESHOLD",
         "MELETE_ENGINE_MAX_TURNS",
         "MELETE_MODEL_API_MODE",
+        "MELETE_ENGINE_SUPPORTS_VISION",
         "TERMINAL_ENV",
     ):
         monkeypatch.delenv(variable, raising=False)
@@ -178,3 +179,16 @@ def test_an_engine_that_is_not_a_spare_never_starts_without_a_capability(tmp_pat
     monkeypatch.delenv("MELETE_RUNTIME_SPARE", raising=False)
     with pytest.raises(SystemExit):
         boot(tmp_path, monkeypatch, TEMPLATE, {"MELETE_BROKER_URL": "http://broker:19188"})
+
+
+@pytest.mark.parametrize(("value", "expected"), [("1", True), ("0", False)])
+def test_boot_config_says_whether_the_model_sees_pictures(tmp_path, monkeypatch, value, expected):
+    """The engine reads model.supports_vision before any catalog it could not
+    reach from the container; the attempt's renderer decides it."""
+    config = boot(tmp_path, monkeypatch, TEMPLATE, {**BASE_ENVIRONMENT, "MELETE_ENGINE_SUPPORTS_VISION": value})
+    assert config["model"]["supports_vision"] is expected
+
+
+def test_boot_refuses_a_vision_answer_it_cannot_read(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit):
+        boot(tmp_path, monkeypatch, TEMPLATE, {**BASE_ENVIRONMENT, "MELETE_ENGINE_SUPPORTS_VISION": "yes"})
