@@ -14,9 +14,12 @@
  * is run with the adapter declaring deny-all only, which is all it offers there.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { resolveHost } from '../../connectors/web.ts';
+import { fixtureUpstream, memoryCredentialPort } from '../../egress/fixtures.ts';
 import type { EgressRecordOpen } from '../../egress/records.ts';
 import { sandboxConformance } from '../conformance.ts';
 import { serviceContainerId } from '../docker-default.ts';
@@ -31,6 +34,7 @@ import {
   type DockerSandboxSettings,
   DockerSandboxSocket,
 } from './docker.ts';
+import { SandboxEgressGuard } from './docker-egress.ts';
 
 const live = process.env.MELETE_SANDBOX_LIVE === 'docker';
 const socket = process.env.MELETE_DOCKER_SOCKET ?? '/var/run/docker.sock';
@@ -625,6 +629,74 @@ if (!live) {
       expect(recorded.map((record) => [record.host, record.verdict, record.reason])).toContainEqual(
         ['www.iana.org', 'refused', 'host_not_connected'],
       );
+    });
+
+    // Conformance scenario 12, credential egress: a real computer uses a
+    // connected account through the relay, and never holds its secret.
+    test('a computer uses a connected account through the relay, and its environment, files and output never hold the secret', async () => {
+      const HOST = 'api.creds.test';
+      const secret = `tok_live_${randomBytes(16).toString('hex')}`;
+      const upstream = await fixtureUpstream(HOST);
+      const port = memoryCredentialPort({ secret, hosts: [HOST] });
+      const guard = new SandboxEgressGuard({
+        resolve: async (name) =>
+          name === HOST ? [{ address: '93.184.216.34', family: 4 }] : resolveHost(name),
+        credentials: port,
+        intercept: {
+          upstream: () => ({ address: { address: '127.0.0.1', family: 4 }, port: upstream.port }),
+          upstreamCa: upstream.ca,
+        },
+      });
+      const credentialed = new DockerSandboxHost(
+        settings({ egressPort: 18_793, egressCredentials: port }),
+        new DockerSandboxSocket(socket),
+        { guard },
+      );
+      try {
+        const handle = await open({ kind: 'open' }, credentialed);
+        const command = await credentialed.attributeCommand(
+          handle,
+          attribution('act_LIVE_credentialed', handle.providerSandboxId),
+        );
+        // The secret is looked for in two halves, so this command's own text never holds it.
+        const half = Math.floor(secret.length / 2);
+        const outcome = await credentialed.exec(
+          handle,
+          {
+            marker: `act_${Date.now()}`,
+            argv: [
+              '/bin/sh',
+              '-c',
+              [
+                `echo answer=$(curl -s -m 20 https://${HOST}/user)`,
+                'echo trusted=$(test -s "$SSL_CERT_FILE" && echo yes)',
+                `A='${secret.slice(0, half)}'; B='${secret.slice(half)}'`,
+                'env | grep -cF "$A$B" | sed "s/^/env=/"',
+                'grep -rlF "$A$B" /home /work /tmp /etc 2>/dev/null | wc -l | sed "s/^/files=/"',
+              ].join('; '),
+            ],
+            cwd: '/work',
+            timeoutMs: 60_000,
+            maxOutputBytes: 64 * 1024,
+            env: command.env,
+          },
+          signal(),
+        );
+        command.settle();
+        const printed = text(outcome.output);
+        process.stdout.write(`docker live, credential egress: ${printed}\n`);
+        expect(printed).toContain('trusted=yes');
+        expect(printed).toContain('Bearer [redacted]');
+        expect(printed).toContain('env=0');
+        expect(printed).toContain('files=0');
+        expect(printed).not.toContain(secret);
+        expect(upstream.seen.map((request) => request.headers.authorization)).toEqual([
+          `Bearer ${secret}`,
+        ]);
+      } finally {
+        await guard.close();
+        await upstream.close();
+      }
     });
   });
 }
