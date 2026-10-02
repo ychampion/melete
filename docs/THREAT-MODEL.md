@@ -541,8 +541,9 @@ holds only placeholders, the egress CA's certificate and per-command tokens.
   after it). A request signed with any other key, carrying its own session
   token or presigned is refused; unsigned requests go out without the account.
   Operations whose answer is a credential (STS sessions, new IAM access keys,
-  registry and database tokens, S3 Express sessions) are refused, and reading a
-  stored secret asks. S3 is read by method, bucket, key and subresource, and
+  registry and database tokens, S3 Express sessions, and any operation named as
+  getting, creating or assuming credentials, a token or a presigned sign-in
+  link) are refused, and reading a stored secret asks. S3 is read by method, bucket, key and subresource, and
   other services by operation name: names beginning with Get, List, Describe
   and the like read, everything else asks (`list and describe calls are reads,
   and delete and run calls ask` runs the classifier over the requests the AWS

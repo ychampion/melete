@@ -239,7 +239,9 @@ Python makes for the same requests.
   federation token from STS, creating an access key or service credential in
   IAM, SSO role credentials, Cognito identity credentials, ECR and CodeArtifact
   authorization tokens, Redshift database credentials, Lightsail access
-  details, and S3 Express sessions.
+  details, EMR cluster credentials and S3 Express sessions, and in any service
+  an operation named as getting, creating, generating or assuming credentials,
+  a token or a presigned sign-in link.
 
 Each card names the operation, the bucket and key or the region, and the
 request; a delete or overwrite says so, and `RunInstances`,
@@ -289,5 +291,7 @@ ETag and version. S3 can answer a copy or the completion of an upload with
 - AWS: a service the classifier does not list is read by its operation's name
   alone; an operation named like a read that changes something would read
   without asking. The operations known to hand out credentials or stored
-  secrets are refused or ask, as above. Give the key, or the role, only the
+  secrets are refused or ask, as above; other reads return whatever the account
+  may read, including values kept in a resource's settings, such as a Lambda
+  function's environment variables. Give the key, or the role, only the
   permissions the work needs.
