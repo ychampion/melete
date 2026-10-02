@@ -277,8 +277,11 @@ copied. A key belongs in your local `deploy/.env` (`bun run melete set
 ### A managed Postgres database
 
 1. Create a Postgres 17 database at your provider, allow the VM through its
-   firewall, and copy the connection URL. End it with `?sslmode=require`, or
-   `?sslmode=verify-full` with the provider's certificate.
+   firewall, and copy the connection URL. End it with `?sslmode=verify-full`
+   when the provider's certificate is signed by a public authority: the
+   connection is then encrypted and the server's identity checked. With
+   `?sslmode=require` the connection is encrypted, and the server's
+   certificate is accepted without that check.
 2. Set it, keeping it out of your shell history, and turn the database on in
    the deploy file:
 

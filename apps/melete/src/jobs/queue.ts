@@ -59,11 +59,34 @@ export type QueueHandle = {
 };
 
 /**
+ * The queue's connection, with DATABASE_URL read as the service's own client
+ * and libpq read it. pg-boss's driver reads `sslmode=require` as verify-full,
+ * so it would refuse a server whose certificate this machine does not trust
+ * while the service itself connects. For `require`, the mode leaves the URL
+ * and TLS is asked for without verifying the certificate, which is what
+ * `require` means to libpq; every other mode stays as written.
+ */
+export function queueConnection(connectionString: string): {
+  connectionString: string;
+  ssl?: { rejectUnauthorized: false };
+} {
+  let url: URL;
+  try {
+    url = new URL(connectionString);
+  } catch {
+    return { connectionString };
+  }
+  if (url.searchParams.get('sslmode') !== 'require') return { connectionString };
+  url.searchParams.delete('sslmode');
+  return { connectionString: url.toString(), ssl: { rejectUnauthorized: false } };
+}
+
+/**
  * Start pg-boss against the same connection string the service uses. The
  * schema is created on first start; nothing is scheduled here.
  */
 export async function startQueue(connectionString: string): Promise<QueueHandle> {
-  const boss = new PgBoss({ connectionString, schema: 'pgboss', max: 4 });
+  const boss = new PgBoss({ ...queueConnection(connectionString), schema: 'pgboss', max: 4 });
   boss.on('error', (error) => process.stderr.write(`pg-boss: ${error.message}\n`));
   try {
     await boss.start();
