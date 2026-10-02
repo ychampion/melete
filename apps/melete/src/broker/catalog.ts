@@ -230,8 +230,7 @@ export function selectCore(
           : (context.resumable === true && item.tool.name === RESUME_ACTION_TOOL.name) ||
               (context.followable === true && item.tool.name === CHASE_FOLLOW_UP_TOOL.name)
             ? 2
-            : item.tool.name === ASK_PERSON_TOOL.name ||
-                (context.waitable === true && item.tool.name === RUNTIME_WAIT_TOOL.name) ||
+            : (context.waitable === true && item.tool.name === RUNTIME_WAIT_TOOL.name) ||
                 (context.conversational === true && item.tool.name === REACT_TOOL_NAME) ||
                 (context.readable === true && item.tool.name === SKILL_READ_TOOL.name)
               ? 1
@@ -253,9 +252,18 @@ export function selectCore(
       item.core || item.entry.source === 'connector' || (item.entry.source === 'mcp' && score > 0),
   );
   const chosen = new Set<CatalogItem>();
+  // Asking the person is always on offer and rides beside the budget like the
+  // discovery tools: it takes no room a job's own tools would have had.
+  let room = budget;
+  const asking = scored.find(({ item }) => item.tool.name === ASK_PERSON_TOOL.name)?.item;
+  if (asking) {
+    room += toolTokens([...tools, asking.tool]) - toolTokens(tools);
+    chosen.add(asking);
+    tools.push(asking.tool);
+  }
   const add = (...group: CatalogItem[]) => {
     const fresh = group.filter((item) => !chosen.has(item));
-    if (toolTokens([...tools, ...fresh.map((item) => item.tool)]) > budget) return false;
+    if (toolTokens([...tools, ...fresh.map((item) => item.tool)]) > room) return false;
     for (const item of fresh) {
       chosen.add(item);
       tools.push(item.tool);
