@@ -701,6 +701,7 @@ button.act-line:focus-visible,
 .permission-head {
   display: flex;
   flex-direction: row;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 12px;
   padding: 16px 16px 0;
@@ -708,6 +709,18 @@ button.act-line:focus-visible,
 .permission:not([data-pending="true"]) .permission-head {
   align-items: center;
   padding-bottom: 16px;
+}
+/* The outcome pill never squeezes the title: a long one wraps onto its own
+   line, and its words wrap inside it. */
+.permission-head > .col.grow {
+  flex: 1 1 180px;
+}
+.permission-head > .status-pill {
+  max-width: 100%;
+  height: auto;
+  min-height: 22px;
+  padding-block: 3px;
+  white-space: normal;
 }
 .permission-lock {
   display: inline-flex;
@@ -862,6 +875,13 @@ button.act-line:focus-visible,
 @media (max-width: 767px) {
   .permission-head {
     padding: 14px 14px 0;
+  }
+  /* On a phone the outcome sits under the title, lined up with it. */
+  .permission-head > .col.grow {
+    flex-basis: calc(100% - 46px);
+  }
+  .permission-head > .status-pill {
+    margin-left: 46px;
   }
   .permission-body {
     padding: 12px 14px 14px;

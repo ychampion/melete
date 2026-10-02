@@ -38,7 +38,6 @@ import {
 } from '../../src/db/schema.ts';
 import { EVENT_ORDER_LOCK } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
-import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
 import { BACKEND_VOCABULARY } from '../../src/experience/projectors.ts';
 import { newId } from '../../src/ids.ts';
@@ -53,6 +52,7 @@ import { ingest } from '../../src/memory/evidence.ts';
 import { recordOutput } from '../../src/memory/outputs.ts';
 import type { RestrictionJournal, RestrictionRecord } from '../../src/memory/restore.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -115,7 +115,7 @@ async function request(path: string, method = 'GET', body?: unknown, key?: strin
   });
 }
 async function createConversation() {
-  const response = await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent);
+  const response = await request('/agents', 'POST', freshAgent());
   expect(response.status).toBe(200);
   const persona = agentResponse.parse(await response.json()).agent;
   const created = await request('/conversations', 'POST', {
@@ -188,7 +188,7 @@ withDb('experience rows and authenticated scope', () => {
   });
   test('plans project real child completion and preserve context in a linked conversation', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     const saved = planResponse.parse(
       await (
@@ -242,7 +242,7 @@ withDb('experience rows and authenticated scope', () => {
   });
   test('a scheduled routine completes twice with separate spending and attempt bounds', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     const routine = automationResponse.parse(
       await (

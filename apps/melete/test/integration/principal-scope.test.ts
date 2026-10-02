@@ -28,7 +28,6 @@ import { emailManifest } from '../../src/connectors/email.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { loadEnv } from '../../src/env.ts';
-import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { ExperienceEffects } from '../../src/experience/effects.ts';
 import { ExperiencePermissions } from '../../src/experience/permissions.ts';
 import { resolveExperienceGrant } from '../../src/experience/rules.ts';
@@ -45,6 +44,7 @@ import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import type { BrowserWorkerClient } from '../../src/workers/browser/client.ts';
 import { BrowserSessionService } from '../../src/workers/browser/routes.ts';
 import type { BrowserSession } from '../../src/workers/browser/sessions.ts';
+import { freshAgent } from '../helpers/agents.ts';
 import { defaultBudget } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -201,7 +201,7 @@ async function seed(cookie: string, label: string) {
   const spaceId = spaces.find((entry) => entry.kind === 'personal')?.id ?? '';
   expect(spaceId).not.toBe('');
   const persona = agentResponse.parse(
-    await json(await call(cookie, '/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)),
+    await json(await call(cookie, '/agents', 'POST', freshAgent())),
   ).agent;
   const created = await call(cookie, '/conversations', 'POST', {
     title: `${label} dinner`,
@@ -385,7 +385,7 @@ async function isolated(cookie: string, other: Seeded, ownAgentId = other.agentI
     [`/tasks/${other.taskId}`, 'DELETE'],
     [`/plans/${other.planId}`, 'GET'],
     [`/plans/${other.planId}/conversation`, 'POST', { agent_id: ownAgentId }],
-    [`/agents/${other.agentId}`, 'PATCH', AGENT_TEMPLATES.templates[0]?.agent],
+    [`/agents/${other.agentId}`, 'PATCH', freshAgent()],
     [`/artifacts/${other.artifactId}/content`, 'GET'],
     [`/messages/${other.messageId}/reactions`, 'GET'],
     [`/messages/${other.messageId}/reactions`, 'POST', { emoji: '👍' }],

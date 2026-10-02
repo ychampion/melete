@@ -22,7 +22,6 @@ import { action, connection, job, owner, space } from '../../src/db/schema.ts';
 import { serviceTransaction } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
 import { appendEvent } from '../../src/events/store.ts';
-import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
@@ -31,6 +30,7 @@ import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner, LOST_NOTE } from '../../src/jobs/runner.ts';
 import { CONVERSATION_BUDGET, DEFAULT_BUDGET, JobService } from '../../src/jobs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -86,7 +86,7 @@ async function request(path: string, method = 'GET', body?: unknown) {
 }
 
 async function createConversation() {
-  const response = await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent);
+  const response = await request('/agents', 'POST', freshAgent());
   expect(response.status).toBe(200);
   const persona = agentResponse.parse(await response.json()).agent;
   const created = await request('/conversations', 'POST', { title: 'Tea', agent_id: persona.id });

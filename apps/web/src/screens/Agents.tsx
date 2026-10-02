@@ -4,7 +4,8 @@
  * an editor with Look, Behaviour and Access, all on the contract's agent
  * record. The nine face states derive from turn status.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { freeAgentName } from '@melete/contracts/mention';
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { logoFor } from '../chat/parts.tsx';
 import {
   AgentFace,
@@ -21,6 +22,7 @@ import {
   Badge,
   Button,
   Checkbox,
+  Dialog,
   Field,
   IconButton,
   Input,
@@ -254,6 +256,7 @@ function AgentEditor({
   onRetryConnections,
   onSaved,
   onClose,
+  onDelete,
 }: {
   agentId: string | null;
   /** Melete: its name and reach are fixed, so only how it sounds is edited. */
@@ -267,8 +270,29 @@ function AgentEditor({
   onRetryConnections?: () => void;
   onSaved: (agent: Agent) => void;
   onClose: () => void;
+  /** Asks to delete this agent; given for agents other than Melete. */
+  onDelete?: () => void;
 }) {
   const [draft, setDraft] = useState<AgentInput>(initial);
+  const panelRef = useRef<HTMLElement>(null);
+  // Focus moves into the drawer when it opens: to the name on a new agent, so
+  // it can be named straight away, otherwise to the drawer itself.
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const name = agentId
+      ? null
+      : panel.querySelector<HTMLInputElement>('input[aria-label="Agent name"]');
+    (name ?? panel).focus({ preventScroll: true });
+    name?.select();
+  }, [agentId]);
+  const onPanelKey = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    // A list open inside the drawer takes the first Escape itself.
+    if (panelRef.current?.querySelector('[aria-expanded="true"]')) return;
+    event.preventDefault();
+    onClose();
+  };
   const [tab, setTab] = useState<'look' | 'behaviour' | 'access'>(isDefault ? 'behaviour' : 'look');
   const [state, setState] = useState<(typeof FACE_STATES)[number][0]>('idle');
   const [busy, setBusy] = useState(false);
@@ -301,9 +325,12 @@ function AgentEditor({
 
   return (
     <aside
+      ref={panelRef}
       className="side-panel"
       style={{ width: 420, maxWidth: '100%' }}
       aria-label={agentId ? `Edit ${draft.name}` : 'New agent'}
+      tabIndex={-1}
+      onKeyDown={onPanelKey}
     >
       <div
         className="row"
@@ -608,9 +635,14 @@ function AgentEditor({
         className="row"
         style={{ gap: 8, padding: '12px 20px 16px', borderTop: '1px solid var(--line)' }}
       >
+        {agentId && !isDefault && onDelete ? (
+          <Button variant="ghost" icon="trash" onClick={onDelete}>
+            Delete
+          </Button>
+        ) : null}
         <div className="grow" />
         <Button loading={busy} onClick={save}>
-          Save agent
+          {agentId ? 'Save agent' : 'Create agent'}
         </Button>
       </div>
     </aside>
@@ -671,6 +703,11 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
     AgentInput,
     'colour' | 'surface' | 'eye_colour'
   > | null>(null);
+  // A template the person chose opens as a draft to name and review; nothing
+  // is made until they save it.
+  const [seed, setSeed] = useState<AgentTemplate | null>(null);
+  const [deleting, setDeleting] = useState<Agent | null>(null);
+  const [removing, setRemoving] = useState(false);
 
   const wall = useMemo(() => {
     const items = WALL.map(([colour, shape], i) => ({
@@ -686,16 +723,59 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
     selected === 'new' ? null : (agents.find((agent) => agent.id === selected) ?? null);
   const key = draftKey(
     selected,
-    selected === 'new' ? { ...blankAgent(), ...(picked ?? {}) } : current ? inputOf(current) : null,
+    selected === 'new'
+      ? { ...blankAgent(), ...(seed?.agent ?? {}), ...(picked ?? {}) }
+      : current
+        ? inputOf(current)
+        : null,
   );
   const initial = useMemo(
     () => (key === null ? null : (JSON.parse(key) as [string, AgentInput])[1]),
     [key],
   );
 
+  // Back to the card that opened the drawer, so the keyboard picks up where it was.
+  const closeTo = (id: string | null) => {
+    navigate('/agents');
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLElement>(id ? `[data-agent-card="${id}"]` : '[data-new-agent]')
+        ?.focus(),
+    );
+  };
+
+  const remove = () => {
+    if (!deleting) return;
+    const gone = deleting;
+    setRemoving(true);
+    void adapter.deleteAgent(gone.id).then((result) => {
+      setRemoving(false);
+      if (result.data === null) {
+        toast({ kind: 'err', title: 'Couldn’t delete', sub: result.error ?? result.unavailable });
+        return;
+      }
+      setDeleting(null);
+      const { conversations, routines, routines_paused: paused } = result.data;
+      const moved = [
+        conversations ? `${conversations} chat${conversations === 1 ? '' : 's'}` : '',
+        routines ? `${routines} routine${routines === 1 ? '' : 's'}` : '',
+      ].filter(Boolean);
+      toast({
+        kind: 'ok',
+        title: `${gone.name} deleted`,
+        sub: moved.length
+          ? `Melete now looks after its ${moved.join(' and ')}.${paused ? ` ${paused === 1 ? 'The routine is' : 'They are'} paused until you turn ${paused === 1 ? 'it' : 'them'} back on.` : ''}`
+          : undefined,
+      });
+      refreshAgents();
+      templates.reload();
+      closeTo(null);
+    });
+  };
+
   const panel = initial ? (
     <AgentEditor
-      key={current?.id ?? 'new'}
+      key={current?.id ?? `new-${seed?.id ?? 'blank'}`}
       agentId={current?.id ?? null}
       isDefault={current?.is_default === true}
       fixedReach={current?.fixed_reach === true}
@@ -705,20 +785,26 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
       onRetryConnections={connections.reload}
       onSaved={(agent) => {
         refreshAgents();
+        templates.reload();
+        setSeed(null);
         toast({ kind: 'ok', title: `${agent.name} is ready.` });
         navigate(`/agents/${agent.id}`);
       }}
-      onClose={() => navigate('/agents')}
+      onClose={() => closeTo(current?.id ?? null)}
+      onDelete={current && !current.is_default ? () => setDeleting(current) : undefined}
     />
   ) : undefined;
 
-  const fromTemplate = (template: AgentTemplate) =>
-    void adapter.createAgent(template.agent).then((r) => {
-      if (r.data) {
-        refreshAgents();
-        navigate(`/agents/${r.data.agent.id}`);
-      } else toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t create the agent' });
+  const fromTemplate = (template: AgentTemplate) => {
+    // The suggested name is one no agent here has, so "@name" stays clear.
+    const taken = agents.map((agent) => agent.name);
+    setPicked(null);
+    setSeed({
+      ...template,
+      agent: { ...template.agent, name: freeAgentName(template.agent.name, taken) },
     });
+    navigate('/agents/new');
+  };
 
   return (
     <Shell title="Agents" rail={false} panel={panel}>
@@ -733,8 +819,10 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
           </div>
           <Button
             icon="plus"
+            data-new-agent=""
             onClick={() => {
               setPicked(null);
+              setSeed(null);
               navigate('/agents/new');
             }}
           >
@@ -756,6 +844,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
             return (
               <a
                 key={agent.id}
+                data-agent-card={agent.id}
                 className="card hoverable col"
                 href={href(`/agents/${agent.id}`)}
                 style={{
@@ -884,6 +973,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
                   }}
                   onClick={() => {
                     setPicked(look);
+                    setSeed(null);
                     navigate('/agents/new');
                   }}
                 >
@@ -936,6 +1026,28 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
         ) : null}
         {templates.error ? <Badge tone="danger">{templates.error}</Badge> : null}
       </div>
+      <Dialog
+        open={deleting !== null}
+        onClose={removing ? () => {} : () => setDeleting(null)}
+        icon="trash"
+        tone="danger"
+        title={`Delete ${deleting?.name ?? 'this agent'}?`}
+        sub={
+          agents.find((agent) => agent.is_default)?.fixed_reach
+            ? `Its chats move to Melete, which can use everything you've connected. Its routines are paused until you turn them back on. What ${deleting?.name ?? 'it'} said stays in those chats.`
+            : `Its chats and routines move to Melete, which can use only what you've chosen for it here. What ${deleting?.name ?? 'it'} said stays in those chats.`
+        }
+        footer={
+          <>
+            <Button variant="outline" disabled={removing} onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" loading={removing} disabled={removing} onClick={remove}>
+              Delete {deleting?.name ?? 'agent'}
+            </Button>
+          </>
+        }
+      />
     </Shell>
   );
 }
