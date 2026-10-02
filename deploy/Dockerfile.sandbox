@@ -1,6 +1,6 @@
 # The computer an agent works in: one container per agent, started by the
 # service's docker sandbox provider on the host's own engine. A shell with the
-# usual tools, Python, git, and a desktop the size of the live view with a
+# usual tools, Python, git and gh, and a desktop the size of the live view with a
 # browser on it. It holds no Melete configuration, credential or client.
 #
 # The base is the runtime image's own, by digest, so an engine that already

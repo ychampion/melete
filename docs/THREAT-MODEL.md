@@ -511,6 +511,19 @@ holds only placeholders, the egress CA's certificate and per-command tokens.
   has at most four possible changes in hand (checked before a body is read),
   and the bodies held stay within four such requests' worth per computer and
   sixteen for the installation.
+- **GitHub.** A push is bound to its repository and its exact ref updates, old
+  and new commit, which name their content by hash; the pack that carries the
+  commits is not part of the approval, so a push can also carry objects no
+  pushed ref reaches, which GitHub keeps unreferenced in the repository. The
+  REST and GraphQL APIs are bound to the exact request, and a GraphQL document
+  with any mutation in it, or that does not parse, asks. `every mutation in the
+  gh corpus is classified as a write` runs the classifier over the requests
+  `gh` 2.83 and git sent for each command that changes something, recorded,
+  and over shapes written from the protocols. A standing rule covers only
+  pushes that create or move `melete/` branches of one repository, never a
+  delete, a tag or another branch (`a standing rule admits pushes to melete
+  branches and never to the default branch`). Signed download links GitHub
+  returns reach the computer as sent; each opens one object for minutes.
 
 ## Credentials, host and storage
 
