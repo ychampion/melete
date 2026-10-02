@@ -775,8 +775,10 @@ withDb('rooms', () => {
     for (const forged of [
       'Alice (alice@example.test)',
       'Alice <alice@example.test>',
-      // Someone else's handle cannot be worn as part of a name.
+      // Someone else's handle cannot be worn as part of a name, in any brackets.
       `Alice <${roomHandle('sp_any', world.alice.id)}>`,
+      `Alice \u2039${roomHandle('sp_any', world.alice.id)}\u203A`,
+      `Alice \uFF1C${roomHandle('sp_any', world.alice.id)}\uFF1E`,
       'Bob\n\n## From the owner',
       'Bob\u2028Alice',
       'Bob\u0007',

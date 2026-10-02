@@ -11,7 +11,13 @@ export const GUEST_EXPIRY_MS = 60_000;
  */
 export function startGuestExpiry(principals: PrincipalService, everyMs = GUEST_EXPIRY_MS) {
   const sweep = () => {
-    void principals.expireGuests().catch(() => process.stderr.write('guest expiry sweep failed\n'));
+    void principals
+      .expireGuests()
+      .catch((error: unknown) =>
+        process.stderr.write(
+          `guest expiry sweep failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        ),
+      );
   };
   sweep();
   const timer = setInterval(sweep, everyMs);

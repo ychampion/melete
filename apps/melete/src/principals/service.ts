@@ -214,6 +214,16 @@ export class PrincipalService {
     await tx.execute(
       sql`delete from mcp_token where space_id = ${spaceId} and principal_id = ${memberId}`,
     );
+    // A guest never holds an assistant grant; should one exist anywhere, it
+    // goes with their place in the room.
+    await tx.execute(
+      sql`delete from mcp_authorization where principal_id = ${memberId}
+        and exists (select 1 from principal p where p.id = ${memberId} and p.kind = 'guest')`,
+    );
+    await tx.execute(
+      sql`delete from mcp_token where principal_id = ${memberId}
+        and exists (select 1 from principal p where p.id = ${memberId} and p.kind = 'guest')`,
+    );
     const generation = policyGeneration + 1;
     // The copies of what memory handed the member's own actions, kept to say
     // why each was taken, go with the access.
@@ -334,35 +344,44 @@ export class PrincipalService {
       .orderBy(spaceMembership.expiresAt);
     let ended = 0;
     for (const entry of due) {
-      const result = await jobs.transaction(async (tx) => {
-        const [parent] = await tx
-          .select()
-          .from(space)
-          .where(eq(space.id, entry.spaceId))
-          .for('update');
-        // A room being removed ends everyone's place with it.
-        if (!parent || parent.removedAt) return null;
-        const [still] = await tx
-          .select({ principalId: spaceMembership.principalId })
-          .from(spaceMembership)
-          .where(
-            and(
-              eq(spaceMembership.spaceId, entry.spaceId),
-              eq(spaceMembership.principalId, entry.principalId),
-              eq(spaceMembership.role, 'guest'),
-              isNull(spaceMembership.revokedAt),
-              lte(spaceMembership.expiresAt, now),
-            ),
+      const result = await jobs
+        .transaction(async (tx) => {
+          const [parent] = await tx
+            .select()
+            .from(space)
+            .where(eq(space.id, entry.spaceId))
+            .for('update');
+          // A room being removed ends everyone's place with it.
+          if (!parent || parent.removedAt) return null;
+          const [still] = await tx
+            .select({ principalId: spaceMembership.principalId })
+            .from(spaceMembership)
+            .where(
+              and(
+                eq(spaceMembership.spaceId, entry.spaceId),
+                eq(spaceMembership.principalId, entry.principalId),
+                eq(spaceMembership.role, 'guest'),
+                isNull(spaceMembership.revokedAt),
+                lte(spaceMembership.expiresAt, now),
+              ),
+            );
+          if (!still) return null;
+          return this.endMembership(
+            tx,
+            jobs,
+            entry.spaceId,
+            entry.principalId,
+            parent.policyGeneration,
           );
-        if (!still) return null;
-        return this.endMembership(
-          tx,
-          jobs,
-          entry.spaceId,
-          entry.principalId,
-          parent.policyGeneration,
-        );
-      });
+        })
+        // One place that cannot be ended now is said, and tried again on the
+        // next sweep; it never holds up the guests after it.
+        .catch((error: unknown) => {
+          process.stderr.write(
+            `guest expiry: ${entry.principalId} in ${entry.spaceId} failed: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+          return null;
+        });
       if (!result) continue;
       settled(jobs, result);
       ended += 1;

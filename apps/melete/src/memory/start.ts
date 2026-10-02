@@ -119,6 +119,7 @@ export async function startServiceMemory(
       coalesce(s.owner_principal_id, (select id from owner limit 1)) as owner_id,
       m.role, m.generation from space s left join space_membership m
       on m.space_id = s.id and m.principal_id = ${principalId} and m.revoked_at is null
+        and m.role <> 'guest' and (m.expires_at is null or m.expires_at > now())
       where s.id = ${spaceId}`;
     const isOwner = authorized?.owner_id === principalId;
     if (!authorized || (authorized.kind === 'personal' ? !isOwner : !authorized.role))

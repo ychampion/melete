@@ -282,7 +282,9 @@ export function mountAuth(
       const [person] = await db
         .select()
         .from(principal)
-        .where(and(eq(principal.id, actor.principalId), inArray(principal.kind, SIGN_IN_KINDS)))
+        // An assistant acts only for a person: a guest never holds a grant, and a
+        // grant somehow written for one is refused here.
+        .where(and(eq(principal.id, actor.principalId), eq(principal.kind, 'person')))
         .limit(1);
       if (!person) {
         return c.json({ error: { code: 'unauthorized', message: 'The access has ended.' } }, 401);

@@ -33,7 +33,9 @@ import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { mcpServerAddresses, OAuthStore } from '../../src/mcp-server/oauth.ts';
 import { PrincipalService } from '../../src/principals/service.ts';
+import { ensurePersonalSpace } from '../../src/principals/session-space.ts';
 import { roomHandle } from '../../src/rooms/transcript.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -643,6 +645,125 @@ withDb('room guests', () => {
     const again = await claim(request);
     expect(again.claims.membership_generation).toBe(before + 1);
   }, 60_000);
+
+  test('a guest connects no assistant and gets no space of their own, whatever route they take', async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('Assistants');
+    const lee = await guestIn(roomId, 'lee@guest.example');
+    const addresses = mcpServerAddresses(PUBLIC_URL);
+    if (!addresses) throw new Error('Expected the assistant addresses');
+    const store = new OAuthStore(sql, addresses);
+    const redirect = 'http://127.0.0.1:40111/callback';
+    const client = await store.register({ client_name: 'Probe', redirect_uris: [redirect] });
+    const verifier = randomBytes(32).toString('base64url');
+    const query = new URLSearchParams({
+      response_type: 'code',
+      client_id: client.client_id,
+      redirect_uri: redirect,
+      code_challenge: createHash('sha256').update(verifier).digest('base64url'),
+      code_challenge_method: 'S256',
+    });
+    // The grant pages are public routes that read the sign-in themselves: both refuse a guest.
+    const shown = await database().app.request(`/oauth/authorize?${query}`, {
+      headers: { Cookie: lee.cookie },
+    });
+    expect(shown.status).toBe(403);
+    expect(await shown.text()).toContain('cannot connect an assistant');
+    const answered = await database().app.request('/oauth/authorize', {
+      method: 'POST',
+      headers: { Cookie: lee.cookie, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ ...Object.fromEntries(query), decision: 'allow' }).toString(),
+    });
+    expect(answered.status).toBe(403);
+    const [own] =
+      await sql`select count(*)::int as n from space where owner_principal_id = ${lee.id}`;
+    expect(own?.n).toBe(0);
+    const [grants] = await sql`select count(*)::int as n from mcp_authorization
+      where principal_id = ${lee.id}`;
+    expect(grants?.n).toBe(0);
+    // Nothing else makes one either.
+    const refusal = await ensurePersonalSpace(database().db, lee.id, directory).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(refusal instanceof Error ? refusal.message : refusal).toBe(
+      'A guest account uses only the rooms it was invited to.',
+    );
+
+    // A grant written for a guest by any other means, here for a space they are
+    // not even in, is refused when it is used.
+    const stray = await makeRoom('Not theirs');
+    const code = await store.issueCode({
+      clientId: client.client_id,
+      principalId: lee.id,
+      spaceId: stray,
+      membershipGeneration: 0,
+      resource: addresses.resource,
+      scope: 'mcp',
+      redirectUri: redirect,
+      codeChallenge: createHash('sha256').update(verifier).digest('base64url'),
+    });
+    const pair = await store.exchangeCode({
+      code,
+      clientId: client.client_id,
+      redirectUri: redirect,
+      verifier,
+    });
+    const called = await database().app.request('/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Authorization: `Bearer ${pair.access_token}`,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    expect(called.status).toBe(401);
+    // And ending the guest's place takes every grant they hold with it, wherever it is.
+    await ok(send(alice.cookie, `/rooms/${roomId}/members/${lee.id}`, 'DELETE'));
+    const [tokens] =
+      await sql`select count(*)::int as n from mcp_token where principal_id = ${lee.id}`;
+    expect(tokens?.n).toBe(0);
+    const [left] =
+      await sql`select count(*)::int as n from space where owner_principal_id = ${lee.id}`;
+    expect(left?.n).toBe(0);
+  }, 180_000);
+
+  test('one guest whose place cannot be ended now never holds up the others', async () => {
+    const { sql, db, jobs } = database();
+    const roomId = await makeRoom('Sweep');
+    const stuck = await guestIn(roomId, 'max@guest.example', 1);
+    const next = await guestIn(roomId, 'nia@guest.example', 1);
+    await sql`update space_membership set expires_at = now() - interval '2 seconds'
+      where space_id = ${roomId} and principal_id = ${stuck.id}`;
+    await sql`update space_membership set expires_at = now() - interval '1 second'
+      where space_id = ${roomId} and principal_id = ${next.id}`;
+    // The first in line cannot be ended: the database refuses it.
+    await sql.unsafe(`create or replace function r5_refuse_end() returns trigger as $$
+      begin
+        if new.principal_id = '${stuck.id}' and new.revoked_at is not null then
+          raise exception 'refused for this test';
+        end if;
+        return new;
+      end $$ language plpgsql`);
+    await sql.unsafe(`create trigger r5_refuse_end before update on space_membership
+      for each row execute function r5_refuse_end()`);
+    try {
+      const principals = new PrincipalService(db, directory, jobs);
+      expect(await principals.expireGuests()).toBe(1);
+      const rows = await sql`select principal_id, revoked_at from space_membership
+        where space_id = ${roomId} and principal_id in (${stuck.id}, ${next.id})`;
+      const ended = Object.fromEntries(
+        rows.map((row) => [String(row.principal_id), row.revoked_at !== null]),
+      );
+      expect(ended).toEqual({ [stuck.id]: false, [next.id]: true });
+    } finally {
+      await sql.unsafe('drop trigger r5_refuse_end on space_membership');
+      await sql.unsafe('drop function r5_refuse_end()');
+    }
+    // Once it can be, the next sweep ends it.
+    expect(await new PrincipalService(db, directory, jobs).expireGuests()).toBe(1);
+  }, 180_000);
 
   test('an expired guest loses access and fences room work like a revocation', async () => {
     const { sql, db, jobs } = database();

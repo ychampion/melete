@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { displayNameText } from '@melete/contracts';
 import { mentionsOf } from './service.ts';
 import { personLabel, roomHandle } from './transcript.ts';
 
@@ -34,14 +35,15 @@ describe('names in a room', () => {
     const label = personLabel({ ...alice, displayName: 'Alice' }, room);
     expect(label).toBe(`Alice <${roomHandle(room, alice.id)}>`);
     expect(label).not.toContain('example.test');
-    expect(roomHandle(room, alice.id)).toMatch(/^[a-z2-9]{6}$/);
+    expect(roomHandle(room, alice.id)).toMatch(/^[a-z2-9]{8}$/);
     // A look-alike name, or the very same name, still carries the handle of the person who chose it.
     expect(personLabel({ ...carol, displayName: 'Alice' }, room)).toBe(
       `Alice <${roomHandle(room, carol.id)}>`,
     );
     expect(roomHandle(room, carol.id)).not.toBe(roomHandle(room, alice.id));
+    // No chosen name: a neutral word, never the part of the email before the @.
     expect(personLabel({ id: carol.id, displayName: null, email: 'sam@example.test' }, room)).toBe(
-      `sam <${roomHandle(room, carol.id)}>`,
+      `Someone <${roomHandle(room, carol.id)}>`,
     );
   });
 
@@ -49,5 +51,24 @@ describe('names in a room', () => {
     const other = 'sp_01J0000000000000000000000Z';
     expect(roomHandle(room, alice.id)).toBe(roomHandle(room, alice.id));
     expect(roomHandle(other, alice.id)).not.toBe(roomHandle(room, alice.id));
+  });
+});
+
+describe('chosen names', () => {
+  test('a name cannot hold < > or @, nor anything that reads as one', () => {
+    for (const name of ['Alice', 'Ana María', 'Bob (design)', '\u0410lice'])
+      expect([name, displayNameText.safeParse(name).success]).toEqual([name, true]);
+    for (const name of [
+      'Alice <k7q2mx3a>',
+      'Alice @home',
+      'Alice \uFF1Ck7q2mx3a\uFF1E',
+      'Alice \uFE64k7q2mx3a\uFE65',
+      'Alice \u2039k7q2mx3a\u203A',
+      'Alice \u00ABk7q2mx3a\u00BB',
+      'Alice \u27E8k7q2mx3a\u27E9',
+      'Alice \u3008k7q2mx3a\u3009',
+      'Alice \uFF20home',
+    ])
+      expect([name, displayNameText.safeParse(name).success]).toEqual([name, false]);
   });
 });

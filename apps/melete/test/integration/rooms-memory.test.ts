@@ -30,7 +30,7 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { captureRoom } from '../../src/memory/capture.ts';
 import { recordAttemptContext } from '../../src/memory/context.ts';
-import type { MemoryScope } from '../../src/memory/db.ts';
+import { lockSpace, type MemoryScope } from '../../src/memory/db.ts';
 import { ingest } from '../../src/memory/evidence.ts';
 import type { ExtractionGateway } from '../../src/memory/extract.ts';
 import { forgetMemory } from '../../src/memory/forget.ts';
@@ -717,6 +717,34 @@ withDb('room memory', () => {
     expect(joined.status).toBe(200);
     const [guest] = await sql`select id from principal where email = 'gus@guest.example'`;
     const guestId = String(guest?.id);
+    // A guest has no memory scope of their own in the room: the room's memory
+    // reaches them only through the room's routes.
+    const { memory } = database();
+    const settle = (work: Promise<unknown>) =>
+      work.then(
+        () => 'allowed',
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+    expect(await settle(memory.provision(roomId, bob.id))).toBe('allowed');
+    expect(await settle(memory.provision(roomId, guestId))).toBe('scope_denied');
+    const reader = { ...(await memory.storageScope(roomId)), principalId: bob.id };
+    const generationOf = async (id: string) =>
+      Number(
+        (
+          await sql`select generation from space_membership
+            where space_id = ${roomId} and principal_id = ${id}`
+        )[0]?.generation,
+      );
+    const lockAs = (id: string, generation: number) =>
+      memory.sql.begin((tx) =>
+        lockSpace(
+          tx,
+          { ...reader, principalId: id, membershipGeneration: generation, role: 'reader' },
+          false,
+        ),
+      );
+    expect(await settle(lockAs(bob.id, await generationOf(bob.id)))).toBe('allowed');
+    expect(await settle(lockAs(guestId, await generationOf(guestId)))).toBe('scope_denied');
     const second = await ask(alice, roomId, 'What do we know about Ana and the deposit now?');
     const during = await attemptOf(second.jobId);
     expect(handed(during.bundle)).not.toContain('ana@private.example');
@@ -729,7 +757,7 @@ withDb('room memory', () => {
     const after = await attemptOf(third.jobId);
     expect(handed(after.bundle)).toContain('ana@private.example');
     await after.finish();
-  }, 120_000);
+  }, 240_000);
 
   test('an owner forgets any room claim, and a member forgets only claims from their own words', async () => {
     const roomId = await makeRoom('Venue', [bob, carol]);

@@ -104,6 +104,9 @@ export const person = z.strictObject({
 export const peopleQuery = z.strictObject({ query: z.string().max(200).optional() });
 export const peopleList = z.strictObject({ people: z.array(person) });
 
+const LOOKALIKE_MARKS =
+  /[<>@\u2039\u203A\u00AB\u00BB\u27E8\u27E9\u2329\u232A\u3008\u3009\u300A\u300B\u276C-\u2771\u29FC\u29FD\u02C2\u02C3]/u;
+
 /**
  * The name other people in a room see, beside the handle the room gives them.
  * One line of plain text with no `<`, `>` or `@`, so a name never reads as
@@ -114,7 +117,12 @@ export const displayNameText = z
   .trim()
   .min(1)
   .max(80)
-  .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}<>@]+$/u, 'Use one line of plain text, without < > or @.');
+  .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}<>@]+$/u, 'Use one line of plain text, without < > or @.')
+  // Look-alikes of < > and @, by compatibility (＜ ﹫) or by shape (‹ › « » ⟨ ⟩), count as them.
+  .refine(
+    (value) => !LOOKALIKE_MARKS.test(value.normalize('NFKC')),
+    'Use one line of plain text, without < > or @.',
+  );
 export const updateMeRequest = z.strictObject({ display_name: displayNameText.nullable() });
 export const meResponse = z.strictObject({
   owner: z.strictObject({

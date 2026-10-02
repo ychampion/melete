@@ -27,23 +27,25 @@ export function displayName(row: { displayName: string | null; email: string }):
   return chosen || (row.email.split('@')[0] ?? row.email);
 }
 
-/** Letters a handle is made of: no two that read alike. */
-const HANDLE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
-const HANDLE_LENGTH = 6;
+/** Letters a handle is made of: 32, no two that read alike, so each takes five bits evenly. */
+const HANDLE_ALPHABET = 'abcdefghijkmnpqrstuvwxyz23456789';
+const HANDLE_LENGTH = 8;
 
 /**
  * The code a room gives a person. It comes from the room and the person's
  * account, both made by the service, so nobody chooses it or can take someone
- * else's; it differs from room to room, so a guest in two rooms is not
- * followed between them by it.
+ * else's. It differs from room to room.
  */
 export function roomHandle(spaceId: string, principalId: string): string {
   const digest = createHash('sha256').update(`room-handle:${spaceId}:${principalId}`).digest();
   let handle = '';
   for (let index = 0; index < HANDLE_LENGTH; index++)
-    handle += HANDLE_ALPHABET[(digest[index] ?? 0) % HANDLE_ALPHABET.length];
+    handle += HANDLE_ALPHABET[(digest[index] ?? 0) & 31];
   return handle;
 }
+
+/** What a room calls someone who has chosen no name: no part of their email is shown. */
+export const UNNAMED = 'Someone';
 
 /**
  * How a room names a person: the name they chose, then the room's handle for
@@ -56,7 +58,7 @@ export function personLabel(
   row: { id: string; displayName: string | null; email: string },
   spaceId: string,
 ): string {
-  return `${displayName(row)} <${roomHandle(spaceId, row.id)}>`;
+  return `${row.displayName?.trim() || UNNAMED} <${roomHandle(spaceId, row.id)}>`;
 }
 
 /** The label of each of a set of principals in one room; see `personLabel`. */
