@@ -11,7 +11,6 @@
  */
 import {
   type ArtifactExpectation,
-  type ArtifactValidation,
   artifactExpectation,
   artifactValidationsHold,
   type JsonObject,
@@ -20,7 +19,6 @@ import {
   pendingArtifactValidation,
   publishReceipt,
 } from '@melete/contracts';
-import type { Sql } from 'postgres';
 import { BrokerFault } from '../broker/errors.ts';
 import { type Query, recordId } from '../broker/records.ts';
 import { type ArtifactRoots, defaultArtifactRoots, readArtifactContent } from './content.ts';
@@ -220,40 +218,6 @@ export function createArtifactRecorder(
     if (publication && typeof artifactId === 'string') {
       await recordPublication(tx, artifactId, publishReceipt.parse(publication));
     }
-  };
-}
-
-/**
- * The owner's own answer. It replaces the pending row a declared `human`
- * expectation left behind, which is what lets the job move.
- */
-export async function acceptArtifact(
-  sql: Sql,
-  input: { artifact_id: string; decision: 'accepted' | 'rejected'; note?: string },
-): Promise<ArtifactValidation> {
-  const [artifact] = await sql`select content_hash from artifact where id = ${input.artifact_id}`;
-  if (!artifact) throw new Error('artifact is unavailable');
-  const [row] = await sql`insert into artifact_validation
-    (artifact_id, class, name, status, detail, evidence, advisory, checked_at, validated_content_hash)
-    values (${input.artifact_id}, 'human', 'human',
-      ${input.decision === 'accepted' ? 'passed' : 'failed'},
-      ${input.note ?? (input.decision === 'accepted' ? 'accepted by the owner' : 'rejected by the owner')},
-      ${JSON.stringify({ decision: input.decision })}::jsonb, false, now(), ${artifact.content_hash})
-    on conflict (artifact_id, name) do update set status = excluded.status,
-      detail = excluded.detail, evidence = excluded.evidence, checked_at = excluded.checked_at,
-      validated_content_hash = excluded.validated_content_hash
-    returning *`;
-  if (!row) throw new Error('the acceptance was not recorded');
-  return {
-    artifact_id: row.artifact_id,
-    class: 'human',
-    name: 'human',
-    status: row.status,
-    detail: row.detail,
-    evidence: row.evidence,
-    advisory: false,
-    checked_at: new Date(row.checked_at).toISOString(),
-    validated_content_hash: row.validated_content_hash,
   };
 }
 

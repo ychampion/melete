@@ -943,6 +943,67 @@ describe('full effect authority binding', () => {
   }
 });
 
+describe('a connection changed under a running attempt', () => {
+  // These are the writes a connection lifecycle change commits in one
+  // transaction: the connection's generation moves, and so does the space's
+  // policy generation, which every attempt captured when it started.
+  const changes = {
+    revoked: 'revoked',
+    'switched to another key': 'active',
+  } as const;
+  for (const [change, status] of Object.entries(changes)) {
+    databaseTest(`a proposal from the old attempt is refused once it is ${change}`, async () => {
+      const s = await setup();
+      await s.sql`update connection set generation = generation + 1, status = ${status}
+        where id = ${s.connectionId}`;
+      await s.sql`update space set policy_generation = policy_generation + 1
+        where id = ${s.claims.space_id}`;
+      expect(
+        await rejectionOf(
+          s.broker.propose(s.claims, {
+            kind: 'test.read',
+            connection_id: s.connectionId,
+            payload: { q: 'inbox' },
+          }),
+        ),
+      ).toMatchObject({ code: 'scope_denied' });
+      expect(await s.sql`select id from action where job_id = ${s.claims.job_id}`).toHaveLength(0);
+      expect(s.calls()).toBe(0);
+    });
+  }
+
+  databaseTest(
+    'a revoked connection is refused even to an attempt on the current policy',
+    async () => {
+      const s = await setup();
+      await s.sql`update connection set status = 'revoked' where id = ${s.connectionId}`;
+      expect(
+        await rejectionOf(
+          s.broker.propose(s.claims, {
+            kind: 'test.read',
+            connection_id: s.connectionId,
+            payload: { q: 'inbox' },
+          }),
+        ),
+      ).toMatchObject({ code: 'unknown_connection' });
+      expect(s.calls()).toBe(0);
+    },
+  );
+
+  databaseTest('a tool whose scope the attempt was not granted is refused', async () => {
+    const s = await setup();
+    expect(
+      await rejectionOf(
+        s.broker.propose(
+          { ...s.claims, scopes: ['test.read'] },
+          { kind: 'test.send', connection_id: s.connectionId, payload: { to: 'a@example.com' } },
+        ),
+      ),
+    ).toMatchObject({ code: 'scope_denied' });
+    expect(await s.sql`select id from action where job_id = ${s.claims.job_id}`).toHaveLength(0);
+  });
+});
+
 describe('a command shown for approval', () => {
   databaseTest(
     'one too long for its card is refused when proposed, and nothing is recorded',
