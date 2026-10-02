@@ -256,10 +256,10 @@ Everything else is a change and asks:
   someone installs it. The approval is bound to the exact bytes of the request,
   so a different tarball is a new approval.
 - **An unpublish** of the whole package or of one version, a **deprecation**,
-  an **owner** change, and any other change to a package's record show each
+  a **maintainer** change, and any other change to a package's record show each
   field the change sets as it will be afterwards (the versions kept, the
-  deprecation messages, the owners, the tags). One that removes versions,
-  owners or tags is marked as such.
+  deprecation messages, the maintainers, the tags). One that removes versions,
+  maintainers or tags is marked as such.
 - **A dist-tag** change shows the tag and the version it will name; **access**,
   **team** and **organisation** changes say what they grant or take away.
 

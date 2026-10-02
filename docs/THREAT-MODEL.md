@@ -541,7 +541,7 @@ holds only placeholders, the egress CA's certificate and per-command tokens.
   request that asks to act as another GitLab user (`Sudo`) and glab's usage
   reports are refused. An npm publish is bound to its exact bytes, tarball
   included, and its card shows the scripts that run on install; unpublishing,
-  deprecating, owner, tag, access, team and organisation changes ask, and the
+  deprecating, maintainer, tag, access, team and organisation changes ask, and the
   audit lookups npm sends as POSTs are the only POSTs that read.
   `every change in the glab and git corpus is classified as a write` and
   `every change in the npm corpus is classified as a write, and installs and

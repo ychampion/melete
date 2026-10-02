@@ -8,7 +8,7 @@
  *
  * - a publish, to the package, each version it adds, its tags and its access,
  *   and the exact bytes of the tarball it carries;
- * - an unpublish, a deprecation, an owner change or any other change to a
+ * - an unpublish, a deprecation, a maintainer change or any other change to a
  *   package's record, shown as each field will be afterwards;
  * - a dist-tag, access, team or organisation change, by what it names.
  *
@@ -221,7 +221,7 @@ function publish(request: InterceptedRequest, pkg: string, doc: Record<string, u
 
 /**
  * Any other change to a package's record (an unpublish of one version, a
- * deprecation, an owner change, a star): each field the document names
+ * deprecation, a maintainer change, a star): each field the document names
  * replaces that field, so the card shows each one as it will be afterwards.
  */
 function rewrite(request: InterceptedRequest, pkg: string, doc: Record<string, unknown>): Write {
@@ -245,8 +245,8 @@ function rewrite(request: InterceptedRequest, pkg: string, doc: Record<string, u
     const maintainers = (Array.isArray(doc.maintainers) ? doc.maintainers : [])
       .map((entry) => str(record(entry).name, 214))
       .filter((name): name is string => Boolean(name));
-    parts.push(`owners: ${listed(maintainers, 5) || 'none'}`);
-    facts.push({ label: 'Owners afterwards', value: listed(maintainers) || 'none' });
+    parts.push(`maintainers: ${listed(maintainers, 5) || 'none'}`);
+    facts.push({ label: 'Maintainers afterwards', value: listed(maintainers) || 'none' });
   }
   if ('dist-tags' in doc) {
     const tags = Object.entries(record(doc['dist-tags'])).map(
@@ -265,7 +265,7 @@ function rewrite(request: InterceptedRequest, pkg: string, doc: Record<string, u
     'package_record',
     pkg,
     { title: `Change ${pkg} on npm (${parts.join('; ') || 'its record'})`, facts },
-    // Versions, owners and tags left out of the lists the document names are removed.
+    // Versions, maintainers and tags left out of the lists the document names are removed.
     'versions' in doc || 'maintainers' in doc || 'dist-tags' in doc,
   );
 }

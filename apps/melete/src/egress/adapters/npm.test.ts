@@ -111,11 +111,11 @@ describe('the npm classifier on recorded npm requests', () => {
     });
   });
 
-  test('unpublishing, deprecating and changing owners are shown as the record they leave', () => {
+  test('unpublishing, deprecating and changing maintainers are shown as the record they leave', () => {
     expect(
       writes('npm-unpublish-version.http').map((w) => [w.summary.title, w.destructive]),
     ).toEqual([
-      ['Change melete-demo on npm (versions kept: 1.1.0; owners: alice, bob; tags; time)', true],
+      ['Change melete-demo on npm (versions kept: 1.1.0; maintainers: alice, bob; tags; time)', true],
       ['Delete the tarball x-1.0.0.tgz of melete-demo from npm', true],
     ]);
     expect(writes('npm-unpublish-all.http').map((w) => w.summary.title)).toEqual([
@@ -123,11 +123,11 @@ describe('the npm classifier on recorded npm requests', () => {
     ]);
     const [deprecated] = writes('npm-deprecate.http');
     expect(deprecated?.summary.title).toBe(
-      'Change melete-demo on npm (versions kept: 1.0.0, 1.1.0; 1 deprecated; owners: alice, bob; tags; time)',
+      'Change melete-demo on npm (versions kept: 1.0.0, 1.1.0; 1 deprecated; maintainers: alice, bob; tags; time)',
     );
     expect(deprecated?.summary.facts).toContainEqual({ label: 'Deprecated', value: '1.0.0: Old' });
     expect(writes('npm-owner-add.http').map((w) => w.summary.title)).toEqual([
-      'Change melete-demo on npm (owners: alice, bob)',
+      'Change melete-demo on npm (maintainers: alice, bob)',
     ]);
     // A star names only who starred it: nothing else is replaced.
     const [star] = writes('npm-star.http');
