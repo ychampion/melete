@@ -86,14 +86,24 @@ type Lookups = {
 /**
  * An attempt's answer and reasoning, as streamed so far. `fresh` while none of
  * its answer has been seen, so its first piece can be joined to the turn's.
+ * The answer stream holds the message being written now: each tool call the
+ * model makes ends the message before it (`said` marks one has text), so the
+ * words written before a call are shown before the call and the next message
+ * starts on a paragraph of its own (`split`).
  */
-type AttemptText = { answer: AnswerStream; reasoning: AnswerStream; fresh: boolean };
+type AttemptText = {
+  answer: AnswerStream;
+  reasoning: AnswerStream;
+  fresh: boolean;
+  said: boolean;
+  split: boolean;
+};
 
 /**
- * Where an attempt's streamed text stood before `seq`: its answer whole, and
- * its reasoning since the answer last moved, which is where reasoning is
- * flushed. Read from the saved events, so a later page of the stream filters
- * exactly as one long page would have.
+ * Where an attempt's streamed text stood before `seq`: the message being
+ * written, and its reasoning since the answer last moved, which is where
+ * reasoning is flushed. Read from the saved events, so a later page of the
+ * stream filters exactly as one long page would have.
  */
 async function attemptText(tx: Transaction, attemptId: string, seq: number): Promise<AttemptText> {
   const rows = await tx
@@ -102,25 +112,39 @@ async function attemptText(tx: Transaction, attemptId: string, seq: number): Pro
     .where(
       and(
         eq(event.attemptId, attemptId),
-        inArray(event.type, ['text_delta', 'reasoning_delta']),
+        inArray(event.type, ['text_delta', 'reasoning_delta', 'tool_call_proposed']),
         sql`${event.seq} < ${seq}`,
       ),
     )
     .orderBy(asc(event.seq));
   let answer = '';
   let reasoning = '';
+  let any = false;
+  let split = false;
   for (const row of rows) {
+    if (row.type === 'tool_call_proposed') {
+      // The message before a call ended there; the next one starts afresh.
+      if (answer !== '') split = true;
+      answer = '';
+      continue;
+    }
     const text = object(row.payload).text;
     if (typeof text !== 'string') continue;
     if (row.type === 'text_delta') {
       answer += text;
+      if (text) {
+        any = true;
+        split = false;
+      }
       reasoning = '';
     } else reasoning += text;
   }
   return {
     answer: new AnswerStream(answer),
     reasoning: new AnswerStream(reasoning),
-    fresh: answer === '',
+    fresh: !any,
+    said: answer !== '',
+    split,
   };
 }
 /** The statuses the runner can leave a turn in when an attempt ends. */
@@ -393,7 +417,13 @@ export class ExperienceEvents {
         const streamed = async (source: EventRow): Promise<AttemptText> => {
           // Text with no attempt is filtered piece by piece; it has nothing to join.
           if (!source.attemptId)
-            return { answer: new AnswerStream(), reasoning: new AnswerStream(), fresh: false };
+            return {
+              answer: new AnswerStream(),
+              reasoning: new AnswerStream(),
+              fresh: false,
+              said: false,
+              split: false,
+            };
           let found = streams.get(source.attemptId);
           if (!found) {
             found = await attemptText(tx, source.attemptId, source.seq);
@@ -451,6 +481,18 @@ export class ExperienceEvents {
         };
         for (const source of raw) {
           const payload = object(source.payload);
+          // A tool call ends the message the model wrote before it: what it still
+          // held back is shown now, ahead of the call, and the next words start
+          // a new paragraph.
+          if (source.type === 'tool_call_proposed' && source.attemptId) {
+            const text = await streamed(source);
+            if (text.said) {
+              const rest = text.answer.end();
+              if (rest) await emit(source, { type: 'text_delta', text: rest }, 'message_end');
+              text.said = false;
+              text.split = true;
+            }
+          }
           for (const tool of await toolCalls(tx, source, jobs, spaceId, lookups.arguments)) {
             const shown = await shownTool(tx, id, tool.id, 'tool');
             if (JSON.stringify(shown) !== JSON.stringify(tool))
@@ -550,8 +592,12 @@ export class ExperienceEvents {
             text.fresh = false;
             if (join === 'replace')
               await emit(source, { type: 'text_delta', text: '', restart: true }, 'answer_join');
-            else if (join === 'separate')
+            else if (join === 'separate' || (text.split && piece))
               await emit(source, { type: 'text_delta', text: '\n\n' }, 'answer_join');
+            if (piece) {
+              text.said = true;
+              text.split = false;
+            }
             await emit(source, {
               type: 'text_delta',
               text: source.attemptId ? text.answer.push(piece) : answerText(piece),

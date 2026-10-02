@@ -4,7 +4,7 @@
  * Everything is drawn as React text, so nothing in a reply becomes markup.
  */
 import { type ReactNode, useEffect, useRef, useState } from 'react';
-import { Icon } from '../design/icons.tsx';
+import { Icon, type IconName } from '../design/icons.tsx';
 import { type Block, type Inline, inlineMarks, parseMarkdown } from '../experience/markdown.ts';
 
 function Marks({ text }: { text: string }) {
@@ -25,6 +25,24 @@ function Marks({ text }: { text: string }) {
   );
 }
 
+/**
+ * The small mark a link wears, by what it points at: a change proposed for
+ * review, a tracked issue, a file, an address to write to, or a site.
+ */
+export function linkIcon(target: string): IconName {
+  if (target.startsWith('mailto:')) return 'mail';
+  let path = '';
+  try {
+    path = new URL(target).pathname;
+  } catch {
+    return 'globe';
+  }
+  if (/\/(pull|pulls|merge_requests)\/\d+/.test(path)) return 'shuffle';
+  if (/\/issues\/\d+/.test(path)) return 'circleCheck';
+  if (/\.[a-z0-9]{1,6}$/i.test(path) && !/\.(html?|php|aspx?)$/i.test(path)) return 'fileText';
+  return 'globe';
+}
+
 function Mark({ span }: { span: Inline }) {
   if (span.kind === 'strong') return <strong>{span.text}</strong>;
   if (span.kind === 'em') return <em>{span.text}</em>;
@@ -37,6 +55,7 @@ function Mark({ span }: { span: Inline }) {
         target="_blank"
         rel="noopener noreferrer nofollow"
       >
+        <Icon name={linkIcon(span.href)} size={14} className="answer-link-icon" />
         {span.text}
       </a>
     );

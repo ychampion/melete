@@ -113,18 +113,20 @@ for (const item of [card, receipt]) {
     const html = renderToStaticMarkup(
       <ActionBar turn={saved} touch={false} onCopy={() => {}} onReact={() => {}} />,
     );
-    expect(html).not.toContain('React with');
+    expect(html).not.toContain('react-btn');
   });
 }
 
-test('a finished text message retains its four rendered reaction buttons', () => {
+test('a finished text message offers thumbs up and thumbs down', () => {
   const state = applyEvent(fromTurns([first], 'send', 'done'), reply(30, first.id));
   const saved = state.turns[0];
   if (!saved) throw new Error('Missing turn');
   const html = renderToStaticMarkup(
     <ActionBar turn={saved} touch={false} onCopy={() => {}} onReact={() => {}} />,
   );
-  expect(html.match(/React with/g)).toHaveLength(4);
+  expect(html.match(/class="react-btn"/g)).toHaveLength(2);
+  expect(html).toContain('aria-label="Good answer"');
+  expect(html).toContain('aria-label="Not a good answer"');
 });
 
 const personEvent = (seq: number, saved: Turn): MeleteEvent => ({
