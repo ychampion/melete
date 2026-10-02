@@ -540,6 +540,13 @@
       "when": 1789232400056,
       "tag": "0076_orphaned_routine_threads",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1789232400057,
+      "tag": "0077_shared_space_scope",
+      "breakpoints": true
     }
   ]
 }

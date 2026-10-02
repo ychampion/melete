@@ -35,6 +35,7 @@ import { EmailConnector } from '../connectors/email.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { newId } from '../ids.ts';
 import { QUEUES } from '../jobs/queue.ts';
+import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 
 /** The event a waiting chase listens on. Must match `REPLY_EVENT_NAME`. */
@@ -263,7 +264,19 @@ export async function readCandidates(sql: Sql, limit = 200): Promise<ReplyCandid
     group by j.id, j.space_id, j.constraints, t.id, t.spec
     order by j.id
     limit ${limit}`;
-  return candidatesFrom(rows as unknown as CandidateRow[]);
+  // The mailbox is read here, outside the broker, so the rule for who may use
+  // a connection is applied here too: a chase is read only through a
+  // connection that serves its job.
+  const candidates = candidatesFrom(rows as unknown as CandidateRow[]);
+  const served: ReplyCandidate[] = [];
+  for (const candidate of candidates) {
+    const audience = await jobConnectionAudience(sql, candidate.jobId);
+    const [source] = await sql`select shared_use from connection
+      where id = ${candidate.connectionId} and space_id = ${candidate.spaceId}`;
+    if (audience && source && connectionServesJob(audience, String(source.shared_use)))
+      served.push(candidate);
+  }
+  return served;
 }
 
 // --------------------------------------------------------------------------

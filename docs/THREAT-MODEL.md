@@ -365,6 +365,17 @@ drives each surface from a second account against the owner's rows, and from the
 owner against the second account's, and asserts that nothing was read, decided,
 sent, undone or steered.
 
+Inside a shared space, a job's memory and connections follow the job's
+principal too. A member's job recalls what the space shares with its members,
+never what is private to the owner, on every memory deployment. A shared
+space's connections, built-in tools included, serve its owner unless marked
+for the room. A member's own job is offered none of them, cannot act through
+them, and cannot watch what they receive, and the broker checks this again
+before anything is sent. Every answer to a permission records the person who
+gave it; one made with the operator's approval key is recorded as the service's.
+[shared-space-scope.test.ts](../apps/melete/test/integration/shared-space-scope.test.ts)
+drives a member's job against the owner's private memory and connections.
+
 What remains: the profile, tasks, saved rules, agents and connection reads are
 rows of a space rather than of a person, so a shared space offers them to its
 owner only. A file whose job row was deleted is scoped by its space alone.

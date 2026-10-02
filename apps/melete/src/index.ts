@@ -10,7 +10,6 @@
 
 import type { AttemptBundle, RuntimeAdapter } from '@melete/contracts';
 import { brokerCatalogState } from '@melete/runtime-hermes';
-import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ZodError } from 'zod';
@@ -65,7 +64,6 @@ import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
-import { connection } from './db/schema.ts';
 import { mountDevices } from './devices/routes.ts';
 import { DeviceService } from './devices/service.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
@@ -87,6 +85,7 @@ import { startQueue } from './jobs/queue.ts';
 import { ReactionService } from './jobs/reactions.ts';
 import { ReplyService } from './jobs/replies.ts';
 import { AttemptRunner } from './jobs/runner.ts';
+import { connectionScopesForJob } from './jobs/scopes.ts';
 import { JobService } from './jobs/service.ts';
 import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
@@ -876,22 +875,17 @@ export async function bootstrap(
           : {}),
         loadCatalog: catalog?.forAttempt,
         liveConnectionScopes: !env.MELETE_ENABLE_TEST_CONNECTOR,
-        // The scopes the space's active connections grant, and the lifecycle
-        // wait. The test connector's scopes are added beside them when it is
-        // enabled, so a `--fake` installation keeps its default tools.
-        scopesForJob: async (tx, row) => {
-          const granted = await tx
-            .select({ scopes: connection.scopes })
-            .from(connection)
-            .where(and(eq(connection.spaceId, row.spaceId), eq(connection.status, 'active')));
-          return [
+        // The scopes the active connections the job may use grant, and the
+        // lifecycle wait. The test connector's scopes are added beside them when
+        // it is enabled, so a `--fake` installation keeps its default tools.
+        scopesForJob: async (tx, row) =>
+          [
             ...new Set([
-              ...granted.flatMap((entry) => entry.scopes),
+              ...(await connectionScopesForJob(tx, row)),
               'job.wait',
               ...(env.MELETE_ENABLE_TEST_CONNECTOR ? TEST_CONNECTOR_SCOPES : []),
             ]),
-          ].sort();
-        },
+          ].sort(),
       });
       // An attempt that ends leaves no sandbox running: its workspace is
       // suspended, and an ephemeral session is closed. Settled after the

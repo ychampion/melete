@@ -111,6 +111,12 @@ export const connection = z.object({
    * asks for these with everything granted before.
    */
   needs_scope: z.array(z.string()).optional(),
+  /**
+   * Whose work a connection in a shared space serves: `owner` is the space
+   * owner's own work, `room` is work the room asks for. A personal space's
+   * connections serve its owner whatever this says.
+   */
+  shared_use: z.enum(['owner', 'room']).optional(),
   last_checked_at: timestamp.nullable(),
   created_at: timestamp,
 });

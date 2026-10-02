@@ -54,6 +54,7 @@ import {
 import { agentAccess, computerTool, directSend } from '../experience/access.ts';
 import { plainText, tooLongToAsk } from '../experience/projectors.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
+import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import type { SandboxRun, TrySandbox } from '../runs/try.ts';
@@ -264,6 +265,16 @@ const ownerAnswered = (action: Action) =>
 /** The sandbox tool a measured try's commands are proposed as. */
 const TRY_TOOL_KIND = 'terminal.run';
 
+/** What a person's answer was recorded as before answers named the person. */
+const LEGACY_PERSON_DECISION = 'owner';
+
+/** The principal a job belongs to; one from before principals is the setup owner's. */
+async function jobPrincipal(tx: Query, job: LockedJob): Promise<string> {
+  if (job.principal_id) return job.principal_id;
+  const [row] = await tx`select id from owner limit 1`;
+  return String(row?.id ?? LEGACY_PERSON_DECISION);
+}
+
 /** Job states after which none of the job's actions can run. */
 const ENDED_JOB_STATES = new Set(['cancelled', 'failed', 'completed']);
 /**
@@ -440,10 +451,11 @@ export class BrokerService implements BrokerOperations {
     )
       throw new BrokerFault('scope_denied');
     const [connection] =
-      await tx`select c.provider, c.scopes, c.status, s.audience from connection c
+      await tx`select c.provider, c.scopes, c.status, c.shared_use, s.audience from connection c
       join space s on s.id = c.space_id
       where c.id = ${connectionId} and c.space_id = ${job.space_id} for share`;
     if (connection?.status !== 'active') throw new BrokerFault('unknown_connection');
+    await this.checkConnectionUse(tx, job, String(connection.shared_use));
     await this.checkExecutionBackend(tx, job.space_id, String(connection.provider));
     const connector = this.options.connectors.get(connectionId);
     if (
@@ -1531,6 +1543,11 @@ export class BrokerService implements BrokerOperations {
     });
   }
 
+  /**
+   * A person's answer to a permission, recorded as theirs: `decidedBy` is the
+   * principal who answered. Left out, as on the service's own approval route,
+   * the answer is the job's principal's, the only person a job asks.
+   */
   async decide(
     id: string,
     request: ApprovalDecisionRequest,
@@ -1540,11 +1557,13 @@ export class BrokerService implements BrokerOperations {
       action: Action,
       approval: Record<string, unknown>,
     ) => Promise<void>,
+    decidedBy?: string,
   ) {
     const original = await loadAction(this.sql, id);
     const result = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, original.job_id);
       const action = await loadAction(tx, id, true);
+      const decider = decidedBy ?? (await jobPrincipal(tx, job));
       const [approval] = await tx`select * from approval where action_id = ${id}
         and payload_hash = ${request.payload_hash} for update`;
       if (
@@ -1566,7 +1585,7 @@ export class BrokerService implements BrokerOperations {
       if (
         request.decision === 'denied' &&
         approval.decision === 'denied' &&
-        approval.decided_by === 'owner'
+        [decider, LEGACY_PERSON_DECISION].includes(String(approval.decided_by))
       )
         return {
           approval_id: approval.id as string,
@@ -1578,7 +1597,7 @@ export class BrokerService implements BrokerOperations {
       if (changed && !approval.decision && request.decision === 'denied') {
         const decidedAt = new Date().toISOString();
         await tx`update approval set decision = 'denied', decided_at = ${decidedAt},
-          decided_by = 'owner' where id = ${approval.id}`;
+          decided_by = ${decider} where id = ${approval.id}`;
         if (action.status === 'needs_approval') await this.setStatus(tx, action, 'denied');
         await appendEvent(tx, job.id, action.attempt_id, 'approval_decided', {
           action_id: id,
@@ -1639,7 +1658,7 @@ export class BrokerService implements BrokerOperations {
       if (action.status !== 'needs_approval') throw new BrokerFault('action_not_admissible');
       const decidedAt = new Date().toISOString();
       await tx`update approval set decision = ${request.decision}, decided_at = ${decidedAt},
-        decided_by = 'owner' where id = ${approval.id}`;
+        decided_by = ${decider} where id = ${approval.id}`;
       await this.setStatus(tx, action, request.decision);
       await appendEvent(tx, job.id, action.attempt_id, 'approval_decided', {
         action_id: id,
@@ -1814,6 +1833,13 @@ export class BrokerService implements BrokerOperations {
     return result.action;
   }
 
+  /** A connection serves only the jobs the shared-use rule gives it to; see `jobs/scopes.ts`. */
+  private async checkConnectionUse(tx: Query, job: LockedJob, sharedUse: string) {
+    const audience = await jobConnectionAudience(tx, job.id);
+    if (!audience || !connectionServesJob(audience, sharedUse))
+      throw new BrokerFault('scope_denied');
+  }
+
   /**
    * Everything that has to be true for these bytes to leave, re-asked.
    *
@@ -1862,9 +1888,10 @@ export class BrokerService implements BrokerOperations {
     )
       throw new BrokerFault('scope_denied');
     const [connection] =
-      await tx`select c.status, c.provider, c.scopes, s.audience from connection c
+      await tx`select c.status, c.provider, c.scopes, c.shared_use, s.audience from connection c
       join space s on s.id = c.space_id
       where c.id = ${action.connection_id} and c.space_id = ${job.space_id} for share`;
+    if (connection) await this.checkConnectionUse(tx, job, String(connection.shared_use));
     // Admitted before the space had a sandbox connection is not enough: the
     // command still runs where the space runs commands now.
     if (connection) await this.checkExecutionBackend(tx, job.space_id, String(connection.provider));

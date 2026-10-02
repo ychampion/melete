@@ -22,6 +22,7 @@ import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { QUEUES } from './queue.ts';
 import type { AttemptRunner } from './runner.ts';
+import { jobMayUseConnection } from './scopes.ts';
 import type { JobRow, JobService } from './service.ts';
 
 export const eventDelivery = z.object({
@@ -109,7 +110,14 @@ export class TriggerService {
           .select()
           .from(connection)
           .where(eq(connection.id, spec.connection_id));
-        if (!source || source.spaceId !== row.spaceId || source.status !== 'active')
+        // A connection serves only the jobs the shared-use rule gives it to,
+        // and watching what it receives is using it.
+        if (
+          !source ||
+          source.spaceId !== row.spaceId ||
+          source.status !== 'active' ||
+          !(await jobMayUseConnection(tx, row.id, source.id))
+        )
           throw new ServiceError(
             'unknown_connection',
             'Choose an active connection in the job space.',
@@ -213,6 +221,10 @@ export class TriggerService {
     if (!registration?.enabled)
       throw new ServiceError('invalid_wait', 'Wait trigger is missing or disabled.');
     const spec = triggerSpec.parse(registration.spec);
+    // A trigger made before its connection stopped serving this job, or before
+    // the rule existed, hears nothing more from it.
+    if (spec.kind !== 'schedule' && !(await jobMayUseConnection(tx, row.id, spec.connection_id)))
+      return row;
     const source =
       spec.kind === 'schedule'
         ? and(
