@@ -86,12 +86,14 @@ async function relayClaims(
     );
   // The attempt that proposed the command, or, when the command was approved
   // and carried out by a later attempt of the same job, that live attempt: an
-  // action keeps the attempt that proposed it.
+  // action keeps the attempt that proposed it. Only an attempt at the job's
+  // current revision takes over: one at an older revision never does.
   const [row] = await broker.sql`select j.id as job_id, j.space_id, j.budget, a.id as attempt_id,
       a.epoch, a.revision, a.principal_id, a.membership_generation
     from attempt a join job j on j.id = a.job_id
     where j.id = ${attribution.jobId} and a.outcome is null
-      and (a.id = ${attribution.attemptId} or a.epoch = j.lease_epoch)
+      and (a.id = ${attribution.attemptId}
+        or (a.epoch = j.lease_epoch and a.revision = j.revision))
     order by (a.id = ${attribution.attemptId}) desc, a.epoch desc limit 1`;
   if (!row) throw new BrokerFault('stale_epoch', 'The work that ran this command has ended.');
   const [connection] = await broker.sql`select scopes from connection

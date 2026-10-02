@@ -258,6 +258,22 @@ withDb('where an account is offered', () => {
     expect(row?.attempt_id).toBe(next);
   }, 30_000);
 
+  test('a live attempt at an older revision never takes over a command whose attempt has ended', async () => {
+    const { mint, claims, push, actionRow, sql } = await setup({ holdSeconds: 0 });
+    const token = mint(claims.attempt_id);
+    const next = recordId('att');
+    await sql`update attempt set outcome = 'completed', ended_at = now() where id = ${claims.attempt_id}`;
+    // The request changed: the job is at revision 1, the live attempt still at 0.
+    await sql`update job set lease_epoch = 2, revision = 1 where id = ${claims.job_id}`;
+    await sql`insert into attempt (id, job_id, epoch, revision, runtime_version, provider, model)
+      values (${next}, ${claims.job_id}, 2, 0, 'fake', 'fake', 'scripted')`;
+    const answer = await push(token);
+    expect(answer?.status).toBe(403);
+    expect(answer?.body).toContain('The work that ran this command has ended.');
+    expect(await actionRow()).toBeUndefined();
+    expect(upstream.seen).toEqual([]);
+  }, 30_000);
+
   test('a shared space, another audience or a public compartment is never offered the account', async () => {
     const { claims, credentials, sql } = await setup({ holdSeconds: 0 });
     const ask = () =>
