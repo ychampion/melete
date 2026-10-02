@@ -12,6 +12,7 @@ import {
 } from '@melete/contracts';
 import { localEndpoint, PrivacyRouter } from '../privacy/index.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
+import { countImages, imageTokens, isInlineImage, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import {
@@ -284,8 +285,11 @@ export function createModelGateway(options: GatewayOptions): Server {
       // counting a token per byte instead refused a request roughly four times
       // sooner than the engine's trigger, so a long conversation was rejected
       // here before it could ever be compacted.
-      // Remote media and built-in tools cannot be metered by this text-only gateway.
+      // Remote media and built-in tools cannot be metered by this gateway. A
+      // picture the request carries itself (a screenshot the agent took) can,
+      // within the limits countImages holds it to.
       if (containsRemoteInput(body)) throw new GatewayError(400, 'unmetered_input_denied');
+      countImages(body);
       // Where this request may go and what it may carry: private conversations
       // go to the person's own model, everything else leaves with its sensitive
       // details swapped for placeholders. A refusal happens before anything is
@@ -294,10 +298,17 @@ export function createModelGateway(options: GatewayOptions): Server {
       const prepared = router
         ? await router.prepare({ principal, provider, protocol, body })
         : null;
-      const outbound = prepared?.body ?? body;
+      // The runtime's mark on a screenshot is for the router; it never leaves.
+      const outbound = withoutMarks(prepared?.body ?? body);
       const local = prepared?.local ?? null;
       const encoded = JSON.stringify(outbound);
-      const inputTokens = estimateInputTokens(encoded) + REQUEST_FRAMING_TOKENS;
+      // A picture is charged as the flat count the engine compacts by, not as
+      // the base64 text it travels in.
+      const pictures = imageTokens(outbound);
+      const inputTokens =
+        estimateInputTokens(pictures.text === outbound ? encoded : JSON.stringify(pictures.text)) +
+        pictures.tokens +
+        REQUEST_FRAMING_TOKENS;
       if (
         inputTokens >
         inputTokenAllowance(model, requested, { max_input_tokens: principal.maxInputTokens })
@@ -587,6 +598,7 @@ function containsRemoteInput(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsRemoteInput);
   const node = object(value);
   if (!node) return false;
+  if (isInlineImage(node)) return false;
   if (
     typeof node.type === 'string' &&
     /image|audio|video|file|web_search|computer|code_interpreter/.test(node.type)

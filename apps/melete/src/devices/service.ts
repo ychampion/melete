@@ -168,6 +168,7 @@ export class DeviceService {
       capabilities: row.capabilities,
       local_capabilities: row.localCapabilities,
       folders: row.folders,
+      cloud_screenshots: row.cloudScreenshots ?? null,
       status: revoked ? 'revoked' : this.hub.online(row.id) ? 'online' : 'offline',
       browser_connected: !revoked && this.hub.online(row.id, 'browser'),
       companion_version: row.companionVersion,
@@ -371,20 +372,29 @@ export class DeviceService {
       .where(eq(pairedDevice.id, device.id));
   }
 
-  async update(id: string, actor: string, change: Partial<DeviceCapabilities>) {
+  async update(
+    id: string,
+    actor: string,
+    change: Partial<DeviceCapabilities>,
+    cloudScreenshots?: boolean | null,
+  ) {
     const { row, status } = await this.get(id, actor);
     if (row.revokedAt || status === 'revoked')
       throw new ServiceError('conflict', 'This computer was disconnected. Pair it again.', 409);
     const capabilities = { ...row.capabilities, ...change };
+    const screens = cloudScreenshots === undefined ? row.cloudScreenshots : cloudScreenshots;
     await this.deps.db.transaction(async (tx) => {
-      await tx.update(pairedDevice).set({ capabilities }).where(eq(pairedDevice.id, id));
+      await tx
+        .update(pairedDevice)
+        .set({ capabilities, cloudScreenshots: screens })
+        .where(eq(pairedDevice.id, id));
       await tx
         .update(connection)
         .set({ scopes: deviceScopes(capabilities, row.localCapabilities) })
         .where(eq(connection.id, row.connectionId));
     });
     this.withdrawRefused(id, capabilities, row.localCapabilities);
-    return this.view({ ...row, capabilities }, status);
+    return this.view({ ...row, capabilities, cloudScreenshots: screens }, status);
   }
 
   async revoke(id: string, actor: string) {

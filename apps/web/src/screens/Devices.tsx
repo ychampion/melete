@@ -223,9 +223,18 @@ function PairDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   );
 }
 
-function DeviceCard({ device, onChanged }: { device: Device; onChanged: () => void }) {
+function DeviceCard({
+  device,
+  onChanged,
+  screensByDefault,
+}: {
+  device: Device;
+  onChanged: () => void;
+  /** Settings → Privacy's answer for paired computers, which this one follows unless it says otherwise. */
+  screensByDefault: boolean;
+}) {
   const [confirming, setConfirming] = useState(false);
-  const [saving, setSaving] = useState<keyof DeviceCapabilities | null>(null);
+  const [saving, setSaving] = useState<keyof DeviceCapabilities | 'screens' | null>(null);
   const revoked = device.status === 'revoked';
   const status =
     device.status === 'online' ? (
@@ -340,6 +349,37 @@ function DeviceCard({ device, onChanged }: { device: Device; onChanged: () => vo
                 </div>
               );
             })}
+            <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
+              <div className="col grow" style={{ gap: 2 }}>
+                <span style={{ fontSize: 13, color: 'var(--heading)' }}>
+                  Let cloud models see this screen
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                  {device.cloud_screenshots === null
+                    ? 'Follows Settings → Privacy. Screenshots are never redacted.'
+                    : 'Set for this computer. Screenshots are never redacted.'}
+                </span>
+              </div>
+              <Toggle
+                label={`Let cloud models see the screen of ${device.name}`}
+                on={device.cloud_screenshots ?? screensByDefault}
+                disabled={saving !== null}
+                onChange={(next) => {
+                  setSaving('screens');
+                  void adapter.changeDeviceScreens(device.id, next).then((r) => {
+                    setSaving(null);
+                    if (r.data === null) {
+                      toast({
+                        kind: 'err',
+                        title: r.error ?? r.unavailable ?? 'Couldn’t change that',
+                      });
+                      return;
+                    }
+                    onChanged();
+                  });
+                }}
+              />
+            </div>
           </div>
         </>
       )}
@@ -383,6 +423,8 @@ function DeviceCard({ device, onChanged }: { device: Device; onChanged: () => vo
 
 export function DevicesTab({ onCount }: { onCount?: (count: number) => void }) {
   const devices = useLoad(() => adapter.devices(), []);
+  // Only to show what a computer with no answer of its own follows: off unless turned on.
+  const privacy = useLoad(() => adapter.privacySettings(), []);
   const [pairing, setPairing] = useState(false);
   const list = devices.data?.devices ?? [];
   const active = list.filter((device) => device.status !== 'revoked');
@@ -411,7 +453,12 @@ export function DevicesTab({ onCount }: { onCount?: (count: number) => void }) {
       ) : null}
       <div className="col" style={{ gap: 8 }}>
         {shown.map((device) => (
-          <DeviceCard key={device.id} device={device} onChanged={reload} />
+          <DeviceCard
+            key={device.id}
+            device={device}
+            onChanged={reload}
+            screensByDefault={privacy.data?.screenshots_paired_devices ?? false}
+          />
         ))}
       </div>
       {devices.data && active.length === 0 ? (

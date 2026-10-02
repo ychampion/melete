@@ -84,6 +84,14 @@ if context_length:
 threshold = whole("MELETE_ENGINE_COMPACTION_THRESHOLD")
 if threshold:
     config.setdefault("compression", {})["threshold_tokens"] = threshold
+# Whether the model is shown screenshots as pictures. Only the two spellings
+# the renderer writes are read; anything else stops the boot rather than leave
+# the image's default in place while the plugin acts on another answer.
+vision = os.environ.get("MELETE_ENGINE_SUPPORTS_VISION", "")
+if vision not in ("", "0", "1"):
+    raise SystemExit("MELETE_ENGINE_SUPPORTS_VISION must be 0 or 1")
+if vision:
+    model_section["supports_vision"] = vision == "1"
 max_turns = whole("MELETE_ENGINE_MAX_TURNS")
 if max_turns:
     config.setdefault("agent", {})["max_turns"] = max_turns

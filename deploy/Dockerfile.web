@@ -23,7 +23,18 @@ COPY apps/mock-api/package.json apps/mock-api/
 COPY apps/tryit/package.json apps/tryit/
 COPY conformance/package.json conformance/
 COPY evals/package.json evals/
-RUN bun install --frozen-lockfile
+# Only the root tooling and the web client's own dependency tree: the other workspaces'
+# development tools, wrangler and its workerd binary among them, play no part in this build.
+# Downloads are kept in a BuildKit cache between builds, and a stalled download is cut off
+# and retried rather than holding the build.
+RUN --mount=type=cache,target=/var/cache/bun \
+    export BUN_INSTALL_CACHE_DIR=/var/cache/bun; \
+    for attempt in 1 2 3; do \
+      timeout 300 bun install --frozen-lockfile --filter ./ --filter @melete/web && exit 0; \
+      echo "dependency install attempt $attempt of 3 did not finish" >&2; \
+      [ "$attempt" = 3 ] || sleep $((attempt * 10)); \
+    done; \
+    exit 1
 
 COPY . .
 RUN bun run --cwd apps/web build
