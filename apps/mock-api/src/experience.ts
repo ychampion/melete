@@ -155,6 +155,8 @@ export class ExperienceMock {
   readonly plans = new Map<string, Plan>();
   readonly tasks = new Map<string, ReturnType<typeof C.experienceTask.parse>>();
   readonly automations = new Map<string, ReturnType<typeof C.experienceAutomation.parse>>();
+  /** The agent each routine runs as, by routine id. */
+  readonly routineAgents = new Map<string, string>();
   readonly memories = new Map<string, ReturnType<typeof C.memoryItem.parse>>();
   /** What the mock believes about the person, with its history and rewinds. */
   readonly beliefs = new MockBeliefs(
@@ -205,7 +207,7 @@ export class ExperienceMock {
         space_id: deps.spaceId,
         is_default: isDefault,
         fixed_reach: isDefault,
-        usage: { conversations: 0, last_used: null },
+        usage: { conversations: 0, last_used: null, routines: 0 },
       });
       this.agents.set(agent.id, agent);
     }
@@ -518,10 +520,10 @@ export class ExperienceMock {
       ['Month two', false, null],
       ['Month three', false, null],
     ]);
-    for (const [title, cron, enabled] of [
-      ['Morning brief', '30 8 * * 1,2,3,4,5', true],
-      ['Expenses on Fridays', '0 16 * * 5', true],
-      ['Long-run check-in', '0 7 * * 0', false],
+    for (const [title, cron, enabled, runner] of [
+      ['Morning brief', '30 8 * * 1,2,3,4,5', true, this.defaultAgent().id],
+      ['Expenses on Fridays', '0 16 * * 5', true, nova.id],
+      ['Long-run check-in', '0 7 * * 0', false, sage.id],
     ] as const) {
       const routine = C.experienceAutomation.parse({
         id: newId('routine'),
@@ -559,6 +561,7 @@ export class ExperienceMock {
         ],
       });
       this.automations.set(routine.id, routine);
+      this.routineAgents.set(routine.id, runner);
     }
     const kyoto = this.start(
       'Kyoto in October',
@@ -1561,6 +1564,7 @@ export class ExperienceMock {
       runs: [],
     });
     this.automations.set(value.id, value);
+    this.routineAgents.set(value.id, input.agent_id);
     return { automation: value };
   }
   /** The label a key shows under, matching the service's own wording. */
@@ -1627,6 +1631,8 @@ export class ExperienceMock {
               last_used:
                 [...this.chats.values()].filter((chat) => chat.view.agent_id === agent.id).at(-1)
                   ?.view.updated_at ?? null,
+              routines: [...this.routineAgents.values()].filter((runner) => runner === agent.id)
+                .length,
             },
           })),
         };
@@ -1660,7 +1666,7 @@ export class ExperienceMock {
           space_id: this.deps.spaceId,
           is_default: existing?.is_default === true,
           fixed_reach: existing?.fixed_reach === true,
-          usage: { conversations: 0, last_used: null },
+          usage: { conversations: 0, last_used: null, routines: 0 },
         });
         this.agents.set(agent.id, agent);
         return { agent };
@@ -1692,10 +1698,15 @@ export class ExperienceMock {
           for (const step of plan.milestones)
             if (step.assignee.kind === 'agent' && step.assignee.agent_id === id)
               step.assignee = { kind: 'agent', agent_id: melete.id };
+        let routines = 0;
+        for (const [routine, runner] of this.routineAgents)
+          if (runner === id) {
+            this.routineAgents.set(routine, melete.id);
+            routines += 1;
+          }
         this.agents.delete(id);
         this.removedAgents.set(id, target);
-        // The mock's routines carry no agent of their own.
-        return { id, moved_to: melete.id, conversations, routines: 0, routines_paused: 0 };
+        return { id, moved_to: melete.id, conversations, routines, routines_paused: 0 };
       }
       case 'GET /conversations': {
         // Most recently active first, a page at a time, as the service answers.
@@ -2061,11 +2072,15 @@ export class ExperienceMock {
         });
         this.automations.delete(id);
         this.automations.set(routine.id, routine);
+        const runner = this.routineAgents.get(id);
+        this.routineAgents.delete(id);
+        if (runner) this.routineAgents.set(routine.id, runner);
         return { automation: routine };
       }
       case 'DELETE /automations/{id}':
         required(this.automations, id);
         this.automations.delete(id);
+        this.routineAgents.delete(id);
         return { status: 'ok' };
       case 'GET /experience/connections':
         return { connections: this.connections() };

@@ -1,9 +1,155 @@
-/* The agent library: shelves, search, cards and the detail sheet. */
+/* The Agents screen: your agents, the library, its sheets, and a library agent's welcome. */
 
+.agents-page {
+  gap: 32px;
+}
+.agents-lede {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--muted);
+  max-width: 540px;
+}
+
+/* ---------- section heads ---------- */
+.lib-title {
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.lib-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.lib-block-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+.lib-block-head h3 {
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.lib-block-head > span {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+/* ---------- your agents ---------- */
+.your-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.agent-grid {
+  container-type: inline-size;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr));
+  gap: 8px;
+}
+.agent-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 10px 10px 12px;
+  border-radius: var(--radius-block, 12px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+}
+.agent-card:hover {
+  border-color: var(--line-strong);
+}
+.agent-card[data-on="true"] {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.agent-card-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 8px;
+}
+.agent-card-main:hover,
+.agent-card-main:hover * {
+  text-decoration: none;
+}
+.agent-card-main:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+}
+.agent-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.agent-card-name {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-card-role {
+  font-weight: 400;
+  color: var(--muted);
+}
+.agent-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.agent-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* A narrow card puts its actions on a line of their own. */
+@container (max-width: 480px) {
+  .agent-card {
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+  .agent-card-main {
+    flex-basis: 100%;
+  }
+  .agent-card-actions {
+    width: 100%;
+    padding-left: 56px;
+    justify-content: flex-end;
+  }
+  .agent-card-actions .badge {
+    margin-right: auto;
+  }
+}
+
+/* ---------- the library ---------- */
 .library {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 24px;
   min-width: 0;
 }
 .library-head {
@@ -11,16 +157,187 @@
   flex-wrap: wrap;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 12px;
+  gap: 12px 24px;
 }
-.library-head p {
+.library-lede {
   font-family: var(--font-voice);
-  font-size: 17px;
-  line-height: 26px;
+  font-size: 18px;
+  line-height: 27px;
   letter-spacing: -0.012em;
   color: var(--secondary);
   max-width: 560px;
 }
+.lib-search {
+  width: 300px;
+  max-width: 100%;
+}
+.lib-count {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+  min-height: 16px;
+}
+
+/* Every card: the agent's face, name and role, its benefit in its own voice, and what it works with. */
+.lib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+  gap: 12px;
+}
+.lib-card {
+  --agent-tint: var(--primary);
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "face id"
+    "benefit benefit"
+    "foot foot";
+  align-items: center;
+  gap: 10px 12px;
+  padding: 16px;
+  border-radius: var(--radius-card, 16px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  text-align: left;
+  color: inherit;
+  min-width: 0;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+.lib-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-lift);
+  transform: translateY(-1px);
+}
+.lib-card:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.lib-card[data-on="true"] {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.lib-card-face {
+  grid-area: face;
+  display: inline-flex;
+}
+.lib-card-id {
+  grid-area: id;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.lib-card-name {
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.lib-card-role {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lib-card-benefit {
+  grid-area: benefit;
+  font-family: var(--font-voice);
+  font-size: 16px;
+  line-height: 23px;
+  letter-spacing: -0.012em;
+  color: var(--heading);
+  text-wrap: pretty;
+}
+.lib-card-foot {
+  grid-area: foot;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.lib-card-go {
+  display: inline-flex;
+  color: var(--muted);
+  opacity: 0;
+  transform: translateX(-3px);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+.lib-card:hover .lib-card-go,
+.lib-card:focus-visible .lib-card-go {
+  opacity: 1;
+  transform: none;
+}
+
+/* A featured card stands taller, its face on a wash of the agent's own colour. */
+.lib-featured {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(196px, 1fr);
+  gap: 12px;
+  overflow-x: auto;
+  padding: 2px 2px 8px;
+  margin: -2px -2px -8px;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: thin;
+}
+.lib-card[data-feature="true"] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "face"
+    "id"
+    "benefit"
+    "foot";
+  align-items: start;
+  align-content: start;
+  gap: 8px;
+  padding: 0 0 16px;
+  overflow: hidden;
+  scroll-snap-align: start;
+}
+.lib-card[data-feature="true"] .lib-card-face {
+  justify-content: center;
+  padding: 22px 0 18px;
+  margin-bottom: 4px;
+  background: color-mix(in srgb, var(--agent-tint) 16%, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--agent-tint) 22%, var(--line));
+}
+.lib-card[data-feature="true"] :is(.lib-card-id, .lib-card-benefit, .lib-card-foot) {
+  padding: 0 16px;
+}
+.lib-card[data-feature="true"] .lib-card-benefit {
+  font-size: 17px;
+  line-height: 24px;
+}
+.lib-card[data-feature="true"] .lib-card-foot {
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+.reach-icons {
+  display: inline-flex;
+  gap: 4px;
+}
+.reach-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--secondary);
+  flex-shrink: 0;
+}
+
+/* Shelves: chips with small icons, then each shelf under its own head. */
 .library-shelves {
   border: 0;
   min-width: 0;
@@ -34,86 +351,88 @@
 .library-shelves .chip {
   flex-shrink: 0;
 }
-.library-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
-  gap: 12px;
-}
-.library-card {
+.lib-shelf {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 16px;
-  border-radius: var(--radius-card, 16px);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  text-align: left;
-  color: inherit;
   min-width: 0;
-  transition:
-    border-color 120ms ease,
-    box-shadow 120ms ease;
+  padding-top: 8px;
 }
-.library-card:hover {
-  border-color: var(--line-strong);
-  box-shadow: var(--shadow-lift);
-}
-.library-card[data-on="true"] {
-  border-color: var(--primary);
-  box-shadow: inset 0 0 0 1px var(--primary);
-}
-.library-card:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
-}
-.library-name {
-  font-size: 15px;
+.lib-shelf-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 18px;
   font-weight: 600;
   color: var(--heading);
 }
-.library-name span {
-  font-weight: 400;
-  color: var(--muted);
-}
-.library-shelf-word {
-  font-size: 12px;
-  color: var(--muted);
-}
-.library-benefit {
-  font-family: var(--font-voice);
-  font-size: 16px;
-  line-height: 23px;
-  letter-spacing: -0.012em;
-  color: var(--heading);
-}
-.works-with {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.works-chip {
+.lib-shelf-icon {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
+  width: 24px;
   height: 24px;
-  padding: 0 9px;
-  border-radius: 999px;
-  background: var(--chip-bg);
-  color: var(--secondary);
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-.library-empty {
-  padding: 20px;
-  border-radius: var(--radius-block, 12px);
+  border-radius: 7px;
   background: var(--soft);
   border: 1px solid var(--line);
-  font-size: 14px;
   color: var(--secondary);
 }
+.lib-shelf-count {
+  font-weight: 500;
+  color: var(--muted);
+}
 
-/* The detail sheet and the welcome after adding. */
+/* Nothing connected yet, and a search with no match. */
+.lib-connect,
+.lib-empty {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border-radius: var(--radius-card, 16px);
+  background: var(--soft);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--secondary);
+}
+.lib-empty {
+  align-items: flex-start;
+}
+.lib-connect strong,
+.lib-empty strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.lib-connect-icon,
+.lib-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--secondary);
+  flex-shrink: 0;
+}
+.lib-connect-link {
+  flex-shrink: 0;
+  text-decoration: none;
+}
+
+/* ---------- sheets ---------- */
+.side-panel.lib-sheet {
+  width: 480px;
+  max-width: 100%;
+}
+.lib-scrim,
+.lib-grabber {
+  display: none;
+}
 .library-sheet-head {
   display: flex;
   align-items: center;
@@ -121,25 +440,55 @@
   height: 48px;
   padding: 0 12px 0 20px;
   border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
 }
 .library-sheet-title {
   flex: 1;
   min-width: 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--heading);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .library-sheet-body {
   overflow-y: auto;
-  padding-bottom: 20px;
+  gap: 22px;
+  padding: 20px 20px 24px;
 }
-.library-hero {
+.library-sheet-foot {
   display: flex;
-  gap: 14px;
+  gap: 8px;
   align-items: center;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.lib-hero {
+  --agent-tint: var(--primary);
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+.lib-hero-face {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 88px;
+  height: 88px;
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--agent-tint) 16%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--agent-tint) 22%, var(--line));
+  flex-shrink: 0;
+}
+.lib-hero-name {
+  font-family: var(--font-voice);
+  font-size: 28px;
+  line-height: 34px;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  color: var(--heading);
 }
 .library-voice {
   font-family: var(--font-voice);
@@ -147,21 +496,28 @@
   line-height: 28px;
   letter-spacing: -0.012em;
   color: var(--heading);
+  text-wrap: pretty;
 }
 .library-section {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 .library-section h3 {
   font-size: 13px;
   font-weight: 600;
   color: var(--heading);
 }
+.lib-lists {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
 .library-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   list-style: none;
   padding: 0;
   margin: 0;
@@ -170,8 +526,8 @@
   display: flex;
   gap: 8px;
   align-items: flex-start;
-  font-size: 14px;
-  line-height: 20px;
+  font-size: 13px;
+  line-height: 19px;
   color: var(--secondary);
 }
 .library-list li > span:first-child {
@@ -185,20 +541,6 @@
 .library-list[data-tone="wont"] li > span:first-child {
   color: var(--sand-ink);
 }
-.library-block {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 12px 14px;
-  border-radius: var(--radius-block, 12px);
-  background: var(--soft);
-  border: 1px solid var(--line);
-}
-.library-block strong {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--heading);
-}
 .library-meta {
   font-size: 12px;
   line-height: 16px;
@@ -208,13 +550,6 @@
   font-size: 13px;
   line-height: 19px;
   color: var(--secondary);
-}
-.library-sheet-foot {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 12px 20px 16px;
-  border-top: 1px solid var(--line);
 }
 .library-suggested {
   display: inline-flex;
@@ -228,15 +563,300 @@
   font-weight: 600;
 }
 
+/* The example chat: the chat's own pieces, on a quiet framed page. */
+.day-preview {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 16px 16px;
+  border-radius: var(--radius-card, 16px);
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+.day-preview .bubble-wrap {
+  max-width: 88%;
+}
+.day-preview :where(.turn-text) .answer p {
+  font-size: 16px;
+  line-height: 25px;
+}
+.day-preview .question {
+  pointer-events: none;
+}
+.day-tag {
+  position: absolute;
+  top: -9px;
+  left: 14px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.lib-schedule {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: var(--radius-block, 12px);
+  background: var(--soft);
+  border: 1px solid var(--line);
+}
+.lib-schedule-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--blue-soft);
+  color: var(--blue-ink);
+  flex-shrink: 0;
+}
+.lib-schedule-line {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--secondary);
+}
+.lib-schedule-line strong {
+  font-weight: 600;
+  color: var(--heading);
+}
+.lib-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lib-questions li {
+  padding-left: 12px;
+  border-left: 2px solid var(--line-strong);
+  font-family: var(--font-voice);
+  font-size: 16px;
+  line-height: 23px;
+  letter-spacing: -0.012em;
+  color: var(--heading);
+}
+.lib-reach,
+.lib-connections {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-block, 12px);
+  overflow: hidden;
+}
+.lib-reach li,
+.lib-connection {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--heading);
+}
+.lib-reach li + li,
+.lib-connection + .lib-connection {
+  border-top: 1px solid var(--line);
+}
+.lib-reach-state {
+  font-size: 12px;
+  color: var(--muted);
+}
+.lib-reach-state[data-on="true"] {
+  color: var(--success);
+  font-weight: 500;
+}
+.lib-connection-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+}
+.lib-connection-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--blue-soft);
+  color: var(--blue-ink);
+  flex-shrink: 0;
+}
+.lib-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--secondary);
+  border-radius: 6px;
+}
+.lib-link:hover {
+  color: var(--heading);
+}
+.lib-link:focus-visible,
+.lib-inline-link:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.lib-inline-link {
+  color: var(--primary);
+}
+
+/* ---------- a library agent's welcome in its first chat ---------- */
+.welcome {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding-top: 24px;
+}
+.welcome-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.welcome-note {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--sand);
+  color: var(--sand-ink);
+  font-size: 13px;
+  line-height: 19px;
+}
+.welcome-note > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.welcome-note a {
+  color: inherit;
+  font-weight: 600;
+}
+.welcome-skipped {
+  align-self: flex-end;
+  font-size: 12px;
+  color: var(--muted);
+}
+.welcome-try {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  font-size: 14px;
+  color: var(--heading);
+  text-align: left;
+}
+.welcome-try:hover {
+  background: var(--hover);
+}
+.welcome-try:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+@media (max-width: 1279px) {
+  .side-panel.lib-sheet {
+    width: 440px;
+  }
+}
+@media (max-width: 1023px) {
+  .side-panel.lib-sheet {
+    width: min(480px, 100%);
+  }
+}
+
 @media (max-width: 767px) {
-  .library-head p {
+  .agents-page {
+    gap: 28px;
+  }
+  .library-lede {
     font-size: 16px;
     line-height: 24px;
+  }
+  .lib-search {
+    width: 100%;
+  }
+  .library-head > .col {
+    width: 100%;
+  }
+  .lib-featured {
+    grid-auto-columns: minmax(78%, 1fr);
+  }
+  .lib-connect {
+    flex-wrap: wrap;
+  }
+  .lib-connect-link {
+    width: 100%;
+    justify-content: center;
+  }
+  .lib-lists {
+    grid-template-columns: 1fr;
+  }
+  /* On a phone the sheet rises from the bottom over a scrim. */
+  .lib-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 44;
+    background: #0e0f1259;
+    border: 0;
+  }
+  .side-panel.lib-sheet {
+    inset: auto 0 0 0;
+    width: 100%;
+    top: auto;
+    height: auto;
+    max-height: 88dvh;
+    border-radius: 20px 20px 0 0;
+    box-shadow: var(--elevated);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .lib-grabber {
+    display: block;
+    width: 36px;
+    height: 4px;
+    margin: 8px auto 0;
+    border-radius: 999px;
+    background: var(--line-strong);
+    flex-shrink: 0;
+  }
+  .library-sheet-foot .library-meta {
+    display: none;
+  }
+  .library-sheet-foot .btn {
+    flex: 1;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .library-card {
+  .lib-card,
+  .lib-card-go,
+  .agent-card {
     transition: none;
+  }
+  .lib-card:hover {
+    transform: none;
   }
 }

@@ -5,7 +5,16 @@ import {
   libraryScheduleWords,
 } from '@melete/contracts/agent-library';
 import type { AgentTemplate } from '../experience/types.ts';
-import { kindsOfApp, missingNeeds, searchLibrary, shelvesOf, suggests } from './agent-library.ts';
+import {
+  dayWork,
+  kindsOfApp,
+  listWords,
+  missingNeeds,
+  recommend,
+  searchLibrary,
+  shelvesOf,
+  suggests,
+} from './agent-library.ts';
 
 const agent = {
   colour: '#7A86D8',
@@ -37,6 +46,16 @@ const entry = (
   questions: [],
   skills: [],
   featured: false,
+  day: {
+    ask: 'Help me.',
+    opening: 'On it.',
+    work: [
+      { reach: 'mail', title: 'Searched your inbox' },
+      { reach: 'files', title: 'Read `notes.md`' },
+    ],
+    question: { text: 'Go ahead?', options: ['Yes', 'No'] },
+    answer: 'Done.',
+  },
   agent: { ...agent, allowed_connection_ids: [], name, role: name },
   ...more,
 });
@@ -125,4 +144,38 @@ test('a connection the job rests on is missing when none it may reach provides i
   // Nothing that provides it is connected at all.
   expect(missingNeeds(needs, [{ id: 'conn_web', app: 'Web' }], null)).toEqual(needs);
   expect(missingNeeds([], connections, [])).toEqual([]);
+});
+
+test('recommendations rest on what is connected, say why, and keep to one per shelf', () => {
+  const mail = [{ app: 'Gmail', status: 'connected' }];
+  const mine = recommend(templates, mail);
+  // Mail connected: the inbox agent comes first, and the reason names Mail only.
+  expect(mine.templates.map((t) => t.id)).toEqual(['inbox-triage', 'refund-chaser']);
+  expect(mine.because).toEqual(['mail']);
+  // A featured agent comes before an equal fit that is not.
+  const featured = templates.map((t) => (t.id === 'refund-chaser' ? { ...t, featured: true } : t));
+  expect(recommend(featured, mail).templates[0]?.id).toBe('refund-chaser');
+  // Two from the same shelf: only the better one.
+  const both = recommend(templates, [...mail, { app: 'Files', status: 'connected' }]);
+  expect(both.templates.filter((t) => t.category === 'Money')).toHaveLength(1);
+  // Nothing connected, or only a connection that is not ready: nothing to recommend.
+  expect(recommend(templates, []).templates).toEqual([]);
+  expect(recommend(templates, [{ app: 'Gmail', status: 'error' }]).templates).toEqual([]);
+  // Web pages alone never make a recommendation: it rests on the person's own apps.
+  const web = [entry('reader', 'Fern', 'Learning', { works_best_with: ['web', 'files'] })];
+  expect(recommend(web, [{ app: 'Web', status: 'connected' }]).templates).toEqual([]);
+});
+
+test('a template’s example work becomes finished rows of the matching kind', () => {
+  const [inbox, notes] = dayWork(templates[1] as AgentTemplate);
+  expect(inbox).toMatchObject({ kind: 'connector', title: 'Searched your inbox', status: 'done' });
+  expect(notes).toMatchObject({ kind: 'file', title: 'Read `notes.md`' });
+  expect(new Set([inbox?.id, notes?.id]).size).toBe(2);
+});
+
+test('lists read as a sentence', () => {
+  expect(listWords([])).toBe('');
+  expect(listWords(['Mail'])).toBe('Mail');
+  expect(listWords(['Mail', 'Calendar'])).toBe('Mail and Calendar');
+  expect(listWords(['Mail', 'Calendar', 'Files'])).toBe('Mail, Calendar and Files');
 });

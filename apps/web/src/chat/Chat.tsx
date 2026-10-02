@@ -7,7 +7,7 @@
  */
 
 import { mentionedAgent } from '@melete/contracts/mention';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { amountWords } from '../companies/format.ts';
 import { Icon } from '../design/icons.tsx';
 import {
@@ -80,7 +80,9 @@ import {
 import { pauseOrStop } from './pause.ts';
 import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
+import { WelcomeThread } from './Welcome.tsx';
 import { AgentLine, LogEntries, WorkLog } from './WorkLog.tsx';
+import { carriedWelcome, carryWelcome, type WelcomeRef } from './welcome.ts';
 import { FINISHED, finalText, foldedTurns, layoutTurn } from './worklog.ts';
 import './chat.css';
 
@@ -529,6 +531,18 @@ export function ChatScreen({ id }: { id: string | null }) {
   // A new chat started from an agent (Home, the sidebar) begins with that agent.
   const asked = conversationId ? null : agentById(agents, route.query.get('agent'));
   const fallback = asked ?? defaultAgentOf(agents);
+  // A library agent's first chat opens with its welcome, and keeps it once the chat starts.
+  const welcomeId = route.query.get('welcome');
+  const askedId = asked?.id ?? null;
+  const welcome: WelcomeRef | null = useMemo(
+    () =>
+      conversationId
+        ? carriedWelcome(conversationId)
+        : askedId && welcomeId
+          ? { agentId: askedId, templateId: welcomeId }
+          : null,
+    [conversationId, askedId, welcomeId],
+  );
   const state = useConversation(conversationId);
   const { conversation, transcript, setTranscript } = state;
   const chatActions = (size?: number) =>
@@ -715,6 +729,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             sub: accepted.error ?? accepted.unavailable ?? '',
           });
         refreshConversations();
+        if (welcome) carryWelcome(created.data.conversation.id, welcome);
         navigate(`/chat/${created.data.conversation.id}`);
         return accepted.data !== null;
       }
@@ -753,7 +768,7 @@ export function ChatScreen({ id }: { id: string | null }) {
       }
       return box.send(localId, post);
     },
-    [conversationId, agentId, fallback, agents, state, refreshConversations],
+    [conversationId, agentId, fallback, agents, state, refreshConversations, welcome],
   );
 
   const retry = (localId: string) => void outbox.current?.retry(localId);
@@ -1034,7 +1049,8 @@ export function ChatScreen({ id }: { id: string | null }) {
                   <span className="overline">Today</span>
                 </div>
               ) : null}
-              {transcript.turns.length === 0 && !state.loading ? (
+              {welcome ? <WelcomeThread welcome={welcome} onTry={setText} /> : null}
+              {transcript.turns.length === 0 && !state.loading && !welcome ? (
                 <div
                   className="col"
                   style={{

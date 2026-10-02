@@ -30,6 +30,8 @@ export type MockOptions = {
   computer?: boolean;
   /** `shared` makes the session's space a shared one the person owns, with two others in it. */
   space?: 'personal' | 'shared';
+  /** `none` starts with nothing connected, as before the person connects an app. */
+  connections?: 'seeded' | 'none';
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -51,6 +53,7 @@ export function createMock(options: MockOptions = {}) {
     computer: options.computer ?? true,
     space: options.space ?? 'personal',
   });
+  if (options.connections === 'none') store.connections.clear();
   return { app, store, runner, scenarios, spaceId, connections };
 }
 
@@ -61,6 +64,7 @@ if (import.meta.main) {
     setupNeeded: process.env.MELETE_MOCK_SETUP === 'needed',
     computer: process.env.MELETE_MOCK_COMPUTER !== 'off',
     space: process.env.MELETE_MOCK_SPACE === 'shared' ? 'shared' : 'personal',
+    connections: process.env.MELETE_MOCK_CONNECTIONS === 'none' ? 'none' : 'seeded',
     voice:
       process.env.MELETE_MOCK_VOICE === 'private'
         ? 'private'
