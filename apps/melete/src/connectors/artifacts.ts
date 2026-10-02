@@ -19,8 +19,8 @@
  * this release will send anywhere.
  */
 import { createHash } from 'node:crypto';
-import { constants, existsSync } from 'node:fs';
-import { mkdir, open, readFile, realpath } from 'node:fs/promises';
+import { constants, lstatSync } from 'node:fs';
+import { mkdir, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import {
   type Action,
@@ -294,8 +294,11 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
             ? path.posix.basename(source)
             : '';
       try {
-        return !existsSync(
-          path.join(options.spacesRoot, spaceId, 'artifacts', ...segmentsFor(target)),
+        // A link counts as something already there, wherever it points.
+        return (
+          lstatSync(path.join(options.spacesRoot, spaceId, 'artifacts', ...segmentsFor(target)), {
+            throwIfNoEntry: false,
+          }) === undefined
         );
       } catch {
         return false;
@@ -356,12 +359,13 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
           constants.O_WRONLY |
             constants.O_CREAT |
             constants.O_NOFOLLOW |
+            constants.O_NONBLOCK |
             (unasked ? constants.O_EXCL : 0),
           0o600,
         ).catch(async (error: unknown) => {
           if (!unasked || (error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
           // A retry of this same save finds its own bytes there and is done.
-          const there = await readFile(resolved).catch(() => null);
+          const there = await read(resolved).catch(() => null);
           if (there && digest(there) === hash) return null;
           throw new Error(
             'the space already has a file with that name; saving over it needs the person to approve',
