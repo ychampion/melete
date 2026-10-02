@@ -1200,7 +1200,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema277"] | components["schemas"]["__schema221"];
+                        "application/json": components["schemas"]["__schema280"] | components["schemas"]["__schema221"];
                     };
                 };
             };

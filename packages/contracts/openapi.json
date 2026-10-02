@@ -7114,7 +7114,7 @@
                 "schema": {
                   "anyOf": [
                     {
-                      "$ref": "#/components/schemas/__schema277"
+                      "$ref": "#/components/schemas/__schema280"
                     },
                     {
                       "$ref": "#/components/schemas/__schema221"

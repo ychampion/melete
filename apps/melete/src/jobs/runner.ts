@@ -1395,13 +1395,13 @@ export class AttemptRunner {
     }
     const deadline = Date.now() + (this.options.dispatchWaitMs ?? DISPATCH_WAIT_MS);
     for (;;) {
-      const [pending] = await this.jobs.transaction((tx) =>
-        tx
-          .select({ id: action.id })
-          .from(action)
-          .where(and(eq(action.jobId, claims.job_id), eq(action.status, 'dispatched')))
-          .limit(1),
-      );
+      // A plain read: no transaction and no event order lock is held while
+      // waiting, so the broker's own settlement is never queued behind it.
+      const [pending] = await this.jobs.db
+        .select({ id: action.id })
+        .from(action)
+        .where(and(eq(action.jobId, claims.job_id), eq(action.status, 'dispatched')))
+        .limit(1);
       const left = deadline - Date.now();
       if (!pending || signal.aborted || left <= 0) return;
       await new Promise<void>((resolve) => {
