@@ -330,11 +330,11 @@ export async function runCommand(options: RunOptions): Promise<CommandResult> {
   checkMarker(request.marker);
   const root = provider.capabilities.markerRoot;
   const directory = markerDirectory(root, request.marker);
+  if (request.dispatch === 'again')
+    return fromMarker(options, 'this action was dispatched before', 'unknown');
   const env = request.env ?? {};
   const refused = execEnvRefusal(env);
   if (refused) return { outcome: 'failed', retryable: false, reason: refused };
-  if (request.dispatch === 'again')
-    return fromMarker(options, 'this action was dispatched before', 'unknown');
   let outcome: ExecOutcome;
   try {
     outcome = await provider.exec(

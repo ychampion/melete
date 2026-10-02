@@ -52,7 +52,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 3,
+        "atMs": 2,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -66,7 +66,7 @@
     },
     {
       "request": {
-        "atMs": 3,
+        "atMs": 2,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
@@ -105,7 +105,7 @@
             "base64": "AAAAADp7ImV2ZW50Ijp7ImVuZCI6eyJleGl0ZWQiOnRydWUsInN0YXR1cyI6ImV4aXQgc3RhdHVzIDAifX19"
           },
           {
-            "atMs": 0,
+            "atMs": 1,
             "base64": "AgAAAAJ7fQ=="
           }
         ],
@@ -163,7 +163,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 5,
+        "atMs": 4,
         "body": {
           "code": "not_found",
           "message": "path not found: /var/tmp/.melete-exec/act_01J0CONFORMANCE00000000"
@@ -172,7 +172,7 @@
     },
     {
       "request": {
-        "atMs": 6,
+        "atMs": 5,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -200,7 +200,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 6,
+        "atMs": 5,
         "body": {
           "code": "not_found",
           "message": "path not found: /var/tmp/.melete-exec/act_01J0CONFORMANCE00000000"
@@ -240,7 +240,7 @@
     },
     {
       "request": {
-        "atMs": 7,
+        "atMs": 6,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -252,7 +252,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 7
+        "atMs": 6
       }
     }
   ]

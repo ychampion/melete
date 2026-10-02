@@ -135,7 +135,7 @@
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "87f3260b785e043ad792c9ea5f3bf1a3e9285ebc0bbd1c70325c8baa574711e3",
+        "bodySha256": "4c01de23b944d07d8ddbbbe35876972b663d59d34fab0d68e1159ff98673d64a",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -151,7 +151,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "d=/var/tmp/.melete-exec/act_01J0E2BSTDIN0000000000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'cat' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+                "d=/var/tmp/.melete-exec/act_01J0E2BSTDIN0000000000000\nmkdir -p -m 0700 /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'cat' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work"
             },

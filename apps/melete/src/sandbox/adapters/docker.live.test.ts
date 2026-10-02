@@ -365,7 +365,9 @@ if (!live) {
         expect(await clocked.reap(signal())).toContain(handle.providerSandboxId);
         expect(await clocked.running(handle, signal())).toBe(false);
         const again = await run('again');
-        process.stdout.write(`docker live, after the idle stop: ${again.outcome}${'reason' in again ? `, ${again.reason}` : ''}\n`);
+        process.stdout.write(
+          `docker live, after the idle stop: ${again.outcome}${'reason' in again ? `, ${again.reason}` : ''}\n`,
+        );
         expect(again).toMatchObject({ outcome: 'succeeded', late: true, reattached: true });
         if (again.outcome !== 'succeeded') return;
         expect(again.record.exitCode).toBe(0);

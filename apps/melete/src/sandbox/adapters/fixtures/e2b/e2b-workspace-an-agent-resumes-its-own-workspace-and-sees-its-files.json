@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 93,
+        "atMs": 42,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes",
         "path": "/sandboxes",
@@ -48,7 +48,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 95,
+        "atMs": 42,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -62,7 +62,7 @@
     },
     {
       "request": {
-        "atMs": 139,
+        "atMs": 43,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
@@ -93,20 +93,20 @@
         },
         "chunks": [
           {
-            "atMs": 1,
+            "atMs": 0,
             "base64": "AAAAACB7ImV2ZW50Ijp7InN0YXJ0Ijp7InBpZCI6MTAwMX19fQ=="
           },
           {
-            "atMs": 2,
+            "atMs": 0,
             "base64": "AAAAADp7ImV2ZW50Ijp7ImVuZCI6eyJleGl0ZWQiOnRydWUsInN0YXR1cyI6ImV4aXQgc3RhdHVzIDAifX19"
           },
           {
-            "atMs": 2,
+            "atMs": 0,
             "base64": "AgAAAAJ7fQ=="
           }
         ],
         "end": "complete",
-        "atMs": 147,
+        "atMs": 43,
         "body": [
           {
             "event": {
@@ -131,11 +131,11 @@
     },
     {
       "request": {
-        "atMs": 156,
+        "atMs": 47,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "9e48ebc0c1b6eb6cba01018946716db485e307db964b6e44c52f11cafe0316cd",
+        "bodySha256": "ebf697b98fa0321ae5790cef385405a09116412a8b25049e0fe5eb5726e15048",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -151,7 +151,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "d=/var/tmp/.melete-exec/act_01J0WORKSPACEWRITE0001\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'printf '\\''%s'\\'' '\\''remembered'\\'' > /work/notes.txt' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+                "d=/var/tmp/.melete-exec/act_01J0WORKSPACEWRITE0001\nmkdir -p -m 0700 /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'printf '\\''%s'\\'' '\\''remembered'\\'' > /work/notes.txt' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work"
             },
@@ -170,16 +170,16 @@
             "base64": "AAAAACB7ImV2ZW50Ijp7InN0YXJ0Ijp7InBpZCI6MTAwMn19fQ=="
           },
           {
-            "atMs": 4,
+            "atMs": 0,
             "base64": "AAAAADp7ImV2ZW50Ijp7ImVuZCI6eyJleGl0ZWQiOnRydWUsInN0YXR1cyI6ImV4aXQgc3RhdHVzIDAifX19"
           },
           {
-            "atMs": 4,
+            "atMs": 0,
             "base64": "AgAAAAJ7fQ=="
           }
         ],
         "end": "complete",
-        "atMs": 157,
+        "atMs": 48,
         "body": [
           {
             "event": {
@@ -204,7 +204,7 @@
     },
     {
       "request": {
-        "atMs": 163,
+        "atMs": 49,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -232,7 +232,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 163,
+        "atMs": 49,
         "body": {
           "entries": [
             {
@@ -258,7 +258,7 @@
     },
     {
       "request": {
-        "atMs": 179,
+        "atMs": 53,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001/pause",
         "path": "/sandboxes/fake-sbx-0001/pause",
@@ -275,12 +275,12 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 180
+        "atMs": 53
       }
     },
     {
       "request": {
-        "atMs": 192,
+        "atMs": 62,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001/connect",
         "path": "/sandboxes/fake-sbx-0001/connect",
@@ -304,7 +304,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 192,
+        "atMs": 62,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -318,7 +318,7 @@
     },
     {
       "request": {
-        "atMs": 197,
+        "atMs": 66,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fwork%2Fnotes.txt&username=user",
@@ -340,7 +340,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 197,
+        "atMs": 66,
         "body": {
           "bytes": 10
         }
@@ -348,7 +348,7 @@
     },
     {
       "request": {
-        "atMs": 202,
+        "atMs": 69,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -360,7 +360,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 202
+        "atMs": 69
       }
     }
   ]

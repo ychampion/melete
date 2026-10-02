@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 67,
+        "atMs": 36,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes",
         "path": "/sandboxes",
@@ -48,7 +48,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 67,
+        "atMs": 37,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -62,7 +62,7 @@
     },
     {
       "request": {
-        "atMs": 68,
+        "atMs": 37,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
@@ -106,7 +106,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 68,
+        "atMs": 37,
         "body": [
           {
             "event": {
@@ -131,11 +131,11 @@
     },
     {
       "request": {
-        "atMs": 81,
+        "atMs": 43,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "eae8f600b848f9da6227b235e4ea3615971c145a3c9fab1d740017e6bebe029d",
+        "bodySha256": "aaa7f3b8daaa9576feedda8836a2e088e18f0ea990f30f807332701c2fed9f54",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -151,7 +151,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "d=/var/tmp/.melete-exec/act_01J0WORKSPACEWRITE0001\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'printf '\\''%s'\\'' '\\''kept'\\'' > /work/kept.txt' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+                "d=/var/tmp/.melete-exec/act_01J0WORKSPACEWRITE0001\nmkdir -p -m 0700 /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'printf '\\''%s'\\'' '\\''kept'\\'' > /work/kept.txt' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work"
             },
@@ -170,16 +170,16 @@
             "base64": "AAAAACB7ImV2ZW50Ijp7InN0YXJ0Ijp7InBpZCI6MTAwMn19fQ=="
           },
           {
-            "atMs": 1,
+            "atMs": 0,
             "base64": "AAAAADp7ImV2ZW50Ijp7ImVuZCI6eyJleGl0ZWQiOnRydWUsInN0YXR1cyI6ImV4aXQgc3RhdHVzIDAifX19"
           },
           {
-            "atMs": 1,
+            "atMs": 0,
             "base64": "AgAAAAJ7fQ=="
           }
         ],
         "end": "complete",
-        "atMs": 82,
+        "atMs": 43,
         "body": [
           {
             "event": {
@@ -204,7 +204,7 @@
     },
     {
       "request": {
-        "atMs": 83,
+        "atMs": 44,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -232,7 +232,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 83,
+        "atMs": 44,
         "body": {
           "entries": [
             {
@@ -258,7 +258,7 @@
     },
     {
       "request": {
-        "atMs": 85,
+        "atMs": 45,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001/pause",
         "path": "/sandboxes/fake-sbx-0001/pause",
@@ -282,7 +282,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 85,
+        "atMs": 45,
         "body": {
           "code": 503,
           "message": "the sandbox is still finishing a previous snapshot; try again"
@@ -291,7 +291,7 @@
     },
     {
       "request": {
-        "atMs": 89,
+        "atMs": 48,
         "method": "GET",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -310,7 +310,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 89,
+        "atMs": 48,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -335,7 +335,7 @@
     },
     {
       "request": {
-        "atMs": 90,
+        "atMs": 48,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fwork%2Fkept.txt&username=user",
@@ -357,7 +357,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 90,
+        "atMs": 48,
         "body": {
           "bytes": 4
         }
@@ -365,7 +365,7 @@
     },
     {
       "request": {
-        "atMs": 94,
+        "atMs": 51,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001/pause",
         "path": "/sandboxes/fake-sbx-0001/pause",
@@ -382,12 +382,12 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 94
+        "atMs": 51
       }
     },
     {
       "request": {
-        "atMs": 100,
+        "atMs": 54,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001/connect",
         "path": "/sandboxes/fake-sbx-0001/connect",
@@ -411,7 +411,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 100,
+        "atMs": 54,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -425,7 +425,7 @@
     },
     {
       "request": {
-        "atMs": 102,
+        "atMs": 55,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fwork%2Fkept.txt&username=user",
@@ -447,7 +447,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 102,
+        "atMs": 55,
         "body": {
           "bytes": 4
         }
@@ -455,7 +455,7 @@
     },
     {
       "request": {
-        "atMs": 105,
+        "atMs": 56,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -467,7 +467,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 105
+        "atMs": 57
       }
     }
   ]

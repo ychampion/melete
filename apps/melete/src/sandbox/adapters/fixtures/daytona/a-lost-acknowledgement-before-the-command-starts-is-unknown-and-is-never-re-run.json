@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 2,
+        "atMs": 1,
         "method": "POST",
         "url": "https://app.daytona.io/api/sandbox",
         "path": "/api/sandbox",
@@ -49,7 +49,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 3,
+        "atMs": 1,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -88,7 +88,7 @@
     },
     {
       "request": {
-        "atMs": 4,
+        "atMs": 2,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -107,7 +107,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 5,
+        "atMs": 2,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -165,7 +165,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 39,
+        "atMs": 38,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -204,7 +204,7 @@
     },
     {
       "request": {
-        "atMs": 39,
+        "atMs": 38,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -229,7 +229,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 40,
+        "atMs": 39,
         "body": {
           "exitCode": 0,
           "result": "PATH=/usr/local/bin:/usr/bin:/bin\nHOME=/home/user\nUSER=user\nLOGNAME=user\nLANG=C.UTF-8\nDAYTONA_SANDBOX_ID=fake-sbx-0001\nDAYTONA_SANDBOX_SNAPSHOT=daytona-small\nDAYTONA_SANDBOX_USER=daytona\nDAYTONA_ORGANIZATION_ID=org_authoring\nDAYTONA_REGION_ID=us\n"
@@ -238,7 +238,7 @@
     },
     {
       "request": {
-        "atMs": 40,
+        "atMs": 39,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session",
         "path": "/toolbox/fake-sbx-0001/process/session",
@@ -255,12 +255,12 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 40
+        "atMs": 39
       }
     },
     {
       "request": {
-        "atMs": 41,
+        "atMs": 39,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -285,7 +285,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 41,
+        "atMs": 39,
         "body": {
           "exitCode": 3,
           "result": ""
@@ -294,7 +294,7 @@
     },
     {
       "request": {
-        "atMs": 42,
+        "atMs": 40,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -319,7 +319,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 42,
+        "atMs": 40,
         "body": {
           "exitCode": 3,
           "result": ""
@@ -328,7 +328,7 @@
     },
     {
       "request": {
-        "atMs": 42,
+        "atMs": 40,
         "method": "GET",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/files/download",
         "path": "/toolbox/fake-sbx-0001/files/download?path=%2Fwork%2Fcounter",
@@ -347,7 +347,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 43,
+        "atMs": 41,
         "body": {
           "statusCode": 404,
           "message": "stat /work/counter: no such file or directory",
@@ -357,7 +357,7 @@
     },
     {
       "request": {
-        "atMs": 43,
+        "atMs": 41,
         "method": "DELETE",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -376,7 +376,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 43,
+        "atMs": 41,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
