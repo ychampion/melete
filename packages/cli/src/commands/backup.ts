@@ -46,7 +46,7 @@ export type BackupOptions = {
  * characters that need no quoting, because the path is used in a remote shell.
  */
 export function parseSshTarget(value: string): SshTarget {
-  const match = /^ssh:\/\/([A-Za-z0-9._@-]+):((?:~|\/)[A-Za-z0-9._/~-]*)$/.exec(value);
+  const match = /^ssh:\/\/([A-Za-z0-9_][A-Za-z0-9._@-]*):((?:~|\/)[A-Za-z0-9._/~-]*)$/.exec(value);
   if (!match?.[1] || !match[2] || match[2].includes('..'))
     throw new BackupRefusal(
       `${value} is not a backup destination this command takes: use ssh://host:/absolute/path or ssh://host:~/path, with letters, digits, . _ - / in the path.`,

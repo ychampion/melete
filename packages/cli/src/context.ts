@@ -158,7 +158,7 @@ function sameDisk(a: string, b: string): boolean | null {
 
 const STREAM_TIMEOUT_MS = 6 * 60 * 60_000;
 
-async function stream(source: Source, sinks: readonly Endpoint[]): Promise<StreamResult> {
+export async function stream(source: Source, sinks: readonly Endpoint[]): Promise<StreamResult> {
   const hash = createHash('sha256');
   let bytes = 0;
   const problems: string[] = [];

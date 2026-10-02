@@ -272,7 +272,8 @@ function gitRun(state: Engine, args: readonly string[]): CommandOutput {
     return no('no such path');
   }
   if (verb === 'rev-parse' && rest[0] === '--verify')
-    return state.branch && rest.at(-1) === `refs/heads/${state.branch}` ? ok(`${OLD}\n`) : no();
+    // The checkout has one branch, main, at OLD.
+    return rest.at(-1) === 'refs/heads/main' ? ok(`${OLD}\n`) : no();
   if (verb === 'checkout' || verb === '-c') {
     const target = args.at(-1) ?? '';
     if (state.commits.has(target)) {
