@@ -9,6 +9,7 @@ import { loadEnv } from '../env.ts';
 import { type AppDeps, createApp } from '../index.ts';
 import { isIsolated, VIEW_POLICY } from '../viewer/headers.ts';
 import {
+  forwardPreview,
   keepInside,
   type PreviewAccess,
   relocate,
@@ -414,4 +415,18 @@ test('the only routes under the preview path are the two reads that check their 
     .filter((route) => route.method !== 'ALL' && route.path.startsWith(PREVIEW_PREFIX))
     .map((route) => `${route.method} ${route.path}`);
   expect(routes).toEqual([`GET ${PREVIEW_PREFIX}:token/`, `GET ${PREVIEW_PREFIX}:token/:path{.+}`]);
+});
+
+test('the proxy itself passes on none of the server cookies or its own policy, before the seal', async () => {
+  const answer = await forwardPreview({
+    address: { host: '127.0.0.1', port: declared.port ?? 0 },
+    method: 'GET',
+    rest: '/',
+    search: '',
+    headers: new Headers({ cookie: 'melete_session=x' }),
+  });
+  expect(answer.headers.has('set-cookie')).toBe(false);
+  expect(answer.headers.has('clear-site-data')).toBe(false);
+  expect(answer.headers.get('content-security-policy')).toBe(VIEW_POLICY);
+  expect(reached.at(-1)?.headers.cookie).toBeUndefined();
 });
