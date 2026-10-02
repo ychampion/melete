@@ -7,6 +7,7 @@ CREATE TABLE "app" (
 	"publisher_principal_id" text NOT NULL,
 	"current_version_id" text,
 	"grant_generation" integer DEFAULT 0 NOT NULL,
+	"last_action_id" text,
 	"status" text DEFAULT 'active' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,

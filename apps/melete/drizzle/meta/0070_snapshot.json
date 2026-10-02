@@ -1,5 +1,5 @@
 {
-  "id": "b02237c3-0be4-493e-b933-f65673a800ca",
+  "id": "7ef65487-d711-420e-a666-ce169820f805",
   "prevId": "3023982c-d3b8-4002-abdb-c66d33c27641",
   "version": "7",
   "dialect": "postgresql",
@@ -13243,6 +13243,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "last_action_id": {
+          "name": "last_action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "status": {
           "name": "status",

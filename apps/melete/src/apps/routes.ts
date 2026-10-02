@@ -24,6 +24,7 @@ import { ServiceError } from '../api/errors.ts';
 import {
   AppUnavailable,
   appRoleFor,
+  appRoleSql,
   type DesiredGrant,
   deleteApp,
   replaceGrants,
@@ -86,15 +87,7 @@ async function visibleApps(sql: Sql, principalId: string, appId?: string): Promi
         v.id as version_id, v.created_at as version_created_at,
         v.file_count as version_file_count, v.total_bytes as version_total_bytes,
         vb.id as version_by_id, vb.email as version_by_email,
-        case
-          when a.publisher_principal_id = ${principalId} then 'manage'
-          when exists (select 1 from app_grant g where g.app_id = a.id and g.revoked_at is null
-            and g.role = 'manage' and g.grantee_kind = 'principal'
-            and g.grantee_id = ${principalId}) then 'manage'
-          when exists (select 1 from app_grant g where g.app_id = a.id and g.revoked_at is null
-            and ((g.grantee_kind = 'principal' and g.grantee_id = ${principalId})
-              or g.grantee_kind = 'installation')) then 'view'
-          else null end as role
+        ${appRoleSql(sql, principalId)} as role
       from app a
       join space s on s.id = a.space_id
       join principal p on p.id = a.publisher_principal_id
@@ -102,6 +95,11 @@ async function visibleApps(sql: Sql, principalId: string, appId?: string): Promi
       left join principal vb on vb.id = v.created_by
       where a.status = 'active' and s.removed_at is null
         and (${appId ?? null}::text is null or a.id = ${appId ?? null})
+        -- Only apps this person could have any role in are looked at.
+        and (a.publisher_principal_id = ${principalId} or s.owner_principal_id = ${principalId}
+          or exists (select 1 from app_grant g where g.app_id = a.id and g.revoked_at is null
+            and ((g.grantee_kind = 'principal' and g.grantee_id = ${principalId})
+              or g.grantee_kind = 'installation')))
     ) visible
     where role is not null
     order by updated_at desc, id`;
@@ -156,6 +154,16 @@ export function mountApps(app: Hono, deps: AppRoutesDeps): void {
     if (!role) throw notFound();
     if (wanted === 'manage' && role !== 'manage') throw notManager();
     return { principalId, appId, role };
+  };
+
+  /** The app's publisher while they belong to its space, or the space's owner. */
+  const isOwner = async (appId: string, principalId: string) => {
+    const [row] = await sql<{ owner: boolean }[]>`select (s.owner_principal_id = ${principalId}
+        or (a.publisher_principal_id = ${principalId} and exists (
+          select 1 from space_membership m where m.space_id = a.space_id
+            and m.principal_id = ${principalId} and m.revoked_at is null))) as owner
+      from app a join space s on s.id = a.space_id where a.id = ${appId}`;
+    return row?.owner === true;
   };
 
   const detail = async (principalId: string, appId: string): Promise<AppDetail> => {
@@ -309,10 +317,28 @@ export function mountApps(app: Hono, deps: AppRoutesDeps): void {
       seen.add(id);
       desired.push({ kind: 'principal', id, role: grant.role });
     }
+    const ownerAsks = await isOwner(appId, principalId);
     await sql.begin(async (tx) => {
       const [row] =
         await tx`select 1 from app where id = ${appId} and status = 'active' for update`;
       if (!row) throw notFound();
+      // Who manages the app is its owner's to change; other managers change who views it.
+      if (!ownerAsks) {
+        const managers = await tx<{ grantee_id: string }[]>`select grantee_id from app_grant
+          where app_id = ${appId} and revoked_at is null and role = 'manage'
+          order by grantee_id`;
+        const asked = desired
+          .flatMap((grant) =>
+            grant.kind === 'principal' && grant.role === 'manage' ? [grant.id] : [],
+          )
+          .sort();
+        if (managers.map((manager) => manager.grantee_id).join() !== asked.join())
+          throw new ServiceError(
+            'forbidden',
+            'Only the person who published this app, or the owner of its space, can change who manages it.',
+            403,
+          );
+      }
       await replaceGrants(tx, appId, desired, principalId);
     });
     return c.json(await detail(principalId, appId));
@@ -320,12 +346,10 @@ export function mountApps(app: Hono, deps: AppRoutesDeps): void {
 
   app.delete('/apps/:id', async (c) => {
     const { principalId, appId } = await requireRole(c, 'manage');
-    const [row] = await sql<{ publisher_principal_id: string }[]>`select publisher_principal_id
-      from app where id = ${appId}`;
-    if (row?.publisher_principal_id !== principalId)
+    if (!(await isOwner(appId, principalId)))
       throw new ServiceError(
         'forbidden',
-        'Only the person who published this app can delete it.',
+        'Only the person who published this app, or the owner of its space, can delete it.',
         403,
       );
     if (!(await deleteApp(sql, appId))) throw notFound();

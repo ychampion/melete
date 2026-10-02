@@ -8,7 +8,7 @@ import { afterAll, expect, test } from 'bun:test';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { JsonObject } from '@melete/contracts';
+import type { Action, JsonObject } from '@melete/contracts';
 import { Hono } from 'hono';
 import { ServiceError } from '../../src/api/errors.ts';
 import { mountApps } from '../../src/apps/routes.ts';
@@ -46,13 +46,13 @@ async function setup() {
   const cy = await person(`cy-${tag}@example.test`);
   const seed = await seedJob(sql, { scopes: SCOPES, provider: 'apps' });
   await sql`update job set principal_id = ${alice} where id = ${seed.claims.job_id}`;
+  // Alice's own space, as a personal space is.
+  await sql`update space set owner_principal_id = ${alice} where id = ${seed.claims.space_id}`;
   const roots = await mkdtemp(path.join(tmpdir(), 'melete-apps-'));
   const workRoot = path.join(roots, 'work');
   const blobs = new LocalBlobStore(path.join(roots, 'blobs'));
-  const registry = new ConnectorRegistry().register(
-    seed.connectionId,
-    createAppsConnector({ sql, workRoot, blobs }),
-  );
+  const connector = createAppsConnector({ sql, workRoot, blobs });
+  const registry = new ConnectorRegistry().register(seed.connectionId, connector);
   const broker = new BrokerService({ sql, connectors: registry });
   const write = (name: string, content: string | Uint8Array) =>
     Bun.write(path.join(workRoot, seed.claims.job_id, 'app', name), content);
@@ -78,8 +78,13 @@ async function setup() {
           : {}),
       });
   };
-  const propose = (kind: string, payload: JsonObject) =>
-    broker.propose(seed.claims, { kind, connection_id: seed.connectionId, payload });
+  const propose = (kind: string, payload: JsonObject, client_ref?: string) =>
+    broker.propose(seed.claims, {
+      kind,
+      connection_id: seed.connectionId,
+      payload,
+      ...(client_ref ? { client_ref } : {}),
+    });
   const approveAndRun = async (proposal: { action_id: string; payload_hash: string }) => {
     await broker.decide(proposal.action_id, {
       decision: 'approved',
@@ -95,9 +100,28 @@ async function setup() {
     for await (const head of blobs.list()) keys.push(head.key);
     return keys;
   };
+  /** Whether the connector says this action took effect, as reconciliation asks. */
+  const verify = async (actionId: string) => {
+    const [row] = await sql`select * from action where id = ${actionId}`;
+    const action = {
+      id: row?.id,
+      job_id: row?.job_id,
+      connection_id: row?.connection_id,
+      kind: row?.kind,
+      idempotency_key: row?.idempotency_key,
+      canonical_payload: row?.canonical_payload,
+    } as unknown as Action;
+    return connector.verify(action, {
+      job_id: seed.claims.job_id,
+      space_id: seed.claims.space_id,
+      idempotency_key: action.id,
+      constraints: {} as never,
+    });
+  };
   return {
     ...seed,
     broker,
+    verify,
     sql,
     alice,
     bo,
@@ -162,9 +186,11 @@ databaseTest(
     expect(refs).toHaveLength(2);
     expect(refs.every((ref) => ref.space_id === ctx.claims.space_id)).toBe(true);
 
+    // Other tests share this database, and an app shared with everyone is everyone's.
     const listed = async (who: string) =>
-      ((await (await ctx.api(who)('/apps')).json()) as { apps: { id: string; role: string }[] })
-        .apps;
+      (
+        (await (await ctx.api(who)('/apps')).json()) as { apps: { id: string; role: string }[] }
+      ).apps.filter((app) => app.id === row?.id);
     expect((await listed(ctx.alice)).map((app) => app.role)).toEqual(['manage']);
     expect((await listed(ctx.bo)).map((app) => app.role)).toEqual(['view']);
     expect(await listed(ctx.cy)).toEqual([]);
@@ -197,9 +223,9 @@ databaseTest(
       payload_hash: early.payload_hash,
     });
     await ctx.write('index.html', 'changed before admission');
-    expect(
-      await rejectionOf(ctx.broker.admit(ctx.claims, early.action_id, early.payload_hash)),
-    ).toMatchObject({ code: 'payload_invalid' });
+    // The folder is read at dispatch, outside the admission's transaction.
+    await ctx.broker.admit(ctx.claims, early.action_id, early.payload_hash);
+    expect((await ctx.broker.dispatch(early.action_id)).status).toBe('failed');
     expect(await ctx.appRows()).toHaveLength(0);
 
     const fresh = await ctx.propose('apps.publish', { dir: 'app', name: 'Board' });
@@ -214,6 +240,7 @@ databaseTest(
     expect(next.status).toBe('needs_approval');
     expect(next.canonical_payload).toMatchObject({
       create: false,
+      current_name: 'Board',
       audience: { kind: 'unchanged', now: 'only you' },
     });
   },
@@ -248,7 +275,12 @@ databaseTest(
       version_id: first?.current_version_id,
     });
     expect(rollback.status).toBe('needs_approval');
-    expect(rollback.canonical_payload).toMatchObject({ name: 'Tracker' });
+    expect(rollback.canonical_payload).toMatchObject({
+      name: 'Tracker',
+      viewers_now: 'only you',
+      data_shown: [],
+      collections_shown: [],
+    });
     expect((await ctx.approveAndRun(rollback)).status).toBe('succeeded');
     expect((await ctx.appRows())[0]?.current_version_id).toBe(first?.current_version_id);
 
@@ -387,6 +419,253 @@ databaseTest(
         and space_id = ${ctx.claims.space_id}`,
     ).toHaveLength(0);
     expect((await alice(`/apps/${app?.id}`)).status).toBe(404);
+  },
+  SLOW,
+);
+
+databaseTest(
+  'proposing the same new app again is the same request, before and after it is approved',
+  async () => {
+    const ctx = await setup();
+    await ctx.write('index.html', 'one app');
+    const first = await ctx.propose('apps.publish', { dir: 'app', name: 'Deals' });
+    const again = await ctx.propose('apps.publish', { dir: 'app', name: 'Deals' });
+    expect(again.action_id).toBe(first.action_id);
+    expect(again.payload_hash).toBe(first.payload_hash);
+    expect(first.canonical_payload).not.toHaveProperty('app_id');
+
+    // A later turn naming the request by its reference finds the approved one and runs it.
+    const asked = await ctx.propose('apps.publish', { dir: 'app', name: 'Ledger' }, 'ledger-1');
+    await ctx.broker.decide(asked.action_id, {
+      decision: 'approved',
+      payload_hash: asked.payload_hash,
+    });
+    const retried = await ctx.propose('apps.publish', { dir: 'app', name: 'Ledger' }, 'ledger-1');
+    expect(retried.action_id).toBe(asked.action_id);
+    if (retried.status === 'approved')
+      await ctx.broker.admit(ctx.claims, asked.action_id, asked.payload_hash);
+    const done = await ctx.broker.dispatch(asked.action_id);
+    expect(done.status).toBe('succeeded');
+    const apps = await ctx.appRows();
+    expect(apps).toHaveLength(1);
+    expect(done.receipt?.detail).toMatchObject({ app_id: apps[0]?.id });
+    // The same action names the same app when it is checked again.
+    expect((await ctx.verify(asked.action_id)).decision).toBe('succeeded');
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a new version is asked for by the name the app has now, and a rename only as shown',
+  async () => {
+    const ctx = await setup();
+    await ctx.write('index.html', 'payroll');
+    await ctx.approveAndRun(await ctx.propose('apps.publish', { dir: 'app', name: 'Payroll' }));
+    const [app] = await ctx.appRows();
+    await ctx.write('index.html', 'something else');
+    const renaming = await ctx.propose('apps.publish', {
+      dir: 'app',
+      name: 'Deals',
+      app_id: app?.id,
+    });
+    expect(renaming.canonical_payload).toMatchObject({
+      current_name: 'Payroll',
+      name: 'Deals',
+      create: false,
+    });
+    // Renamed by its manager after the question was asked: the answer is about another name.
+    await ctx.broker.decide(renaming.action_id, {
+      decision: 'approved',
+      payload_hash: renaming.payload_hash,
+    });
+    await ctx.sql`update app set name = 'Payroll 2026' where id = ${app?.id}`;
+    expect(
+      await rejectionOf(ctx.broker.admit(ctx.claims, renaming.action_id, renaming.payload_hash)),
+    ).toMatchObject({ code: 'payload_invalid' });
+    await ctx.sql`update app set name = 'Payroll' where id = ${app?.id}`;
+    // Asked again (a refused request stays refused), the rename is on the card and goes ahead.
+    const shown = await ctx.propose('apps.publish', {
+      dir: 'app',
+      name: 'Deals',
+      description: 'Open deals',
+      app_id: app?.id,
+    });
+    expect((await ctx.approveAndRun(shown)).status).toBe('succeeded');
+    const [renamed] = await ctx.sql`select name from app where id = ${app?.id}`;
+    expect(renamed?.name).toBe('Deals');
+  },
+  SLOW,
+);
+
+databaseTest(
+  "a rollback is asked for with the earlier version's data and today's viewers",
+  async () => {
+    const ctx = await setup();
+    await ctx.write('index.html', 'v1');
+    await ctx.write('../data/salaries.json', '[]');
+    await ctx.approveAndRun(
+      await ctx.propose('apps.publish', {
+        dir: 'app',
+        name: 'Pay',
+        data: { salaries: { artifact: 'data/salaries.json' } },
+      }),
+    );
+    const [first] = await ctx.appRows();
+    await ctx.write('index.html', 'v2');
+    await ctx.approveAndRun(
+      await ctx.propose('apps.publish', {
+        dir: 'app',
+        name: 'Pay',
+        app_id: first?.id,
+        audience: { kind: 'everyone' },
+      }),
+    );
+    const back = await ctx.propose('apps.rollback', {
+      app_id: first?.id,
+      version_id: first?.current_version_id,
+    });
+    expect(back.canonical_payload).toMatchObject({
+      viewers_now: 'everyone with an account here',
+      data_shown: ['salaries: data/salaries.json from this conversation, newest version each time'],
+    });
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a publish that sets who may open the app keeps the managers its publisher chose',
+  async () => {
+    const ctx = await setup();
+    await ctx.write('index.html', 'v1');
+    await ctx.approveAndRun(await ctx.propose('apps.publish', { dir: 'app', name: 'Team' }));
+    const [app] = await ctx.appRows();
+    await ctx.api(ctx.alice)(`/apps/${app?.id}/grants`, {
+      method: 'PUT',
+      body: {
+        grants: [{ kind: 'principal', email: `bo-${ctx.tag}@example.test`, role: 'manage' }],
+      },
+    });
+    await ctx.write('index.html', 'v2');
+    await ctx.approveAndRun(
+      await ctx.propose('apps.publish', {
+        dir: 'app',
+        name: 'Team',
+        app_id: app?.id,
+        audience: {
+          kind: 'people',
+          emails: [`bo-${ctx.tag}@example.test`, `cy-${ctx.tag}@example.test`],
+        },
+      }),
+    );
+    // Other tests share this database, and an app shared with everyone is everyone's.
+    const roles = async (who: string) =>
+      (
+        (await (await ctx.api(who)('/apps')).json()) as { apps: { id: string; role: string }[] }
+      ).apps
+        .filter((row) => row.id === app?.id)
+        .map((row) => row.role);
+    expect(await roles(ctx.bo)).toEqual(['manage']);
+    expect(await roles(ctx.cy)).toEqual(['view']);
+    await ctx.approveAndRun(
+      await ctx.propose('apps.publish', {
+        dir: 'app',
+        name: 'Team',
+        app_id: app?.id,
+        audience: { kind: 'only_me' },
+      }),
+    );
+    expect(await roles(ctx.bo)).toEqual(['manage']);
+    expect(await roles(ctx.cy)).toEqual([]);
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a check of a publish that never ran does not take it for done when the same bundle is current',
+  async () => {
+    const ctx = await setup();
+    await ctx.write('index.html', 'same');
+    const ran = await ctx.propose('apps.publish', { dir: 'app', name: 'Board' });
+    await ctx.approveAndRun(ran);
+    const [app] = await ctx.appRows();
+    const never = await ctx.propose('apps.publish', {
+      dir: 'app',
+      name: 'Board',
+      app_id: app?.id,
+      audience: { kind: 'people', emails: [`bo-${ctx.tag}@example.test`] },
+    });
+    expect((await ctx.verify(never.action_id)).decision).toBe('undecided');
+    expect((await ctx.verify(ran.action_id)).decision).toBe('succeeded');
+  },
+  SLOW,
+);
+
+databaseTest(
+  "a binding names a workspace file in one of the publisher's own conversations",
+  async () => {
+    const ctx = await setup();
+    await ctx.write('index.html', 'x');
+    for (const artifact of ['../../secret.json', '/etc/passwd', 'C:\\x.json'])
+      expect(
+        await rejectionOf(
+          ctx.propose('apps.publish', { dir: 'app', name: 'X', data: { d: { artifact } } }),
+        ),
+      ).toMatchObject({ code: 'payload_invalid' });
+    // Bo's conversation in the same space is Bo's, not Alice's to show.
+    const theirs = recordId('job');
+    await ctx.sql`insert into job (id, space_id, title, objective, state, lease_epoch, budget,
+        constraints, principal_id)
+      select ${theirs}, space_id, 'Bo', 'Bo', 'running', 1, budget, constraints, ${ctx.bo}
+      from job where id = ${ctx.claims.job_id}`;
+    expect(
+      await rejectionOf(
+        ctx.propose('apps.publish', {
+          dir: 'app',
+          name: 'X',
+          data: { d: { artifact: 'data/d.json', source: theirs } },
+        }),
+      ),
+    ).toMatchObject({ code: 'payload_invalid' });
+  },
+  SLOW,
+);
+
+databaseTest(
+  "the publisher manages an app while they belong to its space, and the space's owner always does",
+  async () => {
+    const ctx = await setup();
+    // A shared space: Cy owns it, Alice is a member who publishes.
+    await ctx.sql`update space set kind = 'shared', owner_principal_id = ${ctx.cy}
+      where id = ${ctx.claims.space_id}`;
+    await ctx.sql`insert into space_membership (principal_id, space_id, role)
+      values (${ctx.alice}, ${ctx.claims.space_id}, 'member'), (${ctx.cy}, ${ctx.claims.space_id}, 'owner')`;
+    // In a shared space a conversation's capability names its person.
+    ctx.claims.principal_id = ctx.alice;
+    ctx.claims.membership_generation = 0;
+    await ctx.sql`update attempt set principal_id = ${ctx.alice}, membership_generation = 0
+      where job_id = ${ctx.claims.job_id}`;
+    await ctx.write('index.html', 'shared');
+    expect(
+      (await ctx.approveAndRun(await ctx.propose('apps.publish', { dir: 'app', name: 'Shared' })))
+        .status,
+    ).toBe('succeeded');
+    const [app] = await ctx.appRows();
+    expect((await ctx.api(ctx.alice)(`/apps/${app?.id}`)).status).toBe(200);
+    expect((await ctx.api(ctx.cy)(`/apps/${app?.id}`)).status).toBe(200);
+    // Alice leaves the space: the app is no longer hers to change.
+    await ctx.sql`update space_membership set revoked_at = now()
+      where principal_id = ${ctx.alice} and space_id = ${ctx.claims.space_id}`;
+    expect((await ctx.api(ctx.alice)(`/apps/${app?.id}`)).status).toBe(404);
+    expect(
+      (
+        await ctx.api(ctx.alice)(`/apps/${app?.id}/grants`, {
+          method: 'PUT',
+          body: { grants: [{ kind: 'installation' }] },
+        })
+      ).status,
+    ).toBe(404);
+    expect((await ctx.api(ctx.cy)(`/apps/${app?.id}`, { method: 'DELETE' })).status).toBe(200);
+    expect(await ctx.appRows()).toHaveLength(0);
   },
   SLOW,
 );

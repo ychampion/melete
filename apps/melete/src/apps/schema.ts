@@ -40,6 +40,12 @@ export const app = pgTable(
     /** Null only between the app row and its first version, inside one transaction. */
     currentVersionId: text('current_version_id'),
     grantGeneration: integer('grant_generation').notNull().default(0),
+    /**
+     * The last action that set the current version or the grants from a
+     * conversation, so a check of whether one ran asks about that action
+     * itself, not about a state another action could also have produced.
+     */
+    lastActionId: text('last_action_id'),
     status: text('status').notNull().default('active'),
     createdAt: created(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

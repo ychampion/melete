@@ -587,15 +587,68 @@ test('a permission to publish an app names it, its size, who can open it and the
         'deals: data/deals.json from this conversation, newest version each time. Viewers see each new version automatically.',
     },
   ]);
-  // A new version says so, and one that keeps its viewers says who they are now.
-  const again = ask({ create: false, audience: { kind: 'unchanged', now: 'only you' } });
-  expect(again.what).toBe('Publish Deals (a new version)');
+  // A new version names the app it replaces as it is called now, whatever name
+  // the request gives, and a new name is a fact of its own on the card.
+  const again = ask({
+    create: false,
+    app_id: 'app_PAYROLL',
+    current_name: 'Payroll',
+    audience: { kind: 'unchanged', now: 'only you' },
+  });
+  expect(again.what).toBe('Publish a new version of Payroll');
+  expect(again.preview?.facts.slice(0, 2)).toEqual([
+    { label: 'App', value: 'Payroll' },
+    { label: 'Renames it to', value: 'Deals' },
+  ]);
   expect(again.preview?.facts.find((fact) => fact.label === 'Viewers')?.value).toBe(
     'Unchanged: only you',
   );
+  const sameName = ask({ create: false, current_name: 'Deals' });
+  expect(sameName.preview?.facts.map((fact) => fact.label)).not.toContain('Renames it to');
   expect(
     ask({ audience: { kind: 'everyone' } }).preview?.facts.find((fact) => fact.label === 'Viewers')
       ?.value,
   ).toBe('Everyone with an account here');
   expect(JSON.stringify(shown)).not.toMatch(BACKEND_VOCABULARY);
+});
+
+test("a permission to change the version of an app shows that version's data and who will see it", () => {
+  const rollback: ActionRow = {
+    ...base,
+    kind: 'apps.rollback',
+    effectClass: 'write_external',
+    connectionId: 'apps-connection',
+    canonicalPayload: {
+      app_id: 'app_DEALS',
+      version_id: 'b'.repeat(64),
+      name: 'Deals',
+      version_published_at: '2026-09-20T07:02:00.000Z',
+      viewers_now: 'everyone with an account here',
+      data_shown: ['salaries: data/salaries.json from this conversation, newest version each time'],
+      collections_shown: ['feedback'],
+    },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const shown = projectPermission({
+    id: 'apr_back',
+    version: 'v1',
+    action: rollback,
+    connection: { id: 'apps-connection', label: 'Apps', provider: 'apps' },
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: false,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+  });
+  expect(shown.what).toBe('Change which version of Deals people see');
+  expect(shown.preview?.facts).toEqual([
+    { label: 'App', value: 'Deals' },
+    { label: 'Version', value: 'The one published 2026-09-20T07:02:00.000Z' },
+    { label: 'Viewers', value: 'Everyone with an account here' },
+    {
+      label: 'Data it shows',
+      value:
+        'salaries: data/salaries.json from this conversation, newest version each time. Viewers see each new version automatically.',
+    },
+    { label: 'Responses it collects', value: 'feedback' },
+  ]);
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtemp, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { APP_LIMITS } from '@melete/contracts';
@@ -81,6 +81,29 @@ describe('a bundle', () => {
       return;
     }
     expect(await refusal(root)).toContain('b.txt is a link');
+  });
+});
+
+describe('a bundle walk', () => {
+  test('is bounded by folders as well as files', async () => {
+    const root = await workspace({ 'index.html': 'x' });
+    for (let n = 0; n < 1_001; n++) await mkdir(path.join(root, JOB, 'app', `d${n}`));
+    expect(await refusal(root)).toContain('more than 1000 files and folders');
+  });
+
+  test('refuses a folder that is a link, and a link given as the folder itself', async () => {
+    const root = await workspace({ 'index.html': 'x' });
+    const outside = await mkdtemp(path.join(tmpdir(), 'melete-apps-outside-'));
+    await Bun.write(path.join(outside, 'secret.txt'), 'not yours');
+    try {
+      await symlink(outside, path.join(root, JOB, 'app', 'linked'), 'dir');
+      await symlink(path.join(root, JOB, 'app'), path.join(root, JOB, 'alias'), 'dir');
+    } catch {
+      // This machine cannot make links without elevation; CI checks the rule.
+      return;
+    }
+    expect(await refusal(root)).toContain('linked is a link');
+    expect(await refusal(root, 'alias')).toContain('is not a folder');
   });
 });
 

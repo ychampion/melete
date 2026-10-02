@@ -364,26 +364,57 @@ const appBytes = (bytes: number) =>
 
 /** What a permission card asks for an app: its name, never only "an app". */
 function appAsk(kind: string, payload: Record<string, unknown>): string | null {
-  const name = typeof payload.name === 'string' ? plainText(payload.name, '', 200) : '';
-  if (kind === 'apps.publish')
-    return name ? `Publish ${name}${payload.create === true ? '' : ' (a new version)'}` : null;
+  const text = (value: unknown) => (typeof value === 'string' ? plainText(value, '', 200) : '');
+  const name = text(payload.name);
+  // A new version is named by the app it replaces, as it is called now.
+  const current = text(payload.current_name);
+  if (kind === 'apps.publish') {
+    if (payload.create === true) return name ? `Publish ${name}` : null;
+    return current ? `Publish a new version of ${current}` : null;
+  }
   if (kind === 'apps.rollback') return name ? `Change which version of ${name} people see` : null;
   return null;
 }
 
+/** The data an app shows, as one card line. */
+const dataFact = (shown: unknown) => {
+  const lines = Array.isArray(shown) ? shown.map(String) : [];
+  return {
+    label: 'Data it shows',
+    value: lines.length
+      ? plainText(`${lines.join('; ')}. Viewers see each new version automatically.`, 'None')
+      : 'None',
+  };
+};
+
+const collectionsFact = (names: string[]) =>
+  names.length
+    ? [{ label: 'Responses it collects', value: plainText(names.join(', '), 'None') }]
+    : [];
+
 /**
- * Everything a person needs to decide on publishing an app: how much it is,
- * who will be able to open it, and which data it shows them, all bound into
- * the payload before the question was asked.
+ * Everything a person needs to decide on publishing an app, or on changing
+ * which version people see: which app, how much it is, who will be able to
+ * open it, and which data it shows them, all bound into the payload before the
+ * question was asked.
  */
 function appFacts(kind: string, payload: Record<string, unknown>) {
   if (kind === 'apps.rollback') {
     const at = typeof payload.version_published_at === 'string' ? payload.version_published_at : '';
+    const viewers = typeof payload.viewers_now === 'string' ? payload.viewers_now : 'only you';
     return [
       ...(typeof payload.name === 'string'
         ? [{ label: 'App', value: plainText(payload.name, 'App', 200) }]
         : []),
       { label: 'Version', value: at ? `The one published ${at}` : 'An earlier version' },
+      {
+        label: 'Viewers',
+        value: plainText(viewers.charAt(0).toUpperCase() + viewers.slice(1), 'Only you'),
+      },
+      dataFact(payload.data_shown),
+      ...collectionsFact(
+        Array.isArray(payload.collections_shown) ? payload.collections_shown.map(String) : [],
+      ),
     ];
   }
   if (kind !== 'apps.publish') return [];
@@ -397,28 +428,28 @@ function appFacts(kind: string, payload: Record<string, unknown>) {
         : audience.kind === 'unchanged' && typeof audience.now === 'string'
           ? `Unchanged: ${audience.now}`
           : 'Only you';
-  const shown = Array.isArray(payload.data_shown) ? payload.data_shown.map(String) : [];
-  const collections = Object.keys(object(payload.collections));
   const files = typeof payload.file_count === 'number' ? payload.file_count : 0;
   const bytes = typeof payload.total_bytes === 'number' ? payload.total_bytes : 0;
+  const name = typeof payload.name === 'string' ? plainText(payload.name, 'App', 200) : null;
+  const current =
+    typeof payload.current_name === 'string' ? plainText(payload.current_name, 'App', 200) : null;
   return [
-    ...(typeof payload.name === 'string'
-      ? [{ label: 'App', value: plainText(payload.name, 'App', 200) }]
-      : []),
+    ...(current
+      ? [
+          { label: 'App', value: current },
+          // A new name is part of what is asked, never done unseen.
+          ...(name && name !== current ? [{ label: 'Renames it to', value: name }] : []),
+        ]
+      : name
+        ? [{ label: 'App', value: name }]
+        : []),
     {
       label: 'Files',
       value: `${files} ${files === 1 ? 'file' : 'files'}, ${appBytes(bytes)}`,
     },
     { label: 'Viewers', value: plainText(viewers, 'Only you') },
-    {
-      label: 'Data it shows',
-      value: shown.length
-        ? plainText(`${shown.join('; ')}. Viewers see each new version automatically.`, 'None')
-        : 'None',
-    },
-    ...(collections.length
-      ? [{ label: 'Responses it collects', value: plainText(collections.join(', '), 'None') }]
-      : []),
+    dataFact(payload.data_shown),
+    ...collectionsFact(Object.keys(object(payload.collections))),
   ];
 }
 

@@ -18,12 +18,14 @@
  * The person does both from the Apps screen without asking: those are their
  * own actions on their own app.
  */
+import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import {
   type Action,
   APP_LIMITS,
   type AppManifest,
   type ConnectorManifest,
+  type DispatchResult,
   type JsonObject,
   type JsonValue,
   type Receipt,
@@ -43,8 +45,8 @@ import {
 } from '../apps/service.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
-import { newId } from '../ids.ts';
 import type { BlobStore } from '../storage/blob.ts';
+import { segmentsFor } from './files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 export type AppsOptions = {
@@ -178,6 +180,8 @@ export const appsManifest: ConnectorManifest = {
           // Bound by the service before the person is asked.
           create: { type: 'boolean' },
           manifest_hash: { type: 'string', pattern: SHA256 },
+          /** The name the app has now, when this adds a version to it. */
+          current_name: { type: 'string', maxLength: 200 },
           file_count: { type: 'integer', minimum: 1 },
           total_bytes: { type: 'integer', minimum: 0 },
           data_shown: {
@@ -206,6 +210,17 @@ export const appsManifest: ConnectorManifest = {
           // Bound by the service before the person is asked.
           name: { type: 'string', maxLength: 200 },
           version_published_at: { type: 'string', maxLength: 64 },
+          viewers_now: { type: 'string', maxLength: 4000 },
+          data_shown: {
+            type: 'array',
+            maxItems: APP_LIMITS.max_data_bindings,
+            items: { type: 'string', maxLength: 2000 },
+          },
+          collections_shown: {
+            type: 'array',
+            maxItems: APP_LIMITS.max_collections,
+            items: { type: 'string', maxLength: 100 },
+          },
         },
       },
       effect_class: 'write_external',
@@ -217,10 +232,16 @@ export const appsManifest: ConnectorManifest = {
 };
 
 const refused = (message: string) => new BrokerFault('payload_invalid', message);
-const changedSinceApproval = () =>
-  refused(
-    'The files changed after the person approved them, so nothing was published. Publish again to ask with the files as they are now.',
-  );
+/**
+ * A dispatch that stopped before anything was stored or changed: the files
+ * were never written and the transaction never committed, so it is settled
+ * as not done rather than left in doubt.
+ */
+const notDone = (reason: string): DispatchResult => ({
+  outcome: 'failed',
+  reason,
+  retryable: false,
+});
 
 type BindingInput = {
   artifact?: unknown;
@@ -240,11 +261,20 @@ async function publisherOf(tx: Query, ctx: ConnectorContext): Promise<string> {
   return id;
 }
 
-/** Each binding's source resolved to a conversation in this space, and a line for the card. */
+/** How a binding reads on a card. */
+const bindingLine = (name: string, path: string, source: string, jobId: string) =>
+  `${name}: ${path} from ${source === jobId ? 'this conversation' : 'another of your conversations in this space'}, newest version each time`;
+
+/**
+ * Each binding's file checked as a workspace path, and its source resolved to
+ * a conversation of the publisher's own in this space: an app shows only what
+ * its publisher could read themselves.
+ */
 async function resolveData(
   tx: Query,
   ctx: ConnectorContext,
   data: unknown,
+  publisher: string,
 ): Promise<{ bindings: AppManifest['data']; shown: string[] }> {
   const bindings: AppManifest['data'] = {};
   const shown: string[] = [];
@@ -256,16 +286,24 @@ async function resolveData(
     const path = binding.artifact ?? binding.path;
     const artifact = typeof path === 'string' ? path : '';
     if (!artifact) throw refused(`Data "${name}" needs the file it shows.`);
+    try {
+      segmentsFor(artifact);
+    } catch {
+      throw refused(`Data "${name}" names ${artifact}, which is not a file in a workspace.`);
+    }
     const named = binding.source ?? binding.source_job_id;
     const source = named === undefined || named === 'this_job' ? ctx.job_id : String(named);
     if (source !== ctx.job_id) {
-      const [job] = await tx`select 1 from job where id = ${source} and space_id = ${ctx.space_id}`;
-      if (!job) throw refused(`Data "${name}" names a conversation that is not in this space.`);
+      const [job] = await tx`select 1 from job j join space s on s.id = j.space_id
+        where j.id = ${source} and j.space_id = ${ctx.space_id}
+          and coalesce(j.principal_id, s.owner_principal_id) = ${publisher}`;
+      if (!job)
+        throw refused(
+          `Data "${name}" names a conversation that is not one of yours in this space.`,
+        );
     }
     bindings[name] = { kind: 'artifact', path: artifact, source_job_id: source };
-    shown.push(
-      `${name}: ${artifact} from ${source === ctx.job_id ? 'this conversation' : 'another conversation in this space'}, newest version each time`,
-    );
+    shown.push(bindingLine(name, artifact, source, ctx.job_id));
   }
   return { bindings, shown };
 }
@@ -319,6 +357,8 @@ async function resolveAudience(
       `No account here for ${missing.join(', ')}. Apps open only for people with an account on this installation.`,
     );
   const others = emails.filter((email) => found.get(email) !== publisher);
+  // Naming only themselves is the same as only them.
+  if (!others.length) return { kind: 'only_me' };
   return {
     kind: 'people',
     emails: others,
@@ -362,6 +402,16 @@ const checkIdentity = (action: Action, ctx: ConnectorContext) => {
 
 const linkFor = (appId: string) => `#/apps/${appId}`;
 
+/**
+ * The app a publish writes to. A new app's id is derived from the action, so
+ * the payload the person approves is the same however often it is proposed,
+ * and every dispatch or check of one action names the same app.
+ */
+const appIdOf = (action: Action): string =>
+  action.canonical_payload.create === true
+    ? `app_${createHash('sha256').update(action.id).digest('hex').slice(0, 32)}`
+    : String(action.canonical_payload.app_id);
+
 export function createAppsConnector(options: AppsOptions): Connector {
   /** The bundle as it is on disk now, with the bindings the payload carries. */
   const bundle = async (ctx: ConnectorContext, payload: JsonObject) => {
@@ -399,19 +449,28 @@ export function createAppsConnector(options: AppsOptions): Connector {
         // apps.rollback
         const appId = String(payload.app_id);
         const app = await managedApp(tx, ctx, appId, publisher);
-        const [version] = await tx`select created_at from app_version
+        const [version] = await tx`select created_at, manifest from app_version
           where id = ${payload.version_id} and app_id = ${appId}`;
         if (!version) throw refused('That version is not one of this app.');
+        // What people would see after it: that version's data, to today's viewers.
+        const manifest = version.manifest as AppManifest;
         return {
           app_id: appId,
           version_id: payload.version_id,
           name: app.name,
           version_published_at: new Date(version.created_at as string).toISOString(),
+          viewers_now: await viewersNow(tx, appId),
+          data_shown: Object.entries(manifest.data)
+            .sort(([a], [b]) => (a < b ? -1 : 1))
+            .map(([name, binding]) =>
+              bindingLine(name, binding.path, binding.source_job_id, ctx.job_id),
+            ),
+          collections_shown: Object.keys(manifest.collections).sort(),
         };
       }
       const existing = typeof payload.app_id === 'string' ? payload.app_id : null;
-      if (existing) await managedApp(tx, ctx, existing, publisher);
-      const { bindings, shown } = await resolveData(tx, ctx, payload.data);
+      const current = existing ? await managedApp(tx, ctx, existing, publisher) : null;
+      const { bindings, shown } = await resolveData(tx, ctx, payload.data, publisher);
       const audience = await resolveAudience(tx, payload.audience, publisher, existing);
       const bound: JsonObject = {
         dir: payload.dir as string,
@@ -419,7 +478,9 @@ export function createAppsConnector(options: AppsOptions): Connector {
         ...(typeof payload.description === 'string' && payload.description.trim()
           ? { description: payload.description.trim() }
           : {}),
-        app_id: existing ?? newId('app'),
+        // A new app is named at dispatch, from the action; see appIdOf.
+        ...(existing ? { app_id: existing } : {}),
+        ...(current ? { current_name: current.name } : {}),
         create: !existing,
         data: bindings as unknown as JsonObject,
         ...(payload.collections ? { collections: collectionsOf(payload.collections) } : {}),
@@ -439,15 +500,16 @@ export function createAppsConnector(options: AppsOptions): Connector {
     async validateBinding(action, ctx, tx) {
       const payload = action.canonical_payload;
       const publisher = await publisherOf(tx, ctx);
-      if (action.kind === 'apps.rollback' || payload.create !== true)
-        await managedApp(tx, ctx, String(payload.app_id), publisher);
-      // Checked here, before anything is sent, so a folder changed since the
-      // approval refuses the publish outright rather than leaving it in doubt.
-      if (
-        action.kind === 'apps.publish' &&
-        (await bundle(ctx, payload)).hash !== payload.manifest_hash
-      )
-        throw changedSinceApproval();
+      if (action.kind === 'apps.rollback' || payload.create !== true) {
+        const app = await managedApp(tx, ctx, String(payload.app_id), publisher);
+        // The card named the app as it was; one renamed since is not what was approved.
+        const shownName = action.kind === 'apps.rollback' ? payload.name : payload.current_name;
+        // A publish that renames the app, checked again after it ran, finds the new name.
+        const renamedHere = action.kind === 'apps.publish' && payload.name === app.name;
+        if (typeof shownName === 'string' && shownName !== app.name && !renamedHere)
+          throw refused('The app was renamed after the person was asked; ask again.');
+      }
+      // The folder is read and compared at dispatch, outside this transaction.
     },
     async execute(action, ctx) {
       checkIdentity(action, ctx);
@@ -464,11 +526,11 @@ export function createAppsConnector(options: AppsOptions): Connector {
             const [row] =
               await tx`select 1 from app where id = ${appId} and space_id = ${ctx.space_id}`;
             if (!row) throw new AppUnavailable('no such app in this space');
-            await setCurrentVersion(tx, appId, versionId);
+            await setCurrentVersion(tx, appId, versionId, action.id);
           });
         } catch (error) {
           if (error instanceof AppUnavailable)
-            throw refused('The app or that version is no longer available, so nothing changed.');
+            return notDone('The app or that version is no longer available, so nothing changed.');
           throw error;
         }
         const detail = { app_id: appId, version_id: versionId, link: linkFor(appId) };
@@ -476,8 +538,11 @@ export function createAppsConnector(options: AppsOptions): Connector {
       }
       if (action.kind !== 'apps.publish') throw new Error('unknown apps tool');
       const { files, manifest, hash } = await bundle(ctx, payload);
-      if (hash !== payload.manifest_hash) throw changedSinceApproval();
-      const appId = String(payload.app_id);
+      if (hash !== payload.manifest_hash)
+        return notDone(
+          'The files changed after the person approved them, so nothing was published. Publish again to ask with the files as they are now.',
+        );
+      const appId = appIdOf(action);
       let published: Awaited<ReturnType<typeof publishVersion>>;
       try {
         published = await publishVersion(options.sql, options.blobs, {
@@ -496,7 +561,7 @@ export function createAppsConnector(options: AppsOptions): Connector {
         });
       } catch (error) {
         if (error instanceof AppUnavailable)
-          throw refused(
+          return notDone(
             'The app is no longer there, or no longer managed by this person, so nothing was published.',
           );
         throw error;
@@ -514,7 +579,7 @@ export function createAppsConnector(options: AppsOptions): Connector {
     async verify(action, ctx) {
       checkIdentity(action, ctx);
       const payload = action.canonical_payload;
-      const appId = String(payload.app_id);
+      const appId = appIdOf(action);
       const versionId =
         action.kind === 'apps.rollback'
           ? String(payload.version_id)
@@ -522,8 +587,12 @@ export function createAppsConnector(options: AppsOptions): Connector {
             ? versionIdFor(appId, payload.manifest_hash)
             : null;
       if (!versionId) return { decision: 'unsupported', reason: 'nothing to compare' };
-      const [row] = await options.sql`select current_version_id from app
+      // Decided by this action's own mark: the same version can be current
+      // because another action put it there.
+      const [row] = await options.sql`select current_version_id, last_action_id from app
         where id = ${appId} and space_id = ${ctx.space_id}`;
+      if (row?.last_action_id !== action.id)
+        return { decision: 'undecided', reason: 'this action did not set the app as it is now' };
       if (row?.current_version_id !== versionId)
         return { decision: 'undecided', reason: 'the app does not show that version now' };
       const detail = { app_id: appId, version_id: versionId, link: linkFor(appId) };
