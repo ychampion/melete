@@ -5,6 +5,7 @@ import type { CommandOutput } from '../../../apps/melete/src/runtime/docker-engi
 import { parseSshTarget, runBackup } from './commands/backup.ts';
 import { runRestore } from './commands/restore.ts';
 import { DEPLOY_FILE } from './deploy-config.ts';
+import { appendHistory } from './history.ts';
 import { temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
 const MB = 1024 ** 2;
@@ -192,7 +193,7 @@ describe('melete restore', () => {
     expect(printed).toContain('docker volume rm melete_pgdata');
     expect(printed).toContain('melete-20261002T100000Z/database.dump');
     expect(printed).not.toMatch(/volume rm \S*restrictions/);
-    expect(printed).not.toContain('cp - melete:/data');
+    expect(printed).not.toContain('melete:/data <');
   });
 
   test('on a new machine the newest journal archive goes back before the service starts', async () => {
@@ -205,7 +206,8 @@ describe('melete restore', () => {
     expect(await runRestore(context, [set], false)).toBe(0);
     const printed = context.printed();
     const restore = printed.indexOf('pg_restore');
-    const journal = printed.indexOf('cp - melete:/data');
+    // -a keeps the archive's file ownership, so the service can still append to the journal.
+    const journal = printed.indexOf('cp -a - melete:/data <');
     expect(journal).toBeGreaterThan(restore);
     expect(printed.indexOf('up -d --no-build --wait\n')).toBeGreaterThan(journal);
   });
@@ -220,7 +222,76 @@ describe('melete restore', () => {
     });
     expect(await runRestore(context, [set], false)).toBe(1);
     expect(context.printed()).toMatch(
-      /fail\s+restore\.checksums\s+These do not match SHA256SUMS: database\.dump/,
+      /fail\s+restore\.checksums\s+database\.dump does not match SHA256SUMS/,
     );
+  });
+
+  test('a backup whose SHA256SUMS leaves out a file, the dump above all, fails its check', async () => {
+    const rig = backupRig();
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    const set = join(rig.backups, 'melete-20261002T100000Z');
+    const sums = readFileSync(join(set, 'SHA256SUMS'), 'utf8');
+    writeFileSync(
+      join(set, 'SHA256SUMS'),
+      sums
+        .split('\n')
+        .filter((line) => !line.endsWith('  database.dump'))
+        .join('\n'),
+    );
+    writeFileSync(join(set, 'extra.tar'), 'unlisted');
+    const context = testContext(rig.deployDir, [], {
+      run: () => ({ code: 0, stdout: '', stderr: '' }),
+    });
+    expect(await runRestore(context, [set], false)).toBe(1);
+    expect(context.printed()).toContain('SHA256SUMS does not list database.dump');
+    expect(context.printed()).toContain('SHA256SUMS does not list extra.tar');
+  });
+});
+
+describe('what backup and restore keep, and refuse', () => {
+  test('keep never removes the backup the last deploy took', async () => {
+    const rig = backupRig();
+    mkdirSync(rig.backups, { recursive: true });
+    for (const name of ['melete-20260901T000000Z', 'melete-20260915T000000Z'])
+      mkdirSync(join(rig.backups, name));
+    const named = join(rig.backups, 'melete-20260901T000000Z');
+    appendHistory(rig.deployDir, {
+      at: '2026-09-01T00:00:01.000Z',
+      command: 'deploy',
+      from: { tag: 'aaaaaaa', revision: null },
+      to: { tag: 'bbbbbbb', revision: null },
+      checkout: null,
+      migrations: { from: 68, to: 69 },
+      backup: named,
+      result: 'deployed',
+      detail: '',
+    });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    // keep is 2: the two newest stay, and so does the one the deploy named, though it is older.
+    expect(readdirSync(rig.backups).sort()).toEqual([
+      'melete-20260901T000000Z',
+      'melete-20260915T000000Z',
+      'melete-20261002T100000Z',
+    ]);
+  });
+
+  test('a shell value that differs from deploy/.env refuses backup and restore', async () => {
+    const rig = backupRig();
+    rig.context.environment = { COMPOSE_PROJECT_NAME: 'other' };
+    expect(await runBackup(rig.context, [], false)).toBe(2);
+    expect(rig.context.errors()).toContain('This shell sets COMPOSE_PROJECT_NAME');
+    expect(existsSync(rig.backups)).toBe(false);
+
+    const sound = backupRig();
+    expect(await runBackup(sound.context, [], false)).toBe(0);
+    const context = testContext(sound.deployDir, [], {
+      run: () => ({ code: 0, stdout: '', stderr: '' }),
+      environment: { MELETE_IMAGE_REGISTRY: 'registry.example.com/team' },
+    });
+    expect(await runRestore(context, [join(sound.backups, 'melete-20261002T100000Z')], false)).toBe(
+      2,
+    );
+    expect(context.errors()).toContain('This shell sets MELETE_IMAGE_REGISTRY');
+    expect(context.errors()).not.toContain('registry.example.com');
   });
 });

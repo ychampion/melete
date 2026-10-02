@@ -66,6 +66,8 @@ export type Context = {
   sameDisk: (a: string, b: string) => boolean | null;
   sleep: (ms: number) => Promise<void>;
   now: () => Date;
+  /** The environment this command runs in, which Compose reads before deploy/.env. */
+  environment: Readonly<Record<string, string | undefined>>;
   out: (text: string) => void;
   err: (text: string) => void;
 };
@@ -163,8 +165,11 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
   let bytes = 0;
   const problems: string[] = [];
   const files: number[] = [];
-  const children: { name: string; child: ReturnType<typeof Bun.spawn> }[] = [];
+  // stderr is read from the start, so a process that writes a lot there never stalls.
+  const children: { name: string; child: ReturnType<typeof Bun.spawn>; stderr: Promise<string> }[] =
+    [];
   let producer: ReturnType<typeof Bun.spawn> | null = null;
+  let producerStderr: Promise<string> = Promise.resolve('');
   const short = (text: string) => text.trim().split('\n').slice(-3).join(' ').slice(0, 400);
   try {
     const writers: ((chunk: Uint8Array) => Promise<void>)[] = [];
@@ -183,7 +188,11 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
           stdout: 'ignore',
           stderr: 'pipe',
         });
-        children.push({ name: sink.command[0] ?? 'command', child });
+        children.push({
+          name: sink.command[0] ?? 'command',
+          child,
+          stderr: new Response(child.stderr as ReadableStream).text(),
+        });
         const stdin = child.stdin as import('bun').FileSink;
         writers.push(async (chunk) => {
           stdin.write(chunk);
@@ -205,6 +214,7 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
         stderr: 'pipe',
       });
       reader = producer.stdout as ReadableStream<Uint8Array>;
+      producerStderr = new Response(producer.stderr as ReadableStream).text();
     }
     const timer = setTimeout(() => {
       producer?.kill();
@@ -218,17 +228,11 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
       }
       for (const close of closers) await close();
       if (producer) {
-        const [code, stderr] = await Promise.all([
-          producer.exited,
-          new Response(producer.stderr as ReadableStream).text(),
-        ]);
+        const [code, stderr] = await Promise.all([producer.exited, producerStderr]);
         if (code !== 0) problems.push(`${producerName} exited ${code}: ${short(stderr)}`);
       }
-      for (const { name, child } of children) {
-        const [code, stderr] = await Promise.all([
-          child.exited,
-          new Response(child.stderr as ReadableStream).text(),
-        ]);
+      for (const { name, child, stderr: text } of children) {
+        const [code, stderr] = await Promise.all([child.exited, text]);
         if (code !== 0) problems.push(`${name} exited ${code}: ${short(stderr)}`);
       }
     } finally {
@@ -264,6 +268,7 @@ export function realContext(deployDir: string = DEFAULT_DEPLOY_DIR): Context {
     sameDisk,
     sleep: (ms) => Bun.sleep(ms),
     now: () => new Date(),
+    environment: process.env,
     out: (text) => process.stdout.write(text),
     err: (text) => process.stderr.write(text),
   };

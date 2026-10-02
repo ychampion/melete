@@ -3,7 +3,7 @@ import { appendFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CommandOutput } from '../../../apps/melete/src/runtime/docker-engine.ts';
-import { appendHistory, historyPath, lastDeployed, readHistory } from './history.ts';
+import { appendHistory, historyPath, lastSwitched, readHistory } from './history.ts';
 import { downloadBytes, inspectRemote, repositoryOf } from './images.ts';
 
 const ok = (value: unknown): CommandOutput => ({
@@ -92,6 +92,9 @@ describe('the deployment history', () => {
     appendHistory(dir, entry('failed', 'two'));
     const entries = readHistory(dir);
     expect(entries.map((item) => item.to.tag)).toEqual(['one', 'two']);
-    expect(lastDeployed(entries)?.to.tag).toBe('one');
+    // The newest run past the switch, failed or not, is the one to undo; a refusal changed nothing.
+    expect(lastSwitched(entries)?.to.tag).toBe('two');
+    appendHistory(dir, { ...entry('failed', 'three'), result: 'refused' });
+    expect(lastSwitched(readHistory(dir))?.to.tag).toBe('two');
   });
 });

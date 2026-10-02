@@ -206,3 +206,29 @@ export const settingId = (name: string): string =>
 
 export const deployFilePresent = (deployDir: string, name: string) =>
   existsSync(join(deployDir, name));
+
+/**
+ * Settings deploy writes or judges. Compose takes a value set in the shell over
+ * deploy/.env, so one set there would leave a deploy writing one release and
+ * Compose running another.
+ */
+export const SHELL_PINNED = [
+  'MELETE_IMAGE_TAG',
+  'MELETE_IMAGE_REGISTRY',
+  'COMPOSE_PROJECT_NAME',
+  'MELETE_SANDBOX_DOCKER_IMAGE',
+] as const;
+
+/** The pinned settings this shell sets to something other than deploy/.env. Names only. */
+export function shellOverrides(
+  environment: Readonly<Record<string, string | undefined>>,
+  env: Record<string, string>,
+): string[] {
+  return SHELL_PINNED.filter((name) => {
+    const shell = environment[name];
+    return shell !== undefined && shell !== (env[name] ?? '');
+  });
+}
+
+export const shellOverrideMessage = (names: readonly string[]) =>
+  `This shell sets ${names.join(', ')} to something other than deploy/.env, and Compose would use the shell's value. Run unset ${names.join(' ')} (or make them match deploy/.env), then run this again. Nothing was changed.`;

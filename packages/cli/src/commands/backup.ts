@@ -19,10 +19,11 @@
  */
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { Context, Endpoint, Source } from '../context.ts';
 import { composeCommand, DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
-import { readInstallation } from '../installation.ts';
+import { lastSwitched, readHistory } from '../history.ts';
+import { readInstallation, shellOverrideMessage, shellOverrides } from '../installation.ts';
 import { LockRefusal, withLock } from '../lock.ts';
 import { EXIT, type ExitCode, type Result, renderReport, report } from '../schema.ts';
 
@@ -323,11 +324,15 @@ export async function takeBackup(
   }
 
   if (destination.kind === 'dir') {
+    // The backup the last deploy took is the one rollback restores from: it is never pruned.
+    const named = lastSwitched(readHistory(context.deployDir))?.backup;
     const kept = readdirSync(destination.dir)
       .filter((entry) => BACKUP_NAME.test(entry))
       .filter((entry) => statSync(join(destination.dir, entry)).isDirectory())
       .sort();
-    const removed = kept.slice(0, Math.max(0, kept.length - config.backup.keep));
+    const removed = kept
+      .slice(0, Math.max(0, kept.length - config.backup.keep))
+      .filter((entry) => !named || resolve(join(destination.dir, entry)) !== resolve(named));
     for (const entry of removed)
       rmSync(join(destination.dir, entry), { recursive: true, force: true });
     if (removed.length > 0)
@@ -356,6 +361,11 @@ export async function runBackup(
   const installation = readInstallation(context.deployDir, context.machine.platform);
   if (installation.env === null) {
     context.err('There is no deploy/.env, so there is no installation here to back up.\n');
+    return EXIT.refused;
+  }
+  const overridden = shellOverrides(context.environment, installation.env);
+  if (overridden.length > 0) {
+    context.err(`${shellOverrideMessage(overridden)}\n`);
     return EXIT.refused;
   }
   const { config } = installation;

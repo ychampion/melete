@@ -406,7 +406,7 @@ export function restoreSteps(context: RestoreContext): string[] {
       ? [
           '# A new machine has no journal yet: put back the newest one before the service starts.',
           `${compose} create melete`,
-          `${compose} cp - melete:/data < ${quote(context.journalArchive)}`,
+          `${compose} cp -a - melete:/data < ${quote(context.journalArchive)}`,
         ]
       : []),
     '# Start only after the restore has finished.',

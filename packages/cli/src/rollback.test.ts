@@ -61,14 +61,16 @@ describe('melete rollback', () => {
       { backup: { dir: backups, keep: 3 } },
     );
     expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(0);
-    const backup = readHistory(deployDir)[0]?.backup ?? '';
+    const backup = readHistory(deployDir).at(-1)?.backup ?? '';
     expect(backup).toContain(backups);
     const before = env(deployDir);
     const calls = rig.state.calls.length;
 
     expect(await runRollback(rig.context, [], false, rig.dependencies)).toBe(3);
     const printed = rig.context.printed();
-    expect(printed).toContain('The database records 1 migration(s) that aaaaaaa does not know');
+    expect(printed).toContain(
+      '1 migration(s), run since aaaaaaa was running, that aaaaaaa does not know',
+    );
     expect(printed).toContain('Nothing was changed.');
     expect(printed).toContain(`${backup}/database.dump`);
     expect(printed).toContain('docker volume rm melete_pgdata');
@@ -95,7 +97,7 @@ describe('melete rollback', () => {
       recorded: whens(69),
     });
     expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(0);
-    expect(readHistory(deployDir)[0]?.migrations.ran).toEqual([]);
+    expect(readHistory(deployDir).at(-1)?.migrations.ran).toEqual([]);
 
     expect(await runRollback(rig.context, [], false, rig.dependencies)).toBe(0);
     expect(env(deployDir)).toContain(`\nMELETE_IMAGE_TAG=${short(OLD)}\n`);
@@ -109,6 +111,6 @@ describe('melete rollback', () => {
     const deployDir = temporaryDeployDir();
     const rig = deployRig(deployDir);
     expect(await runRollback(rig.context, [], false, rig.dependencies)).toBe(2);
-    expect(rig.context.errors()).toContain('No deploy is recorded');
+    expect(rig.context.errors()).toContain('No deploy that changed the stack is recorded');
   });
 });

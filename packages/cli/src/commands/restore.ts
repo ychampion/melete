@@ -13,7 +13,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Context } from '../context.ts';
 import { composeCommand } from '../deploy-config.ts';
-import { readInstallation } from '../installation.ts';
+import { readInstallation, shellOverrideMessage, shellOverrides } from '../installation.ts';
 import { restoreSteps } from '../plan.ts';
 import { EXIT, type ExitCode, type Result, renderReport, report } from '../schema.ts';
 import { BACKUP_NAME, expandHome, writersOf } from './backup.ts';
@@ -43,6 +43,34 @@ export function newestJournal(backup: string): string | null {
   return archives.sort((a, b) => basename(a).localeCompare(basename(b))).at(-1) ?? null;
 }
 
+/**
+ * What makes a backup unusable, one line each; empty when it is whole. Every file in
+ * it, the dump above all, must be listed in SHA256SUMS and match.
+ */
+export async function verifyBackup(context: Context, backup: string): Promise<string[]> {
+  if (!existsSync(backup) || !statSync(backup).isDirectory()) return ['it is not there'];
+  const sumsPath = join(backup, 'SHA256SUMS');
+  if (!existsSync(sumsPath)) return ['it has no SHA256SUMS'];
+  const problems: string[] = [];
+  const listed = new Map<string, string>();
+  for (const line of readFileSync(sumsPath, 'utf8').split('\n').filter(Boolean)) {
+    const [sum, file] = line.split(/\s+/, 2);
+    if (!sum || !file || file.includes('/') || file.includes('\\'))
+      problems.push(`SHA256SUMS has a line it cannot read`);
+    else listed.set(file, sum);
+  }
+  if (!listed.has('database.dump')) problems.push('SHA256SUMS does not list database.dump');
+  for (const file of readdirSync(backup))
+    if (file !== 'SHA256SUMS' && !listed.has(file))
+      problems.push(`SHA256SUMS does not list ${file}`);
+  for (const [file, sum] of listed) {
+    const path = join(backup, file);
+    const hashed = existsSync(path) ? await context.stream({ file: path }, []) : null;
+    if (!hashed?.ok || hashed.sha256 !== sum) problems.push(`${file} does not match SHA256SUMS`);
+  }
+  return problems;
+}
+
 export async function runRestore(
   context: Context,
   args: readonly string[],
@@ -62,43 +90,28 @@ export async function runRestore(
     return EXIT.refused;
   }
   const results: Result[] = [];
-  const sumsPath = join(backup, 'SHA256SUMS');
-  if (!existsSync(sumsPath))
-    results.push({
-      id: 'restore.checksums',
-      level: 'fail',
-      detail: `${backup} has no SHA256SUMS.`,
-    });
-  else {
-    const lines = readFileSync(sumsPath, 'utf8').split('\n').filter(Boolean);
-    const bad: string[] = [];
-    for (const line of lines) {
-      const [sum, file] = line.split(/\s+/, 2);
-      if (!sum || !file || file.includes('/') || file.includes('\\')) {
-        bad.push(line);
-        continue;
-      }
-      const path = join(backup, file);
-      const hashed = existsSync(path) ? await context.stream({ file: path }, []) : null;
-      if (!hashed?.ok || hashed.sha256 !== sum) bad.push(file);
-    }
-    results.push(
-      bad.length === 0
-        ? {
-            id: 'restore.checksums',
-            level: 'ok',
-            detail: `${lines.length} file(s) match SHA256SUMS.`,
-          }
-        : {
-            id: 'restore.checksums',
-            level: 'fail',
-            detail: `These do not match SHA256SUMS: ${bad.join(', ')}`,
-            fix: 'Use another backup; a damaged one cannot be restored safely.',
-          },
-    );
-  }
+  const problems = await verifyBackup(context, backup);
+  results.push(
+    problems.length === 0
+      ? {
+          id: 'restore.checksums',
+          level: 'ok',
+          detail: `${readdirSync(backup).length - 1} file(s) match SHA256SUMS.`,
+        }
+      : {
+          id: 'restore.checksums',
+          level: 'fail',
+          detail: problems.join('; '),
+          fix: 'Use another backup; a damaged one cannot be restored safely.',
+        },
+  );
 
   const installation = readInstallation(context.deployDir, context.machine.platform);
+  const overridden = shellOverrides(context.environment, installation.env ?? {});
+  if (overridden.length > 0) {
+    context.err(`${shellOverrideMessage(overridden)}\n`);
+    return EXIT.refused;
+  }
   const { config } = installation;
   const compose = composeCommand(context.deployDir, config);
   const freshHost =

@@ -184,6 +184,7 @@ export function testContext(
       slept.push(ms);
     },
     now: () => new Date('2026-10-02T10:00:00Z'),
+    environment: {},
     streams,
     streamFails,
     slept,

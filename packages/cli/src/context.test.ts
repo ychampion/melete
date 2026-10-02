@@ -48,4 +48,17 @@ describe('streaming a backup part', () => {
     expect(failed.ok).toBe(false);
     expect(failed.detail).toContain('exited 4');
   });
+
+  test('a source that writes a lot to stderr before its output does not stall', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
+    const noisy = {
+      command: [
+        bun,
+        '-e',
+        'await Bun.write(Bun.stderr, "w".repeat(1 << 20)); process.stdout.write("dump")',
+      ],
+    };
+    const result = await stream(noisy, [{ file: join(dir, 'd.dump') }]);
+    expect(result).toMatchObject({ ok: true, bytes: 4 });
+  }, 20_000);
 });

@@ -58,6 +58,8 @@ export type Engine = {
   /** A pull of a reference starting with one of these fails. */
   failPulls: string[];
   failUp: boolean;
+  /** Container ids by Compose project. */
+  projects: Record<string, string[]>;
   /** Whether starting the service records its journal's migrations. */
   migrateOnUp: boolean;
   ups: number;
@@ -82,7 +84,7 @@ export function release(name: string, revision: string, sizeMb = 100): Published
   };
 }
 
-const asLocal = (ref: string, published: Published): Image => ({
+export const asLocal = (ref: string, published: Published): Image => ({
   id: published.digest,
   repoDigests: [`${ref.split(':').slice(0, -1).join(':')}@${published.digest}`],
   layers: published.layers.map((layer) => layer.diffId),
@@ -119,6 +121,7 @@ export function engine(overrides: Partial<Engine> = {}): Engine {
     databaseBytes: 40 * MB,
     failPulls: [],
     failUp: false,
+    projects: { melete: ['c0ffee'] },
     migrateOnUp: true,
     ups: 0,
     restarts: 0,
@@ -232,9 +235,19 @@ export function engineRun(state: Engine, root: string) {
         .filter((layer) => !known.has(layer.diffId))
         .reduce((total, layer) => total + layer.size, 0);
       state.freeBytes -= Math.ceil(bytes * state.pullCost);
+      // The image the tag named before keeps no tag if nothing else names it.
+      const old = state.local.get(ref);
       state.local.set(ref, asLocal(ref, published));
+      if (
+        old &&
+        old.id !== published.digest &&
+        ![...state.local.values()].some((image) => image.id === old.id)
+      )
+        state.dangling.push(old);
       return ok(ref);
     }
+    if (text.startsWith('docker ps --all --quiet --filter label=com.docker.compose.project='))
+      return ok((state.projects[text.split('=').at(-1) ?? ''] ?? []).join('\n'));
     if (text.startsWith('docker tag ')) {
       state.tagged.push(command.slice(2) as string[]);
       return ok();
@@ -316,8 +329,9 @@ export function deployRig(
   deployDir: string,
   overrides: Partial<Engine> = {},
   contract: object = {},
+  envOverrides: Record<string, string> = {},
 ): DeployRig {
-  const envBefore = writeEnv(deployDir);
+  const envBefore = writeEnv(deployDir, envOverrides);
   writeFileSync(
     join(deployDir, DEPLOY_FILE),
     JSON.stringify({ contract: 1, disk: { min_free_mb: 600, pull_margin_mb: 200 }, ...contract }),

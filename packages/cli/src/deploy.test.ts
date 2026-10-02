@@ -5,7 +5,16 @@ import { runDeploy } from './commands/deploy.ts';
 import { DEPLOY_FILE } from './deploy-config.ts';
 import { readHistory } from './history.ts';
 import { temporaryDeployDir } from './testing.ts';
-import { deployRig, NEW, OLD, REGISTRY, release, whens } from './testing-engine.ts';
+import {
+  asLocal,
+  deployRig,
+  NEW,
+  OLD,
+  REGISTRY,
+  RELEASES,
+  release,
+  whens,
+} from './testing-engine.ts';
 
 const MB = 1024 ** 2;
 const short = (commit: string) => commit.slice(0, 7);
@@ -39,7 +48,9 @@ describe('melete deploy', () => {
     const ups = rig.state.calls.filter((call) => call.includes(' up -d '));
     expect(ups).toHaveLength(2);
     for (const up of ups) expect(up).toContain('--no-build --pull never --wait');
-    const [entry] = readHistory(deployDir);
+    const entries = readHistory(deployDir);
+    expect(entries.map((item) => item.result)).toEqual(['switched', 'deployed']);
+    const entry = entries.at(-1);
     expect(entry).toMatchObject({
       command: 'deploy',
       from: { tag: 'main', revision: OLD },
@@ -310,35 +321,43 @@ describe('melete deploy', () => {
 
   test('deploy prunes only dangling images and nothing labelled for another project', async () => {
     const deployDir = temporaryDeployDir();
-    const rig = deployRig(deployDir);
-    const ours = release('melete-web', OLD);
-    rig.state.dangling = [
+    const pinned = short(OLD);
+    // The stack runs a commit tag the release pipeline later rebuilt for the web image.
+    const rig = deployRig(
+      deployDir,
+      {},
+      { images: { registry: REGISTRY, tag: pinned, channel: 'main' } },
+      { MELETE_IMAGE_TAG: pinned },
+    );
+    for (const name of RELEASES) {
+      rig.state.local.delete(ref(name, 'main'));
+      rig.state.local.set(ref(name, pinned), asLocal(ref(name, pinned), release(name, OLD)));
+    }
+    const rebuilt = release('melete-web', OLD);
+    rig.state.registry.set(ref('melete-web', pinned), {
+      ...rebuilt,
+      digest: 'sha256:melete-web-rebuilt',
+      layers: [...rebuilt.layers.slice(0, 2), { diffId: 'sha256:web-rebuilt', size: 5 * MB }],
+    });
+    const replaced = release('melete-web', OLD).digest;
+    const others = [
+      // Another Melete stack's cached image: our repository, but not one this deploy replaced.
       {
-        id: ours.digest,
-        repoDigests: [`${REGISTRY}/melete-web@${ours.digest}`],
-        layers: [],
-        revision: OLD,
+        id: 'sha256:other-stack-web',
+        repoDigests: [`${REGISTRY}/melete-web@sha256:other-stack-web`],
       },
-      {
-        id: 'sha256:redis',
-        repoDigests: ['docker.io/library/redis@sha256:redis'],
-        layers: [],
-        revision: null,
-      },
-      { id: 'sha256:built-elsewhere', repoDigests: [], layers: [], revision: null },
-      {
-        id: 'sha256:mixed',
-        repoDigests: [`${REGISTRY}/melete-web@sha256:mixed`, 'example.com/other/app@sha256:mixed'],
-        layers: [],
-        revision: null,
-      },
-    ];
-    expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(0);
-    expect(rig.state.removed).toEqual([ours.digest]);
+      { id: 'sha256:redis', repoDigests: ['docker.io/library/redis@sha256:redis'] },
+      { id: 'sha256:built-elsewhere', repoDigests: [] },
+    ].map((image) => ({ ...image, layers: [], revision: null }));
+    rig.state.dangling = [...others];
+    expect(await runDeploy(rig.context, ['--tag', pinned], false, rig.dependencies)).toBe(0);
+    expect(rig.state.pulls).toEqual([ref('melete-web', pinned)]);
+    expect(rig.state.removed).toEqual([replaced]);
+    expect(rig.state.dangling.map((image) => image.id)).toEqual(others.map((image) => image.id));
     const removals = rig.state.calls.filter((call) =>
       /prune|docker rmi|image rm|builder/.test(call),
     );
-    expect(removals).toEqual([`docker image rm ${ours.digest}`]);
+    expect(removals).toEqual([`docker image rm ${replaced}`]);
     // The prune comes after the service's restart.
     const restart = rig.state.calls.findIndex((call) =>
       call.startsWith('docker compose restart melete'),

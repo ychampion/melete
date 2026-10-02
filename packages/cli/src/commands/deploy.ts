@@ -44,7 +44,7 @@ import {
 } from '../../../../deploy/scripts/tailscale-origin.ts';
 import type { Context } from '../context.ts';
 import { composeCommand, composeFiles, DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
-import { appendHistory, type HistoryEntry } from '../history.ts';
+import { appendHistory, type HistoryEntry, readHistory } from '../history.ts';
 import {
   imagesInRepositories,
   inspectLocal,
@@ -58,6 +58,8 @@ import {
   envImageTag,
   type Installation,
   readInstallation,
+  shellOverrideMessage,
+  shellOverrides,
 } from '../installation.ts';
 import { interpolateDocument } from '../interpolate.ts';
 import { LockRefusal, withLock } from '../lock.ts';
@@ -122,7 +124,8 @@ export function deployOptions(args: readonly string[]): DeployOptions {
       const tag = value();
       if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === 'local')
         throw new DeployRefusal(`${tag} is not a published image tag.`);
-      options.tag = tag;
+      // Commits are published under their first seven characters.
+      options.tag = /^[0-9a-f]{8,40}$/.test(tag) ? tag.slice(0, 7) : tag;
     } else if (arg === '--dry-run') options.dryRun = true;
     else if (arg === '--checkout') options.checkout = true;
     else if (arg === '--allow-compose-mismatch') options.allowMismatch = true;
@@ -452,12 +455,13 @@ const HEALTH_POLLS = 24;
 const POLL_MS = 5_000;
 
 /**
- * Removes the stack's own images that no tag names any more. Only images whose
- * recorded registry digests all belong to the stack's repositories are touched;
- * an image another project pulled or built is never a candidate, and `docker
- * image rm` without --force leaves anything a container still uses.
+ * Removes the images this deploy replaced, once no tag names them any more: the
+ * images the stack ran before, and any it retagged. An image this deploy did not
+ * replace is never a candidate, whatever repository it comes from, so another
+ * stack's cached images stay; and `docker image rm` without --force leaves
+ * anything a container still uses.
  */
-export function pruneStackImages(context: Context, repositories: readonly string[]): Result {
+export function pruneReplaced(context: Context, replaced: ReadonlySet<string>): Result {
   const listed = context.run([
     'docker',
     'images',
@@ -473,25 +477,20 @@ export function pruneStackImages(context: Context, repositories: readonly string
       level: 'warn',
       detail: `docker images did not answer: ${lastLine(listed.stderr)}`,
     };
-  const ids = [...new Set(listed.stdout.split(/\s+/).filter(Boolean))];
-  const ours = [...inspectLocal(context.run, ids).entries()]
-    .filter(
-      ([, image]) =>
-        image.repoDigests.length > 0 &&
-        image.repoDigests.every((digest) => repositories.includes(repositoryOf(digest))),
-    )
-    .map(([id]) => id);
+  const ours = [...new Set(listed.stdout.split(/\s+/).filter(Boolean))].filter((id) =>
+    replaced.has(id),
+  );
   if (ours.length === 0)
     return {
       id: 'prune.dangling',
       level: 'ok',
-      detail: 'No replaced image of this stack to remove.',
+      detail: 'No image this deploy replaced is left without a tag.',
     };
   const removed = ours.filter((id) => context.run(['docker', 'image', 'rm', id]).code === 0);
   return {
     id: 'prune.dangling',
     level: 'ok',
-    detail: `Removed ${removed.length} replaced image(s) of this stack${removed.length < ours.length ? `; ${ours.length - removed.length} still in use stay` : ''}.`,
+    detail: `Removed ${removed.length} image(s) this deploy replaced${removed.length < ours.length ? `; ${ours.length - removed.length} still in use stay` : ''}.`,
   };
 }
 
@@ -531,6 +530,11 @@ export async function runDeploy(
 
   const act = async (): Promise<ExitCode> => {
     const installation = readInstallation(context.deployDir, context.machine.platform);
+    const overridden = shellOverrides(context.environment, installation.env ?? {});
+    if (overridden.length > 0) {
+      steps.add({ id: 'deploy.shell', level: 'fail', detail: shellOverrideMessage(overridden) });
+      return finish();
+    }
     if (installation.loaded.kind !== 'found') {
       steps.add({
         id: 'deploy.contract',
@@ -567,6 +571,34 @@ export async function runDeploy(
       return finish();
     }
 
+    // A project with no containers, on an installation whose history ran another, is a
+    // renamed COMPOSE_PROJECT_NAME: every step would act on a new, empty stack.
+    const project = installation.config.project;
+    const elsewhere = readHistory(context.deployDir).find(
+      (item) => item.project !== null && item.project !== project,
+    );
+    if (
+      elsewhere &&
+      context
+        .run([
+          'docker',
+          'ps',
+          '--all',
+          '--quiet',
+          '--filter',
+          `label=com.docker.compose.project=${project}`,
+        ])
+        .stdout.trim() === ''
+    ) {
+      steps.add({
+        id: 'deploy.project',
+        level: 'fail',
+        detail: `Compose project ${project} has no containers, and earlier runs deployed project ${elsewhere.project}; this would start a new, empty installation beside it.`,
+        fix: `Set COMPOSE_PROJECT_NAME back with bun run melete set COMPOSE_PROJECT_NAME=${elsewhere.project}.`,
+      });
+      return finish();
+    }
+
     const gathered = gatherDeploy(context, installation, options);
     const { facts, compose } = gathered;
     const plan: DeployPlan = judgeDeploy(facts);
@@ -577,6 +609,9 @@ export async function runDeploy(
       result: HistoryEntry['result'],
       detail: string,
       backup: string | null = null,
+      ran: number[] | null = migrationDelta(facts.migrations).known
+        ? migrationDelta(facts.migrations).pending
+        : null,
     ): HistoryEntry => ({
       at: context.now().toISOString(),
       command,
@@ -592,10 +627,10 @@ export async function runDeploy(
       migrations: {
         from: facts.migrations.recorded?.length ?? null,
         to: facts.migrations.target?.length ?? null,
-        ran: migrationDelta(facts.migrations).known
-          ? migrationDelta(facts.migrations).pending
-          : null,
+        ran,
+        before: facts.migrations.recorded,
       },
+      project: installation.config.project,
       backup,
       result,
       detail,
@@ -644,6 +679,21 @@ export async function runDeploy(
       code = EXIT.refused;
       return finish(summary);
     };
+
+    const fromImages = inspectLocal(
+      context.run,
+      targetImages(
+        composeFiles(context.deployDir, installation.config).map((file) =>
+          readFileSync(file, 'utf8'),
+        ),
+        installation.env ?? {},
+        installation.config,
+        facts.from.tag,
+      )
+        .filter((image) => image.published)
+        .map((image) => image.ref),
+    );
+    const replaced = new Set([...fromImages.values()].map((image) => image.id));
 
     // The status before anything changes: afterwards, only what got worse counts against the deploy.
     const before = await dependencies.status(context, installation);
@@ -763,6 +813,8 @@ export async function runDeploy(
       }
       return refuse('the image tag could not be written');
     }
+    // On record before anything starts: a run cut short from here on is still one rollback knows.
+    appendHistory(context.deployDir, entry('switched', '', backupLocation, null));
     steps.add({
       id: 'switch.image_tag',
       level: 'ok',
@@ -770,12 +822,25 @@ export async function runDeploy(
     });
     // Computers made before published images name melete-sandbox:local; it follows the new image.
     const sandbox = facts.images.find((image) => /\/melete-sandbox:[^/]+$/.test(image.ref));
+    const localSandbox = inspectLocal(context.run, ['melete-sandbox:local']).get(
+      'melete-sandbox:local',
+    );
+    const fromSandbox = [...fromImages.entries()].find(([ref]) =>
+      /\/melete-sandbox:[^/]+$/.test(ref),
+    )?.[1];
     if (
       installation.config.profiles.includes('sandbox') &&
       sandbox &&
-      context.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', 'melete-sandbox:local'])
-        .code === 0
-    ) {
+      localSandbox &&
+      fromSandbox?.id !== localSandbox.id
+    )
+      steps.add({
+        id: 'switch.sandbox_local',
+        level: 'warn',
+        detail: `melete-sandbox:local is not the published computer image of ${facts.from.tag}, so it is left as it is.`,
+      });
+    else if (installation.config.profiles.includes('sandbox') && sandbox && localSandbox) {
+      replaced.add(localSandbox.id);
       const tagged = context.run(['docker', 'tag', sandbox.ref, 'melete-sandbox:local']);
       steps.add({
         id: 'switch.sandbox_local',
@@ -795,7 +860,17 @@ export async function runDeploy(
         detail,
         fix: `See ${compose.join(' ')} logs --tail=100. To go back: bun run melete rollback${pending > 0 ? ` (it prints the database restore, from ${backupLocation ?? 'your backup'}, because migrations may have run)` : ''}.`,
       });
-      appendHistory(context.deployDir, entry('failed', detail, backupLocation));
+      const now = recordedMigrations(context, compose);
+      const before = facts.migrations.recorded;
+      appendHistory(
+        context.deployDir,
+        entry(
+          'failed',
+          detail,
+          backupLocation,
+          now !== null && before !== null ? now.filter((when) => !before.includes(when)) : null,
+        ),
+      );
       outcome = 'failed';
       code = EXIT.partial;
       return finish(summary);
@@ -898,12 +973,7 @@ export async function runDeploy(
     );
 
     // 10. Only now, with the service restarted, remove what the update replaced.
-    const repositories = [
-      ...new Set(
-        facts.images.filter((image) => image.published).map((image) => repositoryOf(image.ref)),
-      ),
-    ];
-    steps.add(pruneStackImages(context, repositories));
+    steps.add(pruneReplaced(context, replaced));
     const free = freeSpace(
       context.run,
       facts.images.map((image) => ({ name: image.ref, present: true })),

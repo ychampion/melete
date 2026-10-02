@@ -12,8 +12,13 @@
  */
 import type { Context } from '../context.ts';
 import { composeCommand } from '../deploy-config.ts';
-import { lastDeployed, readHistory } from '../history.ts';
-import { readInstallation } from '../installation.ts';
+import { lastSwitched, readHistory } from '../history.ts';
+import {
+  envImageTag,
+  readInstallation,
+  shellOverrideMessage,
+  shellOverrides,
+} from '../installation.ts';
 import { migrationDelta, restoreSteps } from '../plan.ts';
 import { EXIT, type ExitCode } from '../schema.ts';
 import { writersOf } from './backup.ts';
@@ -24,6 +29,7 @@ import {
   recordedMigrations,
   runDeploy,
 } from './deploy.ts';
+import { verifyBackup } from './restore.ts';
 
 export const ROLLBACK_USAGE =
   'Usage: bun run melete rollback [--dry-run] [--wait-timeout <seconds>]';
@@ -47,10 +53,26 @@ export async function runRollback(
       return EXIT.refused;
     }
   }
-  const last = lastDeployed(readHistory(context.deployDir));
+  const last = lastSwitched(readHistory(context.deployDir));
   if (last === null) {
     context.err(
-      'No deploy is recorded in deploy/.melete/history.jsonl, so there is no earlier release to go back to.\n',
+      'No deploy that changed the stack is recorded in deploy/.melete/history.jsonl, so there is no earlier release to go back to.\n',
+    );
+    return EXIT.refused;
+  }
+  const installation = readInstallation(context.deployDir, context.machine.platform);
+  const env = installation.env ?? {};
+  const overridden = shellOverrides(context.environment, env);
+  if (overridden.length > 0) {
+    context.err(`${shellOverrideMessage(overridden)}\n`);
+    return EXIT.refused;
+  }
+  // Only the run history knows about can be undone: if something else moved the stack
+  // since, going back to that run's starting point would skip what came after.
+  const running = envImageTag(env);
+  if (running !== last.to.tag) {
+    context.err(
+      `deploy/.env runs ${running}, but the last recorded run switched the stack to ${last.to.tag}; something changed it since, outside melete deploy. Nothing was changed. Deploy the release you want with bun run melete deploy --tag <tag>.\n`,
     );
     return EXIT.refused;
   }
@@ -63,26 +85,27 @@ export async function runRollback(
     return EXIT.refused;
   }
 
-  const installation = readInstallation(context.deployDir, context.machine.platform);
   const compose = composeCommand(context.deployDir, installation.config);
-  // What the last deploy ran is what going back must undo. Migrations recorded before it
-  // were there while the previous release ran, so it runs beside them again.
+  // Migrations recorded before the run were there while the previous release ran, so it
+  // runs beside them again. Everything recorded since, by that run or anything after it,
+  // that the previous release lacks, means going back is a restore.
   const recorded = recordedMigrations(context, compose);
   const previousJournal = previous.revision ? journalWhens(context, previous.revision) : null;
-  const ran = last.migrations.ran;
+  const before = last.migrations.before;
   const delta = migrationDelta({
     recorded,
     current: last.to.revision
       ? journalWhens(context, last.to.revision)
       : journalWhens(context, null),
     target: previousJournal,
-    ...(ran !== null && recorded !== null
-      ? { accepted: recorded.filter((when) => !ran.includes(when)) }
-      : {}),
+    ...(before !== null ? { accepted: before } : {}),
   });
-  // With what the deploy ran known, `behind` holds only those of its migrations the
-  // previous release lacks; otherwise every recorded one the newer release has counts.
-  if (!delta.known || delta.skipped.length > 0 || delta.behind.length > 0) {
+  const since =
+    before !== null && recorded !== null && previousJournal !== null
+      ? recorded.filter((when) => !before.includes(when) && !previousJournal.includes(when))
+      : [];
+  const unknown = new Set([...delta.behind, ...delta.skipped, ...since]);
+  if (!delta.known || unknown.size > 0) {
     const steps = restoreSteps({
       root: context.root,
       project: installation.config.project,
@@ -95,14 +118,23 @@ export async function runRollback(
     });
     const reason = !delta.known
       ? `The database's migrations could not be compared with ${tag}'s`
-      : `The database records ${delta.behind.length + delta.skipped.length} migration(s) that ${tag} does not know`;
-    const where = last.backup
-      ? `The backup taken before the deploy is ${last.backup}${last.backup.startsWith('ssh://') ? '; copy it back to this machine first' : ''}.`
-      : 'No backup was recorded with that deploy; use your newest backup from before it.';
+      : `The database records ${unknown.size} migration(s), run since ${tag} was running, that ${tag} does not know`;
+    let where: string;
+    if (!last.backup)
+      where = `No backup was recorded with that run; use your newest backup taken before ${last.at}.`;
+    else if (last.backup.startsWith('ssh://'))
+      where = `The backup taken before that run is ${last.backup}; copy it back to this machine first.`;
+    else {
+      const problems = await verifyBackup(context, last.backup);
+      where =
+        problems.length === 0
+          ? `The backup taken before that run is ${last.backup}, and it matches its SHA256SUMS.`
+          : `The backup recorded with that run, ${last.backup}, cannot be used: ${problems.join('; ')}. Use your newest sound backup taken before ${last.at}.`;
+    }
     const text = `${reason}, so going back means restoring the database. Nothing was changed.\n${where}\nRestore, from the installation's checkout:\n${steps.map((line) => `    ${line}`).join('\n')}\n`;
     if (json)
       context.out(
-        `${JSON.stringify({ command: 'rollback', ok: false, outcome: 'restore_needed', to: { tag, revision: previous.revision }, backup: last.backup, steps }, null, 2)}\n`,
+        `${JSON.stringify({ command: 'rollback', ok: false, outcome: 'restore_needed', to: { tag, revision: previous.revision }, backup: last.backup, detail: where, steps }, null, 2)}\n`,
       );
     else context.out(text);
     return dryRun ? EXIT.ok : EXIT.partial;
@@ -120,9 +152,7 @@ export async function runRollback(
       waitSeconds,
       branch: last.checkout?.branch ?? null,
       command: 'rollback',
-      ...(ran !== null && recorded !== null
-        ? { accepted: recorded.filter((when) => !ran.includes(when)) }
-        : {}),
+      ...(before !== null ? { accepted: before } : {}),
     },
     json,
     dependencies,

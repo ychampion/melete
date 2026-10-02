@@ -34,10 +34,20 @@ export const historyEntrySchema = z.object({
     to: z.number().nullable(),
     /** The journal times of the migrations this run applied; null when they could not be told. */
     ran: z.array(z.number()).nullable().default(null),
+    /** The journal times the database recorded before the run; null when it did not answer. */
+    before: z.array(z.number()).nullable().default(null),
   }),
+  /** The Compose project the run acted on. */
+  project: z.string().nullable().default(null),
   /** Where the backup taken before the switch is, or null when none was taken. */
   backup: z.string().nullable(),
-  result: z.enum(['deployed', 'planned', 'refused', 'failed']),
+  /**
+   * - `switched`: written the moment the stack's image tag changed, so a run cut
+   *   short after that is still on record;
+   * - `deployed` and `failed`: how a run that switched ended;
+   * - `refused`: it stopped with nothing changed.
+   */
+  result: z.enum(['deployed', 'switched', 'planned', 'refused', 'failed']),
   detail: z.string(),
 });
 export type HistoryEntry = z.infer<typeof historyEntrySchema>;
@@ -68,9 +78,16 @@ export function readHistory(deployDir: string): HistoryEntry[] {
     });
 }
 
-/** The run that put the stack where it is now: the newest one that finished. */
-export const lastDeployed = (entries: readonly HistoryEntry[]): HistoryEntry | null =>
-  [...entries].reverse().find((entry) => entry.result === 'deployed') ?? null;
+/** Whether a run got past the switch: it changed the image tag the stack runs. */
+export const switched = (entry: HistoryEntry) =>
+  entry.result === 'deployed' || entry.result === 'failed' || entry.result === 'switched';
+
+/**
+ * The run that put the stack where it is now: the newest one that got past the
+ * switch, whether it finished, failed after it, or was cut short.
+ */
+export const lastSwitched = (entries: readonly HistoryEntry[]): HistoryEntry | null =>
+  [...entries].reverse().find(switched) ?? null;
 
 export function renderHistory(entries: readonly HistoryEntry[]): string {
   if (entries.length === 0) return 'No deploys are recorded yet.\n';
