@@ -178,10 +178,14 @@ describe('installable kinds against the connectors they select', () => {
     expect(sorted(CONNECTION_KIND_SCOPES.ics)).toEqual(['calendar.list']);
     expect(sorted(CONNECTION_KIND_SCOPES.sandbox)).toEqual(toolNames(sandboxExecManifest));
     // The read grant is checked by the egress relay itself; the write grant is the broker tool.
-    expect(sorted(CONNECTION_KIND_SCOPES.command_line)).toEqual([
-      'egress.github_read',
-      ...toolNames(createCommandLineConnector('github').manifest),
-    ]);
+    expect(sorted(CONNECTION_KIND_SCOPES.command_line)).toEqual(
+      sorted([
+        'egress.github_read',
+        ...toolNames(createCommandLineConnector('github').manifest),
+        'egress.aws_read',
+        ...toolNames(createCommandLineConnector('aws').manifest),
+      ]),
+    );
   });
 
   test('a form says a grant asks first exactly when the connector requires approval', () => {
@@ -191,6 +195,7 @@ describe('installable kinds against the connectors they select', () => {
         ...calendarManifest.tools,
         ...sandboxExecManifest.tools,
         ...createCommandLineConnector('github').manifest.tools,
+        ...createCommandLineConnector('aws').manifest.tools,
       ].map((tool) => [tool.name, tool]),
     );
     for (const descriptor of CONNECTION_KIND_DESCRIPTORS)
