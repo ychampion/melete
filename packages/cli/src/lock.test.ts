@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { acquireLock, type LockAccess, LockRefusal, withLock } from './lock.ts';
@@ -72,6 +79,49 @@ describe('the deployment lock', () => {
     );
     release();
     expect(existsSync(lockDir(dir))).toBe(true);
+  });
+
+  test('two commands finding the same stale lock cannot both take it over', () => {
+    const dir = deployDir();
+    acquireLock(dir, 'set', access(100));
+    const dead = (pid: number) => pid !== 100;
+    let releaseA: (() => void) | undefined;
+    // B reads the ended holder; before B acts, A takes the lock over completely.
+    const b = {
+      ...access(300, 'box', dead),
+      onStale: () => {
+        releaseA = acquireLock(dir, 'deploy', access(200, 'box', dead));
+      },
+    };
+    expect(() => acquireLock(dir, 'rollback', b)).toThrow(/holds .*: deploy \(process 200/);
+    expect(JSON.parse(readFileSync(join(lockDir(dir), 'holder'), 'utf8'))).toMatchObject({
+      pid: 200,
+    });
+    releaseA?.();
+    expect(existsSync(lockDir(dir))).toBe(false);
+  });
+
+  test('a takeover already under way is refused rather than raced', () => {
+    const dir = deployDir();
+    acquireLock(dir, 'set', access(100));
+    mkdirSync(join(dir, '.melete', 'lock.takeover'));
+    expect(() =>
+      acquireLock(
+        dir,
+        'init',
+        access(200, 'box', () => false),
+      ),
+    ).toThrow(/taking over a lock left by an ended process/);
+    expect(JSON.parse(readFileSync(join(lockDir(dir), 'holder'), 'utf8')).pid).toBe(100);
+  });
+
+  test('a new lock always carries its holder, and nothing is left beside it', () => {
+    const dir = deployDir();
+    const release = acquireLock(dir, 'set', access(100));
+    expect(readdirSync(join(dir, '.melete'))).toEqual(['lock']);
+    expect(readdirSync(lockDir(dir))).toEqual(['holder']);
+    release();
+    expect(readdirSync(join(dir, '.melete'))).toEqual([]);
   });
 
   test('the lock is released when the action throws', async () => {
