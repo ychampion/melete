@@ -250,9 +250,10 @@ describe('melete remote push', () => {
   });
 
   test('a deploy/.env other accounts here can read is never copied', async () => {
-    if (process.platform === 'win32') return; // Windows has no permission bits to judge.
     const { deployDir, context } = sshContext();
     chmodSync(join(deployDir, '.env'), 0o644);
+    // Judged as on Linux; on Windows the file reads as 0666, which is open as well.
+    context.machine = { ...context.machine, platform: 'linux' };
     expect(await runRemote(context, pushArgs(), { json: false, offline: false })).toBe(2);
     expect(context.streams.filter((stream) => stream.sinks.length > 0)).toEqual([]);
     expect(context.printed()).toContain('chmod 600');
