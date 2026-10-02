@@ -39,7 +39,6 @@
         "zod": "4.6.2",
       },
       "devDependencies": {
-        "@types/libsodium-wrappers": "0.8.2",
         "@types/mailparser": "3.4.6",
         "@types/nodemailer": "8.0.1",
         "drizzle-kit": "0.31.10",
@@ -123,7 +122,6 @@
       "version": "0.1.0-pre",
       "dependencies": {
         "re2js": "2.8.6",
-        "ulid": "3.0.2",
         "zod": "4.6.2",
         "zod-openapi": "6.0.2",
       },
@@ -142,7 +140,6 @@
         "@melete/contracts": "workspace:*",
         "gray-matter": "4.0.3",
         "ulid": "3.0.2",
-        "zod": "4.6.2",
       },
     },
     "packages/runtime-hermes": {
@@ -160,7 +157,6 @@
       "dependencies": {
         "@melete/contracts": "workspace:*",
         "gray-matter": "4.0.3",
-        "zod": "4.6.2",
       },
     },
   },
@@ -446,8 +442,6 @@
     "@speed-highlight/core": ["@speed-highlight/core@1.2.24", "", {}, "sha512-qeW2e1l78afw8VhRPfPQ1Gjj+KU5XFQ/OFV5ti6eTa9bruO7mJyZtA4vw0ofqmA3tKCkROE9xLk3VZoeRc98nw=="],
 
     "@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
-
-    "@types/libsodium-wrappers": ["@types/libsodium-wrappers@0.8.2", "", { "dependencies": { "libsodium-wrappers": "*" } }, "sha512-+2IDfSULPUskSjIYfZl9suIUsIE5PXwoKZiE/j0MZWd+M9nEGvJDsk/ztMZKNhL1lBL+1CaypW0dQSjqPW2dMg=="],
 
     "@types/mailparser": ["@types/mailparser@3.4.6", "", { "dependencies": { "@types/node": "*", "iconv-lite": "^0.6.3" } }, "sha512-wVV3cnIKzxTffaPH8iRnddX1zahbYB1ZEoAxyhoBo3TBCBuK6nZ8M8JYO/RhsCuuBVOw/DEN/t/ENbruwlxn6Q=="],
 
