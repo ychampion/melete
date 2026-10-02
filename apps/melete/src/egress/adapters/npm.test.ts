@@ -171,6 +171,13 @@ describe('the npm classifier on recorded npm requests', () => {
       '/%E0%A4%A',
     ])
       expect(write(put(target, { name: 'melete-demo' })).payload.resource).toBeUndefined();
+    // A dot segment anywhere, escaped or not, is not read as the record it seems to name.
+    for (const target of [
+      '/melete-demo/-rev/..',
+      '/melete-demo/-rev/%2e',
+      '/melete-demo/./-rev/1-a',
+    ])
+      expect(write(put(target, { name: 'melete-demo', versions: {} })).operation).toBe('request');
     // A document naming another package than its path asks as the request itself.
     const mismatch = write(put('/other-name', { name: 'melete-demo', _attachments: { a: {} } }));
     expect(mismatch.operation).toBe('request');
