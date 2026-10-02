@@ -35,6 +35,7 @@ import { Ajv, type ValidateFunction } from 'ajv';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
+import { asksAfterResponses } from '../apps/response-guard.ts';
 import { REACT_TOOL, supersededExecution } from '../connectors/catalog.ts';
 import {
   asConnectorFault,
@@ -597,9 +598,12 @@ export class BrokerService implements BrokerOperations {
     // The connector itself says the person decides this one, whatever the settings.
     const connectorAsks =
       this.options.connectors.get(action.connection_id)?.asksFirst?.(action) === true;
+    // A conversation that read responses to an app asks before changing a file an app shows.
+    const afterResponses = changes && (await asksAfterResponses(tx, job.id, action));
     const requiresApproval =
       needsApproval(tool) ||
       connectorAsks ||
+      afterResponses ||
       (agentAsks && changes) ||
       // "Ask me for everything": every change waits for the person.
       (settings?.mode === 'ask' && changes) ||
