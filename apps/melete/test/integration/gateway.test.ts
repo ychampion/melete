@@ -361,6 +361,7 @@ Use the scoped receipt procedure.
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
         tools: [
+          { name: 'ask_person', connection_id: null },
           { name: 'load_tool', connection_id: null },
           { name: 'react', connection_id: null },
           { name: 'search_tools', connection_id: null },

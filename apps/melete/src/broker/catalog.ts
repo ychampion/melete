@@ -21,6 +21,7 @@ import { appendToolTrace } from '../experience/tools.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
 import { spaceRole } from '../principals/authority.ts';
 import { audienceVisible } from '../principals/context.ts';
+import { ASK_PERSON_TOOL } from './ask-person.ts';
 import { CHASE_FOLLOW_UP_TOOL } from './chase.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
@@ -251,9 +252,18 @@ export function selectCore(
       item.core || item.entry.source === 'connector' || (item.entry.source === 'mcp' && score > 0),
   );
   const chosen = new Set<CatalogItem>();
+  // Asking the person is always on offer and rides beside the budget like the
+  // discovery tools: it takes no room a job's own tools would have had.
+  let room = budget;
+  const asking = scored.find(({ item }) => item.tool.name === ASK_PERSON_TOOL.name)?.item;
+  if (asking) {
+    room += toolTokens([...tools, asking.tool]) - toolTokens(tools);
+    chosen.add(asking);
+    tools.push(asking.tool);
+  }
   const add = (...group: CatalogItem[]) => {
     const fresh = group.filter((item) => !chosen.has(item));
-    if (toolTokens([...tools, ...fresh.map((item) => item.tool)]) > budget) return false;
+    if (toolTokens([...tools, ...fresh.map((item) => item.tool)]) > room) return false;
     for (const item of fresh) {
       chosen.add(item);
       tools.push(item.tool);
@@ -531,7 +541,12 @@ export class ToolCatalog {
       if (tool.name === CHASE_FOLLOW_UP_TOOL.name && !(await this.followable(tx, job))) continue;
       if (
         !(await accept(tool.name, tool.connection_id, () => {
-          const lifecycle = [RUNTIME_WAIT_TOOL, RESUME_ACTION_TOOL, CHASE_FOLLOW_UP_TOOL].some(
+          const lifecycle = [
+            RUNTIME_WAIT_TOOL,
+            ASK_PERSON_TOOL,
+            RESUME_ACTION_TOOL,
+            CHASE_FOLLOW_UP_TOOL,
+          ].some(
             (typed) =>
               tool.name === typed.name &&
               schemaFingerprint(tool.input_schema) === schemaFingerprint(typed.input_schema) &&

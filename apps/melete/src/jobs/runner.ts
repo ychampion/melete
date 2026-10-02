@@ -15,6 +15,7 @@ import {
   jobBudget,
   type QuestioningRuntimeAdapter,
   type QuestionSpec,
+  questionSpec,
   type ResponsibilityAttemptBundle,
   type RuntimeAdapter,
   type RuntimeEvent,
@@ -29,6 +30,7 @@ import {
 import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
+import { personQuestionKey } from '../broker/ask-person.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
   action,
@@ -68,7 +70,7 @@ import {
 } from './queue.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
-import { withdrawOutdatedPermissions } from './withdraw.ts';
+import { withdrawOpenQuestion, withdrawOutdatedPermissions } from './withdraw.ts';
 
 export const HEARTBEAT_MS = 15_000;
 export const LEASE_MS = 45_000;
@@ -592,13 +594,24 @@ export class AttemptRunner {
     return registration ? wait : null;
   }
 
+  /** The question this attempt put to the person, if it asked one. Prose cannot create one. */
+  private async askedOfPerson(tx: Transaction, attemptId: string): Promise<QuestionSpec | null> {
+    const [row] = await tx
+      .select({ payload: event.payload })
+      .from(event)
+      .where(eq(event.dedupKey, personQuestionKey(attemptId)));
+    const parsed = questionSpec.safeParse((row?.payload as { question?: unknown })?.question);
+    return parsed.success ? parsed.data : null;
+  }
+
   private async finish(
     tx: Transaction,
     row: JobRow,
     attemptId: string,
     original: AttemptOutcome,
-    carried: readonly QuestionSpec[] = [],
+    raised: readonly QuestionSpec[] = [],
   ): Promise<JobRow> {
+    let carried = raised;
     const brokerParked = ['waiting_for_approval', 'needs_reconciliation'].includes(row.state);
     const [counts] = await tx
       .select({ n: sql<number>`count(*)::int` })
@@ -635,15 +648,34 @@ export class AttemptRunner {
         ),
       )
       .limit(1);
+    // A question the attempt put to the person through the broker. A turn that
+    // ended tidily after asking waits for the answer instead of completing, and
+    // its final words stay as the turn's text.
+    const asked = await this.askedOfPerson(tx, attemptId);
+    const posed: AttemptOutcome =
+      asked &&
+      !brokerParked &&
+      (original.kind === 'completed' || original.kind === 'waiting_for_input')
+        ? {
+            kind: 'waiting_for_input',
+            question: asked.text,
+            ...(original.kind === 'completed' && original.summary.trim()
+              ? { draft: original.summary }
+              : original.kind === 'waiting_for_input' && original.draft
+                ? { draft: original.draft }
+                : {}),
+          }
+        : original;
+    if (asked && posed !== original) carried = [asked, ...carried];
     // A wait that was cancelled before it fired comes back when the attempt told
     // about it completes without choosing another, and only while it can still
     // fire. A retryable failure hands it to the retry instead.
     const cancelled = brokerParked ? null : await this.restorableWait(tx, row, attemptId);
     const restored: AttemptOutcome =
-      cancelled && original.kind === 'completed'
+      cancelled && posed.kind === 'completed'
         ? { kind: 'waiting_for_event_or_time', wait: cancelled }
-        : original;
-    if (restored !== original)
+        : posed;
+    if (restored !== posed)
       await appendEvent(tx, {
         jobId: row.id,
         attemptId,
@@ -730,6 +762,18 @@ export class AttemptRunner {
       input = { kind: 'attempt_waiting_for_event_or_time' };
       wait = rest;
     }
+    // A routine that asked the person something rests on its schedule as well:
+    // the question waits in the person's queue, and the next run still comes
+    // when it is due. The answer wakes the routine on its own.
+    // A turn that parked for approval keeps its question: the person sees both,
+    // and an answer given while the approval waits is read by the next attempt.
+    const explicit =
+      (posed !== original && outcome.kind === 'waiting_for_input') || brokerParked ? asked : null;
+    const routineAsk = explicit && !brokerParked ? await routineRest(tx, row) : null;
+    if (routineAsk) {
+      input = { kind: 'attempt_waiting_for_event_or_time' };
+      wait = routineAsk;
+    }
     if (
       outcome.kind === 'completed' &&
       input.kind === 'attempt_completed' &&
@@ -758,8 +802,11 @@ export class AttemptRunner {
     const resolution = await resolveQuestions(tx, row, {
       attemptId,
       carried,
-      askable: !brokerParked && wait.kind === 'user_input' && !chatComplete,
+      askable:
+        (brokerParked && explicit !== null) ||
+        (!brokerParked && (wait.kind === 'user_input' || routineAsk !== null) && !chatComplete),
       fallback: wait.kind === 'user_input' && !chatComplete ? wait.question : undefined,
+      ...(explicit ? { explicit } : {}),
     });
     if (resolution.asked && wait.kind === 'user_input')
       wait = { kind: 'user_input', question: resolution.asked.text };
@@ -923,8 +970,10 @@ export class AttemptRunner {
       .update(experienceTurn)
       .set({ status: 'stopped', finishedAt: new Date() })
       .where(eq(experienceTurn.id, turn.id));
-    // Nothing the stopped turn asked for may still be allowed afterwards.
+    // Nothing the stopped turn asked for may still be allowed afterwards, and
+    // nothing it asked the person is still waiting for an answer.
     await withdrawPendingPermissions(tx, jobId, STOPPED_NOTE);
+    await withdrawOpenQuestion(tx, jobId, 'stopped');
     await tx
       .update(attempt)
       .set({

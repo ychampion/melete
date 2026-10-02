@@ -165,7 +165,8 @@ export async function captureChat(options: CaptureOptions, limit = 50): Promise<
     from fresh f join event e on e.seq = f.seq join job j on j.id = e.job_id
     -- The agent the message was said to; an older message names none and was said to the chat's.
     left join agent a on a.id = coalesce(e.payload->>'agent_id', j.agent_id) and a.space_id = j.space_id
-    where (e.type = 'notice' and e.payload->>'kind' = 'user_message')
+    -- An option the agent offered and the person picked is a choice, not their own words.
+    where (e.type = 'notice' and e.payload->>'kind' = 'user_message' and e.payload->'chosen' is null)
       -- A job's first objective is the person's own words only when they typed it.
       or (e.type = 'job_created' and j.kind <> 'chat' and j.objective_origin = 'owner_request')
     order by e.seq limit ${limit}`;

@@ -1,5 +1,5 @@
 {
-  "id": "7c73f460-0b31-42aa-bfed-0a263473d95a",
+  "id": "9f1b247c-5c1f-4520-b27e-49aa01677aa7",
   "prevId": "1029e84b-03a8-4260-a842-062e9f4e97e3",
   "version": "7",
   "dialect": "postgresql",
@@ -3350,12 +3350,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "supports_vision": {
-          "name": "supports_vision",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": false
-        },
         "owner_id": {
           "name": "owner_id",
           "type": "text",
@@ -4307,6 +4301,12 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
+        },
+        "why": {
+          "name": "why",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "if_ignored": {
           "name": "if_ignored",

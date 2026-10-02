@@ -34,7 +34,7 @@ import {
   visibleJob,
 } from '../principals/authority.ts';
 import { type AttemptWake, enqueueWake } from './queue.ts';
-import { ENDED_STATES, withdrawEndedJobPermissions } from './withdraw.ts';
+import { ENDED_STATES, withdrawEndedJobPermissions, withdrawOpenQuestion } from './withdraw.ts';
 
 export type JobRow = typeof job.$inferSelect;
 export const DEFAULT_BUDGET: JobBudget = {
@@ -362,8 +362,10 @@ export class JobService {
       dedupKey: `${row.id}:transition:${updated.stateVersion}`,
     });
     // Nothing an ended job proposed can run, so nothing it asked may stay waiting.
-    if (ENDED_STATES.includes(updated.state) && !ENDED_STATES.includes(row.state))
+    if (ENDED_STATES.includes(updated.state) && !ENDED_STATES.includes(row.state)) {
       await withdrawEndedJobPermissions(tx, row.id);
+      await withdrawOpenQuestion(tx, row.id, 'responsibility_finished');
+    }
     await this.faults.afterTransitionBeforeEnqueue?.(tx, updated);
     await this.enqueue(tx, updated, options.reason ?? 'recovery');
     return updated;

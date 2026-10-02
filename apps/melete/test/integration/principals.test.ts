@@ -8,6 +8,7 @@ import type { CapabilityClaims, KnowledgeFrontmatter } from '@melete/contracts';
 import { serializeRecord } from '@melete/knowledge';
 import { eq } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
+import { ASK_PERSON_TOOL } from '../../src/broker/ask-person.ts';
 import { META_TOOLS } from '../../src/broker/catalog.ts';
 import { PostgresGatewayBudget } from '../../src/broker/gateway-budget.ts';
 import { BrokerService } from '../../src/broker/service.ts';
@@ -165,7 +166,7 @@ withDb('principal and shared-space authority', () => {
       };
       expect(
         await new BrokerService({ sql: upgrade.sql, connectors: new Map() }).catalog(legacy),
-      ).toEqual([...META_TOOLS, REACT_TOOL]);
+      ).toEqual([...META_TOOLS, ASK_PERSON_TOOL, REACT_TOOL]);
       const legacyJobs = new JobService(upgrade.db, queue.boss);
       expect(
         (await legacyJobs.transaction((tx) => requireCurrentAttempt(tx, legacy))).job.principalId,
@@ -428,7 +429,11 @@ withDb('principal and shared-space authority', () => {
     ).toBe(200);
     const broker = new BrokerService({ sql: handle.sql, connectors: new Map() });
     // No connector is granted; the catalog is only the broker-owned discovery and reaction tools.
-    expect(await broker.catalog(claimed.claims)).toEqual([...META_TOOLS, REACT_TOOL]);
+    expect(await broker.catalog(claimed.claims)).toEqual([
+      ...META_TOOLS,
+      ASK_PERSON_TOOL,
+      REACT_TOOL,
+    ]);
     const {
       principal_id: ignored,
       membership_generation: ignoredGeneration,

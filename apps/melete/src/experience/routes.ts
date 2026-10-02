@@ -215,7 +215,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       }),
     'GET /quick-answers': (spaceId) => questions.list(spaceId),
     'POST /quick-answers/{id}': (spaceId, c, input) =>
-      questions.answer(spaceId, c.req.param('id') ?? '', String(input.option_id)),
+      questions.answer(spaceId, c.req.param('id') ?? '', input),
     'POST /memory/items': (spaceId, c, input) => {
       // Another assistant saving through the MCP endpoint is recorded as that assistant.
       const assistant = mcpActorOf(c.env);

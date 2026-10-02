@@ -69,6 +69,8 @@ export const questionSpec = z.object({
   blocks_external_effect: z.boolean().default(false),
   deadline_at: timestamp.nullable().default(null),
   options: quickOptions.optional(),
+  /** Why the agent is asking, in its own words, shown under the question. */
+  why: z.string().min(1).max(1000).optional(),
 });
 export type QuestionSpec = z.infer<typeof questionSpec>;
 /** What a caller may hand in: the two ranking fields have defaults. */
