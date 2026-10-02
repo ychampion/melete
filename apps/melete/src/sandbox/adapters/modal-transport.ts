@@ -9,6 +9,7 @@
  * checks what the adapter asks for and how it reads the answers, not the wire
  * format Modal accepts. The live test is what proves the latter.
  */
+import { REENTERED_MESSAGE } from '../marker.ts';
 
 export type ModalToken = { tokenId: string; tokenSecret: string };
 
@@ -91,7 +92,7 @@ export class ModalNotFound extends Error {
 }
 
 /** The text that only a marker-wrapped command's script contains. */
-const MARKED = 'mkdir -p /var/tmp/.melete-exec';
+const MARKED = REENTERED_MESSAGE;
 /** How long after a marked command starts its acknowledgement is cut. */
 export const MODAL_AFTER_START_CUT_MS = 1_000;
 

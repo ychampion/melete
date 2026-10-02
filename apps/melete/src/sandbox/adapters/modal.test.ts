@@ -407,6 +407,52 @@ test('stdin reaches a marked command once', async () => {
   }
 });
 
+test("a command's own environment reaches it, and the next command does not inherit it", async () => {
+  const standin = createModalStandin();
+  const { transport, starts } = recording(standin.transport);
+  const provider = createModalProvider({ transport, appName: APP });
+  const handle = await openSandbox(provider, spec(), signal());
+  const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-modal-cmdenv-'));
+  const show = ['sh', '-c', 'printf "%s|%s" "$GH_PROMPT_DISABLED" "$TZ"'];
+  const run = (marker: string, env?: Record<string, string>) =>
+    runCommand({
+      provider,
+      handle,
+      request: {
+        marker,
+        argv: show,
+        ...(env ? { env } : {}),
+        timeoutMs: 20_000,
+        dispatch: 'first',
+      },
+      workRoot,
+      jobId: 'job_MODALCMDENV',
+      signal: signal(),
+    });
+  try {
+    const first = await run('act_01J0MODALCMDENV00000000', {
+      GH_PROMPT_DISABLED: '1',
+      TZ: 'Europe/Paris',
+    });
+    expect(first.outcome).toBe('succeeded');
+    if (first.outcome === 'succeeded')
+      expect(new TextDecoder().decode(first.record.preview)).toBe('1|Europe/Paris');
+    const second = await run('act_01J0MODALCMDENV00000001');
+    expect(second.outcome).toBe('succeeded');
+    if (second.outcome === 'succeeded')
+      expect(new TextDecoder().decode(second.record.preview)).toBe('|');
+    // The values went in a file the launcher read and removed, never in a process's words.
+    for (const exec of starts) expect(exec.argv.join(' ')).not.toContain('Europe/Paris');
+    expect(
+      starts.some((exec) => new TextDecoder().decode(exec.stdin).includes("TZ='Europe/Paris'")),
+    ).toBe(true);
+    await expect(provider.listFiles(handle, '/var/tmp/.melete-env', signal())).resolves.toEqual([]);
+  } finally {
+    await provider.destroy(handle, signal());
+    await rm(workRoot, { recursive: true, force: true });
+  }
+});
+
 /** An SDK double: the calls the transport makes, and the profile a real client would resolve. */
 function sdkDouble(behaviour: {
   profile?: Partial<Record<string, unknown>>;

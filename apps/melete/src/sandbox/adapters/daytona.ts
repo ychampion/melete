@@ -49,7 +49,14 @@
 import { createHash } from 'node:crypto';
 import { isIPv4 } from 'node:net';
 import { LABEL_OWNER, LABEL_PROJECT, LABEL_SESSION, ownedLabels } from '../manifest.ts';
-import { reattachByMarker, shellQuote } from '../marker.ts';
+import {
+  envFileBody,
+  envFilePath,
+  reattachByMarker,
+  SOURCE_ENV_FILE,
+  shellQuote,
+  VAR_TMP_MARKER_ROOT,
+} from '../marker.ts';
 import {
   type EgressPolicy,
   type ExecOutcome,
@@ -110,8 +117,7 @@ const STDIN_ROOT = '/var/tmp/.melete-stdin';
  * that nothing ran; then run the command without the provider's variables,
  * reading stdin from a file when one was uploaded.
  */
-const LAUNCHER =
-  'cd "$1" 2>/dev/null || exit 112; shift; f="$1"; shift; [ "$f" = - ] && exec env "$@" < /dev/null; exec env "$@" < "$f"';
+const LAUNCHER = `cd "$1" 2>/dev/null || exit 112; shift; f="$1"; shift; ${SOURCE_ENV_FILE}; [ "$f" = - ] && exec env "$@" < /dev/null; exec env "$@" < "$f"`;
 const LIST = '[ -d "$1" ] || exit 3; cd "$1" && exec find . -mindepth 1 -printf "%y %s %m %P\\0"';
 /**
  * Create the workspace, as root through `sudo` where the sandbox user cannot,
@@ -140,6 +146,8 @@ export function daytonaCapabilities(): SandboxCapabilities {
     maxIdleSeconds: null,
     streaming: false,
     reattach: 'marker_only',
+    // `/var/tmp` is on the sandbox's disk, which a stop keeps.
+    markerRoot: VAR_TMP_MARKER_ROOT,
     ports: 'authenticated',
     image: 'template',
     billing: 'per_second',
@@ -710,6 +718,7 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
       let toolbox: Toolbox;
       let hide: string[];
       let stdinPath = '-';
+      let envFile = '-';
       let opened: { status: number; text: string };
       // Everything before the command is sent is provably not the command.
       try {
@@ -718,6 +727,10 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
         if (spec.stdin) {
           stdinPath = `${STDIN_ROOT}/${spec.marker}`;
           await upload(toolbox, stdinPath, spec.stdin, signal);
+        }
+        if (spec.env && Object.keys(spec.env).length > 0) {
+          envFile = envFilePath(spec.marker);
+          await upload(toolbox, envFile, envFileBody(spec.env), signal);
         }
         // One session per action: a session runs its commands one after another.
         opened = await toolboxCall(
@@ -735,6 +748,7 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
         'melete-launch',
         spec.cwd,
         stdinPath,
+        envFile,
         ...hide.flatMap((name) => ['-u', name]),
         'timeout',
         '-s',

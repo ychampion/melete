@@ -296,6 +296,30 @@ describe('running a command', () => {
     expect(text(outcome.output)).toBe('out-err');
   });
 
+  test("a command's own environment is set on its exec only, never in its words", async () => {
+    const { engine, host } = setup();
+    await host.create(spec(), signal());
+    commands(engine, () => ({ stdout: 'ok', exitCode: 0 }));
+    await exec(host, { env: { TZ: 'Europe/Paris', GH_PROMPT_DISABLED: '1' } });
+    await exec(host, { marker: 'act_2' });
+    const launched = engine.calls.filter(
+      (call) =>
+        call.method === 'POST' &&
+        call.path.endsWith('/exec') &&
+        (call.body as EngineBody)?.Cmd?.[3] === 'melete-launch',
+    );
+    expect(launched).toHaveLength(2);
+    const [first, second] = launched.map((call) => call.body as EngineBody);
+    expect(first?.Env).toEqual(['TZ=Europe/Paris', 'GH_PROMPT_DISABLED=1']);
+    expect(JSON.stringify(first?.Cmd)).not.toContain('Europe/Paris');
+    expect(second).not.toHaveProperty('Env');
+  });
+
+  test('markers are kept on the home volume, which an idle stop keeps', () => {
+    const { host } = setup();
+    expect(host.capabilities.markerRoot).toBe('/home/agent/.melete/exec');
+  });
+
   test('output above the cap is cut and says so', async () => {
     const { engine, host } = setup();
     await host.create(spec(), signal());

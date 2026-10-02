@@ -27,6 +27,11 @@ export type SandboxCapabilities = {
   readonly maxIdleSeconds: number | null;
   readonly streaming: boolean;
   readonly reattach: 'process_handle' | 'marker_only';
+  /**
+   * Where the service keeps command markers: an absolute directory on a disk
+   * that outlives a stop or suspend of the sandbox, writable by the sandbox user.
+   */
+  readonly markerRoot: string;
   readonly ports: 'authenticated' | 'public' | 'none';
   readonly image: 'registry' | 'template' | 'both';
   readonly billing: 'per_second' | 'per_minute' | 'per_hour';
@@ -67,6 +72,12 @@ export type ExecSpec = {
   /** The most exec-channel output the adapter keeps in `ExecOutcome.output`. */
   readonly maxOutputBytes: number;
   readonly stdin?: Uint8Array;
+  /**
+   * Set on this command only, over the sandbox's own environment. The service
+   * admits only names from `EXEC_ENV_NAMES`; an adapter passes them through
+   * and never reads them.
+   */
+  readonly env?: Readonly<Record<string, string>>;
 };
 
 /**

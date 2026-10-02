@@ -332,6 +332,98 @@ if (!live) {
     });
   });
 
+  describe('docker sandbox live: command markers', () => {
+    test('a command interrupted by an idle stop keeps its marker and is reported from it', async () => {
+      let now = Date.now();
+      const engine = new LossyDocker();
+      const clocked = new DockerSandboxHost(settings({ idleSeconds: 60 }), engine, {
+        now: () => now,
+      });
+      const handle = await open({ kind: 'deny_all' }, clocked);
+      const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-docker-live-marker-'));
+      const request = {
+        marker: 'act_LIVEIDLESTOP00000000000',
+        argv: ['sh', '-c', 'sleep 3; printf finished'],
+        timeoutMs: 30_000,
+      };
+      const run = (dispatch: 'first' | 'again') =>
+        runCommand({
+          provider: clocked,
+          handle,
+          request: { ...request, dispatch },
+          workRoot,
+          jobId: 'job_LIVE',
+          signal: signal(),
+        });
+      try {
+        // The answer is lost while the command runs, so its outcome is open.
+        engine.loseNext('after_start');
+        expect((await run('first')).outcome).toBe('unknown');
+        await delay(5_000);
+        // Then nobody uses the computer, and the idle clock stops it.
+        now += 61_000;
+        expect(await clocked.reap(signal())).toContain(handle.providerSandboxId);
+        expect(await clocked.running(handle, signal())).toBe(false);
+        const again = await run('again');
+        process.stdout.write(
+          `docker live, after the idle stop: ${again.outcome}${'reason' in again ? `, ${again.reason}` : ''}\n`,
+        );
+        expect(again).toMatchObject({ outcome: 'succeeded', late: true, reattached: true });
+        if (again.outcome !== 'succeeded') return;
+        expect(again.record.exitCode).toBe(0);
+        expect(text(again.record.preview)).toBe('finished');
+      } finally {
+        clocked.stopReaper();
+        await rm(workRoot, { recursive: true, force: true });
+      }
+    });
+
+    test('a marker keeps at most the capture limit, and old or settled markers are removed', async () => {
+      const handle = await open();
+      const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-docker-live-keep-'));
+      const root = host.capabilities.markerRoot;
+      const run = (marker: string, argv: string[], forget: string[] = []) =>
+        runCommand({
+          provider: host,
+          handle,
+          request: { marker, argv, timeoutMs: 60_000, dispatch: 'first', forget },
+          workRoot,
+          jobId: 'job_LIVE',
+          signal: signal(),
+        });
+      try {
+        const big = await run('act_LIVEKEEP000000000000001', [
+          'sh',
+          '-c',
+          'head -c 6M /dev/zero; printf done > /work/after-big',
+        ]);
+        expect(big.outcome).toBe('succeeded');
+        if (big.outcome === 'succeeded') expect(big.record.captureLimited).toBe(true);
+        const sizes = await shell(
+          handle,
+          `stat -c %s ${root}/act_LIVEKEEP000000000000001/out; cat /work/after-big; stat -c %a ${root}`,
+        );
+        process.stdout.write(`docker live, kept output: ${sizes.text}\n`);
+        expect(sizes.text).toBe('4194305\ndone700\n');
+        // An unsettled marker from long ago, and a recent one.
+        await shell(
+          handle,
+          `mkdir -p ${root}/act_LIVEOLD ${root}/act_LIVERECENT && touch -d '10 days ago' ${root}/act_LIVEOLD`,
+        );
+        const next = await run(
+          'act_LIVEKEEP000000000000002',
+          ['true'],
+          ['act_LIVEKEEP000000000000001'],
+        );
+        expect(next.outcome).toBe('succeeded');
+        const left = await shell(handle, `ls ${root} | sort`);
+        expect(left.text).toBe('act_LIVEKEEP000000000000002\nact_LIVERECENT\n');
+      } finally {
+        await rm(workRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe.skipIf(!withDesktop)('docker sandbox live: the desktop', () => {
     const PAGE = `<!doctype html><title>ready</title>
 <body style="margin:0">

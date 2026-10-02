@@ -25,6 +25,7 @@ import {
   type ArtifactExpectation,
   type ConnectorManifest,
   EXEC_LIMITS,
+  type ExecEnvName,
   type JsonValue,
   type Receipt,
   type SandboxConnectionConfig,
@@ -259,12 +260,12 @@ export function outputText(preview: Uint8Array, cut: boolean): { text: string; b
 }
 
 /**
- * The words a command runs as. The person's time zone is set on each command,
- * not only when the sandbox was made, so a workspace resumed after the zone
- * changed still reads the current one.
+ * The environment set on one command. The person's time zone is set on each
+ * command, not only when the sandbox was made, so a workspace resumed after the
+ * zone changed still reads the current one.
  */
-export const commandArgv = (command: string, timeZone: string | null): string[] =>
-  timeZone ? ['env', `TZ=${timeZone}`, 'sh', '-c', command] : ['sh', '-c', command];
+export const commandEnv = (timeZone: string | null): Partial<Record<ExecEnvName, string>> =>
+  timeZone ? { TZ: timeZone } : {};
 
 /** A path inside the sandbox's own workspace; the marker runner refuses the rest. */
 const sandboxCwd = (cwd: string | undefined) =>
@@ -272,6 +273,12 @@ const sandboxCwd = (cwd: string | undefined) =>
 
 export function createSandboxExecConnector(options: SandboxExecOptions): Connector {
   const { sessions, provider, sql } = options;
+  /**
+   * Per sandbox, the actions whose outcomes are recorded and whose markers the
+   * next command there removes. Lost on a restart; the wrapper then prunes
+   * them by age instead.
+   */
+  const settled = new Map<string, string[]>();
 
   const checkIdentity = (action: Action, ctx: ConnectorContext) => {
     if (
@@ -697,22 +704,36 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           retryable: true,
         };
       }
+      const forget = settled.get(session.providerSandboxId) ?? [];
+      settled.delete(session.providerSandboxId);
       const dispatch = await sessions.beginCommand(session.id, action.id, action.id);
       const result = await runCommand({
         provider,
         handle: sessionHandle(session),
         request: {
           marker: action.id,
-          argv: commandArgv(payload.command, timeZone),
+          argv: ['sh', '-c', payload.command],
           cwd: sandboxCwd(payload.cwd),
           timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.default_timeout_ms,
           dispatch,
+          env: commandEnv(timeZone),
+          forget,
         },
         workRoot: options.workRoot,
         jobId: ctx.job_id,
         signal,
       });
       const outcome = await finish(action, ctx, payload, session, result);
+      // A recorded outcome no longer needs its marker; an unknown one keeps it
+      // as the only evidence a later check can read. A command that never
+      // started removed nothing, so what it was to remove waits for the next.
+      const next = result.outcome === 'failed' && result.retryable ? [...forget] : [];
+      if (result.outcome !== 'unknown') next.push(action.id);
+      if (next.length)
+        settled.set(session.providerSandboxId, [
+          ...(settled.get(session.providerSandboxId) ?? []),
+          ...next,
+        ]);
       await sessions.renew(session.id).catch(() => {});
       // The workspace is read back after every command, so a file that lives
       // only in the sandbox at completion is a wrong answer, not a slow one.

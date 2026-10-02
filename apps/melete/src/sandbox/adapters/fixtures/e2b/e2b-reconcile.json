@@ -137,7 +137,7 @@
     },
     {
       "request": {
-        "atMs": 2,
+        "atMs": 1,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0002",
         "path": "/sandboxes/fake-sbx-0002",
@@ -149,7 +149,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 2
+        "atMs": 1
       }
     }
   ]
