@@ -28,6 +28,8 @@ export type MockOptions = {
   voice?: boolean | 'private';
   /** Off, conversations have no browser or sandbox, as on a fresh install. */
   computer?: boolean;
+  /** `shared` makes the session's space a shared one the person owns, with two others in it. */
+  space?: 'personal' | 'shared';
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -47,6 +49,7 @@ export function createMock(options: MockOptions = {}) {
     setupNeeded: options.setupNeeded ?? false,
     voice: options.voice ?? true,
     computer: options.computer ?? true,
+    space: options.space ?? 'personal',
   });
   return { app, store, runner, scenarios, spaceId, connections };
 }
@@ -57,6 +60,7 @@ if (import.meta.main) {
     experience: { seed: process.env.MOCK_SEED !== 'off' },
     setupNeeded: process.env.MELETE_MOCK_SETUP === 'needed',
     computer: process.env.MELETE_MOCK_COMPUTER !== 'off',
+    space: process.env.MELETE_MOCK_SPACE === 'shared' ? 'shared' : 'personal',
     voice:
       process.env.MELETE_MOCK_VOICE === 'private'
         ? 'private'

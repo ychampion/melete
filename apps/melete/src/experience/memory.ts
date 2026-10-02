@@ -19,7 +19,7 @@ import {
 import { resolveContradictions } from '../memory/contradictions.ts';
 import { enqueue, lockSpace, type MemoryScope } from '../memory/db.ts';
 import { persistEvidence } from '../memory/evidence.ts';
-import { forgetMemory } from '../memory/forget.ts';
+import { deleteMemorySource, forgetMemory } from '../memory/forget.ts';
 import { invalidateDependencies, lockEventOrder, notifyInvalidated } from '../memory/invalidate.ts';
 import { writeRepairBriefs } from '../memory/outputs.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
@@ -274,6 +274,25 @@ export class ExperienceMemory {
       return unavailable('Forgetting is not connected to the saved deletion history yet.');
     await forgetMemory(this.sql, scope, { claim_id: id }, this.journal);
     return { status: 'ok' };
+  }
+  /**
+   * Forget what these sources taught, as "forget that" does for one message:
+   * each source is deleted through the restriction journal, taking every
+   * detail that rests only on it. Answers how many saved details went, or null
+   * when this person's memory cannot be reached here.
+   */
+  async forgetSources(spaceId: string, ownerId: string, sourceIds: readonly string[]) {
+    if (!sourceIds.length) return 0;
+    const scope = await this.scope(spaceId, ownerId);
+    if (!scope || !this.journal) return null;
+    const ids = [...sourceIds];
+    const shown = () => this.sql`select count(distinct c.id)::int as n from memory_references ref
+      join memory_claims c on c.id = ref.claim_id
+      where ref.source_id = any(${ids}) and c.space_id = ${spaceId} and not c.hidden`;
+    const [before] = await shown();
+    for (const sourceId of ids) await deleteMemorySource(this.sql, scope, sourceId, this.journal);
+    const [after] = await shown();
+    return Math.max(0, Number(before?.n ?? 0) - Number(after?.n ?? 0));
   }
   /** Whether new things this person says in chat are kept. On until they say otherwise. */
   async settings(principalId: string) {

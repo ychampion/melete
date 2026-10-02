@@ -33,11 +33,13 @@ import { type ComputerBinding, projectComputer } from './computer.ts';
 import { ExperienceEffects } from './effects.ts';
 import { type EventChanges, ExperienceEvents } from './events.ts';
 import { ExperienceHome } from './home.ts';
+import { listMembers, removeMember } from './members.ts';
 import { ExperienceMemory } from './memory.ts';
 import { ExperiencePermissions } from './permissions.ts';
 import { ExperiencePlanning } from './planning.ts';
 import { draftForReview, projectArtifact, projectCards, projectReceipt } from './projectors.ts';
 import { ExperienceQuestions } from './questions.ts';
+import { memorySourcesOf, removeJobs } from './removal.ts';
 import { ExperienceService } from './service.ts';
 
 export type ExperienceDeps = {
@@ -84,6 +86,7 @@ const SPACE_OWNER_SURFACES = new Set([
   'PUT /approval-settings',
   'POST /agents',
   'PATCH /agents/{id}',
+  'DELETE /space/members/{id}',
 ]);
 
 export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
@@ -159,6 +162,14 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       home.saveTask(spaceId, input, c.req.param('id') ?? ''),
     'DELETE /tasks/{id}': (spaceId, c) => home.deleteTask(spaceId, c.req.param('id') ?? ''),
     'GET /experience/connections': (spaceId) => home.connections(spaceId),
+    'GET /space/members': (spaceId, c) =>
+      deps.sql
+        ? listMembers(deps.sql, spaceId, c.get('owner').id)
+        : unavailable('People in this space are not connected yet.'),
+    'DELETE /space/members/{id}': (spaceId, c) =>
+      deps.jobs
+        ? removeMember(deps.db, deps.jobs, spaceId, c.get('owner').id, c.req.param('id') ?? '')
+        : unavailable('People in this space are not connected yet.'),
     'GET /search': (spaceId, c) =>
       home.search(spaceId, c.req.query('q') ?? '', c.get('sessionSpace')?.role !== 'member'),
     'GET /plans': (spaceId) => planning.plans(spaceId),
@@ -166,6 +177,8 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'GET /plans/{id}': async (spaceId, c) => ({
       plan: await planning.view(await planning.requirePlan(spaceId, c.req.param('id') ?? '')),
     }),
+    'DELETE /plans/{id}': (spaceId, c) =>
+      planning.remove(spaceId, c.req.param('id') ?? '', deps.sql),
     'PATCH /plans/{id}/milestones/{milestoneId}': (spaceId, c, input) =>
       planning.complete(
         spaceId,
@@ -406,6 +419,30 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         await service.requireThread(spaceId, c.req.param('id') ?? ''),
       ),
     }),
+    'PATCH /conversations/{id}': (spaceId, c, input) =>
+      service.rename(spaceId, c.req.param('id') ?? '', input),
+    'DELETE /conversations/{id}': async (spaceId, c) => {
+      const id = c.req.param('id') ?? '';
+      await service.requireConversation(spaceId, id);
+      if (!deps.jobs || !deps.sql) return unavailable('Deleting chats is not connected yet.');
+      // Asked for, what the chat taught goes first, so a chat is never gone
+      // while what the person asked to forget is still kept.
+      let forgotten = 0;
+      if (c.req.query('forget_memory') === 'true') {
+        const sources = await memorySourcesOf(deps.sql, id);
+        const count = sources.length
+          ? await memory?.forgetSources(spaceId, c.get('owner').id, sources)
+          : 0;
+        if (count === null || count === undefined)
+          return unavailable('Forgetting is not connected yet, so nothing was deleted.');
+        forgotten = count;
+      }
+      const removal = await removeJobs(
+        { jobs: deps.jobs, sql: deps.sql, runner: deps.runner },
+        await conversationJobs(spaceId, id),
+      );
+      return { id, ...removal, forgotten };
+    },
     'PATCH /conversations/{id}/agent': (spaceId, c, input) =>
       service.switchAgent(spaceId, c.req.param('id') ?? '', String(input.agent_id)),
     'GET /conversations/{id}/messages': (spaceId, c) =>

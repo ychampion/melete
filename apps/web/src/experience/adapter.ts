@@ -41,6 +41,7 @@ import type {
   ConnectionKind,
   Conversation,
   ConversationCreate,
+  ConversationDeleted,
   ConversationPrivacy,
   Device,
   DeviceCapabilities,
@@ -95,6 +96,7 @@ import type {
   SearchResult,
   SendOutcome,
   SensitiveTopic,
+  SpaceMembers,
   StreamGap,
   Task,
   TaskInput,
@@ -253,6 +255,17 @@ export const adapter = {
     guard<{ conversation: Conversation }>(() => api.POST('/conversations/{id}/resume', path(id))),
   stop: (id: string) =>
     guard<{ conversation: Conversation }>(() => api.POST('/conversations/{id}/stop', path(id))),
+  rename: (id: string, title: string) =>
+    guard<{ conversation: Conversation }>(() =>
+      api.PATCH('/conversations/{id}', { ...path(id), body: { title } }),
+    ),
+  /** Stops the chat's work and deletes it; what Melete learned stays unless `forget` is set. */
+  deleteConversation: (id: string, forget: boolean) =>
+    guard<ConversationDeleted>(() =>
+      api.DELETE('/conversations/{id}', {
+        params: { path: { id }, query: { forget_memory: forget ? 'true' : 'false' } },
+      }),
+    ),
   setAgent: (id: string, agent_id: string) =>
     guard<{ conversation: Conversation }>(() =>
       api.PATCH('/conversations/{id}/agent', { ...path(id), body: { agent_id } }),
@@ -510,6 +523,13 @@ export const adapter = {
     guard<{ conversation: Conversation }>(() =>
       api.POST('/plans/{id}/conversation', { ...path(id), body: { agent_id } }),
     ),
+  /** Deletes the plan and its steps; chats started from it stay. */
+  deletePlan: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/plans/{id}', path(id))),
+  /** Who is in the space this session uses. */
+  spaceMembers: () => guard<SpaceMembers>(() => api.GET('/space/members')),
+  /** The space's owner removes someone from a shared space. */
+  removeMember: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.DELETE('/space/members/{id}', path(id))),
   sharePlan: (id: string) => guard<never>(() => api.POST('/plans/{id}/share', path(id))),
 
   /* ---------- routines, connections, browser, search ---------- */

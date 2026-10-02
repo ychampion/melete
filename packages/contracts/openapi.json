@@ -2681,6 +2681,131 @@
             }
           }
         }
+      },
+      "patch": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "PATCH /conversations/{id}",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "title"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema222"
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema221"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "DELETE /conversations/{id}",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "forget_memory",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "$ref": "#/components/schemas/__schema215"
+                        },
+                        "stopped": {
+                          "type": "boolean"
+                        },
+                        "withdrawn": {
+                          "$ref": "#/components/schemas/__schema220"
+                        },
+                        "forgotten": {
+                          "$ref": "#/components/schemas/__schema220"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "stopped",
+                        "withdrawn",
+                        "forgotten"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema221"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/conversations/{id}/agent": {
@@ -6136,6 +6261,42 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "DELETE /plans/{id}",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema245"
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema221"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/plans/{id}/milestones/{milestoneId}": {
@@ -7072,6 +7233,144 @@
                         "connections"
                       ],
                       "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema221"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/space/members": {
+      "get": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "GET /space/members",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "space": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "$ref": "#/components/schemas/__schema215"
+                            },
+                            "name": {
+                              "$ref": "#/components/schemas/__schema216"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "personal",
+                                "shared"
+                              ]
+                            },
+                            "role": {
+                              "type": "string",
+                              "enum": [
+                                "owner",
+                                "member"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "kind",
+                            "role"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "members": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "principal_id": {
+                                "$ref": "#/components/schemas/__schema215"
+                              },
+                              "email": {
+                                "type": "string",
+                                "maxLength": 320
+                              },
+                              "role": {
+                                "type": "string",
+                                "enum": [
+                                  "owner",
+                                  "member"
+                                ]
+                              },
+                              "you": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "principal_id",
+                              "email",
+                              "role",
+                              "you"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "space",
+                        "members"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema221"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/space/members/{id}": {
+      "delete": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "DELETE /space/members/{id}",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema245"
                     },
                     {
                       "$ref": "#/components/schemas/__schema221"

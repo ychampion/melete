@@ -1,12 +1,14 @@
 /**
  * Every chat, most recently active first, a page at a time. The sidebar shows
- * the recent ones; this is where "All chats" goes.
+ * the recent ones; this is where "All chats" goes, and where chats are tidied
+ * up: Select picks several to delete at once, or one to rename.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { DeleteChatsDialog, RenameChatDialog } from '../chat/ChatActions.tsx';
 import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
-import { Button } from '../design/primitives.tsx';
+import { Button, Checkbox } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { agentById, faceOf, lookOf, useApp, useDecisions, useNow } from '../experience/hooks.ts';
 import type { Conversation } from '../experience/types.ts';
@@ -42,7 +44,10 @@ function when(iso: string, now: number): string {
 }
 
 export function ChatsScreen() {
-  const { agents } = useApp();
+  const { agents, refreshConversations } = useApp();
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  const [dialog, setDialog] = useState<'rename' | 'delete' | null>(null);
   const waiting = waitingOn(useDecisions());
   const now = useNow(true, 60_000);
   const [chats, setChats] = useState<Conversation[]>([]);
@@ -71,6 +76,19 @@ export function ChatsScreen() {
 
   useEffect(() => read(null), [read]);
 
+  const chosen = chats.filter((chat) => picked.has(chat.id));
+  const stopSelecting = () => {
+    setSelecting(false);
+    setPicked(new Set());
+  };
+  const toggle = (id: string, on: boolean) =>
+    setPicked((previous) => {
+      const next = new Set(previous);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+
   return (
     <Shell title="Chats">
       <div className="page">
@@ -81,12 +99,44 @@ export function ChatsScreen() {
               Every conversation, the most recent first.
             </p>
           </div>
-          <div className="row" style={{ gap: 8 }}>
-            <Button icon="compose" onClick={() => navigate('/chat/new')}>
-              New chat
-            </Button>
-            <RailToggle />
-          </div>
+          {selecting ? (
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <span aria-live="polite" style={{ fontSize: 13, color: 'var(--muted)' }}>
+                {picked.size} selected
+              </span>
+              <Button
+                variant="outline"
+                icon="pencil"
+                disabled={chosen.length !== 1}
+                onClick={() => setDialog('rename')}
+              >
+                Rename
+              </Button>
+              <Button
+                variant="destructive"
+                icon="trash"
+                disabled={chosen.length === 0}
+                onClick={() => setDialog('delete')}
+              >
+                Delete
+              </Button>
+              <Button variant="ghost" onClick={stopSelecting}>
+                Done
+              </Button>
+            </div>
+          ) : (
+            <div className="row" style={{ gap: 8 }}>
+              {chats.length > 0 ? (
+                <Button variant="outline" icon="check" onClick={() => setSelecting(true)}>
+                  Select
+                </Button>
+              ) : null}
+              <Button icon="compose" onClick={() => navigate('/chat/new')}>
+                New chat
+              </Button>
+              <RailToggle />
+            </div>
+          )}
         </div>
         {error ? (
           <div className="row" style={{ gap: 12, fontSize: 13, color: 'var(--secondary)' }}>
@@ -99,13 +149,8 @@ export function ChatsScreen() {
         <div className="card-12" style={{ overflow: 'hidden' }}>
           {chats.map((chat, index) => {
             const agent = agentById(agents, chat.agent_id);
-            return (
-              <a
-                key={chat.id}
-                className="list-row"
-                href={href(`/chat/${chat.id}`)}
-                style={index === 0 ? { borderTop: 0 } : undefined}
-              >
+            const body = (
+              <>
                 {agent ? (
                   <AgentFace
                     look={lookOf(agent)}
@@ -129,6 +174,27 @@ export function ChatsScreen() {
                 <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
                   {when(chat.updated_at, now)}
                 </span>
+              </>
+            );
+            const first = index === 0 ? { borderTop: 0 } : undefined;
+            return selecting ? (
+              // biome-ignore lint/a11y/noLabelWithoutControl: the checkbox inside is the control
+              <label
+                key={chat.id}
+                className="list-row"
+                data-picked={picked.has(chat.id) ? 'true' : undefined}
+                style={{ ...first, cursor: 'pointer' }}
+              >
+                <Checkbox
+                  checked={picked.has(chat.id)}
+                  onChange={(on) => toggle(chat.id, on)}
+                  label={`Select ${chat.title}`}
+                />
+                {body}
+              </label>
+            ) : (
+              <a key={chat.id} className="list-row" href={href(`/chat/${chat.id}`)} style={first}>
+                {body}
                 <span style={{ color: 'var(--secondary)', display: 'flex' }}>
                   <Icon name="chevronRight" size={16} />
                 </span>
@@ -154,6 +220,29 @@ export function ChatsScreen() {
           </div>
         ) : null}
       </div>
+      {dialog === 'rename' && chosen[0] ? (
+        <RenameChatDialog
+          chat={chosen[0]}
+          open
+          onClose={() => setDialog(null)}
+          onRenamed={(renamed) => {
+            setChats((previous) =>
+              previous.map((chat) => (chat.id === renamed.id ? renamed : chat)),
+            );
+            refreshConversations();
+          }}
+        />
+      ) : null}
+      <DeleteChatsDialog
+        chats={chosen}
+        open={dialog === 'delete'}
+        onClose={() => setDialog(null)}
+        onDeleted={(ids) => {
+          setChats((previous) => previous.filter((chat) => !ids.includes(chat.id)));
+          setPicked(new Set());
+          refreshConversations();
+        }}
+      />
     </Shell>
   );
 }

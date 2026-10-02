@@ -25,6 +25,7 @@ import { MemoryPanel } from './Beliefs.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 import { DevicesTab } from './Devices.tsx';
 import { NotificationsTab } from './Notifications.tsx';
+import { PeopleTab } from './People.tsx';
 import { PrivacyTab } from './Privacy.tsx';
 import './settings.css';
 
@@ -250,6 +251,7 @@ const ruleWhen = (rule: Rule) => {
 const TABS = [
   'account',
   'notifications',
+  'people',
   'connections',
   'devices',
   'approvals',
@@ -264,6 +266,9 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
   const model = useLoad(() => models.settings(), []);
+  const people = useLoad(() => adapter.spaceMembers(), []);
+  // People is a shared space's page; a personal space has only its owner.
+  const shared = people.data?.space.kind === 'shared';
   const current: Tab =
     tab === 'memory'
       ? 'memory'
@@ -303,6 +308,15 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
               tabs={[
                 { value: 'account', label: 'Account' },
                 { value: 'notifications', label: 'Notifications' },
+                ...(shared
+                  ? [
+                      {
+                        value: 'people' as const,
+                        label: 'People',
+                        count: people.data?.members.length,
+                      },
+                    ]
+                  : []),
                 {
                   value: 'connections',
                   label: 'Connections',
@@ -325,6 +339,14 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           </div>
         )}
         {current === 'privacy' ? <PrivacyTab /> : null}
+        {current === 'people' ? (
+          <PeopleTab
+            people={people.data}
+            error={people.error}
+            onRetry={people.reload}
+            onChanged={people.set}
+          />
+        ) : null}
         {current === 'memory' ? (
           <MemoryPanel />
         ) : current === 'approvals' ? (
@@ -375,7 +397,7 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
             <AddConnection onInstalled={connections.reload} />
             <ConnectedAssistants />
           </div>
-        ) : current === 'privacy' ? null : (
+        ) : current === 'privacy' || current === 'people' ? null : (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
               Each rule came from an “Always allow” you chose. It has a limit and an expiry; revoke
