@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { connectorManifest } from '@melete/contracts';
@@ -156,6 +156,16 @@ test('file boundary rejects directory junctions and final symlinks without touch
   await expect(execute('files.list', { path: 'escape', area: 'artifacts' })).rejects.toThrow(
     'symbolic links',
   );
+});
+
+test('a write refuses a second name for a file outside the workspace and leaves that file alone', async () => {
+  const outside = path.join(root, 'outside', 'secret.txt');
+  await writeFile(outside, 'preserved');
+  await link(outside, path.join(root, 'work', 'job_01', 'notes.txt'));
+  await expect(execute('files.write', { path: 'notes.txt', content: 'changed' })).rejects.toThrow(
+    'more than one name',
+  );
+  expect(await readFile(outside, 'utf8')).toBe('preserved');
 });
 
 test('move verifies by content hash and refuses to clobber a destination', async () => {

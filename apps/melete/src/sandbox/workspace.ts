@@ -14,9 +14,9 @@
  * kept, and set-id, sticky, group- and world-writable bits never cross.
  */
 import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { noLinks, segmentsFor } from '../connectors/files.ts';
+import { noLinks, openedAt, segmentsFor } from '../connectors/files.ts';
 import type { SandboxHandle, SandboxProvider } from './types.ts';
 
 const MiB = 1024 * 1024;
@@ -101,8 +101,9 @@ async function ensureDirectory(base: string, segments: string[]): Promise<void> 
 
 /**
  * Write one file under `<workRoot>/<job_id>`, re-resolving every component
- * first. The final open does not follow a link, so a link swapped in after
- * the check is an error rather than a write somewhere else.
+ * first. The final open does not follow a link, and the opened file must still
+ * be the one ordinary file at that path before it is truncated, so a link
+ * swapped in after the check is an error rather than a write somewhere else.
  */
 export async function writeWorkspaceFile(
   workRoot: string,
@@ -111,23 +112,47 @@ export async function writeWorkspaceFile(
   bytes: Uint8Array,
   mode: number,
 ): Promise<void> {
+  await writeConfined(workRoot, jobId, relative, bytes, syncMode(mode));
+}
+
+/** Like `writeWorkspaceFile`, for a file the service keeps for itself: owner-only access. */
+export async function writePrivateWorkspaceFile(
+  workRoot: string,
+  jobId: string,
+  relative: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  await writeConfined(workRoot, jobId, relative, bytes, 0o600);
+}
+
+async function writeConfined(
+  workRoot: string,
+  jobId: string,
+  relative: string,
+  bytes: Uint8Array,
+  mode: number,
+): Promise<void> {
   const base = await jobBase(workRoot, jobId);
   const target = await noLinks(base, [jobId, ...portable(relative)], true);
+  // Non-blocking, so a pipe planted at the name fails the open instead of hanging it.
   const file = await open(
     target,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
-    syncMode(mode),
+    constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    mode,
   );
   try {
-    const stat = await file.stat();
-    if (!stat.isFile()) throw new SyncRefusal('not_regular', `not a regular file: ${relative}`);
+    await openedAt(file, target).catch((error: unknown) => {
+      throw new SyncRefusal('not_regular', `${(error as Error).message}: ${relative}`);
+    });
+    await file.truncate(0);
     await file.writeFile(bytes);
     await file.sync();
+    // The open mode is filtered by the umask; set it on the open file, never by
+    // path, which would follow a link swapped in after the write.
+    await file.chmod(mode);
   } finally {
     await file.close();
   }
-  // The open mode is filtered by the umask; the synchronised mode is not.
-  await chmod(target, syncMode(mode));
 }
 
 /** Read one file under `<workRoot>/<job_id>`, refusing links and anything above `maxBytes`. */

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readdir, realpath, rename } from 'node:fs/promises';
+import { type FileHandle, lstat, mkdir, open, readdir, realpath, rename } from 'node:fs/promises';
 import path from 'node:path';
 import {
   type Action,
@@ -128,6 +128,23 @@ export async function noLinks(
     }
   }
   return current;
+}
+
+/**
+ * Confirm that a file opened for writing is the one ordinary file at `target`,
+ * before a byte of it changes. `noLinks` checks each component before the
+ * open; a directory swapped for a link between that check and the open still
+ * lands the open elsewhere, so the opened file must be the file the real path
+ * names now. A second name for a file elsewhere is refused the same way.
+ */
+export async function openedAt(file: FileHandle, target: string): Promise<void> {
+  const opened = await file.stat();
+  if (!opened.isFile()) throw new Error('write target is not a regular file');
+  if (opened.nlink !== 1) throw new Error('write target has more than one name');
+  if ((await realpath(target)) !== target) throw new Error('symbolic links are not allowed');
+  const named = await lstat(target);
+  if (named.dev !== opened.dev || named.ino !== opened.ino)
+    throw new Error('write target changed while it was opened');
 }
 
 const pathSchema = { type: 'string', minLength: 1 };
@@ -537,8 +554,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
             0o600,
           );
           try {
-            const stat = await file.stat();
-            if (!stat.isFile()) throw new Error('write target is not a regular file');
+            await openedAt(file, target);
             await file.truncate(0);
             await file.writeFile(content, 'utf8');
             await file.sync();

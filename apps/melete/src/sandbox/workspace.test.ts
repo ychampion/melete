@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import {
+  link,
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   realpath,
@@ -13,9 +15,10 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { openedAt } from '../connectors/files.ts';
 import { FakeSandboxProvider } from './fake.ts';
 import type { FileEntry, SandboxHandle, SandboxProvider } from './types.ts';
-import { SyncRefusal, syncIn, syncOut } from './workspace.ts';
+import { SyncRefusal, syncIn, syncOut, writeWorkspaceFile } from './workspace.ts';
 
 const JOB = 'job_WORKSPACE';
 const HANDLE: SandboxHandle = { providerSandboxId: 'stub', imageDigest: null, region: null };
@@ -222,4 +225,40 @@ test('sync-in copies the job workspace and refuses a link in it', async () => {
   await symlink(path.join(root, 'outside'), path.join(job, 'escape'), 'junction');
   const refused = await syncIn(options).catch((error: unknown) => error);
   expect((refused as SyncRefusal).code).toBe('symlink');
+});
+
+test('an opened file that is not the one at its real path is refused before it changes', async () => {
+  // What a directory swapped for a link between the component check and the
+  // open would leave: a handle on a file elsewhere, and the name checked here.
+  const job = path.join(root, 'work', JOB);
+  await mkdir(job);
+  const named = path.join(job, 'notes.md');
+  const elsewhere = path.join(root, 'outside', 'notes.md');
+  await writeFile(named, 'mine');
+  await writeFile(elsewhere, 'kept');
+  const handle = await open(elsewhere, 'r+');
+  try {
+    await expect(openedAt(handle, named)).rejects.toThrow('changed while it was opened');
+  } finally {
+    await handle.close();
+  }
+  const own = await open(named, 'r+');
+  try {
+    await openedAt(own, named);
+  } finally {
+    await own.close();
+  }
+  expect(await readFile(elsewhere, 'utf8')).toBe('kept');
+});
+
+test('a second name for a file elsewhere is refused on write, and the file is left alone', async () => {
+  const job = path.join(root, 'work', JOB);
+  await mkdir(job);
+  const elsewhere = path.join(root, 'outside', 'notes.md');
+  await writeFile(elsewhere, 'kept');
+  await link(elsewhere, path.join(job, 'notes.md'));
+  await expect(
+    writeWorkspaceFile(path.join(root, 'work'), JOB, 'notes.md', new Uint8Array([1]), 0o644),
+  ).rejects.toThrow(SyncRefusal);
+  expect(await readFile(elsewhere, 'utf8')).toBe('kept');
 });
