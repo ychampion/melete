@@ -377,6 +377,51 @@ if (!live) {
         await rm(workRoot, { recursive: true, force: true });
       }
     });
+
+    test('a marker keeps at most the capture limit, and old or settled markers are removed', async () => {
+      const handle = await open();
+      const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-docker-live-keep-'));
+      const root = host.capabilities.markerRoot;
+      const run = (marker: string, argv: string[], forget: string[] = []) =>
+        runCommand({
+          provider: host,
+          handle,
+          request: { marker, argv, timeoutMs: 60_000, dispatch: 'first', forget },
+          workRoot,
+          jobId: 'job_LIVE',
+          signal: signal(),
+        });
+      try {
+        const big = await run('act_LIVEKEEP000000000000001', [
+          'sh',
+          '-c',
+          'head -c 6M /dev/zero; printf done > /work/after-big',
+        ]);
+        expect(big.outcome).toBe('succeeded');
+        if (big.outcome === 'succeeded') expect(big.record.captureLimited).toBe(true);
+        const sizes = await shell(
+          handle,
+          `stat -c %s ${root}/act_LIVEKEEP000000000000001/out; cat /work/after-big; stat -c %a ${root}`,
+        );
+        process.stdout.write(`docker live, kept output: ${sizes.text}\n`);
+        expect(sizes.text).toBe('4194305\ndone700\n');
+        // An unsettled marker from long ago, and a recent one.
+        await shell(
+          handle,
+          `mkdir -p ${root}/act_LIVEOLD ${root}/act_LIVERECENT && touch -d '10 days ago' ${root}/act_LIVEOLD`,
+        );
+        const next = await run(
+          'act_LIVEKEEP000000000000002',
+          ['true'],
+          ['act_LIVEKEEP000000000000001'],
+        );
+        expect(next.outcome).toBe('succeeded');
+        const left = await shell(handle, `ls ${root} | sort`);
+        expect(left.text).toBe('act_LIVEKEEP000000000000002\nact_LIVERECENT\n');
+      } finally {
+        await rm(workRoot, { recursive: true, force: true });
+      }
+    });
   });
 
   describe.skipIf(!withDesktop)('docker sandbox live: the desktop', () => {

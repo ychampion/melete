@@ -3,6 +3,7 @@ import { FAKE_CAPABILITIES, FakeSandboxProvider } from './fake.ts';
 import {
   checkMarker,
   checkMarkerRoot,
+  MARKER_RETENTION_DAYS,
   MARKER_SETUP_EXIT,
   markCommand,
   REENTERED_EXIT,
@@ -100,16 +101,20 @@ test('the wrapper refuses to start a command whose marker already exists', async
   expect(text(await provider.getFile(handle, '/work/count', 16, signal()))).toBe('x');
 });
 
-test('a wrapper that ends without a marker is a retryable failure, not a record', async () => {
-  const { provider, handle } = await sandbox();
-  // The marker root cannot be created when a file already holds its name.
-  await provider.putFiles(
+const putFile = (provider: FakeSandboxProvider, handle: SandboxHandle, path: string) =>
+  provider.putFiles(
     handle,
     (async function* () {
-      yield { path: MARKER_ROOT, bytes: new Uint8Array([1]), mode: 0o644 };
+      yield { path, bytes: new Uint8Array([1]), mode: 0o644 };
     })(),
     signal(),
   );
+
+test('a wrapper that ends without a marker is a retryable failure, not a record', async () => {
+  const { provider, handle } = await sandbox();
+  // Neither root can be made: files hold the names on the way to both.
+  await putFile(provider, handle, MARKER_ROOT.slice(0, MARKER_ROOT.lastIndexOf('/')));
+  await putFile(provider, handle, VAR_TMP_MARKER_ROOT);
   const result = await runCommand({
     provider,
     handle,
@@ -254,6 +259,16 @@ test('an environment name outside the allow-list is refused before anything runs
     { https_proxy: 'http://cmd:token@melete-egress:8791', BASH_ENV: '/work/rc' },
     { TZ: `UTC${String.fromCharCode(0)}; rm -rf /work` },
     { GH_TOKEN: 'x'.repeat(4097) },
+    // Each value fits; together they pass the total.
+    Object.fromEntries(
+      [
+        'GH_TOKEN',
+        'AWS_SECRET_ACCESS_KEY',
+        'AWS_ACCESS_KEY_ID',
+        'SSL_CERT_FILE',
+        'CURL_CA_BUNDLE',
+      ].map((name) => [name, 'x'.repeat(4000)]),
+    ),
   ];
   for (const env of refused) {
     const before = provider.calls.exec;
@@ -294,4 +309,139 @@ test('an allowed environment is set on that command only', async () => {
   });
   if (next.outcome === 'succeeded') expect(text(next.record.preview)).toBe('|');
   else throw new Error(`the second command did not run: ${JSON.stringify(next)}`);
+});
+
+test('a marker root that was replaced by a file or made unwritable is made again, and the command runs', async () => {
+  const { provider, handle } = await sandbox();
+  await putFile(provider, handle, MARKER_ROOT);
+  const replaced = await runWith(provider, handle, ['printf', 'ran']);
+  expect(replaced.outcome).toBe('succeeded');
+  expect(text(await provider.getFile(handle, `${MARKER_ROOT}/${MARKER}/out`, 64, signal()))).toBe(
+    'ran',
+  );
+  const locked = await sandbox();
+  await runCommand({
+    provider: locked.provider,
+    handle: locked.handle,
+    request: {
+      marker: 'act_01J0MARKERTEST0000000009',
+      argv: ['true'],
+      timeoutMs: 5_000,
+      dispatch: 'first',
+    },
+    workRoot: '.',
+    jobId: 'job_UNUSED',
+    signal: signal(),
+  });
+  // chmod 000 on the root: the next command repairs it rather than reporting itself re-entered.
+  const chmod = await locked.provider.exec(
+    locked.handle,
+    {
+      marker: 'x',
+      argv: ['chmod', '000', MARKER_ROOT],
+      cwd: '/',
+      timeoutMs: 5_000,
+      maxOutputBytes: 64,
+    },
+    signal(),
+  );
+  expect(chmod.exitCode).toBe(0);
+  const again = await runWith(locked.provider, locked.handle, ['printf', 'ran']);
+  expect(again.outcome).toBe('succeeded');
+});
+
+test('when the marker root cannot be made again, the marker goes under /var/tmp and is still read', async () => {
+  const { provider, handle } = await sandbox();
+  // A file where the root's parent should be: nothing under it can be made.
+  await putFile(provider, handle, MARKER_ROOT.slice(0, MARKER_ROOT.lastIndexOf('/')));
+  const result = await runWith(provider, handle, ['printf', 'kept aside']);
+  expect(result.outcome).toBe('succeeded');
+  if (result.outcome === 'succeeded') expect(text(result.record.preview)).toBe('kept aside');
+  expect(
+    text(await provider.getFile(handle, `${VAR_TMP_MARKER_ROOT}/${MARKER}/out`, 64, signal())),
+  ).toBe('kept aside');
+  const again = await runWith(provider, handle, ['true'], { dispatch: 'again' });
+  expect(again).toMatchObject({ outcome: 'succeeded', reattached: true });
+});
+
+test("a command's kept output never exceeds the capture limit, and the rest is read and dropped", async () => {
+  const { provider, handle } = await sandbox();
+  const result = await runCommand({
+    provider,
+    handle,
+    request: {
+      marker: MARKER,
+      argv: ['sh', '-c', 'head -c 300000 /dev/zero; printf done > /work/after'],
+      timeoutMs: 5_000,
+      dispatch: 'first',
+    },
+    workRoot: '.',
+    jobId: 'job_UNUSED',
+    signal: signal(),
+    limits: { maxCaptureBytes: 1_000, maxOutputBytes: 1_000 },
+  });
+  expect(result.outcome).toBe('succeeded');
+  if (result.outcome !== 'succeeded') return;
+  expect(result.record.exitCode).toBe(0);
+  expect(result.record.outputBytes).toBe(1_000);
+  expect(result.record.captureLimited).toBe(true);
+  const listed = await provider.listFiles(handle, `${MARKER_ROOT}/${MARKER}`, signal());
+  expect(listed.find((entry) => entry.path === 'out')?.size).toBe(1_001);
+  expect(listed.map((entry) => entry.path).sort()).toEqual(['exit', 'out']);
+  // The command was not cut short by the cap: it went on past its output.
+  expect(text(await provider.getFile(handle, '/work/after', 16, signal()))).toBe('done');
+});
+
+test("a command's marker is removed by the next command once its outcome is recorded", async () => {
+  const { provider, handle } = await sandbox();
+  const FIRST = 'act_01J0MARKERTEST0000000002';
+  const first = await runCommand({
+    provider,
+    handle,
+    request: { marker: FIRST, argv: ['printf', 'first'], timeoutMs: 5_000, dispatch: 'first' },
+    workRoot: '.',
+    jobId: 'job_UNUSED',
+    signal: signal(),
+  });
+  expect(first.outcome).toBe('succeeded');
+  expect((await provider.listFiles(handle, MARKER_ROOT, signal())).map((e) => e.path)).toContain(
+    FIRST,
+  );
+  const second = await runCommand({
+    provider,
+    handle,
+    request: {
+      marker: MARKER,
+      argv: ['printf', 'second'],
+      timeoutMs: 5_000,
+      dispatch: 'first',
+      forget: [FIRST],
+    },
+    workRoot: '.',
+    jobId: 'job_UNUSED',
+    signal: signal(),
+  });
+  expect(second.outcome).toBe('succeeded');
+  const left = (await provider.listFiles(handle, MARKER_ROOT, signal()))
+    .filter((entry) => !entry.path.includes('/'))
+    .map((entry) => entry.path);
+  expect(left).toEqual([MARKER]);
+  expect(await reattachByMarker(provider, handle, FIRST, signal())).toBeNull();
+});
+
+test('every command prunes markers untouched for the retention period, and never its own', () => {
+  const [, , script] = markCommand(MARKER_ROOT, MARKER, ['true'], {
+    forget: [MARKER, 'act_01J0MARKERTEST0000000003'],
+  });
+  const lines = (script ?? '').split('\n');
+  const prune = lines.findIndex((line) => line.startsWith('find "$r"'));
+  const own = lines.findIndex((line) => line.startsWith('mkdir "$d"'));
+  expect(lines[prune]).toBe(
+    `find "$r" -mindepth 1 -maxdepth 1 -type d -mtime +${MARKER_RETENTION_DAYS - 1} -exec rm -rf -- {} + 2>/dev/null`,
+  );
+  // Pruned before this command's own marker exists, and a forget list never names it.
+  expect(prune).toBeLessThan(own);
+  expect(script).toContain('rm -rf -- "$r/act_01J0MARKERTEST0000000003" 2>/dev/null');
+  expect(script).not.toContain(`"$r/${MARKER}" 2>/dev/null`);
+  expect(() => markCommand(MARKER_ROOT, MARKER, ['true'], { forget: ['../home'] })).toThrow();
 });

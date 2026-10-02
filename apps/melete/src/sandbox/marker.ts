@@ -50,7 +50,10 @@ import { readWorkspaceFile, SANDBOX_WORKDIR, writeWorkspaceFile } from './worksp
  * The marker root where `/var/tmp` lives on the sandbox's own disk, and where
  * every adapter kept its markers before the root became a per-adapter setting.
  * A marker not found under the adapter's root is looked for here as well, so a
- * command dispatched before an upgrade is still read from its marker.
+ * command dispatched before an upgrade is still read from its marker, and so is
+ * one whose wrapper found the adapter's root broken. The upgrade half of that
+ * can go one release after the per-adapter root ships; the broken-root half
+ * stays.
  */
 export const VAR_TMP_MARKER_ROOT = '/var/tmp/.melete-exec';
 export const REENTERED_EXIT = 111;
@@ -91,19 +94,96 @@ export function shellQuote(value: string): string {
 }
 
 /**
+ * How long a marker nobody removed stays: the record of a command the service
+ * never settled, for example one cut off by a restart, long since read or
+ * given up on.
+ */
+export const MARKER_RETENTION_DAYS = 7;
+
+/**
+ * Where an adapter that can only pass a command its words leaves the
+ * command's environment instead: one file per action, read and removed by the
+ * launcher before the command starts, so no value is ever a word of a process.
+ */
+export const ENV_FILE_ROOT = '/var/tmp/.melete-env';
+
+export const envFilePath = (marker: string): string => `${ENV_FILE_ROOT}/${checkMarker(marker)}`;
+
+/** The file's text: one quoted `export` per name. Names are the allow-listed ones. */
+export function envFileBody(env: Readonly<Record<string, string>>): Uint8Array {
+  const lines = Object.entries(env).map(([name, value]) => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error('not an environment name');
+    return `export ${name}=${shellQuote(value)}\n`;
+  });
+  return new TextEncoder().encode(lines.join(''));
+}
+
+/**
+ * The launcher words that read and remove that file: `$1` is its path, or `-`
+ * when there is none. A file that was sent and is gone means nothing ran.
+ */
+export const SOURCE_ENV_FILE =
+  'e="$1"; shift; [ "$e" = - ] || { [ -f "$e" ] || exit 112; . "$e"; rm -f "$e"; }';
+
+/** What the wrapper says when no marker root it may use can be made. */
+export const ROOT_UNUSABLE_MESSAGE = 'melete_exec_root_unusable';
+
+/**
  * The wrapped argv the adapter runs. `argv` is the admitted command, quoted
  * word by word; nothing in it is interpreted by the wrapper's own shell.
+ *
+ * The root may sit where the agent can reach it, such as its home. One that
+ * was removed, replaced by a file or made unwritable is made again; when that
+ * fails the marker goes under `VAR_TMP_MARKER_ROOT`, which `locateMarker`
+ * also reads, so a broken root never stops every later command.
+ *
+ * At most `keepBytes` of the output are kept in the marker. The rest is read
+ * and dropped, so the command neither stalls nor dies on a closed pipe, and a
+ * runaway command cannot fill the disk with a record nobody reads.
+ *
+ * Before the command starts, the wrapper removes the markers named in
+ * `forget` (earlier commands whose outcome the service has recorded) and any
+ * marker untouched for `MARKER_RETENTION_DAYS`, so a computer that keeps its
+ * disk does not keep every command's output.
  */
-export function markCommand(root: string, marker: string, argv: readonly string[]): string[] {
-  const directory = markerDirectory(root, marker);
+export function markCommand(
+  root: string,
+  marker: string,
+  argv: readonly string[],
+  options: { keepBytes?: number; forget?: readonly string[] } = {},
+): string[] {
+  checkMarkerRoot(root);
+  checkMarker(marker);
   if (argv.length === 0) throw new Error('an admitted command needs at least one word');
+  const keepBytes = options.keepBytes ?? EXEC_LIMITS.max_capture_bytes + 1;
+  if (!Number.isSafeInteger(keepBytes) || keepBytes < 1)
+    throw new Error('the output kept must be a positive number of bytes');
+  const forget = (options.forget ?? []).map(checkMarker).filter((each) => each !== marker);
+  const usable = '[ -d "$r" ] && [ -w "$r" ] && [ -x "$r" ]';
   const command = argv.map(shellQuote).join(' ');
   const script = [
-    `d=${directory}`,
-    `mkdir -p -m 0700 ${root} || exit ${MARKER_SETUP_EXIT}`,
-    `mkdir "$d" 2>/dev/null || { echo ${REENTERED_MESSAGE} >&2; exit ${REENTERED_EXIT}; }`,
-    `( ${command} ) > "$d/out" 2>&1`,
-    'ec=$?',
+    `r=${root}`,
+    `${usable} || { rm -f "$r" 2>/dev/null; mkdir -p -m 0700 "$r" 2>/dev/null; chmod 0700 "$r" 2>/dev/null; }`,
+    ...(root === VAR_TMP_MARKER_ROOT
+      ? []
+      : [
+          `${usable} || { r=${VAR_TMP_MARKER_ROOT}; mkdir -p -m 0700 "$r" 2>/dev/null; chmod 0700 "$r" 2>/dev/null; }`,
+        ]),
+    `${usable} || { echo ${ROOT_UNUSABLE_MESSAGE} >&2; exit ${MARKER_SETUP_EXIT}; }`,
+    ...(forget.length
+      ? [`rm -rf -- ${forget.map((each) => `"$r/${each}"`).join(' ')} 2>/dev/null`]
+      : []),
+    `find "$r" -mindepth 1 -maxdepth 1 -type d -mtime +${MARKER_RETENTION_DAYS - 1} -exec rm -rf -- {} + 2>/dev/null`,
+    `d="$r/${marker}"`,
+    // A directory already there is this action's own marker; anything else
+    // that stops the directory being made means the command never started.
+    `mkdir "$d" 2>/dev/null || { [ -e "$d" ] && { echo ${REENTERED_MESSAGE} >&2; exit ${REENTERED_EXIT}; }; echo ${ROOT_UNUSABLE_MESSAGE} >&2; exit ${MARKER_SETUP_EXIT}; }`,
+    `{ ( ${command} ) 2>&1; printf '%s\\n' "$?" > "$d/status"; } | { head -c ${keepBytes} > "$d/out"; cat > /dev/null; }`,
+    'ec=',
+    `read ec < "$d/status" 2>/dev/null`,
+    'rm -f "$d/status"',
+    // The command's shell died before it could say how the command ended.
+    `[ -n "$ec" ] || exit ${RESERVED_STATUS_EXIT}`,
     // Written aside and renamed, so a reader never sees a half-written status.
     `printf '%s' "$ec" > "$d/exit.tmp" && mv -f "$d/exit.tmp" "$d/exit"`,
     `[ "$ec" = ${REENTERED_EXIT} ] && exit ${RESERVED_STATUS_EXIT}`,
@@ -181,6 +261,8 @@ export type CommandRequest = {
   dispatch: 'first' | 'again';
   /** Set on this command only; names outside `EXEC_ENV_NAMES` are refused before it is sent. */
   env?: Readonly<Record<string, string>>;
+  /** Earlier actions whose outcomes are recorded: their markers are removed first. */
+  forget?: readonly string[];
 };
 
 export type ExecutionRecord = {
@@ -329,7 +411,7 @@ export async function runCommand(options: RunOptions): Promise<CommandResult> {
   const { provider, handle, request } = options;
   checkMarker(request.marker);
   const root = provider.capabilities.markerRoot;
-  const directory = markerDirectory(root, request.marker);
+  checkMarkerRoot(root);
   if (request.dispatch === 'again')
     return fromMarker(options, 'this action was dispatched before', 'unknown');
   const env = request.env ?? {};
@@ -341,7 +423,10 @@ export async function runCommand(options: RunOptions): Promise<CommandResult> {
       handle,
       {
         marker: request.marker,
-        argv: markCommand(root, request.marker, request.argv),
+        argv: markCommand(root, request.marker, request.argv, {
+          keepBytes: settings(options).maxCaptureBytes + 1,
+          ...(request.forget ? { forget: request.forget } : {}),
+        }),
         cwd: request.cwd ?? SANDBOX_WORKDIR,
         timeoutMs: request.timeoutMs,
         maxOutputBytes: 4096,
@@ -373,15 +458,16 @@ export async function runCommand(options: RunOptions): Promise<CommandResult> {
   if (reentered(outcome))
     return fromMarker(options, 'the marker for this action already existed', 'yes');
   const signal = AbortSignal.timeout(settings(options).probeTimeoutMs);
-  let entries: FileEntry[];
+  let found: Awaited<ReturnType<typeof locateMarker>>;
   try {
-    entries = await provider.listFiles(handle, directory, signal);
+    found = await locateMarker(provider, handle, request.marker, signal);
   } catch (error) {
-    if (!(error instanceof SandboxFileNotFound))
-      return {
-        outcome: 'unknown',
-        reason: `the command ran but its marker could not be read: ${(error as Error).message}`,
-      };
+    return {
+      outcome: 'unknown',
+      reason: `the command ran but its marker could not be read: ${(error as Error).message}`,
+    };
+  }
+  if (!found) {
     const said = text(outcome.output).trim().slice(0, 200);
     // Only the wrapper can exit 112 on the channel; a command's own 112 arrives as 113.
     if (outcome.state === 'exited' && outcome.exitCode === MARKER_SETUP_EXIT)
@@ -395,8 +481,15 @@ export async function runCommand(options: RunOptions): Promise<CommandResult> {
       reason: `the process ended (exit ${outcome.exitCode ?? outcome.signal}) with no marker; the command may have run and removed it, so it is not run again${said ? `: ${said}` : ''}`,
     };
   }
+  const { directory, entries } = found;
   let exitCode = outcome.state === 'exited' ? outcome.exitCode : null;
-  if (exitCode === RESERVED_STATUS_EXIT && regular(entries, 'exit')) {
+  if (exitCode === RESERVED_STATUS_EXIT) {
+    // 113 with no exit record: the command's shell died before saying how it ended.
+    if (!regular(entries, 'exit'))
+      return {
+        outcome: 'unknown',
+        reason: 'the command started and its status was lost, so it is not run again',
+      };
     const recorded = Number(text(await provider.getFile(handle, `${directory}/exit`, 16, signal)));
     if (recorded === REENTERED_EXIT || recorded === MARKER_SETUP_EXIT) exitCode = recorded;
   }

@@ -361,7 +361,8 @@ type Redirect =
 type Command =
   | { kind: 'simple'; words: Word[]; redirects: Redirect[] }
   | { kind: 'subshell'; body: List; redirects: Redirect[] }
-  | { kind: 'group'; body: List; redirects: Redirect[] };
+  | { kind: 'group'; body: List; redirects: Redirect[] }
+  | { kind: 'pipeline'; left: Command; right: Command; redirects: Redirect[] };
 type List = { command: Command; next: ';' | '&&' | '||' }[];
 
 class ShellSyntaxError extends Error {}
@@ -418,7 +419,10 @@ function tokenize(script: string): Token[] {
       endWord();
       tokens.push({ type: 'op', value: char + next });
       index += 1;
-    } else if (char === '|' || char === '&') {
+    } else if (char === '|') {
+      endWord();
+      tokens.push({ type: 'op', value: '|' });
+    } else if (char === '&') {
       throw new ShellSyntaxError(`${char} is not supported`);
     } else if (char === '(' || char === ')') {
       endWord();
@@ -536,8 +540,16 @@ function parse(tokens: Token[]): List {
         position += 1;
         continue;
       }
-      const parsed = command();
+      let parsed = command();
       if (!parsed) throw new ShellSyntaxError('unexpected token');
+      for (;;) {
+        const pipe = tokens[position];
+        if (pipe?.type !== 'op' || pipe.value !== '|') break;
+        position += 1;
+        const right = command();
+        if (!right) throw new ShellSyntaxError('a pipe needs a command after it');
+        parsed = { kind: 'pipeline', left: parsed, right, redirects: [] };
+      }
       const separator = tokens[position];
       let next: ';' | '&&' | '||' = ';';
       if (separator?.type === 'op' && (separator.value === '&&' || separator.value === '||')) {
@@ -561,7 +573,43 @@ export class KilledSignal extends Error {}
 
 type Sink = (bytes: Uint8Array) => void;
 /** `in` is set by a `<` redirection; without one a command reads the process's stdin. */
-type Io = { out: Sink; err: Sink; in?: () => Promise<Uint8Array> };
+type Io = {
+  out: Sink;
+  err: Sink;
+  in?: () => Promise<Uint8Array>;
+  /** The next chunk from a pipe, or null once the writer has ended. */
+  read?: () => Promise<Uint8Array | null>;
+};
+
+/** A pipe between two commands: chunks as they are written, then an end. */
+class FakePipe {
+  private readonly chunks: Uint8Array[] = [];
+  private ended = false;
+  private wake: () => void = () => {};
+  write(bytes: Uint8Array): void {
+    if (bytes.byteLength) this.chunks.push(bytes.slice());
+    this.wake();
+  }
+  close(): void {
+    this.ended = true;
+    this.wake();
+  }
+  async read(): Promise<Uint8Array | null> {
+    for (;;) {
+      const next = this.chunks.shift();
+      if (next) return next;
+      if (this.ended) return null;
+      await new Promise<void>((resolve) => {
+        this.wake = resolve;
+      });
+    }
+  }
+  async readAll(): Promise<Uint8Array> {
+    const parts: Uint8Array[] = [];
+    for (let chunk = await this.read(); chunk; chunk = await this.read()) parts.push(chunk);
+    return new Uint8Array(Buffer.concat(parts));
+  }
+}
 
 type Shell = {
   sandbox: FakeSandbox;
@@ -651,12 +699,51 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
       const [left = '', operator, right = ''] = operands;
       if (operands.length === 3 && operator === '=') return left === right ? 0 : 1;
       if (operands.length === 3 && operator === '!=') return left !== right ? 0 : 1;
+      if (operands.length === 2 && left === '-n') return operator ? 0 : 1;
+      if (operands.length === 2 && left === '-z') return operator ? 1 : 0;
       if (operands.length === 2 && left === '-e') return fs.lstat(path(operator ?? '')) ? 0 : 1;
       if (operands.length === 2 && left === '-d')
         return fs.stat(path(operator ?? ''))?.kind === 'dir' ? 0 : 1;
       if (operands.length === 2 && left === '-f')
         return fs.stat(path(operator ?? ''))?.kind === 'file' ? 0 : 1;
+      // The sandbox user owns what it reaches, so the owner's bits decide.
+      if (operands.length === 2 && (left === '-w' || left === '-x')) {
+        const node = fs.stat(path(operator ?? ''));
+        if (!node || node.kind === 'symlink') return 1;
+        return node.mode & (left === '-w' ? 0o200 : 0o100) ? 0 : 1;
+      }
       return fail('unsupported test', 2);
+    }
+    case 'umask':
+      // The fake keeps no permissions to mask.
+      return 0;
+    case 'read': {
+      const name = args[0] ?? '';
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return fail('a variable name is needed', 2);
+      const input = decode(await (io.in ? io.in() : shell.process.readStdin()));
+      const end = input.indexOf('\n');
+      shell.vars.set(name, end < 0 ? input : input.slice(0, end));
+      return end < 0 ? 1 : 0;
+    }
+    case 'export':
+      for (const assignment of args) {
+        const at = assignment.indexOf('=');
+        if (at < 1) return fail(`not an assignment: ${assignment}`, 2);
+        shell.environment = {
+          ...shell.environment,
+          [assignment.slice(0, at)]: assignment.slice(at + 1),
+        };
+      }
+      return 0;
+    case '.': {
+      let script: string;
+      try {
+        script = decode(fs.readFile(path(args[0] ?? '')));
+      } catch {
+        return fail(`can't open ${args[0] ?? ''}`, 2);
+      }
+      // Sourced: it runs in this shell, so what it exports stays.
+      return runList(parse(tokenize(script)), shell, io);
     }
     case 'exit':
       throw new ExitSignal(args[0] === undefined ? shell.status : Number(args[0]) & 0xff);
@@ -731,6 +818,8 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
     }
     case 'find': {
       const root = args[0] ?? '.';
+      // The fake keeps no file times, so nothing is ever old enough to match.
+      if (args.includes('-mtime')) return 0;
       const format = args[args.indexOf('-printf') + 1] ?? '%P\\n';
       if (!args.includes('-mindepth') || !args.includes('-printf'))
         return fail('only find PATH -mindepth 1 -printf FORMAT is supported', 1);
@@ -758,10 +847,25 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
       return program(args, shell, io);
     case 'head': {
       const operands = args.filter((arg) => arg !== '--');
-      if (operands[0] !== '-c' || operands[2] === undefined)
-        return fail('only -c N FILE is supported', 2);
+      if (operands[0] !== '-c' || operands[1] === undefined)
+        return fail('only -c N [FILE] is supported', 2);
       const count = Number(operands[1]);
       const file = operands[2];
+      if (file === undefined) {
+        if (!io.read) {
+          io.out((await (io.in ? io.in() : shell.process.readStdin())).slice(0, count));
+          return 0;
+        }
+        // As head does on a pipe: what it read past the count is gone.
+        for (let left = count; left > 0; ) {
+          const chunk = await io.read();
+          if (!chunk) break;
+          const part = chunk.subarray(0, left);
+          io.out(part);
+          left -= part.byteLength;
+        }
+        return 0;
+      }
       if (file === '/dev/zero') {
         const chunk = 65_536;
         for (let written = 0; written < count; written += chunk) {
@@ -779,6 +883,10 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
     }
     case 'cat': {
       if (!args.length) {
+        if (io.read) {
+          for (let chunk = await io.read(); chunk; chunk = await io.read()) io.out(chunk);
+          return 0;
+        }
         io.out(await (io.in ? io.in() : shell.process.readStdin()));
         return 0;
       }
@@ -971,6 +1079,33 @@ async function runCommand(command: Command, shell: Shell, io: Io): Promise<numbe
         current = { ...current, out: sink };
       else current = { ...current, err: sink };
     }
+  }
+  if (command.kind === 'pipeline') {
+    // Each side is a subshell; the right one reads what the left one writes, as it is written.
+    const pipe = new FakePipe();
+    const side = (promise: Promise<number>) =>
+      promise.catch((error) => {
+        if (error instanceof ExitSignal) return error.code;
+        throw error;
+      });
+    const left = side(
+      runCommand(
+        command.left,
+        { ...shell, vars: new Map(shell.vars) },
+        { ...current, out: (bytes) => pipe.write(bytes) },
+      ),
+    ).finally(() => pipe.close());
+    const right = side(
+      runCommand(
+        command.right,
+        { ...shell, vars: new Map(shell.vars) },
+        { ...current, in: () => pipe.readAll(), read: () => pipe.read() },
+      ),
+    );
+    const [first, second] = await Promise.allSettled([left, right]);
+    if (first.status === 'rejected') throw first.reason;
+    if (second.status === 'rejected') throw second.reason;
+    return second.value;
   }
   if (command.kind === 'subshell') {
     const child: Shell = { ...shell, vars: new Map(shell.vars) };

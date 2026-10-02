@@ -70,15 +70,19 @@ export type ExecEnvName = (typeof EXEC_ENV_NAMES)[number];
 
 /** The longest value one of those names may carry, in UTF-8 bytes. */
 export const EXEC_ENV_MAX_VALUE_BYTES = 4096;
+/** The most the names and values of one command's environment may add up to, in UTF-8 bytes. */
+export const EXEC_ENV_MAX_TOTAL_BYTES = 16_384;
 
 const EXEC_ENV_ALLOWED: ReadonlySet<string> = new Set(EXEC_ENV_NAMES);
 
 /**
  * Why a per-command environment cannot be sent, or null when it can. A name
- * outside the allow-list, a value that is not text or holds a NUL byte, and a
- * value above the size limit are each refused.
+ * outside the allow-list, a value that is not text or holds a NUL byte, a
+ * value above the size limit, and an environment above the total limit are
+ * each refused.
  */
 export function execEnvRefusal(env: Readonly<Record<string, string>>): string | null {
+  let total = 0;
   for (const [name, value] of Object.entries(env)) {
     if (!EXEC_ENV_ALLOWED.has(name))
       return `the environment name ${JSON.stringify(name.slice(0, 64))} is not one a command may be given`;
@@ -86,7 +90,10 @@ export function execEnvRefusal(env: Readonly<Record<string, string>>): string | 
     if (value.includes('\0')) return `the value of ${name} holds a NUL byte`;
     if (new TextEncoder().encode(value).byteLength > EXEC_ENV_MAX_VALUE_BYTES)
       return `the value of ${name} is longer than ${EXEC_ENV_MAX_VALUE_BYTES} bytes`;
+    total += new TextEncoder().encode(`${name}=${value}`).byteLength;
   }
+  if (total > EXEC_ENV_MAX_TOTAL_BYTES)
+    return `the environment adds up to more than ${EXEC_ENV_MAX_TOTAL_BYTES} bytes`;
   return null;
 }
 

@@ -409,7 +409,8 @@ test('stdin reaches a marked command once', async () => {
 
 test("a command's own environment reaches it, and the next command does not inherit it", async () => {
   const standin = createModalStandin();
-  const provider = createModalProvider({ transport: standin.transport, appName: APP });
+  const { transport, starts } = recording(standin.transport);
+  const provider = createModalProvider({ transport, appName: APP });
   const handle = await openSandbox(provider, spec(), signal());
   const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-modal-cmdenv-'));
   const show = ['sh', '-c', 'printf "%s|%s" "$GH_PROMPT_DISABLED" "$TZ"'];
@@ -440,6 +441,12 @@ test("a command's own environment reaches it, and the next command does not inhe
     expect(second.outcome).toBe('succeeded');
     if (second.outcome === 'succeeded')
       expect(new TextDecoder().decode(second.record.preview)).toBe('|');
+    // The values went in a file the launcher read and removed, never in a process's words.
+    for (const exec of starts) expect(exec.argv.join(' ')).not.toContain('Europe/Paris');
+    expect(
+      starts.some((exec) => new TextDecoder().decode(exec.stdin).includes("TZ='Europe/Paris'")),
+    ).toBe(true);
+    await expect(provider.listFiles(handle, '/var/tmp/.melete-env', signal())).resolves.toEqual([]);
   } finally {
     await provider.destroy(handle, signal());
     await rm(workRoot, { recursive: true, force: true });

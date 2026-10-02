@@ -746,3 +746,16 @@ test('the adapter reads no credential or setting from its own environment', asyn
   expect(source).not.toContain('process.env');
   expect(source).not.toContain('Bun.env');
 });
+
+test("a command's environment travels in a file the launcher removes, never in its words", async () => {
+  const fixture = JSON.parse(await readFile(fixturePath('daytona env'), 'utf8')) as {
+    exchanges: { request: { path: string; body?: unknown } }[];
+  };
+  const commands = fixture.exchanges.filter((exchange) => exchange.request.path.endsWith('/exec'));
+  expect(commands.length).toBeGreaterThan(0);
+  for (const exchange of commands)
+    expect(JSON.stringify(exchange.request.body)).not.toContain('Europe/Paris');
+  expect(
+    fixture.exchanges.some((exchange) => exchange.request.path.includes('/files/upload')),
+  ).toBe(true);
+});
