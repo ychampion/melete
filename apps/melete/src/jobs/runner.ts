@@ -158,6 +158,13 @@ export class AttemptRunner {
    * recovery does it, and the wait below sees the result.
    */
   settleAbandoned?: (attemptId: string) => Promise<unknown>;
+  /**
+   * Whether a connection runs on the agent's own computer, where the broker
+   * runs in this process. An open outcome there is the agent's to check and
+   * never sends the turn to reconciliation. Unset, every connection counts as
+   * an outside effect.
+   */
+  ownComputer?: (connectionId: string) => boolean;
   readonly onFinished: Array<
     (
       tx: Transaction,
@@ -655,7 +662,13 @@ export class AttemptRunner {
     let artifactFailures: string[] = [];
     switch (outcome.kind) {
       case 'completed': {
-        const facts = await completionFacts(tx, row, outcome, this.options.artifactRoots);
+        const facts = await completionFacts(
+          tx,
+          row,
+          outcome,
+          this.options.artifactRoots,
+          this.ownComputer,
+        );
         artifactFailures = facts.artifact_failures;
         input = {
           kind: 'attempt_completed',

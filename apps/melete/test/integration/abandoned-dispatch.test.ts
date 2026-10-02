@@ -261,6 +261,43 @@ withDb('an action its tool call stopped waiting for', () => {
     expect(await attempts(row.id)).toHaveLength(1);
   });
 
+  test('an open step on the agent’s own computer completes the turn without asking the person', async () => {
+    const { handle, jobs } = fixture();
+    const { connectionId, row } = await setup();
+    const own = { ...slowCommand().connector, ownComputer: true };
+    const registry = new ConnectorRegistry().register(connectionId, own);
+    const broker = new BrokerService({ sql: handle.sql, connectors: registry });
+    const { runtime, starts } = impatientRuntime(async (bundle) => {
+      await handle.db.insert(action).values({
+        id: newId('act'),
+        jobId: bundle.attempt.job_id,
+        attemptId: bundle.attempt.id,
+        connectionId,
+        kind: 'test.slow',
+        effectClass: 'write_reversible',
+        canonicalPayload: { command: 'make' },
+        payloadHash: 'c'.repeat(64),
+        idempotencyKey: newId('act'),
+        status: 'dispatched',
+        dispatchedAt: new Date(),
+      });
+    }, 1_000);
+    const worker = runner(runtime);
+    worker.settleAbandoned = (attemptId) => broker.settleAbandoned(attemptId);
+    worker.ownComputer = (id) => registry.get(id)?.ownComputer === true;
+    await worker.handleWake(wake(row));
+
+    expect(starts).toHaveLength(1);
+    const [left] = await actions(row.id);
+    // Still unknown on the record, so a late receipt can land on it.
+    expect(left?.status).toBe('unknown');
+    const job = await jobs.get(row.id);
+    expect(job.state).toBe('completed');
+    expect(job.wait).toEqual({ kind: 'none' });
+    const [only] = await attempts(row.id);
+    expect(only?.outcome).toBe('completed');
+  });
+
   test('past the wait, an action still out rests the turn on its answer instead of re-running it', async () => {
     const { handle, jobs } = fixture();
     const { connectionId, row } = await setup();

@@ -878,6 +878,8 @@ export function evaluateCompletion(
   row: Pick<JobRow, 'id' | 'spaceId' | 'constraints'>,
   outcome: CompletedOutcome,
   records: CompletionRecords,
+  /** Whether a connection runs on the agent's own computer. */
+  ownComputer: (connectionId: string) => boolean = () => false,
 ): CompletionFacts {
   const declared = jobConstraints.parse(row.constraints).deliverable;
   const actions = records.actions.filter((candidate) => candidate.jobId === row.id);
@@ -933,13 +935,20 @@ export function evaluateCompletion(
         referencedActions.length + referencedArtifacts.length + referencedKnowledge.length > 0;
       break;
   }
+  const open = (candidate: CompletionAction) =>
+    candidate.status === 'unknown' || candidate.status === 'unresolved';
+  // A step on the agent's own computer whose outcome is open was the agent's to
+  // check, and it was told so. It neither holds the turn open nor asks the
+  // person; a late receipt still lands on the action.
+  const checkedByAgent = (candidate: CompletionAction) =>
+    open(candidate) && ownComputer(candidate.connectionId);
   return {
-    all_actions_terminal: actions.every((candidate) =>
-      (TERMINAL_ACTION_STATUSES as readonly string[]).includes(candidate.status),
+    all_actions_terminal: actions.every(
+      (candidate) =>
+        (TERMINAL_ACTION_STATUSES as readonly string[]).includes(candidate.status) ||
+        checkedByAgent(candidate),
     ),
-    has_unknown_action: actions.some(
-      (candidate) => candidate.status === 'unknown' || candidate.status === 'unresolved',
-    ),
+    has_unknown_action: actions.some((candidate) => open(candidate) && !checkedByAgent(candidate)),
     deliverable_declared: declared.kind !== 'none',
     deliverable_satisfied: satisfied,
     // Nothing is known about artifacts from records alone; the caller that
@@ -954,6 +963,7 @@ export async function completionFacts(
   row: JobRow,
   outcomeCompleted: CompletedOutcome,
   artifactRoots?: ArtifactRoots,
+  ownComputer?: (connectionId: string) => boolean,
 ): Promise<CompletionFacts> {
   const actions = await tx
     .select({
@@ -995,7 +1005,12 @@ export async function completionFacts(
           and(inArray(knowledgeRecord.id, knowledgeIds), eq(knowledgeRecord.spaceId, row.spaceId)),
         )
     : [];
-  const facts = evaluateCompletion(row, outcomeCompleted, { actions, artifacts, knowledge });
+  const facts = evaluateCompletion(
+    row,
+    outcomeCompleted,
+    { actions, artifacts, knowledge },
+    ownComputer,
+  );
   // A declared check that failed outranks a confident summary: the file is not
   // the thing it was promised to be, whatever the attempt said about it.
   const gate = await artifactGate(tx, row.id, artifactRoots);
