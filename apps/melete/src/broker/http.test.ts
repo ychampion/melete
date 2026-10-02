@@ -39,6 +39,11 @@ const broker: BrokerOperations = {
   async get() {
     throw new BrokerFault('action_not_found');
   },
+  async screenshot(c, id) {
+    if (id !== 'act_shot' || c.attempt_id !== claims.attempt_id)
+      throw new BrokerFault('action_not_found');
+    return { media_type: 'image/png', data: 'iVBORw0KGgo=' };
+  },
   async resume(c, id) {
     resumed.push({ attempt: c.attempt_id, id });
     throw new BrokerFault('revision_mismatch');
@@ -213,4 +218,14 @@ test('the failure line drops short keys, basic credentials and refresh tokens wi
     expect(line).not.toContain(secret);
     expect(line).toContain('broker POST /actions failed');
   }
+});
+
+test("a runtime reads its own screenshot's picture through the broker, under its capability", async () => {
+  const served = await app.request('/actions/act_shot/screenshot', { headers: auth() });
+  expect(served.status).toBe(200);
+  expect(await served.json()).toEqual({ media_type: 'image/png', data: 'iVBORw0KGgo=' });
+  expect((await app.request('/actions/act_shot/screenshot')).status).toBe(401);
+  expect((await app.request('/actions/act_other/screenshot', { headers: auth() })).status).toBe(
+    404,
+  );
 });

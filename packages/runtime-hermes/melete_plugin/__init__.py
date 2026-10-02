@@ -326,23 +326,27 @@ def _client_ref(name: str, arguments: Dict[str, Any], *, read: bool = False) -> 
     return f"{scope}:{name}:{digest}"
 
 
-def engine_result(name: str, result: Dict[str, Any]) -> Any:
+def engine_result(name: str, result: Dict[str, Any], client: Optional[BrokerClient] = None) -> Any:
     """What the engine's registry is handed for one result.
 
     A JSON string (tools/registry.py:792), except for a screenshot shown to a
     model that reads images: then the engine's multimodal envelope, which the
     registry passes through as it is (``_normalize_handler_result``).
     """
-    shaped = attach_picture(name, result)
+    shaped = attach_picture(name, result, getattr(client, "screenshot", None))
     if isinstance(shaped, dict) and shaped.get("_multimodal") is True:
         return shaped
     return json.dumps(result, ensure_ascii=False)
 
 
-def engine_handler(handler: Callable[..., Dict[str, Any]], name: str = "") -> Callable[..., Any]:
+def engine_handler(
+    handler: Callable[..., Dict[str, Any]],
+    name: str = "",
+    client: Optional[BrokerClient] = None,
+) -> Callable[..., Any]:
     """Serialize results; engine keyword metadata is not a connector payload."""
     def forward(args: Optional[Dict[str, Any]] = None, **_runtime_context: Any) -> Any:
-        return engine_result(name, handler(dict(args or {})))
+        return engine_result(name, handler(dict(args or {})), client)
 
     return forward
 
@@ -407,7 +411,7 @@ def register_tools(ctx: Any, client: BrokerClient) -> List[str]:
             # none belongs in the proposed payload. Registry results must be
             # JSON strings (tools/registry.py:792), not ordinary Python dicts,
             # or the engine's multimodal envelope for a screenshot.
-            return engine_result(name, forward(args))
+            return engine_result(name, forward(args), client)
 
         ctx.register_tool(
             name=name,

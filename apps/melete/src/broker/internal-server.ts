@@ -60,6 +60,7 @@ export function createInternalServer(options: {
     new BrokerService({
       sql: options.sql,
       connectors: options.connectors,
+      workRoot: options.artifactRoots?.workRoot,
       boss: options.boss,
       dispatchTimeoutMs: options.dispatchTimeoutMs,
       resolveAuthority: options.resolveAuthority,
