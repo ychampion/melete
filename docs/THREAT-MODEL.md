@@ -467,7 +467,8 @@ derived from the room and the person's account, both made by the service, so
 nobody chooses it or takes another's, and it is what identifies a speaker; the
 agent is told the name before it is self-chosen. A name is one line of plain
 text without `<`, `>` or `@`, so it cannot pass for a handle or an email, and
-where a name enters the agent's input it is quoted. No label carries an email;
+where a name enters the agent's input it is quoted; characters that read as
+`<`, `>` or `@` are refused as well. No label carries any part of an email;
 people who are not guests see emails only in the room's list of people. Each ask is its own request job, recorded with the person who asked, and only
 that person's words reach it: another member's message starts their own request
 or none, never touches someone else's, and so never withdraws their pending
@@ -493,7 +494,12 @@ never sets the password of an account that already exists: a guest already here
 accepts while signed in, and a full account is added by an owner instead. A
 guest's sign-in reaches only the room routes, its own account and a room's files
 and computer view; every other route refuses it before it runs, so a surface
-that was never taught about guests never serves one. Owner-only checks ask
+that was never taught about guests never serves one. The public routes that read
+a sign-in themselves refuse a guest too: a guest connects no assistant, an
+assistant's access names only a person, and no space of their own is ever made
+for anyone but a person. Memory scopes refuse a guest and anyone whose place has
+run out. A sweep that cannot end one guest's place says so and goes on to the
+next. Owner-only checks ask
 whether the signed-in person owns the space rather than whether it is a member, so a new
 role is never taken for an owner. A guest never answers a permission, has no
 people list and starts no work of their own. Adding a guest fences the room's

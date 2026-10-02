@@ -21,13 +21,14 @@ messages first (`DELETE /rooms/{id}/messages/{message}`). The room's owner
 cannot be removed.
 
 In a room every person is shown as the name they chose followed by the handle
-the room gives them, as in `Alice <k7q2mx>`, to the people in the room and to
-its agent. The handle is what tells people apart: nobody chooses it, nobody can
-take someone else's, and it differs from room to room. No label in a room
-carries an email. People who are not guests also see each other's email in the
+the room gives them, as in `Alice <k7q2mx3a>`, to the people in the room and
+to its agent. The handle is what tells people apart: nobody chooses it, nobody
+can take someone else's, and it differs from room to room. No label in a room
+carries any part of an email: someone who has not chosen a name is shown as
+`Someone` with their handle. People who are not guests also see each other's email in the
 room's list of people (`GET /rooms/{id}`). Each person sets their name with
-`PATCH /me`: one line of plain text, without `<`, `>` or `@`, and not a name
-someone else already goes by.
+`PATCH /me`: one line of plain text, without `<`, `>` or `@` or anything that
+reads as one, and not a name someone else already goes by.
 
 ## Guests
 
@@ -52,9 +53,9 @@ A guest:
   the room allows guests to ask (`guests_may_ask`);
 - never answers a permission: a guest's own request is answered by the room's
   owners;
-- has no people list, makes no rooms and starts no work of their own; every
-  route outside their rooms, their own account and a room's files is refused
-  with `guests_use_rooms`;
+- has no people list, no space of their own, makes no rooms, starts no work
+  and connects no assistant; every route outside their rooms, their own account
+  and a room's files is refused with `guests_use_rooms`;
 - sees no one's email.
 
 A guest's place in a room ends when the invite's days are up. From that moment
