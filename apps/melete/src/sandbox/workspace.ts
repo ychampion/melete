@@ -35,6 +35,33 @@ export type SyncReport = { files: number; directories: number; bytes: number };
 
 type WorkspaceLimits = { maxFiles: number; maxTotalBytes: number; maxFileBytes: number };
 
+/**
+ * Write one file under `<workRoot>/<job_id>`.
+ * @deprecated Use `LocalWorkspaceFs.write` from runtime/workspace-fs.ts.
+ */
+export function writeWorkspaceFile(
+  workRoot: string,
+  jobId: string,
+  relative: string,
+  bytes: Uint8Array,
+  mode: number,
+): Promise<void> {
+  return new LocalWorkspaceFs(workRoot).write(jobId, relative, bytes, mode);
+}
+
+/**
+ * Read one file under `<workRoot>/<job_id>`, refusing links and anything above `maxBytes`.
+ * @deprecated Use `LocalWorkspaceFs.read` from runtime/workspace-fs.ts.
+ */
+export function readWorkspaceFile(
+  workRoot: string,
+  jobId: string,
+  relative: string,
+  maxBytes: number,
+): Promise<Buffer> {
+  return new LocalWorkspaceFs(workRoot).read(jobId, relative, maxBytes);
+}
+
 function checkJob(jobId: string): void {
   if (!/^job_[A-Za-z0-9]+$/.test(jobId)) throw new Error('invalid trusted job scope');
 }
