@@ -496,10 +496,24 @@ export function mountRoomsMock(
       id: newId('perm'),
       conversation_id: request.job_id,
       what,
-      why: [waitingLine(room, request), 'To: agency@studio.example'],
+      why: [waitingLine(room, request), 'From: team@studio-mail.example'],
       options: ['allow_once', 'deny'],
       version: newId('ver'),
       preview: null,
+      // What would be sent, whole, so whoever answers reads it first.
+      draft: {
+        id: newId('drf'),
+        recipient: 'agency@studio.example',
+        channel: 'email',
+        subject: `Notes from ${room.name}`,
+        body: `Hello,
+
+Here are the notes from the room ${room.name}. The starter plan keeps its name.
+
+Thanks`,
+        connection_id: newId('conn'),
+        status: 'awaiting_permission',
+      },
       created_at: at,
       requested_by: author(room.id, request.requested_by),
       eligible_approvers: eligibleFor(room, request).map((id) => author(room.id, id)),
