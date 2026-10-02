@@ -173,3 +173,41 @@ test('a key with slashes behind a path, and a webhook address, stay hidden', () 
   ])
     expect(terminalText(line, 4000, 'first')).toBe('[hidden]');
 });
+
+test("the agent's processes show the running ones first, with a scrubbed last line", () => {
+  const process = (
+    id: string,
+    state: 'running' | 'exited' | 'lost',
+    minute: number,
+    line: string,
+  ) => ({
+    id,
+    name: `task ${id}`,
+    state,
+    started_at: at(minute),
+    created_at: at(minute),
+    port: id === 'prc_server' ? 5173 : null,
+    last_line: line,
+  });
+  const view = projectComputer({
+    rows: [],
+    bindings: [],
+    processes: [
+      process('prc_old', 'exited', 1, 'done'),
+      process('prc_server', 'running', 2, '\u001b[32mready\u001b[0m on http://localhost:5173'),
+      process('prc_lost', 'lost', 3, 'export API_TOKEN=sk-live-0123456789abcdef0123456789'),
+    ],
+    available,
+  });
+  expect(view.processes.map((each) => [each.id, each.state])).toEqual([
+    ['prc_server', 'running'],
+    ['prc_lost', 'lost'],
+    ['prc_old', 'exited'],
+  ]);
+  expect(view.processes[0]).toMatchObject({
+    port: 5173,
+    last_line: 'ready on http://localhost:5173',
+    can_preview: false,
+  });
+  expect(view.processes[1]?.last_line).toBe('[hidden]');
+});

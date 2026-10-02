@@ -13,7 +13,7 @@ import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
-import { JobService } from '../../src/jobs/service.ts';
+import { JobService, PROCESS_JOB_WALL_MS } from '../../src/jobs/service.ts';
 import { rejectionOf } from '../helpers/broker.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
@@ -304,5 +304,31 @@ withDb('durable jobs and contract transitions', () => {
 
     const titles = await handle.sql`select budget from job where title = 'Budget'`;
     expect(titles).toHaveLength(3);
+  });
+
+  test("a job whose agent's computer keeps background processes gets the wall time to use them", async () => {
+    const { jobs, handle } = fixture();
+    const agentId = newId('agent');
+    await handle.sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone, standing_instruction)
+      values (${agentId}, ${spaceId}, 'Agent', 'helper', 'blue', 'plain', 'black', 'calm', 'help')`;
+    const routine = (budget?: Record<string, number>) =>
+      jobs.transaction((tx) =>
+        jobs.createInTransaction(
+          tx,
+          { space_id: spaceId, title: 'Routine', objective: 'Run', ...(budget ? { budget } : {}) },
+          { kind: 'routine', agentId },
+        ),
+      );
+    expect((await routine()).budget).toMatchObject({ max_wall_ms: 120_000 });
+    const connectionId = newId('conn');
+    await handle.sql`insert into connection (id, space_id, provider, label, scopes)
+      values (${connectionId}, ${spaceId}, 'sandbox', 'Computer',
+        '["terminal.run","process.start"]'::jsonb)`;
+    expect((await routine()).budget).toMatchObject({ max_wall_ms: PROCESS_JOB_WALL_MS });
+    // A wall time the creator named is kept.
+    expect((await routine({ max_wall_ms: 90_000 })).budget).toMatchObject({ max_wall_ms: 90_000 });
+    // A revoked computer offers no processes.
+    await handle.sql`update connection set status = 'revoked' where id = ${connectionId}`;
+    expect((await routine()).budget).toMatchObject({ max_wall_ms: 120_000 });
   });
 });

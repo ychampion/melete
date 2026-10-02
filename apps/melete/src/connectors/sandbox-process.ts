@@ -95,7 +95,7 @@ const tool = (
 export const PROCESS_TOOLS: ToolManifest[] = [
   tool(
     'process.start',
-    "Start a long-running command in the agent's computer, in the background: a test suite, a build, a dev server. Use it for anything that may take longer than two minutes, and never background a terminal command with & or nohup, which is stopped and unrecorded. The process keeps running after this turn and this job, until it ends, is stopped, or reaches its time limit (two hours unless you say). Returns its id and its first output. Name a port when it is a server.",
+    "Start a command in the agent's computer in the background: a test suite, a build, a dev server, anything longer than two minutes. Never use & or nohup in a terminal command instead. It keeps running after this job until it ends, is stopped or reaches its time limit (two hours unless set). Returns its id and first output. Give port for a server.",
     schema(
       {
         command: { type: 'string', minLength: 1, maxLength: 20000 },
@@ -134,11 +134,12 @@ export const PROCESS_TOOLS: ToolManifest[] = [
   ),
   tool(
     'process.write',
-    "Type text into a running background process's input. Include a newline to end a line.",
+    "Type a line into a running background process's input. Enter is pressed after it unless newline is false.",
     schema(
       {
         process_id: processId,
         text: { type: 'string', minLength: 1, maxLength: PROCESS_LIMITS.write_max_bytes },
+        newline: { type: 'boolean' },
       },
       ['process_id', 'text'],
     ),
@@ -595,8 +596,11 @@ export function createProcessTools(options: ProcessToolOptions) {
         integer(payload, 'port', 1, 65_535);
         integer(payload, 'ttl_minutes', 1, PROCESS_LIMITS.max_ttl_minutes);
       }
-      if (action.kind === 'process.write')
+      if (action.kind === 'process.write') {
         string(payload, 'text', PROCESS_LIMITS.write_max_bytes, true);
+        if (payload.newline !== undefined && typeof payload.newline !== 'boolean')
+          throw new ProcessPayloadRefusal('newline must be true or false');
+      }
       if (action.kind === 'process.signal') {
         const which = payload.signal;
         if (!PROCESS_SIGNALS.includes(which as ProcessSignal))
@@ -621,7 +625,10 @@ export function createProcessTools(options: ProcessToolOptions) {
             const current = row as ProcessRow;
             if (!LIVE_STATES.includes(current.state))
               return refused(`The process has ended (${current.state}), so nothing was written`);
-            const text = new TextEncoder().encode(String(payload.text));
+            // Payload text is trimmed when it is admitted, so the line end is added here.
+            const text = new TextEncoder().encode(
+              `${String(payload.text)}${payload.newline === false ? '' : '\n'}`,
+            );
             const { written } = await computer.write(current.id, text, signal);
             return {
               outcome: 'succeeded',

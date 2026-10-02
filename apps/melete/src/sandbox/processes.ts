@@ -149,6 +149,10 @@ export type AdmitRequest = {
 };
 
 const DAY_MS = 86_400_000;
+/** How long a start may take to reach the computer before its missing directory means it never did. */
+const STARTING_GRACE_MS = 120_000;
+/** A time as Postgres reads it; the driver is given text, never a Date. */
+const iso = (ms: number) => new Date(ms).toISOString();
 
 /** The time the union of these intervals covers, in seconds. */
 export function coveredSeconds(intervals: readonly [number, number][]): number {
@@ -236,8 +240,8 @@ export class SandboxProcesses {
     const rows = await sql`select coalesce(started_at, created_at) as began, ended_at
       from sandbox_process
       where space_id = ${spaceId}
-        and (ended_at is null or ended_at > ${new Date(dayStart)})
-        and created_at < ${new Date(now)}`;
+        and (ended_at is null or ended_at > ${iso(dayStart)}::timestamptz)
+        and created_at < ${iso(now)}::timestamptz`;
     return coveredSeconds(
       rows.map((row) => [
         Math.max(new Date(row.began as string).getTime(), dayStart),
@@ -286,7 +290,7 @@ export class SandboxProcesses {
           ${request.connectionId}, ${request.sessionId}, ${request.jobId}, ${request.actionId},
           ${request.command}, ${request.commandDigest}, ${request.cwd}, ${request.name},
           ${request.port}, 'starting',
-          ${new Date(this.now().getTime() + ttl * 60_000)})
+          ${iso(this.now().getTime() + ttl * 60_000)}::timestamptz)
         returning *`;
       if (!row) throw new Error('the process row was not written');
       return { row: rowOf(row), repeated: false };
@@ -321,7 +325,7 @@ export class SandboxProcesses {
         exit_code = ${exitCode},
         end_reason = ${endReason},
         boot_id = coalesce(boot_id, ${boot}),
-        started_at = coalesce(started_at, ${facts.started ? new Date(facts.started) : null}),
+        started_at = coalesce(started_at, ${facts.started ? iso(facts.started) : null}::timestamptz),
         ended_at = case when ${state} in ('starting', 'running') then null
           else coalesce(ended_at, now()) end,
         output_cursor = greatest(output_cursor, ${facts.cursor}),
@@ -346,9 +350,10 @@ export class SandboxProcesses {
         ended_at = coalesce(ended_at, now()),
         output_cursor = greatest(output_cursor, ${facts?.cursor ?? 0}),
         last_line = coalesce(${facts?.last_line ?? null}, last_line)
-      where id = ${id}
+      where id = ${id} and state in ('starting', 'running')
       returning *`;
-    return row ? rowOf(row) : null;
+    // A row that ended meanwhile keeps the end it was given first.
+    return row ? rowOf(row) : this.get(id);
   }
 
   /** A later time limit, never past the longest from its start. */
@@ -356,7 +361,7 @@ export class SandboxProcesses {
     const minutes = Math.min(ttlMinutes, this.limits.maxTtlMinutes);
     const [row] = await this.sql`update sandbox_process set
         expires_at = least(
-          ${new Date(this.now().getTime() + minutes * 60_000)}::timestamptz,
+          ${iso(this.now().getTime() + minutes * 60_000)}::timestamptz,
           coalesce(started_at, created_at) + make_interval(mins => ${this.limits.maxTtlMinutes}))
       where id = ${id} and state in ('starting', 'running')
       returning *`;
@@ -381,6 +386,14 @@ export class SandboxProcesses {
       const facts = found.get(row.id);
       if (LIVE_STATES.includes(row.state)) {
         if (!facts) {
+          // A start still on its way to the computer has not made its directory yet.
+          if (
+            row.state === 'starting' &&
+            this.now().getTime() - row.createdAt.getTime() < STARTING_GRACE_MS
+          ) {
+            out.push(row);
+            continue;
+          }
           // A start whose helper never made the directory left nothing to find.
           out.push(
             (await this.close(row.id, 'lost', END_REASONS.vanished)) ?? { ...row, state: 'lost' },
