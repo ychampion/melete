@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attemptBundle } from '@melete/contracts';
+import { ASK_PERSON_TOOL } from '../../src/broker/ask-person.ts';
 import { META_TOOLS } from '../../src/broker/catalog.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { REACT_TOOL } from '../../src/connectors/catalog.ts';
@@ -97,10 +98,11 @@ afterAll(async () => {
     expect(first.skills.map((skill) => skill.name)).toEqual(['alpha', 'beta', 'gamma']);
     expect(first.knowledge).toHaveLength(2);
     expect(first.knowledge.every((item) => /@1$/.test(item.handle ?? ''))).toBe(true);
-    // The broker catalog leads with discovery and the reaction tool; the granted connector follows.
+    // The broker catalog leads with discovery, asking and the reaction tool; the granted connector follows.
     expect(first.tools.map((tool) => tool.name)).toEqual([
       'search_tools',
       'load_tool',
+      'ask_person',
       'react',
       'test.send',
     ]);
@@ -109,7 +111,7 @@ afterAll(async () => {
     expect(first.since_last.evidence.map((item) => item.kind)).toEqual(['source']);
     expect(other.skills).toEqual([]);
     expect(other.knowledge).toEqual([]);
-    expect(other.tools).toEqual([...META_TOOLS, REACT_TOOL]);
+    expect(other.tools).toEqual([...META_TOOLS, ASK_PERSON_TOOL, REACT_TOOL]);
     expect(other.since_last.evidence).toEqual([]);
     const seat = await head(db, a, 'pref.travel.seat');
     if (!seat) throw new Error('missing seat');

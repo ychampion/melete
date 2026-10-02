@@ -168,7 +168,11 @@ def build_handler(
                     "schema_fingerprint": loaded.get("schema_fingerprint"),
                     "instruction": "The tool is loaded. This run will continue with its schema.",
                 }
-            if connection_id is None and (name.startswith("skills.") or name in ("compose", "chase.follow_up")):
+            # ask_person records a question for the person; the broker decides
+            # whether it may be asked and the service makes the job wait on it.
+            if connection_id is None and (
+                name.startswith("skills.") or name in ("compose", "chase.follow_up", "ask_person")
+            ):
                 return client.call_native(name, arguments)
         except BrokerError as error:
             return refuse(error)

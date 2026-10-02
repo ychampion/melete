@@ -21,7 +21,7 @@ import {
 import { and, desc, eq, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { ServiceError } from '../api/errors.ts';
-import { attempt, experienceTurn, job, question } from '../db/schema.ts';
+import { agent, attempt, event, experienceTurn, job, question } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -44,6 +44,20 @@ export const PRIVACY_DECISION = 'privacy_decision';
 /** The consequence of ignoring a question the runtime did not describe itself. */
 export const UNANSWERED_CONSEQUENCE =
   'This responsibility stays waiting for your answer and makes no further progress until you reply.';
+
+/**
+ * How a picked option reads as the person's message. The label was written by
+ * the agent, so the message says it was chosen rather than passing the label
+ * off as the person's own words, and it carries a marker that memory and the
+ * reviewer read: an offered choice is never the person's own statement.
+ */
+export const chosenText = (label: string): string => `You chose: ${label}`;
+export type OfferedChoice = { id: string; label: string };
+const chosenMarker = (questionId: string, option: OfferedChoice) => ({
+  question_id: questionId,
+  option_id: option.id,
+  offered_by: 'agent',
+});
 
 /** The submission ID an answer is admitted under, so a resent answer wakes the job once. */
 export const answerKey = (questionId: string): string => `q:${questionId}`;
@@ -68,6 +82,7 @@ export function questionView(row: QuestionRow, jobTitle: string | null): OwnerQu
     key: row.key,
     text: [row.text, ...explanation].join('\n\n').slice(0, 4000),
     ...(row.options.length ? { options: row.options } : {}),
+    ...(row.why ? { why: row.why } : {}),
     because: handles.length > 0 ? handles : [`question:${row.id}`],
     if_ignored: row.ifIgnored,
     blocks_external_effect: row.blocksExternalEffect,
@@ -123,6 +138,11 @@ export type ResolveOptions = {
   askable: boolean;
   /** The frozen outcome's own question, when it has one. */
   fallback?: string;
+  /**
+   * The question the agent put to the person itself. It is the one asked when
+   * the job may ask: the agent ended its turn to wait for exactly this answer.
+   */
+  explicit?: QuestionSpecInput;
   now?: Date;
 };
 
@@ -150,15 +170,19 @@ export async function resolveQuestions(
           ),
         ]
       : [];
-  const pool = unique([...readDeferred(row), ...carried, ...derived]);
-  if (!options.askable) return { asked: null, deferred: pool };
+  const explicit = options.explicit ? questionCandidate(options.explicit, at) : null;
+  const pool = unique([...readDeferred(row), ...carried, ...derived]).filter(
+    (candidate) => candidate.text !== explicit?.text,
+  );
+  if (!options.askable) return { asked: null, deferred: explicit ? [explicit, ...pool] : pool };
   const [open] = await tx
     .select({ id: question.id })
     .from(question)
     .where(and(eq(question.jobId, row.id), eq(question.state, 'open')))
     .limit(1);
   // One open question per job. A second one waits rather than queue-jumping.
-  if (open) return { asked: null, deferred: pool };
+  if (open) return { asked: null, deferred: explicit ? [explicit, ...pool] : pool };
+  if (explicit) return { asked: explicit, deferred: pool };
   const [first, ...rest] = rankQuestions(pool);
   return { asked: first ?? null, deferred: rest };
 }
@@ -228,6 +252,7 @@ export async function persistQuestions(
       blocksExternalEffect: asked.blocks_external_effect,
       deadlineAt: asked.deadline_at ? new Date(asked.deadline_at) : null,
       options: asked.options ?? [],
+      why: asked.why ?? null,
       // A deferred question keeps the moment it was first raised, so waiting counts.
       createdAt: new Date(asked.created_at),
     });
@@ -290,6 +315,8 @@ export type AnswerResult = {
 /** The owner's single queue. Every entry belongs to a job; answering wakes that job alone. */
 export class QuestionService {
   private readonly answers = new Map<string, string>();
+  /** The option an answer in flight picked, by its submission ID. */
+  private readonly offered = new Map<string, OfferedChoice>();
 
   constructor(
     readonly jobs: JobService,
@@ -325,6 +352,14 @@ export class QuestionService {
       },
       answered ? 'answered' : 'superseded_by_input',
     );
+    const option = answered ? this.offered.get(receipt.submission_id) : undefined;
+    if (option)
+      await tx
+        .update(event)
+        .set({
+          payload: sql`${event.payload} || ${JSON.stringify({ chosen: chosenMarker(open.id, option) })}::jsonb`,
+        })
+        .where(eq(event.dedupKey, `${row.id}:input:${row.stateVersion}`));
   }
 
   private async read(id: string): Promise<{ row: QuestionRow; view: OwnerQuestion }> {
@@ -368,7 +403,12 @@ export class QuestionService {
                 and(isNull(question.jobId), ownedSpace(question.spaceId)),
               )
             : undefined,
-          or(isNull(question.jobId), notInArray(job.state, [...TERMINAL_STATES])),
+          // A question about an effect whose outcome is unknown outlives its job.
+          or(
+            isNull(question.jobId),
+            notInArray(job.state, [...TERMINAL_STATES]),
+            eq(question.blocksExternalEffect, true),
+          ),
         ),
       );
     const blocking = await this.blockingKeys(rows.map((row) => row.question));
@@ -550,11 +590,167 @@ export class QuestionService {
     return { question: after.view, job: resumed, receipt: null, status: 200 };
   }
 
-  async answer(id: string, input: unknown): Promise<AnswerResult> {
+  /**
+   * A routine rests on its schedule while its question waits, and a resting
+   * routine takes no message: its runs are the schedule's. The answer is
+   * recorded on the question, written into the routine's thread as the
+   * person's words, and wakes the routine for a run of its own. The next
+   * scheduled run comes when it is due either way.
+   */
+  private async answerRoutine(
+    current: { row: QuestionRow; view: OwnerQuestion },
+    answer: string,
+    option?: OfferedChoice,
+  ): Promise<AnswerResult> {
+    const text = option ? chosenText(option.label) : answer;
+    const key = answerKey(current.row.id);
+    if (current.row.state === 'answered' && current.row.answerSubmissionId === key)
+      return { question: current.view, job: null, receipt: null, status: 200 };
+    const jobId = current.row.jobId ?? '';
+    const resumed = await this.jobs.transaction(async (tx) => {
+      const row = await this.jobs.lock(tx, jobId);
+      if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
+      const speaker = requestPrincipal();
+      if (speaker) await requireJobAccess(tx, jobId, speaker);
+      const [open] = await tx
+        .select({ id: question.id })
+        .from(question)
+        .where(and(eq(question.id, current.row.id), eq(question.state, 'open')))
+        .for('update');
+      if (!open) throw new ServiceError('question_closed', 'This question is no longer open.', 409);
+      if (row.state !== 'waiting_for_event_or_time')
+        throw new ServiceError(
+          'turn_in_progress',
+          'This routine is running now. Answer once this run is over.',
+          409,
+        );
+      await closeOpen(
+        tx,
+        jobId,
+        { state: 'answered', answer, answerSubmissionId: key },
+        'answered',
+      );
+      // The run the answer starts is a turn in the routine's thread, like a
+      // scheduled one. A routine with no agent of its own speaks as the space's.
+      const [fallback] = row.agentId
+        ? []
+        : await tx
+            .select({ id: agent.id })
+            .from(agent)
+            .where(and(eq(agent.spaceId, row.spaceId), eq(agent.isDefault, true)));
+      const agentId = row.agentId ?? fallback?.id ?? null;
+      const turnId = agentId ? newId('turn') : null;
+      if (agentId && turnId)
+        await tx
+          .insert(experienceTurn)
+          .values({ id: turnId, jobId, agentId, submissionId: key, text });
+      await tx.update(job).set({ currentTurnId: turnId }).where(eq(job.id, jobId));
+      await this.recordAnswer(tx, row, current.row.id, text, option, speaker);
+      return this.jobs.move(
+        tx,
+        { ...row, currentTurnId: turnId },
+        { kind: 'event_fired' },
+        { reason: 'input', payload: { question_id: current.row.id } },
+      );
+    });
+    const after = await this.read(current.row.id);
+    return { question: after.view, job: resumed, receipt: null, status: 200 };
+  }
+
+  /** The person's answer as the job's next message, marked when it was an offered choice. */
+  private async recordAnswer(
+    tx: Transaction,
+    row: JobRow,
+    questionId: string,
+    text: string,
+    option: OfferedChoice | undefined,
+    speaker: string | null | undefined,
+  ) {
+    await appendEvent(tx, {
+      jobId: row.id,
+      type: 'notice',
+      payload: {
+        kind: 'user_message',
+        text,
+        principal_id: speaker ?? row.principalId ?? null,
+        ...(option ? { chosen: chosenMarker(questionId, option) } : {}),
+      },
+      dedupKey: `${questionId}:answer`,
+    });
+  }
+
+  /**
+   * An answer the job cannot take as input now: it waits for an approval, or
+   * it ended while the question asks about an effect whose outcome is unknown.
+   * The answer is recorded on the question and written as the person's message
+   * without moving the job, so the attempt that runs after the approval reads
+   * it, and nothing the approval decides is withdrawn by it.
+   */
+  private async answerAlongside(
+    current: { row: QuestionRow; view: OwnerQuestion },
+    answer: string,
+    option?: OfferedChoice,
+  ): Promise<AnswerResult> {
+    const key = answerKey(current.row.id);
+    if (current.row.state === 'answered' && current.row.answerSubmissionId === key)
+      return { question: current.view, job: null, receipt: null, status: 200 };
+    const jobId = current.row.jobId ?? '';
+    const held = await this.jobs.transaction(async (tx) => {
+      const row = await this.jobs.lock(tx, jobId);
+      if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
+      const speaker = requestPrincipal();
+      if (speaker) await requireJobAccess(tx, jobId, speaker);
+      const [open] = await tx
+        .select({ id: question.id })
+        .from(question)
+        .where(and(eq(question.id, current.row.id), eq(question.state, 'open')))
+        .for('update');
+      if (!open) throw new ServiceError('question_closed', 'This question is no longer open.', 409);
+      await closeOpen(
+        tx,
+        jobId,
+        { state: 'answered', answer, answerSubmissionId: key },
+        'answered',
+      );
+      await this.recordAnswer(
+        tx,
+        row,
+        current.row.id,
+        option ? chosenText(option.label) : answer,
+        option,
+        speaker,
+      );
+      return row;
+    });
+    const after = await this.read(current.row.id);
+    return { question: after.view, job: held, receipt: null, status: 200 };
+  }
+
+  /**
+   * `offered` names the option the person picked, when they picked one; the
+   * text is then the option's label and is recorded as a choice, not as words
+   * the person wrote.
+   */
+  async answer(id: string, input: unknown, offered?: OfferedChoice): Promise<AnswerResult> {
     const value = questionAnswerRequest.parse(input);
     const first = await this.read(id);
     if (first.row.source === 'memory') return this.settle(first, value);
     if (await this.isPrivacyQuestion(first.row)) return this.decidePrivacy(first, value.text);
+    const holder = first.row.jobId ? await this.jobs.get(first.row.jobId) : null;
+    if (holder?.kind === 'routine' && holder.state === 'waiting_for_event_or_time')
+      return this.answerRoutine(first, value.text, offered);
+    if (
+      holder &&
+      (holder.state === 'waiting_for_approval' ||
+        (isTerminal(holder.state as JobState) && first.row.blocksExternalEffect))
+    )
+      return this.answerAlongside(first, value.text, offered);
+    if (holder && ['running', 'queued'].includes(holder.state) && first.row.state === 'open')
+      throw new ServiceError(
+        'turn_in_progress',
+        'This is being worked on now. Answer once this step is over.',
+        409,
+      );
     const submissions = this.submissions;
     if (!submissions)
       throw new ServiceError('service_unavailable', 'Configure the submission service.', 503);
@@ -580,11 +776,17 @@ export class QuestionService {
         409,
       );
     this.answers.set(key, value.text);
+    if (offered) this.offered.set(key, offered);
     let result: Awaited<ReturnType<SubmissionService['input']>>;
     try {
-      result = await submissions.input(current.row.jobId, { text: value.text }, key);
+      result = await submissions.input(
+        current.row.jobId,
+        { text: offered ? chosenText(offered.label) : value.text },
+        key,
+      );
     } finally {
       this.answers.delete(key);
+      this.offered.delete(key);
     }
     const after = await this.read(id);
     return {

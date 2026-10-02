@@ -314,6 +314,13 @@ def test_a_chase_follow_up_is_forwarded_to_the_broker_native_gate(client, broker
     assert broker.requests[0]["body"] == {"name": "chase.follow_up", "arguments": {}}
 
 
+def test_a_question_for_the_person_is_forwarded_to_the_broker_native_gate(client, broker):
+    arguments = {"question": "Which day suits you?", "choices": ["Tuesday", "Thursday"]}
+    build_handler(client, {"name": "ask_person", "connection_id": None})(arguments)
+    assert broker.requests[0]["path"] == "/tools/call"
+    assert broker.requests[0]["body"] == {"name": "ask_person", "arguments": arguments}
+
+
 # -- calling ------------------------------------------------------------------
 
 

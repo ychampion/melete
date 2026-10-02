@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from 'bun:test';
 import type { Skill, ToolSpec } from '@melete/contracts';
+import { ASK_PERSON_TOOL } from '../../src/broker/ask-person.ts';
 import { signCapability } from '../../src/broker/capability.ts';
 import { accountToolName, META_TOOLS, ToolCatalog, toolTokens } from '../../src/broker/catalog.ts';
 import { COMPOSE_TOOL, createTestComposeExecutor } from '../../src/broker/compose.ts';
@@ -131,7 +132,7 @@ dbTest(
     const initial = await s.broker.catalog(s.claims);
     // Discovery leads the core; `react` is the one broker-owned tool always beside it.
     // Everything left outside is named, without a schema, on `load_tool`.
-    expect(withoutIndex(initial)).toEqual([...META_TOOLS, REACT_TOOL]);
+    expect(withoutIndex(initial)).toEqual([...META_TOOLS, ASK_PERSON_TOOL, REACT_TOOL]);
     expect(initial.find((tool) => tool.name === 'load_tool')?.description).toContain(
       'Not loaded yet: test.invoice (Find archived invoices by vendor); test.read (Perform read); test.send (Perform send).',
     );
@@ -187,7 +188,7 @@ dbTest(
     await s.sql`update job set lease_epoch = 2 where id = ${s.claims.job_id}`;
     expect(
       withoutIndex(await restarted.catalog({ ...s.claims, attempt_id: newId, epoch: 2 })),
-    ).toEqual([...META_TOOLS, REACT_TOOL]);
+    ).toEqual([...META_TOOLS, ASK_PERSON_TOOL, REACT_TOOL]);
     expect(await rejectionOf(restarted.discovery.load(s.claims, 'test.read'))).toMatchObject({
       code: 'stale_epoch',
     });
@@ -741,9 +742,11 @@ dbTest(
       catalog: { coreTokenBudget: budget },
     });
     const core = await broker.catalog(seed.claims);
+    // Asking the person rides beside the budget, like discovery.
     expect(core.map((entry) => entry.name)).toEqual([
       'search_tools',
       'load_tool',
+      'ask_person',
       'job.wait',
       'react',
       'test.beta',
@@ -760,9 +763,10 @@ dbTest(
       values (${next}, ${seed.claims.job_id}, 2, 'fake', 'fake', 'scripted')`;
     await db.sql`update job set lease_epoch = 2 where id = ${seed.claims.job_id}`;
     const later = await broker.catalog({ ...seed.claims, attempt_id: next, epoch: 2 });
-    expect(later.map((entry) => entry.name).slice(0, 3)).toEqual([
+    expect(later.map((entry) => entry.name).slice(0, 4)).toEqual([
       'search_tools',
       'load_tool',
+      'ask_person',
       'job.wait',
     ]);
     expect(later.map((entry) => entry.name)).toContain('test.send');

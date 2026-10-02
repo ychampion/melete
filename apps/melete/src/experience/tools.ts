@@ -778,6 +778,8 @@ const UNSHOWN = new Set([
   'search_tools',
   'load_tool',
   'resume_action',
+  // A question for the person is its own card in the conversation.
+  'ask_person',
   // In a cell every terminal command and poll is one broker `terminal.run` action,
   // which carries the command and its receipt.
   'terminal',

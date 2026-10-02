@@ -317,9 +317,13 @@ export const adapter = {
     }
   },
   questions: () => guard<{ questions: Question[] }>(() => api.GET('/quick-answers')),
-  answer: (id: string, option_id: string) =>
+  /** One of the offered answers by its id, or `{ text }` for an answer in the person's words. */
+  answer: (id: string, answer: string | { text: string }) =>
     guard<{ status: 'ok' }>(() =>
-      api.POST('/quick-answers/{id}', { ...path(id), body: { option_id } }),
+      api.POST('/quick-answers/{id}', {
+        ...path(id),
+        body: typeof answer === 'string' ? { option_id: answer } : { text: answer.text },
+      }),
     ).then(worthHearing),
 
   /* ---------- phone presence ---------- */

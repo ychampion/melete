@@ -139,9 +139,21 @@ export const experienceQuestion = z.strictObject({
   why: z.array(text),
   if_ignored: text,
   options: quickOptions,
+  /**
+   * Whether an answer in the person's own words is accepted beside the
+   * options. A question about which revision of a fact to keep, or whether a
+   * conversation may leave the device, takes one of its options only.
+   */
+  free_text: z.boolean(),
   /** When it was asked; the queue is oldest first. */
   created_at: date,
 });
+/** One of the offered answers by its id, or an answer in the person's own words. */
+export const quickAnswerRequest = z.union([
+  z.strictObject({ option_id: id }),
+  z.strictObject({ text: z.string().trim().min(1).max(2000) }),
+]);
+export type QuickAnswerRequest = z.infer<typeof quickAnswerRequest>;
 
 /** Every bound is required. The recipient is resolved from trusted evidence by the service. */
 export const standingRuleBounds = z.strictObject({
@@ -1018,7 +1030,7 @@ export const experienceOperations = {
   'DELETE /rules/{id}': { response: experienceOk },
   'GET /quick-answers': { response: z.strictObject({ questions: z.array(experienceQuestion) }) },
   'POST /quick-answers/{id}': {
-    request: z.strictObject({ option_id: id }),
+    request: quickAnswerRequest,
     response: experienceOk,
   },
   'GET /agents': { response: agentList },

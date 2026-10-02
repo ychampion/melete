@@ -56,6 +56,7 @@
       "step": "ask",
       "delay_ms": 500,
       "question": "Want me to hold the ryokan?",
+      "why": "Rooms that week go fast; a hold keeps it for 24 hours at no cost.",
       "options": [
         {
           "label": "Hold it",
