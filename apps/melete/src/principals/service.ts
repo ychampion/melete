@@ -13,7 +13,7 @@ import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { PolicyService } from '../jobs/policy.ts';
 import type { JobService } from '../jobs/service.ts';
-import { spaceAuthority } from './authority.ts';
+import { principalContext, spaceAuthority } from './authority.ts';
 
 export const membershipView = (row: typeof spaceMembership.$inferSelect) =>
   membershipContract.parse({
@@ -194,7 +194,11 @@ export class PrincipalService {
         sql`update memory_action_basis b set items = '[]'::jsonb from job j
           where b.space_id = ${spaceId} and j.id = b.job_id and j.principal_id = ${memberId}`,
       );
-      const controls = await fenceRoster(tx, spaceId, generation, jobs);
+      // The fence is the service's own work, already authorized above: someone
+      // leaving is no longer in the space whose work it fences.
+      const controls = await principalContext.exit(() =>
+        fenceRoster(tx, spaceId, generation, jobs),
+      );
       // The member's own jobs end with their access. A room's requests belong to
       // the room, not to the member, and start again under the new roster.
       const affected = await tx
