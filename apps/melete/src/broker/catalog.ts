@@ -219,6 +219,12 @@ export function selectCore(
   if (!Number.isSafeInteger(budget) || budget < toolTokens(META_TOOLS))
     throw new Error('Core catalog budget cannot hold discovery tools');
   const tools = structuredClone(META_TOOLS);
+  // The tools long work runs on are how its shifts work, not entries
+  // competing for the catalog: they get room of their own on top of it.
+  const harness = items.filter(
+    (item) => item.tool.connection_id === null && RUN_TOOL_NAMES.includes(item.tool.name),
+  );
+  if (harness.length) budget += toolTokens(harness.map((item) => item.tool));
   const query = terms(context.text ?? '');
   const scored = items
     .filter((item) => item.entry.health !== 'failing')
