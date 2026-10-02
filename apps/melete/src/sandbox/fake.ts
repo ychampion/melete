@@ -45,6 +45,8 @@ export const FAKE_CAPABILITIES: SandboxCapabilities = {
   maxIdleSeconds: null,
   streaming: false,
   reattach: 'marker_only',
+  // Away from the old root, so reading a marker left there is exercised too.
+  markerRoot: '/home/agent/.melete/exec',
   ports: 'none',
   image: 'template',
   billing: 'per_second',
@@ -166,14 +168,16 @@ export class FakeFs {
       return;
     }
     let prefix = '';
-    for (const part of FakeFs.normalize(value).split('/').filter(Boolean)) {
+    const parts = FakeFs.normalize(value).split('/').filter(Boolean);
+    for (const [index, part] of parts.entries()) {
       prefix += `/${part}`;
       const target = this.resolve(prefix, true);
       const existing = this.nodes.get(target);
       if (existing?.kind === 'dir') continue;
       if (existing) throw new FsError('EEXIST', target);
       this.parentOf(target);
-      this.nodes.set(target, { kind: 'dir', mode });
+      // As `mkdir -p -m`: the mode is the last directory's; the ones made on the way get the default.
+      this.nodes.set(target, { kind: 'dir', mode: index === parts.length - 1 ? mode : 0o755 });
     }
   }
 
@@ -790,9 +794,18 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
     }
     case 'mkdir': {
       const parents = args.includes('-p');
-      for (const dir of args.filter((arg) => arg !== '-p' && arg !== '--')) {
+      const modeAt = args.indexOf('-m');
+      const mode = modeAt >= 0 ? Number.parseInt(args[modeAt + 1] ?? '', 8) : null;
+      if (mode !== null && Number.isNaN(mode)) return fail('invalid mode', 1);
+      const dirs = args.filter(
+        (arg, index) =>
+          arg !== '-p' &&
+          arg !== '--' &&
+          (modeAt < 0 || (index !== modeAt && index !== modeAt + 1)),
+      );
+      for (const dir of dirs) {
         try {
-          fs.mkdir(path(dir), parents);
+          fs.mkdir(path(dir), parents, mode ?? undefined);
         } catch (error) {
           err(`cannot create directory '${dir}': ${(error as FsError).code ?? 'error'}`);
           return 1;
@@ -1142,7 +1155,13 @@ export class FakeSandboxEngine {
     sandbox: FakeSandbox,
     argv: readonly string[],
     /** Bytes to deliver and close, or `open` to leave stdin for later writes. */
-    options: { cwd: string; stdin?: Uint8Array | 'open'; onOutput: Sink },
+    options: {
+      cwd: string;
+      stdin?: Uint8Array | 'open';
+      onOutput: Sink;
+      /** Set on this process over the sandbox's environment. */
+      env?: Readonly<Record<string, string>>;
+    },
   ): FakeProcess {
     sandbox.nextPid += 1;
     const pid = sandbox.nextPid;
@@ -1164,7 +1183,7 @@ export class FakeSandboxEngine {
       vars: new Map(),
       status: 0,
       positional: ['sh'],
-      environment: { ...sandbox.env },
+      environment: { ...sandbox.env, ...options.env },
     };
     void (async () => {
       let result: { exitCode: number | null; killed: boolean };
@@ -1285,6 +1304,7 @@ export class FakeSandboxProvider implements SandboxProvider {
       cwd: spec.cwd,
       stdin: spec.stdin,
       onOutput: (bytes) => channel.push(bytes),
+      ...(spec.env ? { env: spec.env } : {}),
     });
     let timedOut = false;
     const timer = setTimeout(() => {

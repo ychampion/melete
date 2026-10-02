@@ -49,7 +49,7 @@
 import { createHash } from 'node:crypto';
 import { isIPv4 } from 'node:net';
 import { LABEL_OWNER, LABEL_PROJECT, LABEL_SESSION, ownedLabels } from '../manifest.ts';
-import { reattachByMarker, shellQuote } from '../marker.ts';
+import { reattachByMarker, shellQuote, VAR_TMP_MARKER_ROOT } from '../marker.ts';
 import {
   type EgressPolicy,
   type ExecOutcome,
@@ -140,6 +140,8 @@ export function daytonaCapabilities(): SandboxCapabilities {
     maxIdleSeconds: null,
     streaming: false,
     reattach: 'marker_only',
+    // `/var/tmp` is on the sandbox's disk, which a stop keeps.
+    markerRoot: VAR_TMP_MARKER_ROOT,
     ports: 'authenticated',
     image: 'template',
     billing: 'per_second',
@@ -736,6 +738,7 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
         spec.cwd,
         stdinPath,
         ...hide.flatMap((name) => ['-u', name]),
+        ...Object.entries(spec.env ?? {}).map(([key, value]) => `${key}=${value}`),
         'timeout',
         '-s',
         'KILL',

@@ -33,7 +33,7 @@
  * stores the `melete.*` labels with `_` for `.` and reads them back the same way.
  */
 import { LABEL_SESSION, ownedLabels } from '../manifest.ts';
-import { reattachByMarker } from '../marker.ts';
+import { reattachByMarker, VAR_TMP_MARKER_ROOT } from '../marker.ts';
 import {
   type ExecOutcome,
   type ExecSpec,
@@ -84,6 +84,8 @@ export function modalCapabilities(): SandboxCapabilities {
     maxIdleSeconds: 86_400,
     streaming: false,
     reattach: 'marker_only',
+    // `/var/tmp` is on the sandbox's filesystem, which a snapshot keeps.
+    markerRoot: VAR_TMP_MARKER_ROOT,
     ports: 'none',
     image: 'registry',
     billing: 'per_second',
@@ -344,6 +346,7 @@ export function createModalProvider(options: ModalOptions): ModalSandboxProvider
               'melete-launch',
               spec.cwd,
               ...hide.flatMap((name) => ['-u', name]),
+              ...Object.entries(spec.env ?? {}).map(([key, value]) => `${key}=${value}`),
               'timeout',
               '-s',
               'KILL',

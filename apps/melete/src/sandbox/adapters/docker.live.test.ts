@@ -332,6 +332,51 @@ if (!live) {
     });
   });
 
+  describe('docker sandbox live: command markers', () => {
+    test('a command interrupted by an idle stop keeps its marker and is reported from it', async () => {
+      let now = Date.now();
+      const engine = new LossyDocker();
+      const clocked = new DockerSandboxHost(settings({ idleSeconds: 60 }), engine, {
+        now: () => now,
+      });
+      const handle = await open({ kind: 'deny_all' }, clocked);
+      const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-docker-live-marker-'));
+      const request = {
+        marker: 'act_LIVEIDLESTOP00000000000',
+        argv: ['sh', '-c', 'sleep 3; printf finished'],
+        timeoutMs: 30_000,
+      };
+      const run = (dispatch: 'first' | 'again') =>
+        runCommand({
+          provider: clocked,
+          handle,
+          request: { ...request, dispatch },
+          workRoot,
+          jobId: 'job_LIVE',
+          signal: signal(),
+        });
+      try {
+        // The answer is lost while the command runs, so its outcome is open.
+        engine.loseNext('after_start');
+        expect((await run('first')).outcome).toBe('unknown');
+        await delay(5_000);
+        // Then nobody uses the computer, and the idle clock stops it.
+        now += 61_000;
+        expect(await clocked.reap(signal())).toContain(handle.providerSandboxId);
+        expect(await clocked.running(handle, signal())).toBe(false);
+        const again = await run('again');
+        process.stdout.write(`docker live, after the idle stop: ${again.outcome}${'reason' in again ? `, ${again.reason}` : ''}\n`);
+        expect(again).toMatchObject({ outcome: 'succeeded', late: true, reattached: true });
+        if (again.outcome !== 'succeeded') return;
+        expect(again.record.exitCode).toBe(0);
+        expect(text(again.record.preview)).toBe('finished');
+      } finally {
+        clocked.stopReaper();
+        await rm(workRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe.skipIf(!withDesktop)('docker sandbox live: the desktop', () => {
     const PAGE = `<!doctype html><title>ready</title>
 <body style="margin:0">

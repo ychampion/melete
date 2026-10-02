@@ -152,7 +152,11 @@ export function sandboxConformance(
                   existing.handle,
                   {
                     marker: RESET_MARKER,
-                    argv: ['/bin/sh', '-c', 'rm -rf /var/tmp/.melete-exec /work && mkdir -p /work'],
+                    argv: [
+                      '/bin/sh',
+                      '-c',
+                      `rm -rf ${subject.provider.capabilities.markerRoot} /work && mkdir -p /work`,
+                    ],
                     cwd: '/',
                     timeoutMs: 60_000,
                     maxOutputBytes: 4096,
@@ -256,7 +260,7 @@ export function sandboxConformance(
       expect(state?.state).toBe('lost');
       const out = await context.provider.getFile(
         handle,
-        `/var/tmp/.melete-exec/${MARKER}/out`,
+        `${context.provider.capabilities.markerRoot}/${MARKER}/out`,
         1024,
         signal(),
       );
@@ -345,7 +349,7 @@ export function sandboxConformance(
         const argv = [
           'sh',
           '-c',
-          `rm -rf /var/tmp/.melete-exec/${MARKER}; printf once >> /work/counter; sleep 2; printf done`,
+          `rm -rf ${context.provider.capabilities.markerRoot}/${MARKER}; printf once >> /work/counter; sleep 2; printf done`,
         ];
         context.subject.loseNextAcknowledgement('after_start');
         const lost = await context.run(handle, argv);

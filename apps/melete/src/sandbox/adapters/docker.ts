@@ -50,6 +50,8 @@ const MiB = 1024 * 1024;
 export const DOCKER_SANDBOX_UID = 10004;
 export const DOCKER_SANDBOX_HOME = '/home/agent';
 export const DOCKER_SANDBOX_WORK = '/work';
+/** Command markers, on the home volume so they outlive an idle stop. */
+export const DOCKER_MARKER_ROOT = `${DOCKER_SANDBOX_HOME}/.melete/exec`;
 /** The desktop matches the live view's viewport, so a frame and an input need no scaling. */
 export const DOCKER_DESKTOP = { width: 1024, height: 768 } as const;
 const OWNER = 'com.melete.sandbox';
@@ -120,6 +122,8 @@ export function dockerCapabilities(): SandboxCapabilities {
     maxIdleSeconds: null,
     streaming: false,
     reattach: 'marker_only',
+    // On the home volume: `/var/tmp` is in memory and goes with an idle stop.
+    markerRoot: DOCKER_MARKER_ROOT,
     ports: 'none',
     image: 'registry',
     billing: 'per_second',
@@ -464,6 +468,8 @@ export class DockerSandboxHost implements DockerSandboxProvider {
       maxStderr: number;
       onStdout?: (bytes: Uint8Array) => void;
       deadlineMs?: number;
+      /** `NAME=value` words set on this exec only. */
+      env?: readonly string[];
     },
   ): Promise<{ exitCode: number | null; capture: ExecCapture; durationMs: number }> {
     let id: string;
@@ -475,6 +481,7 @@ export class DockerSandboxHost implements DockerSandboxProvider {
         Tty: false,
         Cmd: argv,
         WorkingDir: '/',
+        ...(options.env?.length ? { Env: [...options.env] } : {}),
       })) as { Id?: string };
       if (!created?.Id || !/^[a-f0-9]{64}$/.test(created.Id))
         throw new Error('the engine did not name the exec');
@@ -720,6 +727,7 @@ export class DockerSandboxHost implements DockerSandboxProvider {
         maxStdout: spec.maxOutputBytes,
         maxStderr: spec.maxOutputBytes,
         deadlineMs: spec.timeoutMs + KILL_GRACE_MS,
+        env: Object.entries(spec.env ?? {}).map(([key, value]) => `${key}=${value}`),
       });
     } catch (error) {
       const phase = (error as { phase?: string }).phase;

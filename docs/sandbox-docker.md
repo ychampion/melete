@@ -127,6 +127,10 @@ by default) is stopped. The next command, file operation, desktop action or
 live view starts it again. Files on its volumes persist; running processes and
 the open browser do not. Watching the desktop counts as use.
 
+Each command's record (its output and exit status) is kept under
+`/home/agent/.melete/exec`, on the home volume, so a command whose answer was
+lost is still reported from that record after an idle stop.
+
 A suspended workspace nobody resumes is removed after
 `MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS`, as with the other providers.
 

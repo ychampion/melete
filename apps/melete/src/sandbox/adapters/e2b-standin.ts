@@ -315,7 +315,7 @@ export function createE2bStandin(
       return connectError(415, 'invalid_argument', 'expected application/connect+json');
     const [first] = decodeEnvelopes(bodyBytes(init.body));
     const request = first?.message as {
-      process?: { cmd?: string; args?: string[]; cwd?: string };
+      process?: { cmd?: string; args?: string[]; cwd?: string; envs?: Record<string, string> };
       stdin?: boolean;
     };
     const deadline = Number(headers.get('connect-timeout-ms') ?? '0');
@@ -348,6 +348,7 @@ export function createE2bStandin(
           cwd,
           stdin: request.stdin ? 'open' : undefined,
           onOutput: output,
+          ...(request.process?.envs ? { env: request.process.envs } : {}),
         });
         send(encodeEnvelope({ event: { start: { pid: child.pid } } }));
         begun = true;

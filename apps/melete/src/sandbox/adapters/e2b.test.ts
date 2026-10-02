@@ -326,6 +326,52 @@ test('stdin reaches a marked command once', async () => {
   }
 });
 
+test("a command's own environment reaches it, and the next command does not inherit it", async () => {
+  const subject = await fixtureSubject('e2b env');
+  const handle = await openSandbox(subject.provider, spec(), signal());
+  const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-e2b-env-'));
+  const show = ['sh', '-c', 'printf "%s|%s" "$GH_PROMPT_DISABLED" "$TZ"'];
+  try {
+    const first = await runCommand({
+      provider: subject.provider,
+      handle,
+      request: {
+        marker: 'act_01J0E2BENV00000000000000',
+        argv: show,
+        env: { GH_PROMPT_DISABLED: '1', TZ: 'Europe/Paris' },
+        timeoutMs: 20_000,
+        dispatch: 'first',
+      },
+      workRoot,
+      jobId: 'job_E2BENV',
+      signal: signal(),
+    });
+    expect(first.outcome).toBe('succeeded');
+    if (first.outcome === 'succeeded')
+      expect(new TextDecoder().decode(first.record.preview)).toBe('1|Europe/Paris');
+    const second = await runCommand({
+      provider: subject.provider,
+      handle,
+      request: {
+        marker: 'act_01J0E2BENV00000000000001',
+        argv: show,
+        timeoutMs: 20_000,
+        dispatch: 'first',
+      },
+      workRoot,
+      jobId: 'job_E2BENV',
+      signal: signal(),
+    });
+    expect(second.outcome).toBe('succeeded');
+    if (second.outcome === 'succeeded')
+      expect(new TextDecoder().decode(second.record.preview)).toBe('|');
+  } finally {
+    await subject.provider.destroy(handle, signal());
+    await rm(workRoot, { recursive: true, force: true });
+    await subject.close();
+  }
+});
+
 test('a domain allow-list is refused before E2B is called', async () => {
   let calls = 0;
   const provider = createE2bProvider({

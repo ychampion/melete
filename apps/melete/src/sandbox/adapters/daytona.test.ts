@@ -446,6 +446,52 @@ test('stdin reaches a marked command once', async () => {
   }
 });
 
+test("a command's own environment reaches it, and the next command does not inherit it", async () => {
+  const subject = await fixtureSubject('daytona env');
+  const handle = await openSandbox(subject.provider, spec(), signal());
+  const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-daytona-env-'));
+  const show = ['sh', '-c', 'printf "%s|%s" "$GH_PROMPT_DISABLED" "$TZ"'];
+  try {
+    const first = await runCommand({
+      provider: subject.provider,
+      handle,
+      request: {
+        marker: 'act_01J0DAYTONAENV000000000',
+        argv: show,
+        env: { GH_PROMPT_DISABLED: '1', TZ: 'Europe/Paris' },
+        timeoutMs: 20_000,
+        dispatch: 'first',
+      },
+      workRoot,
+      jobId: 'job_DAYTONAENV',
+      signal: signal(),
+    });
+    expect(first.outcome).toBe('succeeded');
+    if (first.outcome === 'succeeded')
+      expect(new TextDecoder().decode(first.record.preview)).toBe('1|Europe/Paris');
+    const second = await runCommand({
+      provider: subject.provider,
+      handle,
+      request: {
+        marker: 'act_01J0DAYTONAENV000000001',
+        argv: show,
+        timeoutMs: 20_000,
+        dispatch: 'first',
+      },
+      workRoot,
+      jobId: 'job_DAYTONAENV',
+      signal: signal(),
+    });
+    expect(second.outcome).toBe('succeeded');
+    if (second.outcome === 'succeeded')
+      expect(new TextDecoder().decode(second.record.preview)).toBe('|');
+  } finally {
+    await subject.provider.destroy(handle, signal());
+    await rm(workRoot, { recursive: true, force: true });
+    await subject.close();
+  }
+});
+
 test("the toolbox's answers decide whether a command started", async () => {
   let markers = 0;
   const exec = (argv = ['sh', '-c', 'exit 0'], timeoutMs = 5_000): ExecSpec => {

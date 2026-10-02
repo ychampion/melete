@@ -32,7 +32,7 @@
  * action the service records before dispatch.
  */
 import { createHash } from 'node:crypto';
-import { EXEC_LIMITS } from '@melete/contracts';
+import { EXEC_LIMITS, execEnvRefusal } from '@melete/contracts';
 import {
   type ExecOutcome,
   type FileEntry,
@@ -46,7 +46,13 @@ import {
 } from './types.ts';
 import { readWorkspaceFile, SANDBOX_WORKDIR, writeWorkspaceFile } from './workspace.ts';
 
-export const MARKER_ROOT = '/var/tmp/.melete-exec';
+/**
+ * The marker root where `/var/tmp` lives on the sandbox's own disk, and where
+ * every adapter kept its markers before the root became a per-adapter setting.
+ * A marker not found under the adapter's root is looked for here as well, so a
+ * command dispatched before an upgrade is still read from its marker.
+ */
+export const VAR_TMP_MARKER_ROOT = '/var/tmp/.melete-exec';
 export const REENTERED_EXIT = 111;
 export const REENTERED_MESSAGE = 'melete_exec_reentered';
 /**
@@ -58,6 +64,7 @@ export const MARKER_SETUP_EXIT = 112;
 export const RESERVED_STATUS_EXIT = 113;
 
 const MARKER = /^[A-Za-z0-9_-]{1,64}$/;
+const ROOT = /^(\/[A-Za-z0-9_.-]+)+$/;
 const EMPTY = new Uint8Array(0);
 const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 const text = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
@@ -67,7 +74,15 @@ export function checkMarker(marker: string): string {
   return marker;
 }
 
-export const markerDirectory = (marker: string): string => `${MARKER_ROOT}/${checkMarker(marker)}`;
+/** An absolute path with plain segments, so it needs no quoting and cannot climb out. */
+export function checkMarkerRoot(root: string): string {
+  if (!ROOT.test(root) || root.split('/').some((part) => part === '.' || part === '..'))
+    throw new Error('a marker root must be an absolute path of plain segments');
+  return root;
+}
+
+export const markerDirectory = (root: string, marker: string): string =>
+  `${checkMarkerRoot(root)}/${checkMarker(marker)}`;
 
 /** POSIX single quoting: the only character that needs care is the quote itself. */
 export function shellQuote(value: string): string {
@@ -79,13 +94,13 @@ export function shellQuote(value: string): string {
  * The wrapped argv the adapter runs. `argv` is the admitted command, quoted
  * word by word; nothing in it is interpreted by the wrapper's own shell.
  */
-export function markCommand(marker: string, argv: readonly string[]): string[] {
-  const directory = markerDirectory(marker);
+export function markCommand(root: string, marker: string, argv: readonly string[]): string[] {
+  const directory = markerDirectory(root, marker);
   if (argv.length === 0) throw new Error('an admitted command needs at least one word');
   const command = argv.map(shellQuote).join(' ');
   const script = [
     `d=${directory}`,
-    `mkdir -p ${MARKER_ROOT} || exit ${MARKER_SETUP_EXIT}`,
+    `mkdir -p -m 0700 ${root} || exit ${MARKER_SETUP_EXIT}`,
     `mkdir "$d" 2>/dev/null || { echo ${REENTERED_MESSAGE} >&2; exit ${REENTERED_EXIT}; }`,
     `( ${command} ) > "$d/out" 2>&1`,
     'ec=$?',
@@ -101,24 +116,45 @@ export function markCommand(marker: string, argv: readonly string[]): string[] {
 const regular = (entries: FileEntry[], name: string) =>
   entries.find((entry) => entry.path === name && !entry.directory && !entry.symlink);
 
+type MarkerReader = Pick<SandboxProvider, 'capabilities' | 'listFiles' | 'getFile'>;
+
+/**
+ * Find an action's marker directory: under the adapter's root, or else under
+ * the root every adapter used before, for a command dispatched before an
+ * upgrade. Null when neither holds one.
+ */
+export async function locateMarker(
+  provider: MarkerReader,
+  handle: SandboxHandle,
+  marker: string,
+  signal: AbortSignal,
+): Promise<{ directory: string; entries: FileEntry[] } | null> {
+  const root = provider.capabilities.markerRoot;
+  const roots = root === VAR_TMP_MARKER_ROOT ? [root] : [root, VAR_TMP_MARKER_ROOT];
+  for (const each of roots) {
+    const directory = markerDirectory(each, marker);
+    try {
+      return { directory, entries: await provider.listFiles(handle, directory, signal) };
+    } catch (error) {
+      if (!(error instanceof SandboxFileNotFound)) throw error;
+    }
+  }
+  return null;
+}
+
 /**
  * Reattach by reading the marker directory. Adapters with no native way to
  * reconnect to a process use this as their `reattach`.
  */
 export async function reattachByMarker(
-  provider: Pick<SandboxProvider, 'listFiles' | 'getFile'>,
+  provider: MarkerReader,
   handle: SandboxHandle,
   marker: string,
   signal: AbortSignal,
 ): Promise<ExecOutcome | null> {
-  const directory = markerDirectory(marker);
-  let entries: FileEntry[];
-  try {
-    entries = await provider.listFiles(handle, directory, signal);
-  } catch (error) {
-    if (error instanceof SandboxFileNotFound) return null;
-    throw error;
-  }
+  const found = await locateMarker(provider, handle, marker, signal);
+  if (!found) return null;
+  const { directory, entries } = found;
   const base = {
     started: 'yes' as const,
     signal: null,
@@ -143,6 +179,8 @@ export type CommandRequest = {
   stdin?: Uint8Array;
   /** `again` when this action was dispatched before: it is reattached, never run. */
   dispatch: 'first' | 'again';
+  /** Set on this command only; names outside `EXEC_ENV_NAMES` are refused before it is sent. */
+  env?: Readonly<Record<string, string>>;
 };
 
 export type ExecutionRecord = {
@@ -190,12 +228,12 @@ const settings = (options: RunOptions) => ({
 /** The service reads, hashes and, above the preview cap, stores the output itself. */
 async function capture(
   options: RunOptions,
+  directory: string,
   entries: FileEntry[],
   facts: Pick<ExecutionRecord, 'exitCode' | 'signal' | 'timedOut' | 'durationMs'>,
   signal: AbortSignal,
 ): Promise<ExecutionRecord> {
   const { maxOutputBytes, maxCaptureBytes } = settings(options);
-  const directory = markerDirectory(options.request.marker);
   const out = regular(entries, 'out');
   const listed = out?.size ?? 0;
   const captured =
@@ -264,10 +302,12 @@ async function fromMarker(
       reason: `${cause}; the command started and has no exit record, so it is not run again`,
     };
   try {
-    const entries = await provider.listFiles(handle, markerDirectory(request.marker), signal);
+    const found = await locateMarker(provider, handle, request.marker, signal);
+    if (!found) throw new Error('the marker is no longer there');
     const record = await capture(
       options,
-      entries,
+      found.directory,
+      found.entries,
       { exitCode: state.exitCode, signal: null, timedOut: false, durationMs: null },
       signal,
     );
@@ -288,6 +328,11 @@ const reentered = (outcome: ExecOutcome): boolean =>
 export async function runCommand(options: RunOptions): Promise<CommandResult> {
   const { provider, handle, request } = options;
   checkMarker(request.marker);
+  const root = provider.capabilities.markerRoot;
+  const directory = markerDirectory(root, request.marker);
+  const env = request.env ?? {};
+  const refused = execEnvRefusal(env);
+  if (refused) return { outcome: 'failed', retryable: false, reason: refused };
   if (request.dispatch === 'again')
     return fromMarker(options, 'this action was dispatched before', 'unknown');
   let outcome: ExecOutcome;
@@ -296,11 +341,12 @@ export async function runCommand(options: RunOptions): Promise<CommandResult> {
       handle,
       {
         marker: request.marker,
-        argv: markCommand(request.marker, request.argv),
+        argv: markCommand(root, request.marker, request.argv),
         cwd: request.cwd ?? SANDBOX_WORKDIR,
         timeoutMs: request.timeoutMs,
         maxOutputBytes: 4096,
         ...(request.stdin ? { stdin: request.stdin } : {}),
+        ...(Object.keys(env).length > 0 ? { env } : {}),
       },
       options.signal,
     );
@@ -329,7 +375,7 @@ export async function runCommand(options: RunOptions): Promise<CommandResult> {
   const signal = AbortSignal.timeout(settings(options).probeTimeoutMs);
   let entries: FileEntry[];
   try {
-    entries = await provider.listFiles(handle, markerDirectory(request.marker), signal);
+    entries = await provider.listFiles(handle, directory, signal);
   } catch (error) {
     if (!(error instanceof SandboxFileNotFound))
       return {
@@ -351,13 +397,12 @@ export async function runCommand(options: RunOptions): Promise<CommandResult> {
   }
   let exitCode = outcome.state === 'exited' ? outcome.exitCode : null;
   if (exitCode === RESERVED_STATUS_EXIT && regular(entries, 'exit')) {
-    const recorded = Number(
-      text(await provider.getFile(handle, `${markerDirectory(request.marker)}/exit`, 16, signal)),
-    );
+    const recorded = Number(text(await provider.getFile(handle, `${directory}/exit`, 16, signal)));
     if (recorded === REENTERED_EXIT || recorded === MARKER_SETUP_EXIT) exitCode = recorded;
   }
   const record = await capture(
     options,
+    directory,
     entries,
     {
       exitCode,

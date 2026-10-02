@@ -25,6 +25,7 @@ import {
   type ArtifactExpectation,
   type ConnectorManifest,
   EXEC_LIMITS,
+  type ExecEnvName,
   type JsonValue,
   type Receipt,
   type SandboxConnectionConfig,
@@ -255,12 +256,12 @@ export function outputText(preview: Uint8Array, cut: boolean): { text: string; b
 }
 
 /**
- * The words a command runs as. The person's time zone is set on each command,
- * not only when the sandbox was made, so a workspace resumed after the zone
- * changed still reads the current one.
+ * The environment set on one command. The person's time zone is set on each
+ * command, not only when the sandbox was made, so a workspace resumed after the
+ * zone changed still reads the current one.
  */
-export const commandArgv = (command: string, timeZone: string | null): string[] =>
-  timeZone ? ['env', `TZ=${timeZone}`, 'sh', '-c', command] : ['sh', '-c', command];
+export const commandEnv = (timeZone: string | null): Partial<Record<ExecEnvName, string>> =>
+  timeZone ? { TZ: timeZone } : {};
 
 /** A path inside the sandbox's own workspace; the marker runner refuses the rest. */
 const sandboxCwd = (cwd: string | undefined) =>
@@ -697,10 +698,11 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         handle: sessionHandle(session),
         request: {
           marker: action.id,
-          argv: commandArgv(payload.command, timeZone),
+          argv: ['sh', '-c', payload.command],
           cwd: sandboxCwd(payload.cwd),
           timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.max_timeout_ms,
           dispatch,
+          env: commandEnv(timeZone),
         },
         workRoot: options.workRoot,
         jobId: ctx.job_id,

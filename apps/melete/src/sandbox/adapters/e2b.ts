@@ -26,7 +26,7 @@
  */
 
 import { ownedLabels } from '../manifest.ts';
-import { markerDirectory, reattachByMarker } from '../marker.ts';
+import { checkMarker, reattachByMarker, VAR_TMP_MARKER_ROOT } from '../marker.ts';
 import {
   type EgressPolicy,
   type ExecOutcome,
@@ -91,6 +91,8 @@ export function e2bCapabilities(plan: 'hobby' | 'pro' = 'hobby'): SandboxCapabil
     maxIdleSeconds: null,
     streaming: false,
     reattach: 'marker_only',
+    // `/var/tmp` is on the sandbox's disk, which a pause keeps.
+    markerRoot: VAR_TMP_MARKER_ROOT,
     ports: 'authenticated',
     image: 'template',
     billing: 'per_second',
@@ -375,7 +377,13 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
   /** Start a process and read its events until the stream ends. */
   async function* processEvents(
     session: Session,
-    request: { cmd: string; args: readonly string[]; cwd: string; stdin: boolean },
+    request: {
+      cmd: string;
+      args: readonly string[];
+      cwd: string;
+      stdin: boolean;
+      env?: Readonly<Record<string, string>>;
+    },
     streamTimeoutMs: number,
     root: boolean,
     signal: AbortSignal,
@@ -393,7 +401,14 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
           'Keepalive-Ping-Interval': '50',
         },
         body: encodeEnvelope({
-          process: { cmd: request.cmd, args: [...request.args], cwd: request.cwd },
+          process: {
+            cmd: request.cmd,
+            args: [...request.args],
+            cwd: request.cwd,
+            ...(request.env && Object.keys(request.env).length > 0
+              ? { envs: { ...request.env } }
+              : {}),
+          },
           stdin: request.stdin,
         }),
         signal,
@@ -570,7 +585,13 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
       try {
         for await (const event of processEvents(
           session,
-          { cmd: 'setsid', args: spec.argv, cwd: spec.cwd, stdin: spec.stdin !== undefined },
+          {
+            cmd: 'setsid',
+            args: spec.argv,
+            cwd: spec.cwd,
+            stdin: spec.stdin !== undefined,
+            ...(spec.env ? { env: spec.env } : {}),
+          },
           spec.timeoutMs + KILL_GRACE_MS,
           false,
           stream.signal,
@@ -659,7 +680,7 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
     },
 
     reattach(handle: SandboxHandle, marker: string, signal: AbortSignal) {
-      markerDirectory(marker);
+      checkMarker(marker);
       return reattachByMarker(provider, handle, marker, signal);
     },
 
