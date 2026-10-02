@@ -73,6 +73,10 @@ export const roomMessage = pgTable(
      * live stream sends it again, in commit order, whenever it changes.
      */
     streamSeq: bigint('stream_seq', { mode: 'number' }).notNull().default(0),
+    /** Where the message was written: `web`, or the chat platform it came from. */
+    surface: text('surface').notNull().default('web'),
+    /** The platform's own id for the message, so its replies can thread under it. */
+    externalRef: text('external_ref'),
     createdAt: created(),
     redactedAt: timestamp('redacted_at', { withTimezone: true }),
   },
@@ -215,5 +219,35 @@ export const roomHandoff = pgTable(
       'room_handoff_state',
       sql`${t.state} in ('pending', 'accepted', 'declined', 'running', 'settled', 'shared', 'kept', 'expired')`,
     ),
+  ],
+);
+
+/**
+ * An account on a chat platform, linked to the person it belongs to here. A
+ * platform's message or button press counts only through one of these links:
+ * an account with no link is refused, and never becomes a guest. A link is made
+ * once the platform has proved who holds the account and the person, signed in
+ * here, has said it is theirs.
+ */
+export const principalIdentity = pgTable(
+  'principal_identity',
+  {
+    /** The platform, as its surface names itself. `web` is never one: the web signs people in itself. */
+    provider: text('provider').notNull(),
+    /** The platform's own id for the account, never its display name. */
+    externalId: text('external_id').notNull(),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    createdAt: created(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.provider, t.externalId] }),
+    index('principal_identity_principal_idx').on(t.principalId),
+    check(
+      'principal_identity_provider',
+      sql`${t.provider} ~ '^[a-z][a-z0-9_-]{0,31}$' and ${t.provider} <> 'web'`,
+    ),
+    check('principal_identity_external_id', sql`length(${t.externalId}) between 1 and 200`),
   ],
 );

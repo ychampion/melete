@@ -131,6 +131,7 @@ import { engineProtocol, providerAddress, servicePrivacyRouter } from './privacy
 import { mountPush } from './push/routes.ts';
 import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { mountRooms } from './rooms/routes.ts';
+import type { RoomSurface } from './rooms/surface.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
 import { assertDockerEngine } from './runtime/docker-engine.ts';
@@ -216,6 +217,8 @@ export type AppDeps = {
   modelSettings?: ModelSettingsService;
   /** How many problem reports one person may send in a short time; a test supplies its clock. */
   feedbackLimiter?: FeedbackLimiter;
+  /** Chat platforms people can talk to rooms from, besides the web. Left out, none. */
+  roomSurfaces?: RoomSurface[];
 };
 
 export function createApp(deps: AppDeps) {
@@ -371,6 +374,7 @@ export function createApp(deps: AppDeps) {
       memory: deps.memory,
       env: deps.env,
       triggers: deps.triggers,
+      surfaces: deps.roomSurfaces,
     });
   if (deps.db)
     mountCompanies(app, {

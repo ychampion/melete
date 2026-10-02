@@ -12,7 +12,6 @@ import {
   handoffResultDecision,
   peopleQuery,
   postRoomMessageRequest,
-  type RoomStreamFrame,
   roomConnectionUpdate,
   roomPermissionDecision,
   roomPolicyUpdate,
@@ -30,9 +29,9 @@ import { InviteService, mountInvites } from './invites.ts';
 import { mountRoomMemory } from './memory.ts';
 import { releaseAll, releaseOnTransition, releaseThread } from './release.ts';
 import { type RoomDeps, RoomService } from './service.ts';
+import { RoomGate, type RoomOutbound, type RoomSurface } from './surface.ts';
 
-/** How long a thread stream waits for new frames when nothing says one was committed. */
-export const ROOM_POLL_MS = 1000;
+export { ROOM_POLL_MS } from './surface.ts';
 
 export function mountRooms(
   app: Hono,
@@ -42,9 +41,22 @@ export function mountRooms(
     env?: Env;
     /** Wakes a room's request when a handoff it waits on ends. */
     triggers?: TriggerService;
+    /** Chat platforms rooms can be talked to from, besides the web. */
+    surfaces?: RoomSurface[];
   },
 ): RoomService {
   const service = new RoomService(deps);
+  const surfaceDeps = { db: deps.db, rooms: service, changes: deps.changes };
+  // The web is a surface like any other: its messages, answers and stream go
+  // through the same doors a chat platform's do.
+  const web = RoomGate.web(surfaceDeps);
+  const providers = new Set<string>();
+  for (const surface of deps.surfaces ?? []) {
+    if (providers.has(surface.provider))
+      throw new Error(`Two chat platforms are named "${surface.provider}"`);
+    providers.add(surface.provider);
+    surface.attach(RoomGate.platform(surfaceDeps, surface));
+  }
   const handoffs = new HandoffService({ db: deps.db, jobs: deps.jobs, triggers: deps.triggers });
   // A person's work that a room handed them settles its handoff when it ends.
   if (Array.isArray(deps.jobs.afterMove)) deps.jobs.afterMove.push(handoffs.afterMove());
@@ -99,9 +111,13 @@ export function mountRooms(
   app.post('/rooms/:id/threads', async (c) => {
     const input = createRoomThreadRequest.parse(await c.req.json());
     return c.json(
-      await service.post(param(c, 'id'), actor(c), input, {
+      await web.postRoomMessage({
+        room: param(c, 'id'),
+        author: actor(c),
+        text: input.text,
+        submission_id: input.submission_id,
         title: input.title,
-        askAgent: input.ask_agent,
+        ask_agent: input.ask_agent,
       }),
       201,
     );
@@ -112,7 +128,13 @@ export function mountRooms(
   app.post('/rooms/:id/threads/:threadId/messages', async (c) => {
     const input = postRoomMessageRequest.parse(await c.req.json());
     return c.json(
-      await service.post(param(c, 'id'), actor(c), input, { threadId: param(c, 'threadId') }),
+      await web.postRoomMessage({
+        room: param(c, 'id'),
+        thread: param(c, 'threadId'),
+        author: actor(c),
+        text: input.text,
+        submission_id: input.submission_id,
+      }),
     );
   });
   app.get('/rooms/:id/threads/:threadId/events', async (c) => {
@@ -123,7 +145,7 @@ export function mountRooms(
     const first = await service.frames(spaceId, threadId, person, after);
     if (!c.req.header('Accept')?.includes('text/event-stream'))
       return c.json({ frames: first, next_cursor: first.at(-1)?.seq ?? after });
-    return threadStream(service, deps.changes, {
+    return threadStream(web, {
       spaceId,
       threadId,
       person,
@@ -150,7 +172,12 @@ export function mountRooms(
   });
   app.post('/rooms/:id/approvals/:approvalId', async (c) => {
     const input = roomPermissionDecision.parse(await c.req.json());
-    const result = await service.decide(param(c, 'id'), param(c, 'approvalId'), actor(c), input);
+    const result = await web.decideRoomApproval({
+      room: param(c, 'id'),
+      approval: param(c, 'approvalId'),
+      principal: actor(c),
+      ...input,
+    });
     return result instanceof Response ? result : c.json(result);
   });
   app.get('/rooms/:id/connections', async (c) =>
@@ -199,89 +226,79 @@ export function mountRooms(
 }
 
 /**
- * A thread's live stream. Before each frame it checks the person is still in
- * the room, and closes the stream the moment they are not: removing someone
- * ends what they can read at once, not on their next request.
+ * A thread's live stream: the web's follower of a thread. Before each frame
+ * the follower checks the person is still in the room, and the stream closes
+ * the moment they are not: removing someone ends what they can read at once,
+ * not on their next request.
  */
 function threadStream(
-  service: RoomService,
-  changes: EventChanges | undefined,
+  web: RoomGate,
   start: {
     spaceId: string;
     threadId: string;
     person: string;
     after: number;
-    first: RoomStreamFrame[];
+    first: Awaited<ReturnType<RoomService['frames']>>;
     signal: AbortSignal;
   },
 ): Response {
-  const { spaceId, threadId, person, signal } = start;
-  let cursor = start.after;
-  let buffered = start.first;
-  let closed = false;
-  let changed = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let wake: (() => void) | undefined;
-  let lastWrite = Date.now();
+  const stop = new AbortController();
+  const abort = () => stop.abort();
+  start.signal.addEventListener('abort', abort, { once: true });
+  if (start.signal.aborted) abort();
+  // A frame waits until the reader has taken the one before it.
+  let drained: (() => void) | undefined;
+  stop.signal.addEventListener('abort', () => drained?.(), { once: true });
   const encoder = new TextEncoder();
-  const unsubscribe = changes?.subscribe(() => {
-    changed = true;
-    wake?.();
-  });
-  const close = () => {
-    closed = true;
-    if (timer) clearTimeout(timer);
-    unsubscribe?.();
-    wake?.();
-    signal.removeEventListener('abort', close);
-  };
-  signal.addEventListener('abort', close, { once: true });
-  if (signal.aborted) close();
   const body = new ReadableStream<Uint8Array>(
     {
-      async pull(controller) {
-        while (!closed) {
-          const next = buffered.shift();
-          if (next) {
-            if (!(await service.stillIn(spaceId, person))) {
-              close();
-              break;
-            }
-            cursor = next.seq;
-            controller.enqueue(
-              encoder.encode(
-                `id: ${next.seq}\nevent: ${next.kind}\ndata: ${JSON.stringify(next)}\n\n`,
-              ),
-            );
-            lastWrite = Date.now();
-            return;
-          }
-          if (!changed)
-            await new Promise<void>((resolve) => {
-              wake = resolve;
-              timer = setTimeout(resolve, ROOM_POLL_MS);
-            });
-          wake = undefined;
-          if (timer) clearTimeout(timer);
-          if (closed) break;
-          changed = false;
-          if (!(await service.stillIn(spaceId, person))) {
-            close();
-            break;
-          }
-          buffered = await service.frames(spaceId, threadId, person, cursor).catch(() => {
-            close();
-            return [];
+      start(controller) {
+        const write = async (chunk: string) => {
+          if (stop.signal.aborted) return;
+          controller.enqueue(encoder.encode(chunk));
+          if ((controller.desiredSize ?? 1) > 0) return;
+          await new Promise<void>((resolve) => {
+            drained = resolve;
           });
-          if (!buffered.length && Date.now() - lastWrite >= ROOM_POLL_MS) {
-            controller.enqueue(encoder.encode(': keepalive\n\n'));
-            lastWrite = Date.now();
-            return;
-          }
-        }
-        controller.close();
+          drained = undefined;
+        };
+        const send = (out: RoomOutbound) =>
+          write(
+            `id: ${out.frame.seq}\nevent: ${out.frame.kind}\ndata: ${JSON.stringify(out.frame)}\n\n`,
+          );
+        web
+          .follow({
+            room: start.spaceId,
+            thread: start.threadId,
+            viewer: start.person,
+            after: start.after,
+            first: start.first,
+            signal: stop.signal,
+            deliver: send,
+            idle: () => write(': keepalive\n\n'),
+          })
+          .then(
+            () => {
+              try {
+                controller.close();
+              } catch {
+                // The reader went away first.
+              }
+            },
+            (error: unknown) => {
+              try {
+                controller.error(error);
+              } catch {
+                // The reader went away first.
+              }
+            },
+          )
+          .finally(() => start.signal.removeEventListener('abort', abort));
       },
-      cancel: close,
+      pull() {
+        drained?.();
+      },
+      cancel: abort,
     },
     { highWaterMark: 1 },
   );

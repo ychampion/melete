@@ -397,9 +397,13 @@ export class RoomService {
     actor: string,
     input: { text: string; submission_id: string },
     target: { threadId: string } | { title?: string; askAgent?: boolean },
+    /** Where the message was written, when not on the web: the platform and its id for it. */
+    origin?: { surface: string; external_ref?: string },
   ) {
+    // A platform's submission ids are its own: they never meet the web's, or another platform's.
+    const scope = origin ? `${origin.surface}:` : '';
     const key = createHash('sha256')
-      .update(`${spaceId}:${actor}:${input.submission_id}`)
+      .update(`${spaceId}:${actor}:${scope}${input.submission_id}`)
       .digest('hex');
     const result = await this.deps.jobs.transaction(async (tx) => {
       const { role } = await this.access(tx, spaceId, actor, true);
@@ -464,6 +468,7 @@ export class RoomService {
           mentions,
           requestState: asks ? 'pending' : 'none',
           submissionId: key,
+          ...(origin ? { surface: origin.surface, externalRef: origin.external_ref ?? null } : {}),
         })
         .returning();
       if (!inserted) throw new Error('Message insert returned no row');
