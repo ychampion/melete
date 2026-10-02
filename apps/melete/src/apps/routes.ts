@@ -519,9 +519,9 @@ export function mountApps(app: Hono, deps: AppRoutesDeps): void {
     return c.json(appSubmissionList.parse(page));
   });
 
-  app.delete('/apps/:id/submissions/:submission', async (c) => {
+  app.delete('/apps/:id/submissions/:submission_id', async (c) => {
     const { appId, principalId } = await requireRole(c, 'manage');
-    const id = c.req.param('submission');
+    const id = c.req.param('submission_id');
     if (!SUBMISSION_ID.test(id) || !(await deleteSubmission(sql, appId, id, principalId)))
       throw new ServiceError('not_found', 'No such response.', 404);
     return c.json(appSubmissionDeleted.parse({ id, deleted: true }));

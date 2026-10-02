@@ -19,6 +19,11 @@ export type AppDetail = Ok<paths['/apps/{id}'], 'get'>;
 export type AppVersion = NonNullable<AppDetail['versions']>[number];
 export type AppGrant = NonNullable<AppDetail['grants']>[number];
 export type AppView = Ok<paths['/apps/{id}/views'], 'post'>;
+export type AppDataValue = Ok<paths['/apps/{id}/data/{name}'], 'get'>;
+export type AppDataUpdates = Ok<paths['/apps/{id}/data-updates'], 'get'>;
+export type AppDataUpdate = AppDataUpdates['updates'][number];
+export type AppSubmissionList = Ok<paths['/apps/{id}/submissions'], 'get'>;
+export type AppSubmission = AppSubmissionList['submissions'][number];
 export type GrantRequest = NonNullable<
   paths['/apps/{id}/grants']['put']['requestBody']
 >['content']['application/json']['grants'][number];
@@ -58,6 +63,25 @@ export const appsApi = {
     call<AppDetail>(() => api.PUT('/apps/{id}/grants', { ...byId(id), body: { grants } })),
   remove: (id: string) =>
     call<{ id: string; deleted: true }>(() => api.DELETE('/apps/{id}', byId(id))),
+  dataUpdates: (id: string) =>
+    call<AppDataUpdates>(() => api.GET('/apps/{id}/data-updates', byId(id))),
+  release: (id: string, binding: string, artifactId: string) =>
+    call<AppDataUpdates>(() =>
+      api.POST('/apps/{id}/data-updates', {
+        ...byId(id),
+        body: { binding, artifact_id: artifactId },
+      }),
+    ),
+  submissions: (id: string, query: { collection?: string; before?: string } = {}) =>
+    call<AppSubmissionList>(() =>
+      api.GET('/apps/{id}/submissions', { params: { path: { id }, query } }),
+    ),
+  deleteSubmission: (id: string, submissionId: string) =>
+    call<{ id: string; deleted: true }>(() =>
+      api.DELETE('/apps/{id}/submissions/{submission_id}', {
+        params: { path: { id, submission_id: submissionId } },
+      }),
+    ),
 };
 
 /** Where a view's page loads: the API's own address, then the view's path. */
@@ -71,7 +95,7 @@ export const viewSource = (view: AppView): string => `${API_BASE_URL}${view.view
 async function forViewer(
   route: string,
   init: RequestInit,
-): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+): Promise<{ ok: true; value: unknown } | { ok: false; error: string; status?: number }> {
   try {
     const response = await client.options.fetch(`${API_BASE_URL}${route}`, {
       ...init,
@@ -82,6 +106,7 @@ async function forViewer(
     if (!response.ok)
       return {
         ok: false,
+        status: response.status,
         error:
           response.status === 404
             ? 'This app has nothing by that name.'
@@ -93,11 +118,21 @@ async function forViewer(
   }
 }
 
+/** One data name as an app gets it: only the value, with when it was written kept for the screen. */
+export type DataAnswer =
+  | { ok: true; value: unknown; updatedAt: string | null }
+  | { ok: false; error: string; status?: number };
+
 export const appBridgeCalls = (appId: string) => ({
-  data: (name: string) =>
-    forViewer(`/apps/${encodeURIComponent(appId)}/data/${encodeURIComponent(name)}`, {
-      method: 'GET',
-    }),
+  data: async (name: string): Promise<DataAnswer> => {
+    const result = await forViewer(
+      `/apps/${encodeURIComponent(appId)}/data/${encodeURIComponent(name)}`,
+      { method: 'GET' },
+    );
+    if (!result.ok) return result;
+    const body = result.value as Partial<AppDataValue> | null;
+    return { ok: true, value: body?.value ?? null, updatedAt: body?.updated_at ?? null };
+  },
   submit: (collection: string, record: Record<string, unknown>) =>
     forViewer(`/apps/${encodeURIComponent(appId)}/submissions`, {
       method: 'POST',

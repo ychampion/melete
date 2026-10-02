@@ -9,7 +9,7 @@
  * first.
  */
 import { useEffect, useRef, useState } from 'react';
-import { type BridgeHost, connectBridge } from '../apps/bridge.ts';
+import { type BridgeHost, connectBridge, notifyChanged } from '../apps/bridge.ts';
 import { Button, Dialog } from '../design/primitives.tsx';
 
 /** What the framed page may do. Never same-origin, popups, or top navigation. */
@@ -21,12 +21,15 @@ export function FramedView({
   src,
   title,
   calls,
+  changed = null,
 }: {
   src: string;
   /** Names the frame for assistive technology. */
   title: string;
   /** Stable across renders: the bridge reconnects when it changes. */
   calls: FrameCalls;
+  /** Data the app read that has a newer version; each new value is told to the app once. */
+  changed?: { name: string; at: number } | null;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState<number | null>(null);
@@ -41,6 +44,10 @@ export function FramedView({
       }),
     [calls],
   );
+
+  useEffect(() => {
+    if (changed) notifyChanged(frame.current, changed.name);
+  }, [changed]);
 
   const answer = (open: boolean) => {
     link?.settle(open);
