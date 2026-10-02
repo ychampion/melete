@@ -665,7 +665,8 @@ withDb('experience rows and authenticated scope', () => {
     const turns = turnList.parse(
       await (await request(`/conversations/${chat.id}/messages`)).json(),
     );
-    expect(turns.turns.filter((turn) => turn.text === 'Cook at home')).toHaveLength(1);
+    // A picked option is recorded as a choice the agent offered, not as the person's words.
+    expect(turns.turns.filter((turn) => turn.text === 'You chose: Cook at home')).toHaveLength(1);
     // The answer rides the conversation stream once, so a reload shows it answered.
     const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id, 200);
     expect(

@@ -803,6 +803,8 @@ export const question = pgTable(
     key: text('key'),
     text: text('text').notNull(),
     because: jsonb('because').$type<string[]>().notNull(),
+    /** Why the agent asked, in its own words, when it said. */
+    why: text('why'),
     ifIgnored: text('if_ignored').notNull(),
     blocksExternalEffect: boolean('blocks_external_effect').notNull().default(false),
     deadlineAt: timestamp('deadline_at', { withTimezone: true }),

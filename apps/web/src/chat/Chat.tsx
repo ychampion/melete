@@ -294,7 +294,8 @@ function TurnView({
   onDecide: (id: string, option: PermissionOption, version: string, bounds?: RuleBounds) => void;
   onSendDraft: (handle: string) => void;
   onUndo: (id: string) => void;
-  onAnswer: (questionId: string, optionId: string) => void;
+  /** An offered answer by its id, or `{ text }` for one in the person's words. */
+  onAnswer: (questionId: string, answer: string | { text: string }) => void;
   onOwn: (text: string) => void;
   /** Effects from the broker's ledger that never confirmed; drawn on the newest turn only. */
   unknown?: LedgerAction[];
@@ -365,7 +366,11 @@ function TurnView({
             busy={busy(block.question.id)}
             active={latest && open?.id === block.question.id}
             onAnswer={(optionId) => onAnswer(block.question.id, optionId)}
-            onOwn={onOwn}
+            // A question that takes free text is answered in it; one that does
+            // not takes the words as the next message instead.
+            onOwn={(text) =>
+              block.question.free_text ? onAnswer(block.question.id, { text }) : onOwn(text)
+            }
           />
         );
       default:
@@ -754,12 +759,15 @@ export function ChatScreen({ id }: { id: string | null }) {
     });
 
   const answer = useCallback(
-    (questionId: string, optionId: string) =>
+    (questionId: string, answer: string | { text: string }) =>
       void flight.run(questionId, async () => {
-        const result = await adapter.answer(questionId, optionId);
+        const result = await adapter.answer(questionId, answer);
         if (result.data === null)
           toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t answer' });
-        else setTranscript((previous) => markQuestion(previous, questionId, optionId));
+        else
+          setTranscript((previous) =>
+            markQuestion(previous, questionId, typeof answer === 'string' ? answer : answer.text),
+          );
       }),
     [flight, setTranscript],
   );

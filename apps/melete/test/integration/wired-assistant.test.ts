@@ -178,6 +178,7 @@ afterAll(async () => {
       expect(first.tools.map((tool) => tool.name)).toEqual([
         'search_tools',
         'load_tool',
+        'ask_person',
         'react',
         'test.send',
       ]);

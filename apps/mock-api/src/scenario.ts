@@ -121,6 +121,8 @@ export const scenarioStep = z.discriminatedUnion('step', [
     step: z.literal('ask'),
     delay_ms: z.number().int().nonnegative().default(200),
     question: z.string().min(1),
+    /** Why the agent is asking, shown under the question. */
+    why: z.string().min(1).optional(),
     options: z
       .array(z.object({ label: z.string(), description: z.string().default('') }))
       .min(1)

@@ -107,6 +107,19 @@ export const PLAIN_WORDS: readonly string[] = [
 ];
 
 /**
+ * When to stop and ask the person, and when to carry on. Asking is for a real
+ * ambiguity or a choice that belongs to the person; an approval is never asked
+ * this way, because proposing the action is what asks for it.
+ */
+export const ASKING: readonly string[] = [
+  "If the request is genuinely ambiguous, or the choice is the owner's to make (a date,",
+  'an amount, which of two things), call ask_person with one short question and up to',
+  'four choices, then end your turn; the answer comes back as their next message.',
+  'Otherwise make a sensible choice, say what you chose, and carry on. Never use',
+  'ask_person to ask permission for an action: propose the action and the owner is asked.',
+];
+
+/**
  * The one thing about the environment the model cannot infer: the workspace is
  * the only writable place, and the broker is the only way out.
  */
@@ -125,6 +138,7 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
     'Every tool call is checked and recorded before it runs, and some need the',
     "owner's approval. A tool that answers `needs_approval` has NOT happened: stop,",
     'say what you are waiting on, and end your turn.',
+    ...ASKING,
     ...PLAIN_WORDS,
     'Reusable owner corrections go through learning.propose when it is in the catalog.',
     'It refers the recorded intervention for evaluation; it never installs a live skill.',

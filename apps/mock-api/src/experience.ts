@@ -883,8 +883,9 @@ export class ExperienceMock {
         id: newId('q'),
         conversation_id: chat.view.id,
         text: plainText(step.question, 'What should happen next?'),
-        why: ['Your answer decides the next step.'],
+        why: [step.why ?? 'Your answer decides the next step.'],
         if_ignored: 'This conversation waits for your answer.',
+        free_text: true,
         created_at: this.now(),
         options: step.options.map((option, index) => ({
           id: `option-${index + 1}`,
@@ -1079,6 +1080,7 @@ export class ExperienceMock {
         text: plainText(step.question, 'What should happen next?'),
         why: ['Your answer is needed to continue.'],
         if_ignored: 'This conversation waits for your answer.',
+        free_text: true,
         created_at: this.now(),
         options: [
           { id: 'continue', label: 'Continue' },
@@ -1733,13 +1735,23 @@ export class ExperienceMock {
         return { questions: [...this.questions.values()] };
       case 'POST /quick-answers/{id}': {
         const question = required(this.questions, id);
-        if (!question.options.some((choice) => choice.id === input.option_id))
+        const answer = C.quickAnswerRequest.parse(input);
+        const chosen =
+          'option_id' in answer
+            ? question.options.find((choice) => choice.id === answer.option_id)
+            : undefined;
+        if ('option_id' in answer ? !chosen : !question.free_text)
           throw new MockExperienceError(400, 'Choose an offered answer.');
         this.questions.delete(id);
         if (question.conversation_id) {
           const chat = required(this.chats, question.conversation_id);
-          const chosen = question.options.find((choice) => choice.id === input.option_id);
-          this.decided(chat, 'question', id, 'answered', chosen?.label ?? null);
+          this.decided(
+            chat,
+            'question',
+            id,
+            'answered',
+            'text' in answer ? answer.text : (chosen?.label ?? null),
+          );
           if (input.option_id === 'stop') {
             chat.stopped = true;
             this.state(chat, 'stopped');

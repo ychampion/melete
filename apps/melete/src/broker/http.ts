@@ -15,6 +15,7 @@ import {
 import { Hono } from 'hono';
 import { ZodError, z } from 'zod';
 import { redactSecrets } from '../connectors/faults.ts';
+import { ASK_PERSON_TOOL_NAME } from './ask-person.ts';
 import { AuthenticationError, matchesServiceKey, verifyCapability } from './capability.ts';
 import type { ToolCatalog } from './catalog.ts';
 import type { ComposeService } from './compose.ts';
@@ -25,6 +26,8 @@ export interface BrokerOperations {
   compose?: Pick<ComposeService, 'run'>;
   authorize(claims: CapabilityClaims): Promise<void>;
   requestWait?(claims: CapabilityClaims, input: unknown): Promise<unknown>;
+  /** Record a question for the person; the job waits for the answer once the turn ends. */
+  askPerson?(claims: CapabilityClaims, input: unknown): Promise<unknown>;
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
   get(claims: CapabilityClaims, id: string): Promise<Action>;
@@ -185,6 +188,10 @@ export function createBrokerApp(options: {
         throw new BrokerFault('unknown_tool');
       // Whatever the model passed is dropped: the service writes the follow-up.
       return c.json(await options.broker.followUp(claims));
+    }
+    if (body.name === ASK_PERSON_TOOL_NAME) {
+      if (!options.broker.askPerson) throw new BrokerFault('unknown_tool');
+      return c.json(await options.broker.askPerson(c.get('claims'), body.arguments));
     }
     if (body.name === 'compose') {
       const claims = c.get('claims');
