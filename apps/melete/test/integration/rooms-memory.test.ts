@@ -313,14 +313,14 @@ async function backup(roomId: string) {
       await tx`update memory_spaces set restore_ready = false`;
       await tx.unsafe(`drop schema "${schema}" cascade`);
       for (const row of messages)
-        await tx`update room_message set text = ${row.text}, mentions = ${row.mentions},
+        await tx`update room_message set text = ${row.text}, mentions = ${JSON.stringify(row.mentions)}::text::jsonb,
           redacted_at = ${row.redacted_at}, request_state = ${row.request_state} where id = ${row.id}`;
       for (const row of turns)
         await tx`update experience_turn set text = ${row.text} where id = ${row.id}`;
       for (const row of requests)
         await tx`update job set title = ${row.title}, objective = ${row.objective} where id = ${row.id}`;
       for (const row of events)
-        await tx`update event set payload = ${row.payload} where seq = ${row.seq}`;
+        await tx`update event set payload = ${JSON.stringify(row.payload)}::text::jsonb where seq = ${row.seq}`;
     });
   };
 }
