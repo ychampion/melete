@@ -20,7 +20,7 @@ export async function readArtifactContent(
   const base = await realpath(location.area === 'work' ? roots.workRoot : roots.spacesRoot);
   const scope = location.area === 'work' ? [location.jobId] : [location.spaceId, 'artifacts'];
   const target = await noLinks(base, [...scope, ...segmentsFor(location.path)], false);
-  const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await file.stat();
     if (!stat.isFile() || stat.size > 8 * 1024 * 1024)

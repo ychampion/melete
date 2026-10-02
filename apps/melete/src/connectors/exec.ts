@@ -128,7 +128,10 @@ export function createExecConnector(options: ExecOptions): Connector {
   };
 
   const readStored = async (target: string): Promise<Buffer> => {
-    const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const file = await open(
+      target,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
     try {
       const stat = await file.stat();
       if (!stat.isFile() || stat.size > limit)

@@ -90,7 +90,10 @@ export async function capabilityDirectory(
 /** A file's bytes, or null when it is missing, a link, or unreadable. */
 export async function readBytes(file: string): Promise<Uint8Array | null> {
   try {
-    const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const handle = await open(
+      file,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
     try {
       return new Uint8Array(await handle.readFile());
     } finally {

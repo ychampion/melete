@@ -16,8 +16,6 @@
  * `output` like a command in the workspace.
  */
 import { createHash } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
-import path from 'node:path';
 import {
   type Action,
   type ConnectorManifest,
@@ -39,6 +37,7 @@ import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import { ConnectorFaultError } from '../connectors/faults.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
+import { writePrivateWorkspaceFile } from '../sandbox/workspace.ts';
 import { type DeviceHub, sharedDeviceHub } from './hub.ts';
 import {
   DevicePathError,
@@ -412,6 +411,22 @@ export function unreadableReply(
     : { outcome: 'unknown', reason: `${reason} It may have happened on the computer.` };
 }
 
+/**
+ * Keep a screenshot in the job's workspace, under `device/`, and return the
+ * path relative to the workspace. The computer can write to that workspace, so
+ * no link or second name in it is followed out of it.
+ */
+export async function saveScreenshot(
+  workRoot: string,
+  jobId: string,
+  actionId: string,
+  bytes: Uint8Array,
+): Promise<string> {
+  const file = `device/screenshot-${actionId}.png`;
+  await writePrivateWorkspaceFile(workRoot, jobId, file, bytes);
+  return file;
+}
+
 export function createDeviceConnector(options: DeviceConnectorOptions): Connector {
   const hub = options.hub ?? sharedDeviceHub;
   const manifest = deviceManifest(options.name);
@@ -653,16 +668,12 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
           throw new Error('the screenshot is larger than the cap');
         if (bytes.byteLength < 24 || !bytes.subarray(0, 8).equals(PNG_MAGIC))
           throw new Error('the screenshot is not a PNG image');
-        if (!/^job_[A-Za-z0-9]+$/.test(ctx.job_id)) throw new Error('invalid trusted job scope');
-        const folder = path.join(options.workRoot, ctx.job_id, 'device');
-        await mkdir(folder, { recursive: true });
-        const file = `screenshot-${action.id}.png`;
-        await writeFile(path.join(folder, file), bytes, { mode: 0o600 });
+        const saved = await saveScreenshot(options.workRoot, ctx.job_id, action.id, bytes);
         const hash = digest(bytes);
         return {
           detail: {
             ...(tool === 'browser_screenshot' ? { tab_id: Number(sent.tab_id) } : {}),
-            path: `device/${file}`,
+            path: saved,
             bytes: bytes.byteLength,
             width: bytes.readUInt32BE(16),
             height: bytes.readUInt32BE(20),
