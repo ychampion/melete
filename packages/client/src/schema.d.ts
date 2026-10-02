@@ -2940,6 +2940,8 @@ export interface paths {
                                     /** @constant */
                                     type: "done";
                                 }) | {
+                                    /** @constant */
+                                    restart?: true;
                                     text: string;
                                     /** @constant */
                                     type: "text_delta";

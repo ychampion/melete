@@ -397,7 +397,12 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         // and it is not working again.
         FINAL.has(turn.status) && turn.turn.answer
           ? turn
-          : { ...turn, streamed: turn.streamed + item.text, streaming: true },
+          : {
+              ...turn,
+              // A retried turn's answer replaces the lost attempt's partial one.
+              streamed: item.restart ? item.text : turn.streamed + item.text,
+              streaming: true,
+            },
       );
     case 'card':
       return patchTurn(base, event.turn_id, (turn) => ({

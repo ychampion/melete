@@ -461,7 +461,15 @@ export const experienceEvent = z.strictObject({
   created_at: date,
   item: z.union([
     trailStep,
-    z.strictObject({ type: z.literal('text_delta'), text: z.string() }),
+    z.strictObject({
+      type: z.literal('text_delta'),
+      text: z.string(),
+      /**
+       * The turn's answer so far is replaced by this text rather than added
+       * to: the attempt that wrote it was lost and the turn is running again.
+       */
+      restart: z.literal(true).optional(),
+    }),
     /** The model's reasoning as it writes it, for the trail; never part of the answer. */
     z.strictObject({ type: z.literal('reasoning'), text: z.string() }),
     z.strictObject({ type: z.literal('card'), card: resultCard }),

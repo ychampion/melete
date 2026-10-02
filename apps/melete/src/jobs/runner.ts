@@ -50,6 +50,7 @@ import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { browserEventForPersistence, isBrowserTool } from '../workers/browser/privacy.ts';
+import { type AnswerJoin, answerJoin } from './answer-join.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
 import { buildAttemptSkeleton, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
@@ -101,7 +102,23 @@ export type RunnerOptions = {
     claims: CapabilityClaims,
     bundle: ResponsibilityAttemptBundle,
   ) => Promise<Pick<ResponsibilityAttemptBundle, 'tools' | 'skills' | 'skill_index'>>;
+  /**
+   * How long a finished attempt waits for an action it dispatched to report
+   * back before its outcome is committed. Past it the turn rests with its
+   * answer instead of running again.
+   */
+  dispatchWaitMs?: number;
 };
+
+/**
+ * Past the broker's longest dispatch budget and its recovery sweep, so every
+ * dispatch that still has a sender has settled by then.
+ */
+export const DISPATCH_WAIT_MS = 16 * 60_000;
+
+/** The question a turn rests on when something it started has not reported back. */
+export const STILL_RUNNING_NOTE =
+  'Something this turn started has not reported back yet. Its result will show here once it does, so nothing was run again.';
 export type ClaimedAttempt = { bundle: ResponsibilityAttemptBundle; claims: CapabilityClaims };
 /** What the attempt raised besides its outcome, handed to every finish handler. */
 export type OutcomeContext = {
@@ -119,6 +136,8 @@ export class AttemptRunner {
   >();
   /** Runtime calls that have not returned yet, by attempt. */
   private readonly running = new Map<string, { jobId: string; returned: Promise<void> }>();
+  /** Attempts whose answer text has started, so only the first piece is joined. */
+  private readonly answering = new Set<string>();
   private workerStarted = false;
   private stopping = false;
   scheduler: FairScheduler;
@@ -133,6 +152,12 @@ export class AttemptRunner {
    * transaction; a handler must not throw.
    */
   readonly onSettled: Array<(attemptId: string) => void> = [];
+  /**
+   * Settles what an ended attempt left dispatched with nobody waiting on it,
+   * where the broker runs in this process. Elsewhere the broker's own
+   * recovery does it, and the wait below sees the result.
+   */
+  settleAbandoned?: (attemptId: string) => Promise<unknown>;
   readonly onFinished: Array<
     (
       tx: Transaction,
@@ -442,9 +467,21 @@ export class AttemptRunner {
         throw new AttemptBudgetExceeded('The attempt output-token budget is exhausted.');
       const type = value.type === 'attempt_outcome' ? 'notice' : value.type;
       if (current && row.currentTurnId && value.type === 'text_delta') {
+        // A retried turn replaces the partial answer the lost attempt left; a
+        // turn that carries on after a wait starts a new paragraph.
+        const join = await this.firstAnswerJoin(tx, execution.id, row.id);
         await tx
           .update(experienceTurn)
-          .set({ answer: sql`${experienceTurn.answer} || ${value.text}`, status: 'streaming' })
+          .set({
+            answer:
+              join === 'replace'
+                ? value.text
+                : join === 'separate'
+                  ? sql`case when ${experienceTurn.answer} = '' then ${value.text}
+                      else ${experienceTurn.answer} || ${`\n\n${value.text}`} end`
+                  : sql`${experienceTurn.answer} || ${value.text}`,
+            status: 'streaming',
+          })
           .where(eq(experienceTurn.id, row.currentTurnId));
       }
       const payload: JsonObject =
@@ -1231,6 +1268,7 @@ export class AttemptRunner {
         });
     }, this.options.heartbeatMs ?? HEARTBEAT_MS);
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let completed: Extract<AttemptOutcome, { kind: 'completed' }> | null = null;
     let abortListener = () => {};
     const interrupted = new Promise<never>((_, reject) => {
       abortListener = () => reject(controller.signal.reason);
@@ -1260,9 +1298,34 @@ export class AttemptRunner {
       this.running.set(claims.attempt_id, { jobId: claims.job_id, returned });
       void returned.finally(() => this.running.delete(claims.attempt_id));
       const result = await Promise.race([call, wallLimit, interrupted]);
+      const outcome = isOutcomeEnvelope(result) ? result.outcome : result;
+      if (outcome.kind === 'completed') {
+        completed = outcome;
+        await this.awaitDispatched(claims, controller.signal);
+      }
       await this.commitOutcome(claims, result);
     } catch (error) {
-      if (error instanceof AttemptBudgetExceeded) {
+      if (
+        completed &&
+        error instanceof ServiceError &&
+        error.code === 'actions_not_terminal' &&
+        !controller.signal.aborted
+      ) {
+        // The work is done and its answer written; what it started is still
+        // out. Running the turn again would do every step a second time, so
+        // the turn rests on its answer until that action reports back.
+        const draft = completed.summary;
+        await this.commitOutcome(claims, {
+          kind: 'waiting_for_input',
+          question: STILL_RUNNING_NOTE,
+          ...(draft.trim() ? { draft } : {}),
+        }).catch(async (failure: unknown) => {
+          await this.loseAttempt(
+            claims.attempt_id,
+            failure instanceof Error ? failure.message : 'runtime_crashed',
+          );
+        });
+      } else if (error instanceof AttemptBudgetExceeded) {
         await this.commitOutcome(claims, {
           kind: 'budget_exhausted',
           summary: error.message,
@@ -1285,6 +1348,7 @@ export class AttemptRunner {
       controller.signal.removeEventListener('abort', abortListener);
       if (this.active.get(claims.attempt_id)?.controller === controller)
         this.active.delete(claims.attempt_id);
+      this.answering.delete(claims.attempt_id);
       for (const settled of this.onSettled) {
         try {
           settled(claims.attempt_id);
@@ -1293,6 +1357,62 @@ export class AttemptRunner {
         }
       }
       finished();
+    }
+  }
+
+  /** How this attempt's answer text joins the turn's, for its first piece only. */
+  private async firstAnswerJoin(
+    tx: Transaction,
+    attemptId: string,
+    jobId: string,
+  ): Promise<AnswerJoin> {
+    if (this.answering.has(attemptId)) return 'none';
+    this.answering.add(attemptId);
+    const [earlier] = await tx
+      .select({ seq: event.seq })
+      .from(event)
+      .where(
+        and(eq(event.jobId, jobId), eq(event.attemptId, attemptId), eq(event.type, 'text_delta')),
+      )
+      .limit(1);
+    return earlier ? 'none' : answerJoin(tx, attemptId);
+  }
+
+  /**
+   * Before a finished attempt commits, the actions it dispatched settle. One
+   * whose tool call already returned has no sender left and is settled now;
+   * one the broker is still running is waited for, up to its budget, while
+   * the attempt keeps its lease. Whatever is still out after that is left to
+   * the commit, which rests the turn rather than running it again.
+   */
+  private async awaitDispatched(claims: CapabilityClaims, signal: AbortSignal): Promise<void> {
+    try {
+      await this.settleAbandoned?.(claims.attempt_id);
+    } catch (error) {
+      process.stderr.write(
+        `abandoned action settlement failed: ${error instanceof Error ? error.message : 'error'}\n`,
+      );
+    }
+    const deadline = Date.now() + (this.options.dispatchWaitMs ?? DISPATCH_WAIT_MS);
+    for (;;) {
+      const [pending] = await this.jobs.transaction((tx) =>
+        tx
+          .select({ id: action.id })
+          .from(action)
+          .where(and(eq(action.jobId, claims.job_id), eq(action.status, 'dispatched')))
+          .limit(1),
+      );
+      const left = deadline - Date.now();
+      if (!pending || signal.aborted || left <= 0) return;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(done, Math.min(500, left));
+        function done() {
+          clearTimeout(timer);
+          signal.removeEventListener('abort', done);
+          resolve();
+        }
+        signal.addEventListener('abort', done, { once: true });
+      });
     }
   }
 

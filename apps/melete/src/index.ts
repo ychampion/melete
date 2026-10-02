@@ -892,6 +892,10 @@ export async function bootstrap(
       // cut short by shutdown, and never inside the outcome transaction: both
       // are provider calls, and that transaction holds the event order lock.
       if (sandboxes) runner.onSettled.push((attemptId) => sandboxes?.afterAttempt(attemptId));
+      // Where the broker runs here, what a finished attempt left dispatched with
+      // nobody waiting on it is settled before the attempt commits.
+      runner.settleAbandoned = async (attemptId) =>
+        effectBoundary?.broker.settleAbandoned(attemptId);
       if (browser)
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);

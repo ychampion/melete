@@ -299,9 +299,9 @@ def test_stdin_travels_inside_the_command_so_the_ledger_shows_it():
 
 def test_a_timeout_above_the_limit_is_held_to_it_and_said():
     broker = ScriptedBroker()
-    result = environment(broker).execute("make", timeout=600)
+    result = environment(broker).execute("make", timeout=900)
     assert broker.proposals[0]["payload"]["timeout_ms"] == MAX_TIMEOUT_MS
-    assert "held to the 120s limit" in result["output"]
+    assert "held to the 600s limit" in result["output"]
 
 
 # -- what the engine is told ---------------------------------------------------

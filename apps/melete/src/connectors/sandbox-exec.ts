@@ -229,7 +229,7 @@ export function sandboxDispatchBudgetMs(
 ): number {
   if (action.kind && COMPUTER_TOOL_NAMES.has(action.kind))
     return COMPUTER_BUDGET_MS + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS;
-  let timeout: number = EXEC_LIMITS.max_timeout_ms;
+  let timeout: number = EXEC_LIMITS.default_timeout_ms;
   try {
     timeout = payloadOf(action).timeout_ms ?? timeout;
   } catch {
@@ -624,7 +624,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         marker: action.id,
         argv: ['sh', '-c', payload.command],
         cwd: sandboxCwd(payload.cwd),
-        timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.max_timeout_ms,
+        timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.default_timeout_ms,
         // Never a first run: a verify asks what the marker says, and nothing else.
         dispatch: 'again',
       },
@@ -706,7 +706,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           marker: action.id,
           argv: commandArgv(payload.command, timeZone),
           cwd: sandboxCwd(payload.cwd),
-          timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.max_timeout_ms,
+          timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.default_timeout_ms,
           dispatch,
         },
         workRoot: options.workRoot,

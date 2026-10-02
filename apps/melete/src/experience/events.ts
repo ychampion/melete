@@ -27,6 +27,7 @@ import {
 } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { answerJoin } from '../jobs/answer-join.ts';
 import { LIMIT_REACHED_NOTE, waitingForSlotNote } from '../jobs/limits.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import { AnswerStream, answerText } from './answer-filter.ts';
@@ -82,8 +83,11 @@ type Lookups = {
   arguments: Map<string, unknown>;
 };
 
-/** An attempt's answer and reasoning, as streamed so far. */
-type AttemptText = { answer: AnswerStream; reasoning: AnswerStream };
+/**
+ * An attempt's answer and reasoning, as streamed so far. `fresh` while none of
+ * its answer has been seen, so its first piece can be joined to the turn's.
+ */
+type AttemptText = { answer: AnswerStream; reasoning: AnswerStream; fresh: boolean };
 
 /**
  * Where an attempt's streamed text stood before `seq`: its answer whole, and
@@ -113,7 +117,11 @@ async function attemptText(tx: Transaction, attemptId: string, seq: number): Pro
       reasoning = '';
     } else reasoning += text;
   }
-  return { answer: new AnswerStream(answer), reasoning: new AnswerStream(reasoning) };
+  return {
+    answer: new AnswerStream(answer),
+    reasoning: new AnswerStream(reasoning),
+    fresh: answer === '',
+  };
 }
 /** The statuses the runner can leave a turn in when an attempt ends. */
 const TURN_ENDINGS = new Set(['done', 'failed', 'needs_you']);
@@ -385,7 +393,7 @@ export class ExperienceEvents {
         const streamed = async (source: EventRow): Promise<AttemptText> => {
           // Text with no attempt is filtered piece by piece; it has nothing to join.
           if (!source.attemptId)
-            return { answer: new AnswerStream(), reasoning: new AnswerStream() };
+            return { answer: new AnswerStream(), reasoning: new AnswerStream(), fresh: false };
           let found = streams.get(source.attemptId);
           if (!found) {
             found = await attemptText(tx, source.attemptId, source.seq);
@@ -535,6 +543,15 @@ export class ExperienceEvents {
             const reasoning = text.reasoning.end();
             if (reasoning) await emit(source, { type: 'reasoning', text: reasoning });
             const piece = typeof payload.text === 'string' ? payload.text : '';
+            // A turn run again replaces what the lost attempt said; a turn that
+            // carries on after a wait starts a new paragraph.
+            const join =
+              text.fresh && source.attemptId ? await answerJoin(tx, source.attemptId) : 'none';
+            text.fresh = false;
+            if (join === 'replace')
+              await emit(source, { type: 'text_delta', text: '', restart: true }, 'answer_join');
+            else if (join === 'separate')
+              await emit(source, { type: 'text_delta', text: '\n\n' }, 'answer_join');
             await emit(source, {
               type: 'text_delta',
               text: source.attemptId ? text.answer.push(piece) : answerText(piece),

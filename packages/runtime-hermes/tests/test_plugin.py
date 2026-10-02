@@ -636,3 +636,33 @@ def test_resume_keeps_the_brokers_refusal_and_needs_an_action_id(client, broker)
     refused = handler({"action_id": ACTION})
     assert refused["status"] == "failed"
     assert refused["error"]["code"] == "revision_mismatch"
+
+
+def test_a_sandbox_command_waits_for_the_brokers_whole_budget():
+    """terminal.run is run by the broker before it answers; the ordinary
+    round-trip timeout would give up while the command still runs."""
+    from melete_plugin.terminal_backend import ANSWER_SLACK_SECONDS, SESSION_MARGIN_SECONDS
+
+    class Recording:
+        def __init__(self) -> None:
+            self.calls: List[Dict[str, Any]] = []
+
+        def propose(self, **call: Any) -> Dict[str, Any]:
+            self.calls.append(call)
+            return {"action_id": "act_1", "status": "failed", "message": "no"}
+
+        def action(self, action_id: str) -> Dict[str, Any]:
+            return {}
+
+    recording = Recording()
+    tool = {"name": "terminal.run", "connection_id": "con_sandbox", "effect_class": "write_reversible"}
+    handler = build_handler(recording, tool)  # type: ignore[arg-type]
+    handler({"command": "bun install"})
+    handler({"command": "make", "timeout_ms": 540_000})
+    default, asked = (call["timeout"] for call in recording.calls)
+    assert default == 300 + SESSION_MARGIN_SECONDS + ANSWER_SLACK_SECONDS
+    assert asked == 540 + SESSION_MARGIN_SECONDS + ANSWER_SLACK_SECONDS
+
+    other = Recording()
+    build_handler(other, {"name": "email.send", "connection_id": "con_mail"})({"to": "a"})  # type: ignore[arg-type]
+    assert other.calls[0]["timeout"] is None

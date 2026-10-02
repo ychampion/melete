@@ -260,7 +260,7 @@ const NO_GUESTS: GuestCounts = new Map();
 const guestKey = (connectionId: string, payload: unknown) =>
   `${connectionId}:${JSON.stringify((payload as { uid?: unknown } | null)?.uid ?? null)}`;
 /** The longest a connector may ask one dispatch to take. */
-const MAX_DISPATCH_BUDGET_MS = 10 * 60_000;
+const MAX_DISPATCH_BUDGET_MS = 15 * 60_000;
 /** The limits a caller set, so an unset one keeps its default. */
 const definedOnly = (options: AutoReviewOptions) => ({
   ...(options.hourlyLimit === undefined ? {} : { hourlyLimit: options.hourlyLimit }),
@@ -2614,6 +2614,33 @@ export class BrokerService implements BrokerOperations {
       recovered += 1;
     }
     return recovered;
+  }
+
+  /**
+   * Settle what an attempt left dispatched once its runtime has stopped
+   * waiting. An action this process is still sending is left to finish and
+   * settle itself. Any other one has no sender: a command the cell claimed and
+   * never reported, or a call whose waiter gave up. It is recorded as unknown
+   * (a read as a failure that may be retried) with the reason, so the attempt
+   * can end on it instead of waiting for a recovery sweep. A result that
+   * arrives later still lands on the record.
+   */
+  async settleAbandoned(attemptId: string): Promise<number> {
+    const rows = await this.sql`select id, effect_class from action
+      where attempt_id = ${attemptId} and status = 'dispatched'`;
+    let settled = 0;
+    for (const row of rows) {
+      if (this.inFlight.has(row.id as string)) continue;
+      await this.recordResult(
+        row.id as string,
+        uncertainResult(
+          row.effect_class === 'read',
+          'The tool call ended before this action reported back',
+        ),
+      );
+      settled += 1;
+    }
+    return settled;
   }
 
   /** The broker's own timeout, or longer where the connector says this action needs it. */

@@ -3274,6 +3274,10 @@
                                       },
                                       "text": {
                                         "type": "string"
+                                      },
+                                      "restart": {
+                                        "type": "boolean",
+                                        "const": true
                                       }
                                     },
                                     "required": [

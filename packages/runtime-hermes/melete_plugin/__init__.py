@@ -28,7 +28,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .broker import ATTEMPT_TOKEN_ENV, BROKER_URL_ENV, BrokerClient, BrokerError
 from .execution import ExecRefused, run_in_cell
 from .results import SUCCEEDED, from_error, from_response, needs_approval
-from .terminal_backend import TERMINAL_TOOL, register_terminal_backend
+from .terminal_backend import TERMINAL_TOOL, command_wait_seconds, register_terminal_backend
 
 logger = logging.getLogger("melete.plugin")
 
@@ -213,12 +213,17 @@ def build_handler(
         display = None
         payload = {"intent": arguments} if language is not None else arguments
 
+        # A sandbox command is run by the broker before it answers, for as long
+        # as the command's own timeout and the sandbox's setup allow. The
+        # ordinary round-trip timeout would stop waiting while it still runs.
+        wait = command_wait_seconds(arguments.get("timeout_ms")) if name == TERMINAL_TOOL else None
         try:
             response = client.propose(
                 kind=name,
                 connection_id=str(connection_id),
                 payload=payload,
                 client_ref=_client_ref(name, payload, read=tool.get("effect_class") == "read"),
+                timeout=wait,
             )
         except BrokerError as error:
             return refuse(error)
