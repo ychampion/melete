@@ -246,8 +246,8 @@ describe('creating a sandbox', () => {
       attemptId: 'att_one',
       actionId: 'act_one',
     };
-    const first = host.attributeCommand(handle, attribution);
-    const second = host.attributeCommand(handle, { ...attribution, actionId: 'act_two' });
+    const first = await host.attributeCommand(handle, attribution);
+    const second = await host.attributeCommand(handle, { ...attribution, actionId: 'act_two' });
     const token = (proxy: string) =>
       new RegExp(`^http://cmd:([A-Za-z0-9_-]{32})@${EGRESS_ALIAS}:8791$`).exec(proxy)?.[1] ?? '';
     const one = token(first.env.HTTPS_PROXY);

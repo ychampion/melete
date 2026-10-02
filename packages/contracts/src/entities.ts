@@ -74,6 +74,11 @@ export const CONNECTION_PROVIDERS = [
   'sandbox',
   /** A person's own computer, reached through the companion they paired it with. */
   'device',
+  /**
+   * An account a command in the agent's computer uses through the egress relay,
+   * which holds the secret and asks before every change.
+   */
+  'command_line',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;

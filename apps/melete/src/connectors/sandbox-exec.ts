@@ -733,14 +733,16 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       const dispatch = await sessions.beginCommand(session.id, action.id, action.id);
       // A token for this command alone, ended when it settles: a process it
       // leaves behind reaches out unattributed from then on.
+      const timeoutMs = payload.timeout_ms ?? EXEC_LIMITS.max_timeout_ms;
       const attributed =
         guarded(session) && hasCommandEgress(provider)
-          ? provider.attributeCommand(sessionHandle(session), {
+          ? await provider.attributeCommand(sessionHandle(session), {
               kind: 'command',
               sessionId: session.id,
               jobId: ctx.job_id,
               attemptId: action.attempt_id,
               actionId: action.id,
+              deadlineAt: Date.now() + timeoutMs,
             })
           : null;
       let result: CommandResult;
@@ -753,7 +755,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
             marker: action.id,
             argv: ['sh', '-c', payload.command],
             cwd: sandboxCwd(payload.cwd),
-            timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.max_timeout_ms,
+            timeoutMs,
             dispatch,
             env: { ...commandEnv(timeZone), ...attributed?.env },
             forget,

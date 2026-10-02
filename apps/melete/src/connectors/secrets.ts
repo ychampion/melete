@@ -77,6 +77,52 @@ export class SealedSecretStore implements SecretAccess {
     }
   }
 
+  /**
+   * Seals a value that belongs to the installation rather than to a space,
+   * bound to what it is for and to its row: opening it under another purpose
+   * or another id fails, so a sealed value cannot be moved to a second use.
+   */
+  async sealForPurpose(purpose: string, id: string, value: string): Promise<string> {
+    if (!purpose || !id || !value) throw new Error('A purpose, an id and a value are required');
+    const keys = await this.keys();
+    const plaintext = new TextEncoder().encode(JSON.stringify({ id, purpose, value, v: 1 }));
+    try {
+      const box = sodium.crypto_box_seal(plaintext, keys.publicKey);
+      return `sealed-box-v1:${Buffer.from(box).toString('base64')}`;
+    } finally {
+      sodium.memzero(plaintext);
+      sodium.memzero(keys.privateKey);
+    }
+  }
+
+  /** Opens what `sealForPurpose` sealed, for the same purpose and id only. */
+  async openForPurpose(purpose: string, id: string, sealed: string): Promise<string> {
+    if (!sealed.startsWith('sealed-box-v1:')) throw new Error('Secret unavailable');
+    const keys = await this.keys();
+    let plaintext: Uint8Array | undefined;
+    try {
+      plaintext = sodium.crypto_box_seal_open(
+        Buffer.from(sealed.slice('sealed-box-v1:'.length), 'base64'),
+        keys.publicKey,
+        keys.privateKey,
+      );
+      const record = JSON.parse(new TextDecoder().decode(plaintext)) as Record<string, unknown>;
+      if (
+        record?.id !== id ||
+        record.purpose !== purpose ||
+        record.v !== 1 ||
+        typeof record.value !== 'string'
+      )
+        throw new Error('Invalid sealed record');
+      return record.value;
+    } catch {
+      throw new Error('Secret unavailable');
+    } finally {
+      if (plaintext) sodium.memzero(plaintext);
+      sodium.memzero(keys.privateKey);
+    }
+  }
+
   async withSecret<T>(id: string, spaceId: string, use: (value: string) => Promise<T>): Promise<T> {
     const ciphertext = await this.repository.get(id, spaceId);
     if (!ciphertext?.startsWith('sealed-box-v1:')) throw new Error('Secret unavailable');

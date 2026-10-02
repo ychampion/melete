@@ -48,6 +48,7 @@ import {
   type ConnectorContext,
   connectorAllowsAudience,
 } from '../connectors/types.ts';
+import { isEgressTool } from '../egress/adapters/types.ts';
 import { agentAccess, directSend } from '../experience/access.ts';
 import { plainText, tooLongToAsk } from '../experience/projectors.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
@@ -221,6 +222,9 @@ type PendingReview = {
 
 const question =
   'Melete cannot confirm whether this was sent. Check the destination, then mark it.';
+/** What resuming an approved change from the command line says instead of sending it. */
+export const EGRESS_RERUN =
+  'Approved. This change is made by a command in your computer, not resent from here: run the same command again, unchanged, and it goes through once.';
 /**
  * A dispatch that ended without an answer. A read changes nothing, so it simply
  * failed and can be tried again; anything else may have landed and is unknown.
@@ -1314,6 +1318,11 @@ export class BrokerService implements BrokerOperations {
       return stored;
     });
     const key = action.intent_key ?? '';
+    // The bytes of a change from the command line live in the computer, so
+    // nothing is replayed from here: the command is run again, and its request
+    // is admitted against this approval once.
+    if (isEgressTool(action.kind) && ['approved', 'admitted'].includes(action.status))
+      return { ...(await this.proposalView(action, key, false)), message: EGRESS_RERUN };
     if (action.status === 'approved') {
       await this.admit(claims, action.id, action.payload_hash);
       return this.proposalView(await this.dispatch(action.id), key, false);

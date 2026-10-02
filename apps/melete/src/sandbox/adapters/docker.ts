@@ -26,6 +26,10 @@
  * vouch for is reported as such, never guessed.
  */
 
+import { rootCertificates } from 'node:tls';
+import { EXEC_ENV_NAMES, type ExecEnvName } from '@melete/contracts';
+import type { ComputerTrust, EgressCredentialPort } from '../../egress/credentials.ts';
+import type { InterceptOptions } from '../../egress/intercept.ts';
 import type { EgressRecordSink } from '../../egress/records.ts';
 import type { AttributedCommand, CommandEgress, EgressAttribution } from '../../egress/tokens.ts';
 import { DockerError, DockerSocketApi } from '../../runtime/docker.ts';
@@ -110,7 +114,40 @@ export type DockerSandboxSettings = {
    * `.suffix` for the names below one.
    */
   egressExtraHosts?: readonly string[];
+  /**
+   * Connected command-line accounts: the egress guard terminates TLS for
+   * their hosts, and their computers get the egress CA and placeholders.
+   */
+  egressCredentials?: EgressCredentialPort;
+  /** Limits for requests held inside a terminated tunnel. */
+  egressIntercept?: InterceptOptions;
 };
+
+/** Where a computer with a connected account finds the egress CA and its trust bundle. */
+export const DOCKER_TRUST_DIR = '/home/agent/.melete/ca';
+export const DOCKER_TRUST_CA = `${DOCKER_TRUST_DIR}/egress-ca.pem`;
+export const DOCKER_TRUST_BUNDLE = `${DOCKER_TRUST_DIR}/bundle.pem`;
+
+/**
+ * The environment that points the common clients at the trust bundle: Go,
+ * OpenSSL and `gh`; git and curl; Python; Node (which adds to its own); the
+ * AWS CLI; and the Google Cloud CLI.
+ */
+export const TRUST_ENV = {
+  SSL_CERT_FILE: DOCKER_TRUST_BUNDLE,
+  GIT_SSL_CAINFO: DOCKER_TRUST_BUNDLE,
+  CURL_CA_BUNDLE: DOCKER_TRUST_BUNDLE,
+  REQUESTS_CA_BUNDLE: DOCKER_TRUST_BUNDLE,
+  NODE_EXTRA_CA_CERTS: DOCKER_TRUST_CA,
+  AWS_CA_BUNDLE: DOCKER_TRUST_BUNDLE,
+  CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE: DOCKER_TRUST_BUNDLE,
+} as const;
+
+/** Only names a command may be given; anything else an adapter offered is left out. */
+function allowedEnv(values: Record<string, string>): Partial<Record<ExecEnvName, string>> {
+  const allowed: ReadonlySet<string> = new Set(EXEC_ENV_NAMES);
+  return Object.fromEntries(Object.entries(values).filter(([name]) => allowed.has(name)));
+}
 
 export const DOCKER_SANDBOX_DEFAULTS: Omit<DockerSandboxSettings, 'socket' | 'project'> = {
   cpus: 1,
@@ -373,6 +410,8 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
   private readonly lifetimes = new Map<string, number>();
   private readonly started = new Map<string, number>();
   private readonly usage = new Map<string, { at: number; kb: number }>();
+  /** The egress CA each computer was last given, by name; cleared when it starts again. */
+  private readonly trusted = new Map<string, string>();
   private reaper?: ReturnType<typeof setInterval>;
   private readonly now: () => number;
 
@@ -385,7 +424,13 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       options.guard ??
       new SandboxEgressGuard({
         ...(settings.egressRecords ? { records: settings.egressRecords } : {}),
-        connectedHosts: () => settings.egressExtraHosts ?? [],
+        ...(settings.egressCredentials ? { credentials: settings.egressCredentials } : {}),
+        ...(settings.egressIntercept ? { intercept: settings.egressIntercept } : {}),
+        // The operator's list, and the hosts of the space's connected accounts.
+        connectedHosts: async (space) => [
+          ...(settings.egressExtraHosts ?? []),
+          ...((await settings.egressCredentials?.hosts(space)) ?? []),
+        ],
       });
     this.now = options.now ?? Date.now;
   }
@@ -458,14 +503,73 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
    * A proxy address naming one command, for a computer with a network. The
    * token works only from this computer, and only until `settle`.
    */
-  attributeCommand(handle: SandboxHandle, attribution: EgressAttribution): AttributedCommand {
+  async attributeCommand(
+    handle: SandboxHandle,
+    attribution: EgressAttribution,
+  ): Promise<AttributedCommand> {
     const name = DockerSandboxHost.checkName(handle);
     const token = this.guard.mint(name, attribution);
     const proxy = `http://cmd:${token}@${EGRESS_ALIAS}:${this.settings.egressPort}`;
+    let trust: ComputerTrust | null = null;
+    try {
+      trust = await this.trust(name);
+    } catch {
+      // Without the bundle, a connected host's certificate is not trusted and
+      // its requests fail in the computer: nothing is sent with the account.
+      trust = null;
+    }
     return {
-      env: { HTTPS_PROXY: proxy, https_proxy: proxy, HTTP_PROXY: proxy, http_proxy: proxy },
+      env: {
+        HTTPS_PROXY: proxy,
+        https_proxy: proxy,
+        HTTP_PROXY: proxy,
+        http_proxy: proxy,
+        ...(trust ? { ...allowedEnv(trust.placeholders), ...TRUST_ENV } : {}),
+      },
       settle: () => this.guard.tokens.settle(token),
     };
+  }
+
+  /**
+   * With a connected command-line account in the computer's space, the egress
+   * CA's certificate and a bundle of the public roots plus it, written into
+   * the home volume once per start (and again when the CA changes). Never a
+   * key: the computer can only trust, not vouch.
+   */
+  private async trust(name: string): Promise<ComputerTrust | null> {
+    const credentials = this.settings.egressCredentials;
+    if (!credentials) return null;
+    const trust = await credentials.computer(this.guard.spaceOf(name));
+    if (!trust) return null;
+    if (this.trusted.get(name) === trust.caId) return trust;
+    const file = (path: string, text: string) => ({
+      name: path,
+      directory: false,
+      mode: 0o644,
+      uid: DOCKER_SANDBOX_UID,
+      gid: DOCKER_SANDBOX_UID,
+      bytes: new TextEncoder().encode(text),
+    });
+    const directory = (path: string) => ({
+      name: path,
+      directory: true,
+      mode: 0o755,
+      uid: DOCKER_SANDBOX_UID,
+      gid: DOCKER_SANDBOX_UID,
+    });
+    await this.api.putArchive(
+      name,
+      DOCKER_SANDBOX_HOME,
+      tarArchive([
+        directory('.melete'),
+        directory('.melete/ca'),
+        file('.melete/ca/egress-ca.pem', trust.caPem),
+        file('.melete/ca/bundle.pem', [...rootCertificates, trust.caPem].join('\n')),
+      ]),
+      AbortSignal.timeout(30_000),
+    );
+    this.trusted.set(name, trust.caId);
+    return trust;
   }
 
   /** Start a stopped container again: the automatic resume after an idle stop. */
@@ -485,6 +589,8 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       }
       if (!state?.State?.Running) throw new Error(`the sandbox ${name} did not start`);
       this.started.set(name, this.now());
+      // A computer that starts again is given the trust bundle again.
+      this.trusted.delete(name);
     } else if (state.State?.Paused) {
       await this.api.request('POST', `/containers/${name}/unpause`);
     }
@@ -715,6 +821,7 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       await this.ensureRunning(name);
     } catch (error) {
       this.guard.revoke(name);
+      this.trusted.delete(name);
       for (const undo of made.reverse()) await undo().catch(() => {});
       if (error instanceof SandboxAdapterRefusal) throw error;
       throw new Error(`the sandbox could not be created: ${describe(error)}`);
@@ -991,6 +1098,7 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     signal.throwIfAborted();
     const name = DockerSandboxHost.checkName(handle);
     this.guard.revoke(name);
+    this.trusted.delete(name);
     await this.api.request('DELETE', `/containers/${name}?force=1`).catch((error) => {
       if (!notFound(error)) throw error;
     });
@@ -1234,6 +1342,7 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       const expired = now - since >= lifetime * 1000;
       if (!idle && !expired) continue;
       this.guard.revoke(name);
+      this.trusted.delete(name);
       await this.api.request('POST', `/containers/${name}/stop?t=10`).catch((error) => {
         if (!(error instanceof DockerError && (error.status === 304 || error.status === 404)))
           throw error;

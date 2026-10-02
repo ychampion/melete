@@ -576,7 +576,7 @@ if (!live) {
       const one = await open({ kind: 'open' }, watched);
       const two = await open({ kind: 'open' }, watched);
       const session = one.providerSandboxId;
-      const command = watched.attributeCommand(one, attribution('act_LIVE_one', session));
+      const command = await watched.attributeCommand(one, attribution('act_LIVE_one', session));
       expect(await run(one, `${CODE} https://example.com/`, command.env)).toBe('200');
       const reached = command.settle();
       process.stdout.write(`docker live, egress hosts: ${JSON.stringify(reached)}\n`);
@@ -587,7 +587,10 @@ if (!live) {
       // Without its token the computer still gets out, unattributed.
       expect(await run(one, `${CODE} https://example.com/`, {})).toBe('200');
       // Another computer's live token is refused outright.
-      const borrowed = watched.attributeCommand(one, attribution('act_LIVE_borrowed', session));
+      const borrowed = await watched.attributeCommand(
+        one,
+        attribution('act_LIVE_borrowed', session),
+      );
       const refused = await run(two, `${CODE} https://example.com/; echo " exit=$?"`, borrowed.env);
       borrowed.settle();
       expect(refused).toMatch(/exit=(56|7)\b/);
