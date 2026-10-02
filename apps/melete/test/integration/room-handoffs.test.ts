@@ -24,6 +24,7 @@ import {
   roomMessageResponse,
   roomThreadView,
 } from '@melete/contracts';
+import { createArtifactRecorder } from '../../src/artifact/record.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -63,6 +64,7 @@ const broker = handle
       connectors: registry,
       resolveTrust: createMemoryTrustResolver(),
       resolveStandingGrant: resolvePersonGrant,
+      recordArtifact: createArtifactRecorder(undefined, { workRoot, spacesRoot }),
     })
   : null;
 const app =
@@ -550,7 +552,8 @@ withDb('room handoffs', () => {
       summary: 'Carol could not book it.',
       evidence: [],
     });
-    expect(await jobState(declined.requestId)).toBe('completed');
+    // Answered, it rests like any conversation, no longer waiting on the handoff.
+    expect(await jobState(declined.requestId)).toBe('waiting_for_input');
     const [ran] =
       await sql`select personal_job_id from room_handoff where id = ${declined.handoffId}`;
     expect(ran?.personal_job_id).toBeNull();
@@ -688,7 +691,10 @@ withDb('room handoffs', () => {
       room_id: roomId,
       room_name: 'Files',
       name: 'notes.md',
-      content_hash: sha('# Notes\nShip on Thursday.\n'),
+      content_hash: (
+        await sql`select content_hash from artifact where job_id = ${work.id} and path = 'notes.md'
+          order by created_at desc, id desc limit 1`
+      )[0]?.content_hash,
     });
     await broker.decide(
       asked.action_id,
@@ -699,7 +705,9 @@ withDb('room handoffs', () => {
     await broker.admit(claims, asked.action_id, asked.payload_hash);
     expect((await broker.dispatch(asked.action_id)).status).toBe('succeeded');
     const copied = join(spacesRoot, roomId, 'artifacts', 'notes.md');
-    expect(await readFile(copied, 'utf8')).toBe('# Notes\nShip on Thursday.\n');
+    const original = await readFile(join(workRoot, work.id, 'notes.md'), 'utf8');
+    expect(original).toContain('Ship on Thursday.');
+    expect(await readFile(copied, 'utf8')).toBe(original);
 
     // A different file by the same name never replaces the room's copy.
     await write('# Notes\nShip on Friday.\n');
@@ -716,7 +724,7 @@ withDb('room handoffs', () => {
     );
     await broker.admit(claims, again.action_id, again.payload_hash);
     expect((await broker.dispatch(again.action_id)).status).not.toBe('succeeded');
-    expect(await readFile(copied, 'utf8')).toBe('# Notes\nShip on Thursday.\n');
+    expect(await readFile(copied, 'utf8')).toBe(original);
   });
 
   test('a personal job cannot read a room it is not a member of', async () => {

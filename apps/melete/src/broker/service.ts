@@ -603,8 +603,14 @@ export class BrokerService implements BrokerOperations {
   ): Promise<Admissibility> {
     const access = await agentAccess(tx, job.id);
     const settings = this.options.autoReview ? await loadApprovalSettings(tx, job.space_id) : null;
+    // A hand-off from a room puts a task in front of a person, who reads it
+    // whole and runs or declines it: their answer is the approval, as a draft
+    // waits for the person who sends it.
     const changes =
-      tool.effect_class !== 'read' && tool.name !== 'email.draft' && tool.name !== 'email.discard';
+      tool.effect_class !== 'read' &&
+      tool.name !== 'email.draft' &&
+      tool.name !== 'email.discard' &&
+      tool.name !== 'room.handoff';
     const agentAsks = Boolean(access.agentId && access.asksBeforeActing);
     const provider = this.options.connectors.get(action.connection_id)?.manifest.provider ?? '';
     // The connector itself says the person decides this one, whatever the settings.

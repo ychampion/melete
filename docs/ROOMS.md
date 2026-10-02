@@ -159,6 +159,34 @@ withdraws it (`DELETE /rooms/{id}/shares/{share}`). Every removal here holds
 after a restore from an older backup. [MEMORY](MEMORY.md#rooms) has the
 details.
 
+## With your own setup
+
+A room's agent cannot use anyone's mail, calendar, files or memory. When a
+request needs one of those ("send this summary from my email to Bob"), the agent
+hands the task to a person instead: the person who asked, unless it names
+someone else in the room who is not a guest.
+
+The person finds it on their Home and with their approvals (`GET /handoffs`):
+the room, who asked, and the whole task, word for word. They choose "Run with my
+setup" or "Decline" (`POST /handoffs/{id}`). Running it starts work in their own
+space with exactly that text, using their own connections; anything it sends asks
+them as usual, and an address or amount the task names is shown on their card as
+coming from the room. Accepting names the task's hash, so only the task they read
+runs. A handoff nobody answers within seven days is withdrawn.
+
+When the work finishes, they see the exact result and choose to share it with
+the room or keep it (`POST /handoffs/{id}/result`). Sharing posts that text to
+the thread as theirs, "via Melete"; keeping posts only that they kept it. Either
+way, and on a decline or a withdrawal, the room's request hears how it ended and
+goes on.
+
+From their own chats, a person can also post to a room they are in
+(`room.post`: the card shows the room, the thread and the exact text) or copy a
+checked file into the room's files (`room.add_file`: the room keeps its own
+copy). Each waits for their approval, appears in the room as theirs, and is
+refused once they have left the room. A person's own work can list the rooms
+they are in, and learns nothing of any other room.
+
 ## Who sees what
 
 Only the people in a room read it, the installation's owner included: someone
