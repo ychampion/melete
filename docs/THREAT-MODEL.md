@@ -514,16 +514,26 @@ holds only placeholders, the egress CA's certificate and per-command tokens.
 - **GitHub.** A push is bound to its repository and its exact ref updates, old
   and new commit, which name their content by hash; the pack that carries the
   commits is not part of the approval, so a push can also carry objects no
-  pushed ref reaches, which GitHub keeps unreferenced in the repository. The
+  pushed ref reaches, which GitHub keeps unreferenced in the repository, where
+  they can be fetched by hash (by anyone, in a public repository) until it
+  cleans them up. The
   REST and GraphQL APIs are bound to the exact request, and a GraphQL document
   with any mutation in it, or that does not parse, asks. `every mutation in the
   gh corpus is classified as a write` runs the classifier over the requests
   `gh` 2.83 and git sent for each command that changes something, recorded,
   and over shapes written from the protocols. A standing rule covers only
   pushes that create or move `melete/` branches of one repository, never a
-  delete, a tag or another branch (`a standing rule admits pushes to melete
-  branches and never to the default branch`). Signed download links GitHub
-  returns reach the computer as sent; each opens one object for minutes.
+  delete, a tag or a push to another branch (`a standing rule admits pushes to
+  melete branches and never to the default branch`). **Limit:** a push the rule
+  covers starts the repository's push workflows without asking, and they run
+  the pushed code with the repository's secrets and workflow token; where that
+  token may write and the default branch is unprotected, that code can change
+  the default branch. The rule's text says so, and the docs advise a token
+  without the Workflows permission, read-only workflow permissions and a
+  protected default branch. A server error after a change was sent, and a
+  GraphQL answer of errors with no data, are recorded as possibly landed, never
+  as nothing changed. Signed download links GitHub returns reach the computer
+  as sent; each opens one object for minutes.
 
 ## Credentials, host and storage
 

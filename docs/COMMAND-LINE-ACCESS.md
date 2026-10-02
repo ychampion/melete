@@ -157,11 +157,20 @@ GraphQL change the ids and addresses it returned.
 
 **Standing permission.** Answering "Always" on a push card makes a rule for
 that repository that covers later pushes creating or moving branches under
-`melete/`, within the rule's count, expiry and re-consent window. Every other
-branch, including the default branch, tags, deletes, and every REST or GraphQL
-change still ask. The rule reads the ref updates, not the history between
-them, so it also covers a push that rewrites a `melete/` branch. It is offered
-when the repository's name came from the person or a connected app.
+`melete/`, within the rule's count, expiry and re-consent window. A push to any
+other branch, a tag, a delete, and every REST or GraphQL change still ask. The
+rule reads the ref updates, not the history between them, so it also covers a
+push that rewrites a `melete/` branch. It is offered when the repository's name
+came from the person or a connected app, and it follows the repository through
+a rename or a transfer, as GitHub's own redirects do.
+
+A push the rule covers also starts the repository's workflows that run on
+push. They run the pushed code with the repository's secrets and its workflow
+token, and a workflow token allowed to write can push to any unprotected
+branch, the default branch included. The rule's own text says so. Before
+saying "Always", use a token without the Workflows permission, set the
+repository's default workflow permissions to read, and protect the default
+branch.
 
 Signed links GitHub hands out, for release assets, archives and raw files of
 private repositories, reach the computer as GitHub sends them. Each opens one
@@ -171,6 +180,9 @@ account.
 ## Limits
 
 - Docker computers only, as above.
+- A standing rule for pushes lets those pushes run the repository's workflows
+  without asking, with its secrets; see [GitHub](#github) for the settings that
+  keep them from reaching the default branch.
 - An account can read whatever its own permissions allow, and a computer with
   `open` egress can send what it read anywhere public. Give an account only the
   access the work needs, and choose `connected_hosts_only` for a computer that
