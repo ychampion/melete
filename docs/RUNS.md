@@ -193,9 +193,13 @@ in step with what the run asked for.
 - Quiet wakes notify nobody and get no daily summary. Only `run.log` reports,
   questions and the final result reach the person.
 - Limits the person set still stop it to ask; failures still stop it to ask.
+- A result being checked comes first: while the check runs, a shift that ends
+  (one a message started, say) rests until the check is done rather than on
+  the trigger, and a check that ended meanwhile gives the result right after.
 - Pause turns the trigger off (a shift under way finishes and rests on it);
   resume turns it back on, counting from then, and starts no shift. Stop
-  removes the trigger before it ends the run; finishing removes it too. A
+  removes the trigger before it ends the run; finishing, or cancelling the job
+  any other way, removes it too. A
   message to a resting standing run wakes it now; to a working one, it is read
   at the next shift.
 - `GET /runs` and `GET /runs/{id}` include `standing`: its kind, a plain
@@ -226,7 +230,10 @@ A model that has lost its way tends to repeat itself. Within one shift of a run
 or a helper, the broker answers the same tool call (same name, same arguments)
 three times and refuses the fourth, telling the model it already has that
 result and to change its approach (`apps/melete/src/broker/repeats.ts`). A
-retried delivery with the same client reference is not counted again.
+client reference does not make a call new: the engine derives it from the
+call's arguments and never resends, so the same reference again is a repeat.
+Terminal commands carry a fresh name each time, so running the same command
+again (tests after each fix) is not one.
 
 ## The person's side
 

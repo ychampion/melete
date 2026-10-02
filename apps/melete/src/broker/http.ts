@@ -227,12 +227,10 @@ export function createBrokerApp(options: {
   });
   app.post('/actions', async (c) => {
     const request = proposeActionRequest.parse(await c.req.json());
-    repeats.note(
-      c.get('claims'),
-      request.kind,
-      { connection_id: request.connection_id, payload: request.payload },
-      request.client_ref,
-    );
+    repeats.note(c.get('claims'), request.kind, {
+      connection_id: request.connection_id,
+      payload: request.payload,
+    });
     return c.json(await options.broker.propose(c.get('claims'), request), 201);
   });
   app.post('/reactions', async (c) =>

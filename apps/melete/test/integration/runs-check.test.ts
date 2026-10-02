@@ -395,6 +395,29 @@ withDb('checking a result before it is called done', () => {
     expect((await call(shift.claims, 'run.log', { kind: 'note', title: 'Other' })).status).toBe(
       200,
     );
+    // The engine names a proposal after its arguments, so the same call made
+    // again carries the same reference: that is a repeat too.
+    const propose = async () =>
+      JSON.stringify(
+        await (
+          await brokerApp.request('/actions', {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${signCapability(shift.claims, KEY)}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              connection_id: sandbox,
+              kind: 'web.fetch',
+              payload: { url: 'https://example.test/prices' },
+              client_ref: `${run.id}:web.fetch:same-digest`,
+            }),
+          })
+        ).json(),
+      );
+    for (let made = 0; made < REPEAT_LIMIT; made++)
+      expect(await propose()).not.toContain('already made');
+    expect(await propose()).toContain('already made 3 times');
     // The next shift starts its own count.
     await commit(shift.claims);
     const next = await claim(run.id);
@@ -566,18 +589,17 @@ describe('the repeat guard', () => {
   const claims = (scopes: string[]) =>
     ({ attempt_id: newId('att'), scopes }) as unknown as CapabilityClaims;
 
-  test('applies to long work only, and a retried delivery is not a repeat', () => {
+  test('applies to long work only', () => {
     const guard = new RepeatGuard();
     const chat = claims(['run.start']);
     for (let made = 0; made < REPEAT_LIMIT + 2; made++)
       guard.note(chat, 'web.fetch', { url: 'https://example.test' });
     const run = claims(['run.log']);
-    for (let made = 0; made < REPEAT_LIMIT + 2; made++)
-      guard.note(run, 'web.fetch', { url: 'https://example.test' }, 'same-ref');
-    guard.note(run, 'web.fetch', { url: 'https://example.test' }, 'second');
-    guard.note(run, 'web.fetch', { url: 'https://example.test' }, 'third');
-    expect(() => guard.note(run, 'web.fetch', { url: 'https://example.test' }, 'fourth')).toThrow(
+    for (let made = 0; made < REPEAT_LIMIT; made++)
+      guard.note(run, 'web.fetch', { url: 'https://example.test' });
+    expect(() => guard.note(run, 'web.fetch', { url: 'https://example.test' })).toThrow(
       'already made 3 times',
     );
+    guard.note(run, 'web.fetch', { url: 'https://example.test/other' });
   });
 });

@@ -5,6 +5,7 @@
  * refused with a message the model can act on. Counts live in memory: they
  * belong to one attempt, which does not outlive this process anyway.
  */
+import { createHash } from 'node:crypto';
 import type { CapabilityClaims } from '@melete/contracts';
 import { BrokerFault } from './errors.ts';
 
@@ -25,14 +26,15 @@ function stable(value: unknown): string {
 }
 
 export class RepeatGuard {
-  private readonly attempts = new Map<string, Map<string, { count: number; refs: Set<string> }>>();
+  private readonly attempts = new Map<string, Map<string, number>>();
 
   /**
    * Counts a call and refuses it once the same call was already made
-   * `REPEAT_LIMIT` times in this attempt. A retry that carries the same
-   * client reference is the same call delivered twice, not a repeat.
+   * `REPEAT_LIMIT` times in this attempt. A client reference does not make a
+   * call new: the engine derives it from the call's own arguments and never
+   * resends, so the same reference again is the same call made again.
    */
-  note(claims: CapabilityClaims, name: string, args: unknown, ref?: string) {
+  note(claims: CapabilityClaims, name: string, args: unknown) {
     // Only long work: a run's attempts and its helpers' are offered run.log.
     if (!claims.scopes.includes('run.log')) return;
     let calls = this.attempts.get(claims.attempt_id);
@@ -44,16 +46,16 @@ export class RepeatGuard {
       calls = new Map();
       this.attempts.set(claims.attempt_id, calls);
     }
-    const key = `${name}\n${stable(args)}`;
-    const seen = calls.get(key) ?? { count: 0, refs: new Set<string>() };
-    calls.set(key, seen);
-    if (ref !== undefined && seen.refs.has(ref)) return;
-    if (seen.count >= REPEAT_LIMIT)
+    // Kept as a digest: arguments can be large, and many attempts are remembered.
+    const key = createHash('sha256')
+      .update(`${name}\n${stable(args)}`)
+      .digest('base64');
+    const seen = calls.get(key) ?? 0;
+    if (seen >= REPEAT_LIMIT)
       throw new BrokerFault(
         'payload_invalid',
         `This exact ${name} call was already made ${REPEAT_LIMIT} times in this shift, and you have its result. Making it again will not change the answer: change your approach, or record what you know with run.log and end the shift with run.checkpoint.`,
       );
-    seen.count++;
-    if (ref !== undefined) seen.refs.add(ref);
+    calls.set(key, seen + 1);
   }
 }
