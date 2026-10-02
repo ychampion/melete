@@ -9,7 +9,7 @@ import { Markdown } from '../chat/Markdown.tsx';
 import { ReceiptRow, ResultCard } from '../chat/parts.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import { Button, Status, type StatusTone } from '../design/primitives.tsx';
-import { messageKey, useNow } from '../experience/hooks.ts';
+import { useNow } from '../experience/hooks.ts';
 import { toast } from '../shell/Shell.tsx';
 import {
   followThread,
@@ -30,13 +30,20 @@ import {
   namesAgent,
   needsRead,
   REQUEST_WORDS,
+  recordDelta,
+  type Streams,
   type Turn,
   timeline,
   upsertMessage,
+  withStreams,
 } from './reduce.ts';
 
-/** The shortest gap between two reads of the thread while the agent works. */
-const READ_EVERY_MS = 400;
+/**
+ * The shortest gap between two full reads of the thread. The stream carries
+ * the agent's words, cards and receipts itself; a full read is only for what
+ * it cannot: a new request or turn, or a request coming to rest.
+ */
+const READ_EVERY_MS = 1500;
 
 const TONES: Record<Turn['status'], StatusTone> = {
   idle: 'kind',
@@ -80,27 +87,57 @@ export function Thread({
   const onGoneRef = useRef(onGone);
   onGoneRef.current = onGone;
 
+  const missed = useRef(false);
+  const streams = useRef<Streams>(new Map());
+  const scheduleRef = useRef<() => void>(() => undefined);
+
   const read = useCallback(async () => {
     const mine = ++latestRead.current;
     const from = counter.current;
     const result = await roomsApi.thread(roomId, threadId);
     if (mine !== latestRead.current) return;
     if (result.data) {
+      // Messages that arrived while the read was out are folded in again; they
+      // replace by id. The agent's events cannot be told apart from what the
+      // read already holds, so if any came, the thread is read once more.
       let next = result.data;
-      for (const entry of frames.current) if (entry.n >= from) next = applyFrame(next, entry.frame);
+      let during = false;
+      for (const entry of frames.current) {
+        if (entry.n < from) continue;
+        if (entry.frame.kind === 'message') next = applyFrame(next, entry.frame, streams.current);
+        else during = true;
+      }
       frames.current = frames.current.filter((entry) => entry.n >= from);
-      setView(next);
+      setView(withStreams(next, streams.current));
       setError(null);
+      if (during) scheduleRef.current();
     } else if (result.status === 404 || result.status === 403) onGoneRef.current();
     else setError(result.error ?? result.unavailable);
   }, [roomId, threadId]);
 
+  // One coalesced read at a time, never more often than READ_EVERY_MS, and
+  // none while the page is hidden: it catches up once it is shown again.
   const schedule = useCallback(() => {
+    if (document.visibilityState === 'hidden') {
+      missed.current = true;
+      return;
+    }
     if (timer.current) return;
     timer.current = setTimeout(() => {
       timer.current = null;
       void read();
     }, READ_EVERY_MS);
+  }, [read]);
+  scheduleRef.current = schedule;
+
+  useEffect(() => {
+    const shown = () => {
+      if (document.visibilityState !== 'visible' || !missed.current) return;
+      missed.current = false;
+      void read();
+    };
+    document.addEventListener('visibilitychange', shown);
+    return () => document.removeEventListener('visibilitychange', shown);
   }, [read]);
 
   useEffect(() => {
@@ -112,6 +149,7 @@ export function Thread({
           onGoneRef.current();
           return;
         }
+        if (signal.type === 'signed_out') return;
         if (signal.type === 'open') {
           schedule();
           continue;
@@ -121,7 +159,8 @@ export function Thread({
         frames.current.push({ n: counter.current, frame });
         if (frames.current.length > 500) frames.current = frames.current.slice(-500);
         const current = viewRef.current;
-        setView((held) => (held ? applyFrame(held, frame) : held));
+        recordDelta(streams.current, current, frame);
+        setView((held) => (held ? applyFrame(held, frame, streams.current) : held));
         if (!current || needsRead(current, frame)) schedule();
       }
     })();
@@ -148,12 +187,12 @@ export function Thread({
     if (node && atBottom.current) node.scrollTop = node.scrollHeight;
   }, [tailKey]);
 
-  const send = async (text: string, ask: boolean) => {
+  const send = async (text: string, ask: boolean, key: string) => {
     const body =
       ask && !namesAgent(text, detail.room.agent_name)
         ? `${mentionFor(detail.room.agent_name)} ${text}`
         : text;
-    const result = await roomsApi.post(roomId, threadId, body, messageKey());
+    const result = await roomsApi.post(roomId, threadId, body, key);
     if (!result.data) {
       toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t send that' });
       return false;
@@ -354,8 +393,8 @@ export function NewThread({
         agentName={agent}
         placeholder="Write the first message"
         autoFocus
-        onSend={async (text, ask) => {
-          const result = await roomsApi.startThread(roomId, text, ask);
+        onSend={async (text, ask, key) => {
+          const result = await roomsApi.startThread(roomId, text, ask, key);
           if (!result.data) {
             toast({
               kind: 'err',

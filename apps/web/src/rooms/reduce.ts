@@ -92,16 +92,151 @@ export function timeline(view: ThreadView): ThreadEntry[] {
   return entries;
 }
 
-/** Whether the frame changes something only a fresh read of the thread can show. */
+/** The part of a request's stream event the thread folds in by itself. */
+type StreamItem =
+  | { type: 'text_delta'; text: string }
+  | { type: 'status'; status: Turn['status'] }
+  | { type: 'card'; card: RoomRequest['cards'][number] }
+  | { type: 'receipt'; receipt: RoomRequest['receipts'][number] }
+  | { type: string };
+type StreamEvent = { turn_id: string | null; item: StreamItem };
+
+const SETTLED = new Set<Turn['status']>([
+  'done',
+  'failed',
+  'stopped',
+  'needs_you',
+  'paused',
+  'idle',
+]);
+
+/**
+ * Whether the frame changes something only a fresh read of the thread can
+ * show: a request or turn this view has not seen, an event it cannot fold in
+ * by itself, or a request coming to rest (when the service's own copy of the
+ * answer replaces the streamed one).
+ */
 export function needsRead(view: ThreadView, frame: RoomFrame): boolean {
-  if (frame.kind === 'request') return true;
-  const id = frame.message.request_job_id;
-  return id !== null && !view.requests.some((request) => request.job_id === id);
+  if (frame.kind === 'message') {
+    const id = frame.message.request_job_id;
+    return id !== null && !view.requests.some((request) => request.job_id === id);
+  }
+  const request = view.requests.find((held) => held.job_id === frame.request_job_id);
+  if (!request) return true;
+  const event = frame.event as StreamEvent;
+  if (event.turn_id !== null && !request.turns.some((turn) => turn.id === event.turn_id))
+    return true;
+  const item = event.item;
+  if (item.type === 'status') return SETTLED.has((item as { status: Turn['status'] }).status);
+  return ![
+    'text_delta',
+    'card',
+    'receipt',
+    'say',
+    'action',
+    'note',
+    'done',
+    'reasoning',
+    'tool',
+  ].includes(item.type);
 }
 
-/** Fold one live frame into the thread: messages directly, the agent's work by a fresh read. */
-export function applyFrame(view: ThreadView, frame: RoomFrame): ThreadView {
-  return frame.kind === 'message' ? upsertMessage(view, frame.message) : view;
+/**
+ * The answer text each turn has streamed so far, built from the stream alone.
+ * A full read can be ahead of the stream, so its text is never added to: the
+ * two are compared instead (see `answerOf`), and a word is never shown twice.
+ */
+export type Streams = Map<string, string>;
+
+const WRITING = new Set<Turn['status']>(['queued', 'working', 'streaming']);
+
+/**
+ * Add a frame's words to what its turn has streamed. Called once per frame,
+ * before `applyFrame`, which only reads the streams.
+ */
+export function recordDelta(streams: Streams, view: ThreadView | null, frame: RoomFrame): void {
+  if (frame.kind !== 'request') return;
+  const event = frame.event as StreamEvent;
+  if (event.item.type !== 'text_delta' || !('text' in event.item)) return;
+  const turnId =
+    event.turn_id ??
+    view?.requests.find((request) => request.job_id === frame.request_job_id)?.turns.at(-1)?.id;
+  if (!turnId) return;
+  streams.set(turnId, (streams.get(turnId) ?? '') + event.item.text);
+}
+
+/** A turn's answer: the service's copy once it rests, else the further along of the two. */
+export function answerOf(turn: Turn, streamed: string | undefined): string {
+  if (streamed === undefined || !WRITING.has(turn.status)) return turn.answer;
+  const live = streamed.trimStart();
+  if (turn.answer.startsWith(live)) return turn.answer;
+  return live;
+}
+
+/** A read of the thread, with each answer still being written brought up to what has streamed. */
+export function withStreams(view: ThreadView, streams: Streams): ThreadView {
+  if (streams.size === 0) return view;
+  return {
+    ...view,
+    requests: view.requests.map((request) => ({
+      ...request,
+      turns: request.turns.map((turn) => ({
+        ...turn,
+        answer: answerOf(turn, streams.get(turn.id)),
+      })),
+    })),
+  };
+}
+
+function applyRequestEvent(
+  view: ThreadView,
+  jobId: string,
+  raw: unknown,
+  streams: Streams,
+): ThreadView {
+  const event = raw as StreamEvent;
+  const requests = view.requests.map((request) => {
+    if (request.job_id !== jobId) return request;
+    const item = event.item;
+    const turnId = event.turn_id ?? request.turns.at(-1)?.id ?? null;
+    const onTurn = (change: (turn: Turn) => Turn) =>
+      request.turns.map((turn) => (turn.id === turnId ? change(turn) : turn));
+    if (item.type === 'text_delta') {
+      if (!turnId) return request;
+      const streamed = streams.get(turnId);
+      return {
+        ...request,
+        turns: onTurn((turn) => ({ ...turn, answer: answerOf(turn, streamed) })),
+      };
+    }
+    if (item.type === 'status' && 'status' in item)
+      return {
+        ...request,
+        status: item.status,
+        turns: onTurn((turn) => ({ ...turn, status: item.status })),
+      };
+    if (item.type === 'card' && 'card' in item && !request.cards.some((c) => c.id === item.card.id))
+      return { ...request, cards: [...request.cards, item.card] };
+    if (
+      item.type === 'receipt' &&
+      'receipt' in item &&
+      !request.receipts.some((r) => r.id === item.receipt.id)
+    )
+      return { ...request, receipts: [...request.receipts, item.receipt] };
+    return request;
+  });
+  return { ...view, requests };
+}
+
+/**
+ * Fold one live frame into the thread: messages directly, and the agent's
+ * answer text, status, cards and receipts from its stream, so watching an
+ * answer costs no reads of the thread.
+ */
+export function applyFrame(view: ThreadView, frame: RoomFrame, streams: Streams): ThreadView {
+  return frame.kind === 'message'
+    ? upsertMessage(view, frame.message)
+    : applyRequestEvent(view, frame.request_job_id, frame.event, streams);
 }
 
 const ACTIVE = new Set<Turn['status']>(['queued', 'working', 'streaming', 'needs_you', 'paused']);
@@ -150,4 +285,15 @@ export function namesAgent(text: string, agentName: string): boolean {
     }
     return false;
   });
+}
+
+export type HeldSend = { text: string; ask: boolean; key: string };
+
+/**
+ * The submission key for a send: the one already used when the same message
+ * is sent again after a failure, so the service takes it once; a new one when
+ * the words or the ask changed.
+ */
+export function sendKey(held: HeldSend | null, text: string, ask: boolean, mint: () => string) {
+  return held && held.text === text && held.ask === ask ? held.key : mint();
 }

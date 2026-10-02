@@ -7,7 +7,6 @@
 import type { paths } from '@melete/client';
 import { errorMessage, readSse } from '@melete/client';
 import { client, type Result } from '../experience/adapter.ts';
-import { messageKey } from '../experience/hooks.ts';
 import { plainError } from '../experience/plain.ts';
 
 type Json<T> = T extends { content: { 'application/json': infer B } } ? B : never;
@@ -90,11 +89,11 @@ export const roomsApi = {
       }),
     ),
   threads: (id: string) => call<ThreadList>(() => api.GET('/rooms/{id}/threads', room(id))),
-  startThread: (id: string, text: string, askAgent: boolean) =>
+  startThread: (id: string, text: string, askAgent: boolean, key: string) =>
     call<Posted>(() =>
       api.POST('/rooms/{id}/threads', {
         ...room(id),
-        body: { text, ask_agent: askAgent, submission_id: messageKey() },
+        body: { text, ask_agent: askAgent, submission_id: key },
       }),
     ),
   thread: (id: string, threadId: string) =>
@@ -118,7 +117,8 @@ export const roomsApi = {
 export type ThreadSignal =
   | { type: 'frame'; frame: RoomFrame }
   | { type: 'open' }
-  | { type: 'gone' };
+  | { type: 'gone' }
+  | { type: 'signed_out' };
 
 /**
  * Follow a thread's live frames, resuming from the last seq seen after a drop.
@@ -154,6 +154,11 @@ export async function* followThread(
       );
       if (response.status === 403 || response.status === 404) {
         yield { type: 'gone' };
+        return;
+      }
+      // A session that ended needs a new sign-in; retrying cannot bring it back.
+      if (response.status === 401) {
+        yield { type: 'signed_out' };
         return;
       }
       if (!response.ok || !response.body) continue;

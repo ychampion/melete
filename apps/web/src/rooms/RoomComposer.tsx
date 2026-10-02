@@ -5,7 +5,8 @@
  */
 import { useId, useRef, useState } from 'react';
 import { Button } from '../design/primitives.tsx';
-import { mentionFor, namesAgent } from './reduce.ts';
+import { messageKey } from '../experience/hooks.ts';
+import { type HeldSend, mentionFor, namesAgent, sendKey } from './reduce.ts';
 
 export function RoomComposer({
   agentName,
@@ -15,23 +16,36 @@ export function RoomComposer({
 }: {
   agentName: string;
   placeholder: string;
-  /** Resolves true once the message is accepted, so the draft can be cleared. */
-  onSend: (text: string, ask: boolean) => Promise<boolean>;
+  /**
+   * Resolves true once the message is accepted, so the draft can be cleared.
+   * `key` stays the same for a retry of the same message, so a send whose
+   * answer was lost cannot post it twice.
+   */
+  onSend: (text: string, ask: boolean, key: string) => Promise<boolean>;
   autoFocus?: boolean;
 }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const field = useRef<HTMLTextAreaElement>(null);
+  const pending = useRef<HeldSend | null>(null);
   const hintId = useId();
   const asks = namesAgent(text, agentName);
 
   const send = async (ask: boolean) => {
     const body = text.trim();
     if (!body || busy) return;
+    const asking = ask || asks;
+    // The same message, sent again after a failure, keeps its key.
+    const held = pending.current;
+    const key = sendKey(held, body, asking, messageKey);
+    pending.current = { text: body, ask: asking, key };
     setBusy(true);
-    const ok = await onSend(body, ask || asks);
+    const ok = await onSend(body, asking, key);
     setBusy(false);
-    if (ok) setText('');
+    if (ok) {
+      pending.current = null;
+      setText('');
+    }
     field.current?.focus();
   };
 
