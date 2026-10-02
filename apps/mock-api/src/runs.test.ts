@@ -108,3 +108,18 @@ test('new work starts working, and an unknown id is not found', async () => {
   expect(C.runListResponse.parse((await call(mock, '/runs')).body).runs).toHaveLength(1);
   expect((await call(mock, '/runs/job_missing')).status).toBe(404);
 });
+
+test('a message takes finished work up again, and the export uses plain labels', async () => {
+  const mock = seeded();
+  const { runs } = C.runListResponse.parse((await call(mock, '/runs')).body);
+  const done = runs.find((run) => run.status === 'done');
+  if (!done) throw new Error('missing fixture');
+  const exported = C.runExportResponse.parse((await call(mock, `/runs/${done.id}/export`)).body);
+  expect(exported.markdown).toContain(' · Tried: ');
+  expect(exported.markdown).not.toMatch(/ · (experiment|checkpoint|finished):/);
+  const again = runOf(
+    (await call(mock, `/runs/${done.id}/message`, 'POST', { text: 'Find one more option.' })).body,
+  );
+  expect(again.status).toBe('working');
+  expect(again.finished_at).toBeNull();
+});

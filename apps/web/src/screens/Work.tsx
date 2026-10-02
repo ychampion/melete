@@ -14,6 +14,7 @@ import type { Run, RunEntry } from '../experience/types.ts';
 import { href, navigate } from '../router.ts';
 import { usePoll } from '../runs/poll.ts';
 import { RecordTimeline } from '../runs/Record.tsx';
+import { useRun } from '../runs/useRun.ts';
 import {
   ago,
   appendEntries,
@@ -314,18 +315,29 @@ function BestResult({ run }: { run: Run }) {
   );
 }
 
-function LimitControl({ run, onChange }: { run: Run; onChange: (run: Run) => void }) {
+/** The limit with a new number of hours, or without hours; null once nothing is left. */
+export function withHours(limit: Run['limit'], hours: number | null): Run['limit'] {
+  const { max_hours: _hours, ...rest } = limit ?? {};
+  const next = hours === null ? rest : { ...rest, max_hours: hours };
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+function LimitControl({
+  run,
+  act,
+}: {
+  run: Run;
+  act: (call: () => Promise<Result<{ run: Run }>>) => Promise<Result<{ run: Run }>>;
+}) {
   const current = run.limit?.max_hours ?? null;
   const [open, setOpen] = useState(false);
   const [hours, setHours] = useState(current ? String(current) : '');
   const [busy, setBusy] = useState(false);
   const save = (value: number | null) => {
     setBusy(true);
-    const limit = value === null ? null : { ...(run.limit ?? {}), max_hours: value };
-    void adapter.setRunLimit(run.id, limit).then((result) => {
+    void act(() => adapter.setRunLimit(run.id, withHours(run.limit, value))).then((result) => {
       setBusy(false);
       if (!result.data) return failed(result, 'Couldn’t set the limit');
-      onChange(result.data.run);
       setOpen(false);
       toast({
         kind: 'info',
@@ -423,14 +435,13 @@ function useRecord(id: string, open: boolean) {
 }
 
 function WorkDetail({ id }: { id: string }) {
-  const data = useLoad(() => adapter.run(id), [id]);
-  const run = data.data?.run ?? null;
+  const data = useRun(id);
+  const run = data.run;
   const now = useNow(true, 60_000);
   const [busy, setBusy] = useState<'pause' | 'stop' | 'download' | null>(null);
   const [stopping, setStopping] = useState(false);
   const [recordOpen, setRecordOpen] = useState(false);
   const record = useRecord(id, recordOpen);
-  const set = (next: Run) => data.set({ run: next });
   usePoll(
     () => {
       data.reload();
@@ -461,22 +472,29 @@ function WorkDetail({ id }: { id: string }) {
   const paused = isPaused(run);
   const helpers = new Map(run.steps.map((step) => [step.id, step.title]));
 
-  const act = (kind: 'pause' | 'stop', call: Promise<Result<{ run: Run }>>, fallback: string) => {
+  const act = (
+    kind: 'pause' | 'stop',
+    call: () => Promise<Result<{ run: Run }>>,
+    fallback: string,
+  ) => {
     setBusy(kind);
-    void call.then((result) => {
+    void data.act(call).then((result) => {
       setBusy(null);
-      if (!result.data) return failed(result, fallback);
-      set(result.data.run);
+      if (!result.data) failed(result, fallback);
     });
   };
   const message = async (text: string) => {
-    const result = await adapter.messageRun(run.id, text);
+    const reopening = finished;
+    const result = await data.act(() => adapter.messageRun(run.id, text));
     if (!result.data) {
       failed(result, 'Couldn’t send that');
       return false;
     }
-    set(result.data.run);
-    toast({ kind: 'info', title: 'Sent', sub: 'It takes this into account from here.' });
+    toast(
+      reopening
+        ? { kind: 'info', title: 'It’s picking this up again' }
+        : { kind: 'info', title: 'Sent', sub: 'It takes this into account from here.' },
+    );
     return true;
   };
   const exportRecord = () => {
@@ -529,7 +547,9 @@ function WorkDetail({ id }: { id: string }) {
                   icon="play"
                   loading={busy === 'pause'}
                   disabled={busy !== null}
-                  onClick={() => act('pause', adapter.resumeRun(run.id), 'Couldn’t resume it')}
+                  onClick={() =>
+                    act('pause', () => adapter.resumeRun(run.id), 'Couldn’t resume it')
+                  }
                 >
                   Resume
                 </Button>
@@ -539,7 +559,7 @@ function WorkDetail({ id }: { id: string }) {
                   variant="outline"
                   loading={busy === 'pause'}
                   disabled={busy !== null}
-                  onClick={() => act('pause', adapter.pauseRun(run.id), 'Couldn’t pause it')}
+                  onClick={() => act('pause', () => adapter.pauseRun(run.id), 'Couldn’t pause it')}
                 >
                   Pause
                 </Button>
@@ -651,7 +671,18 @@ function WorkDetail({ id }: { id: string }) {
             </Block>
           )}
 
-          {finished ? null : <LimitControl run={run} onChange={set} />}
+          {run.status === 'done' || run.status === 'failed' ? (
+            <Block title="Keep going" id="run-again">
+              <MessageBox
+                label="Ask it to pick this up again"
+                placeholder="Ask it to pick this up again, and say what to look at next"
+                action="Keep going"
+                onSend={message}
+              />
+            </Block>
+          ) : null}
+
+          {finished ? null : <LimitControl run={run} act={data.act} />}
 
           <section className="run-block" aria-labelledby="run-record-head">
             <h2 id="run-record-head" className="run-block-title">
@@ -697,7 +728,7 @@ function WorkDetail({ id }: { id: string }) {
               disabled={busy !== null}
               onClick={() => {
                 setStopping(false);
-                act('stop', adapter.stopRun(run.id), 'Couldn’t stop it');
+                act('stop', () => adapter.stopRun(run.id), 'Couldn’t stop it');
               }}
             >
               Stop

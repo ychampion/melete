@@ -12,6 +12,20 @@ type Entry = C.RunEntry & { seq: number };
 type Stored = { view: C.RunView; entries: Entry[]; paused: boolean };
 type Experiment = C.RunView['experiments']['recent'][number];
 
+/** What the export calls each part of the record, as the service does. */
+const ENTRY_LABELS: Record<C.RunEntryKind, string> = {
+  plan: 'Plan',
+  note: 'Note',
+  finding: 'Found',
+  decision: 'Decided',
+  experiment: 'Tried',
+  report: 'Update',
+  checkpoint: 'Progress saved',
+  step_started: 'Helper started',
+  step_finished: 'Helper finished',
+  finished: 'Done',
+};
+
 /** Entries per page of the record, small so paging shows with the fixtures. */
 export const RECORD_PAGE = 8;
 
@@ -411,6 +425,11 @@ export class MockRuns {
         if (run.view.status === 'needs_you') {
           run.view.status = 'working';
           run.view.question = null;
+        } else if (run.view.status === 'done' || run.view.status === 'failed') {
+          // A message takes finished work up again, out of any pause it ended under.
+          run.view.status = 'working';
+          run.view.finished_at = null;
+          run.paused = false;
         }
         return this.refresh(run);
       }
@@ -467,18 +486,21 @@ export class MockRuns {
     ];
     for (const entry of run.entries) {
       const by = entry.step_id ? ` (helper: ${steps.get(entry.step_id) ?? entry.step_id})` : '';
-      lines.push(`## ${entry.created_at} · ${entry.kind}${by}: ${entry.title}`, '');
+      lines.push(
+        `## ${entry.created_at} · ${ENTRY_LABELS[entry.kind] ?? 'Note'}${by}: ${entry.title}`,
+        '',
+      );
       if (entry.body) lines.push(entry.body, '');
       if (entry.kind === 'experiment') {
         const data = entry.data;
         lines.push(
           ...[
             typeof data.hypothesis === 'string' && data.hypothesis
-              ? `Hypothesis: ${data.hypothesis}`
+              ? `Idea: ${data.hypothesis}`
               : null,
             typeof data.value === 'number' ? `Value: ${data.value}` : null,
             `Outcome: ${String(data.outcome ?? '')}`,
-            `Checked against output: ${data.checked === true ? 'yes' : 'no'}`,
+            `Confirmed from its output: ${data.checked === true ? 'yes' : 'no'}`,
           ]
             .filter(Boolean)
             .map((fact) => `- ${fact}`),
