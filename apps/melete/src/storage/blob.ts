@@ -71,6 +71,25 @@ export class BlobTooLarge extends Error {
   }
 }
 
+/**
+ * What a `put` in this process returned. A reference is made only from one of
+ * these, so having the bytes, not just knowing their hash, is what lets an
+ * owner refer to a blob.
+ */
+const issued = new WeakSet<StoredBlob>();
+
+/** Called by each store on what its `put` returns. */
+export function issueStored(stored: StoredBlob): StoredBlob {
+  const frozen = Object.freeze({ ...stored });
+  issued.add(frozen);
+  return frozen;
+}
+
+/** Whether this came from a `put` in this process. */
+export function storedHere(stored: StoredBlob): boolean {
+  return issued.has(stored);
+}
+
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY = /^sha256\/([0-9a-f]{64})$/;
 

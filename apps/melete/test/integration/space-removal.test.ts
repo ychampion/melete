@@ -62,6 +62,7 @@ import { LocalBlobStore } from '../../src/storage/local.ts';
 import { storeReferenced } from '../../src/storage/refs.ts';
 import { BrowserSiteService } from '../../src/workers/browser/sites.ts';
 import { FakeStdioLauncher } from '../fixtures/stdio-launcher.ts';
+import { testOwner } from '../helpers/blob-owner.ts';
 import { testDatabase } from '../helpers/database.ts';
 import { type SeededSpace, seedFiles, seedSpace } from './space-removal-fixture.ts';
 
@@ -1139,23 +1140,16 @@ describe.if(handle !== null)('removing a space', () => {
       sql,
       blobs,
       new TextEncoder().encode(`only ${seeded.spaceId}`),
-      {
-        kind: 'test_owner',
-        id: 'only',
-        spaceId: seeded.spaceId,
-      },
+      testOwner(seeded.spaceId, 'only'),
     );
     const sharedBytes = new TextEncoder().encode(`shared ${seeded.spaceId}`);
-    const shared = await storeReferenced(sql, blobs, sharedBytes, {
-      kind: 'test_owner',
-      id: 'mine',
-      spaceId: seeded.spaceId,
-    });
-    await storeReferenced(sql, blobs, sharedBytes, {
-      kind: 'test_owner',
-      id: 'theirs',
-      spaceId: neighbour.spaceId,
-    });
+    const shared = await storeReferenced(
+      sql,
+      blobs,
+      sharedBytes,
+      testOwner(seeded.spaceId, 'mine'),
+    );
+    await storeReferenced(sql, blobs, sharedBytes, testOwner(neighbour.spaceId, 'theirs'));
 
     const { finished } = await removeCompletely(seeded);
     expect(outcome(finished)).toBe('complete');
@@ -1866,6 +1860,7 @@ describe.if(handle !== null)('removing a space', () => {
       journal: routeJournal,
       roots: { spacesRoot, workRoot },
       leaseMs: 5_000,
+      blobs,
     });
     const app = createApp({
       db,
