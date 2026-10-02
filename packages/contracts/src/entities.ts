@@ -74,6 +74,8 @@ export const CONNECTION_PROVIDERS = [
   'sandbox',
   /** A person's own computer, reached through the companion they paired it with. */
   'device',
+  /** Handoffs from a room's agent, and posts and files a person sends to a room they are in. */
+  'room',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;

@@ -22,7 +22,12 @@
  * existed has no origin and is never quotable.
  */
 
-export const OBJECTIVE_ORIGINS = ['owner_request', 'derived', 'room_member'] as const;
+export const OBJECTIVE_ORIGINS = [
+  'owner_request',
+  'derived',
+  'room_member',
+  'room_handoff',
+] as const;
 export type ObjectiveOrigin = (typeof OBJECTIVE_ORIGINS)[number];
 
 /** The recorded origin, and the person: both, or the objective is not quotable. */

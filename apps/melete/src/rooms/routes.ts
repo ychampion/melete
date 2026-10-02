@@ -8,6 +8,8 @@ import {
   addRoomMemberRequest,
   createRoomRequest,
   createRoomThreadRequest,
+  handoffDecision,
+  handoffResultDecision,
   peopleQuery,
   postRoomMessageRequest,
   type RoomStreamFrame,
@@ -20,7 +22,9 @@ import {
 import type { Context, Hono } from 'hono';
 import { readEventCursor } from '../api/events.ts';
 import type { EventChanges } from '../experience/events.ts';
+import type { TriggerService } from '../jobs/triggers.ts';
 import type { MemoryRouteOptions } from '../memory/routes.ts';
+import { HandoffService } from './handoffs.ts';
 import { mountRoomMemory } from './memory.ts';
 import { releaseAll, releaseOnTransition, releaseThread } from './release.ts';
 import { type RoomDeps, RoomService } from './service.ts';
@@ -30,23 +34,33 @@ export const ROOM_POLL_MS = 1000;
 
 export function mountRooms(
   app: Hono,
-  deps: RoomDeps & { changes?: EventChanges; memory?: MemoryRouteOptions },
+  deps: RoomDeps & {
+    changes?: EventChanges;
+    memory?: MemoryRouteOptions;
+    /** Wakes a room's request when a handoff it waits on ends. */
+    triggers?: TriggerService;
+  },
 ): RoomService {
   const service = new RoomService(deps);
+  const handoffs = new HandoffService({ db: deps.db, jobs: deps.jobs, triggers: deps.triggers });
+  // A person's work that a room handed them settles its handoff when it ends.
+  if (Array.isArray(deps.jobs.afterMove)) deps.jobs.afterMove.push(handoffs.afterMove());
   // A request that stops holding its thread lets the thread's next ask go:
   // when it changes state, when an attempt the broker parked ends, and on
   // startup for anything a stopped process left waiting.
   if (Array.isArray(deps.jobs.afterMove)) deps.jobs.afterMove.push(releaseOnTransition(deps));
   const runner = deps.runner;
   if (runner && Array.isArray(runner.onFinished)) {
-    runner.onFinished.push(async (tx, row) => {
+    runner.onFinished.push(async (tx, row, outcome) => {
       if (row.audience === 'room' && row.roomThreadId)
         await releaseThread(tx, deps, row.roomThreadId);
+      else await handoffs.settle(tx, row, outcome);
     });
     const previous = runner.afterRecovery;
     runner.afterRecovery = async () => {
       await previous?.();
       await releaseAll(deps.db, deps);
+      await handoffs.expireDue();
     };
   }
   const actor = (c: Context) => c.get('owner').id;
@@ -155,6 +169,16 @@ export function mountRooms(
   );
   // What the room remembers, and what its people shared into it.
   mountRoomMemory(app, service, deps.memory);
+  // Work a room asked the signed-in person to run with their own setup.
+  app.get('/handoffs', async (c) => c.json(await handoffs.list(actor(c))));
+  app.post('/handoffs/:id', async (c) => {
+    const input = handoffDecision.parse(await c.req.json());
+    return c.json(await handoffs.decide(param(c, 'id'), actor(c), input));
+  });
+  app.post('/handoffs/:id/result', async (c) => {
+    const input = handoffResultDecision.parse(await c.req.json());
+    return c.json(await handoffs.result(param(c, 'id'), actor(c), input));
+  });
   return service;
 }
 

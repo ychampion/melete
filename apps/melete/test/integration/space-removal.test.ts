@@ -354,6 +354,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   skill: 'operational',
   task: 'operational',
   room_presence: 'operational',
+  room_policy: 'operational',
+  room_handoff: 'operational',
   room_message: 'operational',
   room_thread: 'operational',
   // After the jobs and actions that `restrict` them.

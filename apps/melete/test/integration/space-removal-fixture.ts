@@ -294,6 +294,12 @@ export async function seedSpace(
   await sql`insert into room_message (id, space_id, thread_id, author_principal_id, text, submission_id)
     values (${messageId}, ${spaceId}, ${threadId}, ${principalId}, 'Thursday works.', ${newId('rmg')})`;
   await sql`insert into room_presence (space_id, principal_id) values (${spaceId}, ${principalId})`;
+  // How the room works, and a task its agent handed one of its people.
+  await sql`insert into room_policy (space_id) values (${spaceId})`;
+  await sql`insert into room_handoff
+    (id, space_id, room_job_id, thread_id, action_id, target_principal_id, task_text, task_hash, expires_at)
+    values (${newId('rho')}, ${spaceId}, ${jobId}, ${threadId}, ${newId('act')}, ${principalId},
+      'Send the notes', ${'0'.repeat(64)}, now() + interval '7 days')`;
   await sql`insert into memory_room_capture (message_id, space_id, outcome)
     values (${messageId}, ${spaceId}, 'skipped:asked')`;
   const claim = await sql<

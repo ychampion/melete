@@ -105,7 +105,12 @@ export function createMemoryTrustResolver(): TrustResolver {
         await tx`select * from job where id = ${input.job_id} and space_id = ${input.space_id}`;
       if (!job) return [];
       const room = await roomAuthorityOf(tx, input.job_id);
-      const said = room ? await roomOrigins(tx, room, input) : [];
+      // Work a room handed the person: the task is the room's words, not theirs.
+      const said = room
+        ? await roomOrigins(tx, room, input)
+        : job.objective_origin === 'room_handoff'
+          ? await handoffOrigins(tx, String(job.space_id), String(job.id), input)
+          : [];
       const scope = await memoryScopeForSpace(
         tx,
         input.space_id,
@@ -118,17 +123,18 @@ export function createMemoryTrustResolver(): TrustResolver {
         handles,
       });
       const remembered = align(input, resolution);
-      if (!room) return remembered;
+      if (!room && said.length === 0) return remembered;
       // In a room, what was said in this request answers first. Room memory
       // keeps the trust it was captured with, and never vouches for a value as
-      // if the person who asked had given it.
+      // if the person who asked had given it. In handed work, what the room's
+      // task names answers first; the person's own memory answers the rest.
       const answered = new Set(said.map((entry) => entry.path));
       return [
         ...said,
         ...remembered
           .filter((entry) => !answered.has(entry.path))
           .map((entry) =>
-            entry.origin_trust === 'owner'
+            room && entry.origin_trust === 'owner'
               ? originResolution.parse({
                   ...entry,
                   origin_trust: 'external_content',
@@ -220,4 +226,36 @@ export async function roomOrigins(
       );
   }
   return answers;
+}
+
+/**
+ * Where the gated values of a person's work came from, when a room handed
+ * them that work. The task is the room's text, which the person accepted to
+ * run, not text they typed: a value it names is `external_content`, so it
+ * carries a warning on the person's own card, and no standing rule they made
+ * for their own requests admits it.
+ */
+export async function handoffOrigins(
+  tx: Query,
+  spaceId: string,
+  jobId: string,
+  input: TrustResolutionInput,
+): Promise<OriginResolution[]> {
+  if (input.fields.length === 0) return [];
+  const [row] = await tx`select h.task_text, s.name from room_handoff h
+    join space s on s.id = h.space_id
+    join job j on j.id = h.personal_job_id
+    where h.personal_job_id = ${jobId} and j.space_id = ${spaceId}`;
+  if (!row) return [];
+  const task = String(row.task_text ?? '');
+  return input.fields
+    .filter((field) => saysVerbatim(task, field.value))
+    .map((field) =>
+      originResolution.parse({
+        ...field,
+        origin_trust: 'external_content',
+        handle: null,
+        description: `This value came from a request in the room ${JSON.stringify(String(row.name ?? ''))}, not from something you typed.`,
+      }),
+    );
 }

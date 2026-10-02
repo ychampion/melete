@@ -25,6 +25,7 @@ export * from './execution.ts';
 export * from './execution-admission.ts';
 export * from './experience.ts';
 export * from './feedback.ts';
+export * from './handoffs.ts';
 export * from './hooks.ts';
 export * from './job-state.ts';
 export * from './knowledge.ts';
