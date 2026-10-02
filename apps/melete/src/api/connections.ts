@@ -65,6 +65,7 @@ import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
 import { connection, owner, secret, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
+import { githubAccount } from '../egress/adapters/github.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
 import { ownedSpace, spaceAuthority } from '../principals/authority.ts';
@@ -120,6 +121,10 @@ function view(row: typeof connection.$inferSelect) {
     ...(row.configuration.builtin === undefined ? {} : { builtin: true }),
     ...(Array.isArray(row.configuration.needs_scope) && row.configuration.needs_scope.length
       ? { needs_scope: row.configuration.needs_scope }
+      : {}),
+    // The account a command-line connection acts as, found when it was connected.
+    ...(row.provider === 'command_line' && typeof row.configuration.account === 'string'
+      ? { account: row.configuration.account }
       : {}),
     last_checked_at: row.lastCheckedAt?.toISOString() ?? null,
     created_at: row.createdAt.toISOString(),
@@ -1080,6 +1085,7 @@ const KIND_COVERS = {
   mcp: 'tools',
   mcp_stdio: 'tools',
   sandbox: 'execution',
+  command_line: 'execution',
 } as const satisfies Record<
   ConnectionKindDescriptor['kind'],
   ConnectionCatalogEntry['covers'][number]
@@ -1331,6 +1337,35 @@ async function requestedShape(
       scopes: installation.scopes,
       secret: credentials ? JSON.stringify(credentials) : null,
       configuration: { kind: 'sandbox', sandbox: installation.config },
+    };
+  }
+  if (installation.kind === 'command_line') {
+    // The token is asked whose it is while it is still only in memory: one
+    // GitHub refuses never becomes a row or a sealed secret.
+    const checked = await githubAccount(installation.credentials.token, {
+      ...(factory.options.commandLine?.fetch ? { fetch: factory.options.commandLine.fetch } : {}),
+      ...(factory.options.commandLine?.githubApi
+        ? { api: factory.options.commandLine.githubApi }
+        : {}),
+      signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+    });
+    if (!checked.ok)
+      throw new ServiceError(
+        'invalid_request',
+        checked.code === 'credential_refused'
+          ? 'GitHub did not accept this token. Check that it has not expired, then paste it again.'
+          : CONNECTION_CHECK_DETAIL.unavailable,
+        400,
+      );
+    return {
+      scopes: installation.scopes,
+      secret: installation.credentials.token,
+      configuration: {
+        kind: 'command_line',
+        adapter: installation.config.adapter,
+        config: {},
+        account: checked.login,
+      },
     };
   }
   const shape =

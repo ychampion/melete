@@ -160,6 +160,8 @@ export const standingRule = z.strictObject({
     'save_file',
     'restore_file',
     'discard_draft',
+    /** Pushes from the agent's computer to `melete/` branches of one repository. */
+    'push_branch',
   ]),
   connection_id: id,
   recipient_class: text,

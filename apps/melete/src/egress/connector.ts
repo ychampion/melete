@@ -11,7 +11,12 @@
  * before anything is recorded, or fails without sending.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { ConnectorManifest, DispatchResult, JsonObject } from '@melete/contracts';
+import type {
+  ConnectorHealth,
+  ConnectorManifest,
+  DispatchResult,
+  JsonObject,
+} from '@melete/contracts';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Connector } from '../connectors/types.ts';
 import {
@@ -61,7 +66,13 @@ export async function relaying<T>(
 export const COMMAND_LINE_RELAY_ONLY =
   'Commands in the agent’s computer make these requests themselves. Run the command; it asks for approval when it needs one.';
 
-export function createCommandLineConnector(adapter: CredentialAdapterId): Connector {
+export function createCommandLineConnector(
+  adapter: CredentialAdapterId,
+  options: {
+    /** Asks the service whether the account still answers; left out, nothing is asked. */
+    health?: () => Promise<ConnectorHealth>;
+  } = {},
+): Connector {
   const name = egressWriteTool(adapter);
   const manifest: ConnectorManifest = {
     name: `command_line_${adapter}`,
@@ -147,6 +158,7 @@ export function createCommandLineConnector(adapter: CredentialAdapterId): Connec
       };
     },
     async health() {
+      if (options.health) return options.health();
       return {
         status: 'ok',
         detail: 'Used by commands in the agent’s computer.',

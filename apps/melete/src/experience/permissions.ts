@@ -26,6 +26,7 @@ import {
 import {
   isAssistantCommand,
   permissionVersion,
+  ruleCovers,
   ruleKinds,
   ruleRecipient,
   ruleView,
@@ -149,7 +150,7 @@ export class ExperiencePermissions {
       // A rule could never cover what an assistant asks for, so none is offered on its card.
       canAlways:
         warnings.length === 0 &&
-        Boolean(ruleKinds[action.kind]) &&
+        ruleCovers(action) &&
         !isAssistantCommand(row.experience_command_key),
       requestedAt: new Date(row.requested_at),
       review: await actionReviewView(this.sql, action.id),
@@ -228,7 +229,7 @@ export class ExperiencePermissions {
             409,
           );
         if (input.option !== 'always') return;
-        if (!ruleKinds[action.kind])
+        if (!ruleCovers(action))
           throw new ServiceError('invalid_request', 'This permission can only be used once.', 400);
         const warnings = await this.broker.origins(tx, job, action);
         if (
@@ -247,9 +248,12 @@ export class ExperiencePermissions {
         if (Date.parse(input.bounds.expires_at) <= Date.now())
           throw new ServiceError('invalid_request', 'Choose a future expiry.', 400);
         const recipient = ruleRecipient(action);
-        const label = recipient.length
-          ? recipientText(action.canonical_payload)
-          : 'this connected app';
+        const label =
+          ruleKinds[action.kind] === 'push_branch'
+            ? plainText(action.canonical_payload.resource, 'this repository', 200)
+            : recipient.length
+              ? recipientText(action.canonical_payload)
+              : 'this connected app';
         await tx`insert into experience_rule (id, space_id, connection_id, tool_kind, recipient, recipient_class,
         origin_trust, count_cap, expires_at, reconsent_after_days)
         values (${ruleId}, ${spaceId}, ${action.connection_id}, ${action.kind}, ${JSON.stringify(recipient)}::jsonb,

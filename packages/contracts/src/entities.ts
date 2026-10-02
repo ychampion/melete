@@ -116,6 +116,8 @@ export const connection = z.object({
    * asks for these with everything granted before.
    */
   needs_scope: z.array(z.string()).optional(),
+  /** The account a command-line connection acts as, as the service it reaches names it. */
+  account: z.string().max(200).optional(),
   last_checked_at: timestamp.nullable(),
   created_at: timestamp,
 });

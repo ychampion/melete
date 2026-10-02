@@ -4,6 +4,7 @@ import {
   CONNECTION_KIND_SCOPES,
   type ConnectorManifest,
 } from '@melete/contracts';
+import { createCommandLineConnector } from '../egress/connector.ts';
 import { storedSandboxConnection } from '../sandbox/connection.ts';
 import {
   DEFAULT_SANDBOX_LIFETIME_SECONDS,
@@ -176,16 +177,29 @@ describe('installable kinds against the connectors they select', () => {
     expect(sorted(CONNECTION_KIND_SCOPES.caldav)).toEqual(toolNames(calendarManifest));
     expect(sorted(CONNECTION_KIND_SCOPES.ics)).toEqual(['calendar.list']);
     expect(sorted(CONNECTION_KIND_SCOPES.sandbox)).toEqual(toolNames(sandboxExecManifest));
+    // The read grant is checked by the egress relay itself; the write grant is the broker tool.
+    expect(sorted(CONNECTION_KIND_SCOPES.command_line)).toEqual([
+      'egress.github_read',
+      ...toolNames(createCommandLineConnector('github').manifest),
+    ]);
   });
 
   test('a form says a grant asks first exactly when the connector requires approval', () => {
     const tools = new Map(
-      [...emailManifest.tools, ...calendarManifest.tools, ...sandboxExecManifest.tools].map(
-        (tool) => [tool.name, tool],
-      ),
+      [
+        ...emailManifest.tools,
+        ...calendarManifest.tools,
+        ...sandboxExecManifest.tools,
+        ...createCommandLineConnector('github').manifest.tools,
+      ].map((tool) => [tool.name, tool]),
     );
     for (const descriptor of CONNECTION_KIND_DESCRIPTORS)
       for (const scope of descriptor.scopes) {
+        // Reading through the relay is no tool: it never asks.
+        if (/^egress\.[a-z0-9]+_read$/.test(scope.scope)) {
+          expect([scope.effect_class, scope.asks_first]).toEqual(['read', false]);
+          continue;
+        }
         const tool = tools.get(scope.scope);
         expect(tool).toBeDefined();
         expect(scope.effect_class).toBe(tool?.effect_class ?? 'read');
