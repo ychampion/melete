@@ -146,8 +146,9 @@ A suspended workspace nobody resumes is removed after
   brokered action each, with a timeout of up to 120 seconds, the first 16 KiB of
   output in the conversation and up to 1 MiB stored with the job.
 - **Background processes.** `process.start`, `process.list`, `process.read`,
-  `process.write`, `process.signal`, `process.stop` and `process.extend`, for
-  work longer than a command (see "Long-running work" below).
+  `process.write`, `process.signal`, `process.stop`, `process.extend` and
+  `process.wait`, for work longer than a command (see "Long-running work"
+  below).
 - **Files.** The file tools write the job's workspace, which the container
   sees as `/work`.
 - **Computer.** `computer.screenshot` captures the desktop and stores the PNG
@@ -226,6 +227,36 @@ processes, the conversation that started them says so: "Your computer's awake
 time for today is used up (6 of 6 hours). Processes stopped at 14:02 UTC." A
 start over a limit is refused with the reason, which the agent passes on: "This
 computer is already running 4 processes. Stop one first."
+
+### Picking the conversation up when a process finishes
+
+An agent that starts the test suite says so and ends its turn; the
+conversation picks up again when the suite finishes, with its exit code and
+last lines. It asks for this when it starts the process
+(`process.start` with `notify`), or later for a process already running
+(`process.wait` with `later`), on one of three things:
+
+| On | Wakes the job |
+|---|---|
+| `exit` | when the process ends, with its exit code, the reason it ended and the end of its output |
+| `output` | on a line it prints, or a line matching a regular expression (RE2), at most once a minute; lines printed meanwhile are covered by that wake |
+| `listening` | once, when the process opens its port |
+
+The agent then ends its turn waiting on `process:<process id>`. The service
+asks each computer with watched processes how they are, every 5 seconds on
+Docker and every 30 seconds on remote providers, in one call per computer, and
+only what the job asked for wakes it: until then no attempt runs and no model
+is called. A process that ends before the line or port it was watched for
+wakes the job with how it ended. A job watches at most four processes at once,
+and each watch goes when its process has ended.
+
+For a short wait inside the turn, `process.wait` holds the turn for up to 100
+seconds until the process ends, prints a matching line or opens its port, and
+returns what it saw.
+
+A wake never reaches a computer while it is being suspended: the woken
+conversation waits for the suspend to finish and then resumes the computer as
+usual.
 
 ## Watching and taking over
 
