@@ -604,8 +604,8 @@ export class RunService {
         kind: 'checkpoint',
         title:
           outcome.kind === 'budget_exhausted'
-            ? `Shift ${shifts} reached its time limit`
-            : `Shift ${shifts} ended`,
+            ? 'Paused at the time limit for one stretch of work'
+            : 'Picked up where it stopped',
         body: said ? clip(said, 4000) : 'The shift ended without a handoff.',
         data: { next: 'Continue from the record.', next_shift: 'now', automatic: true },
       });
@@ -639,7 +639,7 @@ export class RunService {
     const limit = runLimit.safeParse(state.limit ?? {});
     if (!limit.success) return null;
     const { max_hours, max_output_tokens, max_shifts } = limit.data;
-    if (max_shifts !== undefined && shifts >= max_shifts) return `${max_shifts} shifts`;
+    if (max_shifts !== undefined && shifts >= max_shifts) return `${max_shifts} rounds of work`;
     if (
       max_hours !== undefined &&
       Date.now() - state.createdAt.getTime() >= max_hours * 60 * 60_000
@@ -651,7 +651,7 @@ export class RunService {
         .select({ n: sql<number>`coalesce(sum(coalesce(settled, reserved)), 0)::float8` })
         .from(budgetLedger)
         .where(and(inArray(budgetLedger.jobId, jobs), eq(budgetLedger.kind, 'tokens')));
-      if (Number(used?.n ?? 0) >= max_output_tokens) return `${max_output_tokens} output tokens`;
+      if (Number(used?.n ?? 0) >= max_output_tokens) return 'the amount of model use you allowed';
     }
     return null;
   }
@@ -693,9 +693,11 @@ export class RunService {
     if (!entries.length) return;
     const count = (kind: string) => entries.filter((entry) => entry.kind === kind).length;
     const parts = [
-      count('experiment') ? `${count('experiment')} experiments` : null,
+      count('experiment')
+        ? `${count('experiment')} ${count('experiment') === 1 ? 'try' : 'tries'}`
+        : null,
       count('finding') ? `${count('finding')} findings` : null,
-      count('step_finished') ? `${count('step_finished')} helper results` : null,
+      count('step_finished') ? `${count('step_finished')} from helpers` : null,
     ].filter(Boolean);
     const latest = [...entries].reverse().find((entry) => entry.kind === 'checkpoint');
     const next = latest ? String(object(latest.data).next ?? '') : '';

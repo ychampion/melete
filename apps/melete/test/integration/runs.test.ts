@@ -330,7 +330,7 @@ withDb('long work in shifts', () => {
       await required(runner).commitOutcome(shift.claims, done());
       expect((await row(run.id)).state).toBe(expected);
     }
-    expect((await view(run.id)).question).toContain('limit you set (2 shifts)');
+    expect((await view(run.id)).question).toContain('limit you set (2 rounds of work)');
     const cleared = await request(`/runs/${run.id}/limit`, 'PUT', { limit: null });
     expect(runResponse.parse(await cleared.json()).run.limit).toBeNull();
   });
