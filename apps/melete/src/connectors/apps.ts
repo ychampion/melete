@@ -142,7 +142,7 @@ export const appsManifest: ConnectorManifest = {
     {
       name: 'apps.publish',
       description:
-        'Publish a workspace folder as an app, or a new version of one: index.html on top, web files only (html, js, css, json, images, woff2; 200 files, 25 MiB). Bundle everything. data names files it reads, each saved first with files.write and expect; review:true asks before each version reaches viewers. collections: responses it collects. Asks if it reaches new people, uses WebRTC or shows new data.',
+        'Publish a workspace folder as an app, or a new version of one: index.html on top, web files only (html, js, css, json, images, woff2; 200 files, 25 MiB). Bundle everything. data names files it reads, each saved first with files.write and expect; review:true asks before each version reaches viewers. collections: responses it collects. Asks if it reaches new people, has WebRTC or shows new data.',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -233,7 +233,7 @@ export const appsManifest: ConnectorManifest = {
     {
       name: 'apps.rollback',
       description:
-        'Make an earlier version of an app the one people see. Asks the person when that version uses WebRTC or shows new data.',
+        'Make an earlier version of an app the one people see. Asks first if that version has WebRTC or shows viewers other data.',
       input_schema: {
         type: 'object',
         additionalProperties: false,
