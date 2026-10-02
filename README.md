@@ -95,6 +95,10 @@ key, and you can switch to your own model later.
 On a server, you can skip the build and pull the published images instead:
 [Using prebuilt images](docs/DEPLOYMENT.md#using-prebuilt-images).
 
+`bun run melete check`, `bun run melete doctor` and `bun run melete status` judge
+an installation and name what to do next:
+[The melete command](docs/DEPLOYMENT.md#the-melete-command).
+
 [Deployment](docs/DEPLOYMENT.md) covers version requirements, Windows, remote
 servers, HTTPS, Tailscale, backups and removal.
 
