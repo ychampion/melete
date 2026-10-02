@@ -263,7 +263,11 @@ databaseTest(
         },
       })
       .catch((error: { code?: string }) => error);
-    expect(stranger).toMatchObject({ code: 'payload_invalid' });
+    // The same words whether or not such a routine exists anywhere.
+    expect(stranger).toMatchObject({
+      code: 'payload_invalid',
+      message: 'Data "d" names a conversation or routine that is not one of yours in this space.',
+    });
   },
   60_000,
 );

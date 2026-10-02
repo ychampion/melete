@@ -495,8 +495,12 @@ a response goes through the same admission and approvals as any other, and a
 recipient or destination lifted from one is not a trusted origin. Workspace
 writes usually do not ask, so one more rule closes the path from a viewer's text
 to what every viewer sees: in a conversation that has read responses, a write or
-move to a file an app's current version shows, and any command in a
-conversation whose files an app shows, waits for the person. A deleted
+move to a file an app's current version shows, and any command (code runner
+or the agent's computer) in a conversation whose files an app shows, waits for
+the person. The rule follows the conversation that read the responses: another
+conversation or a routine that is later steered by a summary of them can still
+write a bound file without asking. Update review closes that path for the data
+it covers. A deleted
 response is removed from the app; copies the agent already read stay in that
 conversation and in the record of the read.
 

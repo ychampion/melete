@@ -93,8 +93,12 @@ instructions, and anything it does about one asks as it always would.
 
 Once a conversation has read responses, changing a file an app shows from that conversation asks
 you first, even though saving files in the workspace usually does not. So does running a command
-there, since a command can change any file. Without that, text a viewer wrote could steer what
-every other viewer sees.
+there (the code runner or the agent's computer), since a command can change any file. Without
+that, text a viewer wrote could steer what every other viewer sees.
+
+This holds in the conversation that read the responses. A different conversation, or a routine,
+that is later steered by a summary of them can still save a file an app shows without asking. To
+check each new version of the data yourself, publish with update review on.
 
 ## Versions
 

@@ -374,7 +374,9 @@ async function resolveData(
       const [routine] = await tx<{ job_id: string }[]>`select t.job_id from trigger t
         join job j on j.id = t.job_id where t.id = ${source} and j.kind = 'routine'`;
       if (!routine)
-        throw refused(`Data "${name}" names a routine that is not one of yours in this space.`);
+        throw refused(
+          `Data "${name}" names a conversation or routine that is not one of yours in this space.`,
+        );
       source = routine.job_id;
     }
     let routine = false;

@@ -5,7 +5,18 @@
 import type { JsonObject } from '@melete/contracts';
 import type { Sql, TransactionSql } from 'postgres';
 
-const WORKSPACE_WRITES = new Set(['files.write', 'files.move', 'exec.run', 'exec.python']);
+/**
+ * Tools that can change a conversation's files: the two that name a path, and
+ * every command that runs where those files are (the code runner and the
+ * agent's computer). A command on the person's own device runs elsewhere.
+ */
+const WORKSPACE_WRITES = new Set([
+  'files.write',
+  'files.move',
+  'exec.run',
+  'exec.python',
+  'terminal.run',
+]);
 
 /**
  * Whether this action must ask the person because the conversation read

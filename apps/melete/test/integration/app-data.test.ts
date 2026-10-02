@@ -12,6 +12,7 @@ import path from 'node:path';
 import type { JsonObject } from '@melete/contracts';
 import { Hono } from 'hono';
 import { ServiceError } from '../../src/api/errors.ts';
+import { asksAfterResponses } from '../../src/apps/response-guard.ts';
 import { mountApps } from '../../src/apps/routes.ts';
 import { createArtifactRecorder } from '../../src/artifact/record.ts';
 import { recordId } from '../../src/broker/records.ts';
@@ -603,6 +604,26 @@ databaseTest(
     expect((await write('data/deals.json', '["call me"]')).status).toBe('needs_approval');
     expect((await write('./data//deals.json', '["call me"]')).status).toBe('needs_approval');
     expect((await write('notes/summary.json', '["fine"]')).status).not.toBe('needs_approval');
+    // Every command that runs where the files are asks too, since a command can change any file.
+    for (const [kind, payload] of [
+      ['exec.run', { command: 'echo "[]" > data/deals.json' }],
+      ['exec.python', { code: 'open("data/deals.json", "w").write("[]")' }],
+      ['terminal.run', { command: 'echo "[]" > data/deals.json' }],
+    ] as const)
+      expect(
+        await asksAfterResponses(ctx.sql, ctx.claims.job_id, {
+          kind,
+          canonical_payload: payload,
+        }),
+      ).toBe(true);
+    // A conversation that read no responses is not held to this.
+    const other = recordId('job');
+    expect(
+      await asksAfterResponses(ctx.sql, other, {
+        kind: 'terminal.run',
+        canonical_payload: { command: 'ls' },
+      }),
+    ).toBe(false);
     // Nothing reached viewers without the person.
     expect((await json(await ctx.api(ctx.bo)(`/apps/${appId}/data/deals`))).value).toEqual(['v2']);
   },
