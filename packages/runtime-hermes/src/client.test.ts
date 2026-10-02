@@ -19,10 +19,12 @@ import {
   instructionTokens,
   measureRenderedInput,
   PLAIN_WORDS,
+  PROGRESS_NOTES,
   renderInput,
   renderInstructions,
   renderSoul,
 } from './instructions.ts';
+import { UNPROPOSED_CONTINUATION } from './proposal.ts';
 
 const SUFFIX = '01J8ZP3QWABCDEFGHJKMNPQRST';
 const bundle: AttemptBundle = {
@@ -238,7 +240,7 @@ describe('context assembly', () => {
     expect(text).toContain(`act_${SUFFIX} (email.send) was approved and has not been carried out.`);
     expect(text).toContain(`Call resume_action with action_id "act_${SUFFIX}"`);
     expect(text).toContain('{"to":"alex@example.test","body":"I can attend Friday."}');
-    expect(text).toContain('The owner said: go ahead');
+    expect(text).toContain('The person said: go ahead');
     // Once it has left, or when it was refused, there is nothing to resume.
     const [decision] = resumed.inputs.approval_results;
     if (!decision) throw new Error('fixture decision absent');
@@ -271,10 +273,10 @@ describe('context assembly', () => {
       },
     ];
     const text = renderInput(withdrawn);
-    expect(text).toContain('was withdrawn before the owner answered, because the request changed');
+    expect(text).toContain('was withdrawn before the person answered, because the request changed');
     expect(text).toContain('nobody refused it');
     expect(text).not.toContain('was denied');
-    expect(text).not.toContain('The owner said');
+    expect(text).not.toContain('The person said');
   });
 
   test('constraints read as short prose, and a default is never written down', () => {
@@ -315,7 +317,7 @@ describe('context assembly', () => {
     expect(open).toContain('- Public research: no private knowledge is loaded');
     expect(open).not.toContain('allowed_domains');
     plain.job.constraints = { deliverable: { kind: 'answer' } };
-    expect(renderInput(plain)).toContain('- Done means the owner has an answer.');
+    expect(renderInput(plain)).toContain('- Done means the person has an answer.');
   });
 
   test('a wait cancelled before it fired is named, with no wait in force now', () => {
@@ -484,5 +486,40 @@ describe('the pin', () => {
   test('names the exact release the image is built from', () => {
     expect(HERMES_PINNED_TAG).toBe('v2026.9.7');
     expect(RUNTIME_VERSION).toBe('hermes@v2026.9.7+melete-observers.3');
+  });
+});
+
+describe('how the model is told about the person', () => {
+  test('nothing the model reads calls the person "the owner"', () => {
+    const full = structuredClone(bundle);
+    full.job.constraints = { deliverable: { kind: 'answer' } };
+    full.inputs.approval_results = [
+      { action_id: `act_${SUFFIX}`, decision: 'denied', note: 'not now' },
+      { action_id: `act_${SUFFIX}`, decision: 'denied', note: APPROVAL_OUTDATED_NOTE },
+      {
+        action_id: `act_${SUFFIX}`,
+        decision: 'approved',
+        note: 'go ahead',
+        kind: 'email.send',
+        status: 'approved',
+        payload: { to: 'alex@example.test' },
+      },
+    ];
+    const rendered = [
+      renderSoul(),
+      renderInstructions(full),
+      renderInput(full),
+      UNPROPOSED_CONTINUATION,
+    ].join('\n');
+    expect(rendered).not.toMatch(/\bowner\b/i);
+    // The new message sits under a heading that names the person.
+    expect(renderInput(full)).toContain('## From the person\n\nany news?');
+  });
+
+  test('the model is asked for short notes to the person between batches of work', () => {
+    const text = renderInstructions(bundle);
+    for (const line of PROGRESS_NOTES) expect(text).toContain(line);
+    expect(text).toContain('Before a batch');
+    expect(text).toContain('no\nreasoning');
   });
 });

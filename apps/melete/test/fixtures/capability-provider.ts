@@ -25,7 +25,7 @@ export function capabilityProvider() {
       const task = recordTask.parse(JSON.parse(encoded));
       const typed =
         text.includes('using the declared column type') ||
-        /## From the owner\n\n[^#]*chronolog/i.test(text);
+        /## From the person\n\n[^#]*chronolog/i.test(text);
       const asText = text.includes('comparing the selected values as text');
       const rows = [...task.rows];
       const value = (row: (typeof rows)[number]): number | string => {

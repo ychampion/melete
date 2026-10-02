@@ -34,7 +34,7 @@ export type EngineSkillIntakeOperations = {
 export const LEARNING_TOOL: ToolSpec = {
   name: 'learning.propose',
   description:
-    'Refer the owner correction in this job to evaluated procedure learning. Returns pending history, never installs a live skill. Requires a recorded owner intervention.',
+    "Refer the person's correction in this job to evaluated procedure learning. Returns pending history, never installs a live skill. Requires a recorded correction from the person.",
   input_schema: { type: 'object', properties: {}, additionalProperties: false },
   effect_class: 'read',
   connection_id: null,

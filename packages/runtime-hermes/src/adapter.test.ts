@@ -464,7 +464,7 @@ describe('a go-ahead with nothing proposed', () => {
     expect(outcome).toEqual({ kind: 'waiting_for_approval', action_ids: [ACTION] });
     expect(inputs).toHaveLength(2);
     expect(inputs[1]).toContain('proposed nothing');
-    expect(inputs[1]).toContain('the broker will ask the owner');
+    expect(inputs[1]).toContain('the broker will ask the person');
   });
 
   test('an ask that still proposes nothing settles waiting for input, never completed', async () => {
