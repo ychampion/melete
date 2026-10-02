@@ -18,8 +18,8 @@ Bundle everything: scripts, styles, fonts and images are files in the folder.
 It cannot load from other sites, call APIs or open windows. Use web file
 types (html, js, css, json, images, woff2); at most 200 files and 25 MiB.
 
-Data it shows is a workspace file, such as `data/deals.json`, named under
-`data` when you publish; the app reads its newest version, so a routine that
+Data it shows is a file saved with `files.write` and `expect`, such as
+`data/deals.json`, named under `data` when you publish; the app reads its newest version, so a routine that
 rewrites the file keeps the app current.
 
 To read it, `parent.postMessage({type:'melete.data',id,name:'deals'},'*')`; the

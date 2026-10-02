@@ -23,9 +23,10 @@ including for each new version. The question shows:
   the name it has now, and a new name is shown as a change of its own;
 - who will be able to open it: only you, the people named by the email of their account here, or
   everyone with an account here;
-- the data it shows, with the file and the conversation it comes from. An app shows data only
-  from your own conversations in the space it is published from;
-- the forms it collects answers with, if any.
+- the data it shows, with the file and the conversation it comes from, and whether viewers see
+  each new version at once or only after you review it. An app shows data only from your own
+  conversations in the space it is published from;
+- the responses it collects, if any.
 
 Nothing is stored and nobody sees anything until you allow it. If a file changes after you allowed
 it, that publish stops, and the agent asks again with the files as they are now.
@@ -37,6 +38,48 @@ Viewers need an account on this installation. There are no public links.
 An app can show the newest version of a file in the workspace, such as `data/deals.json`. The
 agent names the file when it publishes, and you see it on the question. A routine that rewrites
 the file keeps the app current without a new version.
+
+- The file is one the agent saved as a checked file (`files.write` with `expect`), so every
+  version of it is recorded with the hash of its bytes. Viewers get exactly a recorded version.
+- JSON is given to the app parsed, and other text (txt, csv, tsv, md) as a string, up to 2 MiB.
+- An app reads only files from conversations in the space it was published from.
+- An open app is told when data it read has a newer version, and reads it again if it wants.
+
+### Reviewing updates first
+
+By default, viewers see each new version as soon as it is written. The question to publish can
+instead say that you review each one first. Then:
+
+- viewers see nothing until you let a first version through, and after that, the version you let
+  through last;
+- the app's page tells you when a new version waits, and Review shows what it changes: for JSON,
+  the top-level keys added, changed and removed, and the size before and after;
+- "Show to viewers" lets the newest version through. An older one cannot be, so what viewers get
+  is what you were shown. The version you let through is kept, so it stays the same when the
+  file moves on.
+
+The publisher, while they belong to the space, and the space's owner review updates.
+
+## Responses
+
+An app can collect responses, such as a form's answers, in collections it names when it is
+published. A response is stored with the account of the person who sent it and the version they
+sent it from.
+
+- A response is a JSON object of at most the size its collection declares, and 16 KiB at most.
+- One person can send one app 30 responses a minute, and an app keeps 10,000 at most. Past
+  either, new ones are refused until a minute passes or a manager deletes some.
+- Managers read responses under Responses on the app's page, and can delete one. Deleting removes
+  what it said.
+- An app's code can send a response in the name of the person viewing it without them pressing
+  anything, within those limits. Responses say what the app sent, not what the person meant.
+
+### The agent and responses
+
+The agent can list the apps in its space that the person manages (`apps.list`) and read their
+responses (`apps.read_submissions`), only in the space the app was published from. A response
+is what a viewer, or the app's code, wrote: the agent treats it as data to summarise, never as
+instructions, and anything it does about one asks as it always would.
 
 ## Versions
 
@@ -109,13 +152,15 @@ only what it fetched for the person viewing:
 
 | Message | What happens |
 |---|---|
-| `{type:'melete.data', id, name}` | The data named `name`, as the publish approval listed it |
+| `{type:'melete.data', id, name}` | The data named `name`, as the publish approval listed it: parsed JSON, a string, or `null` before there is a version to show |
+| `{type:'melete.submit', id, collection, record}` | Sends a response, for a collection the app declares |
 | `{type:'melete.link', url}` | Asks the person, then opens an https link in a new tab |
 | `{type:'melete.size', height}` | Sets the frame's height, within limits |
 
 Answers come back as `{type:'melete.reply', id, ok, value}` or
-`{type:'melete.reply', id, ok:false, error}`. A small client an app can
-include:
+`{type:'melete.reply', id, ok:false, error}`. Melete also sends
+`{type:'melete.changed', name}` when data the app read has a newer version. A
+small client an app can include:
 
 ```js
 const melete = (() => {
@@ -129,6 +174,11 @@ const melete = (() => {
     waiting.delete(reply.id);
     reply.ok ? settle[0](reply.value) : settle[1](new Error(reply.error));
   });
+  const changed = new Set();
+  addEventListener('message', (event) => {
+    if (event.source === parent && event.data && event.data.type === 'melete.changed')
+      for (const listener of changed) listener(event.data.name);
+  });
   const ask = (message) => new Promise((resolve, reject) => {
     const id = ++next;
     waiting.set(id, [resolve, reject]);
@@ -136,6 +186,8 @@ const melete = (() => {
   });
   return {
     data: (name) => ask({ type: 'melete.data', name }),
+    submit: (collection, record) => ask({ type: 'melete.submit', collection, record }),
+    onChange: (listener) => changed.add(listener),
     link: (url) => parent.postMessage({ type: 'melete.link', url }, '*'),
     size: (height) => parent.postMessage({ type: 'melete.size', height }, '*'),
   };
@@ -153,6 +205,13 @@ const melete = (() => {
 | `DELETE /apps/{id}` | Delete the app (its publisher or the space's owner) |
 | `POST /apps/{id}/views` | A view of the app's current version for the person asking |
 | `GET /apps/view/{token}/{path}` | One file of a view, isolated; no session is read |
+| `GET /apps/{id}/data/{name}` | One of the app's data, for the person viewing it |
+| `GET /apps/{id}/data-updates` | New data versions waiting for review (publisher or space owner) |
+| `POST /apps/{id}/data-updates` | Let the newest version of reviewed data through to viewers |
+| `POST /apps/{id}/submissions` | Send a response from the app |
+| `GET /apps/{id}/submissions` | The app's responses, newest first (managers) |
+| `DELETE /apps/{id}/submissions/{submission_id}` | Delete one response (managers) |
 
-The agent's tools are `apps.publish` and `apps.rollback` on the built-in Apps connection, which
-every space has. Both are `write_external` and always ask.
+The agent's tools are on the built-in Apps connection, which every space has. `apps.publish` and
+`apps.rollback` are `write_external` and always ask. `apps.list` and `apps.read_submissions`
+only read.
