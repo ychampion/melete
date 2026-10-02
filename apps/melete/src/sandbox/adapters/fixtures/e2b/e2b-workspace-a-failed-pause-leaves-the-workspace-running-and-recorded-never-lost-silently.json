@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 90,
+        "atMs": 28,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes",
         "path": "/sandboxes",
@@ -48,7 +48,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 91,
+        "atMs": 28,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -62,7 +62,7 @@
     },
     {
       "request": {
-        "atMs": 92,
+        "atMs": 28,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
@@ -106,7 +106,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 92,
+        "atMs": 28,
         "body": [
           {
             "event": {
@@ -131,11 +131,11 @@
     },
     {
       "request": {
-        "atMs": 104,
+        "atMs": 33,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "65ecb18118fcfacbdccc361ffbae12d46d26cf1d309604fb220ee32da758bac8",
+        "bodySha256": "afcceb74ac3dfa918045a1d77dd92d6b268be455c9258bf5fbb02734584f84f4",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -151,7 +151,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0WORKSPACEWRITE0001\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ ( 'sh' '-c' 'printf '\\''%s'\\'' '\\''kept'\\'' > /work/kept.txt' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | { head -c 4194305 > \"$d/out\"; cat > /dev/null; }\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0WORKSPACEWRITE0001\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ ( 'sh' '-c' 'printf '\\''%s'\\'' '\\''kept'\\'' > /work/kept.txt' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | setsid -w sh -c 'head -c \"$1\" > \"$2\"; exec cat > /dev/null' melete-keep 4194305 \"$d/out\"\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work"
             },
@@ -179,7 +179,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 105,
+        "atMs": 33,
         "body": [
           {
             "event": {
@@ -204,7 +204,7 @@
     },
     {
       "request": {
-        "atMs": 107,
+        "atMs": 34,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -232,7 +232,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 107,
+        "atMs": 34,
         "body": {
           "entries": [
             {
@@ -258,7 +258,7 @@
     },
     {
       "request": {
-        "atMs": 111,
+        "atMs": 36,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001/pause",
         "path": "/sandboxes/fake-sbx-0001/pause",
@@ -282,7 +282,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 111,
+        "atMs": 36,
         "body": {
           "code": 503,
           "message": "the sandbox is still finishing a previous snapshot; try again"
@@ -291,7 +291,7 @@
     },
     {
       "request": {
-        "atMs": 118,
+        "atMs": 38,
         "method": "GET",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -310,7 +310,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 118,
+        "atMs": 38,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -335,7 +335,7 @@
     },
     {
       "request": {
-        "atMs": 119,
+        "atMs": 38,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fwork%2Fkept.txt&username=user",
@@ -357,7 +357,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 119,
+        "atMs": 38,
         "body": {
           "bytes": 4
         }
@@ -365,7 +365,7 @@
     },
     {
       "request": {
-        "atMs": 129,
+        "atMs": 41,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001/pause",
         "path": "/sandboxes/fake-sbx-0001/pause",
@@ -382,12 +382,12 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 129
+        "atMs": 41
       }
     },
     {
       "request": {
-        "atMs": 141,
+        "atMs": 48,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001/connect",
         "path": "/sandboxes/fake-sbx-0001/connect",
@@ -411,7 +411,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 141,
+        "atMs": 48,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -425,7 +425,7 @@
     },
     {
       "request": {
-        "atMs": 144,
+        "atMs": 49,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fwork%2Fkept.txt&username=user",
@@ -447,7 +447,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 144,
+        "atMs": 49,
         "body": {
           "bytes": 4
         }
@@ -455,7 +455,7 @@
     },
     {
       "request": {
-        "atMs": 148,
+        "atMs": 50,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -467,7 +467,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 148
+        "atMs": 50
       }
     }
   ]

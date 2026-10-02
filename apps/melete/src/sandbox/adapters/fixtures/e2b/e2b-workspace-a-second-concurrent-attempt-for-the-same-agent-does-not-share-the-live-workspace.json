@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 65,
+        "atMs": 22,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes",
         "path": "/sandboxes",
@@ -48,7 +48,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 65,
+        "atMs": 23,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -62,7 +62,7 @@
     },
     {
       "request": {
-        "atMs": 67,
+        "atMs": 23,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
@@ -106,7 +106,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 67,
+        "atMs": 23,
         "body": [
           {
             "event": {
@@ -131,7 +131,7 @@
     },
     {
       "request": {
-        "atMs": 89,
+        "atMs": 33,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001/pause",
         "path": "/sandboxes/fake-sbx-0001/pause",
@@ -148,12 +148,12 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 89
+        "atMs": 33
       }
     },
     {
       "request": {
-        "atMs": 263,
+        "atMs": 104,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001/connect",
         "path": "/sandboxes/fake-sbx-0001/connect",
@@ -177,7 +177,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 263,
+        "atMs": 104,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -191,7 +191,7 @@
     },
     {
       "request": {
-        "atMs": 271,
+        "atMs": 106,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -203,7 +203,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 271
+        "atMs": 106
       }
     }
   ]
