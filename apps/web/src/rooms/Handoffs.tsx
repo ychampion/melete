@@ -6,7 +6,7 @@
  * read, so what runs and what is posted is what they saw.
  */
 import { useState } from 'react';
-import { Button } from '../design/primitives.tsx';
+import { Button, Status } from '../design/primitives.tsx';
 import type { RoomHandoff } from '../experience/types.ts';
 import { navigate } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
@@ -28,6 +28,10 @@ export function RoomHandoffs({
   const [busy, setBusy] = useState<string | null>(null);
   const shown = handoffs.filter((handoff) => !done.has(`${handoff.id}:${handoff.state}`));
   if (shown.length === 0) return null;
+  // Work already running waits on nothing from the person, so it is not counted.
+  const waiting = shown.filter(
+    (handoff) => handoff.state === 'pending' || handoff.state === 'settled',
+  ).length;
 
   const settle = (handoff: RoomHandoff) => {
     setDone((previous) => new Set(previous).add(`${handoff.id}:${handoff.state}`));
@@ -77,10 +81,12 @@ export function RoomHandoffs({
       <div className="home-section-head">
         <h2 id="home-rooms-asked">
           From your rooms
-          <span className="nav-count">{shown.length}</span>
+          {waiting > 0 ? <span className="nav-count">{waiting}</span> : null}
         </h2>
       </div>
       {shown.map((handoff) => {
+        if (handoff.state === 'running' || handoff.state === 'accepted')
+          return <Running key={handoff.id} handoff={handoff} />;
         const resultReady = handoff.state === 'settled' && handoff.result !== null;
         const title = resultReady
           ? `Share the result with ${handoff.room.name}?`
@@ -167,5 +173,47 @@ export function RoomHandoffs({
         );
       })}
     </section>
+  );
+}
+
+/**
+ * A room's task running with the person's own setup. Nothing waits on them
+ * here: anything it sends asks them first, and its result comes back to this
+ * place for them to share or keep.
+ */
+function Running({ handoff }: { handoff: RoomHandoff }) {
+  const title = `Running with your setup for ${handoff.room.name}`;
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: a fieldset would restyle the card and carries no more meaning than a named group
+    <div className="decision handoff" role="group" aria-label={title} data-running="true">
+      <div className="decision-who">
+        <span className="room-tile handoff-tile" aria-hidden="true">
+          {Array.from(handoff.room.name.trim())[0]?.toUpperCase() ?? '#'}
+        </span>
+        <span className="decision-agent clamp1">{handoff.room.name}</span>
+        <div className="grow" />
+        <Status tone="working" quiet>
+          Running
+        </Status>
+      </div>
+      <p className="decision-title voice">{title}</p>
+      <div className="decision-preview">
+        <span className="handoff-label">The task, word for word</span>
+        <div className="decision-draft handoff-text">{handoff.task}</div>
+      </div>
+      <span className="decision-meta">
+        Anything it sends asks you first. When it finishes, you see the result here and choose
+        whether {handoff.room.name} sees it.
+      </span>
+      <div className="decision-actions">
+        <Button
+          className="btn-card"
+          variant="outline"
+          onClick={() => navigate(`/rooms/${handoff.room.id}/${handoff.thread_id}`)}
+        >
+          Open the room
+        </Button>
+      </div>
+    </div>
   );
 }

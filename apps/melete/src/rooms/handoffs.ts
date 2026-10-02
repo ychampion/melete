@@ -198,13 +198,18 @@ export class HandoffService {
 
   /**
    * What waits for the person on Home and in Approvals: a task to run or
-   * decline, or a result to share or keep. Shown only in their own space.
+   * decline, a task running with their setup, or a result to share or keep.
+   * Shown only in their own space.
    */
   async waiting(actor: string, spaceId: string): Promise<RoomHandoff[]> {
     if ((await personalSpaceOf(this.deps.db, actor)) !== spaceId) return [];
     const { handoffs } = await this.list(actor);
     return handoffs.filter(
-      (item) => item.state === 'pending' || (item.state === 'settled' && item.result_hash),
+      (item) =>
+        item.state === 'pending' ||
+        item.state === 'accepted' ||
+        item.state === 'running' ||
+        (item.state === 'settled' && item.result_hash),
     );
   }
 

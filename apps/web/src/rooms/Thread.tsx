@@ -25,9 +25,9 @@ import {
 } from './api.ts';
 import { PersonAvatar, Who } from './parts.tsx';
 import { RoomComposer } from './RoomComposer.tsx';
+import { RoomPermissionCard } from './RoomPermission.tsx';
 import {
   applyFrame,
-  canAnswer,
   canStop,
   decisionWords,
   mentionFor,
@@ -502,8 +502,9 @@ function Answer({
 
 /**
  * What a request waits on, and what was answered. Everyone in the room sees
- * each waiting permission and who may answer it under the room's rule; only
- * those people get Allow once and Deny. Each answer names who gave it.
+ * each waiting permission whole, with what exactly it would do, and who may
+ * answer it under the room's rule; only those people get its answers. Each
+ * answer names who gave it.
  */
 function Waiting({
   request,
@@ -521,65 +522,15 @@ function Waiting({
   if (permissions.length === 0 && decisions.length === 0) return null;
   return (
     <div className="col room-waiting">
-      {permissions.map((permission) => {
-        const mine = canAnswer(permission, me);
-        const busy = answering === permission.id;
-        return (
-          <section key={permission.id} className="room-permission" aria-label={permission.what}>
-            <span className="room-permission-tile" aria-hidden="true">
-              <Icon name="lock" size={16} />
-            </span>
-            <div className="col room-permission-main">
-              <span className="room-permission-what">{permission.what}</span>
-              {permission.why.map((line) => (
-                <span key={line} className="room-permission-why">
-                  {line}
-                </span>
-              ))}
-              {permission.eligible_approvers && permission.eligible_approvers.length > 0 ? (
-                <span className="room-permission-who">
-                  Who can answer:{' '}
-                  {permission.eligible_approvers.map((person, index) => (
-                    <span key={person.principal_id}>
-                      {index > 0 ? ', ' : null}
-                      <Who label={person.display_name} />
-                      {person.principal_id === me ? ' (you)' : null}
-                    </span>
-                  ))}
-                </span>
-              ) : (
-                <span className="room-permission-who">Nobody in the room can answer this now.</span>
-              )}
-              {mine ? (
-                <div className="room-permission-actions">
-                  <span className="room-permission-note">
-                    <Icon name="lock" size={13} />
-                    This request can be allowed once or denied.
-                  </span>
-                  <div className="row" style={{ gap: 8 }}>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={busy}
-                      onClick={() => onAnswer(permission, 'deny')}
-                    >
-                      Deny
-                    </Button>
-                    <Button
-                      size="sm"
-                      loading={busy}
-                      disabled={busy}
-                      onClick={() => onAnswer(permission, 'allow_once')}
-                    >
-                      Allow once
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          </section>
-        );
-      })}
+      {permissions.map((permission) => (
+        <RoomPermissionCard
+          key={permission.id}
+          permission={permission}
+          me={me}
+          busy={answering === permission.id}
+          onAnswer={onAnswer}
+        />
+      ))}
       {decisions.map((decision) => (
         <span key={decision.approval_id} className="room-decision">
           <Icon name={decision.decision === 'approved' ? 'circleCheck' : 'circleX'} size={14} />

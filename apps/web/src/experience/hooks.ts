@@ -146,7 +146,13 @@ export function useDecisions(): Decisions & { count: number } {
   const { decisions } = useApp();
   return {
     ...decisions,
-    count: decisions.permissions.length + decisions.questions.length + decisions.handoffs.length,
+    // A task already running with the person's setup waits on nothing from them.
+    count:
+      decisions.permissions.length +
+      decisions.questions.length +
+      decisions.handoffs.filter(
+        (handoff) => handoff.state === 'pending' || handoff.state === 'settled',
+      ).length,
   };
 }
 

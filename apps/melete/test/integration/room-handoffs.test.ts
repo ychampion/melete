@@ -413,6 +413,11 @@ withDb('room handoffs', () => {
 
     const running = await accept(world.bob, handoffId, task);
     expect(running.state).toBe('running');
+    // While it runs it stays on his Home, as running, with the work it started.
+    const runningHome = homeResponse.parse(await ok(send(world.bob.cookie, '/home')));
+    expect(runningHome.handoffs?.map((item) => [item.id, item.state, item.job_id])).toEqual([
+      [handoffId, 'running', running.job_id],
+    ]);
     const [work] = await sql`select * from job where id = ${running.job_id}`;
     expect({
       objective: work?.objective,

@@ -725,7 +725,9 @@ export function mountRoomsMock(
       .filter(
         (handoff) =>
           handoff.target === viewer.id &&
-          (handoff.state === 'pending' || (handoff.state === 'settled' && handoff.result !== null)),
+          (handoff.state === 'pending' ||
+            handoff.state === 'running' ||
+            (handoff.state === 'settled' && handoff.result !== null)),
       )
       .sort((a, b) => a.created_at.localeCompare(b.created_at))
       .map(handoffView);

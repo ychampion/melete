@@ -498,53 +498,21 @@
   }
 }
 
-/* ---------- what a request waits on (read-only here) ---------- */
+/* ---------- what a request waits on ---------- */
 
 .room-waiting {
   gap: 8px;
   margin-top: 4px;
 }
-.room-permission {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 16px;
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-lift);
-  background: var(--surface);
+.room-permission-card {
+  gap: 6px;
 }
-.room-permission-tile {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  flex-shrink: 0;
-  border-radius: 10px;
-  background: var(--sand);
-  color: var(--sand-ink);
-}
-.room-permission-main {
-  gap: 3px;
-  min-width: 0;
-}
-.room-permission-what {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--heading);
-  overflow-wrap: anywhere;
-}
-.room-permission-why,
 .room-permission-who {
+  padding: 0 4px;
   font-size: 13px;
   line-height: 19px;
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-.room-permission-who {
   color: var(--secondary);
-  margin-top: 4px;
+  overflow-wrap: anywhere;
 }
 .room-decision {
   display: inline-flex;
@@ -559,24 +527,6 @@
 /* ---------- answering, notes and deleting in a thread ---------- */
 
 .room-rule {
-  font-size: 12px;
-  color: var(--muted);
-}
-.room-permission-actions {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
-}
-.room-permission-note {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
   font-size: 12px;
   color: var(--muted);
 }
