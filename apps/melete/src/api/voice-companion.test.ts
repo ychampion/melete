@@ -14,6 +14,7 @@ import { mountVoice, type VoicePrivacy } from './voice.ts';
 import {
   CANNOT_FROM_HERE,
   type CompanionContext,
+  CUT_OFF_LINE,
   companionBody,
   companionInput,
   openVoiceCompanion,
@@ -194,6 +195,34 @@ describe('what the companion is shown and what it says', () => {
       say: 'I am on the last page now.',
     });
     expect(parseCompanionReply('')).toEqual({ intent: 'quiet', say: null });
+  });
+
+  test('a reply cut off mid-JSON is never spoken as JSON', () => {
+    const cut = [
+      '{"intent":"talk","say":"I am reading the third page and',
+      '{"intent":"talk","sa',
+      '{"intent":',
+      '```json\n{"intent":"talk","say":"Nearly there',
+      '{',
+      '"intent":"talk","say":"half of it"',
+    ];
+    for (const text of cut) {
+      const aside = parseCompanionReply(text);
+      expect(aside).toEqual({ intent: 'talk', say: CUT_OFF_LINE });
+      expect(aside.say).not.toContain('{');
+      expect(aside.say).not.toContain('"');
+    }
+  });
+
+  test('a whole reply with words around it is still read, and its words never carry JSON', () => {
+    expect(parseCompanionReply('Sure: {"intent":"talk","say":"On it."}')).toEqual({
+      intent: 'talk',
+      say: 'On it.',
+    });
+    expect(parseCompanionReply('{"intent":"talk","say":"{\\"intent\\":\\"talk\\""}')).toEqual({
+      intent: 'talk',
+      say: CUT_OFF_LINE,
+    });
   });
 
   test('it never says out loud that something was done or approved', () => {

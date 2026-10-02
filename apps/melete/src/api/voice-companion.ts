@@ -161,6 +161,31 @@ function sayable(text: string): string {
   return end > 40 ? head.slice(0, end + 1) : cut(flat, VOICE_ASIDE_LIMITS.say_characters);
 }
 
+/** Said in place of a reply that was cut off before it was whole. */
+export const CUT_OFF_LINE = 'Sorry, I lost my words there. Could you say that again?';
+
+/** Text that reads as JSON rather than as words to say, whole or cut off. */
+const jsonShaped = (text: string) =>
+  /^[[{]/.test(text.trim()) || /"(?:intent|say)"\s*:/.test(text) || /^\s*```/.test(text);
+
+/** The reply, when `text` is exactly the JSON asked for. */
+function readReply(text: string): z.infer<typeof reply> | null {
+  if (!text) return null;
+  try {
+    const result = reply.safeParse(JSON.parse(text));
+    return result.success ? result.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The one object in text with words around it, such as "Sure: {...}". */
+function embeddedObject(text: string): string {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  return start >= 0 && end > start ? text.slice(start, end + 1) : '';
+}
+
 /**
  * What the model's text means. A reply that is not the JSON asked for is taken
  * as words to say, since that is what a small model most often does wrong; an
@@ -168,18 +193,16 @@ function sayable(text: string): string {
  */
 export function parseCompanionReply(text: string): VoiceAside {
   const body = unfenced(text);
-  let parsed: z.infer<typeof reply> | null = null;
-  try {
-    const result = reply.safeParse(JSON.parse(body));
-    if (result.success) parsed = result.data;
-  } catch {
-    parsed = null;
-  }
+  const parsed = readReply(body) ?? readReply(embeddedObject(body));
   if (!parsed) {
+    // A reply shaped like the JSON asked for, but cut off or malformed, is
+    // never read out: what it meant to say cannot be told from it.
+    if (jsonShaped(body)) return { intent: 'talk', say: CUT_OFF_LINE };
     const said = withoutClaims(sayable(body));
     return said ? { intent: 'talk', say: said } : { intent: 'quiet', say: null };
   }
-  const say = withoutClaims(sayable(parsed.say ?? ''));
+  const words = parsed.say ?? '';
+  const say = jsonShaped(unfenced(words)) ? CUT_OFF_LINE : withoutClaims(sayable(words));
   if (parsed.intent === 'quiet' || (!say && parsed.intent === 'talk'))
     return { intent: 'quiet', say: null };
   return { intent: parsed.intent, say: say || null };
