@@ -170,6 +170,8 @@ export const standingRule = z.strictObject({
 export type StandingRule = z.infer<typeof standingRule>;
 /** How much of a proposed file a permission card carries. */
 export const PERMISSION_FILE_PREVIEW_CHARS = 20_000;
+/** A person a room's permission names: their id, and their name with their email. */
+export const permissionPerson = z.strictObject({ principal_id: id, display_name: z.string() });
 export const permissionCard = z.strictObject({
   id,
   conversation_id: id,
@@ -197,6 +199,13 @@ export const permissionCard = z.strictObject({
   created_at: date,
   /** The beliefs the action rested on, recorded when it was proposed. */
   because: z.array(becauseLink).max(20).optional(),
+  /** In a room: the person whose request this is. */
+  requested_by: permissionPerson.optional(),
+  /**
+   * In a room: everyone who may answer this, under the room's rule. Anyone
+   * else in the room sees the card and cannot answer it.
+   */
+  eligible_approvers: z.array(permissionPerson).optional(),
 });
 export type PermissionCard = z.infer<typeof permissionCard>;
 

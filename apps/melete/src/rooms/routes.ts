@@ -11,6 +11,9 @@ import {
   peopleQuery,
   postRoomMessageRequest,
   type RoomStreamFrame,
+  roomConnectionUpdate,
+  roomPermissionDecision,
+  roomPolicyUpdate,
   sandboxComputerList,
   updateMeRequest,
 } from '@melete/contracts';
@@ -118,6 +121,30 @@ export function mountRooms(app: Hono, deps: RoomDeps & { changes?: EventChanges 
       ),
     ),
   );
+  app.get('/rooms/:id/policy', async (c) => c.json(await service.policy(param(c, 'id'), actor(c))));
+  app.put('/rooms/:id/policy', async (c) => {
+    const input = roomPolicyUpdate.parse(await c.req.json());
+    return c.json(await service.setPolicy(param(c, 'id'), actor(c), input));
+  });
+  app.post('/rooms/:id/approvals/:approvalId', async (c) => {
+    const input = roomPermissionDecision.parse(await c.req.json());
+    const result = await service.decide(param(c, 'id'), param(c, 'approvalId'), actor(c), input);
+    return result instanceof Response ? result : c.json(result);
+  });
+  app.get('/rooms/:id/connections', async (c) =>
+    c.json(await service.connections(param(c, 'id'), actor(c))),
+  );
+  app.put('/rooms/:id/connections/:connectionId', async (c) => {
+    const input = roomConnectionUpdate.parse(await c.req.json());
+    return c.json(
+      await service.setConnection(
+        param(c, 'id'),
+        actor(c),
+        param(c, 'connectionId'),
+        input.shared_use,
+      ),
+    );
+  });
   app.post('/rooms/:id/presence', async (c) =>
     c.json(await service.presence(param(c, 'id'), actor(c))),
   );

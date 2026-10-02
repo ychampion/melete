@@ -1,4 +1,9 @@
-import { hashOriginWarnings, permissionDecision, unavailable } from '@melete/contracts';
+import {
+  hashOriginWarnings,
+  permissionCard,
+  permissionDecision,
+  unavailable,
+} from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import {
@@ -12,6 +17,13 @@ import type { BrokerService } from '../broker/service.ts';
 import { ENDED_NOTE, ENDED_STATES } from '../jobs/withdraw.ts';
 import { actionBecause } from '../memory/basis.ts';
 import { ownJobClause, requestPrincipal } from '../principals/authority.ts';
+import {
+  eligibleApprovers,
+  labelsIn,
+  mayDecide,
+  roomAuthorityOf,
+  waitingFor,
+} from '../rooms/approvals.ts';
 import { actionProjectionRow, type ExperienceEffects } from './effects.ts';
 import { explainHandles } from './evidence.ts';
 import {
@@ -112,8 +124,40 @@ export class ExperiencePermissions {
     return row;
   }
 
+  /**
+   * A permission of the room's own work in this room. No owner check: the
+   * rooms routes have already checked that the reader is in the room, and a
+   * room's work belongs to none of its people.
+   */
+  async findInRoom(spaceId: string, id: string) {
+    const [row] = await this.sql`select p.*, j.experience_parent_id, j.experience_command_key,
+      j.state as job_state,
+      c.label, c.provider,
+      c.configuration, a.job_id, a.connection_id from approval p join action a on a.id = p.action_id
+      join job j on j.id = a.job_id join connection c on c.id = a.connection_id
+      left join job r on r.id = j.experience_parent_id and r.space_id = j.space_id
+      left join principal jp on jp.id = j.principal_id
+      where p.id = ${id} and j.space_id = ${spaceId} and c.space_id = ${spaceId}
+        and (j.audience = 'room' or r.audience = 'room' or jp.kind = 'room')`;
+    if (!row) throw experienceMissing();
+    return row;
+  }
+
   async card(spaceId: string, id: string) {
-    const row = await this.find(spaceId, id);
+    return this.project(spaceId, id, await this.find(spaceId, id), true);
+  }
+
+  /** A room's permission as everyone in the room sees it, naming who may answer it. */
+  async roomCard(spaceId: string, id: string) {
+    return this.project(spaceId, id, await this.findInRoom(spaceId, id), false);
+  }
+
+  private async project(
+    spaceId: string,
+    id: string,
+    row: Awaited<ReturnType<ExperiencePermissions['find']>>,
+    own: boolean,
+  ) {
     const action = await loadAction(this.sql, String(row.action_id));
     const warnings = Array.isArray(row.origin_warnings) ? row.origin_warnings : [];
     // One line per kind of doubt: two warnings of the same kind say it once.
@@ -129,9 +173,19 @@ export class ExperiencePermissions {
     );
     const [parent] = await this.sql`select j.title from job j
       where j.id = ${row.experience_parent_id ?? row.job_id} and j.space_id = ${spaceId}
-      ${ownJobClause(this.sql, 'j')}`;
+      ${own ? ownJobClause(this.sql, 'j') : this.sql``}`;
     if (parent) reasons.push(`For ${plainText(parent.title, 'your request')}.`);
-    return projectPermission({
+    // In a room the card says whose request it is and who may answer it; a
+    // standing rule is never offered there, since it would answer for others.
+    const room = await roomAuthorityOf(this.sql, String(row.job_id));
+    const eligible = room ? await eligibleApprovers(this.sql, room) : [];
+    const names = room ? await labelsIn(this.sql, [...eligible, room.requestedBy ?? '']) : null;
+    if (room && names) reasons.push(waitingFor(room, names));
+    const person = (principalId: string) => ({
+      principal_id: principalId,
+      display_name: names?.get(principalId) ?? 'Someone',
+    });
+    const card = projectPermission({
       id,
       version: permissionVersion(row),
       action: {
@@ -148,12 +202,19 @@ export class ExperiencePermissions {
       reasons,
       // A rule could never cover what an assistant asks for, so none is offered on its card.
       canAlways:
+        !room &&
         warnings.length === 0 &&
         Boolean(ruleKinds[action.kind]) &&
         !isAssistantCommand(row.experience_command_key),
       requestedAt: new Date(row.requested_at),
       review: await actionReviewView(this.sql, action.id),
       because: await actionBecause(this.sql, spaceId, action.id),
+    });
+    if (!room) return card;
+    return permissionCard.parse({
+      ...card,
+      ...(room.requestedBy ? { requested_by: person(room.requestedBy) } : {}),
+      eligible_approvers: eligible.map(person),
     });
   }
 
@@ -184,7 +245,48 @@ export class ExperiencePermissions {
 
   async decide(spaceId: string, id: string, raw: unknown) {
     const input = permissionDecision.parse(raw);
-    const row = await this.find(spaceId, id);
+    // The answer is recorded as the signed-in person's.
+    return this.answer(spaceId, id, await this.find(spaceId, id), input, requestPrincipal());
+  }
+
+  /**
+   * An answer to a room's permission, recorded as `decider`'s. Who may answer
+   * is the room's rule, which the broker checks as it records the answer; a
+   * standing rule is never made from a room.
+   */
+  async decideInRoom(
+    spaceId: string,
+    id: string,
+    input: { option: 'allow_once' | 'deny'; version: string; payload_hash: string },
+    decider: string,
+  ) {
+    const row = await this.findInRoom(spaceId, id);
+    // Asked here so a refusal reads plainly; the broker asks again under its lock.
+    const room = await roomAuthorityOf(this.sql, String(row.job_id));
+    if (!room || !(await mayDecide(this.sql, room, decider)))
+      throw new ServiceError(
+        'not_yours_to_answer',
+        room
+          ? waitingFor(room, await labelsIn(this.sql, [room.requestedBy ?? '']))
+          : 'Nobody in the room can answer this one.',
+        403,
+      );
+    if (String(row.payload_hash) !== input.payload_hash)
+      throw new ServiceError(
+        'approval_hash_mismatch',
+        'What this asks for changed. Review it again.',
+        409,
+      );
+    return this.answer(spaceId, id, row, input, decider);
+  }
+
+  private async answer(
+    spaceId: string,
+    id: string,
+    row: Awaited<ReturnType<ExperiencePermissions['find']>>,
+    input: ReturnType<typeof permissionDecision.parse>,
+    decider: string | undefined,
+  ) {
     const ruleId = `rule_${id}`;
     // The work this was for has ended, so nothing it covered can happen: it is
     // withdrawn, a Deny agrees with that, and an Allow is told why it cannot.
@@ -255,14 +357,15 @@ export class ExperiencePermissions {
         values (${ruleId}, ${spaceId}, ${action.connection_id}, ${action.kind}, ${JSON.stringify(recipient)}::jsonb,
         ${label}, 'connector_verified', ${input.bounds.count_cap}, ${input.bounds.expires_at}, ${input.bounds.reconsent_after_days})`;
       },
-      // The answer is recorded as the signed-in person's.
-      requestPrincipal(),
+      decider,
     );
     // The request changed before this was answered: it is withdrawn, a Deny
     // agrees with that, and an Allow is told why it cannot.
     const outcome = await decided.catch((error: unknown) => {
       if (error instanceof BrokerFault && error.code === 'revision_mismatch')
         throw new ServiceError('permission_withdrawn', CHANGED_MESSAGE, 409);
+      if (error instanceof BrokerFault && error.code === 'scope_denied')
+        throw new ServiceError('not_yours_to_answer', error.message, 403);
       throw error;
     });
     if ('withdrawn' in outcome) return { status: 'ok', option: input.option, rule: null };

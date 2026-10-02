@@ -7,6 +7,7 @@
 import { createHash } from 'node:crypto';
 import {
   displayNameText,
+  type RoomPolicy,
   type RoomRole,
   type RoomStreamFrame,
   roomDetail,
@@ -18,14 +19,25 @@ import {
 import { and, asc, desc, eq, gt, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { event, job, principal, space, spaceMembership } from '../db/schema.ts';
+import {
+  approval,
+  connection,
+  event,
+  job,
+  principal,
+  space,
+  spaceMembership,
+} from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import type { ExperienceEvents } from '../experience/events.ts';
+import type { ExperiencePermissions } from '../experience/permissions.ts';
 import { newId } from '../ids.ts';
+import { PolicyService } from '../jobs/policy.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import { principalContext, spaceAuthority } from '../principals/authority.ts';
 import type { PrincipalService } from '../principals/service.ts';
 import { ComputerFault, type SandboxComputerService } from '../sandbox/computer.ts';
+import { askLimitReached, readRoomPolicy, writeRoomPolicy } from './policy.ts';
 import { presentIn } from './presence.ts';
 import { messageView, requestView, threadView } from './projection.ts';
 import {
@@ -41,6 +53,13 @@ import { roomMessage, roomPresence, roomThread } from './schema.ts';
 import { displayName, namesOf, personLabel } from './transcript.ts';
 
 const missing = () => new ServiceError('not_found', 'That room is not here.', 404);
+const connectionView = (row: typeof connection.$inferSelect) => ({
+  id: row.id,
+  label: row.label,
+  provider: row.provider,
+  status: row.status,
+  shared_use: row.sharedUse === 'room' ? ('room' as const) : ('owner' as const),
+});
 const roomOwnerOnly = () =>
   new ServiceError('scope_denied', 'Only an owner of this room can do that.', 403);
 
@@ -76,6 +95,8 @@ export type RoomDeps = RoomWork & {
   runner?: AttemptRunner;
   /** The conversation projector, run as the room's principal for the room's requests. */
   events?: ExperienceEvents;
+  /** Permission cards and answers, for the room's own permissions. */
+  permissions?: ExperiencePermissions;
 };
 
 export class RoomService {
@@ -190,7 +211,7 @@ export class RoomService {
           present: present.has(person.id),
         }),
       ),
-      policy: { approvers: 'requester', agent_turns: 'asked', guests_may_ask: true },
+      policy: await readRoomPolicy(this.deps.db, spaceId),
     });
   }
 
@@ -337,7 +358,12 @@ export class RoomService {
       ),
     ]);
     const views = [];
-    for (const request of requests) views.push(await requestView(this.deps.db, request, names));
+    const permissions = this.deps.permissions;
+    const card = permissions
+      ? (approvalId: string) => permissions.roomCard(spaceId, approvalId)
+      : undefined;
+    for (const request of requests)
+      views.push(await requestView(this.deps.db, request, names, card));
     return {
       thread: threadView(row, names),
       messages: messages.map((message) => messageView(message, names)),
@@ -362,7 +388,7 @@ export class RoomService {
       .update(`${spaceId}:${actor}:${input.submission_id}`)
       .digest('hex');
     const result = await this.deps.jobs.transaction(async (tx) => {
-      await this.access(tx, spaceId, actor, true);
+      const { role } = await this.access(tx, spaceId, actor, true);
       const [replayed] = await tx
         .select()
         .from(roomMessage)
@@ -405,10 +431,13 @@ export class RoomService {
         first = true;
       }
       const { mentions, asks: named } = mentionsOf(input.text, persona.name);
-      const asks =
+      // Asked outright: by name, by starting the thread with an ask, or by
+      // following straight on from the agent's answer to this person.
+      const asked =
         named ||
         (first && 'askAgent' in target && target.askAgent === true) ||
         (!first && (await this.followsAnswer(tx, thread.id, actor)));
+      const asks = await this.mayAsk(tx, spaceId, actor, role, asked);
       const held = asks && (await threadHeld(tx, thread.id));
       const [inserted] = await tx
         .insert(roomMessage)
@@ -458,6 +487,39 @@ export class RoomService {
       message: messageView(result.message, names),
       request_job_id: result.message.requestJobId,
     };
+  }
+
+  /**
+   * Whether a message asks the agent, under the room's settings. In a room set
+   * to answer every message, every message asks. A guest asks only where the
+   * room lets guests ask, and an ask past the room's hourly limit, or the
+   * person's, is refused when it was asked outright and is plain conversation
+   * otherwise.
+   */
+  private async mayAsk(
+    tx: Transaction,
+    spaceId: string,
+    actor: string,
+    role: RoomRole,
+    asked: boolean,
+  ): Promise<boolean> {
+    const policy = await readRoomPolicy(tx, spaceId);
+    if (!asked && policy.agent_turns !== 'every_message') return false;
+    if (role === 'guest' && !policy.guests_may_ask) {
+      if (asked)
+        throw new ServiceError('guests_may_not_ask', "Guests cannot ask this room's agent.", 403);
+      return false;
+    }
+    const limit = await askLimitReached(tx, spaceId, actor, policy);
+    if (!limit) return true;
+    if (!asked) return false;
+    throw new ServiceError(
+      'rate_limited',
+      limit === 'room'
+        ? `This room has asked its agent ${policy.requests_per_hour} times in the last hour. Try again later.`
+        : `You have asked this room's agent ${policy.requests_per_person_hour} times in the last hour. Try again later.`,
+      429,
+    );
   }
 
   /**
@@ -518,7 +580,138 @@ export class RoomService {
       this.deps.db,
       row.requestedByPrincipalId ? [row.requestedByPrincipalId] : [],
     );
-    return { request: await requestView(this.deps.db, after ?? row, names) };
+    const permissions = this.deps.permissions;
+    return {
+      request: await requestView(
+        this.deps.db,
+        after ?? row,
+        names,
+        permissions ? (approvalId) => permissions.roomCard(spaceId, approvalId) : undefined,
+      ),
+    };
+  }
+
+  /** How the room works. Everyone in it may read this. */
+  async policy(spaceId: string, actor: string) {
+    await this.access(this.deps.db, spaceId, actor);
+    return { policy: await readRoomPolicy(this.deps.db, spaceId) };
+  }
+
+  /**
+   * Change how the room works. Owners only. A new approver rule applies to
+   * every permission answered from now on, the ones already waiting included:
+   * who may answer is checked when the answer is given.
+   */
+  async setPolicy(spaceId: string, actor: string, patch: Partial<RoomPolicy>) {
+    const policy = await this.deps.jobs.transaction(async (tx) => {
+      const access = await this.access(tx, spaceId, actor, true);
+      if (access.role !== 'owner') throw roomOwnerOnly();
+      return writeRoomPolicy(tx, spaceId, actor, patch);
+    });
+    return { policy };
+  }
+
+  /**
+   * Answer one of the room's permissions. Only the people the room's rule
+   * names may, and the answer is bound to the exact content and the card it
+   * was given against.
+   */
+  async decide(
+    spaceId: string,
+    approvalId: string,
+    actor: string,
+    input: { option: 'allow_once' | 'deny'; version: string; payload_hash: string },
+  ) {
+    await this.access(this.deps.db, spaceId, actor);
+    const permissions = this.deps.permissions;
+    if (!permissions) return unavailable('Answering is not connected to the agent yet.');
+    await permissions.decideInRoom(spaceId, approvalId, input, actor);
+    // An answer to a card that changed meanwhile withdraws it rather than
+    // answering it; that is said, not reported as this person's answer.
+    const [recorded] = await this.deps.db
+      .select({ decidedBy: approval.decidedBy })
+      .from(approval)
+      .where(eq(approval.id, approvalId));
+    if (recorded?.decidedBy !== actor)
+      throw new ServiceError(
+        'permission_withdrawn',
+        'This request changed before you answered, so it was withdrawn.',
+        409,
+      );
+    const names = await namesOf(this.deps.db, [actor]);
+    return {
+      status: 'ok' as const,
+      option: input.option,
+      decided_by: { principal_id: actor, display_name: names.get(actor) ?? 'Someone' },
+    };
+  }
+
+  /** The connections in the room's space, and which of them serve the room's requests. */
+  async connections(spaceId: string, actor: string) {
+    const { role } = await this.access(this.deps.db, spaceId, actor);
+    // Owners see every connection in the room's space; everyone else sees only
+    // those that serve the room. One kept for the owner (a mailbox, say) stays theirs.
+    const rows = await this.deps.db
+      .select()
+      .from(connection)
+      .where(
+        and(
+          eq(connection.spaceId, spaceId),
+          ne(connection.status, 'revoked'),
+          role === 'owner' ? undefined : eq(connection.sharedUse, 'room'),
+        ),
+      )
+      .orderBy(asc(connection.createdAt), asc(connection.id));
+    return { connections: rows.map(connectionView) };
+  }
+
+  /**
+   * Let a connection serve the room's requests, or keep it to the owner's own
+   * work. Owners only. Who a connection serves changes what work may act
+   * through it, so work under way in the room is fenced and starts again, and
+   * permissions waiting on it are withdrawn.
+   */
+  async setConnection(
+    spaceId: string,
+    actor: string,
+    connectionId: string,
+    sharedUse: 'owner' | 'room',
+  ) {
+    const jobs = this.deps.jobs;
+    const result = await jobs.transaction(async (tx) => {
+      const access = await this.access(tx, spaceId, actor, true);
+      if (access.role !== 'owner') throw roomOwnerOnly();
+      const [source] = await tx
+        .select()
+        .from(connection)
+        .where(and(eq(connection.id, connectionId), eq(connection.spaceId, spaceId)))
+        .for('update');
+      if (!source || source.status === 'revoked')
+        throw new ServiceError('not_found', 'That connection is not in this room.', 404);
+      if (source.sharedUse === sharedUse) return { row: source, controls: [] };
+      const [parent] = await tx
+        .update(space)
+        .set({ policyGeneration: sql`${space.policyGeneration} + 1` })
+        .where(eq(space.id, spaceId))
+        .returning();
+      if (!parent) throw missing();
+      const [row] = await tx
+        .update(connection)
+        .set({ sharedUse, generation: source.generation + 1 })
+        .where(eq(connection.id, connectionId))
+        .returning();
+      if (!row) throw new Error('Locked connection disappeared');
+      const controls = await new PolicyService(jobs).invalidateInTransaction(
+        tx,
+        spaceId,
+        parent.policyGeneration,
+        connectionId,
+        'policy_changed',
+      );
+      return { row, controls };
+    });
+    for (const control of result.controls) jobs.onCancelled?.(control.job_id);
+    return { connection: connectionView(result.row) };
   }
 
   async presence(spaceId: string, actor: string) {

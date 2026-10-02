@@ -52,6 +52,75 @@ resumes from `Last-Event-ID`. A room view says who is looking at it with a
 heartbeat (`POST /rooms/{id}/presence`); presence is shown, and decides
 nothing about who may read.
 
+## Permissions in a room
+
+When a request needs permission (posting to people through the room's
+connection, adding an event to the room's calendar), its card appears in the
+thread for everyone in the room. The card names who asked and who may answer it
+(`requested_by` and `eligible_approvers`), and only those people can choose
+Allow or Deny. Who may answer is the room's rule:
+
+- `requester` (the default): the person who asked;
+- `any_member`: anyone in the room who is not a guest;
+- `owners`: the room's owners.
+
+Guests never answer a permission, and nor does the room's agent. Where the
+rule is `requester` and a guest asked, the room's owners answer instead.
+Auto-review never answers a room's permission either: whatever the room's
+settings, the people the rule names decide. Work that stays in the room's own
+workspace (its files, its computer) follows the same sandbox rule as a
+person's own work. An answer is
+given at `POST /rooms/{id}/approvals/{approval}` with the card's `version` and
+the exact content's `payload_hash`; if either has changed, it is refused and
+the card is shown again. The answer is checked against the rule and the room's
+people as they are at that moment, and recorded as the person who gave it: the
+thread shows who answered each permission. A permission is answered once, here;
+a standing "always" rule is never made from a room, since it would answer for
+everyone's requests.
+
+When someone leaves, the permissions waiting in the room are withdrawn, and
+each request is told it was refused. A request whose asker has left ends with
+them. A decision push goes to the people who may answer it, and to nobody else.
+
+### Values someone else typed
+
+A value the person who asked typed in their own request (a recipient, an
+address, an amount) counts as theirs for that request. A value someone else in
+the thread typed is shown as theirs: it carries a warning on the asker's card,
+naming who typed it, and no saved rule ever lets it through without asking.
+When auto-review looks at a room's request, the instruction it judges against
+is the asker's own words; what other people said in the thread reaches it
+labelled with their names, never as the instruction.
+
+## How a room works
+
+An owner sets how the room works (`PUT /rooms/{id}/policy`); everyone in the
+room reads it (`GET /rooms/{id}/policy`, and in `GET /rooms/{id}`):
+
+- `approvers`: who answers permissions, as above;
+- `agent_turns`: `asked` (the default) or `every_message`, where every message
+  asks the agent, which uses more of the model;
+- `guests_may_ask`: whether a guest's message can ask the agent;
+- `requests_per_hour` (30) and `requests_per_person_hour` (10): asks the room,
+  and each person in it, may make in an hour. An ask past either limit is
+  refused with `429`; the message can be sent again later, or sent without
+  asking.
+
+The agent is told who answers its request's permissions, so it can say who it
+is waiting for.
+
+## Connections in a room
+
+A room's requests act only through the connections marked for the room. Its own
+tools (files, the web, its computer) are marked so from the start. Any other
+connection in the room's space serves only the owner's own work there until an
+owner marks it for the room (`PUT /rooms/{id}/connections/{connection}` with
+`shared_use: "room"`); everyone in the room can see the connections
+that serve the room (`GET /rooms/{id}/connections`); owners also see the ones
+kept for them. Changing what a connection
+serves starts work under way in the room again and withdraws the permissions
+waiting in it.
+
 ## What the agent reads in a room
 
 For a request, the agent reads:

@@ -9,6 +9,7 @@ import {
   boolean,
   check,
   index,
+  integer,
   jsonb,
   pgTable,
   primaryKey,
@@ -83,6 +84,37 @@ export const roomMessage = pgTable(
       .where(sql`${t.requestState} = 'pending'`),
     check('room_message_kind', sql`${t.kind} in ('person', 'handoff_result', 'system')`),
     check('room_message_request_state', sql`${t.requestState} in ('none', 'pending', 'started')`),
+  ],
+);
+
+/**
+ * How a room works, set by its owners. A room without a row works by the
+ * defaults: the person who asked decides their request's permissions, the
+ * agent answers when asked, guests may ask, and asks are limited per hour.
+ */
+export const roomPolicy = pgTable(
+  'room_policy',
+  {
+    spaceId: text('space_id')
+      .primaryKey()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    /** Who decides a request's permissions: `requester`, `any_member` or `owners`. */
+    approvers: text('approvers').notNull().default('requester'),
+    /** `asked`: the agent answers when asked. `every_message`: every message asks it. */
+    agentTurns: text('agent_turns').notNull().default('asked'),
+    guestsMayAsk: boolean('guests_may_ask').notNull().default(true),
+    requestsPerHour: integer('requests_per_hour').notNull().default(30),
+    requestsPerPersonHour: integer('requests_per_person_hour').notNull().default(10),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: text('updated_by').references(() => principal.id, { onDelete: 'set null' }),
+  },
+  (t) => [
+    check('room_policy_approvers', sql`${t.approvers} in ('requester', 'any_member', 'owners')`),
+    check('room_policy_agent_turns', sql`${t.agentTurns} in ('asked', 'every_message')`),
+    check(
+      'room_policy_limits',
+      sql`${t.requestsPerHour} between 1 and 1000 and ${t.requestsPerPersonHour} between 1 and ${t.requestsPerHour}`,
+    ),
   ],
 );
 

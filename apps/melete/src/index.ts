@@ -364,6 +364,7 @@ export function createApp(deps: AppDeps) {
       principals: new PrincipalService(deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs),
       runner: deps.runner,
       events: experience ? experience.events : undefined,
+      permissions: experience ? experience.permissions : undefined,
       changes: deps.events,
       computers: deps.sandboxComputers,
     });
