@@ -225,9 +225,14 @@ import {
   submissionResponse,
 } from './responsibility.ts';
 import {
+  acceptInviteRequest,
+  acceptInviteResponse,
   addRoomMemberRequest,
+  createRoomInviteRequest,
   createRoomRequest,
   createRoomThreadRequest,
+  inviteView,
+  inviteViewRequest,
   meResponse,
   peopleList,
   peopleQuery,
@@ -236,6 +241,9 @@ import {
   roomConnectionResponse,
   roomConnectionUpdate,
   roomDetail,
+  roomInviteCreated,
+  roomInviteList,
+  roomInviteResponse,
   roomLeaveResponse,
   roomList,
   roomMembershipResponse,
@@ -789,6 +797,82 @@ function roomsPaths() {
           '200': jsonResponse('Removed', roomLeaveResponse),
           '403': problem('Only an owner removes someone else; the owner cannot be removed'),
           '404': notIn,
+        },
+      },
+    },
+    '/rooms/{id}/invites': {
+      get: {
+        tags: ['rooms'],
+        summary: "A room's guest invites, open and used",
+        requestParams: room,
+        responses: {
+          '200': jsonResponse('Invites', roomInviteList),
+          '403': problem('Only an owner of the room'),
+          '404': notIn,
+        },
+      },
+      post: {
+        tags: ['rooms'],
+        summary: 'Invite a guest into a room',
+        description:
+          'Makes a link that works once, for the number of days given (30 by default), which is ' +
+          "also how long the guest stays. The owner sends it themselves. It uses the installation's " +
+          'public address (`MELETE_PUBLIC_URL`) when one is set; the path works on its sign-in page ' +
+          'either way. A guest reads and posts only in the rooms they were invited to, asks the ' +
+          'agent where the room allows it, never answers a permission, and has no people list and ' +
+          'no work of their own.',
+        requestParams: room,
+        requestBody: json(createRoomInviteRequest),
+        responses: {
+          '201': jsonResponse('The invite, with its link shown once', roomInviteCreated),
+          '403': problem('Only an owner of the room'),
+          '404': notIn,
+          '409': problem('That email belongs to someone with a full account, or is in the room'),
+        },
+      },
+    },
+    '/rooms/{id}/invites/{inviteId}': {
+      delete: {
+        tags: ['rooms'],
+        summary: 'Withdraw an invite before it is used',
+        requestParams: { path: z.object({ id: z.string(), inviteId: z.string() }) },
+        responses: {
+          '200': jsonResponse('Withdrawn', roomInviteResponse),
+          '403': problem('Only an owner of the room'),
+          '404': problem('No such invite in this room'),
+          '409': problem('The invite was already used'),
+        },
+      },
+    },
+    '/invites/view': {
+      post: {
+        tags: ['rooms'],
+        summary: 'What an invite link is for',
+        description: "Public. It names the room and nothing about the room's people.",
+        security: [],
+        requestBody: json(inviteViewRequest),
+        responses: {
+          '200': jsonResponse('The invite', inviteView),
+          '404': problem('The link is wrong, used, withdrawn or out of date'),
+        },
+      },
+    },
+    '/invites/accept': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Accept an invite',
+        description:
+          'For someone not signed in it makes the guest account with the password given and signs it in. ' +
+          'When the email already has a guest account, sign in as it first. The link works once.',
+        security: [],
+        requestBody: json(acceptInviteRequest),
+        responses: {
+          '200': jsonResponse('In the room, signed in', acceptInviteResponse),
+          '400': problem('A new account needs a password'),
+          '404': problem('The link is wrong, used, withdrawn or out of date'),
+          '409': problem(
+            'The email has an account: sign in as it first, or it is a full account an owner adds',
+          ),
         },
       },
     },

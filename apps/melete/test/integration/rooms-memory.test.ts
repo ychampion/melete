@@ -38,6 +38,7 @@ import { recall } from '../../src/memory/recall.ts';
 import { restoreMemory } from '../../src/memory/restore.ts';
 import { runExtractionWork } from '../../src/memory/service.ts';
 import { startServiceMemory } from '../../src/memory/start.ts';
+import { roomHandle } from '../../src/rooms/transcript.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -159,7 +160,10 @@ async function login(email: string) {
 }
 const submission = () => `s${randomBytes(8).toString('hex')}`;
 
-type Person = { id: string; cookie: string; label: string };
+type Person = { id: string; cookie: string; name: string };
+/** How a room labels a person: their name, then the handle that room gives them. */
+const labelOf = (person: Person, roomId: string) =>
+  `${person.name} <${roomHandle(roomId, person.id)}>`;
 let alice: Person;
 let bob: Person;
 let carol: Person;
@@ -354,7 +358,7 @@ withDb('room memory', () => {
     expect(setup.status).toBe(201);
     const aliceCookie = sessionCookie(setup);
     const aliceId = ((await setup.json()) as { owner: { id: string } }).owner.id;
-    alice = { id: aliceId, cookie: aliceCookie, label: 'Alice <alice@example.test>' };
+    alice = { id: aliceId, cookie: aliceCookie, name: 'Alice' };
     const made: Person[] = [];
     for (const name of ['bob', 'carol']) {
       const created = await ok<{ principal: { id: string } }>(
@@ -364,7 +368,7 @@ withDb('room memory', () => {
       made.push({
         id: created.principal.id,
         cookie: await login(`${name}@example.test`),
-        label: `${name[0]?.toUpperCase()}${name.slice(1)} <${name}@example.test>`,
+        name: `${name[0]?.toUpperCase()}${name.slice(1)}`,
       });
     }
     [bob, carol] = made as [Person, Person];
@@ -416,8 +420,8 @@ withDb('room memory', () => {
         .map((item) => [item.key, item.content, item.said_by.map((who) => who.display_name)])
         .sort(),
     ).toEqual([
-      ['contact.maya.phone', '+351 912 345 678', [bob.label]],
-      ['pref.travel.seat', 'aisle seat', [alice.label]],
+      ['contact.maya.phone', '+351 912 345 678', [labelOf(bob, roomId)]],
+      ['pref.travel.seat', 'aisle seat', [labelOf(alice, roomId)]],
     ]);
     const [elsewhere] = await sql`select count(*)::int as n from memory_source_content b
       join memory_sources s on s.id = b.source_id
@@ -460,7 +464,7 @@ withDb('room memory', () => {
       ),
     );
     expect([shared.share.shared_by.display_name, shared.share.content]).toEqual([
-      bob.label,
+      labelOf(bob, roomId),
       'ana@home.example',
     ]);
     // Sharing the same detail again answers with the share already there.
@@ -487,7 +491,7 @@ withDb('room memory', () => {
     const knowledge = handed(attempt.bundle);
     expect(knowledge).toContain('window seat');
     expect(knowledge).toContain('ana@home.example');
-    expect(knowledge).toContain(`Shared into this room by ${JSON.stringify(bob.label)}`);
+    expect(knowledge).toContain(`Shared into this room by ${JSON.stringify(labelOf(bob, roomId))}`);
     for (const secret of ['aisle seat', '933 333 333', '900 euros'])
       expect([secret, knowledge.includes(secret)]).toEqual([secret, false]);
     // The shared detail is someone else's word to the room, never the requester's own.
@@ -699,18 +703,28 @@ withDb('room memory', () => {
     expect(handed(before.bundle)).toContain('450 euros');
     await before.finish();
 
-    // A guest joins the room.
-    const guestId = `own_${randomBytes(8).toString('hex')}`;
-    await sql`insert into principal (id, email, kind) values (${guestId}, ${`${guestId}@guest.example`}, 'guest')`;
-    await sql`insert into space_membership (principal_id, space_id, role) values (${guestId}, ${roomId}, 'guest')`;
+    // A guest joins the room by invitation.
+    const invited = await ok<{ path: string }>(
+      send(alice.cookie, `/rooms/${roomId}/invites`, 'POST', { email: 'gus@guest.example' }),
+      201,
+    );
+    const token = new URLSearchParams(invited.path.split('?')[1] ?? '').get('token');
+    const joined = await database().app.request('/invites/accept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, password: 'a-long-enough-password' }),
+    });
+    expect(joined.status).toBe(200);
+    const [guest] = await sql`select id from principal where email = 'gus@guest.example'`;
+    const guestId = String(guest?.id);
     const second = await ask(alice, roomId, 'What do we know about Ana and the deposit now?');
     const during = await attemptOf(second.jobId);
     expect(handed(during.bundle)).not.toContain('ana@private.example');
     expect(handed(during.bundle)).toContain('450 euros');
     await during.finish();
 
-    // The guest leaves; the members-only share is back for the room's work.
-    await sql`update space_membership set revoked_at = now() where principal_id = ${guestId} and space_id = ${roomId}`;
+    // An owner removes the guest; the members-only share is back for the room's work.
+    await ok(send(alice.cookie, `/rooms/${roomId}/members/${guestId}`, 'DELETE'));
     const third = await ask(alice, roomId, 'And after the guest left?');
     const after = await attemptOf(third.jobId);
     expect(handed(after.bundle)).toContain('ana@private.example');

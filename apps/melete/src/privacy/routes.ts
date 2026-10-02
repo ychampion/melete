@@ -18,6 +18,7 @@ import {
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
+import { ownsSessionSpace } from '../principals/session-space.ts';
 import { assertLocalEndpoint, checkLocalModel, isLocalUrl, PrivacyError } from './local.ts';
 import type { PrivacyRouter } from './router.ts';
 import { newKnownId, type PlainSettings, type SealedSettings, sameAddress } from './store.ts';
@@ -36,7 +37,7 @@ function spaceOf(c: Context): string {
 
 function ownerOnly(c: Context): string {
   const spaceId = spaceOf(c);
-  if (c.get('sessionSpace')?.role === 'member')
+  if (!ownsSessionSpace(c.get('sessionSpace')))
     throw new ServiceError('scope_denied', 'Only the owner of this space can do that.', 403);
   return spaceId;
 }
@@ -197,7 +198,7 @@ export function mountPrivacy(app: Hono, options: PrivacyRouteOptions) {
   const conversation = async (c: Context) => {
     const spaceId = spaceOf(c);
     const id = c.req.param('id') ?? '';
-    const member = c.get('sessionSpace')?.role === 'member';
+    const member = !ownsSessionSpace(c.get('sessionSpace'));
     const router = options.router();
     if (
       !(await router.store.ownsConversation(spaceId, id, member ? c.get('owner')?.id : undefined))

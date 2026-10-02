@@ -3,6 +3,7 @@
  * their name, and the answers to the thread's other requests. Nothing from
  * anyone's personal space is here; a thread is all room material.
  */
+import { createHash } from 'node:crypto';
 import type { CanonicalMessage, RoomApprovers } from '@melete/contracts';
 import { and, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { experienceTurn, job, principal } from '../db/schema.ts';
@@ -16,25 +17,52 @@ import { roomMessage, roomPolicy } from './schema.ts';
  */
 export const THREAD_MESSAGES = 100;
 
-/** The name a person goes by in a room: the one they chose, or their email before the @. */
+/**
+ * The name a person goes by in a room: the one they chose, or the part of
+ * their email before the @. The rest of an email, how to reach them, is never
+ * part of a room's labels.
+ */
 export function displayName(row: { displayName: string | null; email: string }): string {
   const chosen = row.displayName?.trim();
   return chosen || (row.email.split('@')[0] ?? row.email);
 }
 
+/** Letters a handle is made of: no two that read alike. */
+const HANDLE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+const HANDLE_LENGTH = 6;
+
 /**
- * How a room names a person: the name they chose, then their email in angle
- * brackets. The email is theirs alone and nobody chooses it, so it is what
- * tells people apart; the name before it is only what they call themselves.
- * A chosen name cannot hold `<`, `>` or `@`, so it never looks like an email.
+ * The code a room gives a person. It comes from the room and the person's
+ * account, both made by the service, so nobody chooses it or can take someone
+ * else's; it differs from room to room, so a guest in two rooms is not
+ * followed between them by it.
  */
-export function personLabel(row: { displayName: string | null; email: string }): string {
-  return `${displayName(row)} <${row.email}>`;
+export function roomHandle(spaceId: string, principalId: string): string {
+  const digest = createHash('sha256').update(`room-handle:${spaceId}:${principalId}`).digest();
+  let handle = '';
+  for (let index = 0; index < HANDLE_LENGTH; index++)
+    handle += HANDLE_ALPHABET[(digest[index] ?? 0) % HANDLE_ALPHABET.length];
+  return handle;
 }
 
-/** The label of each of a set of principals; see `personLabel`. */
+/**
+ * How a room names a person: the name they chose, then the room's handle for
+ * them in angle brackets. The handle is theirs alone in the room and nobody
+ * chooses it, so it is what tells people apart; the name before it is only
+ * what they call themselves. A chosen name cannot hold `<`, `>` or `@`, so it
+ * never reads as a handle. No label carries an email: guests read the room too.
+ */
+export function personLabel(
+  row: { id: string; displayName: string | null; email: string },
+  spaceId: string,
+): string {
+  return `${displayName(row)} <${roomHandle(spaceId, row.id)}>`;
+}
+
+/** The label of each of a set of principals in one room; see `personLabel`. */
 export async function namesOf(
   tx: Pick<Transaction, 'select'>,
+  spaceId: string,
   ids: readonly string[],
 ): Promise<Map<string, string>> {
   const unique = [...new Set(ids)];
@@ -43,7 +71,7 @@ export async function namesOf(
     .select({ id: principal.id, displayName: principal.displayName, email: principal.email })
     .from(principal)
     .where(inArray(principal.id, unique));
-  return new Map(rows.map((row) => [row.id, personLabel(row)]));
+  return new Map(rows.map((row) => [row.id, personLabel(row, spaceId)]));
 }
 
 export type RoomTranscript = {
@@ -122,7 +150,7 @@ export async function roomTranscript(
     ...said.map((entry) => entry.author),
     ...(row.requestedByPrincipalId ? [row.requestedByPrincipalId] : []),
   ];
-  const names = await namesOf(tx, speakers);
+  const names = await namesOf(tx, row.spaceId, speakers);
   const thread: CanonicalMessage[] = [
     ...said.map((entry) => ({
       role: 'user' as const,

@@ -354,7 +354,7 @@ async function roomConversation(
         : [],
     ),
   ];
-  const names = await labelsIn(tx, speakers);
+  const names = await labelsIn(tx, room.spaceId, speakers);
   const other = (id: string) => ({
     from: 'other_member' as const,
     name: names.get(id) ?? 'Someone else in the room',

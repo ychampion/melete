@@ -121,6 +121,7 @@ import {
   SPACE_BEING_CLEARED,
   spaceAuthority,
 } from './principals/authority.ts';
+import { startGuestExpiry } from './principals/expiry.ts';
 import { mountPrincipals } from './principals/routes.ts';
 import { PrincipalService } from './principals/service.ts';
 import { withPrivacyGate } from './privacy/gate.ts';
@@ -368,6 +369,7 @@ export function createApp(deps: AppDeps) {
       changes: deps.events,
       computers: deps.sandboxComputers,
       memory: deps.memory,
+      env: deps.env,
     });
   if (deps.db)
     mountCompanies(app, {
@@ -527,6 +529,7 @@ export async function bootstrap(
   let browser: Awaited<ReturnType<typeof configuredBrowserSessions>>;
   let connections: ConfiguredConnection[] = [];
   let episodeRetention: ReturnType<typeof setInterval> | undefined;
+  let stopGuestExpiry: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
@@ -550,6 +553,7 @@ export async function bootstrap(
     // it as active. Interrupt that wait before runner.stop drains its wakes.
     supervisedRuntime?.beginShutdown();
     clearInterval(episodeRetention);
+    stopGuestExpiry?.();
     sandboxes?.stop();
     let failure: unknown;
     for (const stop of [
@@ -1008,6 +1012,10 @@ export async function bootstrap(
         await operations.start();
         await triggers.start();
         await runner.start();
+        if (handle)
+          stopGuestExpiry = startGuestExpiry(
+            new PrincipalService(handle.db, env.MELETE_SPACES_DIR, jobs),
+          );
         // A chase spends most of its life waiting on a reply, and the wait it
         // holds is an event wait on a `mail.new` trigger. Without something
         // putting that event there, only the deadline ever wakes the job, and a

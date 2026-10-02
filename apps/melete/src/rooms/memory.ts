@@ -123,7 +123,7 @@ export class RoomMemoryService {
       );
     }
     const shares = await roomShares(sql, spaceId, access.role === 'guest');
-    const names = await namesOf(this.db, [
+    const names = await namesOf(this.db, spaceId, [
       ...[...said.values()].flat(),
       ...shares.map((share) => share.granted_by),
     ]);
@@ -257,7 +257,7 @@ export class RoomMemoryService {
     await notifyInvalidated(sql, spaceId);
     const [after] = await this.db.select().from(roomMessage).where(eq(roomMessage.id, messageId));
     if (!after) throw notHere();
-    const names = await namesOf(this.db, [after.authorPrincipalId]);
+    const names = await namesOf(this.db, spaceId, [after.authorPrincipalId]);
     return roomMessageDeleted.parse({ message: messageView(after, names) });
   }
 }

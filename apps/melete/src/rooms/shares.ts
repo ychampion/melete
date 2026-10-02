@@ -118,7 +118,10 @@ export async function sharedItems(
       used += tokens;
       shared.push({
         item: capped,
-        sharedBy: personLabel({ displayName: grant.display_name, email: grant.email }),
+        sharedBy: personLabel(
+          { id: grant.granted_by, displayName: grant.display_name, email: grant.email },
+          roomScope.spaceId,
+        ),
       });
     }
     return shared;

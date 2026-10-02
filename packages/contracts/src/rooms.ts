@@ -37,10 +37,18 @@ export type RoomSummary = z.infer<typeof roomSummary>;
 
 export const roomMember = z.strictObject({
   principal_id: principalId,
+  /** The person's label in this room: the name they chose, then their handle in angle brackets. */
   display_name: z.string(),
   role: roomRole,
+  /**
+   * The code this room gives the person, the one in angle brackets after their
+   * name. Nobody chooses it, so two people with the same name stay apart.
+   */
+  handle: z.string().optional(),
   /** Shown to people who are not guests. */
   email: z.email().optional(),
+  /** When a guest's place in the room ends. */
+  expires_at: timestamp.nullable().optional(),
   /** Looking at the room now. Display only. */
   present: z.boolean(),
 });
@@ -97,9 +105,9 @@ export const peopleQuery = z.strictObject({ query: z.string().max(200).optional(
 export const peopleList = z.strictObject({ people: z.array(person) });
 
 /**
- * The name other people in a room see, beside their email. One line of plain
- * text with no `<`, `>` or `@`, so a name never reads as more than a name, or
- * as someone's email.
+ * The name other people in a room see, beside the handle the room gives them.
+ * One line of plain text with no `<`, `>` or `@`, so a name never reads as
+ * more than a name, or as someone else's handle or email.
  */
 export const displayNameText = z
   .string()
@@ -303,3 +311,58 @@ export const roomShareResponse = z.strictObject({ share: roomShare });
 export const roomShareWithdrawn = z.strictObject({ withdrawn: id });
 export const roomMemoryForgotten = z.strictObject({ forgotten: claimId });
 export const roomMessageDeleted = z.strictObject({ message: roomMessage });
+
+/**
+ * Guests. An owner invites someone by email for a number of days; Melete makes
+ * a link that works once, which the owner sends them. The guest opens it,
+ * chooses a password and lands in that room alone. Their place ends when the
+ * invite's time is up.
+ */
+export const createRoomInviteRequest = z.strictObject({
+  email: z
+    .email()
+    .max(254)
+    .transform((value) => value.toLowerCase()),
+  /** How long the guest stays in the room. Defaults to 30 days. */
+  expires_in_days: z.number().int().min(1).max(365).optional(),
+});
+export const roomInviteState = z.enum(['open', 'accepted', 'expired', 'withdrawn']);
+export const roomInvite = z.strictObject({
+  id,
+  room_id: roomId,
+  email: z.email(),
+  state: roomInviteState,
+  /** When the link stops working, and when the guest's place in the room ends. */
+  expires_at: timestamp,
+  created_by: roomAuthor,
+  created_at: timestamp,
+  accepted_at: timestamp.nullable(),
+});
+export type RoomInvite = z.infer<typeof roomInvite>;
+export const roomInviteList = z.strictObject({ invites: z.array(roomInvite) });
+export const roomInviteCreated = z.strictObject({
+  invite: roomInvite,
+  /** The link to send, when this installation knows its public address. Shown once. */
+  link: z.string().nullable(),
+  /** The same page as a path on this installation, to open or paste on its sign-in page. Shown once. */
+  path: z.string(),
+});
+export const roomInviteResponse = z.strictObject({ invite: roomInvite });
+
+const inviteToken = z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'That invite link is not complete.');
+/** The token from an invite link. It rides in the request body, never in a path a log keeps. */
+export const inviteViewRequest = z.strictObject({ token: inviteToken });
+/** What an invite link shows before it is accepted: the room's name, and nothing about its people. */
+export const inviteView = z.strictObject({
+  room_name: z.string(),
+  expires_at: timestamp,
+  /** An account already signs in with this invite's email: sign in first, then accept. */
+  existing_account: z.boolean(),
+});
+export const acceptInviteRequest = z.strictObject({
+  token: inviteToken,
+  /** The new guest account's password. Not needed when accepting while signed in. */
+  password: z.string().min(8).max(1024).optional(),
+  display_name: displayNameText.optional(),
+});
+export const acceptInviteResponse = z.strictObject({ room_id: roomId });

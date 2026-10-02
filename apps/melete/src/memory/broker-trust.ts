@@ -193,6 +193,7 @@ export async function roomOrigins(
     : [];
   const names = await labelsIn(
     tx,
+    room.spaceId,
     others.map((entry) => String(entry.author_principal_id)),
   );
   const answers: OriginResolution[] = [];

@@ -110,32 +110,39 @@ export function mountArtifacts(
   resolveSpace: SpaceResolver,
 ): void {
   app.get('/artifacts/:id/content', async (c) => {
-    const scope = await resolveSpace(c);
+    const resolved = await resolveSpace(c);
     const id = prefixedId(ID_PREFIXES.artifact).safeParse(c.req.param('id'));
-    if (!scope || !id.success || !prefixedId(ID_PREFIXES.space).safeParse(scope.spaceId).success)
-      throw notFound();
-    const [row] = await db
-      .select({ artifact })
-      .from(artifact)
-      .leftJoin(job, eq(artifact.jobId, job.id))
-      .where(
-        and(
-          eq(artifact.id, id.data),
-          eq(artifact.spaceId, scope.spaceId),
-          // A job's files follow the job: private to its principal, also in a shared space.
-          or(
-            isNull(artifact.jobId),
+    if (!id.success) throw notFound();
+    const scope =
+      resolved && prefixedId(ID_PREFIXES.space).safeParse(resolved.spaceId).success
+        ? resolved
+        : null;
+    // A guest has no space of their own: the only files they read are their rooms'.
+    const viewer = scope ? scope.principalId : c.get('owner')?.id;
+    if (!scope && !viewer) throw notFound();
+    const [row] = scope
+      ? await db
+          .select({ artifact })
+          .from(artifact)
+          .leftJoin(job, eq(artifact.jobId, job.id))
+          .where(
             and(
-              eq(job.spaceId, scope.spaceId),
-              scope.principalId ? ownJob(job.principalId, scope.principalId) : undefined,
+              eq(artifact.id, id.data),
+              eq(artifact.spaceId, scope.spaceId),
+              // A job's files follow the job: private to its principal, also in a shared space.
+              or(
+                isNull(artifact.jobId),
+                and(
+                  eq(job.spaceId, scope.spaceId),
+                  scope.principalId ? ownJob(job.principalId, scope.principalId) : undefined,
+                ),
+              ),
             ),
-          ),
-        ),
-      );
+          )
+      : [];
     // A file a room's request made belongs to the room: the people in the room
     // read it, checked now, and nobody else. Every other file follows its job.
-    const found =
-      row ?? (scope.principalId ? await roomArtifact(db, id.data, scope.principalId) : null);
+    const found = row ?? (viewer ? await roomArtifact(db, id.data, viewer) : null);
     if (!found) throw notFound();
     let bytes: Uint8Array;
     try {

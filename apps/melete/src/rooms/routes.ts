@@ -19,8 +19,10 @@ import {
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import { readEventCursor } from '../api/events.ts';
+import type { Env } from '../env.ts';
 import type { EventChanges } from '../experience/events.ts';
 import type { MemoryRouteOptions } from '../memory/routes.ts';
+import { InviteService, mountInvites } from './invites.ts';
 import { mountRoomMemory } from './memory.ts';
 import { releaseAll, releaseOnTransition, releaseThread } from './release.ts';
 import { type RoomDeps, RoomService } from './service.ts';
@@ -30,7 +32,7 @@ export const ROOM_POLL_MS = 1000;
 
 export function mountRooms(
   app: Hono,
-  deps: RoomDeps & { changes?: EventChanges; memory?: MemoryRouteOptions },
+  deps: RoomDeps & { changes?: EventChanges; memory?: MemoryRouteOptions; env?: Env },
 ): RoomService {
   const service = new RoomService(deps);
   // A request that stops holding its thread lets the thread's next ask go:
@@ -155,6 +157,19 @@ export function mountRooms(
   );
   // What the room remembers, and what its people shared into it.
   mountRoomMemory(app, service, deps.memory);
+  // Guests: invites an owner sends, and the public routes that accept them.
+  if (deps.env)
+    mountInvites(
+      app,
+      new InviteService({
+        db: deps.db,
+        jobs: deps.jobs,
+        principals: deps.principals,
+        rooms: service,
+        publicUrl: deps.env.MELETE_PUBLIC_URL,
+      }),
+      deps.env,
+    );
   return service;
 }
 

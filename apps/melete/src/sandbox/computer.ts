@@ -198,6 +198,7 @@ export class SandboxComputerService {
       join space s on s.id = j.space_id
       join space_membership m on m.space_id = s.id
         and m.principal_id = ${principalId} and m.revoked_at is null
+        and (m.expires_at is null or m.expires_at > now())
       where j.id = ${jobId} and j.audience = 'room' and s.kind = 'shared' and s.removed_at is null`;
     if (room?.role === 'owner') return 'steer';
     return room?.role === 'member' || room?.role === 'guest' ? 'watch' : null;

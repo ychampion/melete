@@ -179,7 +179,9 @@ export class ExperiencePermissions {
     // standing rule is never offered there, since it would answer for others.
     const room = await roomAuthorityOf(this.sql, String(row.job_id));
     const eligible = room ? await eligibleApprovers(this.sql, room) : [];
-    const names = room ? await labelsIn(this.sql, [...eligible, room.requestedBy ?? '']) : null;
+    const names = room
+      ? await labelsIn(this.sql, room.spaceId, [...eligible, room.requestedBy ?? ''])
+      : null;
     if (room && names) reasons.push(waitingFor(room, names));
     const person = (principalId: string) => ({
       principal_id: principalId,
@@ -267,7 +269,7 @@ export class ExperiencePermissions {
       throw new ServiceError(
         'not_yours_to_answer',
         room
-          ? waitingFor(room, await labelsIn(this.sql, [room.requestedBy ?? '']))
+          ? waitingFor(room, await labelsIn(this.sql, room.spaceId, [room.requestedBy ?? '']))
           : 'Nobody in the room can answer this one.',
         403,
       );

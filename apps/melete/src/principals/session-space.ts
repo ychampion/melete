@@ -17,6 +17,16 @@ export type SessionSpace = {
   created: boolean;
 };
 
+/**
+ * Whether the session owns the space it speaks for. Only `owner` does: a
+ * member, a guest, any role added later, and a request with no selected space
+ * at all are each refused an owner's surface. Ask this rather than whether
+ * the role is `member`, so a new role is never taken for an owner.
+ */
+export function ownsSessionSpace(session: Pick<SessionSpace, 'role'> | undefined): boolean {
+  return session?.role === 'owner';
+}
+
 /** A space the session named earlier, with the membership generation it was chosen under. */
 export type SpaceSelection = { spaceId: string; generation: number | null };
 

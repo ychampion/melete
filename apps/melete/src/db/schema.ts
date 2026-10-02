@@ -46,7 +46,8 @@ export const principal = pgTable(
     /**
      * `person` signs in. `room` is the identity a room's agent acts as: it has
      * no password, never signs in and is never listed among people. `guest` is
-     * reserved for invited accounts.
+     * an account made from a room invite: it signs in, and uses only the rooms
+     * it was invited to.
      */
     kind: text('kind').notNull().default('person'),
     /** The name other people in a room see. Null shows the part of the email before the @. */
@@ -91,6 +92,12 @@ export const spaceMembership = pgTable(
     role: text('role').notNull(),
     generation: integer('generation').notNull().default(0),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    /**
+     * When a guest's place in a room ends. Null for everyone else. From this
+     * moment the guest reads nothing, and the expiry sweep ends the membership
+     * as a removal does.
+     */
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
     createdAt: created(),
   },
   (t) => [

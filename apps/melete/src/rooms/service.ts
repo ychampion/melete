@@ -50,7 +50,7 @@ import {
   touchMessage,
 } from './release.ts';
 import { roomMessage, roomPresence, roomThread } from './schema.ts';
-import { displayName, namesOf, personLabel } from './transcript.ts';
+import { displayName, namesOf, personLabel, roomHandle } from './transcript.ts';
 
 const missing = () => new ServiceError('not_found', 'That room is not here.', 404);
 const connectionView = (row: typeof connection.$inferSelect) => ({
@@ -85,6 +85,28 @@ export function mentionsOf(text: string, agentName: string): { mentions: string[
     return false;
   });
   return { mentions: mentions.filter(Boolean), asks };
+}
+
+/**
+ * Whether a name is another account's: its chosen name, or the part before the
+ * @ of its email, ignoring case. A name is how a room, and its agent, tell
+ * people apart at a glance; the handle after it is what settles it.
+ */
+export async function nameTaken(db: Database, name: string, except?: string): Promise<boolean> {
+  const [taken] = await db
+    .select({ id: principal.id })
+    .from(principal)
+    .where(
+      and(
+        except ? ne(principal.id, except) : undefined,
+        or(
+          sql`lower(${principal.displayName}) = lower(${name})`,
+          sql`lower(split_part(${principal.email}, '@', 1)) = lower(${name})`,
+        ),
+      ),
+    )
+    .limit(1);
+  return Boolean(taken);
 }
 
 export type RoomDeps = RoomWork & {
@@ -134,6 +156,7 @@ export class RoomService {
         and(
           eq(spaceMembership.principalId, actor),
           isNull(spaceMembership.revokedAt),
+          or(isNull(spaceMembership.expiresAt), gt(spaceMembership.expiresAt, sql`now()`)),
           ne(spaceMembership.role, 'agent'),
           eq(space.kind, 'shared'),
           isNull(space.removedAt),
@@ -204,10 +227,12 @@ export class RoomService {
       members: rows.map(({ membership, person }) =>
         roomMember.parse({
           principal_id: person.id,
-          display_name: personLabel(person),
+          display_name: personLabel(person, spaceId),
           role: membership.role,
+          handle: roomHandle(spaceId, person.id),
           // A guest sees who is in the room, not how to reach them.
           ...(access.role === 'guest' ? {} : { email: person.email }),
+          expires_at: membership.expiresAt?.toISOString() ?? null,
           present: present.has(person.id),
         }),
       ),
@@ -224,8 +249,9 @@ export class RoomService {
     return {
       member: roomMember.parse({
         principal_id: person.id,
-        display_name: personLabel(person),
+        display_name: personLabel(person, spaceId),
         role: 'member',
+        handle: roomHandle(spaceId, person.id),
         email: person.email,
         present: false,
       }),
@@ -272,20 +298,7 @@ export class RoomService {
   async rename(actor: string, name: string | null) {
     if (name !== null) {
       displayNameText.parse(name);
-      const [taken] = await this.deps.db
-        .select({ id: principal.id })
-        .from(principal)
-        .where(
-          and(
-            ne(principal.id, actor),
-            or(
-              sql`lower(${principal.displayName}) = lower(${name})`,
-              sql`lower(split_part(${principal.email}, '@', 1)) = lower(${name})`,
-            ),
-          ),
-        )
-        .limit(1);
-      if (taken)
+      if (await nameTaken(this.deps.db, name, actor))
         throw new ServiceError(
           'name_taken',
           'Someone here already goes by that name. Choose another.',
@@ -318,6 +331,7 @@ export class RoomService {
       .limit(200);
     const names = await namesOf(
       this.deps.db,
+      spaceId,
       rows.map((row) => row.createdBy),
     );
     return { threads: rows.map((row) => threadView(row, names)) };
@@ -350,7 +364,7 @@ export class RoomService {
         and(eq(job.roomThreadId, threadId), eq(job.spaceId, spaceId), eq(job.audience, 'room')),
       )
       .orderBy(asc(job.createdAt), asc(job.id));
-    const names = await namesOf(this.deps.db, [
+    const names = await namesOf(this.deps.db, spaceId, [
       row.createdBy,
       ...messages.map((message) => message.authorPrincipalId),
       ...requests.flatMap((request) =>
@@ -478,7 +492,7 @@ export class RoomService {
       }
       return { thread, message };
     });
-    const names = await namesOf(this.deps.db, [
+    const names = await namesOf(this.deps.db, spaceId, [
       result.thread.createdBy,
       result.message.authorPrincipalId,
     ]);
@@ -578,6 +592,7 @@ export class RoomService {
     const [after] = await this.deps.db.select().from(job).where(eq(job.id, jobId));
     const names = await namesOf(
       this.deps.db,
+      spaceId,
       row.requestedByPrincipalId ? [row.requestedByPrincipalId] : [],
     );
     const permissions = this.deps.permissions;
@@ -635,7 +650,7 @@ export class RoomService {
         .where(eq(approval.id, approvalId));
       if (!row?.decision || !row.decidedBy) return null;
       if (row.decidedBy === actor && row.decision === wanted) return null;
-      const names = await namesOf(this.deps.db, [row.decidedBy]);
+      const names = await namesOf(this.deps.db, spaceId, [row.decidedBy]);
       const who = names.get(row.decidedBy);
       // Withdrawn by the service rather than answered by a person.
       if (!who) return null;
@@ -671,7 +686,7 @@ export class RoomService {
         409,
       );
     }
-    const names = await namesOf(this.deps.db, [actor]);
+    const names = await namesOf(this.deps.db, spaceId, [actor]);
     return {
       status: 'ok' as const,
       option: input.option,
@@ -809,6 +824,7 @@ export class RoomService {
       : [];
     const names = await namesOf(
       this.deps.db,
+      spaceId,
       messages.map((message) => message.authorPrincipalId),
     );
     const frames: RoomStreamFrame[] = [

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { mentionsOf } from './service.ts';
-import { personLabel } from './transcript.ts';
+import { personLabel, roomHandle } from './transcript.ts';
 
 describe('which messages ask a room agent', () => {
   test('a message that names the agent asks it, by its own name or as Melete', () => {
@@ -26,16 +26,28 @@ describe('which messages ask a room agent', () => {
 });
 
 describe('names in a room', () => {
-  test('every person is named with their own email, whatever name they chose', () => {
-    expect(personLabel({ displayName: 'Alice', email: 'alice@example.test' })).toBe(
-      'Alice <alice@example.test>',
+  const room = 'sp_01J00000000000000000000000';
+  const alice = { id: 'own_01J0000000000000000000000A', email: 'alice@example.test' };
+  const carol = { id: 'own_01J0000000000000000000000C', email: 'carol@example.test' };
+
+  test('every person is named with the handle the room gives them, and never with their email', () => {
+    const label = personLabel({ ...alice, displayName: 'Alice' }, room);
+    expect(label).toBe(`Alice <${roomHandle(room, alice.id)}>`);
+    expect(label).not.toContain('example.test');
+    expect(roomHandle(room, alice.id)).toMatch(/^[a-z2-9]{6}$/);
+    // A look-alike name, or the very same name, still carries the handle of the person who chose it.
+    expect(personLabel({ ...carol, displayName: 'Alice' }, room)).toBe(
+      `Alice <${roomHandle(room, carol.id)}>`,
     );
-    // A look-alike name still carries the email of the person who chose it.
-    expect(personLabel({ displayName: '\u0410lice', email: 'carol@example.test' })).toBe(
-      '\u0410lice <carol@example.test>',
+    expect(roomHandle(room, carol.id)).not.toBe(roomHandle(room, alice.id));
+    expect(personLabel({ id: carol.id, displayName: null, email: 'sam@example.test' }, room)).toBe(
+      `sam <${roomHandle(room, carol.id)}>`,
     );
-    expect(personLabel({ displayName: null, email: 'sam@example.test' })).toBe(
-      'sam <sam@example.test>',
-    );
+  });
+
+  test('a handle is the same in one room every time, and differs from room to room', () => {
+    const other = 'sp_01J0000000000000000000000Z';
+    expect(roomHandle(room, alice.id)).toBe(roomHandle(room, alice.id));
+    expect(roomHandle(other, alice.id)).not.toBe(roomHandle(room, alice.id));
   });
 });

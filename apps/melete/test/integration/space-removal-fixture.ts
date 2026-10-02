@@ -294,6 +294,9 @@ export async function seedSpace(
   await sql`insert into room_message (id, space_id, thread_id, author_principal_id, text, submission_id)
     values (${messageId}, ${spaceId}, ${threadId}, ${principalId}, 'Thursday works.', ${newId('rmg')})`;
   await sql`insert into room_presence (space_id, principal_id) values (${spaceId}, ${principalId})`;
+  await sql`insert into room_invite (id, space_id, email, token_hash, expires_at, created_by)
+    values (${newId('rin')}, ${spaceId}, 'guest@example.test', ${newId('rin')}, now() + interval '30 days', ${principalId})`;
+  await sql`insert into room_policy (space_id, approvers) values (${spaceId}, 'owners')`;
   await sql`insert into memory_room_capture (message_id, space_id, outcome)
     values (${messageId}, ${spaceId}, 'skipped:asked')`;
   const claim = await sql<
