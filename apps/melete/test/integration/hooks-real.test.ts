@@ -77,9 +77,10 @@ realTest(
     });
     expect(catalogResponse.status).toBe(200);
     const catalog = (await catalogResponse.json()) as { tools: { name: string }[] };
-    // Native discovery and reactions need no connection grant; the only granted
+    // Native discovery, asking and reactions need no connection grant; the only granted
     // connector operation in this fixture must still be files.read.
     expect(catalog.tools.map((tool) => tool.name)).toEqual([
+      'ask_person',
       'files.read',
       'load_tool',
       'react',

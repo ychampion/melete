@@ -207,7 +207,13 @@ dbTest('resume_action is offered first, and only while an approved action waits'
   expect(await names(s.claims)).not.toContain(RESUME_ACTION_TOOL.name);
   const proposal = await s.approved({ body: 'offer' });
   const next = await s.nextAttempt(s.claims);
-  expect((await names(next)).slice(0, 3)).toEqual(['search_tools', 'load_tool', 'resume_action']);
+  // First after the tools that are always there: discovery and asking the person.
+  expect((await names(next)).slice(0, 4)).toEqual([
+    'search_tools',
+    'load_tool',
+    'ask_person',
+    'resume_action',
+  ]);
   await s.broker.resume(next, proposal.action_id);
   expect(await names(next)).not.toContain(RESUME_ACTION_TOOL.name);
   // An approval that has lapsed is not offered either, and admission refuses it.
