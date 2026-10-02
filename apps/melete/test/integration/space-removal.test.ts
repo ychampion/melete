@@ -346,6 +346,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   device_pairing: 'operational',
   question: 'operational',
   sandbox_session: 'operational',
+  egress_record: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
   privacy_settings: 'operational',
@@ -645,6 +646,10 @@ describe.if(handle !== null)('removing a space', () => {
       values (${`sbx_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'fake',
         ${`sbx_provider_${seeded.spaceId}`}, 'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'closed',
         now(), now())`;
+    // Where that computer connected.
+    await sql`insert into egress_record (id, session_id, space_id, host, port, verdict, opened_at)
+      values (${`egr_${seeded.spaceId}`}, ${`sbx_${seeded.spaceId}`}, ${seeded.spaceId},
+        'example.com', 443, 'unattributed', now())`;
     // The privacy router's rows: settings, a sealed vault, a conversation's state, an audit row.
     const conversation = `job_privacy_${seeded.spaceId}`;
     await sql`insert into privacy_settings (space_id, settings) values (${seeded.spaceId}, '{}'::jsonb)`;
