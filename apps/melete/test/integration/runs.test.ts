@@ -9,6 +9,10 @@ import {
   runResponse,
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
+import { signCapability } from '../../src/broker/capability.ts';
+import { createBrokerApp } from '../../src/broker/http.ts';
+import { BrokerService } from '../../src/broker/service.ts';
+import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import {
   action,
@@ -33,11 +37,8 @@ import { testDatabase } from '../helpers/database.ts';
 const handle = await testDatabase();
 const queue = handle ? await startQueue(handle.url) : null;
 const jobs = handle && queue ? new JobService(handle.db, queue.boss) : null;
-const runner = jobs
-  ? new AttemptRunner(jobs, new StubRuntimeAdapter(), {
-      key: 'runs-fixture-signing-key-32-bytes-long',
-    })
-  : null;
+const KEY = 'runs-fixture-signing-key-32-bytes-long';
+const runner = jobs ? new AttemptRunner(jobs, new StubRuntimeAdapter(), { key: KEY }) : null;
 const runs = jobs ? new RunService(jobs) : null;
 if (runner && runs) attachRuns(runner, runs);
 const app = handle
@@ -425,6 +426,87 @@ withDb('long work in shifts', () => {
     const tuned = await view(run.id);
     expect(tuned.experiments.best).toMatchObject({ title: 'Lower learning rate', checked: true });
     expect(tuned.status_line).toContain('best accuracy 0.873');
+  });
+
+  test('through the broker: a chat may start work, a run gets its tools, a helper fewer', async () => {
+    const broker = new BrokerService({
+      sql: required(handle).sql,
+      connectors: new ConnectorRegistry(),
+      runs: required(runs),
+    });
+    const brokerApp = createBrokerApp({
+      broker,
+      capabilityKey: KEY,
+      approvalKey: 'runs-fixture-approval-key-32-bytes!',
+    });
+    const as = (claims: Parameters<RunService['call']>[0]) => ({
+      authorization: `Bearer ${signCapability(claims, KEY)}`,
+      'content-type': 'application/json',
+    });
+    const tools = async (claims: Parameters<RunService['call']>[0]) =>
+      (
+        (await (await brokerApp.request('/tools', { headers: as(claims) })).json()) as {
+          tools: { name: string }[];
+        }
+      ).tools.map((entry) => entry.name);
+    const call = (claims: Parameters<RunService['call']>[0], name: string, args: unknown) =>
+      brokerApp.request('/tools/call', {
+        method: 'POST',
+        headers: as(claims),
+        body: JSON.stringify({ name, arguments: args }),
+      });
+
+    // A conversation, with the person asking for something big.
+    const chat = await required(jobs).transaction((tx) =>
+      required(jobs).createInTransaction(
+        tx,
+        { space_id: spaceId, title: 'Research', objective: 'Research' },
+        { kind: 'chat' },
+      ),
+    );
+    await required(jobs).input(
+      chat.id,
+      'Keep testing caching ideas until one halves the load time.',
+    );
+    const turn = await claim(chat.id);
+    expect(turn.claims.scopes).toContain('run.start');
+    expect(await tools(turn.claims)).toContain('run.start');
+    expect(await tools(turn.claims)).not.toContain('run.log');
+    const started = await call(turn.claims, 'run.start', {
+      goal: 'Halve the load time with caching',
+      metric: { name: 'load ms', direction: 'lower' },
+    });
+    expect(started.status).toBe(200);
+    const { run_id } = (await started.json()) as { run_id: string };
+    const listed = runListResponse.parse(
+      await (await request(`/runs?conversation_id=${chat.id}`)).json(),
+    ).runs;
+    expect(listed.map((entry) => entry.id)).toEqual([run_id]);
+    expect(listed[0]?.metric).toEqual({ name: 'load ms', direction: 'lower' });
+
+    // The run's own shift is offered its tools, pinned in the core catalog.
+    const shift = await claim(run_id);
+    const offered = await tools(shift.claims);
+    expect(offered).toEqual(
+      expect.arrayContaining(['run.log', 'run.delegate', 'run.checkpoint', 'run.finish']),
+    );
+    expect(offered).not.toContain('run.start');
+    const logged = await call(shift.claims, 'run.log', {
+      kind: 'finding',
+      title: 'Images dominate',
+    });
+    expect(logged.status).toBe(200);
+    // A wrong argument comes back as something the model can read and fix.
+    const wrong = await call(shift.claims, 'run.log', { kind: 'diary', title: 'x' });
+    expect(wrong.status).toBe(409);
+    expect(JSON.stringify(await wrong.json())).toContain('kind');
+    const helper = (await (
+      await call(shift.claims, 'run.delegate', { task: 'Measure the images' })
+    ).json()) as { helper_id: string };
+    const helperShift = await claim(helper.helper_id);
+    expect(await tools(helperShift.claims)).not.toContain('run.delegate');
+    const refused = await call(helperShift.claims, 'run.delegate', { task: 'More' });
+    expect(refused.status).toBe(409);
   });
 
   test('the list shows runs, newest first, and a conversation sees the ones it started', async () => {
