@@ -5,7 +5,7 @@
  * same facts always give the same plan, so the tests drive every refusal
  * without Docker.
  */
-import { DATABASE_CLIENT } from './database.ts';
+import { CLIENT_TLS, DATABASE_CLIENT } from './database.ts';
 import type { DeployConfig } from './deploy-config.ts';
 import { downloadBytes, type LocalImage, type RemoteImage, sameContent } from './images.ts';
 import type { Result } from './schema.ts';
@@ -406,7 +406,7 @@ export function restoreSteps(context: RestoreContext): string[] {
           "# (create it at the provider, or use the provider's restore to a time before the backup),",
           '# point DATABASE_URL at it with bun run melete set --from-env DATABASE_URL, then load the dump.',
           '# Keep the restriction journal volume: the newer journal is replayed at startup.',
-          `${compose} run --rm --no-deps -T ${DATABASE_CLIENT} sh -c 'exec pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error' < ${quote(dump)}`,
+          `${compose} run --rm --no-deps -T ${DATABASE_CLIENT} sh -c '${CLIENT_TLS}exec pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error' < ${quote(dump)}`,
         ]
       : [
           `# Replace only the database volume. Keep ${context.project}_restrictions and every other volume:`,

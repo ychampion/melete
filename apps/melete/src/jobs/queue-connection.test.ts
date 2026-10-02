@@ -27,4 +27,20 @@ describe('the queue connection', () => {
     ])
       expect(queueConnection(url)).toEqual({ connectionString: url });
   });
+
+  test('require with a root certificate named stays verified, as libpq verifies it', () => {
+    const url =
+      'postgres://melete:p@db.example.net:5432/melete?sslmode=require&sslrootcert=/etc/melete/ca.pem';
+    expect(queueConnection(url)).toEqual({ connectionString: url });
+  });
+
+  test('sslrootcert=system leaves the URL, so the driver checks the public authorities instead of reading a file named system', () => {
+    const connection = queueConnection(
+      'postgres://melete:p@db.example.net:5432/melete?sslmode=verify-full&sslrootcert=system',
+    );
+    expect(connection.ssl).toBeUndefined();
+    const url = new URL(connection.connectionString);
+    expect(url.searchParams.get('sslmode')).toBe('verify-full');
+    expect(url.searchParams.has('sslrootcert')).toBe(false);
+  });
 });

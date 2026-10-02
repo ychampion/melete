@@ -277,11 +277,14 @@ copied. A key belongs in your local `deploy/.env` (`bun run melete set
 ### A managed Postgres database
 
 1. Create a Postgres 17 database at your provider, allow the VM through its
-   firewall, and copy the connection URL. End it with `?sslmode=verify-full`
-   when the provider's certificate is signed by a public authority: the
-   connection is then encrypted and the server's identity checked. With
-   `?sslmode=require` the connection is encrypted, and the server's
-   certificate is accepted without that check.
+   firewall, and copy the connection URL. End it with `?sslmode=verify-full`,
+   so the connection is encrypted and the server's certificate is checked.
+   A certificate signed by a public authority is checked as it is. When the
+   provider signs with an authority of its own (its documentation offers the
+   certificate bundle), save that bundle as `deploy/config/database-ca.pem` and
+   run `bun run melete set MELETE_DATABASE_CA_FILE=/etc/melete/database-ca.pem`.
+   `?sslmode=require` also encrypts, and accepts the server's certificate
+   without a check; `check` reports that as a warning.
 2. Set it, keeping it out of your shell history, and turn the database on in
    the deploy file:
 
@@ -297,7 +300,8 @@ copied. A key belongs in your local `deploy/.env` (`bun run melete set
 
 3. `bun run melete check` confirms the URL asks for TLS, and `bun run melete
    doctor` that the server answers, runs Postgres 17 and encrypts the
-   connection. Then push and start as usual.
+   connection. Then push and start as usual. `POSTGRES_PASSWORD` stays in
+   `deploy/.env` as `init` wrote it, because the base Compose file reads it.
 
 The stack then leaves the bundled postgres off. A one-off `database-client`
 container, the stack's own Postgres 17 image, checks that the server accepts

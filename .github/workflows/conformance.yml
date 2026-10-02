@@ -246,10 +246,17 @@ jobs:
   # own address stand in for them, outside every network of the stack. Then the replacement
   # runbook: back up, lose the host and the database, restore from the steps restore prints.
   cloud-vm:
-    name: A stack on an external database and bucket, restored onto a new host
+    name: A stack on an external database and bucket, restored onto a new host (${{ matrix.tls }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    # require: encrypted, the certificate unchecked. verify-full: checked against an authority this
+    # job creates, handed to the stack as an operator would hand it a provider's own.
+    strategy:
+      fail-fast: false
+      matrix:
+        tls: [require, verify-full]
     env:
+      TLS_MODE: ${{ matrix.tls }}
       COMPOSE: docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.external-db.yml -f deploy/docker-compose.blobs-s3.yml
       # Keys of a throwaway store on this runner; they guard nothing else.
       MELETE_BLOB_S3_ACCESS_KEY_ID: melete_ci
@@ -274,7 +281,17 @@ jobs:
           host=$(hostname -I | awk '{print $1}')
           certs="$RUNNER_TEMP/db-tls"
           mkdir -p "$certs"
-          openssl req -new -x509 -days 1 -nodes -subj "/CN=$host" -keyout "$certs/server.key" -out "$certs/server.crt"
+          if [ "$TLS_MODE" = verify-full ]; then
+            # An authority of the job's own signs the server's certificate for the runner's address.
+            openssl req -new -x509 -days 1 -nodes -subj "/CN=melete ci authority" -keyout "$certs/ca.key" -out "$certs/ca.crt"
+            openssl req -new -nodes -subj "/CN=$host" -keyout "$certs/server.key" -out "$certs/server.csr"
+            printf 'subjectAltName=IP:%s\n' "$host" > "$certs/san.ext"
+            openssl x509 -req -days 1 -in "$certs/server.csr" -CA "$certs/ca.crt" -CAkey "$certs/ca.key" -CAcreateserial -extfile "$certs/san.ext" -out "$certs/server.crt"
+            cp "$certs/ca.crt" deploy/config/database-ca.pem
+            echo "MELETE_DATABASE_CA_FILE=/etc/melete/database-ca.pem" >> "$GITHUB_ENV"
+          else
+            openssl req -new -x509 -days 1 -nodes -subj "/CN=$host" -keyout "$certs/server.key" -out "$certs/server.crt"
+          fi
           sudo chown 70:70 "$certs/server.key" "$certs/server.crt"
           sudo chmod 600 "$certs/server.key"
           password=$(openssl rand -hex 24)
@@ -292,7 +309,7 @@ jobs:
           docker exec cloud-db psql -U melete -d melete -c 'select pg_reload_conf()'
           for _ in $(seq 60); do curl -fsS "http://$host:59000/minio/health/ready" && break; sleep 2; done
           echo "BUCKET_HOST=$host" >> "$GITHUB_ENV"
-          echo "DATABASE_URL=postgres://melete:$password@$host:55432/melete?sslmode=require" >> "$GITHUB_ENV"
+          echo "DATABASE_URL=postgres://melete:$password@$host:55432/melete?sslmode=$TLS_MODE" >> "$GITHUB_ENV"
       - name: Configure the installation for them
         run: |
           set -euo pipefail
@@ -300,6 +317,7 @@ jobs:
           chmod 600 deploy/.env
           bun run melete set --from-env DATABASE_URL MELETE_BLOB_S3_ACCESS_KEY_ID MELETE_BLOB_S3_SECRET_ACCESS_KEY
           bun run melete set MELETE_BLOB_S3_BUCKET=melete-blobs "MELETE_BLOB_S3_ENDPOINT=http://$BUCKET_HOST:59000"
+          if [ -n "${MELETE_DATABASE_CA_FILE:-}" ]; then bun run melete set "MELETE_DATABASE_CA_FILE=$MELETE_DATABASE_CA_FILE"; fi
           printf '{"contract":1,"images":{"registry":null,"tag":"local","channel":"local"},"database":{"external":true},"blobs":{"store":"s3","bucket":"melete-blobs","endpoint":"http://%s:59000"}}\n' "$BUCKET_HOST" > deploy/melete.deploy.json
           bun run melete check | tee cloud-report.txt
       - name: Build and start the stack
@@ -321,6 +339,14 @@ jobs:
           journal=$(jq '.entries | length' apps/melete/drizzle/meta/_journal.json)
           test "$(docker exec cloud-db psql -U melete -d melete -Atc 'select count(*) from drizzle.__drizzle_migrations')" = "$journal"
           test "$(docker exec cloud-db psql -U melete -d melete -Atc "select count(*) from pg_stat_ssl s join pg_stat_activity a using (pid) where a.datname = 'melete' and s.ssl")" -gt 0
+          if [ "$TLS_MODE" = verify-full ]; then
+            # libpq in the client checked the certificate against the authority (a wrong one is refused).
+            if $COMPOSE run --rm --no-deps -T database-client sh -c 'PGSSLROOTCERT=/etc/ssl/cert.pem exec psql --dbname="$DATABASE_URL" -Atc "select 1"'; then
+              echo "::error::the client reached the database with the public authorities, so the server certificate was not checked"
+              exit 1
+            fi
+            test "$($COMPOSE exec -T melete printenv NODE_EXTRA_CA_CERTS)" = /etc/melete/database-ca.pem
+          fi
           # The service is handed the bucket and reaches it.
           test "$($COMPOSE exec -T melete printenv MELETE_BLOB_STORE)" = s3
           $COMPOSE exec -T melete bun -e 'const r = await fetch(`${process.env.MELETE_BLOB_S3_ENDPOINT}/minio/health/ready`); process.exit(r.ok ? 0 : 1)'
@@ -354,7 +380,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: cloud-vm-${{ github.run_id }}
+          name: cloud-vm-${{ matrix.tls }}-${{ github.run_id }}
           path: |
             cloud-report.txt
             compose-logs.txt

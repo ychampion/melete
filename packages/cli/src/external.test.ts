@@ -1,6 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose substitutions and shell lines, not templates.
 import { describe, expect, test } from 'bun:test';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { judgeStatus, SERVICES, type StatusFacts } from '../../../deploy/scripts/status.ts';
 import { takeBackup } from './commands/backup.ts';
@@ -9,6 +9,7 @@ import { databaseBytes, recordedMigrations } from './commands/deploy.ts';
 import { gatherDoctor, judgeDatabase, parseDatabaseAnswer } from './commands/doctor.ts';
 import { adoptedConfig } from './commands/init.ts';
 import { statusServices } from './commands/status.ts';
+import { CLIENT_TLS } from './database.ts';
 import {
   BLOBS_S3_FILE,
   composeCommand,
@@ -78,7 +79,15 @@ describe('the external database file', () => {
     >;
     expect(overlay.melete?.networks).toEqual(networksWithout);
     // Only the merge of networks and depends_on is replaced; the service's own settings stay the base file's.
-    expect(Object.keys(overlay.melete ?? {}).sort()).toEqual(['depends_on', 'networks']);
+    expect(Object.keys(overlay.melete ?? {}).sort()).toEqual([
+      'depends_on',
+      'environment',
+      'networks',
+    ]);
+    // The one setting added: a provider authority the service's database clients trust.
+    expect(overlay.melete?.environment).toEqual({
+      NODE_EXTRA_CA_CERTS: '${MELETE_DATABASE_CA_FILE:-}',
+    });
   });
 
   test('reaches the database from the stack own pinned Postgres image, with the URL only in its environment', () => {
@@ -91,6 +100,17 @@ describe('the external database file', () => {
     expect(client?.networks).toEqual(['edge']);
     expect(client?.ports).toBeUndefined();
     expect(JSON.stringify(overlay)).not.toContain('ports');
+  });
+
+  test('the gate checks the server against the CA file or the public authorities only when the URL asks for verification', () => {
+    const client = overlay['database-client'] as Service & {
+      command?: string[];
+      volumes?: string[];
+    };
+    // Compose turns $$ into $, so the gate runs the very line the melete command runs.
+    expect((client.command?.[2] ?? '').replace(/\$\$/g, '$').startsWith(CLIENT_TLS)).toBe(true);
+    expect(client.environment?.PGSSLROOTCERT).toBe('${MELETE_DATABASE_CA_FILE:-}');
+    expect(client.volumes).toEqual(['./config:/etc/melete:ro']);
   });
 
   test('the melete command adds the file after the overlays, and the S3 file last', () => {
@@ -113,9 +133,9 @@ describe('the external database file', () => {
 });
 
 describe('melete check with an external database', () => {
-  test('a database URL that asks for TLS passes', () => {
+  test('a database URL that asks for TLS and checks the server passes', () => {
     const deployDir = temporaryDeployDir();
-    writeEnv(deployDir, { DATABASE_URL: EXTERNAL_URL });
+    writeEnv(deployDir, { DATABASE_URL: EXTERNAL_URL.replace('require', 'verify-full') });
     contract(deployDir, { database: { external: true } });
     expect(failed(deployDir)).toEqual([]);
     expect(levels(deployDir, 'database.')).toEqual({
@@ -123,6 +143,31 @@ describe('melete check with an external database', () => {
       'database.external_url': 'ok',
       'database.tls': 'ok',
     });
+  });
+
+  test('sslmode=require is encrypted but unchecked, so it is a warning that names verify-full', () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir, { DATABASE_URL: EXTERNAL_URL });
+    contract(deployDir, { database: { external: true } });
+    const tls = judge(deployDir).find((result) => result.id === 'database.tls');
+    expect(tls?.level).toBe('warn');
+    expect(tls?.fix).toContain('sslmode=verify-full');
+  });
+
+  test('a provider certificate is named under /etc/melete and must be in deploy/config', () => {
+    const deployDir = temporaryDeployDir();
+    const url = EXTERNAL_URL.replace('require', 'verify-full');
+    contract(deployDir, { database: { external: true } });
+    writeEnv(deployDir, {
+      DATABASE_URL: url,
+      MELETE_DATABASE_CA_FILE: '/etc/melete/database-ca.pem',
+    });
+    expect(failed(deployDir)).toEqual(['database.ca_file']);
+    mkdirSync(join(deployDir, 'config'));
+    writeFileSync(join(deployDir, 'config', 'database-ca.pem'), 'certificate');
+    expect(failed(deployDir)).toEqual([]);
+    writeEnv(deployDir, { DATABASE_URL: url, MELETE_DATABASE_CA_FILE: '/home/ca.pem' });
+    expect(failed(deployDir)).toEqual(['database.ca_file']);
   });
 
   test('a database URL that would let the connection go unencrypted fails, and the URL is never shown', () => {
@@ -226,7 +271,7 @@ describe('reaching an external database', () => {
     const dump = context.streams[0];
     const source = dump && 'command' in dump.source ? dump.source.command.join(' ') : '';
     expect(source).toContain(
-      'run --rm --no-deps -T database-client sh -c exec pg_dump --dbname="$DATABASE_URL" --format=custom',
+      `run --rm --no-deps -T database-client sh -c ${CLIENT_TLS}exec pg_dump --dbname="$DATABASE_URL" --format=custom`,
     );
     expect(source).not.toContain('exec -T postgres');
     const check = dump?.sinks.find((sink) => 'command' in sink);
@@ -250,7 +295,7 @@ describe('reaching an external database', () => {
     const deployDir = temporaryDeployDir();
     writeEnv(deployDir, { DATABASE_URL: EXTERNAL_URL });
     const compose = composeCommand(deployDir, external);
-    const client = `${compose.join(' ')} run --rm --no-deps -T database-client sh -c exec psql --dbname="$DATABASE_URL" -At -c`;
+    const client = `${compose.join(' ')} run --rm --no-deps -T database-client sh -c ${CLIENT_TLS}exec psql --dbname="$DATABASE_URL" -At -c`;
     const context = testContext(deployDir, [
       [`${client} "select created_at`, ok('1789232400049\n1789232400050\n')],
       [`${client} "select pg_database_size`, ok('81920000\n')],
@@ -280,7 +325,7 @@ describe('reaching an external database', () => {
     expect(steps).not.toContain('docker volume rm');
     expect(steps).not.toContain('up -d --no-build --wait postgres');
     expect(steps).toContain(
-      `run --rm --no-deps -T database-client sh -c 'exec pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error' < /b/melete-20261002T024141Z/database.dump`,
+      `run --rm --no-deps -T database-client sh -c '${CLIENT_TLS}exec pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error' < /b/melete-20261002T024141Z/database.dump`,
     );
     // The journal still comes back before the service starts on a new machine.
     expect(steps.indexOf('cp -a - melete:/data')).toBeLessThan(

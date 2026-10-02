@@ -3,6 +3,8 @@
  * start safely, judged from the files alone. It reads deploy/melete.deploy.json,
  * deploy/.env and the Compose files, and asks neither Docker nor the network.
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { readEnv } from '../../../../apps/melete/src/env.ts';
 import { type ComposeFile, checkCompose } from '../../../../deploy/scripts/compose-check.ts';
 import { judgeModel } from '../../../../deploy/scripts/status.ts';
@@ -232,7 +234,7 @@ function judgeContractAgainstEnv(installation: Installation): Result[] {
           },
     );
   if (config.database.external) overlay('an external database', EXTERNAL_DB_FILE, 'database');
-  results.push(...judgeDatabaseUrl(config, env));
+  results.push(...judgeDatabaseUrl(config, env, installation.deployDir));
   if (config.blobs.store === 's3') overlay('an S3-compatible blob store', BLOBS_S3_FILE, 'blobs');
   results.push(...judgeBlobs(config, env));
   if (config.cells.hosts.length > 0)
@@ -254,7 +256,11 @@ const TLS_MODES = new Set(['require', 'verify-ca', 'verify-full']);
  * Where DATABASE_URL points, judged against `database.external`. Only the host
  * is ever named: the URL holds the password.
  */
-export function judgeDatabaseUrl(config: DeployConfig, env: Record<string, string>): Result[] {
+export function judgeDatabaseUrl(
+  config: DeployConfig,
+  env: Record<string, string>,
+  deployDir: string | null = null,
+): Result[] {
   let url: URL;
   try {
     url = new URL(env.DATABASE_URL?.trim() ?? '');
@@ -292,17 +298,55 @@ export function judgeDatabaseUrl(config: DeployConfig, env: Record<string, strin
       },
     ];
   const mode = url.searchParams.get('sslmode') ?? '';
-  return [
+  const VERIFY_FULL =
+    'End DATABASE_URL with ?sslmode=verify-full, then set it again with bun run melete set --from-env DATABASE_URL. For a provider authority of its own, put its certificate in deploy/config/ and set MELETE_DATABASE_CA_FILE to /etc/melete/<file>.';
+  const results: Result[] = [
     { id: 'database.external_url', level: 'ok', detail: `The database is at ${url.hostname}.` },
-    TLS_MODES.has(mode)
-      ? { id: 'database.tls', level: 'ok', detail: `DATABASE_URL asks for TLS (sslmode=${mode}).` }
-      : {
+    !TLS_MODES.has(mode)
+      ? {
           id: 'database.tls',
           level: 'fail',
           detail: `DATABASE_URL ${mode ? `has sslmode=${mode}, which` : 'sets no sslmode, so it'} would let the connection to ${url.hostname} go unencrypted.`,
-          fix: 'End DATABASE_URL with ?sslmode=require (or verify-full with the provider certificate), then set it again with bun run melete set --from-env DATABASE_URL.',
-        },
+          fix: VERIFY_FULL,
+        }
+      : mode === 'require'
+        ? {
+            id: 'database.tls',
+            level: 'warn',
+            detail: `DATABASE_URL has sslmode=require: the connection to ${url.hostname} is encrypted, and the server's certificate is accepted without a check, so a machine in between could pose as the database.`,
+            fix: VERIFY_FULL,
+          }
+        : {
+            id: 'database.tls',
+            level: 'ok',
+            detail: `DATABASE_URL asks for TLS and checks the server (sslmode=${mode}).`,
+          },
   ];
+  const caFile = env.MELETE_DATABASE_CA_FILE?.trim() ?? '';
+  if (caFile) {
+    const inConfig = /^\/etc\/melete\/[A-Za-z0-9._/-]+$/.test(caFile) && !caFile.includes('..');
+    const present =
+      inConfig && deployDir !== null
+        ? existsSync(join(deployDir, 'config', caFile.slice('/etc/melete/'.length)))
+        : inConfig;
+    results.push(
+      present
+        ? {
+            id: 'database.ca_file',
+            level: 'ok',
+            detail: `The server's certificate is checked against ${caFile}.`,
+          }
+        : {
+            id: 'database.ca_file',
+            level: 'fail',
+            detail: inConfig
+              ? `MELETE_DATABASE_CA_FILE names ${caFile}, and deploy/config/ has no such file.`
+              : `MELETE_DATABASE_CA_FILE names ${caFile}; the containers see deploy/config/ at /etc/melete, so it must be a path there.`,
+            fix: 'Put the provider certificate in deploy/config/, and set MELETE_DATABASE_CA_FILE=/etc/melete/<file>.',
+          },
+    );
+  }
+  return results;
 }
 
 /** The bucket settings deploy/.env holds, judged against the contract's `blobs`. */

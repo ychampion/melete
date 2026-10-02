@@ -62,9 +62,13 @@ export type QueueHandle = {
  * The queue's connection, with DATABASE_URL read as the service's own client
  * and libpq read it. pg-boss's driver reads `sslmode=require` as verify-full,
  * so it would refuse a server whose certificate this machine does not trust
- * while the service itself connects. For `require`, the mode leaves the URL
- * and TLS is asked for without verifying the certificate, which is what
- * `require` means to libpq; every other mode stays as written.
+ * while the service itself connects. For `require` with no root certificate
+ * named, the mode leaves the URL and TLS is asked for without verifying the
+ * certificate, which is what `require` means to libpq. `sslrootcert=system`
+ * is libpq's name for the public authorities, which the driver would try to
+ * read as a file; it leaves the URL, and the driver checks the server against
+ * the same public authorities (with NODE_EXTRA_CA_CERTS, when set). Every
+ * other setting stays as written.
  */
 export function queueConnection(connectionString: string): {
   connectionString: string;
@@ -76,7 +80,13 @@ export function queueConnection(connectionString: string): {
   } catch {
     return { connectionString };
   }
-  if (url.searchParams.get('sslmode') !== 'require') return { connectionString };
+  const rootCert = url.searchParams.get('sslrootcert');
+  if (rootCert === 'system') {
+    url.searchParams.delete('sslrootcert');
+    return { connectionString: url.toString() };
+  }
+  if (url.searchParams.get('sslmode') !== 'require' || rootCert !== null)
+    return { connectionString };
   url.searchParams.delete('sslmode');
   return { connectionString: url.toString(), ssl: { rejectUnauthorized: false } };
 }

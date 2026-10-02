@@ -1,9 +1,14 @@
 # Add to the base file with -f docker-compose.yml -f docker-compose.external-db.yml,
 # or set "database": { "external": true } in deploy/melete.deploy.json and the
 # melete command adds it. The service uses the Postgres server DATABASE_URL names
-# (17 or newer, over TLS: end the URL with ?sslmode=require), such as a managed
-# database. The bundled postgres service stays off, and the service leaves the
-# private database network, which nothing else joins.
+# (17 or newer), such as a managed database. End the URL with
+# ?sslmode=verify-full, so the connection is encrypted and the server's
+# certificate is checked. A certificate from a public authority is checked
+# against the images' own list; for a provider's own authority, put its
+# certificate in deploy/config/ and set MELETE_DATABASE_CA_FILE to its path
+# under /etc/melete (for example /etc/melete/database-ca.pem). The bundled
+# postgres service stays off, and the service leaves the private database
+# network, which nothing else joins.
 #
 # database-client is the stack's own Postgres image with the database's address.
 # On `up` it waits up to a minute for the server to accept connections, and the
@@ -24,12 +29,19 @@ services:
     networks: [edge]
     environment:
       DATABASE_URL: ${DATABASE_URL:?run bun run deploy/scripts/configure.ts}
+      # Read only for a URL that asks for verification (packages/cli/src/database.ts, CLIENT_TLS).
+      PGSSLROOTCERT: ${MELETE_DATABASE_CA_FILE:-}
+    volumes:
+      - ./config:/etc/melete:ro
     command:
       - sh
       - -c
-      - 'for attempt in $$(seq 30); do pg_isready --quiet --dbname="$$DATABASE_URL" --timeout=5 && exit 0; sleep 2; done; echo "The database at DATABASE_URL did not accept connections." >&2; exit 1'
+      - 'case "$$DATABASE_URL" in *sslmode=verify-*) export PGSSLROOTCERT="$${PGSSLROOTCERT:-system}" ;; *) unset PGSSLROOTCERT ;; esac; for attempt in $$(seq 30); do pg_isready --quiet --dbname="$$DATABASE_URL" --timeout=5 && exit 0; sleep 2; done; echo "The database at DATABASE_URL did not accept connections." >&2; exit 1'
 
   melete:
+    environment:
+      # The provider's own authority, trusted by the service's database clients too.
+      NODE_EXTRA_CA_CERTS: ${MELETE_DATABASE_CA_FILE:-}
     networks: !override
       edge:
         aliases: [melete-api]

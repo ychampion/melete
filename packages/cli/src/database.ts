@@ -12,6 +12,17 @@ import type { DeployConfig } from './deploy-config.ts';
 export const DATABASE_CLIENT = 'database-client';
 
 /**
+ * The root certificates libpq checks the server against, set only when the URL
+ * asks for verification: the file MELETE_DATABASE_CA_FILE names (handed to the
+ * container as PGSSLROOTCERT), or else the image's own public authorities. For
+ * any other mode it is unset, because a root file turns libpq's `require` into
+ * `verify-ca`. deploy/docker-compose.external-db.yml runs the same line.
+ */
+export const CLIENT_TLS =
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template.
+  'case "$DATABASE_URL" in *sslmode=verify-*) export PGSSLROOTCERT="${PGSSLROOTCERT:-system}" ;; *) unset PGSSLROOTCERT ;; esac; ';
+
+/**
  * The connection arguments a psql, pg_dump or pg_restore line takes, read from
  * the container's environment when it runs.
  */
@@ -34,7 +45,8 @@ export function databaseShell(
   config: DeployConfig,
   script: (db: string) => string,
 ): string[] {
-  return [...compose, ...clientCommand(config), 'sh', '-c', script(connection(config))];
+  const tls = config.database.external ? CLIENT_TLS : '';
+  return [...compose, ...clientCommand(config), 'sh', '-c', `${tls}${script(connection(config))}`];
 }
 
 /** One SQL statement whose answer is a single line, unaligned. */
