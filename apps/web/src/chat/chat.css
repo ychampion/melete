@@ -597,15 +597,6 @@ button.act-line:focus-visible,
     flex: 1;
   }
 }
-.result-facts {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--secondary);
-}
 .receipt {
   display: flex;
   flex-direction: row;

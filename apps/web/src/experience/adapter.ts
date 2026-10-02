@@ -766,8 +766,6 @@ async function binary<T>(
   }
 }
 
-export type Adapter = typeof adapter;
-
 export type StreamItem =
   | { type: 'open' }
   | { type: 'event'; event: ExperienceEvent }

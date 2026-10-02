@@ -145,8 +145,6 @@ export const LOGO_NAMES: Record<LogoName, string> = {
   tripadvisor: 'Tripadvisor',
 };
 
-export const isLogo = (name: string): name is LogoName => name in LOGOS;
-
 export function Logo({ name, size = 40 }: { name: LogoName; size?: number }) {
   const spec = LOGOS[name];
   const pad = 'pad' in spec ? spec.pad : 5;

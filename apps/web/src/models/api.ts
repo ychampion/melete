@@ -8,7 +8,7 @@
  * contract stops this compiling. No call here ever receives a key back.
  */
 import type { paths } from '@melete/client';
-import { API_BASE_URL, client, type Result } from '../experience/adapter.ts';
+import { call } from '../experience/call.ts';
 
 type Json<T> = T extends { content: { 'application/json': infer B } } ? B : never;
 
@@ -22,35 +22,6 @@ export type SignInStatus = Json<
 export type SignInStart = Json<
   paths['/model-providers/{provider}/sign-in']['post']['responses'][201]
 >;
-
-const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
-
-type Failure = { error?: { message?: string } };
-
-async function call<T>(
-  path: string,
-  init: { method?: string; body?: unknown } = {},
-): Promise<Result<T>> {
-  try {
-    const response = await client.options.fetch(`${API_BASE_URL}${path}`, {
-      method: init.method ?? 'GET',
-      headers: {
-        ...client.options.headers,
-        ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
-      },
-      credentials: client.options.credentials,
-      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-    });
-    const body: unknown = await response.json().catch(() => null);
-    if (!response.ok) {
-      const said = (body as Failure | null)?.error?.message;
-      return { data: null, error: said ?? OFFLINE, unavailable: null };
-    }
-    return { data: body as T, error: null, unavailable: null };
-  } catch {
-    return { data: null, error: OFFLINE, unavailable: null };
-  }
-}
 
 const provider = (name: string) => encodeURIComponent(name);
 
