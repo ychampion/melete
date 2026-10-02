@@ -75,7 +75,7 @@ assembled request.
 
 ## HTTP lifecycle and approvals
 
-The client builds requests for capabilities, run start/status/events/stop and
+The client builds requests for capabilities, run start/events/stop and
 shell-approval responses. Evidence includes `start posts to /v1/runs with the
 surrogate token`, `the attempt id is the idempotency key and the job id is the
 session`, and `the event request asks for a stream and does not try to resume one`.

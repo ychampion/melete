@@ -3,7 +3,7 @@
  *
  * Melete's identity is the engine's own identity slot: it is written as
  * `SOUL.md` in the engine home, which the pinned engine puts first in its system
- * prompt in place of its stock persona (`agent/system_prompt.py:487`). The run's
+ * prompt in place of its stock persona (`agent/system_prompt.py`). The run's
  * `instructions` then follow the engine's preamble, so everything here is
  * additive: a conversation's persona on top of that identity, then the part of
  * the attempt Melete owns. The engine contributes its own preamble in addition to
