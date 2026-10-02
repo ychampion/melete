@@ -22,6 +22,22 @@ export const VIEW_PREFIX = '/apps/view/';
 export const viewPath = (method: string, path: string): boolean =>
   (method === 'GET' || method === 'HEAD') && path.startsWith(VIEW_PREFIX);
 
+/**
+ * What a browser says it is loading (`Sec-Fetch-Dest`) when it opens a file
+ * as a page of its own, or embeds one as a plugin. A page opened on its own
+ * has no frame around it to keep it from navigating itself elsewhere.
+ */
+const PAGE_OF_ITS_OWN = new Set(['document', 'embed', 'object']);
+
+/**
+ * Whether a request for framed content may be answered: the browser says
+ * what it is loading, and it is not a page of its own. A request that does
+ * not say is refused too: every browser that can run an app says.
+ */
+export function framedRequest(destination: string | null | undefined): boolean {
+  return typeof destination === 'string' && destination !== '' && !PAGE_OF_ITS_OWN.has(destination);
+}
+
 /** What the page may still do inside its frame. No same-origin, popups or top navigation. */
 export const VIEW_SANDBOX = 'allow-scripts allow-forms allow-downloads';
 

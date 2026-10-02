@@ -71,7 +71,10 @@ describe('the isolating middleware', () => {
       c.header('set-cookie', 'melete_session=x');
     });
     app.get('/view/forgot', () => new Response('<p>page</p>'));
-    app.get('/view/served', () => new Response('<p>page</p>', { headers: viewHeaders('text/html') }));
+    app.get(
+      '/view/served',
+      () => new Response('<p>page</p>', { headers: viewHeaders('text/html') }),
+    );
     app.get('/view/throws', () => {
       throw new Error('boom');
     });

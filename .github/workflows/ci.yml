@@ -151,6 +151,25 @@ jobs:
           MELETE_BROWSER_SANDBOX_PROOF: '1'
         run: bun test apps/melete/test/integration/browser-sandbox.test.ts --max-concurrency=1
 
+  app-isolation:
+    name: Prove app isolation in real browsers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Install Chromium and Firefox
+        run: bunx playwright install --with-deps chromium firefox
+      # A missing browser fails this job rather than skipping the proof.
+      - name: Prove a published app stays inside its frame
+        env:
+          MELETE_APP_ISOLATION_PROOF: '1'
+        run: bun test apps/melete/test/browser/app-isolation.test.ts --max-concurrency=1
+
   mcp-stdio:
     name: Stdio MCP servers in their own containers (conformance 10)
     runs-on: ubuntu-24.04

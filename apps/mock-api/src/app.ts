@@ -67,6 +67,7 @@ import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
+import { mountAppsMock } from './apps.ts';
 import { mountCompaniesMock } from './companies.ts';
 import { mountExperienceMock } from './experience.ts';
 import { mountFeedbackMock } from './feedback.ts';
@@ -136,6 +137,7 @@ export function createMockApp(deps: AppDeps) {
   );
 
   // Before the experience routes, which answer every operation they do not implement.
+  mountAppsMock(app, deps);
   mountPrivacyMock(app, deps, () => experience.chats);
   const experience = mountExperienceMock(app, deps);
   experience.computer.mount(app);

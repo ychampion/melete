@@ -21,18 +21,11 @@ import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { type BlobStore, blobKey } from '../storage/blob.ts';
-import { VIEW_PREFIX, viewHeaders } from '../viewer/headers.ts';
+import { framedRequest, VIEW_PREFIX, viewHeaders } from '../viewer/headers.ts';
 import type { ViewTokens } from '../viewer/tokens.ts';
 import { appRoleSql } from './service.ts';
 
 export type AppViewDeps = { sql: Sql; blobs?: BlobStore; tokens: ViewTokens };
-
-/**
- * What a browser says it is loading (`Sec-Fetch-Dest`) when it opens a file
- * as a page of its own, or embeds one as a plugin. A request that does not
- * say is refused too: every browser that can run an app says.
- */
-const REFUSED_DESTINATIONS = new Set(['document', 'embed', 'object']);
 
 const ended = () =>
   new ServiceError('not_found', 'This view has ended. Open the app again from Melete.', 404);
@@ -80,8 +73,7 @@ export function mountAppViews(app: Hono, deps: AppViewDeps): void {
   });
 
   app.get(`${VIEW_PREFIX}:token/:path{.+}`, async (c) => {
-    const destination = c.req.header('sec-fetch-dest');
-    if (!destination || REFUSED_DESTINATIONS.has(destination))
+    if (!framedRequest(c.req.header('sec-fetch-dest')))
       throw new ServiceError('forbidden', 'Open this app from Melete.', 403);
     const claims = tokens.verify(c.req.param('token'));
     if (!claims) throw ended();
