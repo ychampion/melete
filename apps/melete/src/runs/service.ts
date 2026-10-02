@@ -34,6 +34,7 @@ import {
   runLogInput,
   runStartInput,
   runView,
+  waitSpec,
 } from '@melete/contracts';
 import {
   and,
@@ -68,6 +69,7 @@ import { newId } from '../ids.ts';
 import { requireCurrentAttempt } from '../jobs/fence.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import { DEFAULT_BUDGET, type JobRow, type JobService } from '../jobs/service.ts';
+import type { TriggerService } from '../jobs/triggers.ts';
 import { ownJob, principalContext, requestPrincipal } from '../principals/authority.ts';
 import {
   bestExperiment,
@@ -79,6 +81,17 @@ import {
   stepsOf,
   valueShown,
 } from './record.ts';
+import {
+  checkpointNext,
+  ON_TRIGGER,
+  restingOnTrigger,
+  restOn,
+  setStandingEnabled,
+  stand,
+  standingTrigger,
+  standingView,
+  unstand,
+} from './standing.ts';
 
 /**
  * What one shift may use. These only stop a runaway shift: a run goes on in
@@ -103,7 +116,15 @@ const ACTIVE_RUN_LIMIT = 10;
 const missing = () => new ServiceError('not_found', 'That piece of work was not found.', 404);
 
 export class RunService {
+  /** Registers the schedules standing work rests on; set where triggers run. */
+  triggers?: TriggerService;
+
   constructor(readonly jobs: JobService) {}
+
+  /** Brings schedule registrations in line with the trigger rows, after they changed. */
+  async syncSchedules() {
+    await this.triggers?.syncSchedules();
+  }
 
   get db() {
     return this.jobs.db;
@@ -115,7 +136,7 @@ export class RunService {
   async call(claims: CapabilityClaims, name: string, input: unknown): Promise<unknown> {
     if (!claims.scopes.includes(name))
       throw new ServiceError('scope_denied', `${name} is not available here.`, 403);
-    return this.jobs.transaction(async (tx) => {
+    const result = await this.jobs.transaction(async (tx) => {
       const { job: row } = await requireCurrentAttempt(tx, claims);
       switch (name) {
         case 'run.start':
@@ -132,6 +153,8 @@ export class RunService {
           throw new ServiceError('unknown_tool', `${name} is not a run tool.`, 404);
       }
     });
+    if (name === 'run.start' || name === 'run.checkpoint') await this.syncSchedules();
+    return result;
   }
 
   private async stateOf(tx: Transaction, jobId: string): Promise<State> {
@@ -223,6 +246,9 @@ export class RunService {
       metric: input.metric ?? null,
       limit: input.limit ?? null,
     });
+    // Work that repeats stands on its schedule from the start; the caller
+    // registers the schedule once this commits.
+    if (input.repeat) await stand(tx, this.jobs, row, { kind: 'schedule', ...input.repeat });
     return row;
   }
 
@@ -411,10 +437,20 @@ export class RunService {
   private async checkpoint(tx: Transaction, row: JobRow, attemptId: string, raw: unknown) {
     const state = await this.stateOf(tx, row.id);
     const input = runCheckpointInput.parse(raw);
-    if (input.next_shift && !['now', 'when_helpers_finish'].includes(input.next_shift)) {
+    if (
+      typeof input.next_shift === 'string' &&
+      !['now', 'when_helpers_finish', 'drop_trigger'].includes(input.next_shift)
+    ) {
       if (Date.parse(input.next_shift) <= Date.now())
         throw new ServiceError('payload_invalid', 'next_shift must be in the future.', 400);
     }
+    const nextShift = await checkpointNext(
+      tx,
+      this.jobs,
+      row,
+      Boolean(state.parentRunId),
+      input.next_shift,
+    );
     await this.write(tx, {
       run: this.rootOf(state),
       step: state.parentRunId ? row.id : null,
@@ -422,7 +458,7 @@ export class RunService {
       kind: 'checkpoint',
       title: clip(input.summary.split('\n')[0] ?? input.summary, 200),
       body: input.summary,
-      data: { next: input.next, next_shift: input.next_shift ?? 'now' },
+      data: { next: input.next, next_shift: nextShift },
     });
     return { status: 'saved', instruction: 'Saved. End this shift now with one short line.' };
   }
@@ -491,6 +527,8 @@ export class RunService {
     const run = this.rootOf(state);
     const step = state.parentRunId ? row.id : null;
     const shifts = state.shifts + 1;
+    // Standing work rests on its trigger after a shift unless it asks otherwise.
+    const stands = step ? null : await standingTrigger(tx, row.id);
     const mine = await tx
       .select()
       .from(runEntry)
@@ -521,12 +559,24 @@ export class RunService {
     // A shift that only handed off to a later time, or to helpers still out,
     // is resting rather than idle; one that only handed off to go on now is idle.
     const asked = [...mine].reverse().find((entry) => entry.kind === 'checkpoint');
-    const askedNext = asked ? String(object(asked.data).next_shift ?? 'now') : 'now';
+    const askedNext = asked
+      ? String(object(asked.data).next_shift ?? 'now')
+      : stands
+        ? ON_TRIGGER
+        : 'now';
     const resting =
-      askedNext === 'when_helpers_finish'
-        ? !step && (await this.activeSteps(tx, row.id)) > 0
-        : askedNext !== 'now' && Date.parse(askedNext) > (await databaseNow(tx)).getTime();
-    const idle = progressed ? 0 : resting ? state.idleShifts : state.idleShifts + 1;
+      askedNext === ON_TRIGGER
+        ? Boolean(stands)
+        : askedNext === 'when_helpers_finish'
+          ? !step && (await this.activeSteps(tx, row.id)) > 0
+          : askedNext !== 'now' && Date.parse(askedNext) > (await databaseNow(tx)).getTime();
+    // Waiting on a trigger is not idling: a quiet day is the point of standing work.
+    const idle =
+      progressed || (askedNext === ON_TRIGGER && stands)
+        ? 0
+        : resting
+          ? state.idleShifts
+          : state.idleShifts + 1;
     await tx
       .update(runState)
       .set({ shifts, idleShifts: idle, waitingOnSteps: false })
@@ -607,12 +657,20 @@ export class RunService {
             ? 'Paused at the time limit for one stretch of work'
             : 'Picked up where it stopped',
         body: said ? clip(said, 4000) : 'The shift ended without a handoff.',
-        data: { next: 'Continue from the record.', next_shift: 'now', automatic: true },
+        data: {
+          next: 'Continue from the record.',
+          next_shift: stands ? ON_TRIGGER : 'now',
+          automatic: true,
+        },
       });
     }
-    if (!step) await this.digest(tx, row, state, attemptId);
+    // Standing work tells the person only what it reports: no daily summary
+    // of quiet wakes.
+    if (!step && !stands) await this.digest(tx, row, state, attemptId);
     const next = String(object(handoff.data).next_shift ?? 'now');
     const now = (await databaseNow(tx)).getTime();
+    if (next === ON_TRIGGER && stands)
+      return { kind: 'waiting_for_event_or_time', wait: await restOn(tx, stands) };
     if (next === 'when_helpers_finish' && !step) {
       if (await this.activeSteps(tx, row.id)) {
         await tx.update(runState).set({ waitingOnSteps: true }).where(eq(runState.jobId, row.id));
@@ -824,6 +882,11 @@ export class RunService {
       const report = newest('report');
       const handoff = newest('checkpoint');
       const finished = newest('finished');
+      const registration = isTerminal(row.state as JobState)
+        ? null
+        : await standingTrigger(tx, row.id);
+      const standing = registration ? await standingView(tx, this.jobs, row, registration) : null;
+      const onTrigger = Boolean(standing) && restingOnTrigger(row);
       return runView.parse({
         id: row.id,
         title: row.title,
@@ -842,6 +905,7 @@ export class RunService {
           waitingOnSteps: state.waitingOnSteps,
           nextWakeAt: row.state === 'waiting_for_event_or_time' ? row.nextWakeAt : null,
           question: question_,
+          standing: onTrigger ? (standing?.kind ?? null) : null,
         }),
         conversation_id: state.conversationId,
         agent_id: row.agentId,
@@ -849,10 +913,12 @@ export class RunService {
         finished_at:
           state.finishedAt?.toISOString() ??
           (isTerminal(row.state as JobState) ? row.updatedAt.toISOString() : null),
-        next_shift_at:
-          row.state === 'waiting_for_event_or_time'
+        next_shift_at: onTrigger
+          ? (standing?.next_wake_at ?? null)
+          : row.state === 'waiting_for_event_or_time'
             ? (row.nextWakeAt?.toISOString() ?? null)
             : null,
+        standing,
         shifts: state.shifts,
         metric,
         limit: state.limit ? runLimit.parse(state.limit) : null,
@@ -969,8 +1035,10 @@ export class RunService {
         if (!(error instanceof ServiceError) || error.code !== 'already_terminal') throw error;
       }
     };
-    // The run first: once it is fenced it cannot start another helper, so the
+    // What it stands on goes first, so nothing wakes it behind the stop. Then
+    // the run: once it is fenced it cannot start another helper, so the
     // helpers read after it are all there are.
+    if (await this.jobs.transaction((tx) => unstand(tx, row.id))) await this.syncSchedules();
     await cancel(row.id);
     const steps = await this.db
       .select({ id: job.id })
@@ -994,12 +1062,20 @@ export class RunService {
     // record, holds its own row and then needs the run's row (the record's
     // foreign key), so taking the run first could deadlock with it.
     const ids = [...(await this.jobs.transaction((tx) => this.stepIds(tx, row.id))), row.id];
-    await this.jobs.transaction(async (tx) => {
+    const triggers = await this.jobs.transaction(async (tx) => {
       for (const id of ids) {
         const locked = await this.jobs.lock(tx, id);
         if (!locked || isTerminal(locked.state as JobState)) continue;
         await tx.update(job).set({ paused, updatedAt: new Date() }).where(eq(job.id, id));
-        if (!paused && ['queued', 'waiting_for_event_or_time'].includes(locked.state)) {
+        // Standing work resumed keeps resting on its trigger, which is on again.
+        const onTrigger =
+          locked.state === 'waiting_for_event_or_time' &&
+          waitSpec.safeParse(locked.wait).data?.kind === 'event';
+        if (
+          !paused &&
+          !onTrigger &&
+          ['queued', 'waiting_for_event_or_time'].includes(locked.state)
+        ) {
           const moved =
             locked.state === 'queued'
               ? { ...locked, paused: false, nextWakeAt: await databaseNow(tx) }
@@ -1021,7 +1097,9 @@ export class RunService {
         payload: { kind: paused ? 'run_paused' : 'run_resumed' },
         dedupKey: `${row.id}:${paused ? 'paused' : 'resumed'}:${newId('op')}`,
       });
+      return setStandingEnabled(tx, row.id, !paused);
     });
+    if (triggers) await this.syncSchedules();
   }
 
   /**
@@ -1123,6 +1201,8 @@ function statusLine(input: {
   waitingOnSteps: boolean;
   nextWakeAt: Date | null;
   question: string | null;
+  /** Set while standing work rests on its trigger. */
+  standing: 'schedule' | 'event' | 'watch' | null;
 }): string {
   const tried =
     input.experiments > 0
@@ -1151,6 +1231,8 @@ function statusLine(input: {
           `Waiting for ${input.helpersWorking} helper${input.helpersWorking === 1 ? '' : 's'}`,
           tried,
         );
+      if (input.standing)
+        return join(input.standing === 'schedule' ? 'Waiting until next time' : 'Watching', tried);
       if (input.nextWakeAt && input.nextWakeAt.getTime() - Date.now() < 60_000)
         return join('Working on it', tried);
       return join(input.nextWakeAt ? 'Picks up again later' : 'Waiting', tried);
@@ -1163,4 +1245,8 @@ export { isRunKind };
 export function attachRuns(runner: AttemptRunner, runs: RunService) {
   runner.runs = runs;
   runner.onFinished.push((tx, row, outcome) => runs.stepEnded(tx, row, outcome));
+  // Finished work stands on nothing; taken up again, it can set a new trigger.
+  runner.onFinished.push(async (tx, row) => {
+    if (row.kind === 'run' && isTerminal(row.state as JobState)) await unstand(tx, row.id);
+  });
 }

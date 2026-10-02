@@ -176,6 +176,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       const row = await jobs.transaction((tx) =>
         runs.create(tx, spaceId, input, { agentId: agentId ?? null }),
       );
+      await runs.syncSchedules();
       return { run: await runs.view(row) };
     },
     'GET /runs/{id}': async (spaceId, c) => {

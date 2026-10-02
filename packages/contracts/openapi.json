@@ -7101,6 +7101,25 @@
                       "direction"
                     ]
                   },
+                  "repeat": {
+                    "type": "object",
+                    "properties": {
+                      "cron": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 120
+                      },
+                      "timezone": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      }
+                    },
+                    "required": [
+                      "cron"
+                    ],
+                    "additionalProperties": false
+                  },
                   "agent_id": {
                     "type": "string"
                   },
@@ -28693,6 +28712,45 @@
               }
             ]
           },
+          "standing": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "schedule",
+                      "event",
+                      "watch"
+                    ]
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "next_wake_at": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/__schema149"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "description",
+                  "next_wake_at"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "shifts": {
             "type": "integer",
             "minimum": 0,
@@ -28886,6 +28944,7 @@
           "started_at",
           "finished_at",
           "next_shift_at",
+          "standing",
           "shifts",
           "metric",
           "limit",

@@ -10,8 +10,9 @@
  * read back, exported and checked later.
  */
 import { z } from 'zod';
-import { timestamp } from './common.ts';
+import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
 import type { ToolSpec } from './runtime.ts';
+import { watchPredicate } from './watch.ts';
 
 export const RUN_KINDS = ['run', 'run_step'] as const;
 export const isRunKind = (kind: string): boolean => (RUN_KINDS as readonly string[]).includes(kind);
@@ -75,12 +76,48 @@ export type RunLimit = z.infer<typeof runLimit>;
 const title = z.string().trim().min(1).max(RUN_TITLE_LIMIT);
 const body = z.string().max(RUN_BODY_LIMIT);
 
+/** A repeating time, in the person's time zone unless another is named. */
+export const runSchedule = z
+  .object({
+    cron: z.string().trim().min(1).max(120),
+    timezone: z.string().trim().min(1).max(64).optional(),
+  })
+  .strict();
+export type RunSchedule = z.infer<typeof runSchedule>;
+
+/**
+ * What a standing run rests on between shifts: a schedule, something new on
+ * one of the space's connections, or an observation that passes a test. It
+ * wakes only then, with no model call while nothing happens.
+ */
+export const runWake = z.discriminatedUnion('kind', [
+  runSchedule.extend({ kind: z.literal('schedule') }).strict(),
+  z
+    .object({
+      kind: z.literal('event'),
+      connection_id: prefixedId(ID_PREFIXES.connection),
+      event_name: z.string().trim().min(1).max(200),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('watch'),
+      connection_id: prefixedId(ID_PREFIXES.connection),
+      event_name: z.string().trim().min(1).max(200),
+      predicate: watchPredicate,
+    })
+    .strict(),
+]);
+export type RunWake = z.infer<typeof runWake>;
+
 export const runStartInput = z
   .object({
     goal: z.string().trim().min(1).max(4000),
     title: title.optional(),
     done_when: z.string().trim().max(1000).optional(),
     metric: runMetric.optional(),
+    /** Keeps the work standing: after each shift it rests until the next time. */
+    repeat: runSchedule.optional(),
   })
   .strict();
 export type RunStartInput = z.infer<typeof runStartInput>;
@@ -112,8 +149,17 @@ export const runDelegateInput = z
   .strict();
 export type RunDelegateInput = z.infer<typeof runDelegateInput>;
 
-/** When the next shift starts: now, once the helpers are done, or at a time. */
-export const runNext = z.union([z.literal('now'), z.literal('when_helpers_finish'), timestamp]);
+/**
+ * When the next shift starts: now, once the helpers are done, at a time, or
+ * whenever a wake fires (the run then stands on it until it drops it).
+ */
+export const runNext = z.union([
+  z.literal('now'),
+  z.literal('when_helpers_finish'),
+  z.literal('drop_trigger'),
+  timestamp,
+  runWake,
+]);
 
 export const runCheckpointInput = z
   .object({
@@ -159,6 +205,11 @@ export const RUN_START_TOOL: ToolSpec = {
           direction: { type: 'string', enum: ['higher', 'lower'] },
         },
         required: ['name', 'direction'],
+      },
+      repeat: {
+        type: 'object',
+        description:
+          'For work that repeats: {cron, timezone?}, in the person’s time zone by default.',
       },
     },
     ['goal'],
@@ -216,8 +267,9 @@ export const RUN_CHECKPOINT_TOOL: ToolSpec = {
       summary: { type: 'string' },
       next: { type: 'string' },
       next_shift: {
-        type: 'string',
-        description: '"now" (default), "when_helpers_finish", or a future UTC time.',
+        anyOf: [{ type: 'string' }, { type: 'object' }],
+        description:
+          '"now" (default), "when_helpers_finish", a future UTC time, or a wake it rests on after every shift: {kind:"schedule",cron,timezone?}, {kind:"event",connection_id,event_name} or {kind:"watch",connection_id,event_name,predicate:{all:[{field,op,value}]}}. "drop_trigger" ends that.',
       },
     },
     ['summary', 'next'],
@@ -277,6 +329,15 @@ export const runExperimentView = z.object({
   created_at: timestamp,
 });
 
+/** What a standing run rests on, in words, and when it next wakes if that is known. */
+export const runStandingView = z.object({
+  kind: z.enum(['schedule', 'event', 'watch']),
+  /** "Every weekday at 9:00", "When new mail arrives in Mail". */
+  description: z.string(),
+  next_wake_at: timestamp.nullable(),
+});
+export type RunStandingView = z.infer<typeof runStandingView>;
+
 export const runStepView = z.object({
   id: z.string(),
   title: z.string(),
@@ -297,6 +358,8 @@ export const runView = z.object({
   started_at: timestamp,
   finished_at: timestamp.nullable(),
   next_shift_at: timestamp.nullable(),
+  /** Set while the work stands on a schedule or a watch. */
+  standing: runStandingView.nullable(),
   shifts: z.number().int().nonnegative(),
   metric: runMetric.nullable(),
   limit: runLimit.nullable(),

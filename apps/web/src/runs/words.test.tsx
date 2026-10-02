@@ -18,6 +18,7 @@ import {
   RECORD_LABEL,
   recordFileName,
   recordLabel,
+  standingLine,
   statusOf,
   triesLine,
   workOrder,
@@ -35,6 +36,7 @@ const run = (over: Partial<Run> = {}): Run => ({
   started_at: '2026-10-01T08:00:00.000Z',
   finished_at: null,
   next_shift_at: null,
+  standing: null,
   shifts: 2,
   metric: null,
   limit: null,
@@ -125,6 +127,25 @@ test('the newest moment counts as the last update, and work that needs the perso
     run({ id: 'asks', status: 'needs_you', started_at: '2026-09-01T08:00:00.000Z' }),
   ]).map((item) => item.id);
   expect(order).toEqual(['asks', 'moving', 'done']);
+});
+
+test('work that repeats says what it waits for and when it next wakes, in plain words', () => {
+  expect(standingLine(run())).toBeNull();
+  const watching = run({
+    standing: { kind: 'watch', description: 'When new mail arrives in Mail', next_wake_at: null },
+  });
+  expect(standingLine(watching)).toBe('When new mail arrives in Mail');
+  const scheduled = standingLine(
+    run({
+      standing: {
+        kind: 'schedule',
+        description: 'Every weekday at 9:00',
+        next_wake_at: '2026-10-05T09:00:00.000Z',
+      },
+    }),
+  );
+  expect(scheduled).toStartWith('Every weekday at 9:00 · next ');
+  expect(scheduled).not.toMatch(INTERNAL);
 });
 
 test('a later page joins the end without repeating what is shown', () => {

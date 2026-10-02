@@ -13747,6 +13747,10 @@ export interface paths {
                             direction: "higher" | "lower";
                             name: string;
                         };
+                        repeat?: {
+                            cron: string;
+                            timezone?: string;
+                        };
                         title?: string;
                     };
                 };
@@ -17713,6 +17717,12 @@ export interface components {
             question: string | null;
             result: string | null;
             shifts: number;
+            standing: {
+                description: string;
+                /** @enum {string} */
+                kind: "schedule" | "event" | "watch";
+                next_wake_at: components["schemas"]["__schema149"] | null;
+            } | null;
             started_at: components["schemas"]["__schema149"];
             status: components["schemas"]["__schema278"];
             status_line: string;

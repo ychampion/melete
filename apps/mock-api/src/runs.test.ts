@@ -44,6 +44,30 @@ test('the seed holds work under way, work waiting on the person, and finished wo
   expect(inChat.map((run) => run.id)).toEqual([working.id]);
 });
 
+test('the seed has work that repeats, and new work can repeat from the start', async () => {
+  const { runs } = C.runListResponse.parse((await call(seeded(), '/runs')).body);
+  const standing = runs.find((run) => run.standing);
+  expect(standing?.standing).toMatchObject({
+    kind: 'schedule',
+    description: 'Every weekday at 9:00',
+  });
+  expect(standing?.standing?.next_wake_at).toBeTruthy();
+  expect(standing?.status_line).toBe('Waiting until next time');
+
+  const mock = createMock({ speed: 0 });
+  const created = runOf(
+    (
+      await call(mock, '/runs', 'POST', {
+        goal: 'Check the price list',
+        repeat: { cron: '30 8 * * 1' },
+      })
+    ).body,
+  );
+  expect(created.standing?.description).toBe('Every Monday at 8:30');
+  const stopped = runOf((await call(mock, `/runs/${created.id}/stop`, 'POST')).body);
+  expect(stopped.standing).toBeNull();
+});
+
 test('the record pages oldest first and ends with no cursor', async () => {
   const mock = seeded();
   const { runs } = C.runListResponse.parse((await call(mock, '/runs')).body);

@@ -26,6 +26,7 @@ import {
   keepsMoving,
   lastActivity,
   recordFileName,
+  standingLine,
   statusOf,
   workOrder,
 } from '../runs/words.ts';
@@ -134,6 +135,7 @@ function WorkCard({ run, now }: { run: Run; now: number }) {
         </Status>
       </div>
       <span className="run-card-line">{run.status_line}</span>
+      {run.standing ? <span className="run-card-repeat">{standingLine(run)}</span> : null}
       <span className="run-card-meta">
         Started {ago(run.started_at, now)} · updated {ago(lastActivity(run), now)}
       </span>
@@ -532,6 +534,12 @@ function WorkDetail({ id }: { id: string }) {
             <dl className="run-goal">
               <dt>Goal</dt>
               <dd>{run.goal}</dd>
+              {run.standing ? (
+                <>
+                  <dt>Wakes</dt>
+                  <dd>{standingLine(run)}</dd>
+                </>
+              ) : null}
               {run.done_when ? (
                 <>
                   <dt>Done when</dt>
