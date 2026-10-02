@@ -401,10 +401,14 @@ device). Every question the agent asks with `ask_person` takes free text.
 A question asked by the agent keeps its job waiting for the answer. In a chat
 or a responsibility the job is `waiting_for_input`; a routine rests on its
 schedule instead, so its next run still comes, and answering wakes it for a run
-of its own. The answer reaches the agent as the person's next message. Stopping
-or deleting the conversation, or cancelling the job, withdraws the question and
-closes its card. Voice mode never answers one: it says the question is on the
-screen.
+of its own. The answer reaches the agent as the person's next message; a picked
+option reads "You chose: …" and is marked as a choice the agent offered, so
+memory never takes it as the person's own words. A question asked in a turn that
+also waits for an approval stays beside it, and an answer given meanwhile is read
+by the attempt after the approval. Stopping or deleting the conversation, or
+cancelling the job, withdraws the question and closes its card, except a
+question about an effect whose outcome is unknown, which stays until answered.
+Voice mode never answers one: it says the question is on the screen.
 
 `GET /agents/templates` offers Planner, Travel concierge, and Study buddy.
 `GET/POST /agents` and `PATCH /agents/{id}` manage the specified appearance,

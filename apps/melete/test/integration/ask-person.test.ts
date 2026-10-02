@@ -16,7 +16,15 @@ import {
 import { and, desc, eq } from 'drizzle-orm';
 import { requestPersonQuestion } from '../../src/broker/ask-person.ts';
 import { session } from '../../src/db/auth-schema.ts';
-import { event, experienceTurn, owner, question, space, trigger } from '../../src/db/schema.ts';
+import {
+  event,
+  experienceTurn,
+  job,
+  owner,
+  question,
+  space,
+  trigger,
+} from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { newId } from '../../src/ids.ts';
@@ -25,6 +33,7 @@ import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
+import { captureChat } from '../../src/memory/capture.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -85,6 +94,7 @@ const quickAnswers = async () =>
   ).questions;
 
 let persona: string | undefined;
+let pickedSeq: number | undefined;
 async function agentId() {
   persona ??= agentResponse.parse(
     await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
@@ -118,6 +128,20 @@ async function claim(jobId: string, reason: 'input' | 'event') {
 
 const ask = (claims: CapabilityClaims, input: unknown) =>
   requestPersonQuestion(sql(), claims, input);
+
+/** The person's latest message on the job, with its record. */
+const latestRecord = async (jobId: string) => {
+  const rows = await required(handle)
+    .db.select({ seq: event.seq, payload: event.payload })
+    .from(event)
+    .where(and(eq(event.jobId, jobId), eq(event.type, 'notice')))
+    .orderBy(desc(event.seq));
+  const found = rows.find((row) => (row.payload as { kind?: string }).kind === 'user_message');
+  return {
+    seq: required(found).seq,
+    payload: required(found).payload as { text: string; chosen?: Record<string, unknown> },
+  };
+};
 
 /** The person's latest message on the job, as the next attempt reads it. */
 const latestMessage = async (jobId: string) => {
@@ -182,14 +206,23 @@ withDb('the agent asks the person and waits for the answer', () => {
     const answered = await request(`/quick-answers/${card.id}`, 'POST', { option_id: 'choice_2' });
     expect(answered.status).toBe(200);
     expect((await required(jobs).get(id)).state).toBe('queued');
-    expect(await latestMessage(id)).toBe('Thursday');
+    // The label was written by the agent: the message says it was chosen, and
+    // carries which offered option it was.
+    const picked = await latestRecord(id);
+    expect(picked.payload.text).toBe('You chose: Thursday');
+    expect(picked.payload.chosen).toEqual({
+      question_id: required((await questionsOf(id))[0]).id,
+      option_id: 'choice_2',
+      offered_by: 'agent',
+    });
     const [closed] = await questionsOf(id);
     expect(closed).toMatchObject({ state: 'answered', answer: 'Thursday' });
     // The next attempt reads the answer as the person's new message.
     const next = await claim(id, 'input');
     expect(next.bundle.inputs.new_user_messages.map((message) => message.content)).toEqual([
-      'Thursday',
+      'You chose: Thursday',
     ]);
+    pickedSeq = picked.seq;
   });
 
   test('an answer in the person’s own words is accepted; an unknown choice is not', async () => {
@@ -209,8 +242,25 @@ withDb('the agent asks the person and waits for the answer', () => {
       (await request(`/quick-answers/${card.id}`, 'POST', { text: 'Nothing too far north' }))
         .status,
     ).toBe(200);
-    expect(await latestMessage(id)).toBe('Nothing too far north');
+    const typed = await latestRecord(id);
+    expect(typed.payload.text).toBe('Nothing too far north');
+    expect(typed.payload.chosen).toBeUndefined();
     expect((await required(jobs).get(id)).state).toBe('queued');
+    // Memory takes the typed answer as the person's words and never an offered choice.
+    await captureChat(
+      {
+        sql: sql(),
+        journal: { read: async () => [], append: async () => {} },
+        scopeForJob: async () => {
+          throw new Error('no scope in this fixture');
+        },
+        privacyOrigin: async () => null,
+      },
+      10_000,
+    );
+    const captured = await sql()`select event_seq from memory_capture
+      where event_seq in (${typed.seq}, ${required(pickedSeq)})`;
+    expect(captured.map((row) => Number(row.event_seq))).toEqual([typed.seq]);
   });
 
   test('one question per turn, with at most four choices', async () => {
@@ -357,5 +407,98 @@ withDb('the agent asks the person and waits for the answer', () => {
       (await request(`/quick-answers/${card.id}`, 'POST', { text: 'Yes, from now on' })).status,
     ).toBe(200);
     expect((await required(jobs).get(jobId)).stateVersion).toBe(rested.stateVersion);
+  });
+
+  test('a question about an unconfirmed send outlives a stop and a cancel', async () => {
+    const { id } = await chatTurn('Send the invoice to Sam');
+    await required(runner).stopConversation(id);
+    const blocking = newId('qst');
+    await sql()`insert into question (id, source, job_id, text, because, if_ignored, blocks_external_effect)
+      values (${blocking}, 'job', ${id}, 'Did the invoice reach Sam?', '["The destination never acknowledged it."]'::jsonb,
+        'Nothing is sent in the meantime.', true)`;
+    // Stopping again, and then cancelling, leave it for the person.
+    await sql()`update experience_turn set status = 'needs_you' where job_id = ${id}`;
+    await required(runner).stopConversation(id);
+    expect((await questionsOf(id))[0]?.state).toBe('open');
+    await sql()`update job set kind = 'responsibility' where id = ${id}`;
+    await required(jobs).cancel(id);
+    expect((await required(jobs).get(id)).state).toBe('cancelled');
+    expect((await questionsOf(id))[0]?.state).toBe('open');
+    expect((await quickAnswers()).some((entry) => entry.id === blocking)).toBe(true);
+    // Answering it records what the person knows without restarting the job.
+    expect(
+      (await request(`/quick-answers/${blocking}`, 'POST', { text: 'Yes, Sam replied' })).status,
+    ).toBe(200);
+    expect((await questionsOf(id))[0]).toMatchObject({
+      state: 'answered',
+      answer: 'Yes, Sam replied',
+    });
+    expect((await required(jobs).get(id)).state).toBe('cancelled');
+  });
+
+  test('a question asked in a turn that parked for approval is kept beside the approval', async () => {
+    const { id, claims } = await chatTurn('Email Sam the plan');
+    await ask(claims.claims, {
+      question: 'Should I copy Alex?',
+      choices: ['Copy Alex', 'Just Sam'],
+    });
+    // The broker parked the turn on an approval while it ran.
+    await required(handle)
+      .db.update(job)
+      .set({ state: 'waiting_for_approval' })
+      .where(eq(job.id, id));
+    await required(runner).commitOutcome(claims.claims, {
+      kind: 'completed',
+      summary: 'The draft is ready for your OK.',
+      evidence: [],
+    });
+    expect((await required(jobs).get(id)).state).toBe('waiting_for_approval');
+    const card = required((await quickAnswers()).find((entry) => entry.conversation_id === id));
+    expect(card.text).toBe('Should I copy Alex?');
+    // Answered while the approval waits: recorded for the next attempt, the job stays put.
+    expect(
+      (await request(`/quick-answers/${card.id}`, 'POST', { option_id: 'choice_1' })).status,
+    ).toBe(200);
+    expect((await required(jobs).get(id)).state).toBe('waiting_for_approval');
+    const record = await latestRecord(id);
+    expect(record.payload.text).toBe('You chose: Copy Alex');
+    expect(record.payload.chosen).toMatchObject({ option_id: 'choice_1', offered_by: 'agent' });
+  });
+
+  test('answering a routine with no agent of its own still opens a turn', async () => {
+    await request('/agents');
+    const routine = automationResponse.parse(
+      await (
+        await request('/automations/morning-brief', 'POST', {
+          agent_id: await agentId(),
+          at: '09:30',
+        })
+      ).json(),
+    ).automation;
+    expect((await request(`/automations/${routine.id}/test`, 'POST')).status).toBe(200);
+    const [registration] = await required(handle)
+      .db.select()
+      .from(trigger)
+      .where(eq(trigger.id, routine.id));
+    const jobId = required(registration).jobId;
+    const claimed = await claim(jobId, 'event');
+    await ask(claimed.claims, { question: 'Skip the weekend?', choices: ['Skip', 'Keep'] });
+    await required(runner).commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: '',
+      evidence: [],
+    });
+    await required(handle).db.update(job).set({ agentId: null }).where(eq(job.id, jobId));
+    const card = required((await quickAnswers()).find((entry) => entry.conversation_id === jobId));
+    expect(
+      (await request(`/quick-answers/${card.id}`, 'POST', { option_id: 'choice_1' })).status,
+    ).toBe(200);
+    const woken = await required(jobs).get(jobId);
+    expect(woken.state).toBe('queued');
+    const [turn] = await required(handle)
+      .db.select()
+      .from(experienceTurn)
+      .where(eq(experienceTurn.id, required(woken.currentTurnId)));
+    expect(turn?.text).toBe('You chose: Skip');
   });
 });

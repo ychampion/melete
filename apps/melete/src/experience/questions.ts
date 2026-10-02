@@ -86,6 +86,7 @@ export class ExperienceQuestions {
     const [entry] = await this.find(spaceId, id);
     if (!entry) throw experienceMissing();
     let text: string;
+    let offered: { id: string; label: string } | undefined;
     if ('option_id' in request) {
       const option = quickOptions
         .parse(entry.question.options)
@@ -93,6 +94,7 @@ export class ExperienceQuestions {
       if (!option)
         throw new ServiceError('invalid_choice', 'Choose one of the offered answers.', 400);
       text = option.label;
+      offered = option;
     } else {
       if (!freeText(entry.question))
         throw new ServiceError('invalid_choice', 'Choose one of the offered answers.', 400);
@@ -101,7 +103,7 @@ export class ExperienceQuestions {
     if (!this.questions) return unavailable('Answers are not connected yet.');
     if (entry.question.source === 'memory')
       return unavailable('Open this memory item to choose the detail to keep.');
-    const result = await this.questions.answer(id, { text });
+    const result = await this.questions.answer(id, { text }, offered);
     if (result.error)
       throw new ServiceError(
         'answer_not_accepted',

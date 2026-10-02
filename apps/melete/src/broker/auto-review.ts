@@ -268,7 +268,11 @@ export async function reviewInput(
   const recent = messages
     .reverse()
     .map((message) => ({
-      from: message.payload.kind === 'user_message' ? ('person' as const) : ('assistant' as const),
+      // An option the person picked was written by the assistant.
+      from:
+        message.payload.kind === 'user_message' && !message.payload.chosen
+          ? ('person' as const)
+          : ('assistant' as const),
       text: String(message.payload.text ?? ''),
     }))
     .filter((entry) => entry.text);

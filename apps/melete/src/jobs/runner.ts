@@ -643,9 +643,11 @@ export class AttemptRunner {
     // A question the attempt put to the person through the broker. A turn that
     // ended tidily after asking waits for the answer instead of completing, and
     // its final words stay as the turn's text.
-    const asked = brokerParked ? null : await this.askedOfPerson(tx, attemptId);
+    const asked = await this.askedOfPerson(tx, attemptId);
     const posed: AttemptOutcome =
-      asked && (original.kind === 'completed' || original.kind === 'waiting_for_input')
+      asked &&
+      !brokerParked &&
+      (original.kind === 'completed' || original.kind === 'waiting_for_input')
         ? {
             kind: 'waiting_for_input',
             question: asked.text,
@@ -755,8 +757,11 @@ export class AttemptRunner {
     // A routine that asked the person something rests on its schedule as well:
     // the question waits in the person's queue, and the next run still comes
     // when it is due. The answer wakes the routine on its own.
-    const explicit = posed !== original && outcome.kind === 'waiting_for_input' ? asked : null;
-    const routineAsk = explicit ? await routineRest(tx, row) : null;
+    // A turn that parked for approval keeps its question: the person sees both,
+    // and an answer given while the approval waits is read by the next attempt.
+    const explicit =
+      (posed !== original && outcome.kind === 'waiting_for_input') || brokerParked ? asked : null;
+    const routineAsk = explicit && !brokerParked ? await routineRest(tx, row) : null;
     if (routineAsk) {
       input = { kind: 'attempt_waiting_for_event_or_time' };
       wait = routineAsk;
@@ -790,7 +795,8 @@ export class AttemptRunner {
       attemptId,
       carried,
       askable:
-        !brokerParked && (wait.kind === 'user_input' || routineAsk !== null) && !chatComplete,
+        (brokerParked && explicit !== null) ||
+        (!brokerParked && (wait.kind === 'user_input' || routineAsk !== null) && !chatComplete),
       fallback: wait.kind === 'user_input' && !chatComplete ? wait.question : undefined,
       ...(explicit ? { explicit } : {}),
     });
