@@ -1272,6 +1272,8 @@ export function Questionnaire({
           <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
             Press 1–{options.length + 1}
           </span>
+        ) : answered === 'withdrawn' ? (
+          <Status tone="kind">Withdrawn</Status>
         ) : null}
       </div>
       {options.map((option, index) => {

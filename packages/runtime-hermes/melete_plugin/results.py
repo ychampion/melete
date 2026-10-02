@@ -25,12 +25,16 @@ UNRESOLVED = "unresolved"
 
 #: The exact words the model is given when an action parks. It has to stop: a
 #: second attempt at the same effect while the first is pending approval is how
-#: one approved send becomes two.
+#: one approved send becomes two. Asking the person a question is not a second
+#: attempt at the effect, and the question is kept beside the approval, so a
+#: turn that also needs an answer may still ask it before it ends.
 END_TURN_INSTRUCTION = (
     "This action is waiting for the owner's decision and has NOT happened. "
     "Stop now. Do not retry it, do not work around it, and do not say it is "
-    "done. End your turn with a short note of what you are waiting on. You will "
-    "be started again with the decision once it has been made."
+    "done. If this task also needs the person to answer a question, ask it with "
+    "ask_person before you end; say a question is on their screen only when "
+    "ask_person accepted it. End your turn with a short note of what you are "
+    "waiting on. You will be started again with the decision once it has been made."
 )
 
 FAILURE_INSTRUCTION = (

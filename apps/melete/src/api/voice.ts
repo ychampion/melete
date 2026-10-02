@@ -41,14 +41,19 @@ import {
 import type { TranscriptionAdapter } from '../connectors/transcribe.ts';
 import { wavDurationMs } from '../connectors/wav.ts';
 import type { Database } from '../db/client.ts';
-import { agent, experienceTurn, job } from '../db/schema.ts';
+import { agent, experienceTurn, job, question } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import { answerStream, answerText } from '../experience/answer-filter.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { ownJob } from '../principals/authority.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
 import { ServiceError } from './errors.ts';
-import { COMPANION_LIMITS, type CompanionContext, type VoiceCompanion } from './voice-companion.ts';
+import {
+  COMPANION_LIMITS,
+  type CompanionContext,
+  pointToQuestion,
+  type VoiceCompanion,
+} from './voice-companion.ts';
 
 export type VoiceUsageKind = 'transcribe' | 'speech' | 'session' | 'aside';
 
@@ -421,12 +426,13 @@ export function mountVoice(
     // Counted against the day like every voice call; a refusal that generated nothing is given back.
     const reservation = await allowance.take(principalId, 'aside', 1, limits.asides);
     if (!reservation) throw new ServiceError('voice_daily_limit', DAILY.aside, 429);
+    const known = await context(scope.conversationId, scope.agentId);
     const result = await companion
       .answer({
         spaceId: scope.spaceId,
         conversationId: scope.conversationId,
         request: parsed.data,
-        context: await context(scope.conversationId, scope.agentId),
+        context: known,
         signal: c.req.raw.signal,
       })
       .catch(() => ({ failed: 'unanswered' as const }));
@@ -434,7 +440,7 @@ export function mountVoice(
       if (result.failed === 'refused') await allowance.giveBack(reservation).catch(() => undefined);
       throw new ServiceError('voice_aside_failed', 'Melete could not answer that just now.', 502);
     }
-    return c.json(voiceAside.parse(result.answer));
+    return c.json(voiceAside.parse(pointToQuestion(parsed.data, known, result.answer)));
   });
 
   app.post('/conversations/:id/voice/speech', async (c) => {
@@ -483,8 +489,14 @@ async function conversationContext(
     .where(eq(experienceTurn.jobId, conversationId))
     .orderBy(desc(experienceTurn.createdAt), desc(experienceTurn.id))
     .limit(COMPANION_LIMITS.turns);
+  const [open] = await db
+    .select({ id: question.id })
+    .from(question)
+    .where(and(eq(question.jobId, conversationId), eq(question.state, 'open')))
+    .limit(1);
   return {
     agentName: named?.name?.trim() || 'Melete',
+    asking: open !== undefined,
     turns: rows.reverse().map((row) => ({
       said: row.text,
       answer: (['queued', 'working', 'streaming'].includes(row.status)

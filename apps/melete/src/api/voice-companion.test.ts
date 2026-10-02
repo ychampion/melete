@@ -17,6 +17,7 @@ import {
   CUT_OFF_LINE,
   companionBody,
   companionInput,
+  ON_SCREEN_LINE,
   openVoiceCompanion,
   parseCompanionReply,
   replyText,
@@ -308,6 +309,7 @@ function route(options: {
   taken?: string[];
   givenBack?: string[];
   asides?: number;
+  context?: CompanionContext;
 }) {
   const built = new Hono();
   built.onError((error, c) =>
@@ -349,7 +351,7 @@ function route(options: {
     limits: { seconds: 1800, characters: 20_000, sessions: 30, asides: options.asides ?? 600 },
     privacy: options.privacy ?? (async () => null),
     companion: options.companion === undefined ? null : options.companion,
-    context: async () => context,
+    context: async () => options.context ?? context,
     ...(options.now ? { now: options.now } : {}),
   });
   const post = (body: unknown) =>
@@ -362,6 +364,33 @@ function route(options: {
 }
 
 describe('the aside route', () => {
+  test('a spoken answer to a question that waits on the screen is pointed there, never met with silence', async () => {
+    const quiet: VoiceCompanion = {
+      answer: async () => ({ answer: { intent: 'quiet', say: null } }),
+    };
+    const heard: VoiceAsideRequest = {
+      kind: 'heard',
+      text: 'Let us eat out.',
+      activity: progress.activity,
+    };
+    const asking = { ...context, asking: true };
+    const pointed = await route({ companion: quiet, context: asking }).post(heard);
+    expect(await pointed.json()).toEqual({ intent: 'talk', say: ON_SCREEN_LINE });
+    // A progress moment, or nothing waiting, may still be quiet.
+    expect(
+      await (await route({ companion: quiet, context: asking }).post(progress)).json(),
+    ).toEqual({
+      intent: 'quiet',
+      say: null,
+    });
+    expect(await (await route({ companion: quiet }).post(heard)).json()).toEqual({
+      intent: 'quiet',
+      say: null,
+    });
+    // The companion is told the question is there.
+    expect(JSON.parse(companionInput(heard, asking)).question_waiting_on_screen).toBe(true);
+  });
+
   const answering = (calls: unknown[]): VoiceCompanion => ({
     answer: async (asked) => {
       calls.push(asked);

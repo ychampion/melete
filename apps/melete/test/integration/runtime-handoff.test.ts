@@ -152,4 +152,81 @@ afterAll(async () => {
     expect(independent.action_id).not.toBe(fresh.action_id);
     expect(independent.status).toBe('needs_approval');
   }, 20_000);
+
+  // The broker leaves the job running when an action parks, and the runtime
+  // reports the park as the attempt's outcome. A question the same turn asked,
+  // before or after the proposal, still reaches the person beside the approval.
+  for (const order of ['asked first', 'proposed first'] as const) {
+    test(`a question and an approval in one turn both reach the person (${order})`, async () => {
+      if (!handle || !queue) return;
+      const scope = await createScope({ ...handle, boss: queue.boss });
+      const connectionId = newId('conn');
+      await handle.sql`insert into connection (id, space_id, provider, label, scopes, status)
+        values (${connectionId}, ${scope.spaceId}, 'test', 'Test', '["test.send"]'::jsonb, 'active')`;
+      const broker = new BrokerService({
+        sql: handle.sql,
+        connectors: await configuredConnectors({
+          sql: handle.sql,
+          workRoot: '.',
+          spacesRoot: '.',
+          enableTestConnector: true,
+        }),
+        deferApprovalWaitToRunner: true,
+      });
+      const jobs = new JobService(handle.db, queue.boss);
+      const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
+        key: 'runtime-handoff-key-32-characters-long',
+        scopes: ['test.send'],
+      });
+      const job = await jobs.create({
+        space_id: scope.spaceId,
+        title: 'Summary',
+        objective: 'Open the page and ask about the language',
+      });
+      const claim = await runner.claim({
+        job_id: job.id,
+        expected_epoch: job.leaseEpoch,
+        expected_version: job.stateVersion,
+        reason: 'created',
+      });
+      if (!claim) throw new Error('No claimed attempt');
+      const ask = () =>
+        broker.askPerson(claim.claims, {
+          question: 'English or Spanish?',
+          choices: ['English', 'Spanish'],
+        });
+      const propose = () =>
+        broker.propose(claim.claims, {
+          kind: 'test.send',
+          connection_id: connectionId,
+          payload: { message: `Open the page (${order})` },
+          client_ref: `beside-${order}`,
+        });
+      let proposed: Awaited<ReturnType<typeof propose>>;
+      if (order === 'asked first') {
+        expect((await ask()).status).toBe('waiting_for_input');
+        proposed = await propose();
+      } else {
+        proposed = await propose();
+        expect((await ask()).status).toBe('waiting_for_input');
+      }
+      expect(proposed.status).toBe('needs_approval');
+      const finished = await runner.commitOutcome(claim.claims, {
+        kind: 'waiting_for_approval',
+        action_ids: [proposed.action_id],
+      });
+      expect(finished.state).toBe('waiting_for_approval');
+      const questions = await handle.sql`select text, state, options from question
+        where job_id = ${job.id}`;
+      expect(questions).toHaveLength(1);
+      expect(questions[0]).toMatchObject({
+        text: 'English or Spanish?',
+        state: 'open',
+        options: [
+          { id: 'choice_1', label: 'English' },
+          { id: 'choice_2', label: 'Spanish' },
+        ],
+      });
+    }, 20_000);
+  }
 });
