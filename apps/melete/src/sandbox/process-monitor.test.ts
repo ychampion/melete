@@ -370,6 +370,36 @@ withDb('waking a job from its background process', () => {
     expect(await s.attempts(row.id)).toBe(3);
   }, 60_000);
 
+  test('a line printed just before the process ends still wakes the job with that line', async () => {
+    const s = await setup();
+    const row = await s.conversation('Run the slow check');
+    const first = await s.claim(row);
+    const id = String(
+      s.detail(
+        await s.run(first.claims, 'process.start', {
+          command: 'sleep 20; echo READY',
+          notify: { on: 'output', pattern: '^READY$' },
+        }),
+      ).process_id,
+    );
+    await s.waitOn(first.claims, id);
+    const sandbox = await s.sandboxOf();
+    await s.pass();
+    // The line and the end both come between two passes.
+    s.computers.print(sandbox, id, 'READY\n');
+    s.computers.exit(sandbox, id, 0);
+    await s.pass();
+    expect((await s.job(row.id)).state).toBe('queued');
+    const next = await s.claim(row);
+    expect(next.bundle.inputs.trigger_events).toEqual([
+      expect.objectContaining({
+        event_name: 'process.output',
+        payload: expect.objectContaining({ process_id: id, line: 'READY' }),
+      }),
+    ]);
+    expect(await s.watchesOf(row.id)).toHaveLength(0);
+  }, 60_000);
+
   test('a listening port is reported once', async () => {
     const s = await setup();
     const row = await s.conversation('Start the dev server');

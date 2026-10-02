@@ -56,8 +56,9 @@ export const MONITOR_DOCKER_MS = 5_000;
 export const MONITOR_REMOTE_MS = 30_000;
 /** How long one computer may take to answer before the pass moves on. */
 const COMPUTER_BUDGET_MS = 20_000;
-/** How much new output one pass reads for one watch. */
+/** How much new output one pass reads for one watch, and how many reads the last lines of an ended process get. */
 const SCAN_BYTES = 64 * 1024;
+const FINAL_READS = 16;
 
 export type ProcessWakes = {
   deliver(input: EventDelivery): Promise<unknown>;
@@ -247,10 +248,12 @@ export class ProcessMonitor {
     for (const each of members) {
       const row = rows.find((candidate) => candidate.id === each.row.id) ?? each.row;
       const facts = status.processes.find((candidate) => candidate.id === row.id);
-      if (!facts || !LIVE_STATES.includes(row.state)) continue;
+      if (!facts) continue;
+      // A process that ended since the last pass still has its last lines read.
+      const live = LIVE_STATES.includes(row.state);
       for (const watch of each.watches) {
         if (!watch.enabled) continue;
-        if (watch.kind === 'listening') {
+        if (watch.kind === 'listening' && live) {
           if (each.notify.listening?.[watch.id]) continue;
           const open = row.port === null ? facts.ports.length > 0 : facts.ports.includes(row.port);
           if (!open) continue;
@@ -262,7 +265,7 @@ export class ProcessMonitor {
           });
           await this.remember(row.id, ['listening', watch.id], true);
         } else if (watch.kind === 'output') {
-          await this.scan(reached.computer, row, facts.cursor, watch, each.notify, budget);
+          await this.scan(reached.computer, row, facts.cursor, watch, each.notify, budget, !live);
         }
       }
     }
@@ -271,7 +274,9 @@ export class ProcessMonitor {
   /**
    * New output for one output watch: the first line it wants since the last
    * wake is delivered, at most once a minute, and the lines read with it are
-   * covered by that delivery. Only whole lines are read, until the process ends.
+   * covered by that delivery. Only whole lines are read, until the process
+   * ends. Once it has ended (`final`), what is left is read to its end and its
+   * line delivered whatever the minute says: it is the last the watch will see.
    */
   private async scan(
     computer: ProcessComputer,
@@ -280,57 +285,57 @@ export class ProcessMonitor {
     watch: Watch,
     notify: NotifyState,
     signal: AbortSignal,
+    final = false,
   ): Promise<void> {
-    const own = notify.watches?.[watch.id] ?? { scanned: 0, delivered_at: null };
+    let own = notify.watches?.[watch.id] ?? { scanned: 0, delivered_at: null };
     if (cursor <= own.scanned) return;
     const now = this.now();
     if (
+      !final &&
       own.delivered_at &&
       now.getTime() - Date.parse(own.delivered_at) < PROCESS_LIMITS.output_wake_seconds * 1000
     )
       return;
-    const answer = await computer.read(row.id, own.scanned, SCAN_BYTES, 0, signal);
-    const bytes = answer.data;
-    const from = answer.read.from;
-    const ended = answer.process.state !== 'running' && answer.process.state !== 'starting';
-    let end = bytes.lastIndexOf(0x0a) + 1;
-    // A process that ended has no more of its last line to come, and a line
-    // longer than one read is taken in pieces.
-    if (ended || (end === 0 && bytes.byteLength >= SCAN_BYTES)) end = bytes.byteLength;
-    if (end === 0) return;
     const pattern = watch.pattern === null ? null : compileWatchPattern(watch.pattern);
-    let match: { line: string; at: number } | null = null;
-    for (let offset = 0; offset < end; ) {
-      const newline = bytes.indexOf(0x0a, offset);
-      const stop = newline === -1 || newline >= end ? end : newline;
-      const line = lineOf(bytes.subarray(offset, stop));
-      if (pattern ? pattern.matcher(line).find() : line.trim() !== '') {
-        match = { line, at: from + offset };
-        break;
+    for (let reads = 0; reads < (final ? FINAL_READS : 1); reads++) {
+      const answer = await computer.read(row.id, own.scanned, SCAN_BYTES, 0, signal);
+      const bytes = answer.data;
+      const from = answer.read.from;
+      const ended = answer.process.state !== 'running' && answer.process.state !== 'starting';
+      let end = bytes.lastIndexOf(0x0a) + 1;
+      // A process that ended has no more of its last line to come, and a line
+      // longer than one read is taken in pieces.
+      if (ended || (end === 0 && bytes.byteLength >= SCAN_BYTES)) end = bytes.byteLength;
+      if (end === 0) return;
+      let match: { line: string; at: number } | null = null;
+      for (let offset = 0; offset < end; ) {
+        const newline = bytes.indexOf(0x0a, offset);
+        const stop = newline === -1 || newline >= end ? end : newline;
+        const line = lineOf(bytes.subarray(offset, stop));
+        if (pattern ? pattern.matcher(line).find() : line.trim() !== '') {
+          match = { line, at: from + offset };
+          break;
+        }
+        offset = stop + 1;
       }
-      offset = stop + 1;
-    }
-    const scanned = from + end;
-    if (match) {
-      await this.deliver(row, 'output', `output:${watch.id}:${match.at}`, {
-        process_id: row.id,
-        watch: watch.id,
-        line: match.line,
-        cursor: match.at,
-        tail: terminalText(
-          new TextDecoder().decode(
-            bytes.subarray(Math.max(0, end - PROCESS_LIMITS.wake_tail_bytes), end),
+      if (match)
+        await this.deliver(row, 'output', `output:${watch.id}:${match.at}`, {
+          process_id: row.id,
+          watch: watch.id,
+          line: match.line,
+          cursor: match.at,
+          tail: terminalText(
+            new TextDecoder().decode(
+              bytes.subarray(Math.max(0, end - PROCESS_LIMITS.wake_tail_bytes), end),
+            ),
+            PROCESS_LIMITS.wake_tail_bytes,
+            'last',
           ),
-          PROCESS_LIMITS.wake_tail_bytes,
-          'last',
-        ),
-      });
+        });
+      own = { scanned: from + end, delivered_at: match ? now.toISOString() : own.delivered_at };
+      await this.remember(row.id, ['watches', watch.id], own);
+      if (match || from + end >= answer.read.total) return;
     }
-    const next: OutputState = {
-      scanned,
-      delivered_at: match ? now.toISOString() : own.delivered_at,
-    };
-    await this.remember(row.id, ['watches', watch.id], next);
   }
 
   /** A watched process ended: tell its exit watches, then let `processEnded` settle every watch on it. */
@@ -342,6 +347,26 @@ export class ProcessMonitor {
       const [told] = await this.options.sql`select 1 from event
         where dedup_key = ${`connector:${row.connectionId}:process:${row.id}:exited:${watch.id}`}`;
       if (!told) pending.push(watch);
+    }
+    // Lines printed just before the end still reach the output watches waiting for them.
+    const outputs = each.watches.filter((watch) => watch.enabled && watch.kind === 'output');
+    if (outputs.length) {
+      const reached = await this.reach(row).catch(() => null);
+      const budget = AbortSignal.any([signal, AbortSignal.timeout(COMPUTER_BUDGET_MS)]);
+      for (const watch of outputs) {
+        if (!reached) break;
+        await this.scan(
+          reached.computer,
+          row,
+          Number.MAX_SAFE_INTEGER,
+          watch,
+          each.notify,
+          budget,
+          true,
+        ).catch((error) => {
+          this.say(`the last output of process ${row.id} was not read: ${String(error)}`);
+        });
+      }
     }
     const tail = pending.length ? await this.tail(row, signal) : null;
     const observation: JsonObject = {
