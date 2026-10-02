@@ -4,13 +4,17 @@
  * service that writes it.
  */
 import { RUN_TRY_LIMITS, type RunStatus } from '@melete/contracts';
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
-import { job, runEntry, runState } from '../db/schema.ts';
+import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { action, job, runEntry, runState } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobRow } from '../jobs/service.ts';
 import { standingBrief } from './standing.ts';
 
 export const BRIEF_RECENT = 5;
+/** Approaches that did not work, listed so later shifts do not repeat them. */
+const BRIEF_DEAD_ENDS = 8;
+/** Tries and findings a check is shown, newest first. */
+const CHECK_SHOWN = 20;
 
 export type Entry = typeof runEntry.$inferSelect;
 export type State = typeof runState.$inferSelect;
@@ -23,9 +27,23 @@ export const object = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
-/** Every number written in a piece of text. */
+/**
+ * Every number written in a piece of text, each read whole: digits inside a
+ * longer number, an identifier (`act_9`, `9f3a`), a date (`2026-09`) or a
+ * version (`1.9.3`) are not numbers of their own. A unit may follow (`12ms`).
+ */
 function numbersIn(text: string): number[] {
-  return [...text.matchAll(/-?\d+(?:\.\d+)?(?:e[-+]?\d+)?/gi)].map((match) => Number(match[0]));
+  return [
+    ...text.matchAll(/(?:(?<![\w.])-|(?<![\w.-]))\d+(?:\.\d+)?(?:e[-+]?\d+)?(?!\.\d|_|[a-z]*\d)/gi),
+  ].map((match) => Number(match[0]));
+}
+
+/** The text of every value in a stored output, unescaped, one per line. */
+export function textOf(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value !== 'object') return String(value);
+  return (Array.isArray(value) ? value : Object.values(value)).map(textOf).join('\n');
 }
 
 /**
@@ -58,6 +76,7 @@ export async function runBrief(tx: Transaction, row: JobRow): Promise<string> {
   if (!state) return '';
   const run = state.parentRunId ?? state.jobId;
   const step = state.parentRunId ? row.id : null;
+  if (step && state.checking) return checkBrief(tx, state, run, step);
   const [root] = state.parentRunId
     ? await tx.select().from(runState).where(eq(runState.jobId, run))
     : [state];
@@ -77,6 +96,30 @@ export async function runBrief(tx: Transaction, row: JobRow): Promise<string> {
         .limit(1)
     )[0];
   const lines: string[] = [];
+  // Gaps a check found in the last result come first, until a new result is offered.
+  if (!step) {
+    const [last] = await tx
+      .select()
+      .from(runEntry)
+      .where(
+        and(
+          eq(runEntry.runJobId, run),
+          inArray(runEntry.kind, ['proposed', 'check', 'finished']),
+          or(eq(runEntry.kind, 'check'), isNull(runEntry.stepJobId)),
+        ),
+      )
+      .orderBy(desc(runEntry.seq))
+      .limit(1);
+    const data = object(last?.data);
+    if (last?.kind === 'check' && data.verdict === 'gaps' && data.settle !== true)
+      lines.push(
+        [
+          'A separate check of the result you gave found it is not done yet:',
+          ...gapsOf(data).map((gap) => `- ${clip(gap, 500)}`),
+          'Close these gaps, then call run.finish again.',
+        ].join('\n'),
+      );
+  }
   const age = Math.max(0, Date.now() - state.createdAt.getTime());
   const days = Math.floor(age / 86_400_000);
   const hours = Math.floor(age / 3_600_000);
@@ -127,6 +170,35 @@ export async function runBrief(tx: Transaction, row: JobRow): Promise<string> {
         .join('\n'),
     );
   }
+  const dead = await tx
+    .select()
+    .from(runEntry)
+    .where(
+      and(
+        eq(runEntry.runJobId, run),
+        or(
+          and(
+            eq(runEntry.kind, 'experiment'),
+            sql`${runEntry.data}->>'outcome' in ('failed', 'discarded')`,
+          ),
+          sql`${runEntry.data}->>'dead_end' = 'true'`,
+        ),
+      ),
+    )
+    .orderBy(desc(runEntry.seq))
+    .limit(BRIEF_DEAD_ENDS);
+  if (dead.length)
+    lines.push(
+      [
+        "Already tried, didn't work (do not repeat these):",
+        ...dead.map((entry) => {
+          const data = object(entry.data);
+          const value = typeof data.value === 'number' ? ` = ${data.value}` : '';
+          const why = entry.body || (typeof data.hypothesis === 'string' ? data.hypothesis : '');
+          return `- ${clip(entry.title, 120)}${value}${why ? `: ${clip(why, 200)}` : ''}`;
+        }),
+      ].join('\n'),
+    );
   const findings = await tx
     .select({ title: runEntry.title })
     .from(runEntry)
@@ -164,44 +236,171 @@ export async function runBrief(tx: Transaction, row: JobRow): Promise<string> {
 }
 
 export async function stepsOf(tx: Transaction, run: string) {
+  return (await stepsOfRuns(tx, [run])).get(run) ?? [];
+}
+
+type Step = { id: string; title: string; status: RunStatus; result: string | null };
+
+/** The helpers of several runs at once, each with its result. */
+export async function stepsOfRuns(tx: Transaction, runs: string[]) {
+  const steps = new Map<string, Step[]>();
+  if (!runs.length) return steps;
   const rows = await tx
-    .select({ id: job.id, title: job.title, state: job.state, paused: job.paused })
+    .select({
+      id: job.id,
+      run: runState.parentRunId,
+      title: job.title,
+      state: job.state,
+      paused: job.paused,
+    })
     .from(runState)
     .innerJoin(job, eq(job.id, runState.jobId))
-    .where(eq(runState.parentRunId, run))
+    .where(inArray(runState.parentRunId, runs))
     .orderBy(asc(runState.createdAt));
-  if (!rows.length) return [];
+  if (!rows.length) return steps;
+  // Its own result, or, for a helper that ended without one, why it ended:
+  // the newest of each kind per helper.
   const results = await tx
-    .select({
+    .selectDistinctOn([runEntry.stepJobId, runEntry.kind], {
       step: runEntry.stepJobId,
       kind: runEntry.kind,
       body: runEntry.body,
-      seq: runEntry.seq,
     })
     .from(runEntry)
     .where(
       and(
-        eq(runEntry.runJobId, run),
+        inArray(runEntry.runJobId, runs),
         inArray(runEntry.kind, ['finished', 'step_finished']),
         inArray(
           runEntry.stepJobId,
           rows.map((entry) => entry.id),
         ),
+        or(eq(runEntry.kind, 'finished'), sql`${runEntry.body} <> ''`),
       ),
     )
-    .orderBy(desc(runEntry.seq));
-  // Its own result, or, for a helper that ended without one, why it ended.
+    .orderBy(runEntry.stepJobId, runEntry.kind, desc(runEntry.seq));
   const resultOf = (id: string) =>
     (
       results.find((result) => result.step === id && result.kind === 'finished') ??
-      results.find((result) => result.step === id && result.body)
+      results.find((result) => result.step === id)
     )?.body ?? null;
-  return rows.map((entry) => ({
-    id: entry.id,
-    title: entry.title,
-    status: runStatusOf(entry.state, entry.paused),
-    result: resultOf(entry.id),
-  }));
+  for (const entry of rows) {
+    const list = steps.get(entry.run ?? '') ?? [];
+    list.push({
+      id: entry.id,
+      title: entry.title,
+      status: runStatusOf(entry.state, entry.paused),
+      result: resultOf(entry.id),
+    });
+    steps.set(entry.run ?? '', list);
+  }
+  return steps;
+}
+
+/** The gaps a check named, as text. */
+export function gapsOf(data: Record<string, unknown>): string[] {
+  return Array.isArray(data.gaps) ? data.gaps.map(String) : [];
+}
+
+/**
+ * What a helper checking a result is given: the goal, what done means, the
+ * result offered and the evidence in the record. Not the work's own
+ * reasoning: the check confirms the result, it does not redo the work.
+ */
+async function checkBrief(tx: Transaction, state: State, run: string, step: string) {
+  const [root] = await tx.select().from(runState).where(eq(runState.jobId, run));
+  const [proposal] = state.checking
+    ? await tx.select().from(runEntry).where(eq(runEntry.id, state.checking))
+    : [];
+  const tries = await tx
+    .select()
+    .from(runEntry)
+    .where(and(eq(runEntry.runJobId, run), eq(runEntry.kind, 'experiment')))
+    .orderBy(desc(runEntry.seq))
+    .limit(CHECK_SHOWN);
+  const findings = await tx
+    .select()
+    .from(runEntry)
+    .where(and(eq(runEntry.runJobId, run), eq(runEntry.kind, 'finding')))
+    .orderBy(desc(runEntry.seq))
+    .limit(CHECK_SHOWN);
+  const evidence = object(proposal?.data).evidence;
+  const cited = Array.isArray(evidence) ? evidence.map(String) : [];
+  const helpers = tx
+    .select({ id: runState.jobId })
+    .from(runState)
+    .where(eq(runState.parentRunId, run));
+  const actions = cited.length
+    ? await tx
+        .select({
+          id: action.id,
+          kind: action.kind,
+          status: action.status,
+          receipt: action.receipt,
+        })
+        .from(action)
+        .where(
+          and(
+            inArray(action.id, cited),
+            sql`(${action.jobId} = ${run} or ${action.jobId} in ${helpers})`,
+          ),
+        )
+    : [];
+  const [handoff] = await tx
+    .select()
+    .from(runEntry)
+    .where(
+      and(
+        eq(runEntry.runJobId, run),
+        eq(runEntry.stepJobId, step),
+        eq(runEntry.kind, 'checkpoint'),
+      ),
+    )
+    .orderBy(desc(runEntry.seq))
+    .limit(1);
+  const lines = [
+    'You are checking whether a piece of work is really done before it is given to the person. Do not redo the work: confirm the result against the evidence below, and read or fetch what you need to confirm it.',
+    `The goal: ${clip(root?.goal ?? '', 1500)}`,
+    `Done when: ${clip(root?.doneWhen ?? '', 1000)}`,
+    `The result offered:\n${clip(proposal?.body ?? '', 6000)}`,
+  ];
+  if (handoff) lines.push(`Where your last shift left off: ${clip(handoff.body, 1500)}`);
+  lines.push(
+    tries.length
+      ? [
+          'Tries in the record, newest first ("measured" means the value was found in the output of the action it cites):',
+          ...tries.map((entry) => {
+            const data = object(entry.data);
+            const value = typeof data.value === 'number' ? ` = ${data.value}` : '';
+            return `- ${clip(entry.title, 160)}${value} (${String(data.outcome ?? 'kept')}, ${data.checked === true ? 'measured' : 'not measured'})`;
+          }),
+        ].join('\n')
+      : 'There are no tries in the record.',
+  );
+  if (findings.length)
+    lines.push(
+      [
+        'Findings in the record:',
+        ...findings.map(
+          (entry) => `- ${clip(entry.title, 160)}${entry.body ? `: ${clip(entry.body, 400)}` : ''}`,
+        ),
+      ].join('\n'),
+    );
+  lines.push(
+    actions.length
+      ? [
+          'Actions the result rests on, with their output:',
+          ...actions.map(
+            (entry) =>
+              `- ${entry.id} (${entry.kind}, ${entry.status}): ${clip(textOf(entry.receipt), 1500)}`,
+          ),
+        ].join('\n')
+      : 'The result cites no actions as evidence.',
+  );
+  lines.push(
+    'End with run.finish: verdict "passes" when the result meets what done means and the evidence holds it up, or verdict "gaps" with each specific gap (what is missing, wrong or not supported). Do not close the gaps yourself.',
+  );
+  return lines.join('\n\n');
 }
 
 /** The best kept experiment with a value: checked results first, then by the metric. */

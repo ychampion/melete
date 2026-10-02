@@ -17,6 +17,8 @@ export const RECORD_LABEL: Record<RunEntry['kind'], string> = {
   checkpoint: 'Progress saved',
   step_started: 'Helper started',
   step_finished: 'Helper finished',
+  proposed: 'Result given for checking',
+  check: 'Checked',
   finished: 'Done',
 };
 

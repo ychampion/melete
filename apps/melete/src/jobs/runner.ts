@@ -328,6 +328,14 @@ export class AttemptRunner {
         payload: { epoch, revision: row.revision },
         dedupKey: `${attemptId}:started`,
       });
+      // Long work whose result has been through its check is given it here,
+      // by an attempt that only records it: nothing for a model to do.
+      const settled =
+        this.runs && isRunKind(row.kind) ? await this.runs.settle(tx, row, attemptId) : null;
+      if (settled) {
+        await this.finish(tx, row, attemptId, settled);
+        return null;
+      }
       // The skills went into the instructions, where no tool call shows them.
       const followed = skillTraceCall(attemptId, bundle.skills, await databaseNow(tx));
       if (followed)
@@ -979,6 +987,16 @@ export class AttemptRunner {
     attemptId: string,
     reason: string,
   ): Promise<boolean> {
+    // Long work that gave its result before the attempt was lost is done with
+    // that result: running the shift again could only repeat it.
+    const given =
+      this.runs && isRunKind(row.kind) && row.state === 'running'
+        ? await this.runs.recordedFinish(tx, row, attemptId)
+        : null;
+    if (given) {
+      await this.finish(tx, row, attemptId, given);
+      return true;
+    }
     const [counts] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(attempt)

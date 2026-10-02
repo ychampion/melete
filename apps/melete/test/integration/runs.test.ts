@@ -29,7 +29,7 @@ import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
-import { bestExperiment, valueShown } from '../../src/runs/record.ts';
+import { bestExperiment, textOf, valueShown } from '../../src/runs/record.ts';
 import { attachRuns, RunService } from '../../src/runs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { rejectionOf } from '../helpers/broker.ts';
@@ -132,6 +132,8 @@ withDb('long work in shifts', () => {
       goal: 'Find the fastest sort for our data',
       done_when: 'One approach is clearly fastest',
       metric: { name: 'ms', direction: 'lower' },
+      // The check of a result is covered in runs-check.test.ts.
+      check_result: false,
     });
     expect(run.status).toBe('working');
     expect(run.shifts).toBe(0);
@@ -684,6 +686,20 @@ describe('reading measured values', () => {
     expect(valueShown(12, '{"stdout":"took 12 ms"}')).toBe(true);
     expect(valueShown(12, '{"stdout":"took 121 ms"}')).toBe(false);
     expect(valueShown(0.9, 'accuracy 0.873')).toBe(false);
+  });
+
+  test('a number is read whole, not out of a longer number, an id, a date or a version', () => {
+    expect(valueShown(9, 'released in 1990')).toBe(false);
+    expect(valueShown(9, 'act_9f3a2c and job_01H9')).toBe(false);
+    expect(valueShown(-9, 'on 2026-09-01')).toBe(false);
+    expect(valueShown(3, 'version 1.9.3')).toBe(false);
+    expect(valueShown(9, 'hash 9f3a')).toBe(false);
+    expect(valueShown(9, 'took 9 ms')).toBe(true);
+    expect(valueShown(12, 'took 12ms')).toBe(true);
+    expect(valueShown(-0.5, 'delta:-0.5')).toBe(true);
+    expect(valueShown(0.873, 'accuracy=0.8731.')).toBe(true);
+    // Output read from its stored form, where a line break is not a letter n.
+    expect(valueShown(0.87, textOf({ stdout: 'epoch 3\n0.87\n' }))).toBe(true);
   });
 
   test('the best experiment prefers checked results, then the better value', () => {

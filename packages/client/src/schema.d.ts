@@ -13739,6 +13739,7 @@ export interface paths {
                 content: {
                     "application/json": {
                         agent_id?: string;
+                        check_result?: boolean;
                         done_when?: string;
                         goal: string;
                         limit?: components["schemas"]["__schema23"];
@@ -13881,7 +13882,8 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        limit: components["schemas"]["__schema23"] | null;
+                        check_result?: boolean;
+                        limit?: components["schemas"]["__schema23"] | null;
                     };
                 };
             };
@@ -14031,7 +14033,7 @@ export interface paths {
                                 };
                                 id: string;
                                 /** @enum {string} */
-                                kind: "plan" | "note" | "finding" | "decision" | "experiment" | "report" | "checkpoint" | "step_started" | "step_finished" | "finished";
+                                kind: "plan" | "note" | "finding" | "decision" | "experiment" | "report" | "checkpoint" | "step_started" | "step_finished" | "proposed" | "check" | "finished";
                                 step_id: string | null;
                                 title: string;
                             }[];
@@ -17685,6 +17687,11 @@ export interface components {
         };
         __schema277: {
             agent_id: string | null;
+            check: {
+                enabled: boolean;
+                gaps: string[];
+                state: ("checking" | "passed" | "gaps" | "not_confirmed") | null;
+            };
             conversation_id: string | null;
             done_when: string | null;
             experiments: {

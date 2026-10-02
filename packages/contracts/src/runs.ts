@@ -28,6 +28,10 @@ export const RUN_ENTRY_KINDS = [
   'checkpoint',
   'step_started',
   'step_finished',
+  /** A result offered while a separate check confirms it. */
+  'proposed',
+  /** What the check of a proposed result found. */
+  'check',
   'finished',
 ] as const;
 export const runEntryKind = z.enum(RUN_ENTRY_KINDS);
@@ -49,6 +53,8 @@ export const RUN_BODY_LIMIT = 8000;
 export const RUN_ACTIVE_STEP_LIMIT = 6;
 /** Shifts in a row that recorded nothing and did nothing before the run stops to ask. */
 export const RUN_IDLE_SHIFT_LIMIT = 3;
+/** Checks that may find gaps in a result before it is given anyway, with the gaps named. */
+export const RUN_CHECK_LIMIT = 2;
 
 export const runMetric = z.object({
   name: z.string().min(1).max(80),
@@ -136,6 +142,8 @@ export const runLogInput = z
     outcome: z.enum(['kept', 'discarded', 'failed']).optional(),
     /** Experiments: the ids of the actions whose output shows the value. */
     evidence: z.array(z.string().max(64)).max(10).optional(),
+    /** An approach that did not work, so later shifts do not try it again. */
+    dead_end: z.boolean().optional(),
   })
   .strict();
 export type RunLogInput = z.infer<typeof runLogInput>;
@@ -247,6 +255,11 @@ export type RunCheckpointInput = z.infer<typeof runCheckpointInput>;
 export const runFinishInput = z
   .object({
     summary: z.string().trim().min(1).max(RUN_BODY_LIMIT),
+    /** The ids of the actions the result rests on. */
+    evidence: z.array(z.string().max(64)).max(10).optional(),
+    /** Checking a result: whether it holds, or the specific gaps found. */
+    verdict: z.enum(['passes', 'gaps']).optional(),
+    gaps: z.array(z.string().trim().min(1).max(500)).max(10).optional(),
   })
   .strict();
 export type RunFinishInput = z.infer<typeof runFinishInput>;
@@ -308,6 +321,10 @@ export const RUN_LOG_TOOL: ToolSpec = {
         type: 'array',
         items: { type: 'string' },
         description: 'Action ids whose output shows the value.',
+      },
+      dead_end: {
+        type: 'boolean',
+        description: 'This approach did not work; later shifts should not try it again.',
       },
     },
     ['kind', 'title'],
@@ -374,7 +391,23 @@ export const RUN_FINISH_TOOL: ToolSpec = {
   description: 'The work is done: give the result. Ends the work.',
   effect_class: 'write_reversible',
   connection_id: null,
-  input_schema: obj({ summary: { type: 'string' } }, ['summary']),
+  input_schema: obj(
+    {
+      summary: { type: 'string' },
+      evidence: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Action ids the result rests on.',
+      },
+      verdict: {
+        type: 'string',
+        enum: ['passes', 'gaps'],
+        description: 'Only when checking a result.',
+      },
+      gaps: { type: 'array', items: { type: 'string' }, description: 'With verdict "gaps".' },
+    },
+    ['summary'],
+  ),
 };
 
 export const RUN_TOOLS = [
@@ -431,6 +464,16 @@ export const runStandingView = z.object({
   next_wake_at: timestamp.nullable(),
 });
 export type RunStandingView = z.infer<typeof runStandingView>;
+/**
+ * Whether the result was confirmed by a separate check before the work was
+ * called done: under way, passed, gaps sent back to the work, or given
+ * anyway with what could not be confirmed.
+ */
+export const runCheckView = z.object({
+  enabled: z.boolean(),
+  state: z.enum(['checking', 'passed', 'gaps', 'not_confirmed']).nullable(),
+  gaps: z.array(z.string()),
+});
 
 export const runStepView = z.object({
   id: z.string(),
@@ -471,6 +514,7 @@ export const runView = z.object({
   findings: z.number().int().nonnegative(),
   steps: z.array(runStepView),
   question: z.string().nullable(),
+  check: runCheckView,
 });
 export type RunView = z.infer<typeof runView>;
 
@@ -487,6 +531,11 @@ export const runRecordResponse = z.object({
 export const runCreateRequest = runStartInput.extend({
   agent_id: z.string().optional(),
   limit: runLimit.optional(),
+  /** Have a separate check confirm the result before it is called done. On by default. */
+  check_result: z.boolean().optional(),
 });
 export const runMessageRequest = z.object({ text: z.string().trim().min(1).max(4000) }).strict();
-export const runLimitRequest = z.object({ limit: runLimit.nullable() }).strict();
+/** A limit (null clears it) and whether results are checked; what is left out stays as it is. */
+export const runLimitRequest = z
+  .object({ limit: runLimit.nullable().optional(), check_result: z.boolean().optional() })
+  .strict();

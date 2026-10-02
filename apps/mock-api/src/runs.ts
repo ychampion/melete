@@ -23,6 +23,8 @@ const ENTRY_LABELS: Record<C.RunEntryKind, string> = {
   checkpoint: 'Progress saved',
   step_started: 'Helper started',
   step_finished: 'Helper finished',
+  proposed: 'Result given for checking',
+  check: 'Checked',
   finished: 'Done',
 };
 
@@ -152,6 +154,7 @@ export class MockRuns {
       findings: 0,
       steps: [],
       question: null,
+      check: { enabled: Boolean(input.done_when), state: null, gaps: [] },
     };
     const run: Stored = { view, entries: [], paused: false };
     this.runs.set(view.id, run);
@@ -443,6 +446,7 @@ export class MockRuns {
       metric: value.metric ?? null,
     });
     run.view.limit = value.limit ?? null;
+    run.view.check.enabled = Boolean(value.done_when) && value.check_result !== false;
     run.view.next = 'Make a plan and start on the first part.';
     if (value.repeat)
       run.view.standing = {
@@ -524,7 +528,10 @@ export class MockRuns {
       }
       case 'PUT /runs/{id}/limit': {
         const run = this.required(id);
-        run.view.limit = C.runLimitRequest.parse(input).limit;
+        const settings = C.runLimitRequest.parse(input);
+        if (settings.limit !== undefined) run.view.limit = settings.limit;
+        if (settings.check_result !== undefined)
+          run.view.check.enabled = Boolean(run.view.done_when) && settings.check_result;
         return this.refresh(run);
       }
       default:
