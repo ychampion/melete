@@ -12,6 +12,7 @@ ENV VITE_MELETE_API=${VITE_MELETE_API}
 WORKDIR /app
 COPY package.json bun.lock ./
 COPY apps/web/package.json apps/web/
+COPY packages/cli/package.json packages/cli/
 COPY packages/client/package.json packages/client/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/device/package.json packages/device/
