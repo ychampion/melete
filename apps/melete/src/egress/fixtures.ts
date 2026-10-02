@@ -12,6 +12,7 @@ import type { EgressAdmission } from '../broker/egress-admission.ts';
 import { SealedSecretStore } from '../connectors/secrets.ts';
 import { selfSignedPair } from '../gateway/fixtures/self-signed.ts';
 import { testAdapter } from './adapters/test.ts';
+import { type CredentialAdapter, hostCovered } from './adapters/types.ts';
 import { EgressCertificateAuthority, memoryEgressCaStore } from './ca.ts';
 import type { EgressCredentialPort } from './credentials.ts';
 
@@ -80,44 +81,56 @@ export function testSealer() {
   return new SealedSecretStore({ put: async () => {}, get: async () => null }, () => key);
 }
 
-/** A credential port over one test-adapter account, held in memory. */
+/**
+ * A credential port over one account held in memory: a test-adapter account
+ * over `hosts`, or another adapter's with its configuration.
+ */
 export function memoryCredentialPort(input: {
   secret: string;
-  hosts: string[];
+  hosts?: string[];
   readOnlyHosts?: string[];
+  account?: { adapter: CredentialAdapter; config: unknown };
   connectionId?: string;
   admitWrite?: EgressAdmission;
   /** Answers no account at all: the tunnel stays blind. */
   none?: () => boolean;
 }): EgressCredentialPort & { ca: EgressCertificateAuthority; lookups: number } {
+  const adapter = input.account?.adapter ?? (testAdapter as CredentialAdapter);
   const ca = new EgressCertificateAuthority({
     store: memoryEgressCaStore(),
     sealer: testSealer(),
-    constraints: testAdapter.constraints,
+    constraints: adapter.constraints,
   });
-  const config = testAdapter.parseConfig({
-    hosts: input.hosts,
-    read_only_hosts: input.readOnlyHosts ?? [],
-  });
+  const config = input.account
+    ? input.account.config
+    : testAdapter.parseConfig({
+        hosts: input.hosts ?? [],
+        read_only_hosts: input.readOnlyHosts ?? [],
+      });
+  const hosts = adapter.hosts(config);
   const port = {
     ca,
     lookups: 0,
     async find({ host }: { host: string }) {
       port.lookups += 1;
-      if (input.none?.() || !config.hosts.includes(host)) return null;
+      if (input.none?.() || !hostCovered(host, hosts)) return null;
       return {
         connectionId: input.connectionId ?? 'conn_TEST',
-        adapter: testAdapter,
+        adapter,
         config,
         withSecret: <T>(use: (secret: string) => Promise<T>) => use(input.secret),
       };
     },
     async computer() {
       const certificate = await ca.certificate();
-      return { caId: certificate.id, caPem: certificate.pem, placeholders: {} };
+      return {
+        caId: certificate.id,
+        caPem: certificate.pem,
+        placeholders: adapter.placeholders(config) as Record<string, string>,
+      };
     },
     async hosts() {
-      return config.hosts;
+      return hosts;
     },
     admitWrite:
       input.admitWrite ??

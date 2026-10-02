@@ -14,14 +14,23 @@
  * is run with the adapter declaring deny-all only, which is all it offers there.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
+import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer as createHttpsServer } from 'node:https';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
+import type { EgressWriteInput } from '../../broker/egress-admission.ts';
 import { resolveHost } from '../../connectors/web.ts';
+import { githubAdapter } from '../../egress/adapters/github.ts';
+import type { CredentialAdapter } from '../../egress/adapters/types.ts';
 import { fixtureUpstream, memoryCredentialPort } from '../../egress/fixtures.ts';
+import { type GitRequestSeen, gitSmartHttp } from '../../egress/git-fixture.ts';
 import type { EgressRecordOpen } from '../../egress/records.ts';
 import { certificateAuthority, leafCertificate, newKeyPair, pem } from '../../egress/x509.ts';
+import { selfSignedPair } from '../../gateway/fixtures/self-signed.ts';
 import { sandboxConformance } from '../conformance.ts';
 import { serviceContainerId } from '../docker-default.ts';
 import { openSandbox, sandboxLabels } from '../manifest.ts';
@@ -787,5 +796,180 @@ if (!live) {
         await upstream.close();
       }
     });
+
+    // GitHub through the relay: the computer's own git and gh, a git server
+    // that speaks smart HTTP and checks the account, and an API fixture. The
+    // first push is held and git prints why; the same push run again goes
+    // through, bound to the same ref updates.
+    test('git and gh in a real computer clone, push and change GitHub through the relay, and the computer never holds the token', async () => {
+      const token = `github_pat_live_${randomBytes(16).toString('hex')}`;
+      const run = promisify(execFile);
+      const root = await mkdtemp(path.join(tmpdir(), 'melete-live-git-'));
+      const bare = path.join(root, 'alice', 'site.git');
+      await run('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+      const seed = path.join(root, 'seed');
+      await run('git', ['init', '-q', '-b', 'main', seed]);
+      await run('git', [
+        '-C',
+        seed,
+        '-c',
+        'user.name=A',
+        '-c',
+        'user.email=a@example.com',
+        'commit',
+        '-q',
+        '--allow-empty',
+        '-m',
+        'Start',
+      ]);
+      await run('git', ['-C', seed, 'push', '-q', bare, 'main']);
+      const pair = selfSignedPair('github.com');
+      const gitSeen: GitRequestSeen[] = [];
+      const gitServer = createHttpsServer(
+        { key: pair.key, cert: pair.cert },
+        gitSmartHttp({
+          root,
+          account: `Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`,
+          seen: gitSeen,
+        }),
+      );
+      await new Promise<void>((resolve) => gitServer.listen(0, '127.0.0.1', resolve));
+      const gitPort = (gitServer.address() as AddressInfo).port;
+      const api = await fixtureUpstream('api.github.com', (request) =>
+        request.path === '/user'
+          ? { body: JSON.stringify({ login: 'alice' }) }
+          : request.path === '/repos/alice/site/issues'
+            ? {
+                status: 201,
+                body: JSON.stringify({
+                  number: 1,
+                  html_url: 'https://github.com/alice/site/issues/1',
+                }),
+              }
+            : undefined,
+      );
+      const writes: EgressWriteInput[] = [];
+      const port = memoryCredentialPort({
+        secret: token,
+        account: { adapter: githubAdapter as CredentialAdapter, config: {} },
+        admitWrite: async (input) => {
+          writes.push(input);
+          // The first change waits for the person; after that, each is approved.
+          if (writes.length === 1)
+            return {
+              kind: 'waiting',
+              actionId: 'act_LIVE_push',
+              message: `Waiting for your approval in Melete: ${input.write.summary.title}. Run the same command again once it is approved.`,
+            };
+          return {
+            kind: 'sent',
+            actionId: `act_LIVE_${writes.length}`,
+            result: await input.forward(),
+          };
+        },
+      });
+      const ports: Record<string, number> = {
+        'github.com': gitPort,
+        'api.github.com': api.port,
+      };
+      const guard = new SandboxEgressGuard({
+        resolve: async (name) =>
+          name in ports ? [{ address: '140.82.112.3', family: 4 }] : resolveHost(name),
+        credentials: port,
+        intercept: {
+          upstream: (host) => ({
+            address: { address: '127.0.0.1', family: 4 },
+            port: ports[host] ?? 0,
+          }),
+          upstreamCa: [pair.cert.toString(), api.ca],
+        },
+      });
+      const credentialed = new DockerSandboxHost(
+        settings({ egressPort: 18_794, egressCredentials: port }),
+        new DockerSandboxSocket(socket),
+        { guard },
+      );
+      try {
+        const handle = await open({ kind: 'open' }, credentialed);
+        const command = await credentialed.attributeCommand(
+          handle,
+          attribution('act_LIVE_github', handle.providerSandboxId),
+        );
+        const half = Math.floor(token.length / 2);
+        const outcome = await credentialed.exec(
+          handle,
+          {
+            marker: `act_${Date.now()}`,
+            argv: [
+              '/bin/sh',
+              '-c',
+              [
+                'cd /work',
+                'git clone -q https://github.com/alice/site site 2>&1; echo clone=$?',
+                'cd site && git checkout -q -b melete/fix-login',
+                'echo fixed > login.txt && git add login.txt',
+                'git -c user.name=A -c user.email=a@example.com commit -q -m "Fix login"',
+                'echo new=$(git rev-parse HEAD)',
+                'git push origin melete/fix-login 2>&1 | sed "s/^/first: /"',
+                'git push origin melete/fix-login 2>&1 | sed "s/^/second: /"',
+                'echo gh_user=$(gh api user --jq .login 2>&1)',
+                'echo issue=$(gh api -X POST repos/alice/site/issues -f title=Hello --jq .html_url 2>&1)',
+                'echo gh=$(gh --version | head -1)',
+                `A='${token.slice(0, half)}'; B='${token.slice(half)}'`,
+                'env | grep -cF "$A$B" | sed "s/^/env=/"',
+                'grep -rlF "$A$B" /home /work /tmp /etc 2>/dev/null | wc -l | sed "s/^/files=/"',
+              ].join('\n'),
+            ],
+            cwd: '/work',
+            timeoutMs: 120_000,
+            maxOutputBytes: 64 * 1024,
+            env: command.env,
+          },
+          signal(),
+        );
+        command.settle();
+        const printed = text(outcome.output);
+        process.stdout.write(`docker live, github: ${printed}\n`);
+        expect(printed).toContain('clone=0');
+        const newId = /new=([0-9a-f]{40})/.exec(printed)?.[1] ?? '';
+        expect(newId).toMatch(/^[0-9a-f]{40}$/);
+        // Held: git itself says why, beside the branch it pushed.
+        expect(printed).toContain(
+          'first:  ! [remote rejected] melete/fix-login -> melete/fix-login (Waiting for your approval in Melete: Push to alice/site (melete/fix-login).',
+        );
+        expect(printed).toContain('first: remote: Waiting for your approval in Melete');
+        // Run again: sent once, and the branch is on the server at the commit approved.
+        expect(printed).toMatch(
+          /second: .*\* \[new branch\]\s+melete\/fix-login -> melete\/fix-login/,
+        );
+        const onServer = await run('git', ['-C', bare, 'rev-parse', 'refs/heads/melete/fix-login']);
+        expect(onServer.stdout.trim()).toBe(newId);
+        // Both runs asked for the same change, down to its bound bytes and headers.
+        const [held, sent] = writes;
+        expect(held?.write.payload).toMatchObject({
+          resource: 'alice/site',
+          updates: [{ ref: 'refs/heads/melete/fix-login', old: '0'.repeat(40), new: newId }],
+        });
+        expect(JSON.stringify(sent?.write.payload)).toBe(JSON.stringify(held?.write.payload));
+        // gh reads and asks through the same relay.
+        expect(printed).toContain('gh_user=alice');
+        expect(printed).toContain('issue=https://github.com/alice/site/issues/1');
+        expect(printed).toContain('gh=gh version 2.83.2');
+        expect(writes[2]?.write.summary.title).toBe('Open an issue in alice/site: Hello');
+        // Every request upstream carried the account; nothing in the computer did.
+        expect(gitSeen.length).toBeGreaterThanOrEqual(4);
+        expect(new Set(api.seen.map((request) => request.headers.authorization))).toEqual(
+          new Set([`Bearer ${token}`]),
+        );
+        expect(printed).toContain('env=0');
+        expect(printed).toContain('files=0');
+        expect(printed).not.toContain(token);
+      } finally {
+        await guard.close();
+        await api.close();
+        gitServer.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 240_000);
   });
 }
