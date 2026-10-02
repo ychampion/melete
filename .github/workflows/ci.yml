@@ -169,6 +169,10 @@ jobs:
         env:
           MELETE_APP_ISOLATION_PROOF: '1'
         run: bun test apps/melete/test/browser/app-isolation.test.ts --max-concurrency=1
+      - name: Prove a preview of a server in an agent's computer stays inside its frame and its port
+        env:
+          MELETE_APP_ISOLATION_PROOF: '1'
+        run: bun test apps/melete/test/browser/preview-isolation.test.ts --max-concurrency=1
 
   mcp-stdio:
     name: Stdio MCP servers in their own containers (conformance 10)

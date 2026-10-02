@@ -30,6 +30,7 @@ import {
   pointerButton,
   shownAddress,
 } from './live.ts';
+import { ProcessesPanel } from './ProcessesPanel.tsx';
 import './computer.css';
 
 const POLL_MS = 3000;
@@ -750,7 +751,12 @@ export function ComputerPanel({
     });
     onChanged();
   };
-  const empty = computer && !browser && !desktop && computer.terminal.length === 0;
+  const empty =
+    computer &&
+    !browser &&
+    !desktop &&
+    computer.terminal.length === 0 &&
+    computer.processes.length === 0;
   const words = computer ? computerEmptyWords(agentName, computer.available) : null;
   return (
     <aside className="side-panel computer-panel" aria-label={`${agentName}’s computer`}>
@@ -808,6 +814,7 @@ export function ComputerPanel({
         {computer && computer.terminal.length > 0 ? (
           <Terminal commands={computer.terminal} />
         ) : null}
+        {computer ? <ProcessesPanel processes={computer.processes} onChanged={onChanged} /> : null}
       </div>
       {browser ? (
         <div className="computer-foot" data-control={browser.control}>

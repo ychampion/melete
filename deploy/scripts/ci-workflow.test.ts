@@ -188,12 +188,14 @@ describe('the continuous integration workflow', () => {
     }
   });
 
-  test('a job of its own proves app isolation in two browsers, and fails rather than skips', () => {
+  test('a job of its own proves app and preview isolation in two browsers, and fails rather than skips', () => {
     const job = ci.workflow.jobs?.['app-isolation'];
     const runs = (job?.steps ?? []).map((step) => step.run ?? '');
     expect(runs).toContain('bunx playwright install --with-deps chromium firefox');
     const proof = job?.steps?.find((step) => step.run?.includes('app-isolation.test.ts'));
     expect(proof?.env?.MELETE_APP_ISOLATION_PROOF).toBe('1');
+    const preview = job?.steps?.find((step) => step.run?.includes('preview-isolation.test.ts'));
+    expect(preview?.env?.MELETE_APP_ISOLATION_PROOF).toBe('1');
     expect((job?.steps ?? []).filter((step) => step.if !== undefined)).toEqual([]);
   });
 
