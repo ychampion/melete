@@ -19,7 +19,7 @@
  * this release will send anywhere.
  */
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import { mkdir, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -271,6 +271,33 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
 
   return {
     manifest: artifactsManifest,
+    // Saved to the space as a new file, the person can open and delete it.
+    // Emailed it is gone, and saved over a file they have it replaces theirs.
+    staysInSpace(action, spaceId) {
+      const destination = action.canonical_payload.destination;
+      if (
+        action.kind !== 'artifact.publish' ||
+        typeof destination !== 'object' ||
+        destination === null ||
+        Array.isArray(destination) ||
+        destination.kind !== 'space_artifacts'
+      )
+        return false;
+      const source = action.canonical_payload.path;
+      const target =
+        typeof destination.path === 'string'
+          ? destination.path
+          : typeof source === 'string'
+            ? path.posix.basename(source)
+            : '';
+      try {
+        return !existsSync(
+          path.join(options.spacesRoot, spaceId, 'artifacts', ...segmentsFor(target)),
+        );
+      } catch {
+        return false;
+      }
+    },
     async prepare(payload, ctx, tx) {
       const relative = typeof payload.path === 'string' ? payload.path : '';
       const area = payload.area === 'artifacts' ? 'artifacts' : 'work';

@@ -8,7 +8,7 @@
  * complete the job, and the same job completes once the numbers are right.
  */
 import { afterAll, expect, spyOn, test } from 'bun:test';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { JsonValue } from '@melete/contracts';
@@ -127,6 +127,12 @@ const totalsExpectation: JsonValue = {
     { kind: 'totals', column: 'amount', total_label: 'Total' },
     { kind: 'required_columns', columns: ['item', 'amount'] },
   ],
+};
+
+/** A file the person already keeps in the space; saving over it asks first. */
+const ownFile = async (root: string, spaceId: string, name: string, content: string) => {
+  await mkdir(path.join(root, spaceId, 'artifacts'), { recursive: true });
+  await Bun.write(path.join(root, spaceId, 'artifacts', name), content);
 };
 
 databaseTest(
@@ -345,6 +351,7 @@ databaseTest(
         payload: { path: 'approved.txt', content, expect: { kind: 'text', render: false } },
       });
     await write('version A');
+    await ownFile(ctx.spacesRoot, ctx.claims.space_id, 'approved.txt', "the person's own");
     const proposal = await ctx.broker.propose(ctx.claims, {
       kind: 'artifact.publish',
       connection_id: ctx.publishConnection,
@@ -361,8 +368,8 @@ databaseTest(
     expect(
       await Bun.file(
         path.join(ctx.spacesRoot, ctx.claims.space_id, 'artifacts', 'approved.txt'),
-      ).exists(),
-    ).toBe(false);
+      ).text(),
+    ).toBe("the person's own");
     const [versionA] =
       await ctx.sql`select id, content_hash from artifact where job_id = ${ctx.claims.job_id} and path = 'approved.txt' order by created_at, id limit 1`;
     expect(proposal.canonical_payload).toMatchObject({
@@ -702,7 +709,7 @@ databaseTest(
 );
 
 databaseTest(
-  'publishing is approved once and leaves a receipt linked to the record',
+  'saving over a file in the space is approved once and leaves a receipt linked to the record',
   async () => {
     const context = await setup();
     await context.broker.propose(context.claims, {
@@ -711,6 +718,7 @@ databaseTest(
       payload: { path: 'report.csv', content: csv('40.00'), expect: totalsExpectation },
       client_ref: 'write-publish',
     });
+    await ownFile(context.spacesRoot, context.claims.space_id, 'report.csv', 'last month');
     const request = {
       kind: 'artifact.publish',
       connection_id: context.publishConnection,
@@ -767,6 +775,7 @@ databaseTest(
       path.join(context.workRoot, context.claims.job_id, 'report.csv'),
       csv('999.00'),
     );
+    await ownFile(context.spacesRoot, context.claims.space_id, 'report.csv', 'last month');
     const request = {
       kind: 'artifact.publish',
       connection_id: context.publishConnection,
@@ -782,6 +791,68 @@ databaseTest(
     expect(attempted).toMatchObject({ code: 'payload_invalid' });
     const [action] = await context.sql`select status from action where id = ${parked.action_id}`;
     expect(action?.status).toBe('approved');
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a new file saved to the space goes through at once; emailing it still asks',
+  async () => {
+    const context = await setup();
+    await context.broker.propose(context.claims, {
+      kind: 'files.write',
+      connection_id: context.connectionId,
+      payload: { path: 'notes.csv', content: csv('12.00'), expect: totalsExpectation },
+      client_ref: 'write-new',
+    });
+    const saved = await context.broker.propose(context.claims, {
+      kind: 'artifact.publish',
+      connection_id: context.publishConnection,
+      payload: { path: 'notes.csv', destination: { kind: 'space_artifacts', path: null } },
+      client_ref: 'save-new',
+    });
+    expect(saved.status).toBe('succeeded');
+    expect(saved.requires_approval).toBe(false);
+    expect(
+      await readFile(
+        path.join(context.spacesRoot, context.claims.space_id, 'artifacts', 'notes.csv'),
+        'utf8',
+      ),
+    ).toBe(csv('12.00').trim());
+    // The same file, saved again under its own name, would replace it: that asks.
+    await context.broker.propose(context.claims, {
+      kind: 'files.write',
+      connection_id: context.connectionId,
+      payload: { path: 'notes.csv', content: csv('13.00'), expect: totalsExpectation },
+      client_ref: 'write-again',
+    });
+    const again = await context.broker.propose(context.claims, {
+      kind: 'artifact.publish',
+      connection_id: context.publishConnection,
+      payload: { path: 'notes.csv', destination: { kind: 'space_artifacts', path: null } },
+      client_ref: 'save-again',
+    });
+    expect(again.status).toBe('needs_approval');
+    // A path that is not a plain name inside the space is never waved through.
+    const odd = await context.broker
+      .propose(context.claims, {
+        kind: 'artifact.publish',
+        connection_id: context.publishConnection,
+        payload: { path: 'notes.csv', destination: { kind: 'space_artifacts', path: '../x.csv' } },
+        client_ref: 'save-odd',
+      })
+      .catch((error: unknown) => error);
+    expect((odd as { status?: string }).status).not.toBe('succeeded');
+    const mailed = await context.broker.propose(context.claims, {
+      kind: 'artifact.publish',
+      connection_id: context.publishConnection,
+      payload: {
+        path: 'notes.csv',
+        destination: { kind: 'email', to: 'owner@example.com', subject: 'Notes' },
+      },
+      client_ref: 'mail-new',
+    });
+    expect(mailed.status).toBe('needs_approval');
   },
   SLOW,
 );

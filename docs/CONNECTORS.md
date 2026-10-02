@@ -60,7 +60,7 @@ succeeded and the job continues`.
 | Calendar | Read-only ICS import; CalDAV, Google Calendar or Outlook calendar list/create/update with UID and content verification | `CalDAV create uses action UID and conditional PUT; list and verify use real HTTP locally`; `an event is named by its action, so a second create cannot make a second event` |
 | Test destination | Durable acceptance with optional lost acknowledgement | `destination drops its acknowledgement only after acceptance and verify resolves it` |
 | Exec | `exec.run` and `exec.python` carried out inside the cell against a broker-reserved action, with the finished record settled afterwards | `the exec manifest parses and declares in-cell execution with a record schema`; `execution-admission.test.ts` |
-| Artifacts | Declared writes become artifact records with deterministic checks; publishing to the space or by email is an approved external effect | `artifacts.test.ts` |
+| Artifacts | Declared writes become artifact records with deterministic checks; a new file saved to the space goes through like work in the agent's own workspace, while saving over a file already there or sending by email is an approved external effect | `artifacts.test.ts` |
 | Generation (speech) | `audio.synthesize` as a `spend` capability with approval, reservation, receipt and an authenticated artifact endpoint | `is a real RIFF/WAVE file, not a placeholder string`; `speech-broker.test.ts` |
 | MCP | HTTP servers, and stdio servers in containers of their own, behind the broker, with the effect classes, scopes and audience the installation declares | `MCP config is strict, operator scoped, and defaults unclassified tools to external writes`; `MCP worker and server claims cannot make an ungranted tool callable` |
 | Browser | Semantic observe, open, fill, click, select, read and an approved `browser.submit`, carried out by a worker process outside the cell with epoch-fenced takeover; a person signs in to a site themselves through a live view of the worker's page, and signs the space out of a site again | `approval binds the exact browser intent and repeated proposals dispatch one effect`; `an unapproved submit has no external effects and its warning identifies the observed destination`; `no persisted event contains the typed secret or the identity-provider host`; `forgetting a site removes its cookies and the profile row`; see [the browser worker](browser-worker.md) |
@@ -86,7 +86,7 @@ does not depend on isolation the running deployment lacks.
 | --- | --- | --- |
 | Files | `files.list`, `files.read`, `files.write`, `files.move` | always |
 | Web | `web.fetch` | always; the address and compartment checks below still apply |
-| Finished work | `artifact.publish` | always; every publication needs approval |
+| Finished work | `artifact.publish` | always; a new file saved to the space needs no approval, replacing one or emailing it does |
 | Speech | `audio.synthesize` | only while a speech-capable provider is configured; a `spend`, so every call needs approval and a budget reservation |
 | Code in the workspace | `exec.run`, `exec.python` | only while attempts run in a container (`MELETE_RUNTIME_ADAPTER=docker`, or the Hermes adapter with `MELETE_RUNTIME_SUPERVISOR=docker`); under the process supervisor the row offers nothing |
 
