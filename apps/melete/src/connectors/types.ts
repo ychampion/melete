@@ -50,10 +50,11 @@ export interface Connector {
   execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
   verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult>;
   /**
-   * What a dispatch is settled as when the process that sent it ended before
-   * its answer came back, for a connector that can say more than "unknown": a
-   * command in the agent's own sandbox can read its marker, and anything it
-   * did stays inside that sandbox. Without it, such a dispatch is unknown.
+   * What a dispatch is settled as when its answer never came back (the process
+   * that sent it ended, the connection dropped, or it timed out), for a
+   * connector that can say more than "unknown": a step in the agent's own
+   * computer can read its marker or be looked at by the agent, so the person is
+   * never asked whether it worked. Without it, such a dispatch is unknown.
    */
   abandoned?(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
   /**

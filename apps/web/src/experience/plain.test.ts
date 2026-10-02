@@ -47,6 +47,9 @@ test('time zones read by a name people use, old names included', () => {
   expect(zoneName('Asia/Calcutta', summer)).toBe('India Standard Time (Kolkata)');
   expect(zoneName('America/Los_Angeles', summer)).toBe('Pacific Time (Los Angeles)');
   expect(zoneName('UTC', summer)).toBe('UTC');
+  // The same name all year, and a retired US name reads as its current zone.
+  expect(zoneName('Europe/Berlin', summer)).toBe('Central European Time (Berlin)');
+  expect(zoneName('US/Eastern', summer)).toBe('Eastern Time (New York)');
   expect(plainSchedule('Every day at 7:30 AM (Asia/Calcutta)', summer)).toBe(
     'Every day at 7:30 AM (India Standard Time)',
   );

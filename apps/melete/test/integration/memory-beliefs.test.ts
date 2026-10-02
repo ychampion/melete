@@ -19,7 +19,7 @@ import { type MemoryScope, provisionMemorySpace } from '../../src/memory/db.ts';
 import { latestDigest, writeDueDigest } from '../../src/memory/digest.ts';
 import { ingest } from '../../src/memory/evidence.ts';
 import type { ExtractionGateway } from '../../src/memory/extract.ts';
-import { cleanupMemory, deleteMemorySource } from '../../src/memory/forget.ts';
+import { cleanupMemory, deleteMemorySource, forgetMemory } from '../../src/memory/forget.ts';
 import { recordOutput } from '../../src/memory/outputs.ts';
 import {
   beliefMarkdown,
@@ -619,6 +619,22 @@ withDb('why an action was taken', () => {
     expect(await actionBecause(db.sql, spaceId, proposal.action_id)).toEqual([
       { kind: 'belief', id: wine, label: 'Wine: kind: red', basis: 'declared' },
     ]);
+    // A belief the person forgets is no longer named, from the moment Memory stops
+    // listing it, before any cleanup has run.
+    const journal = await journalFor('because-forget');
+    await forgetMemory(db.sql, scope, { claim_id: wine }, journal);
+    expect(await actionBecause(db.sql, spaceId, proposal.action_id)).toEqual([]);
+    // Clearing everything takes the recalled ones with it too.
+    const another = await broker.propose(seed.claims, {
+      kind: 'test.send',
+      connection_id: seed.connectionId,
+      payload: { to: 'maya@example.com', body: 'Still on for seven?' },
+    });
+    expect(await actionBecause(db.sql, spaceId, another.action_id)).toEqual([
+      { kind: 'belief', id: dinner, label: 'Dinner: time: seven', basis: 'recalled' },
+    ]);
+    await forgetMemory(db.sql, scope, { all: true }, journal);
+    expect(await actionBecause(db.sql, spaceId, another.action_id)).toEqual([]);
   });
 });
 

@@ -165,7 +165,6 @@ export function NotificationsTab() {
         >
           {pushSupported() && configured && !here ? (
             <Button
-              size="sm"
               icon="bell"
               loading={busy}
               disabled={busy}

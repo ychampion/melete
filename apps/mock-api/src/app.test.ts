@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import {
   actionListResponse,
   actionResponse,
+  actionSummaryListResponse,
   approvalDecisionResponse,
   approvalListResponse,
   attemptListResponse,
@@ -385,6 +386,34 @@ describe('the rules the API is supposed to enforce', () => {
     });
     expect(status).toBe(409);
     expect(errorResponse.parse(json).error.code).toBe('not_awaiting_reconciliation');
+  });
+
+  test('the summary view lists each action by what a person is shown of it', async () => {
+    await toApproval(mock, 'Chase the heating repair by email.');
+    const full = actionListResponse.parse((await call(mock.app, 'GET', '/actions')).json).actions;
+    const lean = actionSummaryListResponse.parse(
+      (await call(mock.app, 'GET', '/actions?view=summary')).json,
+    ).actions;
+    expect(lean.map((action) => action.id)).toEqual(full.map((action) => action.id));
+    const [first] = lean;
+    if (!first) throw new Error('no action');
+    expect(Object.keys(first).sort()).toEqual(
+      [
+        'canonical_payload',
+        'created_at',
+        'dispatched_at',
+        'effect_class',
+        'id',
+        'job_id',
+        'kind',
+        'reconciliation',
+        'resolved_at',
+        'status',
+      ].sort(),
+    );
+    expect(first.canonical_payload.to).toEqual(full[0]?.canonical_payload.to);
+    expect(first.canonical_payload).not.toHaveProperty('body');
+    expect(JSON.stringify(lean).length).toBeLessThan(JSON.stringify(full).length);
   });
 
   test('the payload the approval shows is canonical, not what the model typed', async () => {

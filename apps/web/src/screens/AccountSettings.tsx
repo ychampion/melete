@@ -7,8 +7,9 @@ import { useState } from 'react';
 import { Button, Field, Input, Select } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useApp } from '../experience/hooks.ts';
+import { zoneName } from '../experience/plain.ts';
 import { givenName, UNNAMED } from '../experience/profile.ts';
-import { browserTimeZone, timeZoneChoices, zoneName } from '../experience/timezone.ts';
+import { browserTimeZone, timeZoneChoices } from '../experience/timezone.ts';
 import { toast } from '../shell/Shell.tsx';
 
 function TimeZoneField() {

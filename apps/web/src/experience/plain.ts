@@ -139,6 +139,18 @@ export function zoneCity(zone: string): string {
 /** "Pacific Time", "India Standard Time", or null when the browser has no name for the zone. */
 function zoneLongName(zone: string, at: Date): string | null {
   try {
+    // The generic name holds all year: "Central European Time", not "... Summer Time".
+    const generic = new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      timeZoneName: 'longGeneric',
+    })
+      .formatToParts(at)
+      .find((part) => part.type === 'timeZoneName')?.value;
+    if (generic && !/^GMT[+-]/.test(generic) && generic !== zoneCity(zone)) return generic;
+  } catch {
+    // A browser without generic names falls through to the long name.
+  }
+  try {
     const long = new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'long' })
       .formatToParts(at)
       .find((part) => part.type === 'timeZoneName')?.value;

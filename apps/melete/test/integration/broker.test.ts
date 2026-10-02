@@ -499,6 +499,59 @@ describe('durable action lifecycle', () => {
   );
 
   databaseTest(
+    'a step in the agent’s own computer that never answered is settled, never asked about',
+    async () => {
+      const s = await setup(async () => ({
+        outcome: 'unknown',
+        reason: 'the desktop did not answer',
+      }));
+      s.connector.abandoned = async () => ({
+        outcome: 'failed',
+        reason: 'look at the screen before trying it again',
+        retryable: false,
+      });
+      const proposal = await s.broker.propose(s.claims, {
+        kind: 'test.send',
+        connection_id: s.connectionId,
+        payload: {},
+      });
+      await s.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+      const settled = await s.broker.dispatch(proposal.action_id);
+      expect(settled.status).toBe('failed');
+      expect(settled.reconciliation).toMatchObject({
+        reason: 'look at the screen before trying it again',
+        retryable: false,
+      });
+      const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
+      expect(job?.state).not.toBe('needs_reconciliation');
+      const asked = await s.sql`select id from question where job_id = ${s.claims.job_id}`;
+      expect(asked).toHaveLength(0);
+      expect(s.calls()).toBe(1);
+    },
+  );
+
+  databaseTest('an outside effect that never answered is still put to the person', async () => {
+    const s = await setup(async () => ({ outcome: 'unknown', reason: 'the provider timed out' }));
+    const proposal = await s.broker.propose(s.claims, {
+      kind: 'test.send',
+      connection_id: s.connectionId,
+      payload: {},
+    });
+    await s.broker.decide(proposal.action_id, {
+      decision: 'approved',
+      payload_hash: proposal.payload_hash,
+    });
+    await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+    expect((await s.broker.dispatch(proposal.action_id)).status).toBe('unknown');
+    const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
+    expect(job?.state).toBe('needs_reconciliation');
+  });
+
+  databaseTest(
     'a dispatch whose attempt stopped heartbeating is unknown at once without a connector account',
     async () => {
       const s = await setup();

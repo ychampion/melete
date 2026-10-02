@@ -261,7 +261,6 @@ export function PrivacyTab() {
         />
         <div className="row" style={{ gap: 8 }}>
           <Button
-            size="sm"
             onClick={() => void runPreview()}
             loading={previewing}
             disabled={previewing}
@@ -417,11 +416,10 @@ export function PrivacyTab() {
             />
           </Field>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <Button size="sm" type="submit" disabled={saving || !baseUrl.trim() || !model.trim()}>
+            <Button type="submit" disabled={saving || !baseUrl.trim() || !model.trim()}>
               Save
             </Button>
             <Button
-              size="sm"
               variant="outline"
               type="button"
               disabled={!baseUrl.trim() || !model.trim()}
@@ -547,7 +545,7 @@ export function PrivacyTab() {
               />
             </Field>
           </div>
-          <Button size="sm" type="submit" disabled={saving || !settings.sealed_vault}>
+          <Button type="submit" disabled={saving || !settings.sealed_vault}>
             Add
           </Button>
         </form>

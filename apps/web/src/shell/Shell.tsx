@@ -43,8 +43,8 @@ import {
   useLoad,
   useMedia,
 } from '../experience/hooks.ts';
+import { zoneName } from '../experience/plain.ts';
 import { givenName } from '../experience/profile.ts';
-import { zoneName } from '../experience/timezone.ts';
 import type { CalendarEvent, Conversation, Home, Task } from '../experience/types.ts';
 import { FeedbackHost, openFeedback } from '../feedback/FeedbackPanel.tsx';
 import { href, navigate, useRoute } from '../router.ts';

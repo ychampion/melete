@@ -124,6 +124,36 @@ describe('what is said while the work runs is routed, never dropped', () => {
     expect(asksToStop('Also check the second site')).toBe(false);
   });
 
+  test('a stop word turned around by a negation is not a stop', () => {
+    for (const heard of [
+      "Don't stop",
+      'don’t stop, this is great',
+      'Do not cancel',
+      'Never stop',
+      'No, keep going',
+      'No need to cancel anything',
+      "You shouldn't quit now",
+      'Please do not abort the booking',
+    ])
+      expect(asksToStop(heard)).toBe(false);
+    for (const heard of [
+      'Stop',
+      'No, stop',
+      'Please cancel it',
+      'Never mind',
+      "Don't book it, just stop",
+      "Don't book it just stop",
+      'Keep the notes but stop the search',
+      'Okay, stop everything please',
+    ])
+      expect(asksToStop(heard)).toBe(true);
+    expect(routeAside("Don't stop", { intent: 'stop', say: 'Stopping.' })).toEqual({
+      kind: 'queue',
+      text: "Don't stop",
+      say: QUEUED,
+    });
+  });
+
   test('a question is answered out loud; silence is never the answer to the person', () => {
     expect(routeAside('How far along?', { intent: 'talk', say: 'Two of three pages.' })).toEqual({
       kind: 'say',

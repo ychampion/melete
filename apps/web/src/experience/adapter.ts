@@ -354,7 +354,7 @@ export const adapter = {
   /* ---------- the broker's ledger: effects the connector never confirmed ---------- */
   unknownActions: (jobId: string) =>
     guard<{ actions: LedgerAction[] }>(() =>
-      api.GET('/actions', { params: { query: { job_id: jobId } } }),
+      api.GET('/actions', { params: { query: { job_id: jobId, view: 'summary' } } }),
     ),
   resolveAction: (id: string, resolution: ActionResolution, note?: string) =>
     guard<{ action: LedgerAction }>(() =>

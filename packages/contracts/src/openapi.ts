@@ -9,6 +9,7 @@ import {
   actionListQuery,
   actionListResponse,
   actionResponse,
+  actionSummaryListResponse,
   approvalDecisionResponse,
   approvalListResponse,
   attemptListResponse,
@@ -1863,8 +1864,16 @@ export function buildOpenApiDocument() {
           get: {
             tags: ['actions'],
             summary: 'The action ledger',
+            description:
+              'Every field of each action, or with `view=summary` only what a person is shown of ' +
+              'it. GET /actions/{actionId} always returns the full record.',
             requestParams: { query: actionListQuery },
-            responses: { '200': jsonResponse('Actions', actionListResponse) },
+            responses: {
+              '200': jsonResponse(
+                'Actions',
+                z.union([actionListResponse, actionSummaryListResponse]),
+              ),
+            },
           },
         },
 

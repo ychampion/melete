@@ -84,10 +84,21 @@ export type AsideAction =
  * pages and tools, so its `stop` is believed only when this agrees.
  */
 export function asksToStop(heard: string): boolean {
-  return /\b(stop|stopping|cancel|halt|abort|quit|never mind|forget (it|that|about it|the whole thing))\b/i.test(
-    heard,
-  );
+  const said = heard.toLowerCase().replace(/[‘’]/g, "'");
+  // Each clause is read on its own: "no, keep going" and "don't stop" carry on,
+  // while "keep the notes, but stop the search" still asks for a stop.
+  return said.split(/[,.;:!?…]|\b(?:but|and|then|just)\b/).some((clause) => {
+    for (const match of clause.matchAll(STOP_WORD))
+      if (!NEGATED.test(clause.slice(0, match.index))) return true;
+    return false;
+  });
 }
+
+const STOP_WORD =
+  /\b(stop|stopping|cancel|halt|abort|quit|never mind|forget (it|that|about it|the whole thing))\b/g;
+/** A "don't", "never" or "no need to" earlier in the same clause turns a stop word around. */
+const NEGATED =
+  /\b(don'?t|do not|doesn'?t|does not|never|not|no need to|no reason to|won'?t|will not|shouldn'?t|should not|without|can'?t|cannot)\b/;
 
 /**
  * What to do with something heard while the work runs, given the companion's

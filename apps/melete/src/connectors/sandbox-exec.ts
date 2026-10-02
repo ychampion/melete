@@ -96,15 +96,20 @@ export type SandboxExecOptions = {
 export const WORKSPACE_WAIT_MS = 60_000;
 
 /**
- * Why a command cut off by a stop or restart of the service was not finished,
- * when the computer it ran in could reach nothing outside.
+ * Why a command whose answer never came back (a stop or restart of the
+ * service, a lost connection, a timeout) has no result, when the computer it
+ * ran in could reach nothing outside.
  */
 export const INTERRUPTED =
-  "Melete stopped while this command was running in the agent's computer, so its result was not captured. It may have run in part or in full, and anything it changed is inside that computer: check before running it again";
+  "This command's result was not captured from the agent's computer, so whether it finished is not known. It may have run in part or in full, and anything it changed is inside that computer: check before running it again";
 
 /** The same, when the computer had network access: what it did may have reached outside. */
 export const INTERRUPTED_WITH_NETWORK =
-  "Melete stopped while this command was running in the agent's computer, so its result was not captured. It may have run in part or in full. The computer had network access, so the command may also have reached outside it, for example by sending or uploading something: check before running it again";
+  "This command's result was not captured from the agent's computer, so whether it finished is not known. It may have run in part or in full. The computer had network access, so the command may also have reached outside it, for example by sending or uploading something: check before running it again";
+
+/** Why a click, key or other desktop step that never answered has no result. */
+export const DESKTOP_UNCONFIRMED =
+  "The agent's computer did not confirm this desktop step, so whether it happened is not known: look at the screen before trying it again";
 const WORKSPACE_POLL_MS = 2_000;
 
 /** The conversation holding the computer, as the model can repeat it to the person. */
@@ -724,9 +729,11 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     verify,
 
     async abandoned(action, ctx) {
-      // A click has no record to read back, and it can reach a page outside.
+      // A click has no record to read back, but the agent can look at its own
+      // screen, which the person cannot do any better: it is settled, and the
+      // agent is told to look before it tries again.
       if (COMPUTER_TOOL_NAMES.has(action.kind))
-        return { outcome: 'unknown', reason: 'the service stopped before the desktop answered' };
+        return { outcome: 'failed', reason: DESKTOP_UNCONFIRMED, retryable: false };
       let verdict: VerifyResult;
       try {
         verdict = await verify(action, { ...ctx, signal: AbortSignal.timeout(30_000) });

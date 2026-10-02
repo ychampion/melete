@@ -1917,7 +1917,10 @@ export class BrokerService implements BrokerOperations {
     clearTimeout(timer);
     if (result === 'timeout') {
       controller.abort();
-      const unknown = await this.recordResult(id, uncertainResult(readOnly, 'timed out', question));
+      const unknown = await this.recordResult(
+        id,
+        await this.settleOpen(prepared.action, uncertainResult(readOnly, 'timed out', question)),
+      );
       // A cooperative abort is not proof of non-delivery; a later receipt is still a fact.
       void execution.then((late) => this.settleRepair(prepared.action, late)).catch(() => {});
       return unknown;
@@ -2064,9 +2067,31 @@ export class BrokerService implements BrokerOperations {
       await this.sql`update repair_candidate set state = 'applied', updated_at = now()
         where action_id = ${id} and state = 'evaluated' and safe = true`;
     }
-    const settled = await this.recordResult(id, run.result as DispatchResult);
-    if (run.question) await this.escalate(settled, run);
+    const result = await this.settleOpen(action, run.result as DispatchResult);
+    const settled = await this.recordResult(id, result);
+    // An open outcome the connector settled itself leaves nothing to ask the person.
+    const answered = run.disposition === 'needs_reconciliation' && result.outcome !== 'unknown';
+    if (run.question && !answered) await this.escalate(settled, run);
     return settled;
+  }
+
+  /**
+   * A dispatch that ended without an answer, settled by its connector where the
+   * connector can say more than "unknown": a step in the agent's own computer
+   * has a record to read back, and anything it did started there, so the person
+   * is never asked whether it worked. Every other open outcome stays unknown.
+   */
+  private async settleOpen(action: Action, result: DispatchResult): Promise<DispatchResult> {
+    if (result.outcome !== 'unknown') return result;
+    const connector = this.options.connectors.get(action.connection_id);
+    if (!connector?.abandoned) return result;
+    try {
+      const [job] = await this.sql<LockedJob[]>`select * from job where id = ${action.job_id}`;
+      if (!job) return result;
+      return dispatchResult.parse(await connector.abandoned(action, this.context(job, action)));
+    } catch {
+      return result;
+    }
   }
 
   /**
@@ -2572,11 +2597,9 @@ export class BrokerService implements BrokerOperations {
           : 'Dispatch ended without a durable receipt',
       );
       let result: DispatchResult = fallback;
-      if (orphaned && connector?.abandoned) {
+      if (connector?.abandoned) {
         try {
-          const action = await loadAction(this.sql, row.id as string);
-          const [job] = await this.sql<LockedJob[]>`select * from job where id = ${action.job_id}`;
-          if (job) result = await connector.abandoned(action, this.context(job, action));
+          result = await this.settleOpen(await loadAction(this.sql, row.id as string), fallback);
         } catch {
           result = fallback;
         }
