@@ -150,6 +150,10 @@ const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
 const artifactUrl = (id: string): string =>
   `${client.options.baseUrl}/artifacts/${encodeURIComponent(id)}/content`;
 
+/** The picture a screenshot took, for the person's own trail. */
+const screenshotUrl = (id: string): string =>
+  `${client.options.baseUrl}/screenshots/${encodeURIComponent(id)}`;
+
 /** Turn an openapi-fetch result into a Result, reading not_available as a reason. */
 function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Response }): Result<T> {
   if (outcome.data !== undefined) {
@@ -708,6 +712,7 @@ export const adapter = {
     ),
   /** Where a file or picture the service keeps is served, with the session's cookie. */
   artifactUrl,
+  screenshotUrl,
   search: (q: string) =>
     guard<{ results: SearchResult[] }>(() => api.GET('/search', { params: { query: { q } } })),
 

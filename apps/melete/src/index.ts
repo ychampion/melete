@@ -32,6 +32,7 @@ import { mountQuestions } from './api/questions.ts';
 import { mountReactions, type SpaceResolver } from './api/reactions.ts';
 import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
+import { mountScreenshots } from './api/screenshots.ts';
 import { mountTriggers } from './api/triggers.ts';
 import {
   mountVoice,
@@ -65,6 +66,7 @@ import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { mountDevices } from './devices/routes.ts';
+import { moveWorkspaceScreens } from './devices/screens.ts';
 import { DeviceService } from './devices/service.ts';
 import { startEgressRetention } from './egress/records.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
@@ -263,6 +265,7 @@ export function createApp(deps: AppDeps) {
       { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
       personalSpace,
     );
+  if (deps.db) mountScreenshots(app, deps.db, deps.env.MELETE_WORK_DIR, personalSpace);
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   // After mountPrincipals, so the owner-only guard it installs on every
   // non-GET under /spaces/:id runs before the handler that removes one.
@@ -1015,6 +1018,13 @@ export async function bootstrap(
         if (options.workers !== false) removals.start();
       }
       if (options.workers !== false) {
+        // Before any attempt: a paired computer's screenshots an earlier version
+        // kept in job workspaces move to the service's own store.
+        await moveWorkspaceScreens(env.MELETE_WORK_DIR).catch((error: unknown) => {
+          process.stderr.write(
+            `device screenshots were not moved out of job workspaces: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+        });
         await operations.start();
         await triggers.start();
         await runner.start();

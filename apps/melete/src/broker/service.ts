@@ -59,7 +59,6 @@ import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import type { SandboxRun, TrySandbox } from '../runs/try.ts';
 import { closedComputerStep } from '../sandbox/closed-step.ts';
-import { readWorkspaceFile } from '../sandbox/workspace.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
 import { ASK_PERSON_TOOL, requestPersonQuestion } from './ask-person.ts';
 import {
@@ -75,6 +74,7 @@ import {
   type AutoReviewOptions,
   actionReviewView,
   CHANGES_EXISTING_EVENT,
+  changesPersonFiles,
   deciding,
   escalationReason,
   loadApprovalSettings,
@@ -106,6 +106,7 @@ import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } fro
 import { RESUME_ACTION_TOOL } from './resume.ts';
 import { type ReviewInput, type ReviewVerdict, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
+import { readScreenshot, SCREENSHOT_TOOLS } from './screenshots.ts';
 import {
   collectOriginFields,
   createTableTrustResolver,
@@ -114,18 +115,14 @@ import {
 } from './trust.ts';
 
 type ConnectorResolver = { get(connectionId: string): Connector | undefined };
-/** The tools whose succeeded receipts name a screenshot saved in the job's workspace. */
-export const SCREENSHOT_TOOLS: readonly string[] = [
-  'computer.screenshot',
-  'device.screenshot',
-  'device.browser_screenshot',
-];
+/** What a runtime is told instead of a paired computer's picture it may not show. */
+export const DEVICE_SCREEN_WITHHELD =
+  'The screenshot was taken and is kept private: this computer does not let cloud models see its screen (Settings > Devices). It is not a file you can open. Say what you could not see; do not guess at it or look for it.';
 
-/** The eight bytes every PNG file starts with. */
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-/** The largest saved screenshot handed back to a runtime: a device's own cap is 8 MB. */
-const MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024;
+/** A screenshot's picture for a runtime, or why it is kept from the model. */
+export type ScreenshotPicture =
+  | { media_type: 'image/png'; data: string }
+  | { withheld: true; reason: string };
 
 export type BrokerOptions = {
   sql: Sql;
@@ -642,37 +639,39 @@ export class BrokerService implements BrokerOperations {
 
   /**
    * The picture a succeeded screenshot of this attempt's job saved, as base64.
-   * Only for a screenshot tool, only for its own job, and only from the path
-   * its receipt names inside that job's workspace.
+   * Only for a screenshot tool and only for its own job. The agent's own
+   * computer's is read from the path its receipt names inside that job's
+   * workspace; a paired computer's from the service's own store, and only when
+   * that computer lets cloud models see its screen (its own switch, or the
+   * privacy setting when it has none). Otherwise the answer says it is kept
+   * private, and the model is given the receipt alone. Either picture is served
+   * only while it is the one the receipt recorded.
    */
-  async screenshot(
-    claims: CapabilityClaims,
-    id: string,
-  ): Promise<{ media_type: 'image/png'; data: string }> {
+  async screenshot(claims: CapabilityClaims, id: string): Promise<ScreenshotPicture> {
     const action = await this.get(claims, id);
-    const detail = action.receipt?.detail as { path?: unknown } | undefined;
-    if (
-      !this.options.workRoot ||
-      !SCREENSHOT_TOOLS.includes(action.kind) ||
-      action.status !== 'succeeded' ||
-      typeof detail?.path !== 'string' ||
-      !detail.path.toLowerCase().endsWith('.png')
-    )
+    const workRoot = this.options.workRoot;
+    if (!workRoot || !SCREENSHOT_TOOLS.includes(action.kind) || action.status !== 'succeeded')
       throw new BrokerFault('action_not_found');
-    let bytes: Buffer;
-    try {
-      bytes = await readWorkspaceFile(
-        this.options.workRoot,
-        action.job_id,
-        detail.path,
-        MAX_SCREENSHOT_BYTES,
-      );
-    } catch {
-      throw new BrokerFault('action_not_found');
-    }
-    // Served as a PNG only when it is one: whatever else sits at that path is not.
-    if (!bytes.subarray(0, 8).equals(PNG_SIGNATURE)) throw new BrokerFault('action_not_found');
+    if (action.kind !== 'computer.screenshot' && !(await this.deviceScreenShared(action)))
+      return { withheld: true, reason: DEVICE_SCREEN_WITHHELD };
+    const bytes = await readScreenshot(workRoot, action);
+    if (!bytes) throw new BrokerFault('action_not_found');
     return { media_type: 'image/png', data: bytes.toString('base64') };
+  }
+
+  /** Whether a paired computer's screenshot may be shown to a cloud model. */
+  private async deviceScreenShared(action: Action): Promise<boolean> {
+    const [row] = await this.sql`select d.id as device_id, d.cloud_screenshots,
+        coalesce(ps.settings->>'screenshots_paired_devices', '') = 'true' as by_default
+      from action a
+      join job j on j.id = a.job_id
+      left join paired_device d on d.connection_id = a.connection_id and d.space_id = j.space_id
+      left join privacy_settings ps on ps.space_id = j.space_id
+      where a.id = ${action.id}`;
+    if (!row || typeof row.device_id !== 'string') return false;
+    return typeof row.cloud_screenshots === 'boolean'
+      ? row.cloud_screenshots
+      : row.by_default === true;
   }
 
   async get(claims: CapabilityClaims, id: string): Promise<Action> {
@@ -808,6 +807,9 @@ export class BrokerService implements BrokerOperations {
       toolAsks ||
       connectorAsks ||
       (agentAsks && changes) ||
+      // The person's own Files are not the agent's workspace: a change there
+      // is asked, or reviewed when the person lets reviewed app changes go.
+      changesPersonFiles(tool.name, action.canonical_payload) ||
       // "Ask me for everything": every change waits for the person.
       (settings?.mode === 'ask' && changes) ||
       // With the sandbox switch off, work in the agent's own workspace asks too.

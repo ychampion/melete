@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import type { ConnectorTool, JsonObject, OriginWarning } from '@melete/contracts';
-import { escalationReason, reviewerApproves, reviewTier } from './auto-review.ts';
+import {
+  changesPersonFiles,
+  escalationReason,
+  reviewerApproves,
+  reviewTier,
+} from './auto-review.ts';
 
 type Tool = Pick<ConnectorTool, 'name' | 'effect_class' | 'requires_approval' | 'execution'>;
 const tool = (
@@ -34,6 +39,28 @@ describe('reviewTier', () => {
     ['a draft in the mailbox', tool('email.draft', 'write_reversible'), 'imap'],
   ])('%s is sandbox work', (_name, t, provider) => {
     expect(tier(t, provider)).toMatchObject({ tier: 'sandbox', actionClass: 'sandbox' });
+  });
+
+  test("a file saved into, or moved in or out of, the person's own Files is theirs, not sandbox work", () => {
+    const write = tool('files.write', 'write_reversible');
+    const move = tool('files.move', 'write_reversible');
+    for (const [t, payload] of [
+      [write, { path: 'imgtest.png', area: 'artifacts', content: 'x' }],
+      [move, { from: 'shot.png', to: 'shot.png', to_area: 'artifacts' }],
+      [move, { from: 'shot.png', to: 'shot.png', area: 'artifacts' }],
+    ] as const)
+      expect(tier(t, 'files', payload)).toMatchObject({
+        tier: 'reviewable',
+        actionClass: 'app_changes',
+      });
+    // Its own workspace stays sandbox work, named or by default.
+    for (const [t, payload] of [
+      [write, { path: 'notes.md', content: 'x' }],
+      [write, { path: 'notes.md', area: 'work', content: 'x' }],
+      [move, { from: 'a.md', to: 'b.md', area: 'work', to_area: 'work' }],
+    ] as const)
+      expect(tier(t, 'files', payload)).toMatchObject({ tier: 'sandbox' });
+    expect(changesPersonFiles('files.read', { path: 'a.md', area: 'artifacts' })).toBe(false);
   });
 
   test('a reversible change in a connected app is reviewable as an app change', () => {

@@ -17,6 +17,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { noLinks, openedAt, pinDirectory, segmentsFor } from '../connectors/files.ts';
+import { LEGACY_SCREEN_PATH } from '../devices/screens.ts';
 import type { SandboxHandle, SandboxProvider } from './types.ts';
 
 const MiB = 1024 * 1024;
@@ -203,6 +204,9 @@ async function walkLocal(root: string, limits: WorkspaceLimits): Promise<LocalFi
       }
       if (!stat.isFile())
         throw new SyncRefusal('not_regular', `not a regular file or directory: ${relative}`);
+      // A paired computer's screenshot an earlier version left in the workspace
+      // never goes to a sandbox (devices/screens.ts).
+      if (LEGACY_SCREEN_PATH.test(relative)) continue;
       if (stat.size > limits.maxFileBytes)
         throw new SyncRefusal('file_too_large', `a file above the per-file cap: ${relative}`);
       total += stat.size;
@@ -284,6 +288,8 @@ export async function syncOut(options: SyncOptions): Promise<SyncReport> {
     if (seen.has(key))
       throw new SyncRefusal('duplicate', `a path was listed twice: ${JSON.stringify(entry.path)}`);
     seen.add(key);
+    // Nor does one a sandbox still holds come back into the workspace.
+    if (!entry.directory && LEGACY_SCREEN_PATH.test(segments.join('/'))) continue;
     if (entry.directory) {
       directories.push(segments);
       if (directories.length > limits.maxFiles)

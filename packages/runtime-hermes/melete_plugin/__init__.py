@@ -336,7 +336,8 @@ def engine_result(name: str, result: Dict[str, Any], client: Optional[BrokerClie
     shaped = attach_picture(name, result, getattr(client, "screenshot", None))
     if isinstance(shaped, dict) and shaped.get("_multimodal") is True:
         return shaped
-    return json.dumps(result, ensure_ascii=False)
+    # The receipt, with what was said about a picture that is not shown.
+    return json.dumps(shaped if isinstance(shaped, dict) else result, ensure_ascii=False)
 
 
 def engine_handler(

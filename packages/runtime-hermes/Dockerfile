@@ -3,8 +3,9 @@
 # The seams in patches/observer_bridge.py are checked against the audited pin
 # before application. They add compaction observation, bind the plugin's
 # observers to the HTTP run queue, put the model's reasoning on the run's event
-# stream and keep the engine's own install out of the system prompt. They change
-# no broker decision.
+# stream, keep the engine's own install out of the system prompt and keep a
+# screenshot's picture in the session store for the next run. They change no
+# broker decision.
 # Thin configuration keys are cited in .agents/notes/0009-hermes-surface.md.
 #
 # The container has no route to the internet. docker-compose attaches it only to
@@ -25,7 +26,7 @@ ARG HERMES_COMMIT=2237be355906fbe6065ce1815711eee52b2d646e
 # build. `bun run compose:check` recomputes it from the tracked files and names
 # the value to paste here, so a plugin change without a new pin fails before an
 # image is built.
-ARG MELETE_PLUGIN_SHA=2fc5f438c29c1edccb988d93f9b13ed46a5101c27f688ec154b80acf1d8be4db
+ARG MELETE_PLUGIN_SHA=ee0577c0ad118a5c8c4229fe1df993e82c2fdf41f1078da89ad2719caea041d9
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

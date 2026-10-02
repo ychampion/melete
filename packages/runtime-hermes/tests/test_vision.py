@@ -110,6 +110,65 @@ def test_a_paired_device_screenshot_is_shown_too(client, broker, workspace, monk
     ]
 
 
+def test_a_screenshot_from_one_of_two_paired_computers_is_shown(client, broker, workspace, monkeypatch):  # noqa: F811
+    """With two paired computers each one's tools are named per connection
+    (`accountToolName`); the picture still arrives."""
+    monkeypatch.setenv(VISION_ENV, "1")
+    broker.screenshots[ACTION] = png(800, 600)
+    result = run(client, broker, "device.screenshot__0123456789ab", f"device/screenshot-{ACTION}.png")
+    assert isinstance(result, dict) and result["_multimodal"] is True
+    assert decoded(result).size == (800, 600)
+    # A name that only looks like one is not a screenshot tool.
+    assert isinstance(run(client, broker, "device.screenshot__notahexsuffix"), str)
+
+
+def device_receipt() -> dict:
+    """A paired computer's receipt: no path, since the picture is in no workspace."""
+    return {
+        "id": ACTION,
+        "receipt": {
+            "action_id": ACTION,
+            "connection_id": CONNECTION,
+            "external_ref": None,
+            "detail": {"device": "Laptop", "bytes": 100, "width": 800, "height": 600, "content_hash": HASH},
+        },
+    }
+
+
+def run_device(client, broker):  # noqa: F811
+    broker.catalog = [screenshot_tool("device.screenshot")]
+    broker.action_record = device_receipt()
+    ctx = RecordingContext()
+    register(ctx, client)
+    return ctx.tools[0]["handler"]({}, task_id="engine")
+
+
+def test_a_device_screenshot_with_no_path_is_shown_when_the_computer_allows_it(client, broker, workspace, monkeypatch):  # noqa: F811
+    monkeypatch.setenv(VISION_ENV, "1")
+    broker.screenshots[ACTION] = png(800, 600)
+    result = run_device(client, broker)
+    assert isinstance(result, dict) and result["_multimodal"] is True
+    assert decoded(result).size == (800, 600)
+    assert result["text_summary"].startswith("Screenshot from device.screenshot (800x600). ")
+
+
+def test_a_device_screenshot_kept_private_is_said_so_and_never_shown(client, broker, workspace, monkeypatch):  # noqa: F811
+    monkeypatch.setenv(VISION_ENV, "1")
+    broker.screenshots[ACTION] = "The screenshot was taken and is kept private."
+    result = run_device(client, broker)
+    assert isinstance(result, str) and "image_url" not in result
+    shown = json.loads(result)
+    assert shown["picture"] == "The screenshot was taken and is kept private."
+    assert "path" not in shown["receipt"]["detail"]
+
+
+def test_a_model_without_vision_is_told_a_device_screenshot_is_not_a_file(client, broker, workspace, monkeypatch):  # noqa: F811
+    monkeypatch.setenv(VISION_ENV, "0")
+    shown = json.loads(run_device(client, broker))
+    assert "not a file" in shown["picture"]
+    assert not [r for r in broker.requests if r["path"].endswith("/screenshot")]
+
+
 def test_a_model_without_vision_gets_the_text_receipt_unchanged(client, broker, workspace, monkeypatch):  # noqa: F811
     monkeypatch.setenv(VISION_ENV, "0")
     result = run(client, broker)
