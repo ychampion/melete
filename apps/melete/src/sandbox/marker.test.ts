@@ -452,6 +452,21 @@ test("the stage that keeps a command's output runs in a session of its own, so a
   expect(line).toBeDefined();
   // The command and its status on the left; the keeping stage, in a new session, on the right.
   expect(line?.split(' | ')[1]).toBe(
-    `setsid -w sh -c 'head -c "$1" > "$2"; exec cat > /dev/null' melete-keep 10 "$d/out"`,
+    `setsid -w sh -c 'head -c "$1"; exec cat > /dev/null' melete-keep 10; } > "$d/out"`,
   );
+  // `out` is opened by the group around both stages, before the command starts, and by
+  // nothing else: no stage creates a file in the marker while the command can remove it.
+  expect(line?.startsWith('{ { ( ')).toBe(true);
+  expect((script ?? '').match(/"\$d\/out"/g)).toHaveLength(1);
+});
+
+test('a command that removes its own marker leaves it removed, with no status written after it', async () => {
+  const { provider, handle } = await sandbox();
+  const result = await runWith(provider, handle, [
+    'sh',
+    '-c',
+    `rm -rf ${MARKER_ROOT}/${MARKER}; printf once`,
+  ]);
+  expect(result.outcome).toBe('unknown');
+  expect(await reattachByMarker(provider, handle, MARKER, signal())).toBeNull();
 });
