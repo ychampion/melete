@@ -13,6 +13,7 @@ import { runDeploy } from './commands/deploy.ts';
 import { runDoctor } from './commands/doctor.ts';
 import { runInit } from './commands/init.ts';
 import { runLogs } from './commands/logs.ts';
+import { runRemote } from './commands/remote.ts';
 import { runRestore } from './commands/restore.ts';
 import { runRollback } from './commands/rollback.ts';
 import { runSet } from './commands/set.ts';
@@ -39,6 +40,10 @@ export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [opt
   restore <backup> [--plan]  Check a backup's checksums and print the steps that restore it
   upgrade <version>          Upgrade an installation that builds its images (deploy/scripts/upgrade.ts)
   history [--json]           The deploys, rollbacks and upgrades this installation has run
+  remote <ssh-target> [--path <dir>] <command> [args]
+                             Run one of these commands on another machine over SSH, in its checkout
+  remote <ssh-target> [--path <dir>] push [--replace] [--dry-run]
+                             Copy deploy/.env, deploy/melete.deploy.json and deploy/config/ there
 
 --deploy-dir names the deployment directory of another checkout; the default is this checkout's deploy/.
 Exit codes: 0 done, 1 a check failed, 2 refused with nothing changed, 3 acted but did not finish.
@@ -123,6 +128,8 @@ export async function main(argv: readonly string[], make = realContext): Promise
       return await runRestore(context, parsed.rest, parsed.json);
     case 'upgrade':
       return await runUpgrade(context, parsed.rest);
+    case 'remote':
+      return await runRemote(context, parsed.rest, { json: parsed.json, offline: parsed.offline });
     case 'history': {
       const refused = noExtra('Usage: bun run melete history [--json]');
       if (refused !== null) return refused;

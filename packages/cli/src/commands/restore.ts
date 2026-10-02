@@ -146,6 +146,7 @@ export async function runRestore(
     previous: null,
     freshHost,
     journalArchive: journal,
+    externalDatabase: config.database.external,
   });
   if (!installation.env)
     steps.unshift(

@@ -3,8 +3,11 @@
  * Docker client about the engine and Compose, measures free space where Docker
  * keeps its images in MB against the contract's floor, the engine's memory,
  * whether the ports the stack publishes are free or already the stack's own,
- * whether each image is present, and whether the registry answers. It changes
- * nothing. The registry is the one network call, and `--offline` skips it.
+ * whether each image is present, and whether the registry answers. With an
+ * external database it asks that server, from the stack's own Postgres client
+ * image, for its version and whether the connection is encrypted. It changes
+ * nothing. The registry and the external database are its network calls, and
+ * `--offline` skips both.
  *
  * The test suite's own prerequisites stay in `bun run doctor`.
  */
@@ -19,6 +22,7 @@ import {
 } from '../../../../apps/melete/src/runtime/docker-host.ts';
 import { freeSpace } from '../../../../deploy/scripts/status.ts';
 import type { Context, PortProbe } from '../context.ts';
+import { databaseShell } from '../database.ts';
 import { composeCommand, type DeployConfig } from '../deploy-config.ts';
 import { type Installation, publishedPorts, readInstallation } from '../installation.ts';
 import { EXIT, type ExitCode, type Result, renderReport, report } from '../schema.ts';
@@ -70,7 +74,79 @@ export type DoctorFacts = {
   images: { name: string; present: boolean }[] | null;
   /** null when not asked: no registry, or --offline. */
   registry: { url: string; answered: boolean; detail: string } | null;
+  /** The external database's answer; null when not asked: the bundled database, no deploy/.env, or --offline. */
+  database: DatabaseFact | null;
 };
+
+export type DatabaseFact =
+  | { answered: true; versionNum: number | null; encrypted: boolean | null }
+  | { answered: false; detail: string };
+
+/** Postgres 17 is the bundled server's version, and the dump client's. */
+export const MIN_DATABASE_VERSION = 170_000;
+const NEXT_DATABASE_VERSION = 180_000;
+
+/** The server's answer to `show server_version_num` and pg_stat_ssl's `ssl`, one per line. */
+export function parseDatabaseAnswer(stdout: string): DatabaseFact {
+  const [version, ssl] = stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return {
+    answered: true,
+    versionNum: version && /^\d+$/.test(version) ? Number(version) : null,
+    encrypted: ssl === 't' ? true : ssl === 'f' ? false : null,
+  };
+}
+
+export function judgeDatabase(fact: DatabaseFact): Result[] {
+  if (!fact.answered)
+    return [
+      {
+        id: 'database.reachable',
+        level: 'fail',
+        detail: `The database at DATABASE_URL did not answer: ${fact.detail}`,
+        fix: 'Check the address, that this machine is allowed through the provider firewall, and the password, then set it with bun run melete set --from-env DATABASE_URL.',
+      },
+    ];
+  const results: Result[] = [
+    { id: 'database.reachable', level: 'ok', detail: 'The database at DATABASE_URL answers.' },
+  ];
+  const { versionNum } = fact;
+  const shown =
+    versionNum === null ? 'unknown' : `${Math.floor(versionNum / 10_000)}.${versionNum % 10_000}`;
+  results.push(
+    versionNum === null || versionNum < MIN_DATABASE_VERSION
+      ? {
+          id: 'database.version',
+          level: 'fail',
+          detail: `The server is Postgres ${shown}; Melete needs 17 or newer.`,
+          fix: 'Upgrade the server, or create the database on a Postgres 17 server.',
+        }
+      : versionNum >= NEXT_DATABASE_VERSION
+        ? {
+            id: 'database.version',
+            level: 'warn',
+            detail: `The server is Postgres ${shown}; backups use the stack's Postgres 17 client, and pg_dump 17 refuses a newer server.`,
+            fix: "Back up with the provider's own snapshots, or keep the server on 17.",
+          }
+        : { id: 'database.version', level: 'ok', detail: `The server is Postgres ${shown}.` },
+  );
+  results.push(
+    fact.encrypted === true
+      ? { id: 'database.tls', level: 'ok', detail: 'The connection is encrypted.' }
+      : {
+          id: 'database.tls',
+          level: 'fail',
+          detail:
+            fact.encrypted === false
+              ? 'The server accepted the connection unencrypted.'
+              : 'Whether the connection is encrypted could not be read.',
+          fix: 'End DATABASE_URL with ?sslmode=require, and turn on TLS at the provider.',
+        },
+  );
+  return results;
+}
 
 export function judgeDoctor(facts: DoctorFacts): Result[] {
   const results: Result[] = [facts.contract];
@@ -162,6 +238,8 @@ export function judgeDoctor(facts: DoctorFacts): Result[] {
           },
     );
   }
+
+  if (facts.database !== null) results.push(...judgeDatabase(facts.database));
 
   if (facts.registry !== null)
     results.push(
@@ -262,6 +340,7 @@ export async function gatherDoctor(
     ports: null,
     images: null,
     registry: null,
+    database: null,
   };
   if (docker.length > 0) return facts;
 
@@ -296,6 +375,33 @@ export async function gatherDoctor(
     }
   }
   facts.freeBytes = freeSpace(run, facts.images);
+
+  // The client runs from the stack's own image, never pulled here: doctor changes nothing.
+  if (!offline && config.database.external && installation.env !== null) {
+    const client = facts.images?.find((image) => image.name.startsWith('postgres:'));
+    if (client?.present) {
+      const answer = run(
+        databaseShell(
+          compose,
+          config,
+          (db) =>
+            `exec psql ${db} -At -c "show server_version_num" -c "select ssl from pg_stat_ssl where pid = pg_backend_pid()"`,
+        ),
+        90_000,
+      );
+      facts.database =
+        answer.code === 0
+          ? parseDatabaseAnswer(answer.stdout)
+          : {
+              answered: false,
+              detail: answer.stderr.trim().split('\n').at(-1)?.trim() || `exit ${answer.code}`,
+            };
+    } else
+      facts.database = {
+        answered: false,
+        detail: `the client image ${client?.name ?? 'postgres:17-alpine'} is not on this engine yet; bun run melete deploy or docker compose pull brings it`,
+      };
+  }
 
   if (!offline && config.images.registry !== null) {
     const url = registryUrl(config.images.registry);

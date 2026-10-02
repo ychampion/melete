@@ -5,6 +5,7 @@
  * same facts always give the same plan, so the tests drive every refusal
  * without Docker.
  */
+import { DATABASE_CLIENT } from './database.ts';
 import type { DeployConfig } from './deploy-config.ts';
 import { downloadBytes, type LocalImage, type RemoteImage, sameContent } from './images.ts';
 import type { Result } from './schema.ts';
@@ -372,6 +373,8 @@ export type RestoreContext = {
   freshHost: boolean;
   /** The newest restriction journal archive, for a fresh host. */
   journalArchive: string | null;
+  /** The database is DATABASE_URL's server rather than the bundled postgres volume. */
+  externalDatabase?: boolean;
 };
 
 /**
@@ -397,11 +400,21 @@ export function restoreSteps(context: RestoreContext): string[] {
         ]
       : []),
     `${compose} down`,
-    `# Replace only the database volume. Keep ${context.project}_restrictions and every other volume:`,
-    '# the newer journal is replayed at startup, so nothing forgotten since the backup comes back.',
-    `docker volume rm ${context.project}_pgdata`,
-    `${compose} up -d --no-build --wait postgres`,
-    `${compose} exec -T postgres sh -c 'exec pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges --exit-on-error' < ${quote(dump)}`,
+    ...(context.externalDatabase
+      ? [
+          '# The database is the server DATABASE_URL names. Restore into a new, empty database there',
+          "# (create it at the provider, or use the provider's restore to a time before the backup),",
+          '# point DATABASE_URL at it with bun run melete set --from-env DATABASE_URL, then load the dump.',
+          '# Keep the restriction journal volume: the newer journal is replayed at startup.',
+          `${compose} run --rm --no-deps -T ${DATABASE_CLIENT} sh -c 'exec pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error' < ${quote(dump)}`,
+        ]
+      : [
+          `# Replace only the database volume. Keep ${context.project}_restrictions and every other volume:`,
+          '# the newer journal is replayed at startup, so nothing forgotten since the backup comes back.',
+          `docker volume rm ${context.project}_pgdata`,
+          `${compose} up -d --no-build --wait postgres`,
+          `${compose} exec -T postgres sh -c 'exec pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges --exit-on-error' < ${quote(dump)}`,
+        ]),
     ...(context.freshHost && context.journalArchive
       ? [
           '# A new machine has no journal yet: put back the newest one before the service starts.',

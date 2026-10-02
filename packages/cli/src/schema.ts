@@ -21,7 +21,16 @@ export const resultSchema = z.object({
 export type Result = z.infer<typeof resultSchema>;
 
 export const reportSchema = z.object({
-  command: z.enum(['check', 'doctor', 'status', 'deploy', 'rollback', 'backup', 'restore']),
+  command: z.enum([
+    'check',
+    'doctor',
+    'status',
+    'deploy',
+    'rollback',
+    'backup',
+    'restore',
+    'remote',
+  ]),
   /** No result failed. */
   ok: z.boolean(),
   results: z.array(resultSchema),

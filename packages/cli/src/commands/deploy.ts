@@ -27,7 +27,6 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parse } from 'yaml';
 import { withSetting } from '../../../../deploy/scripts/set-env.ts';
 import {
   type Check,
@@ -43,6 +42,7 @@ import {
   replaceFile,
 } from '../../../../deploy/scripts/tailscale-origin.ts';
 import type { Context } from '../context.ts';
+import { psqlLine } from '../database.ts';
 import { composeCommand, composeFiles, DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
 import { appendHistory, type HistoryEntry, readHistory } from '../history.ts';
 import {
@@ -54,9 +54,9 @@ import {
   repositoryOf,
 } from '../images.ts';
 import {
-  type ComposeDocument,
   envImageTag,
   type Installation,
+  parseCompose,
   readInstallation,
   shellOverrideMessage,
   shellOverrides,
@@ -77,7 +77,7 @@ import { EXIT, type ExitCode, type Result, report } from '../schema.ts';
 import { BackupRefusal, expandHome, parseSshTarget, takeBackup } from './backup.ts';
 import { judgeCheck } from './check.ts';
 import { contractAfter } from './set.ts';
-import { diskFloors, statusComposeArgs } from './status.ts';
+import { diskFloors, statusComposeArgs, statusServices } from './status.ts';
 
 const MB = 1024 ** 2;
 const JOURNAL = 'apps/melete/drizzle/meta/_journal.json';
@@ -182,16 +182,18 @@ export const journalCount = (context: Context, revision: string | null): number 
   journalWhens(context, revision)?.length ?? null;
 
 /** The migrations the database has recorded, by journal time; null when it did not answer. */
-export function recordedMigrations(context: Context, compose: readonly string[]): number[] | null {
-  const output = context.run([
-    ...compose,
-    'exec',
-    '-T',
-    'postgres',
-    'sh',
-    '-c',
-    'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "select created_at from drizzle.__drizzle_migrations order by created_at"',
-  ]);
+export function recordedMigrations(
+  context: Context,
+  compose: readonly string[],
+  config: DeployConfig,
+): number[] | null {
+  const output = context.run(
+    psqlLine(
+      compose,
+      config,
+      'select created_at from drizzle.__drizzle_migrations order by created_at',
+    ),
+  );
   if (output.code !== 0) return null;
   const lines = output.stdout
     .split('\n')
@@ -200,16 +202,14 @@ export function recordedMigrations(context: Context, compose: readonly string[])
   return lines.every((line) => /^\d+$/.test(line)) ? lines.map(Number) : null;
 }
 
-export function databaseBytes(context: Context, compose: readonly string[]): number | null {
-  const output = context.run([
-    ...compose,
-    'exec',
-    '-T',
-    'postgres',
-    'sh',
-    '-c',
-    'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "select pg_database_size(current_database())"',
-  ]);
+export function databaseBytes(
+  context: Context,
+  compose: readonly string[],
+  config: DeployConfig,
+): number | null {
+  const output = context.run(
+    psqlLine(compose, config, 'select pg_database_size(current_database())'),
+  );
   const text = output.stdout.trim();
   return output.code === 0 && /^\d+$/.test(text) ? Number(text) : null;
 }
@@ -224,7 +224,7 @@ export function targetImages(
   const values = { ...env, MELETE_IMAGE_TAG: tag };
   const services = new Map<string, { image?: string; profiles?: string[]; build?: unknown }>();
   for (const text of texts) {
-    const document = interpolateDocument(parse(text) as ComposeDocument, values);
+    const document = interpolateDocument(parseCompose(text), values);
     for (const [name, definition] of Object.entries(document.services ?? {}))
       services.set(name, { ...services.get(name), ...(definition as object) });
   }
@@ -390,12 +390,12 @@ export function gatherDeploy(
       knownLayers,
       freeBytes,
       migrations: {
-        recorded: recordedMigrations(context, compose),
+        recorded: recordedMigrations(context, compose, config),
         current: journalWhens(context, head),
         target: revision !== null && revisionAvailable ? journalWhens(context, revision) : null,
         ...(options.accepted ? { accepted: options.accepted } : {}),
       },
-      databaseBytes: databaseBytes(context, compose),
+      databaseBytes: databaseBytes(context, compose, config),
       backup,
     },
     compose,
@@ -448,6 +448,7 @@ export const realStatus = async (context: Context, installation: Installation) =
       },
     ),
     diskFloors(installation.config),
+    statusServices(installation.config),
   );
 
 const DEFAULT_DEPENDENCIES: DeployDependencies = { file: fileReplacer, status: realStatus };
@@ -865,7 +866,7 @@ export async function runDeploy(
         detail,
         fix: `See ${compose.join(' ')} logs --tail=100. To go back: bun run melete rollback${pending > 0 ? ` (it prints the database restore, from ${backupLocation ?? 'your backup'}, because migrations may have run)` : ''}.`,
       });
-      const now = recordedMigrations(context, compose);
+      const now = recordedMigrations(context, compose, installation.config);
       const before = facts.migrations.recorded;
       appendHistory(
         context.deployDir,
@@ -940,7 +941,7 @@ export async function runDeploy(
       let missing: number[] = expected;
       for (let poll = 0; poll < HEALTH_POLLS; poll += 1) {
         if (poll > 0) await context.sleep(POLL_MS);
-        const recorded = new Set(recordedMigrations(context, compose) ?? []);
+        const recorded = new Set(recordedMigrations(context, compose, installation.config) ?? []);
         missing = expected.filter((when) => !recorded.has(when));
         if (missing.length === 0) break;
       }

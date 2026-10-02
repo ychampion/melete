@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Context, Endpoint, Source } from '../context.ts';
+import { clientCommand, databaseShell, psqlLine } from '../database.ts';
 import { composeCommand, DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
 import { lastSwitched, readHistory } from '../history.ts';
 import { readInstallation, shellOverrideMessage, shellOverrides } from '../installation.ts';
@@ -96,15 +97,6 @@ const sshCommand = (target: SshTarget, script: string) => [
   script,
 ];
 
-const psql = (sql: string) => [
-  'exec',
-  '-T',
-  'postgres',
-  'sh',
-  '-c',
-  `exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "${sql}"`,
-];
-
 /** The services that write to the database or the volumes. */
 export const writersOf = (config: DeployConfig) => [
   'melete',
@@ -137,12 +129,13 @@ export type Estimate = {
 export function measureBackup(
   context: Context,
   compose: readonly string[],
+  config: DeployConfig,
   withVolumes: boolean,
 ): Estimate {
   const run = context.run;
   return {
     databaseBytes: number(
-      run([...compose, ...psql('select pg_database_size(current_database())')]),
+      run(psqlLine(compose, config, 'select pg_database_size(current_database())')),
     ),
     journalBytes: duBytes(
       run([...compose, 'exec', '-T', 'melete', 'du', '-sk', '/data/restrictions']),
@@ -249,19 +242,9 @@ export async function takeBackup(
     (await part(
       'backup.database',
       'database.dump',
-      {
-        command: [
-          ...compose,
-          'exec',
-          '-T',
-          'postgres',
-          'sh',
-          '-c',
-          'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom',
-        ],
-      },
+      { command: databaseShell(compose, config, (db) => `exec pg_dump ${db} --format=custom`) },
       // Read back as it is written: a dump pg_restore cannot list is no backup.
-      [{ command: [...compose, 'exec', '-T', 'postgres', 'pg_restore', '--list'] }],
+      [{ command: [...compose, ...clientCommand(config), 'pg_restore', '--list'] }],
     )) &&
     (await part('backup.journal', `restrictions-${name.slice('melete-'.length)}.tar`, {
       command: [...compose, 'cp', 'melete:/data/restrictions', '-'],
@@ -382,7 +365,7 @@ export async function runBackup(
   };
 
   if (options.estimate) {
-    const estimate = measureBackup(context, compose, options.withVolumes);
+    const estimate = measureBackup(context, compose, config, options.withVolumes);
     const free = destinationFree(context, destination);
     const results: Result[] = [];
     const size = (bytes: number) => `${Math.ceil(bytes / MB)} MB`;
@@ -391,7 +374,9 @@ export async function runBackup(
         ? {
             id: 'backup.database_mb',
             level: 'fail',
-            detail: 'The database did not answer; is postgres running?',
+            detail: config.database.external
+              ? 'The database did not answer; run bun run melete doctor to see why.'
+              : 'The database did not answer; is postgres running?',
           }
         : {
             id: 'backup.database_mb',

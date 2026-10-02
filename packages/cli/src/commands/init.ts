@@ -18,12 +18,14 @@ import { basename, join } from 'node:path';
 import { parseEnvFile } from '../../../../deploy/scripts/provider-settings.ts';
 import type { Context, Run } from '../context.ts';
 import {
+  BLOBS_S3_FILE,
   channelOf,
   createDeployConfig,
   DEFAULT_REGISTRY,
   DEPLOY_FILE,
   type DeployConfig,
   deployConfigSchema,
+  EXTERNAL_DB_FILE,
   OVERLAY_FILES,
   type Overlay,
   renderDeployConfig,
@@ -138,6 +140,12 @@ export function adoptedConfig(
     .filter(([name, file]) => files.has(file) || (name !== 'tailscale-kernel' && names.has(name)))
     .map(([name]) => name);
   const sandbox = names.has('sandbox-image') || env.MELETE_SANDBOX_PROVIDER?.trim() === 'docker';
+  const setting = (name: string) => env[name]?.trim() || undefined;
+  const bucket = setting('MELETE_BLOB_S3_BUCKET');
+  if (files.has(BLOBS_S3_FILE) && !bucket)
+    throw new InitRefusal(
+      `The stack runs with ${BLOBS_S3_FILE}, but deploy/.env names no MELETE_BLOB_S3_BUCKET, so the bucket it uses is not clear. Set it, and run this again.`,
+    );
   return deployConfigSchema.parse({
     contract: 1,
     project,
@@ -145,6 +153,15 @@ export function adoptedConfig(
     profiles: sandbox ? ['sandbox'] : [],
     overlays,
     disk: { min_free_mb: 4096, pull_margin_mb: 512, ...disk },
+    database: { external: files.has(EXTERNAL_DB_FILE) || names.has('database-client') },
+    blobs: files.has(BLOBS_S3_FILE)
+      ? {
+          store: 's3',
+          bucket,
+          endpoint: setting('MELETE_BLOB_S3_ENDPOINT'),
+          region: setting('MELETE_BLOB_S3_REGION'),
+        }
+      : { store: 'local' },
   });
 }
 

@@ -90,7 +90,7 @@ export async function runRollback(
   // Migrations recorded before the run were there while the previous release ran, so it
   // runs beside them again. Everything recorded since, by that run or anything after it,
   // that the previous release lacks, means going back is a restore.
-  const recorded = recordedMigrations(context, compose);
+  const recorded = recordedMigrations(context, compose, installation.config);
   const previousJournal = previous.revision ? journalWhens(context, previous.revision) : null;
   const before = last.migrations.before;
   const delta = migrationDelta({
@@ -116,6 +116,7 @@ export async function runRollback(
       previous: { tag, revision: last.checkout ? last.checkout.from : null },
       freshHost: false,
       journalArchive: null,
+      externalDatabase: installation.config.database.external,
     });
     const reason = !delta.known
       ? `The database's migrations could not be compared with ${tag}'s`

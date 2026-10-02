@@ -36,6 +36,7 @@ const healthy: DoctorFacts = {
     answered: true,
     detail: 'https://ghcr.io/v2/ answers (401).',
   },
+  database: null,
 };
 
 const find = (facts: DoctorFacts, id: string) =>
