@@ -7085,6 +7085,44 @@
         }
       }
     },
+    "/automations/{id}/restart": {
+      "post": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "POST /automations/{id}/restart",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema277"
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema221"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/automations/{id}": {
       "delete": {
         "tags": [

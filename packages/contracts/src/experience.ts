@@ -849,7 +849,7 @@ export const experienceAutomation = z.strictObject({
   title: text,
   schedule: text,
   enabled: z.boolean(),
-  /** Stopped for good: it cannot be resumed, only deleted. */
+  /** Stopped for good: it cannot be resumed, only started again or deleted. */
   ended: z.boolean(),
   /** The thread every run of this routine writes into. */
   conversation_id: id,
@@ -1072,6 +1072,11 @@ export const experienceOperations = {
   /** Stops the schedule; nothing runs until it is resumed. */
   'POST /automations/{id}/pause': { response: automationResponse },
   'POST /automations/{id}/resume': { response: automationResponse },
+  /**
+   * Starts an ended routine again with the same settings. The new routine takes
+   * the ended one's place on the list; one that has not ended is refused.
+   */
+  'POST /automations/{id}/restart': { response: automationResponse },
   /** Stops the routine for good and takes it off the list. */
   'DELETE /automations/{id}': { response: experienceOk },
   'POST /automations/morning-brief': {

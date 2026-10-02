@@ -122,16 +122,19 @@ export function RunRow({ run }: { run: AutomationRun }) {
   );
 }
 
-function RoutineCard({
+export function RoutineCard({
   automation,
   onChange,
   onRemoved,
+  onReplaced,
 }: {
   automation: Automation;
   onChange: (next: Automation) => void;
   onRemoved: (id: string) => void;
+  /** An ended routine was started again; the new one takes its place. */
+  onReplaced: (id: string, next: Automation) => void;
 }) {
-  const [busy, setBusy] = useState<'test' | 'switch' | 'remove' | null>(null);
+  const [busy, setBusy] = useState<'test' | 'switch' | 'restart' | 'remove' | null>(null);
   const [confirming, setConfirming] = useState(false);
   const toggle = () => {
     setBusy('switch');
@@ -143,6 +146,22 @@ function RoutineCard({
         return;
       }
       onChange(r.data.automation);
+    });
+  };
+  const restart = () => {
+    setBusy('restart');
+    void adapter.restartAutomation(automation.id).then((r) => {
+      setBusy(null);
+      if (r.data === null) {
+        toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t start it again' });
+        return;
+      }
+      onReplaced(automation.id, r.data.automation);
+      toast({
+        kind: 'info',
+        title: `${automation.title} is on again`,
+        sub: 'It runs at its next scheduled time.',
+      });
     });
   };
   const remove = () => {
@@ -230,6 +249,18 @@ function RoutineCard({
             Test run
           </Button>
         )}
+        {automation.ended ? (
+          <Button
+            size="sm"
+            variant="outline"
+            icon="refresh"
+            loading={busy === 'restart'}
+            disabled={busy !== null}
+            onClick={restart}
+          >
+            Start again
+          </Button>
+        ) : null}
         {automation.ended ? null : (
           <Button
             size="sm"
@@ -429,6 +460,9 @@ export function AutomationsScreen() {
               automation={automation}
               onChange={update}
               onRemoved={(id) => data.set({ automations: list.filter((a) => a.id !== id) })}
+              onReplaced={(id, next) =>
+                data.set({ automations: list.map((a) => (a.id === id ? next : a)) })
+              }
             />
           ))}
         </div>
