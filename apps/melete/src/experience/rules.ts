@@ -33,8 +33,8 @@ export const RULE_BRANCH_PREFIX = 'refs/heads/melete/';
 /**
  * Whether a standing rule of its kind could ever cover this action. Most kinds
  * are covered whole; a change from the agent's computer only when it is a
- * push that creates or moves `melete/` branches of one repository. A delete,
- * a tag, the default branch or any other branch, and every other change
+ * push that creates or moves `melete/` branches of one repository and carries
+ * no push options. A delete, a tag, the default branch or any other branch, and every other change
  * (a pull request, a merge, an API call) always ask.
  */
 export function ruleCovers(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean {
@@ -47,6 +47,10 @@ export function ruleCovers(action: Pick<Action, 'kind' | 'canonical_payload'>): 
     payload.operation === 'push' &&
     payload.destructive === false &&
     typeof payload.resource === 'string' &&
+    // A push option asks the service to do more than move the branch (open or
+    // merge a change request, skip or vary its checks): such a push asks.
+    Array.isArray(payload.push_options) &&
+    payload.push_options.length === 0 &&
     updates.length > 0 &&
     updates.every((update) => {
       const item = (update ?? {}) as Record<string, unknown>;
