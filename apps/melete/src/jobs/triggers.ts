@@ -612,7 +612,10 @@ export class TriggerService {
         const wait = current ? waitSpec.safeParse(current.wait) : null;
         const needed =
           current?.state === 'running' ||
-          (current?.state === 'waiting_for_event_or_time' &&
+          // A watch revocation disabled can no longer wake anything, so it is
+          // not kept for a wait on it; the revocation answers that wait.
+          (watch.enabled &&
+            current?.state === 'waiting_for_event_or_time' &&
             wait?.success === true &&
             wait.data.kind === 'event' &&
             wait.data.trigger_id === watch.id);

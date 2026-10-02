@@ -174,6 +174,8 @@ export const PROCESS_TOOLS: ToolManifest[] = [
     schema({ process_id: processId }, ['process_id']),
     'write_reversible',
   ),
+  // A read: it waits, or with `later` it records a watch for this job, which is
+  // Melete's own state, idempotent and bounded at a few per job.
   tool(
     'process.wait',
     'Wait up to 100 s in this turn for a background process to exit, print a line matching pattern (RE2) or listen on its port. With later, nothing waits now: this job is woken when it happens; end the turn with job.wait, event_name process:<process_id>.',

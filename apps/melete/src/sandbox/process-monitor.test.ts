@@ -400,6 +400,76 @@ withDb('waking a job from its background process', () => {
     expect(await s.watchesOf(row.id)).toHaveLength(0);
   }, 60_000);
 
+  test('a chatty process does not hold back the line a watch wants, and its last line is found at the end', async () => {
+    const s = await setup();
+    const row = await s.conversation('Watch the logs');
+    const first = await s.claim(row);
+    const id = String(
+      s.detail(
+        await s.run(first.claims, 'process.start', {
+          command: 'serve',
+          notify: { on: 'output', pattern: 'ERROR' },
+        }),
+      ).process_id,
+    );
+    await s.waitOn(first.claims, id);
+    const sandbox = await s.sandboxOf();
+    const filler = `${'INFO '.padEnd(99, 'x')}\n`;
+    // About 200 KiB, then the line: found in the same pass.
+    s.computers.print(sandbox, id, filler.repeat(2000));
+    s.computers.print(sandbox, id, 'ERROR now\n');
+    await s.pass();
+    expect((await s.job(row.id)).state).toBe('queued');
+    const second = await s.claim(row);
+    expect(second.bundle.inputs.trigger_events).toEqual([
+      expect.objectContaining({ payload: expect.objectContaining({ line: 'ERROR now' }) }),
+    ]);
+    await s.waitOn(second.claims, id);
+    // About 2 MiB, the line, then the end, all between two passes.
+    s.computers.print(sandbox, id, filler.repeat(21_000));
+    s.computers.print(sandbox, id, 'ERROR final\n');
+    s.computers.exit(sandbox, id, 1);
+    await s.pass();
+    expect((await s.job(row.id)).state).toBe('queued');
+    const third = await s.claim(row);
+    expect(third.bundle.inputs.trigger_events).toEqual([
+      expect.objectContaining({
+        event_name: 'process.output',
+        payload: expect.objectContaining({ line: 'ERROR final' }),
+      }),
+    ]);
+  }, 120_000);
+
+  test("a finished job's watches go, and its process is no longer asked or delivered to", async () => {
+    const s = await setup();
+    const row = await s.conversation('Start the server');
+    const first = await s.claim(row);
+    const id = String(
+      s.detail(
+        await s.run(first.claims, 'process.start', { command: 'serve', notify: { on: 'output' } }),
+      ).process_id,
+    );
+    await s.sql`update attempt set ended_at = now() where id = ${first.claims.attempt_id}`;
+    await s.sql`update job set state = 'completed' where id = ${row.id}`;
+    const sandbox = await s.sandboxOf();
+    const calls = s.computers.calls.length;
+    for (let index = 0; index < 3; index++) {
+      s.computers.print(sandbox, id, `GET / 200 ${index}\n`);
+      s.later(61);
+      await s.pass();
+    }
+    expect(
+      await s.sql`select seq from event where payload->>'kind' = 'connector_event'
+        and payload->'payload'->>'process_id' = ${id}`,
+    ).toHaveLength(0);
+    expect(await s.watchesOf(row.id)).toHaveLength(0);
+    expect(s.computers.calls.slice(calls)).toEqual([]);
+    // Watches are found by the process they follow, through their own index.
+    expect(
+      await s.sql`select indexname from pg_indexes where indexname = 'trigger_process_watch_idx'`,
+    ).toHaveLength(1);
+  }, 60_000);
+
   test('a listening port is reported once', async () => {
     const s = await setup();
     const row = await s.conversation('Start the dev server');
