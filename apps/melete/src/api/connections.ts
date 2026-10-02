@@ -67,6 +67,7 @@ import { connection, owner, secret, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
+import { signInStore } from '../ops/signin-store.ts';
 import { ownedSpace, spaceAuthority } from '../principals/authority.ts';
 import {
   checkSandboxConfiguration,
@@ -588,7 +589,10 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
 
   // Signing in to a remote MCP server. The sign-in earns the credential that
   // would otherwise be pasted, and ends on the same installation path.
+  // A sign-in may come back to any instance, so they wait in Postgres.
+  const pendingSignIns = signInStore(deps.sql, factory.options.masterKey);
   const signIns = new McpSignIns({
+    store: pendingSignIns,
     publicUrl: deps.env.MELETE_PUBLIC_URL,
     clientMetadata: deps.env.MELETE_OAUTH_CLIENT_METADATA,
     authorize: async (actor, requested) => {
@@ -696,8 +700,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     }
   });
 
-  app.get('/mcp-sign-ins/:id', (c) => {
-    const status = signIns.status(c.get('owner').id, c.req.param('id'));
+  app.get('/mcp-sign-ins/:id', async (c) => {
+    const status = await signIns.status(c.get('owner').id, c.req.param('id'));
     if (!status) throw new ServiceError('not_found', 'No sign-in by that id.', 404);
     return c.json(mcpSignInStatus.parse(status));
   });
@@ -832,6 +836,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     const title = ACCOUNT_TITLES[name];
     const provider = accountProviders[name];
     const signIns = new AccountSignIns<ConnectionResponse>(name, {
+      store: pendingSignIns,
       publicUrl: deps.env.MELETE_PUBLIC_URL,
       ...(provider ? { provider } : {}),
       authorize: async (actor, requested) => {
@@ -890,8 +895,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       }
     });
 
-    app.get(`/${name}-sign-ins/:id`, (c) => {
-      const status = signIns.status(c.get('owner').id, c.req.param('id'));
+    app.get(`/${name}-sign-ins/:id`, async (c) => {
+      const status = await signIns.status(c.get('owner').id, c.req.param('id'));
       if (!status) throw new ServiceError('not_found', 'No sign-in by that id.', 404);
       return c.json(accountSignInStatus.parse(status));
     });

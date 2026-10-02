@@ -123,7 +123,7 @@ describe('signing in with Google', () => {
       'calendar.delete',
     ]);
     expect(grant?.credential.refresh_token).toBeDefined();
-    expect(service.status('prn_owner', started.sign_in_id)).toEqual({
+    expect(await service.status('prn_owner', started.sign_in_id)).toEqual({
       state: 'connected',
       connection_ids: ['conn_mail', 'conn_calendar'],
     });

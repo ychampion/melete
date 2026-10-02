@@ -115,6 +115,7 @@ import { configuredMemoryGateway } from './memory/gateway.ts';
 import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { startServiceMemory } from './memory/start.ts';
+import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
 import {
   refusedForRemoval,
   requestPrincipal,
@@ -161,6 +162,8 @@ export type AppDeps = {
   env: Env;
   db: Database | null;
   loginThrottle?: LoginThrottle;
+  /** Where request limits are counted. Left out, in Postgres when `sql` is given. */
+  limits?: LimitStore;
   jobs?: JobService;
   triggers?: TriggerService;
   approvals?: ApprovalService;
@@ -241,7 +244,9 @@ export function createApp(deps: AppDeps) {
   // Mounted before the routes it follows, so it runs once they have answered;
   // see mountDefaultConnections.
   if (connections) mountDefaultConnections(app, connections);
-  mountAuth(app, deps);
+  // Limits every instance on the database shares; one instance alone counts the same.
+  const limits = deps.limits ?? (deps.sql ? new PostgresLimitStore(deps.sql) : undefined);
+  mountAuth(app, { ...deps, limits });
   // The authenticated session names the space and the principal; a request header never does.
   const personalSpace: SpaceResolver =
     deps.resolveSpace ??
@@ -270,6 +275,7 @@ export function createApp(deps: AppDeps) {
         policy: deps.policy ?? (deps.jobs ? new PolicyService(deps.jobs) : undefined),
         ...(deps.jobs ? { jobs: deps.jobs } : {}),
       }),
+      limits,
     );
   const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
   // One reader of the model connected in the app, for its routes and the companies scan.
@@ -373,6 +379,7 @@ export function createApp(deps: AppDeps) {
       env: deps.env,
       broker: deps.broker,
       registry: deps.registry,
+      limits,
     });
   if (deps.db) mountFeedback(app, { db: deps.db, version: VERSION, limiter: deps.feedbackLimiter });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
