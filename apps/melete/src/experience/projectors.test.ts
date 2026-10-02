@@ -587,6 +587,12 @@ test('a permission to publish an app names it, its size, who can open it and the
         'deals: data/deals.json from this conversation, newest version each time. Viewers see each new version automatically.',
     },
   ]);
+  // Code that opens WebRTC connections is a warning on the card, never a refusal.
+  expect(ask({ opens_connections: ['call.js'] }).preview?.facts.at(-1)).toEqual({
+    label: 'Warning',
+    value:
+      'Its code can open direct connections to other servers (WebRTC, in call.js), which can send what the app shows, or what a viewer types into it, anywhere. Publish it only if you trust that code with that data.',
+  });
   // A new version names the app it replaces as it is called now, whatever name
   // the request gives, and a new name is a fact of its own on the card.
   const again = ask({

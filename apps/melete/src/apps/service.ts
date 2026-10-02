@@ -450,6 +450,27 @@ export async function deleteApp(sql: Sql, appId: string): Promise<boolean> {
   });
 }
 
+/**
+ * The bundle's script and page files that use WebRTC or the camera and
+ * microphone, by the names those use. A sandboxed page can still open WebRTC
+ * connections to a server of its choosing, which no header in today's
+ * browsers stops, so the person is told before publishing. This reads names,
+ * not behaviour: code that hides them is not found, and the warning is
+ * advice, never a guarantee.
+ */
+const WEBRTC = /RTCPeerConnection|RTCDataChannel|getUserMedia/;
+const SCRIPT_OR_PAGE = /\.(?:js|mjs|html?)$/i;
+const MAX_NAMED = 10;
+
+export function webrtcUse(files: readonly BundleFile[]): string[] {
+  const decoder = new TextDecoder('utf-8', { fatal: false });
+  return files
+    .filter((file) => SCRIPT_OR_PAGE.test(file.path) && WEBRTC.test(decoder.decode(file.bytes)))
+    .map((file) => file.path)
+    .sort()
+    .slice(0, MAX_NAMED);
+}
+
 /** Every blob a manifest names. */
 export function manifestKeys(manifest: AppManifest): BlobKey[] {
   return [...new Set(Object.values(manifest.files).map((file) => blobKey(file.sha256)))];

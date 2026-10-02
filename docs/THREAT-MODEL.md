@@ -461,10 +461,15 @@ page opened on its own could move itself to another site and take what it
 holds with it.
 
 The page holds no credential. The token in its path names one person, one app,
-one version and the app's grant generation, lasts 15 minutes, and is signed
-with a key derived from the master key. Every file request checks all of them
-again: any change to who may open the app, or to the version it shows, ends
-every open view on its next request. The web server forwards these requests
+one version, the app's grant generation and the browser session it was opened
+from. It lasts at most twelve hours and is signed with a key derived from the
+master key; without a master key the key lasts as long as the process, so
+installations with more than one service instance need one. Every file
+request checks all of them again: any change to who may open the app, to the
+version it shows, or signing out ends the view on its next file request. A
+page already loaded keeps showing what it has until the Apps screen next
+checks, within a minute. The token names the person by their account id,
+which the app can read in its own address. The web server forwards these requests
 without the session cookie, and the app's own requests arrive marked
 cross-site, so no cookie travels with them anyway. Bytes are read whole and
 checked against the manifest's hash before they are sent.
@@ -477,9 +482,14 @@ confirms it. The page answers only its own frame's window.
 Melete's own pages send `frame-ancestors 'self'` and `X-Frame-Options:
 SAMEORIGIN`, so another site cannot frame them.
 
-Two channels stay outside what a page's policy controls: WebRTC connections,
-and lookups of names the page mentions. Neither carries the viewer's session,
-and an app sees only data its approval listed.
+**WebRTC is open.** Browsers let any page, sandboxed or not, open WebRTC
+connections, and no header in today's browsers stops them: an app can reach a
+STUN or TURN server it names, and send what it shows, or what a viewer types
+into it, to that server. Names the page looks up can carry data the same way.
+Neither carries the viewer's session. The question to publish warns when the
+app's code uses WebRTC by name (`RTCPeerConnection`, `RTCDataChannel`,
+`getUserMedia`); code that hides those names is not found. Apps are for code
+the person trusts with the data it shows.
 
 ## Credentials, host and storage
 

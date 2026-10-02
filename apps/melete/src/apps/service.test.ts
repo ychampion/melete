@@ -3,7 +3,14 @@ import { mkdir, mkdtemp, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { APP_LIMITS } from '@melete/contracts';
-import { BundleRefused, manifestFor, manifestHash, readBundle, versionIdFor } from './service.ts';
+import {
+  BundleRefused,
+  manifestFor,
+  manifestHash,
+  readBundle,
+  versionIdFor,
+  webrtcUse,
+} from './service.ts';
 
 const JOB = 'job_BUNDLE';
 
@@ -121,5 +128,24 @@ describe('a version', () => {
     ).not.toBe(hash);
     expect(versionIdFor('app_A', hash)).toBe(versionIdFor('app_A', hash));
     expect(versionIdFor('app_A', hash)).not.toBe(versionIdFor('app_B', hash));
+  });
+});
+
+describe('a bundle that uses WebRTC', () => {
+  test('is named by the script and page files that use it, and nothing else', async () => {
+    const root = await workspace({
+      'index.html':
+        '<!doctype html><script>navigator.mediaDevices.getUserMedia({audio:true})</script>',
+      'call.js': 'const pc = new webkitRTCPeerConnection({iceServers:[]});',
+      'channel.mjs':
+        'export const open = (pc) => pc.createDataChannel("x") instanceof RTCDataChannel;',
+      'notes.txt': 'RTCPeerConnection is mentioned here, in a file that never runs',
+      'plain.js': 'document.title = "deals";',
+    });
+    expect(webrtcUse(await readBundle(root, JOB, 'app'))).toEqual([
+      'call.js',
+      'channel.mjs',
+      'index.html',
+    ]);
   });
 });

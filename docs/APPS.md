@@ -53,8 +53,9 @@ The person who published an app manages it while they belong to the space it was
 from. The owner of that space manages it too. Either of them can make other people managers.
 
 - Managers see every version and what changed between them, and the list of who can open the app.
-- Managers can change who can open the app. People removed from the list lose the app straight
-  away. Who manages it is changed only by its publisher or the space's owner.
+- Managers can change who can open the app. People removed from the list lose the app on its
+  next file request, and its open page closes within a minute. Who manages it is changed only
+  by its publisher or the space's owner.
 - A new version that sets who can open the app changes the viewers and keeps the managers.
 - The publisher or the space's owner can delete an app. Its files are kept for a grace period while
   nothing else uses them, and then removed.
@@ -73,16 +74,33 @@ open it.
 ### How an app is kept apart
 
 An app runs in a frame with a separate, opaque origin. It cannot read Melete's
-cookies, storage or API, and it cannot fetch anything, load from other sites,
-open windows or move the page it is shown in. It loads only its own files.
+cookies, storage or API. Its scripts, styles, images and fonts load only from
+its own files; its requests, forms, popups and frames to other sites are
+blocked, and it cannot move the page it is shown in, or its own frame, to
+another site.
+
+**An app's code can still send data elsewhere over WebRTC.** Browsers today
+let any page, sandboxed or not, open WebRTC connections to a server it names,
+and no header stops them. A hostile app can use that to send what it shows, or
+what a viewer types into it, to another server. Publish only apps whose code
+you trust with the data they show. When the code uses WebRTC by name, the
+question to publish says so; code that hides it is not found.
 
 - Its files are served with `Content-Security-Policy: sandbox allow-scripts
   allow-forms allow-downloads` and a policy that allows only its own files. A
   response without that policy is never served.
-- Each view lasts 15 minutes and is renewed while the app is open. Changing
-  who can open the app, or which version it shows, ends every open view at
-  once, and the person removed loses it straight away.
+- A view belongs to the browser session that opened it. It ends when that
+  session signs out, after twelve hours at most, and whenever who can open the
+  app, or the version it shows, changes. Each of these is checked on every file
+  the app loads.
+- The Apps screen checks the view every minute, and whenever the app asks
+  Melete for something that fails. A person removed from an app loses it on its
+  next file request, and the open page closes within a minute. What that page
+  already loaded stays on their screen until then.
 - A file opened on its own, outside Melete's frame, is refused.
+- Apps open over https, or on this computer through `localhost`. Over plain
+  http to another address, browsers do not say how a file is being loaded, so
+  every app file is refused.
 
 ### What an app can ask Melete for
 

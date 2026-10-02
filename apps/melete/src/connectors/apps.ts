@@ -42,6 +42,7 @@ import {
   readBundle,
   setCurrentVersion,
   versionIdFor,
+  webrtcUse,
 } from '../apps/service.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
@@ -188,6 +189,12 @@ export const appsManifest: ConnectorManifest = {
             type: 'array',
             maxItems: APP_LIMITS.max_data_bindings,
             items: { type: 'string', maxLength: 2000 },
+          },
+          /** Files whose code opens direct connections (WebRTC); see webrtcUse. */
+          opens_connections: {
+            type: 'array',
+            maxItems: 10,
+            items: { type: 'string', maxLength: 512 },
           },
         },
       },
@@ -490,11 +497,14 @@ export function createAppsConnector(options: AppsOptions): Connector {
       // Read and checked before the person is asked: a bundle that breaks a
       // rule is refused here, and nothing about it is stored.
       const { files, manifest, hash } = await bundle(ctx, bound);
+      const connecting = webrtcUse(files);
       return {
         ...bound,
         manifest_hash: hash,
         file_count: files.length,
         total_bytes: Object.values(manifest.files).reduce((sum, file) => sum + file.size, 0),
+        // Shown on the card as a warning; it never refuses the bundle.
+        ...(connecting.length ? { opens_connections: connecting } : {}),
       };
     },
     async validateBinding(action, ctx, tx) {
