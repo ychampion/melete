@@ -3,7 +3,7 @@ import type { JsonObject } from '@melete/contracts';
 import { egressPayload } from '../broker/egress-admission.ts';
 import { githubAdapter } from '../egress/adapters/github.ts';
 import type { InterceptedRequest } from '../egress/adapters/types.ts';
-import { ruleCovers } from './rules.ts';
+import { ruleCovers, ruleView } from './rules.ts';
 
 const ZERO = '0'.repeat(40);
 const A = 'ef5e63cd808eddbe9fad81f85b15341188093b1b';
@@ -30,6 +30,30 @@ function push(updates: Array<[string, string, string]>): JsonObject {
 }
 const covered = (payload: JsonObject, kind = 'egress.github_write') =>
   ruleCovers({ kind, canonical_payload: payload });
+
+describe('what a push rule says it allows', () => {
+  test('the rule says its pushes run the repository workflows with its secrets, and what to protect', () => {
+    const view = ruleView({
+      id: 'rule_1',
+      tool_kind: 'egress.github_write',
+      connection_id: 'conn_01J00000000000000000000000',
+      recipient_class: 'alice/site',
+      job_id: null,
+      count_cap: 5,
+      expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+      reconsent_after_days: 7,
+      used: 0,
+      created_at: new Date().toISOString(),
+    });
+    expect(view.kind).toBe('push_branch');
+    expect(view.text).toStartWith('Pushes to melete/ branches in alice/site, up to 5 times');
+    expect(view.text).toContain(
+      "runs the repository's workflows on the pushed code, with the repository's secrets",
+    );
+    expect(view.text).toContain('can change the default branch unless it is protected');
+    expect(view.text).toContain('without the Workflows permission');
+  });
+});
 
 describe('which pushes a standing rule may cover', () => {
   test('creating or moving melete branches is covered', () => {

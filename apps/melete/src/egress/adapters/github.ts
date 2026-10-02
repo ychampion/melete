@@ -185,6 +185,9 @@ function classifyPush(request: InterceptedRequest, repository: string): Classifi
 
 function classifyLfsBatch(request: InterceptedRequest, repository: string): Classification {
   const batch = jsonObject(request.body);
+  // A key given twice could be read either way by another parser: it asks.
+  const named = request.body.toString('utf8').match(/"operation"\s*:/g)?.length ?? 0;
+  if (named !== 1) return generic(request, repository);
   if (batch?.operation === 'download') return { kind: 'read' };
   const objects = Array.isArray(batch?.objects) ? batch.objects : null;
   if (batch?.operation !== 'upload' || !objects) return generic(request, repository);
@@ -658,17 +661,23 @@ function rejected(write: ClassifiedWrite, upstream: UpstreamResponse): string | 
         .join(', ')}`;
     return null;
   }
-  if (write.operation === 'graphql') {
-    const answer = jsonObject(upstream.body);
-    const errors = Array.isArray(answer?.errors) ? answer.errors : [];
-    const data = answer?.data as Record<string, unknown> | null | undefined;
-    const landed = data && Object.values(data).some((value) => value !== null);
-    if (errors.length && !landed) {
-      const first = (errors[0] ?? {}) as Record<string, unknown>;
-      return `GitHub refused this change: ${str(first.message, 300) ?? 'it answered with an error'}`;
-    }
-  }
   return null;
+}
+
+/**
+ * A GraphQL answer with errors and no data: GraphQL nulls a mutation's field
+ * when anything under it fails, which can be after the change itself was
+ * made, so it cannot say whether the change took effect.
+ */
+function uncertain(write: ClassifiedWrite, upstream: UpstreamResponse): string | null {
+  if (write.operation !== 'graphql' || upstream.status >= 400) return null;
+  const answer = jsonObject(upstream.body);
+  const errors = Array.isArray(answer?.errors) ? answer.errors : [];
+  const data = answer?.data as Record<string, unknown> | null | undefined;
+  const landed = data && Object.values(data).some((value) => value !== null);
+  if (!errors.length || landed) return null;
+  const first = (errors[0] ?? {}) as Record<string, unknown>;
+  return `GitHub answered with an error (${str(first.message, 300) ?? 'no message'}), and the change may still have taken effect. Check before asking for it again.`;
 }
 
 function heldAnswer(
@@ -746,6 +755,7 @@ export const githubAdapter: CredentialAdapter<GithubAdapterConfig> = {
   ],
   receipt,
   rejected,
+  uncertain,
   heldAnswer,
 };
 

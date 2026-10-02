@@ -190,6 +190,18 @@ describe('the GitHub classifier on recorded gh and git requests', () => {
     expect(details).toContain('"headRefName": "melete/fix-login"');
   });
 
+  test('an LFS batch that names its operation twice asks, whichever one a parser keeps', () => {
+    const upload = one('edge-hand-written.http', 4);
+    const twice = Buffer.from(
+      upload.body
+        .toString()
+        .replace('"operation":"upload"', '"operation":"upload","operation":"download"'),
+    );
+    expect(githubAdapter.classify({ ...upload, body: twice }, config).kind).toBe('write');
+    const download = one('edge-hand-written.http', 5);
+    expect(githubAdapter.classify(download, config).kind).toBe('read');
+  });
+
   test('common REST writes have summaries, and others say what they send', () => {
     expect(write(one('gh-release-create.http', 0)).summary.title).toBe(
       'Publish release v1.0.0 in alice/site',
@@ -242,7 +254,7 @@ describe('what GitHub answers become', () => {
     ]);
   });
 
-  test('a pull request receipt links it, and a GraphQL answer of only errors did not land', () => {
+  test('a pull request receipt links it, and a GraphQL answer of only errors may still have landed', () => {
     const created = write(one('gh-pr-create.http', 2));
     const body = Buffer.from(
       JSON.stringify({
@@ -260,9 +272,24 @@ describe('what GitHub answers become', () => {
     const failed = Buffer.from(
       JSON.stringify({ data: { createPullRequest: null }, errors: [{ message: 'No commits' }] }),
     );
-    expect(githubAdapter.rejected?.(created, { status: 200, headers: {}, body: failed })).toBe(
-      'GitHub refused this change: No commits',
+    // GraphQL nulls a mutation's field when anything under it fails, possibly after the change.
+    expect(
+      githubAdapter.rejected?.(created, { status: 200, headers: {}, body: failed }),
+    ).toBeNull();
+    expect(
+      githubAdapter.uncertain?.(created, { status: 200, headers: {}, body: failed }),
+    ).toStartWith(
+      'GitHub answered with an error (No commits), and the change may still have taken effect.',
     );
+    const landed = Buffer.from(
+      JSON.stringify({
+        data: { createPullRequest: { pullRequest: { id: 'PR_1' } } },
+        errors: [{ message: 'a later field failed' }],
+      }),
+    );
+    expect(
+      githubAdapter.uncertain?.(created, { status: 200, headers: {}, body: landed }),
+    ).toBeNull();
     const issue = write(one('gh-release-create.http', 0));
     expect(
       githubAdapter.receipt(issue, {

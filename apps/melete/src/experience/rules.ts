@@ -18,6 +18,15 @@ export const ruleKinds: Record<string, StandingRule['kind']> = {
   'egress.github_write': 'push_branch',
 };
 
+/**
+ * What a push rule lets happen beyond the push itself, said on the rule: a
+ * pushed branch runs the repository's workflows with the pushed code and the
+ * repository's secrets, and a workflow allowed to write can change any branch
+ * that is not protected, the default branch included.
+ */
+export const PUSH_RULE_WARNING =
+  "Each push it covers also runs the repository's workflows on the pushed code, with the repository's secrets; a workflow allowed to write can change the default branch unless it is protected. Use a token without the Workflows permission, read-only workflow permissions, and protection on the default branch.";
+
 /** The only branches a standing rule for pushes covers. */
 export const RULE_BRANCH_PREFIX = 'refs/heads/melete/';
 
@@ -78,7 +87,7 @@ export function ruleView(row: Record<string, unknown>): StandingRule {
     text: row.job_id
       ? `Follow-ups in one chase to ${recipient}, up to ${row.count_cap}, until ${numericDate(new Date(String(row.expires_at)))}.`
       : kind === 'push_branch'
-        ? `Pushes to melete/ branches in ${recipient}, up to ${row.count_cap} times, until ${numericDate(new Date(String(row.expires_at)))}. Ask again after ${row.reconsent_after_days} days.`
+        ? `Pushes to melete/ branches in ${recipient}, up to ${row.count_cap} times, until ${numericDate(new Date(String(row.expires_at)))}. Ask again after ${row.reconsent_after_days} days. ${PUSH_RULE_WARNING}`
         : `${kind.replaceAll('_', ' ')} for ${recipient}, up to ${row.count_cap} times, until ${numericDate(new Date(String(row.expires_at)))}. Ask again after ${row.reconsent_after_days} days.`,
     bounds: {
       count_cap: row.count_cap,

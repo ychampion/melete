@@ -484,6 +484,7 @@ function forwarder(
                     outcome: 'answered',
                     response,
                     rejected: use.adapter.rejected?.(write, response) ?? null,
+                    uncertain: use.adapter.uncertain?.(write, response) ?? null,
                     detail: {
                       host: context.host,
                       method: base.method,

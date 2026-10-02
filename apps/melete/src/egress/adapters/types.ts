@@ -124,6 +124,12 @@ export interface CredentialAdapter<Config = unknown> {
    */
   rejected?(write: ClassifiedWrite, upstream: UpstreamResponse): string | null;
   /**
+   * Why the service's answer below 500 still cannot say whether the change
+   * took effect (a GraphQL answer whose data is all null beside errors: the
+   * mutation may have run before a later field failed), or null when it can.
+   */
+  uncertain?(write: ClassifiedWrite, upstream: UpstreamResponse): string | null;
+  /**
    * The answer a write that is held for approval, or refused, gets: in the
    * shape the service's own clients read, so `git` or `gh` prints `message`.
    * Null keeps the relay's plain-text answer with `status`.

@@ -33,6 +33,8 @@ export type ForwardResult =
       detail: JsonObject;
       /** Why the change did not take effect although the service answered below 400. */
       rejected?: string | null;
+      /** Why it cannot be told whether the change took effect, although the service answered. */
+      uncertain?: string | null;
     }
   /** The request left and its answer was lost: it may have landed. */
   | { outcome: 'lost'; reason: string }
@@ -132,6 +134,13 @@ export function createCommandLineConnector(
           retryable: false,
         };
       const { status } = result.response;
+      // A server error can follow a change that already landed: it is never recorded as nothing.
+      if (status >= 500)
+        return {
+          outcome: 'unknown',
+          reason: `The service answered ${status} after this change was sent, so it may have taken effect. Check before asking for it again.`,
+        };
+      if (result.uncertain) return { outcome: 'unknown', reason: result.uncertain };
       if (status >= 400)
         return {
           outcome: 'failed',
