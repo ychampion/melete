@@ -436,9 +436,18 @@ export const experienceDecision = z.strictObject({
    * `replaced` is a permission a later message in the same conversation made
    * stale: it can no longer be allowed, and nothing it covered is sent. On a
    * permission, `withdrawn` means the person stopped the turn while it waited,
-   * with the same effect.
+   * with the same effect, and `outdated` means something it relied on (a fact
+   * it rested on, or the request itself) changed before anyone answered.
    */
-  outcome: z.enum(['allow_once', 'always', 'deny', 'replaced', 'answered', 'withdrawn']),
+  outcome: z.enum([
+    'allow_once',
+    'always',
+    'deny',
+    'replaced',
+    'answered',
+    'withdrawn',
+    'outdated',
+  ]),
   /** The chosen answer, for an answered question. */
   answer: z.string().max(4000).nullable(),
   decided_at: date,

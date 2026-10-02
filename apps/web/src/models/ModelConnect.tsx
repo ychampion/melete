@@ -255,6 +255,19 @@ function TestResult({ result }: { result: ConnectionTest | null }) {
 }
 
 /** The model to use: the provider's list when a test returned one, otherwise typed. */
+/**
+ * The provider's models by the names people read, each with its exact id on hover.
+ * Two ids that read the same (dated builds of one model) keep their ids beside them.
+ */
+function modelOptions(ids: string[]) {
+  const names = ids.map(modelDisplayName);
+  return ids.map((id, index) => {
+    const name = names[index] ?? id;
+    const shared = names.filter((other) => other === name).length > 1;
+    return { value: id, label: shared ? `${name} (${id})` : name, title: id };
+  });
+}
+
 function ModelChoice({
   value,
   onChange,
@@ -277,10 +290,7 @@ function ModelChoice({
             value={options.includes(value) ? value : ''}
             onChange={onChange}
             width="100%"
-            options={[
-              { value: '', label: 'Choose a model' },
-              ...options.map((option) => ({ value: option, label: option })),
-            ]}
+            options={[{ value: '', label: 'Choose a model' }, ...modelOptions(options)]}
           />
         </Field>
       ) : (

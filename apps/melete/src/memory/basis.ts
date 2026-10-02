@@ -88,13 +88,24 @@ async function beliefLinks(
 ): Promise<BecauseLink[]> {
   const ids = [...new Set(claims.map((claim) => claim.claim_id))].slice(0, LIMIT);
   if (!ids.length) return [];
-  // The belief as it reads now: a forgotten one is not named, a corrected one
-  // links to its current value, which is what the person can open.
+  // The belief as it reads now, by the same test Memory lists it by: a forgotten
+  // one, or one whose conversation was removed or cleared, is not named; a
+  // corrected one links to its current value, which is what the person can open.
   const rows = await sql`select c.id, c.key, c.domain_key, b.content from memory_claims c
     join memory_revisions r on r.claim_id = c.id and r.revision = c.head_revision
     join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
     where c.space_id = ${spaceId} and c.id = any(${ids}) and not c.hidden
-      and r.status in ('active','disputed')`;
+      and r.status in ('active','disputed')
+      and exists (select 1 from memory_references ref where ref.claim_id = r.claim_id and ref.revision = r.revision)
+      and not exists (
+        select 1 from memory_references ref left join memory_sources s on s.id = ref.source_id
+        where ref.claim_id = r.claim_id and ref.revision = r.revision and (
+          s.id is null or s.space_id <> c.space_id or s.state <> 'active' or s.source_version <> ref.source_version
+          or exists (select 1 from memory_suppressions sup where sup.space_id = c.space_id and
+            ((sup.source_id = s.id and (sup.start is null or (sup.start < ref."end" and sup."end" > ref.start)))
+             or (sup.operation = 'clear' and s.eligibility_generation <= sup.eligibility_cutoff)))
+        )
+      )`;
   const byId = new Map(rows.map((row) => [String(row.id), row]));
   return ids.flatMap((id) => {
     const row = byId.get(id);

@@ -120,7 +120,9 @@ export function caseSteps(found: Case, transcript: Transcript): Step[] {
             ? 'Replaced by your new message'
             : permission.decided === 'withdrawn'
               ? 'Withdrawn when you stopped'
-              : `Asked once for ${company.name}`,
+              : permission.decided === 'outdated'
+                ? 'Withdrawn because something it relied on changed'
+                : `Asked once for ${company.name}`,
       state: allowed ? 'done' : 'now',
     });
   }

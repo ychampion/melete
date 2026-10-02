@@ -14,6 +14,8 @@ import {
   actionListQuery,
   actionListResponse,
   actionResponse,
+  actionSummaryListResponse,
+  actionSummaryOf,
   approvalDecisionRequest,
   approvalDecisionResponse,
   approvalListResponse,
@@ -628,6 +630,8 @@ export function createMockApp(deps: AppDeps) {
       .filter((action) => !query.effect_class || action.effect_class === query.effect_class)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, query.limit);
+    if (query.view === 'summary')
+      return send(actionSummaryListResponse, { actions: actions.map(actionSummaryOf) });
     return send(actionListResponse, { actions });
   });
 

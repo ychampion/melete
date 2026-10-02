@@ -751,6 +751,14 @@ button.act-line:focus-visible,
   line-height: 18px;
   color: var(--muted);
 }
+/* The request a card is for, on one line: a long chat title ends in an ellipsis. */
+.permission-for {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 /* What auto-review decided: on a receipt it let through, or a card it sent to the person. */
 .review-note {
   display: flex;

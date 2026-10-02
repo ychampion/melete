@@ -933,7 +933,7 @@ export function FilePreview({ file }: { file: NonNullable<Permission['file']> })
 
 /** What a decided permission card says it came to; null while it waits. */
 export function permissionOutcome(
-  decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null,
+  decided: PermissionOption | 'replaced' | 'withdrawn' | 'outdated' | 'closed' | null,
 ): string | null {
   return decided === 'allow_once'
     ? 'Allowed once'
@@ -945,20 +945,22 @@ export function permissionOutcome(
           ? 'Replaced by your new message'
           : decided === 'withdrawn'
             ? 'Withdrawn when you stopped'
-            : decided === 'closed'
-              ? 'Decided'
-              : null;
+            : decided === 'outdated'
+              ? 'Withdrawn because something it relied on changed'
+              : decided === 'closed'
+                ? 'Decided'
+                : null;
 }
 
 /** The tile at the head of a permission card: a lock while it waits, then what came of it. */
 export function permissionTile(
-  decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null,
+  decided: PermissionOption | 'replaced' | 'withdrawn' | 'outdated' | 'closed' | null,
 ): { icon: IconName; outcome: 'pending' | 'allowed' | 'denied' | 'withdrawn' | 'decided' } {
   if (decided === null) return { icon: 'lock', outcome: 'pending' };
   if (decided === 'allow_once' || decided === 'always')
     return { icon: 'check', outcome: 'allowed' };
   if (decided === 'deny') return { icon: 'x', outcome: 'denied' };
-  if (decided === 'replaced' || decided === 'withdrawn')
+  if (decided === 'replaced' || decided === 'withdrawn' || decided === 'outdated')
     return { icon: 'clock', outcome: 'withdrawn' };
   return { icon: 'circleCheck', outcome: 'decided' };
 }
@@ -972,7 +974,7 @@ export function PermissionCard({
   busy = false,
 }: {
   permission: Permission;
-  decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null;
+  decided: PermissionOption | 'replaced' | 'withdrawn' | 'outdated' | 'closed' | null;
   onDecide: (option: PermissionOption, bounds?: RuleBounds) => void;
   touch?: boolean;
   /** Drawn without its footer, when the phone carries the decision in a bottom bar. */
@@ -1006,9 +1008,11 @@ export function PermissionCard({
   }, [decided]);
   // "Label: value" lines are fields; any other reason ("For your request.") reads as a sentence.
   const reasons = permission.why.slice(1);
-  const notes = reasons.filter((line) => !line.includes(': '));
+  // "For <request>" names the request, and a title can hold a colon of its own.
+  const isNote = (line: string) => !line.includes(': ') || line.startsWith('For ');
+  const notes = reasons.filter(isNote);
   const fields = reasons
-    .filter((line) => line.includes(': '))
+    .filter((line) => !isNote(line))
     .map((line) => {
       const [label = '', ...value] = line.split(': ');
       return { label, value: value.join(': ') };
@@ -1056,11 +1060,17 @@ export function PermissionCard({
           {pending ? (
             <>
               <span className="permission-why">{permission.why[0]}</span>
-              {notes.map((note) => (
-                <span key={note} className="permission-why">
-                  {note}
-                </span>
-              ))}
+              {notes.map((note) =>
+                note.startsWith('For ') ? (
+                  <span key={note} className="permission-why permission-for" title={note}>
+                    {note}
+                  </span>
+                ) : (
+                  <span key={note} className="permission-why">
+                    {note}
+                  </span>
+                ),
+              )}
             </>
           ) : null}
           <BecauseLine because={permission.because} />
@@ -1356,6 +1366,13 @@ export function describeAction(action: LedgerAction): string {
     return 'a command on its computer';
   return 'one step of this task';
 }
+
+/**
+ * A step on the agent's own computer: a command or a desktop step there. Its
+ * open outcome is the agent's to check, so the person is never asked about it.
+ */
+export const ownComputerStep = (action: Pick<LedgerAction, 'kind'>): boolean =>
+  /^(?:terminal\.run|computer\.)/.test(action.kind);
 
 /** Whether a step that went unconfirmed was a message to someone, which "arrives". */
 const isMessage = (action: LedgerAction): boolean => {

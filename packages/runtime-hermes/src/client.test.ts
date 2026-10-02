@@ -19,6 +19,7 @@ import { HERMES_PINNED_TAG, RUNTIME_VERSION } from './index.ts';
 import {
   instructionTokens,
   measureRenderedInput,
+  PLAIN_WORDS,
   renderInput,
   renderInstructions,
   renderSoul,
@@ -376,6 +377,17 @@ describe('context assembly', () => {
       `The person's time zone is Asia/Kolkata. "Today", "now" and every date and time you give mean that zone, not UTC.`,
     );
     expect(renderInstructions(bundle)).not.toContain('time zone');
+  });
+
+  test('the model is told the plain words to use for how it works', () => {
+    const text = renderInstructions(bundle);
+    expect(text).toContain('"my computer"');
+    expect(text).toContain('"your approval"');
+    expect(text).toContain('Never say sandbox, broker, capability, attempt');
+    // The instructions themselves speak the same way outside that one list.
+    const rest = text.replace(PLAIN_WORDS.join('\n'), '');
+    for (const word of ['sandbox', 'broker', 'capability', 'attempt'])
+      expect(rest.toLowerCase()).not.toContain(word);
   });
 
   test("the run names the workspace it is given in place of the bundle's", () => {

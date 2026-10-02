@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime_support"))
 from melete_plugin import register  # noqa: E402
 from melete_plugin.broker import BrokerError  # noqa: E402
 from melete_plugin.execution import child_environment  # noqa: E402
-from melete_plugin.results import UNCERTAIN_INSTRUCTION  # noqa: E402
+from melete_plugin.results import OWN_COMPUTER_INSTRUCTION  # noqa: E402
 from melete_plugin.terminal_backend import (  # noqa: E402
     BACKEND_NAME,
     INTERRUPTED_STATUS,
@@ -392,7 +392,7 @@ def test_a_lost_acknowledgement_is_unknown_and_is_never_sent_again(error):
     result = environment(broker).execute("deploy.sh")
     assert result["returncode"] != 0
     assert result["output"].startswith("[outcome unknown]")
-    assert UNCERTAIN_INSTRUCTION in result["output"]
+    assert OWN_COMPUTER_INSTRUCTION in result["output"]
     assert len(broker.proposals) == 1
     assert broker.reads == []
 
@@ -459,7 +459,7 @@ def test_an_interrupt_stops_the_wait_and_reports_the_outcome_unknown():
         broker.hold.set()
         timer.cancel()
     assert result["returncode"] == INTERRUPTED_STATUS
-    assert "already sent" in result["output"] and UNCERTAIN_INSTRUCTION in result["output"]
+    assert "already sent" in result["output"] and OWN_COMPUTER_INSTRUCTION in result["output"]
     assert len(broker.proposals) == 1
     assert beats, "the engine's activity heartbeat ran while the command was waited on"
 

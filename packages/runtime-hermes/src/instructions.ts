@@ -95,12 +95,24 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
 }
 
 /**
+ * How the agent names its own machinery to the person. Tool results and
+ * manifests use the service's words; the person should hear plain ones.
+ */
+export const PLAIN_WORDS: readonly string[] = [
+  'When you talk to the person, use plain words for how you work. The computer your',
+  'commands, files and desktop steps run on is "my computer". Anything waiting on them',
+  'is waiting for "your approval" or "your OK". Something you could not finish is',
+  'something you "tried". Never say sandbox, broker, capability, attempt, connector,',
+  'payload or receipt to them, and never give an id, a hash or a tool name.',
+];
+
+/**
  * The one thing about the environment the model cannot infer: the workspace is
  * the only writable place, and the broker is the only way out.
  */
 const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
   [
-    '# This attempt',
+    '# This task',
     '',
     `Workspace: ${workspace}. It is the only path you can write to.`,
     ...(bundle.time_zone
@@ -110,9 +122,10 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
       : []),
     'Answer in your reply. Save a file only when the owner asks for one.',
     `Budget: at most ${bundle.budget.max_turns} turns and ${bundle.budget.max_actions} actions.`,
-    'Every tool call is proposed to the broker, which records it and may need the',
+    'Every tool call is checked and recorded before it runs, and some need the',
     "owner's approval. A tool that answers `needs_approval` has NOT happened: stop,",
     'say what you are waiting on, and end your turn.',
+    ...PLAIN_WORDS,
     'Reusable owner corrections go through learning.propose when it is in the catalog.',
     'It refers the recorded intervention for evaluation; it never installs a live skill.',
   ].join('\n');

@@ -14,8 +14,10 @@ import {
   applyGap,
   applyMessageEvent,
   emptyTranscript,
+  fillAnswers,
   fillTurns,
   fromTurns,
+  replayedStatus,
   setDelivery,
   setDrafts,
   type Transcript,
@@ -178,6 +180,9 @@ export type ConversationState = {
   renamed: (conversation: Conversation) => void;
 };
 
+/** The statuses a turn ends at, after which its saved answer is read. */
+const FINISHED_STATUSES: TurnStatus[] = ['done', 'failed', 'stopped'];
+
 /**
  * Load a conversation, its saved turns and its drafts, then follow its events
  * from the last seq the history held. Reconnects resume from the last event
@@ -246,6 +251,13 @@ export function useConversation(id: string | null): ConversationState {
         }
       })();
 
+      // A finished turn's saved answer is its final message alone: read it once it ends.
+      const readAnswers = () =>
+        void adapter.turns(id).then((saved) => {
+          if (controller.signal.aborted || !saved.data) return;
+          const turns = saved.data.turns;
+          setTranscriptState((previous) => fillAnswers(previous, turns));
+        });
       // A turn started elsewhere arrives as events first; its saved text is read once.
       const reading = new Set<string>();
       const readTurn = (turnId: string | null) => {
@@ -270,18 +282,22 @@ export function useConversation(id: string | null): ConversationState {
           setTranscriptState((previous) => applyGap(previous, item.gap));
         } else {
           const event = item.event;
+          const said = event.item;
           setTranscriptState((previous) => {
             const next = applyEvent(previous, event);
             if (next.turns.some((turn) => turn.unread && turn.id === event.turn_id))
               queueMicrotask(() => readTurn(event.turn_id));
+            if (said.type === 'status' && !replayedStatus(previous, event)) {
+              const { status, composer } = said;
+              queueMicrotask(() => {
+                setConversation((current) =>
+                  current ? { ...current, status, composer } : current,
+                );
+                if (FINISHED_STATUSES.includes(status)) readAnswers();
+              });
+            }
             return next;
           });
-          if (item.event.item.type === 'status') {
-            const { status, composer } = item.event.item;
-            setConversation((previous) =>
-              previous ? { ...previous, status, composer } : previous,
-            );
-          }
         }
       }
     })();

@@ -42,7 +42,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from .broker import BrokerClient, BrokerError
-from .results import END_TURN_INSTRUCTION, FAILURE_INSTRUCTION, SUCCEEDED, UNCERTAIN_INSTRUCTION
+from .results import END_TURN_INSTRUCTION, FAILURE_INSTRUCTION, OWN_COMPUTER_INSTRUCTION, SUCCEEDED
 
 logger = logging.getLogger("melete.plugin.terminal")
 
@@ -158,7 +158,7 @@ def _unknown(reason: str, action_id: Optional[str] = None) -> Dict[str, Any]:
     named = f" (action {action_id})" if action_id else ""
     return _result(
         f"[outcome unknown{named}] {reason}. The command may have run in the sandbox, "
-        "and no output came back for it. " + UNCERTAIN_INSTRUCTION,
+        "and no output came back for it. " + OWN_COMPUTER_INSTRUCTION,
         UNKNOWN_STATUS,
     )
 
@@ -249,7 +249,7 @@ class SandboxTerminal:
                 return {
                     "result": _result(
                         "[Command interrupted] The command was already sent to the sandbox and "
-                        "its outcome is unknown here. " + UNCERTAIN_INSTRUCTION,
+                        "its outcome is unknown here. " + OWN_COMPUTER_INSTRUCTION,
                         INTERRUPTED_STATUS,
                     )
                 }

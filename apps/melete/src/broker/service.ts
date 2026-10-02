@@ -280,7 +280,16 @@ const untrustedOrigin = (warnings: OriginWarning[]) =>
  * proposal of a send that already happened names the receipt, and a second
  * proposal of a send nobody can confirm says exactly that instead of retrying.
  */
-export function dispositionMessage(action: Action, repeated: boolean): string {
+/** What the agent is told about a step on its own computer whose outcome is not known. */
+export const OWN_COMPUTER_UNKNOWN =
+  "Its result did not come back from the agent's own computer, so whether it happened is not known. It was not run again, and the person is not asked. Check before trying again: take a screenshot, read the page, or look for the files or output the command would have left.";
+
+export function dispositionMessage(
+  action: Action,
+  repeated: boolean,
+  /** The action ran on the agent's own computer, so the agent checks an open outcome itself. */
+  ownComputer = false,
+): string {
   const receiptRef = (action.receipt?.external_ref as string | null | undefined) ?? action.id;
   const already = repeated ? 'already ' : '';
   switch (action.status) {
@@ -310,8 +319,10 @@ export function dispositionMessage(action: Action, repeated: boolean): string {
       return `This effect ${already}failed at ${action.resolved_at ?? action.created_at}${why}. Nothing was sent again.${again}`;
     }
     case 'unknown':
+      if (ownComputer) return OWN_COMPUTER_UNKNOWN;
       return `${question} It was ${already}attempted at ${action.dispatched_at ?? action.created_at} and was not sent again.`;
     case 'unresolved':
+      if (ownComputer) return OWN_COMPUTER_UNKNOWN;
       return `${question} Verification could not decide, and it was not sent again.`;
   }
 }
@@ -546,7 +557,7 @@ export class BrokerService implements BrokerOperations {
    * why, and tells the agent to wait rather than find another way round.
    */
   private async reviewedMessage(action: Action, repeated: boolean): Promise<string> {
-    const message = dispositionMessage(action, repeated);
+    const message = dispositionMessage(action, repeated, this.ownComputer(action));
     if (action.status !== 'needs_approval' || !this.options.autoReview) return message;
     const review = await actionReviewView(this.sql, action.id);
     if (review?.outcome !== 'escalated') return message;
@@ -573,6 +584,7 @@ export class BrokerService implements BrokerOperations {
       repeated,
       message: await this.reviewedMessage(action, repeated),
       origin_warnings: originWarnings.parse(approval?.origin_warnings ?? []),
+      own_computer: this.ownComputer(action),
     };
   }
 
@@ -2065,8 +2077,20 @@ export class BrokerService implements BrokerOperations {
         where action_id = ${id} and state = 'evaluated' and safe = true`;
     }
     const settled = await this.recordResult(id, run.result as DispatchResult);
-    if (run.question) await this.escalate(settled, run);
+    // A step on the agent's own computer that never answered is for the agent
+    // to check, not a question for the person.
+    const ownStep = run.disposition === 'needs_reconciliation' && this.ownComputer(action);
+    if (run.question && !ownStep) await this.escalate(settled, run);
     return settled;
+  }
+
+  /**
+   * Whether the action ran on the agent's own computer, so an outcome left open
+   * is the agent's to check (a screenshot, the page, what a command left
+   * behind) and never a question put to the person.
+   */
+  private ownComputer(action: Pick<Action, 'connection_id'>): boolean {
+    return this.options.connectors.get(action.connection_id)?.ownComputer === true;
   }
 
   /**
@@ -2331,6 +2355,7 @@ export class BrokerService implements BrokerOperations {
       if (
         result.outcome === 'unknown' &&
         !late &&
+        !this.ownComputer(action) &&
         !['cancelled', 'failed', 'completed'].includes(job.state)
       ) {
         await this.moveJob(tx, job, 'needs_reconciliation', { kind: 'user_input', question });
@@ -2421,7 +2446,11 @@ export class BrokerService implements BrokerOperations {
           and status in ('unknown', 'unresolved', 'dispatched')`;
         if (pending?.count === 0 && !late && currentJob.state === 'needs_reconciliation')
           await this.wake(tx, currentJob, 'recovery');
-      } else if (!late && !['cancelled', 'failed', 'completed'].includes(currentJob.state)) {
+      } else if (
+        !late &&
+        !this.ownComputer(current) &&
+        !['cancelled', 'failed', 'completed'].includes(currentJob.state)
+      ) {
         await this.moveJob(tx, currentJob, 'needs_reconciliation', {
           kind: 'user_input',
           question,

@@ -30,13 +30,14 @@ export type TurnBlock =
   /**
    * `decided` is the option chosen, here or as the stream's decision reports
    * it; `replaced` means a later message made the request stale; `withdrawn`
-   * means the person stopped the turn while it waited; `closed`
+   * means the person stopped the turn while it waited; `outdated` means
+   * something it relied on changed before anyone answered; `closed`
    * means its action moved on past approval without a decision item saying which way.
    */
   | {
       type: 'permission';
       permission: Permission;
-      decided: PermissionOption | 'replaced' | 'withdrawn' | 'closed' | null;
+      decided: PermissionOption | 'replaced' | 'withdrawn' | 'outdated' | 'closed' | null;
     }
   /** `answered` is the option id, or `closed` when the turn moved on after an answer given elsewhere. */
   | { type: 'question'; question: Question; answered: string | null };
@@ -59,6 +60,12 @@ export type TranscriptTurn = {
   live: { id: string; title: string } | null;
   /** Started elsewhere and drawn from its events; its saved text is still to be read. */
   unread?: boolean;
+  /**
+   * The saved copy said the turn had finished. Its events, replayed in order,
+   * pass through "working" on the way to that end, and none of them makes a
+   * finished turn read as working again.
+   */
+  finished?: boolean;
 };
 
 export type ReactionMessage = {
@@ -105,7 +112,18 @@ const fromTurn = (turn: Turn): TranscriptTurn => ({
   delivery: turn.delivery,
   messageSeq: null,
   live: null,
+  ...(FINAL.has(turn.status) ? { finished: true } : {}),
 });
+
+/**
+ * A replayed status of a turn whose saved copy already finished: it is history,
+ * and says nothing about whether the conversation is working now.
+ */
+export function replayedStatus(transcript: Transcript, event: ExperienceEvent): boolean {
+  if (event.item.type !== 'status' || FINAL.has(event.item.status)) return false;
+  const turn = transcript.turns.find((entry) => entry.id === event.turn_id);
+  return turn?.finished === true;
+}
 
 export function fromTurns(turns: Turn[], composer: ComposerState, status: TurnStatus): Transcript {
   return { ...emptyTranscript(), turns: turns.map(fromTurn), composer, status };
@@ -130,11 +148,14 @@ function patchTurn(
 /**
  * The saved answer plus what streamed after it was read, never doubled. The
  * stream can carry the whole answer again, or more than the saved copy around
- * it, so when one holds the other only the longer one is shown.
+ * it, so when one holds the other only the longer one is shown. A finished
+ * turn's saved answer is the whole of it: what was written before an approval
+ * ("Waiting on your approval…") is not shown above the final answer.
  */
 export function answerOf(turn: TranscriptTurn): string {
   const answer = turn.turn.answer;
   const streamed = turn.streamed;
+  if (answer && FINAL.has(turn.status)) return answer;
   if (!streamed) return answer;
   if (!answer) return streamed;
   if (streamed.includes(answer)) return streamed;
@@ -183,6 +204,22 @@ function ensureTurn(transcript: Transcript, event: ExperienceEvent): Transcript 
 /** The ids of turns whose saved text has not been read yet. */
 export const unreadTurns = (transcript: Transcript): string[] =>
   transcript.turns.filter((turn) => turn.unread).map((turn) => turn.id);
+
+/**
+ * Take the saved answers of turns that have finished, read once they end: the
+ * saved copy keeps only the final message, which replaces what streamed.
+ */
+export function fillAnswers(transcript: Transcript, saved: Turn[]): Transcript {
+  return {
+    ...transcript,
+    turns: transcript.turns.map((turn) => {
+      const copy = saved.find((entry) => entry.id === turn.id);
+      return copy?.answer && FINAL.has(copy.status) && FINAL.has(turn.status)
+        ? { ...turn, finished: true, turn: { ...turn.turn, answer: copy.answer } }
+        : turn;
+    }),
+  };
+}
 
 /** Fill in turns started elsewhere from their saved copies: the message, and who answers it. */
 export function fillTurns(transcript: Transcript, saved: Turn[]): Transcript {
@@ -396,6 +433,7 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         blocks: [...turn.blocks, { type: 'question', question: item.question, answered: null }],
       }));
     case 'status': {
+      if (replayedStatus(base, event)) return base;
       // A status replayed for an earlier turn says nothing about the conversation
       // now: a long history opened mid-replay would otherwise read as working.
       const index = event.turn_id ? base.turns.findIndex((t) => t.id === event.turn_id) : -1;
@@ -517,7 +555,7 @@ export function setDelivery(
 export function markPermission(
   transcript: Transcript,
   id: string,
-  option: PermissionOption | 'replaced' | 'withdrawn',
+  option: PermissionOption | 'replaced' | 'withdrawn' | 'outdated',
 ): Transcript {
   return {
     ...transcript,
@@ -543,7 +581,8 @@ export function applyDecision(transcript: Transcript, decision: ExperienceDecisi
       decision.outcome === 'always' ||
       decision.outcome === 'deny' ||
       decision.outcome === 'replaced' ||
-      decision.outcome === 'withdrawn'
+      decision.outcome === 'withdrawn' ||
+      decision.outcome === 'outdated'
       ? markPermission(transcript, decision.id, decision.outcome)
       : transcript;
   }

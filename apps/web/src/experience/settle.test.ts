@@ -78,7 +78,15 @@ test('a status replayed for an earlier turn leaves the conversation as it is now
   );
   expect(replayed.status).toBe('done');
   expect(replayed.composer).toBe('send');
-  const current = applyEvent(opened, {
+  // The latest turn, finished too, is not set working by its own replayed history.
+  const own = applyEvent(opened, {
+    ...event({ type: 'status', status: 'working', composer: 'pause' }),
+    turn_id: 'turn_2',
+  });
+  expect(own.status).toBe('done');
+  // A latest turn the saved copy says is still under way follows its statuses.
+  const running = fromTurns([finished, { ...latest, status: 'queued' }], 'pause', 'queued');
+  const current = applyEvent(running, {
     ...event({ type: 'status', status: 'working', composer: 'pause' }),
     turn_id: 'turn_2',
   });

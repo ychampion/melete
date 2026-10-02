@@ -12,14 +12,10 @@ import { MeleteAvatar, MeleteMark } from '../design/mark.tsx';
 import { Button, Chip, Field, Input, Segmented, Select, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { lookOf, messageKey, useApp, useLoad, useMedia } from '../experience/hooks.ts';
+import { zoneName } from '../experience/plain.ts';
 import { givenName, onboardedProfile, UNNAMED } from '../experience/profile.ts';
 import { keptAnswer, SETUP_QUESTIONS, SKIP_REPLY } from '../experience/setup-answers.ts';
-import {
-  browserTimeZone,
-  setupTimeZone,
-  timeZoneChoices,
-  zoneName,
-} from '../experience/timezone.ts';
+import { browserTimeZone, setupTimeZone, timeZoneChoices } from '../experience/timezone.ts';
 import type { AgentTemplate, MemoryItem, TourStage } from '../experience/types.ts';
 import { models } from '../models/api.ts';
 import { ActiveModel, ModelConnect } from '../models/ModelConnect.tsx';

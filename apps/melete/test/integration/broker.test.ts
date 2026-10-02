@@ -11,7 +11,7 @@ import { PgBoss } from 'pg-boss';
 import type { EffectAuthority } from '../../src/broker/authority.ts';
 import { loadAction, recordId } from '../../src/broker/records.ts';
 import type { BrokerOptions } from '../../src/broker/service.ts';
-import { BrokerService } from '../../src/broker/service.ts';
+import { BrokerService, OWN_COMPUTER_UNKNOWN } from '../../src/broker/service.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
@@ -497,6 +497,104 @@ describe('durable action lifecycle', () => {
       expect(s.calls()).toBe(0);
     },
   );
+
+  databaseTest(
+    'a step on the agent’s own computer that never answered stays unknown, for the agent to check',
+    async () => {
+      const s = await setup(async () => ({
+        outcome: 'unknown',
+        reason: 'the desktop did not answer',
+      }));
+      s.connector.ownComputer = true;
+      const request = { kind: 'test.send', connection_id: s.connectionId, payload: {} };
+      const proposal = await s.broker.propose(s.claims, request);
+      await s.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+      const open = await s.broker.dispatch(proposal.action_id);
+      // Never settled as failed: whether it happened is not known.
+      expect(open.status).toBe('unknown');
+      // The person is not asked.
+      const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
+      expect(job?.state).not.toBe('needs_reconciliation');
+      const asked = await s.sql`select id from question where job_id = ${s.claims.job_id}`;
+      expect(asked).toHaveLength(0);
+      // The agent is told to check before any retry, and nothing is sent again.
+      const told = await s.broker.propose(s.claims, request);
+      expect(told.own_computer).toBe(true);
+      expect(told.message).toBe(OWN_COMPUTER_UNKNOWN);
+      expect(told.message).toContain('Check before trying again');
+      expect(told.message).not.toMatch(/fail/i);
+      expect(s.calls()).toBe(1);
+    },
+  );
+
+  databaseTest(
+    'a command on the agent’s own computer that outruns its budget lands when it finishes',
+    async () => {
+      const s = await setup(
+        async (action) => {
+          await Bun.sleep(600);
+          return {
+            outcome: 'succeeded',
+            receipt: {
+              action_id: action.id,
+              connection_id: action.connection_id,
+              external_ref: 'ran',
+              received_at: new Date().toISOString(),
+              late: false,
+              detail: { output: 'built' },
+            },
+          };
+        },
+        { dispatchTimeoutMs: 200 },
+      );
+      s.connector.ownComputer = true;
+      const proposal = await s.broker.propose(s.claims, {
+        kind: 'test.send',
+        connection_id: s.connectionId,
+        payload: {},
+      });
+      await s.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+      expect((await s.broker.dispatch(proposal.action_id)).status).toBe('unknown');
+      const [waiting] = await s.sql`select state from job where id = ${s.claims.job_id}`;
+      expect(waiting?.state).not.toBe('needs_reconciliation');
+      // The late receipt still lands, with its output.
+      let landed = await loadAction(s.sql, proposal.action_id);
+      for (let tries = 0; tries < 40 && landed.status === 'unknown'; tries++) {
+        await Bun.sleep(100);
+        landed = await loadAction(s.sql, proposal.action_id);
+      }
+      expect(landed.status).toBe('succeeded');
+      expect(landed.receipt?.detail).toMatchObject({ output: 'built' });
+      const asked = await s.sql`select id from question where job_id = ${s.claims.job_id}`;
+      expect(asked).toHaveLength(0);
+      expect(s.calls()).toBe(1);
+    },
+  );
+
+  databaseTest('an outside effect that never answered is still put to the person', async () => {
+    const s = await setup(async () => ({ outcome: 'unknown', reason: 'the provider timed out' }));
+    const proposal = await s.broker.propose(s.claims, {
+      kind: 'test.send',
+      connection_id: s.connectionId,
+      payload: {},
+    });
+    await s.broker.decide(proposal.action_id, {
+      decision: 'approved',
+      payload_hash: proposal.payload_hash,
+    });
+    await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+    expect((await s.broker.dispatch(proposal.action_id)).status).toBe('unknown');
+    const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
+    expect(job?.state).toBe('needs_reconciliation');
+  });
 
   databaseTest(
     'a dispatch whose attempt stopped heartbeating is unknown at once without a connector account',

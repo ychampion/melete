@@ -354,7 +354,7 @@ export function Select({
   icon?: IconName;
   value: string;
   onChange: (value: string) => void;
-  options: readonly { value: string; label: string }[];
+  options: readonly { value: string; label: string; title?: string }[];
   height?: number;
   width?: number | string;
   label: string;
@@ -374,7 +374,7 @@ export function Select({
         onChange={(event) => onChange(event.target.value)}
       >
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <option key={option.value} value={option.value} title={option.title}>
             {option.label}
           </option>
         ))}
