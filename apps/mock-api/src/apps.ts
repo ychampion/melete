@@ -29,6 +29,7 @@ import {
   appSubmissionDeleted,
   appSubmissionList,
   appSubmissionRequest,
+  appSubmissionsDeleted,
   appView,
   type JsonValue,
 } from '@melete/contracts';
@@ -544,6 +545,17 @@ export function mountAppsMock(app: Hono, deps: AppDeps): void {
         ),
         next_before: null,
       }),
+    );
+  });
+
+  app.delete('/apps/:id/submissions', (c) => {
+    const entry = apps.get(c.req.param('id'));
+    const from = c.req.query('from');
+    if (!entry || !from) return missing();
+    const before = entry.submissions.length;
+    entry.submissions = entry.submissions.filter((submission) => submission.by?.id !== from);
+    return Response.json(
+      appSubmissionsDeleted.parse({ from, deleted: before - entry.submissions.length }),
     );
   });
 

@@ -14,13 +14,14 @@ import { changedWhen } from './AppsScreen.tsx';
 import { type AppDataUpdate, type AppDetail, type AppSubmission, appsApi } from './api.ts';
 
 const VALUE_CHARS = 300;
+const KEY_CHARS = 60;
 
 /** A response's fields as lines a person reads: `name: value`, each clipped. */
 export function responseLines(data: Record<string, unknown>): { key: string; text: string }[] {
   return Object.entries(data).map(([key, value]) => {
     const text = typeof value === 'string' ? value : JSON.stringify(value);
     return {
-      key,
+      key: key.length > KEY_CHARS ? `${key.slice(0, KEY_CHARS)}…` : key,
       text: text.length > VALUE_CHARS ? `${text.slice(0, VALUE_CHARS)}…` : text,
     };
   });
@@ -97,6 +98,19 @@ export function ResponsesDialog({
     toast({ kind: 'ok', title: 'Response deleted' });
   };
 
+  const removeAll = async (submission: AppSubmission) => {
+    const from = submission.by;
+    if (!from) return;
+    const result = await appsApi.deleteSubmissionsFrom(id, from.id);
+    setConfirming(null);
+    if (!result.data) {
+      toast({ kind: 'err', title: result.error ?? 'Couldn’t delete them' });
+      return;
+    }
+    setItems((current) => (current ?? []).filter((item) => item.by?.id !== from.id));
+    toast({ kind: 'ok', title: `Deleted ${result.data.deleted} from ${from.email}` });
+  };
+
   const names = detail.collections.map((entry) => entry.name);
   return (
     <Dialog
@@ -140,14 +154,26 @@ export function ResponsesDialog({
                     {names.length > 1 ? ` · ${item.collection}` : ''}
                   </span>
                   {confirming === item.id ? (
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      onClick={() => void remove(item)}
-                      aria-label={`Confirm deleting the response from ${item.by?.email ?? 'someone'}`}
-                    >
-                      Delete it
-                    </Button>
+                    <span className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => void remove(item)}
+                        aria-label={`Confirm deleting the response from ${item.by?.email ?? 'someone'}`}
+                      >
+                        Delete it
+                      </Button>
+                      {item.by ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void removeAll(item)}
+                          aria-label={`Delete every response from ${item.by.email}`}
+                        >
+                          Delete all theirs
+                        </Button>
+                      ) : null}
+                    </span>
                   ) : (
                     <Button
                       size="sm"

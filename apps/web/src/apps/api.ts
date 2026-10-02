@@ -76,6 +76,12 @@ export const appsApi = {
     call<AppSubmissionList>(() =>
       api.GET('/apps/{id}/submissions', { params: { path: { id }, query } }),
     ),
+  deleteSubmissionsFrom: (id: string, principalId: string) =>
+    call<{ from: string; deleted: number }>(() =>
+      api.DELETE('/apps/{id}/submissions', {
+        params: { path: { id }, query: { from: principalId } },
+      }),
+    ),
   deleteSubmission: (id: string, submissionId: string) =>
     call<{ id: string; deleted: true }>(() =>
       api.DELETE('/apps/{id}/submissions/{submission_id}', {

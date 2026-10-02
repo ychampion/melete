@@ -34,6 +34,9 @@ import {
   viewSource,
 } from './api.ts';
 import { CHECK_EVERY_MS, type Frame, nextFrame } from './frame.ts';
+
+const RECHECK_AT_MOST_MS = 5_000;
+
 import './apps.css';
 
 /** "version 3", counted from the first; null when the versions are not listed for this person. */
@@ -299,22 +302,30 @@ export function AppViewer({ id }: { id: string }) {
 
   // A request the app makes that fails may mean the person lost the app: ask at once.
   const base = useMemo(() => appBridgeCalls(id), [id]);
+  // At most one re-check every few seconds, however often the app's requests fail.
+  const lastCheck = useRef(0);
+  const recheck = useCallback(() => {
+    const now = Date.now();
+    if (now - lastCheck.current < RECHECK_AT_MOST_MS) return;
+    lastCheck.current = now;
+    void open();
+  }, [open]);
   const calls = useMemo(
     () => ({
       data: async (name: string) => {
         const result = await base.data(name);
         if (result.ok) read.current.set(name, result.updatedAt);
-        else void open();
+        else recheck();
         return result;
       },
       submit: async (collection: string, record: Record<string, unknown>) => {
         const result = await base.submit(collection, record);
         // Too many, too large or not declared is the app's doing; anything else may be lost access.
-        if (!result.ok && ![400, 413, 429].includes(result.status ?? 0)) void open();
+        if (!result.ok && ![400, 413, 429].includes(result.status ?? 0)) recheck();
         return result;
       },
     }),
-    [base, open],
+    [base, recheck],
   );
 
   // Data the app read is asked for again with each check; a newer version is told to the app.

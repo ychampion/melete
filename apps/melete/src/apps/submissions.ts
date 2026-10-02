@@ -65,6 +65,14 @@ export async function submit(
         and created_at > now() - interval '1 minute'`;
     if ((recent?.count ?? 0) >= APP_LIMITS.submissions_per_minute)
       throw new SubmissionRefused('Too many responses in the last minute. Try again shortly.', 429);
+    const [mine] = await tx<{ count: number }[]>`select count(*)::int as count
+      from app_submission where app_id = ${input.appId} and principal_id = ${input.principalId}
+        and deleted_at is null`;
+    if ((mine?.count ?? 0) >= APP_LIMITS.max_submissions_per_person)
+      throw new SubmissionRefused(
+        'This app holds as many of your responses as it keeps from one person.',
+        429,
+      );
     const [kept] = await tx<{ count: number }[]>`select count(*)::int as count
       from app_submission where app_id = ${input.appId} and deleted_at is null`;
     if ((kept?.count ?? 0) >= APP_LIMITS.max_submissions_per_app)
@@ -132,4 +140,18 @@ export async function deleteSubmission(
     where id = ${submissionId} and app_id = ${appId} and deleted_at is null
     returning id`;
   return rows.length > 0;
+}
+
+/** Remove the contents of every response one person sent an app. How many there were. */
+export async function deleteSubmissionsFrom(
+  sql: Sql,
+  appId: string,
+  principalId: string,
+  by: string,
+): Promise<number> {
+  const rows = await sql`update app_submission
+    set data = '{}'::jsonb, size = 0, deleted_at = now(), deleted_by = ${by}
+    where app_id = ${appId} and principal_id = ${principalId} and deleted_at is null
+    returning id`;
+  return rows.length;
 }

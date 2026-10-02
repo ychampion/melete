@@ -17,6 +17,7 @@ import {
   appSubmissionDeleted,
   appSubmissionList,
   appSubmissionRequest,
+  appSubmissionsDeleted,
   appView,
 } from './apps.ts';
 
@@ -210,7 +211,8 @@ export const appsPaths = () => ({
       description:
         "Stored with the viewer's account, for a collection the app's current version " +
         'declares. A record is at most the size the collection declares (16 KiB at most). ' +
-        'One person may send one app 30 responses a minute.',
+        'One person may send one app 30 responses a minute, and an app keeps 500 from any ' +
+        'one person and 10,000 in all.',
       requestParams: appParam,
       requestBody: json(appSubmissionRequest),
       responses: {
@@ -236,6 +238,23 @@ export const appsPaths = () => ({
       },
       responses: {
         '200': jsonResponse('Responses', appSubmissionList),
+        '403': problem('Not a manager of this app'),
+        '404': problem('No such app, or this person cannot open it'),
+      },
+    },
+    delete: {
+      tags: ['apps'],
+      summary: 'Delete every response one person sent an app',
+      description: 'Their contents are removed; the app keeps no copy.',
+      requestParams: {
+        path: z.object({ id: z.string().meta({ description: 'App id' }) }),
+        query: z.object({
+          from: z.string().meta({ description: 'The account whose responses are deleted' }),
+        }),
+      },
+      responses: {
+        '200': jsonResponse('Deleted', appSubmissionsDeleted),
+        '400': problem('No account named'),
         '403': problem('Not a manager of this app'),
         '404': problem('No such app, or this person cannot open it'),
       },

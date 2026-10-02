@@ -26,6 +26,7 @@ import {
   appSubmissionDeleted,
   appSubmissionList,
   appSubmissionRequest,
+  appSubmissionsDeleted,
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -51,7 +52,13 @@ import {
   replaceGrants,
   setCurrentVersion,
 } from './service.ts';
-import { deleteSubmission, listSubmissions, SubmissionRefused, submit } from './submissions.ts';
+import {
+  deleteSubmission,
+  deleteSubmissionsFrom,
+  listSubmissions,
+  SubmissionRefused,
+  submit,
+} from './submissions.ts';
 
 const notFound = () => new ServiceError('not_found', 'No such app.', 404);
 const notManager = () =>
@@ -517,6 +524,15 @@ export function mountApps(app: Hono, deps: AppRoutesDeps): void {
       before: before ?? null,
     });
     return c.json(appSubmissionList.parse(page));
+  });
+
+  app.delete('/apps/:id/submissions', async (c) => {
+    const { appId, principalId } = await requireRole(c, 'manage');
+    const from = c.req.query('from');
+    if (!from || from.length > 200)
+      throw new ServiceError('invalid_request', 'Name whose responses to delete.', 400);
+    const deleted = await deleteSubmissionsFrom(sql, appId, from, principalId);
+    return c.json(appSubmissionsDeleted.parse({ from, deleted }));
   });
 
   app.delete('/apps/:id/submissions/:submission_id', async (c) => {

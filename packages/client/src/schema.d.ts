@@ -1367,7 +1367,7 @@ export interface paths {
         put?: never;
         /**
          * Send a response from an app
-         * @description Stored with the viewer's account, for a collection the app's current version declares. A record is at most the size the collection declares (16 KiB at most). One person may send one app 30 responses a minute.
+         * @description Stored with the viewer's account, for a collection the app's current version declares. A record is at most the size the collection declares (16 KiB at most). One person may send one app 30 responses a minute, and an app keeps 500 from any one person and 10,000 in all.
          */
         post: {
             parameters: {
@@ -1438,7 +1438,66 @@ export interface paths {
                 };
             };
         };
-        delete?: never;
+        /**
+         * Delete every response one person sent an app
+         * @description Their contents are removed; the app keeps no copy.
+         */
+        delete: {
+            parameters: {
+                query: {
+                    /** @description The account whose responses are deleted */
+                    from: string;
+                };
+                header?: never;
+                path: {
+                    /** @description App id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deleted */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            deleted: number;
+                            from: string;
+                        };
+                    };
+                };
+                /** @description No account named */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema157"];
+                    };
+                };
+                /** @description Not a manager of this app */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema157"];
+                    };
+                };
+                /** @description No such app, or this person cannot open it */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema157"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;

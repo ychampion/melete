@@ -33,6 +33,8 @@ export const APP_LIMITS = {
   submissions_per_minute: 30,
   /** Responses one app keeps at most; past this, new ones are refused until some are deleted. */
   max_submissions_per_app: 10_000,
+  /** Responses one app keeps from any one person, so nobody can fill it for everyone else. */
+  max_submissions_per_person: 500,
   /** Responses one page of the list, or one read by the agent, holds at most. */
   max_submission_page: 100,
 } as const;
@@ -301,3 +303,9 @@ export const appSubmissionList = z.strictObject({
 export type AppSubmissionList = z.infer<typeof appSubmissionList>;
 
 export const appSubmissionDeleted = z.strictObject({ id: z.string(), deleted: z.literal(true) });
+
+/** Every response one person sent an app, deleted at once. */
+export const appSubmissionsDeleted = z.strictObject({
+  from: z.string(),
+  deleted: z.number().int().min(0),
+});
