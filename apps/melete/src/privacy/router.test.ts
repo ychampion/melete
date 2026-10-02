@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
+import { markedScreenshot } from '../gateway/fixtures/screenshot.ts';
 import {
   createModelGateway,
   type GatewayBudget,
@@ -9,7 +10,14 @@ import {
   type GatewayProvider,
   type GatewaySettlement,
 } from '../gateway/index.ts';
-import { IMAGE_WITHHELD_LOCAL, IMAGE_WITHHELD_PRIVATE, PrivacyRouter } from './router.ts';
+import {
+  IMAGE_WITHHELD_DEVICE,
+  IMAGE_WITHHELD_LOCAL,
+  IMAGE_WITHHELD_OWN,
+  IMAGE_WITHHELD_PRIVATE,
+  IMAGE_WITHHELD_UNKNOWN,
+  PrivacyRouter,
+} from './router.ts';
 import { MemoryPrivacyStore } from './store.ts';
 
 const PROVIDERS: GatewayProvider[] = [
@@ -1084,7 +1092,7 @@ test('a space or agent the person marked private is reported as such, and a chan
 describe('screenshots follow the conversation', () => {
   // Base64 that happens to read like an account number: as text it would be
   // swapped for a placeholder and the picture broken.
-  const data = `AAAA${SAM.account}AAAA`;
+  const data = `${markedScreenshot('computer', 64)}${SAM.account}AAAA`;
   const screenshot = { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${data}` } };
   const messages = [
     { role: 'user', content: `Pay from account ${SAM.account}` },
@@ -1127,6 +1135,114 @@ describe('screenshots follow the conversation', () => {
     const body = JSON.parse(captured[0]?.body ?? '{}');
     expect(body.messages[0].content).toBe('Pay from account ⟦ACCOUNT_1⟧');
     expect(body.messages[2].content[1]).toEqual(screenshot);
+  });
+
+  /** One tool result carrying a screenshot from `source`, in an ordinary conversation. */
+  const withShot = (source: string | null) => [
+    messages[0],
+    messages[1],
+    {
+      role: 'tool',
+      tool_call_id: 'c1',
+      content: [
+        { type: 'text', text: 'saved' },
+        {
+          type: 'image_url',
+          image_url: { url: `data:image/jpeg;base64,${markedScreenshot(source)}` },
+        },
+      ],
+    },
+  ];
+  const ordinarySpace = async (settings: Record<string, unknown> = {}) => {
+    const store = new MemoryPrivacyStore();
+    store.scopes.set('job_chat', {
+      spaceId: 'spc_1',
+      conversationId: 'job_chat',
+      agentId: 'agt_1',
+      turnId: 'trn_1',
+    });
+    await store.saveSettings('spc_1', settings, null);
+    return store;
+  };
+  const sentPicture = async (store: MemoryPrivacyStore, source: string | null) => {
+    const { captured, post } = await start({ store });
+    const response = await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: withShot(source),
+    });
+    expect(response.status).toBe(200);
+    return sentContent(captured)[1];
+  };
+  const asSent = (source: string | null) => ({
+    type: 'image_url',
+    image_url: { url: `data:image/jpeg;base64,${markedScreenshot(source)}` },
+  });
+
+  test("a paired computer's screen stays off cloud models by default; the receipt still goes", async () => {
+    const store = await ordinarySpace();
+    expect(await sentPicture(store, 'device:dev_1')).toEqual({
+      type: 'text',
+      text: IMAGE_WITHHELD_DEVICE,
+    });
+    // A screenshot from the companion's browser is the same computer's screen.
+    expect(await sentPicture(store, 'device')).toEqual({
+      type: 'text',
+      text: IMAGE_WITHHELD_DEVICE,
+    });
+  });
+
+  test('a computer that allows it is seen, and its own answer wins over the setting', async () => {
+    const allowed = await ordinarySpace();
+    allowed.deviceScreens.set('spc_1:dev_1', true);
+    expect(await sentPicture(allowed, 'device:dev_1')).toEqual(asSent('device:dev_1'));
+    // Another computer in the same space still follows the setting, off.
+    expect(await sentPicture(allowed, 'device:dev_2')).toEqual({
+      type: 'text',
+      text: IMAGE_WITHHELD_DEVICE,
+    });
+    const settingOn = await ordinarySpace({ screenshots_paired_devices: true });
+    expect(await sentPicture(settingOn, 'device:dev_2')).toEqual(asSent('device:dev_2'));
+    settingOn.deviceScreens.set('spc_1:dev_2', false);
+    expect(await sentPicture(settingOn, 'device:dev_2')).toEqual({
+      type: 'text',
+      text: IMAGE_WITHHELD_DEVICE,
+    });
+    // A computer of another space is not this one's to allow.
+    allowed.deviceScreens.set('spc_other:dev_3', true);
+    expect(await sentPicture(allowed, 'device:dev_3')).toEqual({
+      type: 'text',
+      text: IMAGE_WITHHELD_DEVICE,
+    });
+  });
+
+  test("the agent's own computer is seen unless the owner turned that off, whatever the device setting", async () => {
+    expect(await sentPicture(await ordinarySpace(), 'computer')).toEqual(asSent('computer'));
+    expect(
+      await sentPicture(await ordinarySpace({ screenshots_paired_devices: false }), 'computer'),
+    ).toEqual(asSent('computer'));
+    expect(
+      await sentPicture(await ordinarySpace({ screenshots_own_computer: false }), 'computer'),
+    ).toEqual({ type: 'text', text: IMAGE_WITHHELD_OWN });
+  });
+
+  test('a picture with no mark never reaches a cloud model', async () => {
+    const store = await ordinarySpace({
+      screenshots_own_computer: true,
+      screenshots_paired_devices: true,
+    });
+    expect(await sentPicture(store, null)).toEqual({ type: 'text', text: IMAGE_WITHHELD_UNKNOWN });
+  });
+
+  test("a paired computer's screen still goes to a local model that reads images in a private conversation", async () => {
+    const store = await inPrivateSpace('qwen2.5vl:7b');
+    const { captured, post } = await start({ store });
+    const response = await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: withShot('device:dev_1'),
+    });
+    expect(response.status).toBe(200);
+    expect(captured[0]?.url).toBe('http://127.0.0.1:11434/v1/chat/completions');
+    expect(sentContent(captured)[1]).toEqual(asSent('device:dev_1'));
   });
 
   test('a private conversation on a local model that reads images shows it the picture', async () => {

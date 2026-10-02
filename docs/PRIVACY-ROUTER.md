@@ -96,11 +96,15 @@ Checked by pattern, checksum and nearby words:
 | Email addresses | |
 | Dates of birth | A date with "born", "DOB", "date of birth" |
 | Passwords and keys | Private key blocks; common key formats; "password is …", "api_key = …"; bearer tokens; passwords in URLs |
-| Your own list | Names, accounts, addresses and anything else you add under **Always protect**, matched wherever they appear |
+| Your own list | Names, accounts, addresses and anything else you add under **Always protect**, matched wherever they appear in the text |
 
 Numbers that only look like these are left alone: order, invoice, tracking and
 ticket numbers, prices and amounts, dates, times and versions. Each kind can be
 turned off in Settings.
+
+All of this applies to text. Screenshots are pictures and are not redacted:
+what reaches a model is decided by the screenshot switches and the private
+routing below ([Screenshots](#screenshots)).
 
 With a local model set, **Let the local model find names, addresses and health
 details too** also asks that model to mark those in each new message it has not
@@ -157,8 +161,8 @@ private (the space, the agent, or the topic). What memory learns from it:
   from an ordinary conversation;
 - is not shown to another assistant reading your saved details through
   Melete's MCP endpoint;
-- is swapped for a `⟦PRIVATE_n⟧` placeholder if its wording turns up in any
-  request that goes to a cloud model, as a second line behind the rules above.
+- is swapped for a `⟦PRIVATE_n⟧` placeholder if its wording turns up in the
+  text of any request that goes to a cloud model, as a second line behind the rules above.
 
 You still see all of it in your own memory screen.
 
@@ -238,21 +242,33 @@ Redaction reduces what a cloud model sees. It is not anonymisation.
   its bytes match what was signed; a new detail the model wrote there itself is
   left as it wrote it.
 - Files, audio, and pictures a provider would fetch from an address are
-  refused by the gateway. The one kind of picture it forwards is a screenshot
-  the agent took of its own computer or a paired device, carried inside the
-  request. Its pixels cannot be redacted, so a screenshot goes only where the
-  conversation goes, and only when nothing has to be hidden from that model:
-  - an ordinary conversation sends it to the cloud model with the request,
-    while the text beside it is redacted as usual. What is on the screen is
-    sent as it is;
-  - a private or sensitive conversation shows it to your local model when that
-    model reads images, and otherwise tells it a screenshot was taken;
-  - a private conversation you let go to the cloud redacted never sends it: the
-    picture is replaced by a line saying it was withheld;
-  - with no local model and no answer from you, nothing is sent at all.
+  refused by the gateway. Screenshots are the one kind of picture it forwards;
+  see [Screenshots](#screenshots).
 - The local model's context window may be smaller than the cloud model's, and
   local routing needs the chat completions protocol; with another protocol,
   Melete asks first instead.
+
+## Screenshots
+
+When the model reads images, the agent is shown the screenshots it takes: of
+its own computer and browser, and of your paired computers. They are carried
+inside the request and are not redacted: the detected details, your **Always
+protect** list and what memory learned privately are swapped out of text only.
+Each screenshot names where it came from, and the router decides from that:
+
+- **Ordinary conversations.** Under **Settings → Privacy → Screenshots sent to
+  cloud models**, the agent's own computer and browser are on and your paired
+  computers are off. Each paired computer has its own **Let cloud models see
+  this screen** under **Devices**, which wins when set. A screenshot that is not
+  allowed is replaced by a line saying one was taken; the agent still has the
+  receipt naming where it was saved. A picture whose source is not known never
+  goes to a cloud model.
+- **Private and sensitive conversations.** Screenshots go to your local model
+  only if it reads images; otherwise it is told one was taken. If you let such a
+  conversation go to a cloud model redacted, its screenshots stay behind. With
+  no local model and no answer from you, nothing is sent.
+- **A model you confirmed runs on your own machine** gets requests as written,
+  screenshots included.
 
 ## Performance
 

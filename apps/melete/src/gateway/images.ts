@@ -90,18 +90,82 @@ function textInPlaceOf(node: Node, text: string): Node {
   return { type: node.type === 'input_image' ? 'input_text' : 'text', text };
 }
 
-/** A copy of the body with every inline picture replaced by `text`. The input is not modified. */
+/**
+ * A copy of the body with inline pictures replaced by text. `text` is the
+ * replacement for every picture, or a function that names one per picture and
+ * returns null for a picture that stays. The input is not modified.
+ */
 export function withoutImages(
   body: Record<string, unknown>,
-  text: string,
+  text: string | ((image: Node) => string | null),
 ): Record<string, unknown> {
   const walk = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(walk);
     if (!isNode(value)) return value;
-    if (isInlineImage(value)) return textInPlaceOf(value, text);
+    if (isInlineImage(value)) {
+      const replacement = typeof text === 'string' ? text : text(value);
+      return replacement === null ? value : textInPlaceOf(value, replacement);
+    }
     return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, walk(child)]));
   };
   return walk(body) as Record<string, unknown>;
+}
+
+/** Every inline picture in a body, in order. */
+export function inlineImages(body: unknown): Node[] {
+  const found: Node[] = [];
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) for (const item of value) walk(item);
+    else if (isNode(value)) {
+      if (isInlineImage(value)) found.push(value);
+      else for (const child of Object.values(value)) walk(child);
+    }
+  };
+  walk(body);
+  return found;
+}
+
+/**
+ * Where a screenshot came from, as the runtime marked it: the agent's own
+ * computer, or a paired computer by id. Anything without the mark (a picture
+ * re-encoded on the way, or from somewhere else) is unknown, and is treated as
+ * the most private kind there is.
+ */
+export type ImageSource =
+  | { kind: 'computer' }
+  | { kind: 'device'; deviceId: string | null }
+  | { kind: 'unknown' };
+
+/** The JPEG comment the runtime writes into each screenshot it sends (melete_plugin/vision.py). */
+export const SOURCE_MARK = 'melete-screenshot:';
+
+/** The source a screenshot's own bytes name: a JPEG comment segment before the image data. */
+export function imageSource(image: Node): ImageSource {
+  const data = inlineData(image);
+  if (!data) return { kind: 'unknown' };
+  // The comment sits in the header, well inside the first few kilobytes.
+  const head = Buffer.from(data.slice(0, 8192 - (Math.min(data.length, 8192) % 4)), 'base64');
+  if (head[0] !== 0xff || head[1] !== 0xd8) return { kind: 'unknown' };
+  let at = 2;
+  while (at + 4 <= head.length && head[at] === 0xff) {
+    const marker = head[at + 1] ?? 0;
+    // Start of scan: the header is over.
+    if (marker === 0xda) break;
+    const length = head.readUInt16BE(at + 2);
+    if (length < 2) break;
+    if (marker === 0xfe) {
+      const comment = head.subarray(at + 4, at + 2 + length).toString('latin1');
+      if (!comment.startsWith(SOURCE_MARK)) break;
+      const source = comment.slice(SOURCE_MARK.length);
+      if (source === 'computer') return { kind: 'computer' };
+      if (source === 'device') return { kind: 'device', deviceId: null };
+      const device = /^device:([A-Za-z0-9_-]{1,100})$/.exec(source);
+      if (device?.[1]) return { kind: 'device', deviceId: device[1] };
+      break;
+    }
+    at += 2 + length;
+  }
+  return { kind: 'unknown' };
 }
 
 /**

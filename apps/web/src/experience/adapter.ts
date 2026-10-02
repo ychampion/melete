@@ -377,6 +377,11 @@ export const adapter = {
     guard<{ device: Device }>(() =>
       api.PATCH('/devices/{id}', { ...path(id), body: { capabilities } }),
     ),
+  /** Let cloud models see this computer's screen, or not; null follows Settings → Privacy. */
+  changeDeviceScreens: (id: string, cloud_screenshots: boolean | null) =>
+    guard<{ device: Device }>(() =>
+      api.PATCH('/devices/{id}', { ...path(id), body: { cloud_screenshots } }),
+    ),
   revokeDevice: (id: string) =>
     guard<{ device: Device }>(() => api.POST('/devices/{id}/revoke', path(id))),
   /* ---------- other assistants connected over MCP ---------- */

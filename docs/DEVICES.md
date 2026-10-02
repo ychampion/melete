@@ -62,6 +62,11 @@ Every action on your computer leaves a receipt in the conversation, like any oth
 command and its output, the file and its content hash, the page that was opened, or the
 screenshot, which is kept with the task's files.
 
+A model that reads images is shown a screenshot of your computer only on your own local model, or
+on a cloud model in an ordinary conversation when **Let cloud models see this screen** is on for
+that computer (off unless you turn it on here or under **Settings → Privacy**). Otherwise it reads
+the receipt alone. Screenshots are not redacted; see [PRIVACY-ROUTER](PRIVACY-ROUTER.md#screenshots).
+
 ### Limits
 
 | Limit | Value |

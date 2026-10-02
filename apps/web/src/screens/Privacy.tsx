@@ -189,6 +189,8 @@ export function PrivacyTab() {
       | 'private_agent_ids'
       | 'local_detection'
       | 'model_on_device'
+      | 'screenshots_own_computer'
+      | 'screenshots_paired_devices'
     >,
   ) => {
     setSettings((current) => (current ? { ...current, ...change } : current));
@@ -466,6 +468,29 @@ export function PrivacyTab() {
           disabled={!settings.local_model}
           onChange={(next) => flip({ local_detection: next })}
         />
+      </Section>
+
+      <Section
+        title="Screenshots sent to cloud models"
+        sub="When the agent works on a computer it can look at the screen. A cloud model that reads images is shown those screenshots in ordinary conversations only if you allow it here."
+      >
+        <SwitchRow
+          label="The agent's own computer and browser"
+          hint="Its own sandbox, where it browses and works for you."
+          on={settings.screenshots_own_computer}
+          onChange={(next) => flip({ screenshots_own_computer: next })}
+        />
+        <SwitchRow
+          label="Your paired computers"
+          hint="Your own screens. Each computer can say otherwise under Devices."
+          on={settings.screenshots_paired_devices}
+          onChange={(next) => flip({ screenshots_paired_devices: next })}
+        />
+        <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0 }}>
+          Screenshots are pictures, so nothing in them is swapped for a placeholder: the details
+          above and your Always protect list apply to text only. Private conversations never send
+          screenshots to a cloud model; your local model sees them only if it reads images.
+        </p>
       </Section>
 
       <Section

@@ -21,6 +21,12 @@ The engine decides the rest, and none of it is changed here:
 The picture is read only from the job's own workspace, through the same path
 checks commands use, and only for a receipt the broker returned for a screenshot
 tool that succeeded.
+
+Each picture names its source in a JPEG comment (``melete-screenshot:computer``
+or ``melete-screenshot:device:<id>``). The privacy router reads it to decide
+whether a cloud model may see the picture: a paired computer's screen goes to
+one only when that computer, or the privacy setting, allows it. A picture with
+no mark is treated as the most private kind.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ import io
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -42,6 +49,11 @@ VISION_ENV = "MELETE_ENGINE_SUPPORTS_VISION"
 
 #: The tools whose receipt names a screenshot saved in the job's workspace.
 SCREENSHOT_TOOLS = frozenset({"computer.screenshot", "device.screenshot", "device.browser_screenshot"})
+
+#: ``SOURCE_MARK`` in apps/melete/src/gateway/images.ts.
+SOURCE_MARK = "melete-screenshot:"
+
+_DEVICE_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
 
 #: ``VISION_IMAGE_MAX_EDGE`` in the contracts package.
 MAX_EDGE = 1280
@@ -77,7 +89,16 @@ def screenshot_path(result: Dict[str, Any]) -> Optional[str]:
     return path if isinstance(path, str) and path.lower().endswith(".png") else None
 
 
-def encode(data: bytes) -> Optional[str]:
+def source_of(name: str, result: Dict[str, Any]) -> str:
+    """The mark a picture carries: the agent's own computer, or which paired computer."""
+    if not name.startswith("device."):
+        return "computer"
+    detail = result.get("receipt", {}).get("detail", {})
+    device = detail.get("device_id") if isinstance(detail, dict) else None
+    return f"device:{device}" if isinstance(device, str) and _DEVICE_ID.match(device) else "device"
+
+
+def encode(data: bytes, mark: str = "computer") -> Optional[str]:
     """The picture as base64 JPEG within the per-picture limit, or None.
 
     None when Pillow is missing or the bytes are not a picture it can read; the
@@ -103,7 +124,13 @@ def encode(data: bytes) -> Optional[str]:
             scaled = picture.resize(size, Image.LANCZOS)
         for quality in QUALITIES:
             out = io.BytesIO()
-            scaled.save(out, format="JPEG", quality=quality, optimize=True)
+            scaled.save(
+                out,
+                format="JPEG",
+                quality=quality,
+                optimize=True,
+                comment=(SOURCE_MARK + mark).encode("ascii"),
+            )
             text = base64.b64encode(out.getvalue()).decode("ascii")
             if len(text) <= MAX_ENCODED_BYTES:
                 return text
@@ -139,7 +166,7 @@ def attach(name: str, result: Dict[str, Any]) -> Any:
     except (ExecRefused, OSError) as error:
         logger.warning("melete: the screenshot at %s could not be read: %s", path, error)
         return result
-    picture = encode(data)
+    picture = encode(data, source_of(name, result))
     if picture is None:
         return result
     summary = text_summary(name, result, path)

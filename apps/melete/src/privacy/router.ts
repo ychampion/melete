@@ -33,7 +33,13 @@ import {
   type QuestionSpecInput,
   type SensitiveTopic,
 } from '@melete/contracts';
-import { countImages, withoutImages } from '../gateway/images.ts';
+import {
+  countImages,
+  type ImageSource,
+  imageSource,
+  inlineImages,
+  withoutImages,
+} from '../gateway/images.ts';
 import { GatewayError, type GatewayPrincipal, type GatewayProvider } from '../gateway/types.ts';
 import {
   authoredParts,
@@ -62,6 +68,18 @@ import { type KnownValue, placeholderCategory, Vault } from './vault.ts';
  */
 export const IMAGE_WITHHELD_PRIVATE =
   '[A screenshot was taken here. It is not shown to this model because this conversation is private and a picture cannot be redacted.]';
+
+/** The agent's own screenshot, when the owner turned those off for cloud models. */
+export const IMAGE_WITHHELD_OWN =
+  '[A screenshot of your own computer was taken here. It is not shown to cloud models: that is turned off in Settings > Privacy. The receipt says where it was saved.]';
+
+/** A paired computer's screenshot, unless that computer or the privacy setting allows it. */
+export const IMAGE_WITHHELD_DEVICE =
+  "[A screenshot of the person's paired computer was taken here. It is not shown to cloud models unless that computer allows it in Settings > Devices. The receipt says where it was saved.]";
+
+/** A picture whose source is not marked, treated as the most private kind. */
+export const IMAGE_WITHHELD_UNKNOWN =
+  '[A picture was here. It is not shown to cloud models because where it came from is not known.]';
 
 /** What a screenshot becomes for a local model that does not read images. */
 export const IMAGE_WITHHELD_LOCAL =
@@ -244,6 +262,40 @@ export class PrivacyRouter {
     return state;
   }
 
+  /**
+   * An ordinary conversation's pictures as a cloud model may see them. The
+   * agent's own computer and browser go unless the owner turned that off; a
+   * paired computer's screen goes only when that computer, or failing its own
+   * answer the privacy setting, allows it; a picture of unknown source never.
+   */
+  private async screenshotsForCloud(
+    spaceId: string | null,
+    settings: ResolvedSettings,
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const images = inlineImages(body);
+    if (!images.length) return body;
+    const sources = new Map<unknown, ImageSource>(
+      images.map((image) => [image, imageSource(image)]),
+    );
+    const devices = new Map<string, boolean | null>();
+    for (const source of sources.values())
+      if (source.kind === 'device' && source.deviceId && !devices.has(source.deviceId))
+        devices.set(
+          source.deviceId,
+          spaceId ? await this.store.deviceCloudScreenshots(spaceId, source.deviceId) : null,
+        );
+    return withoutImages(body, (image) => {
+      const source = sources.get(image) ?? imageSource(image);
+      if (source.kind === 'computer') return settings.screenshotsOwn ? null : IMAGE_WITHHELD_OWN;
+      if (source.kind === 'device') {
+        const own = source.deviceId ? (devices.get(source.deviceId) ?? null) : null;
+        return (own ?? settings.screenshotsDevices) ? null : IMAGE_WITHHELD_DEVICE;
+      }
+      return IMAGE_WITHHELD_UNKNOWN;
+    });
+  }
+
   /** The destination and body for one outbound request. Throws to refuse it. */
   async prepare(input: {
     principal: GatewayPrincipal;
@@ -293,12 +345,16 @@ export class PrivacyRouter {
       if (decision.consent !== 'allowed')
         throw new GatewayError(409, 'privacy_confirmation_required');
     }
-    // The person agreed to a redacted version of a private conversation. Text
-    // is redacted below; a picture cannot be, so it stays behind.
-    const outbound = decision.private ? withoutImages(body, IMAGE_WITHHELD_PRIVATE) : body;
-    // What memory learned in private conversations is swapped out of every
-    // cloud request, wherever it appears: recall already leaves it out, and
-    // this catches any other way it could arrive.
+    // Pictures are not redacted: nothing below reads them. In a private
+    // conversation the person let go redacted, they stay behind; in an ordinary
+    // one each goes only as far as its source's switch allows.
+    const outbound = decision.private
+      ? withoutImages(body, IMAGE_WITHHELD_PRIVATE)
+      : await this.screenshotsForCloud(scope.spaceId, settings, body);
+    // What memory learned in private conversations is swapped out of the text
+    // of every cloud request, wherever it appears: recall already leaves it
+    // out, and this catches any other way it could arrive as text. Pictures are
+    // not read for it; they follow the screenshot switches above.
     const remembered = scope.spaceId ? await this.store.privateMemory(scope.spaceId) : [];
     const state = await this.state(scope, settings, `${settings.version}:${digest(remembered)}`);
     let localDetection: PrivacyReceipt['local_detection'] = 'off';

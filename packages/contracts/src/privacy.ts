@@ -119,6 +119,16 @@ export const privacySettings = z.strictObject({
   model_on_device: z.boolean(),
   /** Whether swapped details are kept, sealed, between requests. */
   sealed_vault: z.boolean(),
+  /**
+   * Cloud models may see screenshots of the agent's own computer and browser
+   * in an ordinary conversation. Pictures are not redacted.
+   */
+  screenshots_own_computer: z.boolean(),
+  /**
+   * Cloud models may see screenshots of paired computers in an ordinary
+   * conversation. A computer's own setting, when it has one, wins.
+   */
+  screenshots_paired_devices: z.boolean(),
 });
 export type PrivacySettings = z.infer<typeof privacySettings>;
 
@@ -137,6 +147,8 @@ export const privacySettingsUpdate = z.strictObject({
     .nullable()
     .optional(),
   local_detection: z.boolean().optional(),
+  screenshots_own_computer: z.boolean().optional(),
+  screenshots_paired_devices: z.boolean().optional(),
   /** Confirm (true) or withdraw (false) that the configured model's address is a model the owner runs. */
   model_on_device: z.boolean().optional(),
   add_known_values: z

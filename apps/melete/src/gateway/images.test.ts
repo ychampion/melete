@@ -9,7 +9,8 @@ import {
 } from '@melete/contracts';
 import { compactionThresholdTokens } from '@melete/runtime-hermes';
 import { defaultPrivacyRouter } from '../privacy/index.ts';
-import { countImages, imageTokens, isInlineImage, withoutImages } from './images.ts';
+import { markedScreenshot } from './fixtures/screenshot.ts';
+import { countImages, imageSource, imageTokens, isInlineImage, withoutImages } from './images.ts';
 import {
   createModelGateway,
   GatewayError,
@@ -22,7 +23,7 @@ import { estimateInputTokens } from './metering.ts';
 const MODEL = 'accounts/fireworks/models/deepseek-v4p1-flash';
 
 /** Base64 text of the given length, as a shrunk screenshot arrives. */
-const picture = (length: number) => 'A'.repeat(length);
+const picture = (length: number) => markedScreenshot('computer', length);
 const chatImage = (data: string) => ({
   type: 'image_url',
   image_url: { url: `data:image/jpeg;base64,${data}` },
@@ -110,6 +111,26 @@ describe('pictures a request carries', () => {
       ],
     });
     expect(body).toEqual(copy);
+  });
+
+  test('name their source in their own bytes, and anything unmarked is unknown', () => {
+    expect(imageSource(chatImage(markedScreenshot('computer')))).toEqual({ kind: 'computer' });
+    expect(imageSource(messagesImage(markedScreenshot('device:dev_01ABC')))).toEqual({
+      kind: 'device',
+      deviceId: 'dev_01ABC',
+    });
+    expect(imageSource(responsesImage(markedScreenshot('device')))).toEqual({
+      kind: 'device',
+      deviceId: null,
+    });
+    for (const unmarked of [
+      markedScreenshot(null),
+      markedScreenshot('somewhere-else'),
+      markedScreenshot('device:../../x'),
+      'AAAA',
+      'iVBORw0KGgo=',
+    ])
+      expect(imageSource(chatImage(unmarked))).toEqual({ kind: 'unknown' });
   });
 
   test('are charged the flat count the engine compacts by, not their bytes', () => {

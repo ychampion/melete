@@ -37,6 +37,10 @@ export type ResolvedSettings = {
    * address are sent as written; nothing else is trusted as local.
    */
   onDeviceUrl: string | null;
+  /** Cloud models may see the agent's own computer and browser. On unless turned off. */
+  screenshotsOwn: boolean;
+  /** Cloud models may see paired computers' screens. Off unless turned on. */
+  screenshotsDevices: boolean;
 };
 
 /** What is stored in the plain `settings` column. */
@@ -49,6 +53,8 @@ export type PlainSettings = {
   local_detection?: boolean;
   /** The provider address the owner confirmed runs on a machine they control. */
   model_on_device_url?: string | null;
+  screenshots_own_computer?: boolean;
+  screenshots_paired_devices?: boolean;
 };
 
 /** What is sealed beside it. */
@@ -85,6 +91,8 @@ export function resolveSettings(
     localDetection: plain.local_detection === true,
     known: sealed?.known ?? [],
     onDeviceUrl: plain.model_on_device_url ?? null,
+    screenshotsOwn: plain.screenshots_own_computer !== false,
+    screenshotsDevices: plain.screenshots_paired_devices === true,
   };
 }
 
@@ -182,6 +190,11 @@ export interface PrivacyStore {
    * private when they were captured, so a cloud request can leave it out.
    */
   privateMemory(spaceId: string): Promise<string[]>;
+  /**
+   * A paired computer's own answer to whether cloud models may see its screen,
+   * or null when it has none. Null too for a computer outside this space.
+   */
+  deviceCloudScreenshots(spaceId: string, deviceId: string): Promise<boolean | null>;
   /** The answer given to the question an attempt asked, or null while it is open. */
   answer(attemptId: string): Promise<string | null>;
   log(entry: RequestLog): Promise<void>;
@@ -408,6 +421,13 @@ export class PostgresPrivacyStore implements PrivacyStore {
     return rows.map((row) => String(row.content));
   }
 
+  async deviceCloudScreenshots(spaceId: string, deviceId: string): Promise<boolean | null> {
+    const [row] = await this.sql`select cloud_screenshots from paired_device
+      where id = ${deviceId} and space_id = ${spaceId}`;
+    const value = row?.cloud_screenshots;
+    return typeof value === 'boolean' ? value : null;
+  }
+
   async answer(attemptId: string): Promise<string | null> {
     const [row] = await this.sql`select answer from question
       where attempt_id = ${attemptId} and state = 'answered' order by created_at desc limit 1`;
@@ -542,6 +562,13 @@ export class MemoryPrivacyStore implements PrivacyStore {
 
   async privateMemory(spaceId: string) {
     return this.memory.get(spaceId) ?? [];
+  }
+
+  /** Paired computers' own screenshot answers, keyed `space:device`. */
+  readonly deviceScreens = new Map<string, boolean>();
+
+  async deviceCloudScreenshots(spaceId: string, deviceId: string) {
+    return this.deviceScreens.get(`${spaceId}:${deviceId}`) ?? null;
   }
 
   async answer(attemptId: string) {

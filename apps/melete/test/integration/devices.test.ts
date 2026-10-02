@@ -9,7 +9,12 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type CapabilityClaims, DEVICE_LIMITS, type RuntimeAdapter } from '@melete/contracts';
+import {
+  type CapabilityClaims,
+  DEVICE_LIMITS,
+  type DeviceView,
+  type RuntimeAdapter,
+} from '@melete/contracts';
 import { BrowserBridge } from '../../../../packages/device/src/browser.ts';
 import {
   type AgentOptions,
@@ -30,6 +35,7 @@ import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { PostgresPrivacyStore } from '../../src/privacy/store.ts';
 import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -474,6 +480,25 @@ withDb('the agent uses the computer through the broker', () => {
     const [after] = await s.sql`select scopes from connection where id = ${connectionId}`;
     expect(after?.scopes).toContain('device.screenshot');
     expect(after?.scopes).not.toContain('device.run');
+    expect(((await changed.json()) as { device: DeviceView }).device.cloud_screenshots).toBeNull();
+
+    // Letting cloud models see this screen is the computer's own answer, and
+    // the privacy router reads it from the same row.
+    const store = new PostgresPrivacyStore(s.sql);
+    const deviceId = localOff.config.device_id;
+    const [space] = await s.sql`select space_id from paired_device where id = ${deviceId}`;
+    expect(await store.deviceCloudScreenshots(String(space?.space_id), deviceId)).toBeNull();
+    const shown = await s.app.request(
+      `/devices/${deviceId}`,
+      s.as(s.cookie, 'PATCH', { cloud_screenshots: true }),
+    );
+    expect(shown.status).toBe(200);
+    expect(((await shown.json()) as { device: DeviceView }).device.cloud_screenshots).toBe(true);
+    expect(await store.deviceCloudScreenshots(String(space?.space_id), deviceId)).toBe(true);
+    // Its grants are untouched by it, and another space cannot read it.
+    const [kept] = await s.sql`select scopes from connection where id = ${connectionId}`;
+    expect(kept?.scopes).toContain('device.screenshot');
+    expect(await store.deviceCloudScreenshots('sp_elsewhere', deviceId)).toBeNull();
   }, 60_000);
 
   test('work for an offline computer waits, and goes when it connects again', async () => {

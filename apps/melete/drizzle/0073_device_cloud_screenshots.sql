@@ -1,0 +1,1 @@
+ALTER TABLE "paired_device" ADD COLUMN "cloud_screenshots" boolean;
