@@ -90,7 +90,9 @@ export type RunnerOptions = {
    * owner chooses in the app applies from the next attempt without a restart.
    * Left out, `provider` and `model` decide.
    */
-  resolveModel?: (tx: Transaction) => Promise<{ provider: string; model: string }>;
+  resolveModel?: (
+    tx: Transaction,
+  ) => Promise<{ provider: string; model: string; vision?: boolean }>;
   scopes?: string[];
   liveConnectionScopes?: boolean;
   scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
@@ -215,11 +217,17 @@ export class AttemptRunner {
       // this attempt is told it was withdrawn rather than that it is pending.
       await withdrawOutdatedPermissions(tx, row.id);
       const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
-      const chosen = (await this.options.resolveModel?.(tx)) ?? {
-        provider: this.options.provider ?? 'stub',
-        model: this.options.model ?? 'script',
+      const chosen: { provider: string; model: string; vision?: boolean } =
+        (await this.options.resolveModel?.(tx)) ?? {
+          provider: this.options.provider ?? 'stub',
+          model: this.options.model ?? 'script',
+        };
+      const model = {
+        provider: chosen.provider,
+        model: chosen.model,
+        fallback: null,
+        ...(typeof chosen.vision === 'boolean' ? { vision: chosen.vision } : {}),
       };
-      const model = { provider: chosen.provider, model: chosen.model, fallback: null };
       const budget = jobBudget.parse(row.budget);
       const [previous] = await tx
         .select()

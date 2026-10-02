@@ -37,6 +37,10 @@ export type ResolvedSettings = {
    * address are sent as written; nothing else is trusted as local.
    */
   onDeviceUrl: string | null;
+  /** Cloud models may see the agent's own computer and browser. On unless turned off. */
+  screenshotsOwn: boolean;
+  /** Cloud models may see paired computers' screens. Off unless turned on. */
+  screenshotsDevices: boolean;
 };
 
 /** What is stored in the plain `settings` column. */
@@ -49,6 +53,8 @@ export type PlainSettings = {
   local_detection?: boolean;
   /** The provider address the owner confirmed runs on a machine they control. */
   model_on_device_url?: string | null;
+  screenshots_own_computer?: boolean;
+  screenshots_paired_devices?: boolean;
 };
 
 /** What is sealed beside it. */
@@ -85,6 +91,8 @@ export function resolveSettings(
     localDetection: plain.local_detection === true,
     known: sealed?.known ?? [],
     onDeviceUrl: plain.model_on_device_url ?? null,
+    screenshotsOwn: plain.screenshots_own_computer !== false,
+    screenshotsDevices: plain.screenshots_paired_devices === true,
   };
 }
 
@@ -109,6 +117,22 @@ export type Scope = {
   agentId: string | null;
   turnId: string | null;
 };
+
+/**
+ * Whose screen a screenshot shows, read from the brokered action it came
+ * from: the agent's own computer, or a paired computer with its own answer on
+ * cloud models (null when it has none).
+ */
+export type ScreenshotSource =
+  | { kind: 'computer' }
+  | { kind: 'device'; deviceId: string; cloudScreenshots: boolean | null };
+
+/** The tools whose succeeded actions are screenshots. */
+export const SCREENSHOT_TOOLS = [
+  'computer.screenshot',
+  'device.screenshot',
+  'device.browser_screenshot',
+] as const;
 
 export type ConversationState = {
   sensitive: SensitiveTopic | null;
@@ -182,6 +206,12 @@ export interface PrivacyStore {
    * private when they were captured, so a cloud request can leave it out.
    */
   privateMemory(spaceId: string): Promise<string[]>;
+  /**
+   * The source of the screenshot `actionId` names, when it is a screenshot
+   * action of this job that succeeded; null for anything else, so a picture
+   * that names another job's action, or no real one, is treated as unlabelled.
+   */
+  screenshotSource(jobId: string, actionId: string): Promise<ScreenshotSource | null>;
   /** The answer given to the question an attempt asked, or null while it is open. */
   answer(attemptId: string): Promise<string | null>;
   log(entry: RequestLog): Promise<void>;
@@ -408,6 +438,23 @@ export class PostgresPrivacyStore implements PrivacyStore {
     return rows.map((row) => String(row.content));
   }
 
+  async screenshotSource(jobId: string, actionId: string): Promise<ScreenshotSource | null> {
+    const [row] = await this.sql`select a.kind, d.id as device_id, d.cloud_screenshots
+      from action a
+      join job j on j.id = a.job_id
+      left join paired_device d on d.connection_id = a.connection_id and d.space_id = j.space_id
+      where a.id = ${actionId} and a.job_id = ${jobId} and a.status = 'succeeded'
+        and a.kind in ${this.sql([...SCREENSHOT_TOOLS])}`;
+    if (!row) return null;
+    if (row.kind === 'computer.screenshot') return { kind: 'computer' };
+    if (typeof row.device_id !== 'string') return null;
+    return {
+      kind: 'device',
+      deviceId: row.device_id,
+      cloudScreenshots: typeof row.cloud_screenshots === 'boolean' ? row.cloud_screenshots : null,
+    };
+  }
+
   async answer(attemptId: string): Promise<string | null> {
     const [row] = await this.sql`select answer from question
       where attempt_id = ${attemptId} and state = 'answered' order by created_at desc limit 1`;
@@ -542,6 +589,13 @@ export class MemoryPrivacyStore implements PrivacyStore {
 
   async privateMemory(spaceId: string) {
     return this.memory.get(spaceId) ?? [];
+  }
+
+  /** Succeeded screenshot actions, keyed `job:action`. */
+  readonly screenshots = new Map<string, ScreenshotSource>();
+
+  async screenshotSource(jobId: string, actionId: string) {
+    return this.screenshots.get(`${jobId}:${actionId}`) ?? null;
   }
 
   async answer(attemptId: string) {

@@ -156,6 +156,12 @@ export const deviceView = z
     /** What the companion on the computer allows. A capability is usable only when both allow it. */
     local_capabilities: deviceCapabilities,
     folders: z.array(deviceFolder),
+    /**
+     * Whether a cloud model may see this computer's screen in an ordinary
+     * conversation. Null follows `screenshots_paired_devices` in the privacy
+     * settings. Its screenshots never go to a cloud model in a private one.
+     */
+    cloud_screenshots: z.boolean().nullable(),
     status: z.enum(['online', 'offline', 'revoked']),
     /** Whether the browser extension on this computer is switched on and connected now. */
     browser_connected: z.boolean(),
@@ -182,7 +188,9 @@ export const devicePairingResponse = z
   .meta({ id: 'DevicePairing' });
 
 export const deviceUpdateRequest = z.strictObject({
-  capabilities: deviceCapabilities.partial(),
+  capabilities: deviceCapabilities.partial().optional(),
+  /** Let cloud models see this screen. Null goes back to the privacy setting. */
+  cloud_screenshots: z.boolean().nullable().optional(),
 });
 
 /* ---------- what the companion sends ---------- */

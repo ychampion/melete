@@ -98,7 +98,12 @@ export function mountDevices(app: Hono, devices: DeviceService) {
   });
   app.patch('/devices/:id', async (c) => {
     const input = deviceUpdateRequest.parse(await c.req.json());
-    const device = await devices.update(c.req.param('id'), c.get('owner').id, input.capabilities);
+    const device = await devices.update(
+      c.req.param('id'),
+      c.get('owner').id,
+      input.capabilities ?? {},
+      input.cloud_screenshots,
+    );
     return c.json(deviceResponse.parse({ device }));
   });
   app.post('/devices/:id/revoke', async (c) => {

@@ -12,7 +12,7 @@
  */
 
 import type { DeviceCapabilities, DeviceFolder } from '@melete/contracts';
-import { index, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import { boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 import { connection, space } from '../db/schema.ts';
 
 export const pairedDevice = pgTable(
@@ -34,6 +34,11 @@ export const pairedDevice = pgTable(
     /** What the companion on the computer allows, as it last said. */
     localCapabilities: jsonb('local_capabilities').$type<DeviceCapabilities>().notNull(),
     folders: jsonb('folders').$type<DeviceFolder[]>().notNull().default([]),
+    /**
+     * Whether cloud models may see this computer's screen in an ordinary
+     * conversation. Null follows the space's privacy setting, which is off.
+     */
+    cloudScreenshots: boolean('cloud_screenshots'),
     companionVersion: text('companion_version'),
     pairedBy: text('paired_by').notNull(),
     pairedAt: timestamp('paired_at', { withTimezone: true }).notNull().defaultNow(),

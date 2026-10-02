@@ -9,7 +9,12 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type CapabilityClaims, DEVICE_LIMITS, type RuntimeAdapter } from '@melete/contracts';
+import {
+  type CapabilityClaims,
+  DEVICE_LIMITS,
+  type DeviceView,
+  type RuntimeAdapter,
+} from '@melete/contracts';
 import { BrowserBridge } from '../../../../packages/device/src/browser.ts';
 import {
   type AgentOptions,
@@ -30,6 +35,7 @@ import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { PostgresPrivacyStore } from '../../src/privacy/store.ts';
 import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -474,6 +480,50 @@ withDb('the agent uses the computer through the broker', () => {
     const [after] = await s.sql`select scopes from connection where id = ${connectionId}`;
     expect(after?.scopes).toContain('device.screenshot');
     expect(after?.scopes).not.toContain('device.run');
+    expect(((await changed.json()) as { device: DeviceView }).device.cloud_screenshots).toBeNull();
+
+    // Whose screen a screenshot shows is read from the job's own succeeded
+    // screenshot action and the computer behind its connection, never from
+    // the picture; letting cloud models see it is that computer's own answer.
+    const store = new PostgresPrivacyStore(s.sql);
+    const deviceId = localOff.config.device_id;
+    const screenshot = async (job: typeof claims, kind: string, status: string) => {
+      const id = recordId('act');
+      await s.sql`insert into action (id, job_id, attempt_id, connection_id, kind,
+        effect_class, canonical_payload, payload_hash, idempotency_key, status)
+        values (${id}, ${job.job_id}, ${job.attempt_id}, ${connectionId}, ${kind}, 'read',
+          '{}'::jsonb, ${'d'.repeat(64)}, ${id}, ${status})`;
+      return id;
+    };
+    const shot = await screenshot(claims, 'device.screenshot', 'succeeded');
+    expect(await store.screenshotSource(claims.job_id, shot)).toEqual({
+      kind: 'device',
+      deviceId,
+      cloudScreenshots: null,
+    });
+    const shown = await s.app.request(
+      `/devices/${deviceId}`,
+      s.as(s.cookie, 'PATCH', { cloud_screenshots: true }),
+    );
+    expect(shown.status).toBe(200);
+    expect(((await shown.json()) as { device: DeviceView }).device.cloud_screenshots).toBe(true);
+    expect(await store.screenshotSource(claims.job_id, shot)).toEqual({
+      kind: 'device',
+      deviceId,
+      cloudScreenshots: true,
+    });
+    // Its grants are untouched by it.
+    const [kept] = await s.sql`select scopes from connection where id = ${connectionId}`;
+    expect(kept?.scopes).toContain('device.screenshot');
+    // Another job's screenshot, an action that is not a screenshot, or one that
+    // did not succeed names nothing.
+    const otherJob = await s.job(tools);
+    expect(await store.screenshotSource(otherJob.job_id, shot)).toBeNull();
+    const listing = await screenshot(claims, 'device.list_files', 'succeeded');
+    expect(await store.screenshotSource(claims.job_id, listing)).toBeNull();
+    const failed = await screenshot(claims, 'device.browser_screenshot', 'failed');
+    expect(await store.screenshotSource(claims.job_id, failed)).toBeNull();
+    expect(await store.screenshotSource(claims.job_id, recordId('act'))).toBeNull();
   }, 60_000);
 
   test('work for an offline computer waits, and goes when it connects again', async () => {

@@ -858,6 +858,16 @@ With `OPENAI_API_KEY` or `OPENAI_COMPAT_BASE_URL` set, the agent can also turn
 text into speech. `MELETE_SPEECH_MODEL` names the text-to-speech model it uses;
 left empty, it is `gpt-4o-mini-tts`.
 
+`MELETE_DEFAULT_MODEL_VISION` says whether the default model reads images
+(`true` or `false`). When it does, the screenshots the agent takes of its own
+computer and of paired devices reach it as pictures, scaled to at most 1280
+pixels and compressed; the three newest are kept in each request and older ones
+are replaced by their text receipt, and compaction starts sooner to leave room
+for them. Otherwise the model reads the receipt alone: where the picture was
+saved, its size and its digest. Left empty, Melete's model catalog decides,
+and an unknown model reads text only. A model chosen in the app carries the
+owner's own answer (`supports_vision` on `PUT /model-settings/default`).
+
 `MELETE_DEFAULT_MAX_OUTPUT_TOKENS` (default `4096`) is the output limit the
 gateway gives a model request that names none. The runtime names none unless its
 own configuration sets one, so this is the usual ceiling on one reply; a few

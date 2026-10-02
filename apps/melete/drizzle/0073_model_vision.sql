@@ -1,0 +1,1 @@
+ALTER TABLE "model_default" ADD COLUMN "supports_vision" boolean;

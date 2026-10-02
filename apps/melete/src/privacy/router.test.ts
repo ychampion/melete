@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
+import { markedScreenshot, unmarkedBytes } from '../gateway/fixtures/screenshot.ts';
 import {
   createModelGateway,
   type GatewayBudget,
@@ -9,7 +10,14 @@ import {
   type GatewayProvider,
   type GatewaySettlement,
 } from '../gateway/index.ts';
-import { PrivacyRouter } from './router.ts';
+import {
+  IMAGE_WITHHELD_DEVICE,
+  IMAGE_WITHHELD_LOCAL,
+  IMAGE_WITHHELD_OWN,
+  IMAGE_WITHHELD_PRIVATE,
+  IMAGE_WITHHELD_UNKNOWN,
+  PrivacyRouter,
+} from './router.ts';
 import { MemoryPrivacyStore } from './store.ts';
 
 const PROVIDERS: GatewayProvider[] = [
@@ -1079,4 +1087,226 @@ test('a space or agent the person marked private is reported as such, and a chan
   router.invalidate('spc_1');
   expect(await router.marksPrivate('spc_1', null)).toBe(true);
   expect(await router.marksPrivate('spc_2', null)).toBe(false);
+});
+
+describe('screenshots follow the conversation', () => {
+  const OWN = 'act_01OWNSCREEN';
+  const DEVICE = 'act_01DEVICESCREEN';
+  const OTHER_DEVICE = 'act_01SECONDDEVICE';
+  // Base64 that happens to read like an account number: as text it would be
+  // swapped for a placeholder and the picture broken.
+  const data = `${markedScreenshot(OWN, 64)}${SAM.account}AAAA`;
+  const picture = (base64: string) => ({
+    type: 'image_url',
+    image_url: { url: `data:image/jpeg;base64,${base64}` },
+  });
+  /** One tool result carrying a screenshot, in the chat completions shape. */
+  const withShot = (base64: string) => [
+    { role: 'user', content: `Pay from account ${SAM.account}` },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        { id: 'c1', type: 'function', function: { name: 'computer.screenshot', arguments: '{}' } },
+      ],
+    },
+    {
+      role: 'tool',
+      tool_call_id: 'c1',
+      content: [{ type: 'text', text: 'saved' }, picture(base64)],
+    },
+  ];
+  const messages = withShot(data);
+  /** The job's own screenshots, as the broker recorded them. */
+  const recorded = (store: MemoryPrivacyStore) => {
+    store.screenshots.set(`job_chat:${OWN}`, { kind: 'computer' });
+    store.screenshots.set(`job_chat:${DEVICE}`, {
+      kind: 'device',
+      deviceId: 'dev_1',
+      cloudScreenshots: null,
+    });
+    // Another job's screenshot of the agent's own computer: not this job's to name.
+    store.screenshots.set(`job_elsewhere:act_01FORGED`, { kind: 'computer' });
+    return store;
+  };
+  const inSpace = async (settings: Record<string, unknown>) => {
+    const store = new MemoryPrivacyStore();
+    store.scopes.set('job_chat', {
+      spaceId: 'spc_1',
+      conversationId: 'job_chat',
+      agentId: 'agt_1',
+      turnId: 'trn_1',
+    });
+    await store.saveSettings('spc_1', settings, null);
+    return recorded(store);
+  };
+  const ordinarySpace = (settings: Record<string, unknown> = {}) => inSpace(settings);
+  const inPrivateSpace = async (local?: string, consent?: boolean) => {
+    const store = await inSpace({
+      private_agent_ids: ['agt_1'],
+      ...(local ? { local_model: { base_url: 'http://127.0.0.1:11434/v1', model: local } } : {}),
+    });
+    if (consent) await store.updateConversation('job_chat', 'spc_1', { consent: 'allowed' });
+    return store;
+  };
+  const sentContent = (captured: Captured[]) =>
+    JSON.parse(captured[0]?.body ?? '{}').messages[2].content as unknown[];
+  /** The picture's bytes as the provider received them, or null when a line stood in. */
+  const sentBytes = (part: unknown): Buffer | null => {
+    const url = (part as { image_url?: { url?: string } }).image_url?.url;
+    return url ? Buffer.from(url.replace(/^data:image\/jpeg;base64,/, ''), 'base64') : null;
+  };
+  const sentPicture = async (store: MemoryPrivacyStore, action: string | null) => {
+    const { captured, post } = await start({ store });
+    const response = await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: withShot(markedScreenshot(action)),
+    });
+    expect(response.status).toBe(200);
+    // Whatever was decided, the runtime's mark never reaches a provider.
+    expect(captured[0]?.body).not.toContain(
+      Buffer.from('melete-screenshot').toString('base64').slice(0, 12),
+    );
+    return sentContent(captured)[1];
+  };
+  const shown = (action: string) => ({ bytes: unmarkedBytes(action) });
+  const asReceived = (part: unknown) => ({ bytes: sentBytes(part) });
+
+  test('an ordinary conversation sends the picture to the cloud model unredacted and unmarked, the text redacted', async () => {
+    const { captured, post } = await start({ store: await ordinarySpace() });
+    expect(
+      (await post('/providers/fireworks/v1/chat/completions', { stream: true, messages })).status,
+    ).toBe(200);
+    const body = JSON.parse(captured[0]?.body ?? '{}');
+    expect(body.messages[0].content).toBe('Pay from account ⟦ACCOUNT_1⟧');
+    const bytes = sentBytes(body.messages[2].content[1]);
+    expect(bytes?.toString('latin1')).not.toContain('melete-screenshot');
+    // Only the comment came out: the picture's own bytes are as they were.
+    const original = Buffer.from(data, 'base64');
+    expect(bytes?.length).toBe(original.length - (4 + `melete-screenshot:${OWN}`.length));
+    expect(bytes?.subarray(-20)).toEqual(original.subarray(-20));
+  });
+
+  test("a paired computer's screen stays off cloud models by default; the receipt still goes", async () => {
+    expect(await sentPicture(await ordinarySpace(), DEVICE)).toEqual({
+      type: 'text',
+      text: IMAGE_WITHHELD_DEVICE,
+    });
+  });
+
+  test("whose screen it is comes from the action, and the computer's own answer wins", async () => {
+    const allowed = await ordinarySpace();
+    allowed.screenshots.set(`job_chat:${DEVICE}`, {
+      kind: 'device',
+      deviceId: 'dev_1',
+      cloudScreenshots: true,
+    });
+    expect(asReceived(await sentPicture(allowed, DEVICE))).toEqual(shown(DEVICE));
+    const settingOn = await ordinarySpace({ screenshots_paired_devices: true });
+    expect(asReceived(await sentPicture(settingOn, DEVICE))).toEqual(shown(DEVICE));
+    settingOn.screenshots.set(`job_chat:${OTHER_DEVICE}`, {
+      kind: 'device',
+      deviceId: 'dev_2',
+      cloudScreenshots: false,
+    });
+    expect(await sentPicture(settingOn, OTHER_DEVICE)).toEqual({
+      type: 'text',
+      text: IMAGE_WITHHELD_DEVICE,
+    });
+  });
+
+  test("the agent's own computer is seen unless the owner turned that off, whatever the device setting", async () => {
+    expect(asReceived(await sentPicture(await ordinarySpace(), OWN))).toEqual(shown(OWN));
+    expect(
+      asReceived(
+        await sentPicture(await ordinarySpace({ screenshots_paired_devices: false }), OWN),
+      ),
+    ).toEqual(shown(OWN));
+    expect(
+      await sentPicture(await ordinarySpace({ screenshots_own_computer: false }), OWN),
+    ).toEqual({ type: 'text', text: IMAGE_WITHHELD_OWN });
+  });
+
+  test("a picture with no mark, or naming another job's action or none at all, never reaches a cloud model", async () => {
+    const store = await ordinarySpace({
+      screenshots_own_computer: true,
+      screenshots_paired_devices: true,
+    });
+    for (const action of [null, 'act_01FORGED', 'act_01NOSUCHACTION'])
+      expect(await sentPicture(store, action)).toEqual({
+        type: 'text',
+        text: IMAGE_WITHHELD_UNKNOWN,
+      });
+  });
+
+  test("a paired computer's screen still goes to a local model that reads images in a private conversation", async () => {
+    const { captured, post } = await start({ store: await inPrivateSpace('qwen2.5vl:7b') });
+    const response = await post('/providers/fireworks/v1/chat/completions', {
+      stream: true,
+      messages: withShot(markedScreenshot(DEVICE)),
+    });
+    expect(response.status).toBe(200);
+    expect(captured[0]?.url).toBe('http://127.0.0.1:11434/v1/chat/completions');
+    expect(asReceived(sentContent(captured)[1])).toEqual(shown(DEVICE));
+  });
+
+  test('a local model that reads text only is told a screenshot was taken, without it', async () => {
+    const { captured, post } = await start({ store: await inPrivateSpace('llama3.3') });
+    expect(
+      (await post('/providers/fireworks/v1/chat/completions', { stream: true, messages })).status,
+    ).toBe(200);
+    expect(captured[0]?.url).toBe('http://127.0.0.1:11434/v1/chat/completions');
+    expect(sentContent(captured)[1]).toEqual({ type: 'text', text: IMAGE_WITHHELD_LOCAL });
+    expect(captured[0]?.body).not.toContain(data);
+  });
+
+  test('with no local model a private conversation sends nothing, screenshot included', async () => {
+    const { captured, post, reserved } = await start({ store: await inPrivateSpace() });
+    expect(
+      (await post('/providers/fireworks/v1/chat/completions', { stream: true, messages })).status,
+    ).toBe(409);
+    expect(captured).toHaveLength(0);
+    expect(reserved).toHaveLength(0);
+  });
+
+  test('a private conversation the person let go redacted keeps its pictures behind, in every protocol', async () => {
+    const { captured, post } = await start({ store: await inPrivateSpace(undefined, true) });
+    expect(
+      (await post('/providers/fireworks/v1/chat/completions', { stream: true, messages })).status,
+    ).toBe(200);
+    expect(sentContent(captured)[1]).toEqual({ type: 'text', text: IMAGE_WITHHELD_PRIVATE });
+    const responses = await post('/providers/openai/v1/responses', {
+      input: [
+        {
+          type: 'function_call_output',
+          call_id: 'c1',
+          output: [{ type: 'input_image', image_url: `data:image/png;base64,${data}` }],
+        },
+      ],
+    });
+    // The provider's own answer is beside the point here: only what left is.
+    await responses.body?.cancel();
+    const anthropic = await post('/providers/anthropic/v1/messages', {
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'c1',
+              content: [
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data } },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    await anthropic.body?.cancel();
+    expect(captured).toHaveLength(3);
+    for (const request of captured) {
+      expect(request.body).not.toContain(data);
+      expect(request.body).toContain('a picture cannot be redacted');
+    }
+  });
 });
