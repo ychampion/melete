@@ -5,10 +5,18 @@ import {
   type JobState,
   spaceMembership as membershipContract,
 } from '@melete/contracts';
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { job, owner, principal, space, spaceMembership, trigger } from '../db/schema.ts';
+import {
+  experienceTurn,
+  job,
+  owner,
+  principal,
+  space,
+  spaceMembership,
+  trigger,
+} from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { PolicyService } from '../jobs/policy.ts';
@@ -225,6 +233,18 @@ export class PrincipalService {
           { payload: { reason: 'membership_revoked' } },
         );
         await tx.update(trigger).set({ enabled: false }).where(eq(trigger.jobId, row.id));
+        // A conversation's turn in flight ends with it, rather than reading as
+        // still working once nobody can carry it on.
+        if (row.currentTurnId)
+          await tx
+            .update(experienceTurn)
+            .set({ status: 'stopped', finishedAt: new Date() })
+            .where(
+              and(
+                eq(experienceTurn.id, row.currentTurnId),
+                inArray(experienceTurn.status, ['queued', 'working', 'streaming']),
+              ),
+            );
         cancelled.push(row.id);
       }
       if (!updated) throw new Error('Locked membership disappeared');

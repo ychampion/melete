@@ -461,10 +461,12 @@ room's members, and it is never added to a room. Its membership generation is
 the room's roster generation, bumped with every change of who is in the room,
 so a capability minted before the change is refused at the broker.
 
-Names are how the agent and the room tell people apart, so a name is one line
-of plain text, no two people go by the same one, and where names still match
-each is shown with its email. Where a name enters the agent's input it is
-quoted. Each ask is its own request job, recorded with the person who asked, and only
+Every speaker is shown, to people and to the agent, as their chosen name
+followed by their email in angle brackets. The email is unique and nobody
+chooses it, so it is what identifies a speaker; the agent is told the name
+before it is self-chosen. A name is one line of plain text without `<`, `>` or
+`@`, so it cannot pass for an email, and where a name enters the agent's input
+it is quoted. Each ask is its own request job, recorded with the person who asked, and only
 that person's words reach it: another member's message starts their own request
 or none, never touches someone else's, and so never withdraws their pending
 permission. A request reads the room's own material and the thread with each

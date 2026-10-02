@@ -38,7 +38,7 @@ import {
   touchMessage,
 } from './release.ts';
 import { roomMessage, roomPresence, roomThread } from './schema.ts';
-import { displayName, distinctNames, namesOf } from './transcript.ts';
+import { displayName, namesOf, personLabel } from './transcript.ts';
 
 const missing = () => new ServiceError('not_found', 'That room is not here.', 404);
 const roomOwnerOnly = () =>
@@ -173,7 +173,7 @@ export class RoomService {
       )
       .orderBy(asc(spaceMembership.createdAt), asc(spaceMembership.principalId));
     const present = new Set(await presentIn(this.deps.db, spaceId));
-    const names = distinctNames(rows.map(({ person }) => person));
+
     const persona = await serviceTransaction(this.deps.db, (tx) => roomAgentOf(tx, spaceId));
     return roomDetail.parse({
       room: {
@@ -183,7 +183,7 @@ export class RoomService {
       members: rows.map(({ membership, person }) =>
         roomMember.parse({
           principal_id: person.id,
-          display_name: names.get(person.id) ?? displayName(person),
+          display_name: personLabel(person),
           role: membership.role,
           // A guest sees who is in the room, not how to reach them.
           ...(access.role === 'guest' ? {} : { email: person.email }),
@@ -203,7 +203,7 @@ export class RoomService {
     return {
       member: roomMember.parse({
         principal_id: person.id,
-        display_name: displayName(person),
+        display_name: personLabel(person),
         role: 'member',
         email: person.email,
         present: false,

@@ -22,7 +22,17 @@ export function displayName(row: { displayName: string | null; email: string }):
   return chosen || (row.email.split('@')[0] ?? row.email);
 }
 
-/** Display names for a set of principals. */
+/**
+ * How a room names a person: the name they chose, then their email in angle
+ * brackets. The email is theirs alone and nobody chooses it, so it is what
+ * tells people apart; the name before it is only what they call themselves.
+ * A chosen name cannot hold `<`, `>` or `@`, so it never looks like an email.
+ */
+export function personLabel(row: { displayName: string | null; email: string }): string {
+  return `${displayName(row)} <${row.email}>`;
+}
+
+/** The label of each of a set of principals; see `personLabel`. */
 export async function namesOf(
   tx: Pick<Transaction, 'select'>,
   ids: readonly string[],
@@ -33,27 +43,7 @@ export async function namesOf(
     .select({ id: principal.id, displayName: principal.displayName, email: principal.email })
     .from(principal)
     .where(inArray(principal.id, unique));
-  return distinctNames(rows);
-}
-
-/**
- * Names that tell people apart: a name two of these people share, ignoring
- * case, carries each one's email, so nobody reads as somebody else.
- */
-export function distinctNames(
-  rows: readonly { id: string; displayName: string | null; email: string }[],
-): Map<string, string> {
-  const counts = new Map<string, number>();
-  for (const row of rows) {
-    const key = displayName(row).toLowerCase();
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  return new Map(
-    rows.map((row) => {
-      const name = displayName(row);
-      return [row.id, (counts.get(name.toLowerCase()) ?? 0) > 1 ? `${name} (${row.email})` : name];
-    }),
-  );
+  return new Map(rows.map((row) => [row.id, personLabel(row)]));
 }
 
 export type RoomTranscript = {

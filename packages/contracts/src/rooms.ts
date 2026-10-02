@@ -74,15 +74,16 @@ export const peopleQuery = z.strictObject({ query: z.string().max(200).optional(
 export const peopleList = z.strictObject({ people: z.array(person) });
 
 /**
- * The name other people in a room see. One line of plain text: no control
- * characters or line breaks, so a name is never more than a name.
+ * The name other people in a room see, beside their email. One line of plain
+ * text with no `<`, `>` or `@`, so a name never reads as more than a name, or
+ * as someone's email.
  */
 export const displayNameText = z
   .string()
   .trim()
   .min(1)
   .max(80)
-  .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+$/u, 'Use one line of plain text.');
+  .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}<>@]+$/u, 'Use one line of plain text, without < > or @.');
 export const updateMeRequest = z.strictObject({ display_name: displayNameText.nullable() });
 export const meResponse = z.strictObject({
   owner: z.strictObject({

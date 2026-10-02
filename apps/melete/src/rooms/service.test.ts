@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { mentionsOf } from './service.ts';
-import { distinctNames } from './transcript.ts';
+import { personLabel } from './transcript.ts';
 
 describe('which messages ask a room agent', () => {
   test('a message that names the agent asks it, by its own name or as Melete', () => {
@@ -26,12 +26,16 @@ describe('which messages ask a room agent', () => {
 });
 
 describe('names in a room', () => {
-  test("a name two people share carries each one's email, and a unique name stands alone", () => {
-    const names = distinctNames([
-      { id: 'a', displayName: 'Sam', email: 'sam@one.test' },
-      { id: 'b', displayName: null, email: 'SAM@two.test' },
-      { id: 'c', displayName: 'Lee', email: 'lee@one.test' },
-    ]);
-    expect([...names.values()]).toEqual(['Sam (sam@one.test)', 'SAM (SAM@two.test)', 'Lee']);
+  test('every person is named with their own email, whatever name they chose', () => {
+    expect(personLabel({ displayName: 'Alice', email: 'alice@example.test' })).toBe(
+      'Alice <alice@example.test>',
+    );
+    // A look-alike name still carries the email of the person who chose it.
+    expect(personLabel({ displayName: '\u0410lice', email: 'carol@example.test' })).toBe(
+      '\u0410lice <carol@example.test>',
+    );
+    expect(personLabel({ displayName: null, email: 'sam@example.test' })).toBe(
+      'sam <sam@example.test>',
+    );
   });
 });
