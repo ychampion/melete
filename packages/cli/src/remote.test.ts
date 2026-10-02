@@ -86,6 +86,16 @@ describe('melete remote: arguments', () => {
     expect(REMOTE_COMMANDS).toContain('status');
   });
 
+  test('a key given as set NAME=value is refused here, before it reaches an SSH command line', () => {
+    expect(() => parseRemote(['vm1', 'set', 'ANTHROPIC_API_KEY=sk-x'])).toThrow(
+      'not sent on a command line',
+    );
+    expect(() => parseRemote(['vm1', 'set', 'DATABASE_URL=postgres://u:p@h/d'])).toThrow(
+      RemoteRefusal,
+    );
+    expect(parseRemote(['vm1', 'set', 'MELETE_PUBLIC_URL=https://m.example']).command).toBe('set');
+  });
+
   test('set --from-env is refused, because over SSH it would read the remote shell', () => {
     expect(() => parseRemote(['vm1', 'set', '--from-env', 'ANTHROPIC_API_KEY'])).toThrow(
       'push --replace',
@@ -178,6 +188,19 @@ describe('melete remote: running a command there', () => {
     }
   });
 
+  test('a deploy directory its group can write is run, with a warning', async () => {
+    const { context } = sshContext({
+      preflight: { stdout: 'bun 1.3.2\ndocker 29.1.3\ncheckout 775 775\n' },
+    });
+    expect(
+      await runRemote(context, ['vm1', '--path', '/srv/m', 'push', '--dry-run'], {
+        json: false,
+        offline: false,
+      }),
+    ).toBe(0);
+    expect(context.printed()).toContain('remote.deploy_group_writable');
+  });
+
   test('a connection that fails is refused, and one that drops mid-command reports where to look', async () => {
     const refused = sshContext({
       preflight: { code: 255, stdout: '', stderr: 'Permission denied (publickey).' },
@@ -235,7 +258,7 @@ describe('melete remote push', () => {
     const sink = write?.sinks[0];
     const script = sink && 'command' in sink ? (sink.command.at(-1) ?? '') : '';
     expect(script).toBe(
-      `umask 077 && cd '/srv/melete'/deploy && cat > '.env.melete-push' && chmod 600 '.env.melete-push' && mv -f '.env.melete-push' '.env'`,
+      `umask 077 && cd '/srv/melete'/deploy && t=$(mktemp './.melete-push.XXXXXX') && cat > "$t" && chmod 600 "$t" && mv -fT "$t" '.env'`,
     );
     expect(value.results.find((result) => result.id === 'remote.env_private')?.level).toBe('ok');
     // No command line, here or there, carries a value from deploy/.env, and nothing printed does.
@@ -307,7 +330,7 @@ describe('melete remote push', () => {
     expect(writes).toHaveLength(1);
     const sink = writes[0]?.sinks[0];
     expect(sink && 'command' in sink ? sink.command.at(-1) : '').toBe(
-      `umask 022 && cd '/srv/melete'/deploy && mkdir -p 'config' && cat > 'config/connections.json.melete-push' && mv -f 'config/connections.json.melete-push' 'config/connections.json'`,
+      `umask 077 && cd '/srv/melete'/deploy && mkdir -p 'config' && t=$(mktemp 'config/.melete-push.XXXXXX') && cat > "$t" && chmod 644 "$t" && mv -fT "$t" 'config/connections.json'`,
     );
   });
 
@@ -334,7 +357,7 @@ describe('melete remote push', () => {
       ].join('\n'),
     );
     expect(writeScript('/srv/m', { name: 'melete.deploy.json', file: '', private: false })).toBe(
-      `umask 022 && cd '/srv/m'/deploy && cat > 'melete.deploy.json.melete-push' && mv -f 'melete.deploy.json.melete-push' 'melete.deploy.json'`,
+      `umask 077 && cd '/srv/m'/deploy && t=$(mktemp './.melete-push.XXXXXX') && cat > "$t" && chmod 644 "$t" && mv -fT "$t" 'melete.deploy.json'`,
     );
   });
 });

@@ -24,6 +24,7 @@
  */
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { isSecretName } from '../../../../deploy/scripts/set-env.ts';
 import type { Context } from '../context.ts';
 import { DEPLOY_FILE } from '../deploy-config.ts';
 import { readInstallation } from '../installation.ts';
@@ -96,6 +97,15 @@ export function parseRemote(args: readonly string[]): RemoteOptions {
   )
     throw new RemoteRefusal(
       'set --from-env reads the key from the shell it runs in, which over SSH is the remote one. Run bun run melete set --from-env here, then bun run melete remote <target> push --replace. Nothing was changed.',
+    );
+  // A key on the SSH command line would show in process lists on both machines.
+  const secret =
+    command === 'set'
+      ? commandArgs.map((arg) => arg.split('=')[0] ?? '').find((name) => isSecretName(name))
+      : undefined;
+  if (secret)
+    throw new RemoteRefusal(
+      `${secret} holds a secret, so it is not sent on a command line. Run bun run melete set --from-env ${secret} here, then bun run melete remote <target> push --replace. Nothing was changed.`,
     );
   return { target, path, command, args: commandArgs };
 }
@@ -210,6 +220,14 @@ export function judgeRemote(facts: RemoteFacts, target: string, path: string): R
             fix: `Run chmod o-w on ${open.join(' and ')} there.`,
           },
     );
+    const deployMode = facts.modes[1];
+    if (open.length === 0 && (Number.parseInt(deployMode, 8) & 0o020) !== 0)
+      results.push({
+        id: 'remote.deploy_group_writable',
+        level: 'warn',
+        detail: `At ${path}, deploy/ is writable by its group on ${target} (mode ${deployMode}), so another account in that group could replace a file there between runs.`,
+        fix: `Run chmod g-w on ${path}/deploy there, unless the group is yours alone.`,
+      });
   }
   return results;
 }
@@ -280,15 +298,18 @@ export function parseHashes(stdout: string): { hashes: Map<string, string>; lock
 /** The script that writes one file from stdin: under a temporary name, then moved into place. */
 export function writeScript(path: string, item: PushItem): string {
   const target = shellWord(item.name);
-  const temporary = shellWord(`${item.name}.melete-push`);
-  const parent = item.name.includes('/') ? item.name.slice(0, item.name.lastIndexOf('/')) : null;
+  const parent = item.name.includes('/') ? item.name.slice(0, item.name.lastIndexOf('/')) : '.';
+  // mktemp creates a new file of its own (O_EXCL, 0600), so a name planted in
+  // deploy/ beforehand is never written through; mv -T then replaces the
+  // target itself, never a directory a symlink there points at.
   return [
-    `umask ${item.private ? '077' : '022'}`,
+    'umask 077',
     `cd ${shellWord(path)}/deploy`,
-    ...(parent ? [`mkdir -p ${shellWord(parent)}`] : []),
-    `cat > ${temporary}`,
-    ...(item.private ? [`chmod 600 ${temporary}`] : []),
-    `mv -f ${temporary} ${target}`,
+    ...(parent !== '.' ? [`mkdir -p ${shellWord(parent)}`] : []),
+    `t=$(mktemp ${shellWord(`${parent}/.melete-push.XXXXXX`)})`,
+    `cat > "$t"`,
+    `chmod ${item.private ? '600' : '644'} "$t"`,
+    `mv -fT "$t" ${target}`,
   ].join(' && ');
 }
 
@@ -298,6 +319,7 @@ async function push(
   path: string,
   args: readonly string[],
   json: boolean,
+  warnings: readonly Result[] = [],
 ): Promise<ExitCode> {
   const unknown = args.filter((arg) => arg !== '--replace' && arg !== '--dry-run');
   if (unknown.length > 0) {
@@ -306,7 +328,7 @@ async function push(
   }
   const replace = args.includes('--replace');
   const dryRun = args.includes('--dry-run');
-  const results: Result[] = [];
+  const results: Result[] = [...warnings];
   const finish = (code: ExitCode) => {
     const value = report('remote', results);
     context.out(json ? `${JSON.stringify(value, null, 2)}\n` : renderReport(value));
@@ -510,8 +532,13 @@ export async function runRemote(
     return EXIT.refused;
   }
 
+  const warnings = preflight.filter((result) => result.level === 'warn');
   if (options.command === 'push')
-    return await push(context, options, path, options.args, flags.json);
+    return await push(context, options, path, options.args, flags.json, warnings);
+  for (const warning of warnings)
+    context.err(
+      `warn  ${warning.id}  ${warning.detail}${warning.fix ? ` -> ${warning.fix}` : ''}\n`,
+    );
 
   // The summary goes to stderr, so the remote command's --json output stays the only stdout.
   context.err(
