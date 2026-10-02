@@ -68,12 +68,16 @@ export type ContainerFacts = {
   service: string;
   image: string;
   configFiles: string[];
+  /** A `docker compose run` container: not part of the stack, and often on an older image. */
+  oneoff: boolean;
+  running: boolean;
 };
 
 /** `docker inspect` output, reduced to what adoption reads. */
 export function parseInspect(stdout: string): ContainerFacts[] {
   const rows = JSON.parse(stdout) as {
     Config?: { Image?: string; Labels?: Record<string, string> | null };
+    State?: { Running?: boolean };
   }[];
   return rows.map((row) => {
     const labels = row.Config?.Labels ?? {};
@@ -84,6 +88,8 @@ export function parseInspect(stdout: string): ContainerFacts[] {
         .split(',')
         .map((file) => file.trim())
         .filter(Boolean),
+      oneoff: labels['com.docker.compose.oneoff'] === 'True',
+      running: row.State?.Running === true,
     };
   });
 }
@@ -104,28 +110,34 @@ export function adoptedConfig(
   env: Record<string, string>,
   disk: Partial<DeployConfig['disk']>,
 ): DeployConfig {
-  const service = containers.find((container) => container.service === 'melete');
-  if (!service)
+  const stack = containers.filter((container) => !container.oneoff);
+  const services = stack.filter((container) => container.service === 'melete');
+  if (services.length === 0)
     throw new InitRefusal(
       `Compose project ${project} has no melete service container on this engine. For a new installation run bun run melete init.`,
     );
+  // A running service container says what the stack runs; a stopped one may be left from an older deploy.
+  const running = services.filter((container) => container.running);
+  const candidates = running.length > 0 ? running : services;
+  const seen = [...new Set(candidates.map((container) => container.image))];
+  if (seen.length > 1)
+    throw new InitRefusal(
+      `The melete service containers of project ${project} run different images (${seen.join(', ')}), so which one is the installation is not clear. Remove the stale container, or start the stack, and run this again.`,
+    );
+  const service = candidates[0] as ContainerFacts;
   const images = parseServiceImage(service.image);
   if (!images)
     throw new InitRefusal(
       `The melete service runs ${service.image}, which is not a Melete service image this command can describe.`,
     );
   const files = new Set(
-    containers.flatMap((container) =>
-      container.configFiles.map((f) => basename(f.replace(/\\/g, '/'))),
-    ),
+    stack.flatMap((container) => container.configFiles.map((f) => basename(f.replace(/\\/g, '/')))),
   );
-  const services = new Set(containers.map((container) => container.service));
+  const names = new Set(stack.map((container) => container.service));
   const overlays = (Object.entries(OVERLAY_FILES) as [Overlay, string][])
-    .filter(
-      ([name, file]) => files.has(file) || (name !== 'tailscale-kernel' && services.has(name)),
-    )
+    .filter(([name, file]) => files.has(file) || (name !== 'tailscale-kernel' && names.has(name)))
     .map(([name]) => name);
-  const sandbox = services.has('sandbox-image') || env.MELETE_SANDBOX_PROVIDER?.trim() === 'docker';
+  const sandbox = names.has('sandbox-image') || env.MELETE_SANDBOX_PROVIDER?.trim() === 'docker';
   return deployConfigSchema.parse({
     contract: 1,
     project,
@@ -144,6 +156,8 @@ function readContainers(run: Run, project: string): ContainerFacts[] {
     '--quiet',
     '--filter',
     `label=com.docker.compose.project=${project}`,
+    '--filter',
+    'label=com.docker.compose.oneoff=False',
   ]);
   if (listed.code !== 0)
     throw new InitRefusal(

@@ -5,15 +5,22 @@ import { initOptions, parseServiceImage, runInit } from './commands/init.ts';
 import { DEPLOY_FILE } from './deploy-config.ts';
 import { changingCalls, ok, temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
-const container = (service: string, image: string, files: string[]) => ({
+const container = (
+  service: string,
+  image: string,
+  files: string[],
+  state: { running?: boolean; oneoff?: boolean } = {},
+) => ({
   Config: {
     Image: image,
     Labels: {
       'com.docker.compose.project': 'melete',
       'com.docker.compose.service': service,
       'com.docker.compose.project.config_files': files.join(','),
+      'com.docker.compose.oneoff': state.oneoff ? 'True' : 'False',
     },
   },
+  State: { Running: state.running ?? true },
 });
 
 const files = [
@@ -78,6 +85,36 @@ describe('melete init --adopt', () => {
     expect(JSON.parse(readFileSync(join(deployDir, DEPLOY_FILE), 'utf8')).profiles).toEqual([
       'sandbox',
     ]);
+  });
+
+  test('a one-off or stopped service container never decides the adopted image', async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir, { MELETE_IMAGE_TAG: '34a9140' });
+    const leftovers = [
+      container('melete', 'ghcr.io/ychampion/melete-service:0ld0ne1', files, { oneoff: true }),
+      container('melete', 'ghcr.io/ychampion/melete-service:0ld0ne2', files, { running: false }),
+      ...running,
+    ];
+    const context = testContext(deployDir, engine(leftovers));
+    expect(await runInit(context, ['--adopt'])).toBe(0);
+    expect(JSON.parse(readFileSync(join(deployDir, DEPLOY_FILE), 'utf8')).images.tag).toBe(
+      '34a9140',
+    );
+    // Compose is asked for the stack's own containers only.
+    expect(context.docker.calls[0]).toContain('label=com.docker.compose.oneoff=False');
+  });
+
+  test('service containers that disagree on the image are refused, with no file written', async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir);
+    const split = [
+      container('melete', 'ghcr.io/ychampion/melete-service:aaaaaaa', files),
+      container('melete', 'ghcr.io/ychampion/melete-service:bbbbbbb', files),
+    ];
+    const context = testContext(deployDir, engine(split));
+    expect(await runInit(context, ['--adopt'])).toBe(2);
+    expect(context.errors()).toContain('run different images');
+    expect(existsSync(join(deployDir, DEPLOY_FILE))).toBe(false);
   });
 
   test('a difference between deploy/.env and what runs is pointed out', async () => {
