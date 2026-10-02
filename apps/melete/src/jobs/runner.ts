@@ -158,13 +158,6 @@ export class AttemptRunner {
    * recovery does it, and the wait below sees the result.
    */
   settleAbandoned?: (attemptId: string) => Promise<unknown>;
-  /**
-   * Whether a connection runs on the agent's own computer, where the broker
-   * runs in this process. An open outcome there is the agent's to check and
-   * never sends the turn to reconciliation. Unset, every connection counts as
-   * an outside effect.
-   */
-  ownComputer?: (connectionId: string) => boolean;
   readonly onFinished: Array<
     (
       tx: Transaction,
@@ -662,13 +655,7 @@ export class AttemptRunner {
     let artifactFailures: string[] = [];
     switch (outcome.kind) {
       case 'completed': {
-        const facts = await completionFacts(
-          tx,
-          row,
-          outcome,
-          this.options.artifactRoots,
-          this.ownComputer,
-        );
+        const facts = await completionFacts(tx, row, outcome, this.options.artifactRoots);
         artifactFailures = facts.artifact_failures;
         input = {
           kind: 'attempt_completed',
@@ -1311,6 +1298,10 @@ export class AttemptRunner {
       this.running.set(claims.attempt_id, { jobId: claims.job_id, returned });
       void returned.finally(() => this.running.delete(claims.attempt_id));
       const result = await Promise.race([call, wallLimit, interrupted]);
+      // The runtime has answered: the wall clock covered its work, not the
+      // wait for what that work started, which must not be cut short into a
+      // lost attempt and a rerun. Only Stop or a fence ends the wait early.
+      clearTimeout(timeout);
       const outcome = isOutcomeEnvelope(result) ? result.outcome : result;
       if (outcome.kind === 'completed') {
         completed = outcome;

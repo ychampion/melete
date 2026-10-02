@@ -261,12 +261,64 @@ withDb('an action its tool call stopped waiting for', () => {
     expect(await attempts(row.id)).toHaveLength(1);
   });
 
-  test('an open step on the agent’s own computer completes the turn without asking the person', async () => {
+  test.each([
+    ['deny_all', 'completed'],
+    ['open', 'needs_reconciliation'],
+  ] as const)(
+    'an open step on the agent’s computer with egress %s leaves the turn %s',
+    async (egress, expected) => {
+      const { handle, jobs } = fixture();
+      const { spaceId, connectionId, row } = await setup();
+      const own = { ...slowCommand().connector, ownComputer: true };
+      const registry = new ConnectorRegistry().register(connectionId, own);
+      const broker = new BrokerService({ sql: handle.sql, connectors: registry });
+      const { runtime, starts } = impatientRuntime(async (bundle) => {
+        const actionId = newId('act');
+        const sessionId = `session_${actionId}`;
+        await handle.db.insert(action).values({
+          id: actionId,
+          jobId: bundle.attempt.job_id,
+          attemptId: bundle.attempt.id,
+          connectionId,
+          kind: 'test.slow',
+          effectClass: 'write_reversible',
+          canonicalPayload: { command: 'make' },
+          payloadHash: 'c'.repeat(64),
+          idempotencyKey: newId('act'),
+          status: 'dispatched',
+          dispatchedAt: new Date(),
+        });
+        await handle.sql`insert into sandbox_session (id, connection_id, space_id, job_id,
+            attempt_id, adapter, provider_sandbox_id, image_ref, egress_policy, persistence,
+            status, lease_expires_at)
+          values (${sessionId}, ${connectionId}, ${spaceId}, ${bundle.attempt.job_id},
+            ${bundle.attempt.id}, 'fake', ${sessionId}, 'image',
+            ${JSON.stringify({ kind: egress })}::jsonb, 'ephemeral', 'ready',
+            now() + interval '10 minutes')`;
+        await handle.sql`insert into sandbox_command (action_id, session_id, marker)
+          values (${actionId}, ${sessionId}, ${actionId})`;
+      }, 1_000);
+      const worker = runner(runtime);
+      worker.settleAbandoned = (attemptId) => broker.settleAbandoned(attemptId);
+      await worker.handleWake(wake(row));
+
+      expect(starts).toHaveLength(1);
+      const [left] = await actions(row.id);
+      // Still unknown on the record, so a late receipt can land on it.
+      expect(left?.status).toBe('unknown');
+      const job = await jobs.get(row.id);
+      expect(job.state).toBe(expected);
+      if (expected === 'completed') expect(job.wait).toEqual({ kind: 'none' });
+      else expect(JSON.stringify(job.wait)).toContain('network access');
+      expect(await attempts(row.id)).toHaveLength(1);
+    },
+  );
+
+  test('a dispatched action that outlives the wall limit rests the turn instead of rerunning it', async () => {
     const { handle, jobs } = fixture();
     const { connectionId, row } = await setup();
-    const own = { ...slowCommand().connector, ownComputer: true };
-    const registry = new ConnectorRegistry().register(connectionId, own);
-    const broker = new BrokerService({ sql: handle.sql, connectors: registry });
+    await handle.sql`update job set budget = jsonb_set(budget, '{max_wall_ms}', '300'::jsonb)
+      where id = ${row.id}`;
     const { runtime, starts } = impatientRuntime(async (bundle) => {
       await handle.db.insert(action).values({
         id: newId('act'),
@@ -276,26 +328,21 @@ withDb('an action its tool call stopped waiting for', () => {
         kind: 'test.slow',
         effectClass: 'write_reversible',
         canonicalPayload: { command: 'make' },
-        payloadHash: 'c'.repeat(64),
+        payloadHash: 'd'.repeat(64),
         idempotencyKey: newId('act'),
         status: 'dispatched',
         dispatchedAt: new Date(),
       });
-    }, 1_000);
-    const worker = runner(runtime);
-    worker.settleAbandoned = (attemptId) => broker.settleAbandoned(attemptId);
-    worker.ownComputer = (id) => registry.get(id)?.ownComputer === true;
-    await worker.handleWake(wake(row));
+    }, 100);
+    // The wait runs well past the 300 ms wall limit.
+    const worker = runner(runtime, 1_500);
+    await worker.handleWake(wake(await jobs.get(row.id)));
 
     expect(starts).toHaveLength(1);
-    const [left] = await actions(row.id);
-    // Still unknown on the record, so a late receipt can land on it.
-    expect(left?.status).toBe('unknown');
     const job = await jobs.get(row.id);
-    expect(job.state).toBe('completed');
-    expect(job.wait).toEqual({ kind: 'none' });
-    const [only] = await attempts(row.id);
-    expect(only?.outcome).toBe('completed');
+    expect(job.state).toBe('waiting_for_input');
+    expect(job.wait).toMatchObject({ kind: 'user_input', question: STILL_RUNNING_NOTE });
+    expect(await attempts(row.id)).toHaveLength(1);
   });
 
   test('past the wait, an action still out rests the turn on its answer instead of re-running it', async () => {

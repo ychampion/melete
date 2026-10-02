@@ -896,8 +896,6 @@ export async function bootstrap(
       // nobody waiting on it is settled before the attempt commits.
       runner.settleAbandoned = async (attemptId) =>
         effectBoundary?.broker.settleAbandoned(attemptId);
-      runner.ownComputer = (connectionId) =>
-        effectBoundary?.registry.get(connectionId)?.ownComputer === true;
       if (browser)
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);

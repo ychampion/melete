@@ -56,6 +56,7 @@ import { pendingRepairBriefs } from '../memory/outputs.ts';
 import { asKnowledge, attemptRecallQuery, recall } from '../memory/recall.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { selectedContext } from '../principals/context.ts';
+import { closedComputerStepColumn } from '../sandbox/closed-step.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { PRIVACY_DECISION, questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
@@ -826,7 +827,11 @@ type CompletedOutcome = Extract<AttemptOutcome, { kind: 'completed' }>;
 type CompletionAction = Pick<
   typeof action.$inferSelect,
   'id' | 'jobId' | 'connectionId' | 'kind' | 'effectClass' | 'status' | 'receipt'
-> & { spaceId: string | null };
+> & {
+  spaceId: string | null;
+  /** It ran on an agent's computer that could reach nothing outside. */
+  closedStep?: boolean;
+};
 type CompletionArtifact = Pick<
   typeof artifact.$inferSelect,
   'id' | 'jobId' | 'spaceId' | 'path' | 'contentHash' | 'size'
@@ -878,8 +883,6 @@ export function evaluateCompletion(
   row: Pick<JobRow, 'id' | 'spaceId' | 'constraints'>,
   outcome: CompletedOutcome,
   records: CompletionRecords,
-  /** Whether a connection runs on the agent's own computer. */
-  ownComputer: (connectionId: string) => boolean = () => false,
 ): CompletionFacts {
   const declared = jobConstraints.parse(row.constraints).deliverable;
   const actions = records.actions.filter((candidate) => candidate.jobId === row.id);
@@ -937,11 +940,12 @@ export function evaluateCompletion(
   }
   const open = (candidate: CompletionAction) =>
     candidate.status === 'unknown' || candidate.status === 'unresolved';
-  // A step on the agent's own computer whose outcome is open was the agent's to
-  // check, and it was told so. It neither holds the turn open nor asks the
-  // person; a late receipt still lands on the action.
+  // A step on the agent's own computer, one that could reach nothing outside,
+  // whose outcome is open was the agent's to check, and it was told so. It
+  // neither holds the turn open nor asks the person; a late receipt still
+  // lands on the action. With network access it reconciles like any effect.
   const checkedByAgent = (candidate: CompletionAction) =>
-    open(candidate) && ownComputer(candidate.connectionId);
+    open(candidate) && candidate.closedStep === true;
   return {
     all_actions_terminal: actions.every(
       (candidate) =>
@@ -963,7 +967,6 @@ export async function completionFacts(
   row: JobRow,
   outcomeCompleted: CompletedOutcome,
   artifactRoots?: ArtifactRoots,
-  ownComputer?: (connectionId: string) => boolean,
 ): Promise<CompletionFacts> {
   const actions = await tx
     .select({
@@ -975,6 +978,7 @@ export async function completionFacts(
       status: action.status,
       receipt: action.receipt,
       spaceId: connection.spaceId,
+      closedStep: closedComputerStepColumn,
     })
     .from(action)
     .leftJoin(connection, eq(connection.id, action.connectionId))
@@ -1005,12 +1009,7 @@ export async function completionFacts(
           and(inArray(knowledgeRecord.id, knowledgeIds), eq(knowledgeRecord.spaceId, row.spaceId)),
         )
     : [];
-  const facts = evaluateCompletion(
-    row,
-    outcomeCompleted,
-    { actions, artifacts, knowledge },
-    ownComputer,
-  );
+  const facts = evaluateCompletion(row, outcomeCompleted, { actions, artifacts, knowledge });
   // A declared check that failed outranks a confident summary: the file is not
   // the thing it was promised to be, whatever the attempt said about it.
   const gate = await artifactGate(tx, row.id, artifactRoots);
