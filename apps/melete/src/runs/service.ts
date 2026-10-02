@@ -418,6 +418,14 @@ export class RunService {
   private async finish(tx: Transaction, row: JobRow, attemptId: string, raw: unknown) {
     const state = await this.stateOf(tx, row.id);
     const input = runFinishInput.parse(raw);
+    // A result written while helpers are still out would leave their findings behind.
+    const working = state.parentRunId ? 0 : await this.activeSteps(tx, row.id);
+    if (working)
+      throw new ServiceError(
+        'helpers_working',
+        `${working} helper${working === 1 ? ' is' : 's are'} still working. End this shift with run.checkpoint and next_shift "when_helpers_finish", and finish once their results are in.`,
+        409,
+      );
     await this.write(tx, {
       run: this.rootOf(state),
       step: state.parentRunId ? row.id : null,

@@ -32,6 +32,7 @@ import { JobService } from '../../src/jobs/service.ts';
 import { bestExperiment, valueShown } from '../../src/runs/record.ts';
 import { attachRuns, RunService } from '../../src/runs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -234,6 +235,10 @@ withDb('long work in shifts', () => {
       task: 'Price vendor B',
       title: 'Vendor B',
     })) as { helper_id: string };
+    // Finishing now would leave the helpers' findings behind.
+    expect(
+      String(await rejectionOf(tool(lead.claims, 'run.finish', { summary: 'Too soon.' }))),
+    ).toContain('2 helpers are still working');
     await tool(lead.claims, 'run.checkpoint', {
       summary: 'Asked two helpers.',
       next: 'Compare their prices.',
@@ -253,7 +258,9 @@ withDb('long work in shifts', () => {
     expect(helperA.claims.scopes).toContain('run.finish');
     expect(helperA.claims.scopes).not.toContain('run.delegate');
     expect(helperA.bundle.job.objective).toContain('The whole work: Compare three vendors');
-    await expect(tool(helperA.claims, 'run.delegate', { task: 'More help' })).rejects.toThrow();
+    expect(
+      await rejectionOf(tool(helperA.claims, 'run.delegate', { task: 'More help' })),
+    ).toBeDefined();
     await tool(helperA.claims, 'run.finish', { summary: 'Vendor A costs $40.' });
     await required(runner).commitOutcome(helperA.claims, done());
     expect((await row(one.helper_id)).state).toBe('completed');
