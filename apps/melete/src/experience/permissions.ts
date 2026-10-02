@@ -33,6 +33,10 @@ import {
 import { experienceMissing } from './service.ts';
 
 /** What the person is told when they answer a permission whose work has ended. */
+/** The line naming the request a permission is for, with one stop at the end, never two. */
+export const forLine = (title: string): string =>
+  /[.!?…]$/.test(title) ? `For ${title}` : `For ${title}.`;
+
 const ENDED_MESSAGE = 'This was withdrawn because the work it was for has ended.';
 /** What the person is told when they allow a permission whose request has since changed. */
 const CHANGED_MESSAGE =
@@ -130,7 +134,7 @@ export class ExperiencePermissions {
     const [parent] = await this.sql`select j.title from job j
       where j.id = ${row.experience_parent_id ?? row.job_id} and j.space_id = ${spaceId}
       ${ownJobClause(this.sql, 'j')}`;
-    if (parent) reasons.push(`For ${plainText(parent.title, 'your request')}.`);
+    if (parent) reasons.push(forLine(plainText(parent.title, 'your request')));
     return projectPermission({
       id,
       version: permissionVersion(row),

@@ -4,7 +4,14 @@
  * again; none of these prints the reply twice or splices two copies together.
  */
 import { expect, test } from 'bun:test';
-import { answerOf, applyEvents, fromTurns, type TranscriptTurn } from './reduce.ts';
+import {
+  answerOf,
+  applyEvents,
+  fillAnswers,
+  fromTurns,
+  replayedStatus,
+  type TranscriptTurn,
+} from './reduce.ts';
 import type { ExperienceEvent, Turn } from './types.ts';
 
 const AT = '2026-10-02T09:00:00.000Z';
@@ -22,8 +29,9 @@ const turnOf = (answer: string, status: Turn['status'] = 'done'): Turn => ({
   created_at: AT,
 });
 
+/** A turn still running, read with part of its answer saved and more streamed since. */
 const shown = (answer: string, streamed: string) => {
-  const [turn] = fromTurns([turnOf(answer)], 'send', 'done').turns;
+  const [turn] = fromTurns([turnOf(answer, 'working')], 'pause', 'working').turns;
   return answerOf({ ...(turn as TranscriptTurn), streamed });
 };
 
@@ -82,4 +90,48 @@ test('a finished turn read with its answer is not set working by replayed text',
   const turn = replayed.turns[0] as TranscriptTurn;
   expect(answerOf(turn)).toBe('Everything is lined up.');
   expect(turn.streaming).toBe(false);
+});
+
+test('a finished turn shows only its final answer, not what was written before an approval', () => {
+  seq = 200;
+  const waiting = 'Waiting on your approval to open https://example.com.';
+  const opened = 'Opened example.com. It is a placeholder page.';
+  // Live: the words before the approval and the final answer both streamed.
+  const live = fromTurns([{ ...turnOf(''), id: 'turn_2', status: 'working' }], 'pause', 'working');
+  const ran = applyEvents(live, [
+    status('working'),
+    delta(waiting),
+    status('needs_you'),
+    status('working'),
+    delta(opened),
+    status('done'),
+  ]);
+  // Its saved copy, read once it ends, keeps only the final message.
+  const read = fillAnswers(ran, [{ ...turnOf(opened), id: 'turn_2' }]);
+  expect(answerOf(read.turns[0] as TranscriptTurn)).toBe(opened);
+  // And a reload reads the same.
+  const reloaded = fromTurns([{ ...turnOf(opened), id: 'turn_2' }], 'send', 'done');
+  expect(
+    answerOf({ ...(reloaded.turns[0] as TranscriptTurn), streamed: `${waiting}${opened}` }),
+  ).toBe(opened);
+  // A turn still running keeps everything it has streamed.
+  const running = applyEvents(live, [status('working'), delta(waiting)]);
+  expect(answerOf(running.turns[0] as TranscriptTurn)).toBe(waiting);
+});
+
+test('replaying a long finished turn never reads as working', () => {
+  seq = 300;
+  const saved = fromTurns([{ ...turnOf('All done.'), id: 'turn_2' }], 'send', 'done');
+  // The first page of its events ends before the final status arrives.
+  const firstPage = [status('working'), delta('All '), status('needs_you'), status('working')];
+  expect(replayedStatus(saved, firstPage[0] as ExperienceEvent)).toBe(true);
+  const midway = applyEvents(saved, firstPage);
+  expect(midway.status).toBe('done');
+  expect(midway.composer).toBe('send');
+  expect(midway.turns[0]?.status).toBe('done');
+  const after = applyEvents(midway, [status('done')]);
+  expect(after.status).toBe('done');
+  // A turn the saved copy says is still running follows its statuses as before.
+  const running = fromTurns([{ ...turnOf('', 'working'), id: 'turn_2' }], 'pause', 'working');
+  expect(applyEvents(running, [status('needs_you')]).status).toBe('needs_you');
 });

@@ -3395,7 +3395,8 @@
                                               "deny",
                                               "replaced",
                                               "answered",
-                                              "withdrawn"
+                                              "withdrawn",
+                                              "outdated"
                                             ]
                                           },
                                           "answer": {

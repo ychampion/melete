@@ -2930,7 +2930,7 @@ export interface paths {
                                         /** @enum {string} */
                                         kind: "permission" | "question";
                                         /** @enum {string} */
-                                        outcome: "allow_once" | "always" | "deny" | "replaced" | "answered" | "withdrawn";
+                                        outcome: "allow_once" | "always" | "deny" | "replaced" | "answered" | "withdrawn" | "outdated";
                                     };
                                     /** @constant */
                                     type: "decision";
