@@ -58,11 +58,20 @@ export type Classification =
       summary: CardSummary;
       /** Deletes or overwrites something: shown as such on the card. */
       destructive: boolean;
+      /**
+       * What of the body the approval binds, when the payload already names
+       * everything the body does by content (a push's ref updates name their
+       * commits by hash, and the pack that carries them can differ between two
+       * runs of the same push). Left out, the body's exact bytes are bound.
+       */
+      boundBody?: JsonObject;
     }
   | { kind: 'refuse'; reason: string };
 
 /** A request on its way upstream: what the adapter returns from `authorize`. */
 export type OutboundRequest = {
+  /** The tunnel's host, which the request goes to. */
+  host: string;
   method: string;
   /** Path and query. */
   target: string;
@@ -94,6 +103,13 @@ export interface CredentialAdapter<Config = unknown> {
   hosts(config: Config): string[];
   /** Values the computer's commands see in place of the account. Allow-listed names only. */
   placeholders(config: Config): Partial<Record<ExecEnvName, string>>;
+  /**
+   * The placeholder values that stand in for the account: a header carrying
+   * one never travels upstream. Left out, every placeholder value counts;
+   * an adapter whose placeholders include plain switches (`1`, `0`) names
+   * only its stand-ins.
+   */
+  standIns?(config: Config): string[];
   classify(request: InterceptedRequest, config: Config): Classification;
   /** The request with the account added: a header, or a signature. */
   authorize(request: OutboundRequest, secret: string, config: Config): OutboundRequest;
@@ -101,6 +117,23 @@ export interface CredentialAdapter<Config = unknown> {
   redactions(secret: string): string[];
   /** What the action's receipt keeps about a write, from the upstream answer. */
   receipt(write: ClassifiedWrite, upstream: UpstreamResponse): JsonObject;
+  /**
+   * Why a write the service answered below 400 still did not take effect (a
+   * push whose refs were all rejected, a GraphQL answer with only errors), or
+   * null when it did.
+   */
+  rejected?(write: ClassifiedWrite, upstream: UpstreamResponse): string | null;
+  /**
+   * The answer a write that is held for approval, or refused, gets: in the
+   * shape the service's own clients read, so `git` or `gh` prints `message`.
+   * Null keeps the relay's plain-text answer with `status`.
+   */
+  heldAnswer?(
+    request: InterceptedRequest,
+    write: ClassifiedWrite,
+    message: string,
+    status: number,
+  ): UpstreamResponse | null;
 }
 
 /**

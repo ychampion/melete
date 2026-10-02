@@ -1,0 +1,19 @@
+# gh issue comment 1 --repo alice/site --body hey
+### read
+POST https://api.github.com/graphql
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json; charset=utf-8
+graphql-features: merge_queue
+user-agent: GitHub CLI 2.83.2
+
+{"query":"\n\tquery IssueByNumber($owner: String!, $repo: String!, $number: Int!) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\thasIssuesEnabled\n\t\t\tissue: issueOrPullRequest(number: $number) {\n\t\t\t\t__typename\n\t\t\t\t...on Issue{id,url}\n\t\t\t\t...on PullRequest{id,url}\n\t\t\t}\n\t\t}\n\t}","variables":{"number":1,"owner":"alice","repo":"site"}}
+
+### write
+POST https://api.github.com/graphql
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json
+graphql-features: merge_queue
+user-agent: GitHub CLI 2.83.2
+
+{"query":"mutation CommentCreate($input:AddCommentInput!){addComment(input: $input){commentEdge{node{url}}}}","variables":{"input":{"subjectId":"I_kwDOAlice1","body":"hey"}}}
+

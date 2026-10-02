@@ -1,0 +1,19 @@
+# gh pr comment 7 --repo alice/site --body hi
+### read
+POST https://api.github.com/graphql
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json; charset=utf-8
+graphql-features: merge_queue
+user-agent: GitHub CLI 2.83.2
+
+{"query":"\n\tquery PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\tpullRequest(number: $pr_number) {id,url,number}\n\t\t}\n\t}","variables":{"owner":"alice","pr_number":7,"repo":"site"}}
+
+### write
+POST https://api.github.com/graphql
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json
+graphql-features: merge_queue
+user-agent: GitHub CLI 2.83.2
+
+{"query":"mutation CommentCreate($input:AddCommentInput!){addComment(input: $input){commentEdge{node{url}}}}","variables":{"input":{"subjectId":"PR_kwDOAlice7","body":"hi"}}}
+

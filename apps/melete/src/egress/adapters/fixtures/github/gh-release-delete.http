@@ -1,0 +1,24 @@
+# gh release delete v1 --repo alice/site --yes
+### read
+GET https://api.github.com/repos/alice/site/releases/tags/v1
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json; charset=utf-8
+user-agent: GitHub CLI 2.83.2
+
+
+### read
+POST https://api.github.com/graphql
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json
+graphql-features: merge_queue
+user-agent: GitHub CLI 2.83.2
+
+{"query":"query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}","variables":{"name":"site","owner":"alice","tagName":"v1"}}
+
+
+### write
+DELETE https://api.github.com/repos/alice/site/releases/9
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json; charset=utf-8
+user-agent: GitHub CLI 2.83.2
+

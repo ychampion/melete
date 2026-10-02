@@ -1,0 +1,35 @@
+# git clone https://github.com/alice/site
+### read
+GET https://github.com/alice/site.git/info/refs?service=git-upload-pack
+accept: */*
+user-agent: git/2.39.5
+git-protocol: version=2
+
+
+### read
+POST https://github.com/alice/site.git/git-upload-pack
+accept: application/x-git-upload-pack-result
+content-type: application/x-git-upload-pack-request
+user-agent: git/2.39.5
+git-protocol: version=2
+
+0014command=ls-refs
+001eagent=git/2.39.5.debian.120016object-format=sha100010009peel
+000csymrefs
+000bunborn
+0014ref-prefix HEAD
+001bref-prefix refs/heads/
+001aref-prefix refs/tags/
+0000
+
+### read
+POST https://github.com/alice/site.git/git-upload-pack
+accept: application/x-git-upload-pack-result
+content-type: application/x-git-upload-pack-request
+user-agent: git/2.39.5
+git-protocol: version=2
+
+0011command=fetch001eagent=git/2.39.5.debian.120016object-format=sha10001000dthin-pack000fno-progress000dofs-delta0032want ef5e63cd808eddbe9fad81f85b15341188093b1b
+0032want ef5e63cd808eddbe9fad81f85b15341188093b1b
+0009done
+0000

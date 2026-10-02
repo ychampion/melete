@@ -1,0 +1,8 @@
+# gh api graphql -f query='mutation{deleteRef(input:{refId:"REF_1"}){clientMutationId}}'
+### write
+POST https://api.github.com/graphql
+accept: */*
+content-type: application/json; charset=utf-8
+user-agent: GitHub CLI 2.83.2
+
+{"query":"mutation{deleteRef(input:{refId:\"REF_1\"}){clientMutationId}}"}

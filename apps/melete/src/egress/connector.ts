@@ -22,7 +22,13 @@ import {
 
 /** What happened to one forwarded request. */
 export type ForwardResult =
-  | { outcome: 'answered'; response: UpstreamResponse; detail: JsonObject }
+  | {
+      outcome: 'answered';
+      response: UpstreamResponse;
+      detail: JsonObject;
+      /** Why the change did not take effect although the service answered below 400. */
+      rejected?: string | null;
+    }
   /** The request left and its answer was lost: it may have landed. */
   | { outcome: 'lost'; reason: string }
   /** Nothing left: the upstream could not be reached. */
@@ -121,6 +127,7 @@ export function createCommandLineConnector(adapter: CredentialAdapterId): Connec
           reason: `The service answered ${status}; nothing was changed by this request.`,
           retryable: false,
         };
+      if (result.rejected) return { outcome: 'failed', reason: result.rejected, retryable: false };
       return {
         outcome: 'succeeded',
         receipt: {

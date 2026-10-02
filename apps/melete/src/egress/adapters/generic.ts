@@ -38,7 +38,7 @@ export function canonicalBody(request: InterceptedRequest): JsonObject {
 }
 
 /** Text with a plain note of how much was left out. */
-function cut(text: string): string {
+export function shownText(text: string): string {
   if (text.length <= SHOWN_BODY_CHARS) return text;
   return `${text.slice(0, SHOWN_BODY_CHARS)}\n… ${text.length - SHOWN_BODY_CHARS} more characters not shown`;
 }
@@ -46,13 +46,13 @@ function cut(text: string): string {
 /** The body as a person can read it: JSON, text, or its size and digest. */
 export function shownBody(request: InterceptedRequest, body: JsonObject): string {
   if (request.body.length === 0) return 'No body';
-  if ('json' in body) return cut(JSON.stringify(body.json, null, 2));
+  if ('json' in body) return shownText(JSON.stringify(body.json, null, 2));
   const text = request.body.toString('utf8');
   const readable =
     TEXT_TYPE.test(request.headers['content-type'] ?? '') ||
     // biome-ignore lint/suspicious/noControlCharactersInRegex: control bytes mark a binary body.
     (!text.includes('�') && !/[\u0000-\u0008\u000E-\u001F]/.test(text));
-  if (readable) return cut(text);
+  if (readable) return shownText(text);
   return `${request.body.length} bytes of binary data, sha256 ${String(body.sha256)}`;
 }
 

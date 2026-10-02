@@ -1,0 +1,8 @@
+# gh api -X POST markdown -f text=hi
+### read
+POST https://api.github.com/markdown
+accept: */*
+content-type: application/json; charset=utf-8
+user-agent: GitHub CLI 2.83.2
+
+{"text":"hi"}

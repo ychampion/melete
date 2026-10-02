@@ -1,0 +1,26 @@
+# gh pr merge 7 --repo alice/site --squash --delete-branch
+### read
+POST https://api.github.com/graphql
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json; charset=utf-8
+graphql-features: merge_queue
+user-agent: GitHub CLI 2.83.2
+
+{"query":"\n\tquery PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\tpullRequest(number: $pr_number) {id,number,state,title,commits(last:1){nodes{commit{oid}}},mergeStateStatus,headRepositoryOwner{id,login,...on User{name}},headRefName,baseRefName,headRefOid}\n\t\t}\n\t}","variables":{"owner":"alice","pr_number":7,"repo":"site"}}
+
+### write
+POST https://api.github.com/graphql
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json
+graphql-features: merge_queue
+user-agent: GitHub CLI 2.83.2
+
+{"query":"mutation PullRequestMerge($input:MergePullRequestInput!){mergePullRequest(input: $input){clientMutationId}}","variables":{"input":{"pullRequestId":"PR_kwDOAlice7","mergeMethod":"SQUASH"}}}
+
+
+### write
+DELETE https://api.github.com/repos/alice/site/git/refs/heads/melete%2Ffix-login
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json; charset=utf-8
+user-agent: GitHub CLI 2.83.2
+

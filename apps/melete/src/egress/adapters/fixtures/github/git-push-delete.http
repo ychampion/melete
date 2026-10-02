@@ -1,0 +1,17 @@
+# git push origin --delete melete/fix-login
+### read base64
+GET https://github.com/alice/site.git/info/refs?service=git-receive-pack
+accept: */*
+user-agent: git/2.39.5
+
+
+### write base64
+POST https://github.com/alice/site.git/git-receive-pack
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+user-agent: git/2.39.5
+
+MDBjNTQyZTljYjFmNWMyMjQyNjRjOGE5Yjc1YWZhM2U0Mzk0NWZmODAwMzQgMDAwMDAwMDAwMDAw
+MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCByZWZzL2hlYWRzL21lbGV0ZS9maXgtbG9naW4A
+IHJlcG9ydC1zdGF0dXMtdjIgc2lkZS1iYW5kLTY0ayBxdWlldCBvYmplY3QtZm9ybWF0PXNoYTEg
+YWdlbnQ9Z2l0LzIuMzkuNS5kZWJpYW4uMTIwMDAw
