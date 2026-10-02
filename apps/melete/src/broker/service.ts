@@ -645,13 +645,17 @@ export class BrokerService implements BrokerOperations {
     // only a grant scoped to this job, over values the person approved in it,
     // is asked when there are doubts, and it is told exactly what they are.
     const input = { job, action, tool, phase, warnings };
+    // A room's work is answered by the people its rule names, each time: no
+    // standing rule or scope, made by anyone for their own work, answers for it.
+    const roomWork = requiresApproval && (await roomAuthorityOf(tx, job.id)) !== null;
     const authorizedBy =
-      requiresApproval && warnings.length > 0 && this.options.resolveScopedGrant
+      requiresApproval && !roomWork && warnings.length > 0 && this.options.resolveScopedGrant
         ? await this.options.resolveScopedGrant(tx, input)
         : null;
     const granted =
       authorizedBy !== null ||
       (requiresApproval &&
+        !roomWork &&
         warnings.length === 0 &&
         this.options.resolveStandingGrant !== undefined &&
         (await this.options.resolveStandingGrant(tx, input)));

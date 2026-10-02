@@ -30,6 +30,7 @@ import { calendarManifest } from '../../src/connectors/calendar.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { loadEnv } from '../../src/env.ts';
+import { resolvePersonGrant } from '../../src/experience/chase-scope.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
@@ -57,6 +58,7 @@ const broker = handle
       sql: handle.sql,
       connectors: registry,
       resolveTrust: createMemoryTrustResolver(),
+      resolveStandingGrant: resolvePersonGrant,
     })
   : null;
 const app =
@@ -484,6 +486,29 @@ withDb('room approvals', () => {
       decision: 'approved',
       decided_by: world.alice.id,
     });
+
+    // A standing rule would answer for everyone's requests, so a room's card
+    // never offers one, even to an owner, even for a change that could have one.
+    const calendar = await install(roomId, calendarManifest, 'room');
+    const opened = await startThread(world.alice, roomId, '@Melete put the offsite in');
+    const { claims, bundle } = await claim(opened.request_job_id ?? '');
+    // The agent is told who answers this request's permissions.
+    expect(bundle.job.objective).toContain(
+      "Only the room's owners can answer the permissions it asks for.",
+    );
+    const proposed = await database().broker.propose(claims as CapabilityClaims, {
+      connection_id: calendar,
+      kind: 'calendar.create',
+      payload: { summary: 'Offsite', start: '2026-10-13T09:00:00Z', end: '2026-10-13T17:00:00Z' },
+    });
+    expect(proposed.requires_approval).toBe(true);
+    const { card: event } = await card(
+      world.alice,
+      roomId,
+      opened.thread.id,
+      proposed.approval_id ?? '',
+    );
+    expect(event.options).toEqual(['allow_once', 'deny']);
   }, 90_000);
 
   test("a recipient another member typed carries an origin warning on the requester's card", async () => {
@@ -529,7 +554,12 @@ withDb('room approvals', () => {
     const { claims } = await claim(requestId);
     await runner.commitOutcome(claims, { kind: 'completed', summary: 'Ready.', evidence: [] });
     // Alice asks again; it reaches her own request.
-    const follow = await post(world.alice, roomId, opened.thread.id, '@Melete use the short version.');
+    const follow = await post(
+      world.alice,
+      roomId,
+      opened.thread.id,
+      '@Melete use the short version.',
+    );
     expect(follow.request_job_id).toBe(requestId);
     const [space] = await sql`select space_id from job where id = ${requestId}`;
     const input = await reviewInput(sql, {
@@ -670,6 +700,11 @@ withDb('room approvals', () => {
     const { sql, db } = database();
     const { roomId } = await makeRoom('Calendars');
     const calendar = await install(roomId, calendarManifest, 'owner');
+    await sql`insert into experience_rule (id, space_id, connection_id, tool_kind, recipient,
+        recipient_class, origin_trust, count_cap, expires_at, reconsent_after_days)
+      values (${`rule_${randomBytes(6).toString('hex')}`}, ${roomId}, ${calendar}, 'calendar.create',
+        '[]'::jsonb, 'this connected app', 'connector_verified', 10,
+        ${new Date(Date.now() + 86_400_000).toISOString()}, 30)`;
     const listed = roomConnectionList.parse(
       await ok(send(world.bob.cookie, `/rooms/${roomId}/connections`)),
     );
@@ -686,7 +721,7 @@ withDb('room approvals', () => {
           requestId,
         )
       ).map((tool) => tool.connection_id);
-    // Both kinds of connection grant the same scopes; the request is offered only the room's.
+    // A connection kept for the owner is not offered to the room's request.
     expect(await offered()).not.toContain(calendar);
     const { claims } = await claim(requestId);
     expect(
@@ -705,5 +740,17 @@ withDb('room approvals', () => {
     // What the request may act through changed, so the attempt in flight is fenced.
     const [attempt] = await sql`select outcome from attempt where id = ${claims.attempt_id}`;
     expect(attempt?.outcome).toBe('fenced');
+    // A standing rule the owner saved for their own use of it never answers
+    // for the room: the room's request still asks.
+    const ruleBefore =
+      await sql`select count(*)::int as n from experience_rule where connection_id = ${calendar}`;
+    expect(ruleBefore[0]?.n).toBe(1);
+    const again = await claim(requestId);
+    const proposed = await database().broker.propose(again.claims as CapabilityClaims, {
+      connection_id: calendar,
+      kind: 'calendar.create',
+      payload: { summary: 'Offsite', start: '2026-10-13T09:00:00Z', end: '2026-10-13T17:00:00Z' },
+    });
+    expect(proposed.requires_approval).toBe(true);
   }, 90_000);
 });
