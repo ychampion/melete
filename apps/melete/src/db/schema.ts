@@ -184,6 +184,22 @@ export const modelDefault = pgTable(
   (table) => [check('model_default_single_row', sql`${table.id} = 'installation'`)],
 );
 
+/**
+ * What a provider's own model list said about which of its models read
+ * images, kept from the last time the list was fetched. A provider's rows are
+ * replaced whenever its list is fetched again.
+ */
+export const modelVisionReport = pgTable(
+  'model_vision_report',
+  {
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    supportsVision: boolean('supports_vision').notNull(),
+    reportedAt: timestamp('reported_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.provider, table.model] })],
+);
+
 export const connection = pgTable(
   'connection',
   {

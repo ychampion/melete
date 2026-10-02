@@ -19121,10 +19121,10 @@ export interface components {
                 /** @description Whether the model is shown the screenshots the agent takes, as pictures. Otherwise it reads their text receipt: where each was saved, its size and digest. */
                 vision: boolean;
                 /**
-                 * @description `catalog`: Melete’s list of models that read images. `app`: the owner said so when choosing the model. `operator`: MELETE_DEFAULT_MODEL_VISION.
+                 * @description `catalog`: Melete’s list of models that read images. `provider`: the provider’s own model list says whether it reads images. `app`: the owner said so when choosing the model. `operator`: MELETE_DEFAULT_MODEL_VISION.
                  * @enum {string}
                  */
-                vision_source: "catalog" | "app" | "operator";
+                vision_source: "catalog" | "provider" | "app" | "operator";
             };
             /** @description Whether this account may change keys and the model (the owner) */
             can_edit: boolean;

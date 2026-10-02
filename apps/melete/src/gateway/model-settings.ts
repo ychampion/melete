@@ -22,19 +22,25 @@
  *
  * A key for the OpenAI-compatible endpoint is bound to the address it was saved
  * for, the operator's or the owner's, and is only ever sent there.
+ *
+ * Whether the active model reads images: the owner's word, else the
+ * operator's, else what the provider's model list said (kept per provider and
+ * model whenever the list is fetched), else Melete's catalog. A missing or old
+ * answer is fetched in the background; no attempt waits for it.
  */
 import {
-  effectiveVision,
+  listedVisionByModel,
   MODEL_PROVIDERS,
   type ModelConnectionTest,
   type ModelProvider,
   type ModelSettings,
+  resolveVision,
 } from '@melete/contracts';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { SealedSecretStore, type SecretRepository } from '../connectors/secrets.ts';
 import type { Database } from '../db/client.ts';
-import { modelDefault, modelProviderKey } from '../db/schema.ts';
+import { modelDefault, modelProviderKey, modelVisionReport } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
 import type { ProviderSignIn } from './credentials.ts';
@@ -61,6 +67,17 @@ export const MODEL_PROVIDER_LABELS: Record<ModelProvider, string> = {
 export const MODEL_TEST_TIMEOUT_MS = 10_000;
 /** A provider that lists thousands of models is cut to this many, sorted. */
 const MODEL_LIST_LIMIT = 1000;
+/** A provider's answer on vision older than this is fetched again, in the background. */
+export const VISION_REPORT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** The least time between two background fetches of one provider's list, per process. */
+export const VISION_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
+/**
+ * Providers whose model list says which models read images, and so is worth
+ * fetching in the background: Fireworks (`supports_image_input`) and the
+ * compatible endpoints that answer like OpenRouter. Any other list is still
+ * read for an answer when the owner tests the connection.
+ */
+const LISTS_REPORT_VISION = new Set<string>(['fireworks', OPENAI_COMPATIBLE]);
 
 type KeyRow = typeof modelProviderKey.$inferSelect;
 type Runner = Database | Transaction;
@@ -117,6 +134,10 @@ export interface ModelSettingsOptions {
 export class ModelSettingsService {
   private readonly box: ReturnType<typeof keyBox>;
   private readonly masterKey: () => string | undefined;
+  /** When each provider's list was last fetched in the background, by this process. */
+  private readonly refreshedAt = new Map<string, number>();
+  /** The background fetch in flight, if any, per provider. */
+  private readonly refreshing = new Map<string, Promise<void>>();
 
   constructor(private readonly options: ModelSettingsOptions) {
     this.masterKey = options.masterKey ?? (() => options.env.MELETE_MASTER_KEY);
@@ -213,35 +234,117 @@ export class ModelSettingsService {
   async activeChoice(
     db: Runner = this.options.db,
   ): Promise<{ provider: string; model: string; vision: boolean }> {
-    const { provider, model, vision } = this.active(await this.chosen(db));
+    const { provider, model, vision } = await this.active(await this.chosen(db), db);
     return { provider, model, vision };
   }
 
   /**
    * The model in use and whether it is shown pictures: the owner's word for a
-   * model chosen in the app, the operator's for the server default, and the
-   * catalog's when neither said.
+   * model chosen in the app, the operator's for the server default, then the
+   * provider's model list, and the catalog's when none of them said.
    */
-  private active(chosen: Awaited<ReturnType<ModelSettingsService['chosen']>>) {
+  private async active(chosen: Awaited<ReturnType<ModelSettingsService['chosen']>>, db?: Runner) {
     const provider = chosen?.provider ?? this.env.MELETE_DEFAULT_PROVIDER;
     const model = chosen?.model ?? this.env.MELETE_DEFAULT_MODEL;
     const stated = chosen ? chosen.supportsVision : this.env.MELETE_DEFAULT_MODEL_VISION;
-    return {
+    const report = typeof stated === 'boolean' ? undefined : await this.report(provider, model, db);
+    const { vision, source } = resolveVision(provider, model, {
+      stated,
+      statedBy: chosen ? 'app' : 'operator',
+      reported: report?.supportsVision,
+    });
+    return { provider, model, vision, vision_source: source };
+  }
+
+  /**
+   * What the provider's list last said about this model. When it has said
+   * nothing yet, or said it long ago, its list is fetched again in the
+   * background; the answer in hand is used meanwhile.
+   */
+  private async report(provider: string, model: string, db: Runner = this.options.db) {
+    if (!isModelProvider(provider) || provider === CHATGPT_PROVIDER) return undefined;
+    const [row] = await db
+      .select({
+        supportsVision: modelVisionReport.supportsVision,
+        reportedAt: modelVisionReport.reportedAt,
+      })
+      .from(modelVisionReport)
+      .where(and(eq(modelVisionReport.provider, provider), eq(modelVisionReport.model, model)));
+    const stale = !row || Date.now() - row.reportedAt.getTime() > VISION_REPORT_MAX_AGE_MS;
+    // Only lists known to answer are fetched unasked; a test passes its own transport.
+    if (
+      stale &&
+      LISTS_REPORT_VISION.has(provider) &&
+      (this.options.fetch || this.env.NODE_ENV !== 'test')
+    )
+      void this.refreshVision(provider);
+    return row;
+  }
+
+  /**
+   * Fetches the provider's model list in the background and keeps what it says
+   * about vision. At most one fetch per provider at a time, and one an hour;
+   * a provider that cannot be reached leaves the stored answers as they were.
+   */
+  refreshVision(provider: ModelProvider): Promise<void> {
+    const inFlight = this.refreshing.get(provider);
+    if (inFlight) return inFlight;
+    const last = this.refreshedAt.get(provider);
+    if (last !== undefined && Date.now() - last < VISION_REFRESH_INTERVAL_MS)
+      return Promise.resolve();
+    this.refreshedAt.set(provider, Date.now());
+    const run = (async () => {
+      try {
+        const base = await this.configuredBase(provider);
+        const key = base ? await this.currentKey(provider) : undefined;
+        if (!base || !key) return;
+        const listed = await this.list(provider, base, key);
+        if (listed.ok) await this.remember(provider, listed.body);
+      } catch (error) {
+        console.warn(`Couldn’t refresh ${provider}’s model list: ${describe(error)}`);
+      } finally {
+        this.refreshing.delete(provider);
+      }
+    })();
+    this.refreshing.set(provider, run);
+    return run;
+  }
+
+  /**
+   * Keeps what a fetched model list says about vision, replacing the
+   * provider's earlier answers. A list that says nothing about vision leaves
+   * them alone. Never throws: the list was fetched for something else.
+   */
+  private async remember(provider: string, body: unknown): Promise<void> {
+    const answers = listedVisionByModel(body);
+    if (!answers.size) return;
+    const reportedAt = new Date();
+    const rows = [...answers].map(([model, supportsVision]) => ({
       provider,
       model,
-      vision: effectiveVision(provider, model, stated),
-      vision_source:
-        typeof stated === 'boolean'
-          ? chosen
-            ? ('app' as const)
-            : ('operator' as const)
-          : ('catalog' as const),
-    };
+      supportsVision,
+      reportedAt,
+    }));
+    try {
+      await this.options.db.transaction(async (tx) => {
+        await tx.delete(modelVisionReport).where(eq(modelVisionReport.provider, provider));
+        for (let start = 0; start < rows.length; start += 500)
+          await tx.insert(modelVisionReport).values(rows.slice(start, start + 500));
+      });
+    } catch (error) {
+      console.warn(`Couldn’t keep ${provider}’s vision answers: ${describe(error)}`);
+    }
+  }
+
+  /** Forgets a provider's answers, when its address or key changes. */
+  private async forgetReports(provider: string): Promise<void> {
+    await this.options.db.delete(modelVisionReport).where(eq(modelVisionReport.provider, provider));
+    this.refreshedAt.delete(provider);
   }
 
   async view(canEdit: boolean): Promise<ModelSettings> {
     const [rows, chosen] = await Promise.all([this.keyRows(), this.chosen()]);
-    const active = this.active(chosen);
+    const active = await this.active(chosen);
     const providers = await Promise.all(
       MODEL_PROVIDERS.map(async (provider) => {
         const row = this.usableRow(provider, rows);
@@ -352,10 +455,14 @@ export class ModelSettingsService {
       .insert(modelProviderKey)
       .values(values)
       .onConflictDoUpdate({ target: modelProviderKey.provider, set: values });
+    // Another key can see other models, and a compatible endpoint's key may
+    // come with a new address: what the old list said no longer holds.
+    await this.forgetReports(provider);
   }
 
   async removeKey(provider: string): Promise<void> {
     await this.options.db.delete(modelProviderKey).where(eq(modelProviderKey.provider, provider));
+    await this.forgetReports(provider);
   }
 
   async setDefault(
@@ -442,7 +549,8 @@ export class ModelSettingsService {
 
   /**
    * One small authenticated call: the provider's model list. It proves the key
-   * and address and gives the owner something to choose from. Nothing is saved.
+   * and address and gives the owner something to choose from. Only what the
+   * list says about which models read images is kept.
    */
   async test(input: {
     provider: string;
@@ -464,12 +572,7 @@ export class ModelSettingsService {
     ): ModelConnectionTest => ({ ok: false, code, message, status });
 
     let base: string;
-    const configuredBase =
-      provider === OPENAI_COMPATIBLE
-        ? (this.operatorBaseUrl() ??
-          this.usableRow(provider, await this.keyRows())?.baseUrl ??
-          undefined)
-        : BUILT_IN.get(provider)?.baseUrl;
+    const configuredBase = await this.configuredBase(provider);
     try {
       base =
         provider === OPENAI_COMPATIBLE && input.base_url
@@ -492,6 +595,37 @@ export class ModelSettingsService {
     }
     if (!key) return failed('no_key', `Paste your ${label} API key first.`);
 
+    const listed = await this.list(provider, base, key);
+    if (!listed.ok) return listed;
+    // What the list says about vision is kept for the address in use; a list
+    // from an address not yet saved describes some other endpoint.
+    if (base === configuredBase) await this.remember(provider, listed.body);
+    return { ok: true, models: modelIds(listed.body), latency_ms: listed.latency_ms };
+  }
+
+  /** The address a provider's model list is fetched from: built in, or the compatible endpoint's. */
+  private async configuredBase(provider: ModelProvider): Promise<string | undefined> {
+    return provider === OPENAI_COMPATIBLE
+      ? (this.operatorBaseUrl() ??
+          this.usableRow(provider, await this.keyRows())?.baseUrl ??
+          undefined)
+      : BUILT_IN.get(provider)?.baseUrl;
+  }
+
+  /** Fetches the provider's model list, or says in plain words why it could not. */
+  private async list(
+    provider: ModelProvider,
+    base: string,
+    key: string,
+  ): Promise<
+    { ok: true; body: unknown; latency_ms: number } | Extract<ModelConnectionTest, { ok: false }>
+  > {
+    const label = MODEL_PROVIDER_LABELS[provider];
+    const failed = (
+      code: Extract<ModelConnectionTest, { ok: false }>['code'],
+      message: string,
+      status: number | null = null,
+    ) => ({ ok: false as const, code, message, status });
     const url = new URL('models', base);
     const headers = new Headers({ accept: 'application/json' });
     if (provider === 'anthropic') {
@@ -571,8 +705,7 @@ export class ModelSettingsService {
         status,
       );
     }
-    const models = modelIds(body);
-    return { ok: true, models, latency_ms: Math.round(performance.now() - started) };
+    return { ok: true, body, latency_ms: Math.round(performance.now() - started) };
   }
 }
 
@@ -664,4 +797,8 @@ export function modelIds(body: unknown): string[] {
       ids.add(value.replace(/^models\//, ''));
   }
   return [...ids].sort().slice(0, MODEL_LIST_LIMIT);
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

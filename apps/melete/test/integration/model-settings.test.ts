@@ -614,4 +614,85 @@ describeWithDb('the model, connected in the app', () => {
     ).find((p) => p.name === 'openai-compatible');
     expect(unbound?.signedIn).toBeUndefined();
   });
+
+  test('whether the model reads images is the provider’s answer when its list gives one', async () => {
+    const SEES = 'accounts/fireworks/models/fixture-sees';
+    const BLIND = 'accounts/fireworks/models/qwen2p5-vl-32b-instruct';
+    const UNLISTED = 'accounts/fireworks/models/llama4-maverick-instruct-basic';
+    let answer: () => Response = () =>
+      Response.json({
+        data: [
+          { id: SEES, supports_image_input: true },
+          { id: BLIND, supports_image_input: false },
+        ],
+      });
+    const api = app({}, async () => answer());
+    const cookie = await owner(api);
+    await api.call('/model-settings/keys/fireworks', cookie, put({ api_key: FIREWORKS_KEY }));
+    const tested = await api.call('/model-settings/test', cookie, post({ provider: 'fireworks' }));
+    expect(tested.body).toMatchObject({ ok: true, models: [BLIND, SEES] });
+    const choose = async (model: string, supports_vision?: boolean | null) => {
+      const chosen = await api.call(
+        '/model-settings/default',
+        cookie,
+        put({ provider: 'fireworks', model, supports_vision }),
+      );
+      expect(chosen.status).toBe(200);
+      return chosen.body.active as Json;
+    };
+
+    // The provider says yes to a model Melete's list does not know.
+    expect(await choose(SEES)).toMatchObject({ vision: true, vision_source: 'provider' });
+    expect(await api.settings.activeChoice()).toMatchObject({ model: SEES, vision: true });
+    // The provider says no to a model Melete's list thinks reads images.
+    expect(await choose(BLIND)).toMatchObject({ vision: false, vision_source: 'provider' });
+    expect(await api.settings.activeChoice()).toMatchObject({ vision: false });
+    // A model the list says nothing about is left to Melete's list.
+    expect(await choose(UNLISTED)).toMatchObject({ vision: true, vision_source: 'catalog' });
+    // The owner's word wins over the provider's.
+    expect(await choose(SEES, false)).toMatchObject({ vision: false, vision_source: 'app' });
+    expect(await api.settings.activeChoice()).toMatchObject({ vision: false });
+    expect(await choose(BLIND, true)).toMatchObject({ vision: true, vision_source: 'app' });
+    await api.settings.refreshVision('fireworks');
+
+    // A provider that cannot be reached leaves the answers already given.
+    answer = () => new Response('unavailable', { status: 503 });
+    const later = app({}, async () => answer());
+    await later.settings.refreshVision('fireworks');
+    expect(await choose(SEES)).toMatchObject({ vision: true, vision_source: 'provider' });
+
+    // With no answer stored and the list unavailable, Melete's list decides at
+    // once, and nothing waits on the provider.
+    await database().sql`delete from model_vision_report`;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let asked = 0;
+    const slow = app({}, async () => {
+      asked += 1;
+      await held;
+      throw new TypeError('fetch failed');
+    });
+    const view = await slow.call('/model-settings', cookie);
+    expect(view.body.active).toMatchObject({
+      model: SEES,
+      vision: false,
+      vision_source: 'catalog',
+    });
+    release();
+    await slow.settings.refreshVision('fireworks');
+    expect(asked).toBe(1);
+    expect((await slow.call('/model-settings', cookie)).body.active).toMatchObject({
+      vision_source: 'catalog',
+    });
+
+    // The provider's answer arrives in the background, for the next attempt.
+    answer = () => Response.json({ data: [{ id: SEES, supports_image_input: true }] });
+    const fresh = app({}, async () => answer());
+    expect(await fresh.settings.activeChoice()).toMatchObject({ vision: false });
+    await fresh.settings.refreshVision('fireworks');
+    expect(await fresh.settings.activeChoice()).toMatchObject({ vision: true });
+    expect(answered.join('\n')).not.toContain(FIREWORKS_KEY);
+  });
 });

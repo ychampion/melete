@@ -34498,10 +34498,11 @@
                 "type": "string",
                 "enum": [
                   "catalog",
+                  "provider",
                   "app",
                   "operator"
                 ],
-                "description": "`catalog`: Melete’s list of models that read images. `app`: the owner said so when choosing the model. `operator`: MELETE_DEFAULT_MODEL_VISION."
+                "description": "`catalog`: Melete’s list of models that read images. `provider`: the provider’s own model list says whether it reads images. `app`: the owner said so when choosing the model. `operator`: MELETE_DEFAULT_MODEL_VISION."
               },
               "updated_at": {
                 "anyOf": [
