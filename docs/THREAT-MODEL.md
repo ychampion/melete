@@ -527,7 +527,12 @@ an address or amount it names carries a warning on their own card, and no
 standing rule they made admits it. The result reaches the room only when they
 approve that exact text, also by its hash; keeping it private tells the room
 only that they kept it, and a decline or an unanswered handoff tells the room
-nothing more. Only the person a handoff names sees or answers it. From their own
+nothing more. A result is held with the handoff only while it waits for that
+choice: sharing, keeping, seven days without an answer, the person forgetting
+anything in their own memory, or removing their space clears it, and a cleared
+result cannot be shared. A guest's request hands nothing to anyone, a person
+has at most three handoffs from one room waiting, and a handoff whose request
+was stopped or ended is withdrawn. Only the person a handoff names sees or answers it. From their own
 work a person posts to a room, or copies a checked file into its files, only
 with their approval of the exact room, thread and text or file, and only while
 they are in the room: membership is read again when the action is proposed,

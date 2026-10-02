@@ -172,13 +172,22 @@ setup" or "Decline" (`POST /handoffs/{id}`). Running it starts work in their own
 space with exactly that text, using their own connections; anything it sends asks
 them as usual, and an address or amount the task names is shown on their card as
 coming from the room. Accepting names the task's hash, so only the task they read
-runs. A handoff nobody answers within seven days is withdrawn.
+runs. A handoff nobody answers within seven days is withdrawn, and so is one
+whose request was stopped or ended. Only a request from a member hands work to
+anyone; a guest's request never reaches a person's own setup. A person has at
+most three handoffs from one room waiting for them, and one request hands out
+at most three. Handing a task over needs no answer in the room, since the
+person's own acceptance is the answer; a room whose owners set approvals to ask
+for everything asks for this too.
 
 When the work finishes, they see the exact result and choose to share it with
 the room or keep it (`POST /handoffs/{id}/result`). Sharing posts that text to
 the thread as theirs, "via Melete"; keeping posts only that they kept it. Either
 way, and on a decline or a withdrawal, the room's request hears how it ended and
-goes on.
+goes on. Once shared or kept, the result is no longer stored with the handoff. A
+result not shared or kept within seven days is cleared, and so is one waiting
+when the person forgets something in their own memory or removes their space;
+it can no longer be shared, and the room hears only that it is gone.
 
 From their own chats, a person can also post to a room they are in
 (`room.post`: the card shows the room, the thread and the exact text) or copy a

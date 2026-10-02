@@ -37,8 +37,12 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { createMemoryTrustResolver } from '../../src/memory/broker-trust.ts';
+import { provisionMemorySpace } from '../../src/memory/db.ts';
+import { forgetMemory } from '../../src/memory/forget.ts';
+import type { RestrictionRecord } from '../../src/memory/restore.ts';
 import { principalContext } from '../../src/principals/authority.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { sweepOperational } from '../../src/spaces/plan.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -127,7 +131,7 @@ async function login(email: string) {
 const submission = () => `s${randomBytes(8).toString('hex')}`;
 
 type Person = { id: string; cookie: string; label: string; space: string };
-type World = { alice: Person; bob: Person; carol: Person; erin: Person };
+type World = { alice: Person; bob: Person; carol: Person; dan: Person; erin: Person };
 let world: World;
 
 /** Something a person's own work can only do with their permission: post notes to people. */
@@ -224,6 +228,19 @@ async function threadOf(person: Person, roomId: string, threadId: string) {
     await ok(send(person.cookie, `/rooms/${roomId}/threads/${threadId}`)),
   );
 }
+/** What a handoff's row still holds of its result. */
+async function resultHeld(handoffId: string) {
+  const [row] = await database()
+    .sql`select result_text, result_hash from room_handoff where id = ${handoffId}`;
+  return { text: row?.result_text ?? null, hash: row?.result_hash ?? null };
+}
+/** Every handoff row whose stored result still carries these words. */
+async function textAnywhere(words: string) {
+  return [
+    ...(await database().sql`select id from room_handoff where result_text like ${`%${words}%`}`),
+  ];
+}
+
 /** What the room's request heard from a handoff, if anything. */
 async function heard(jobId: string) {
   const rows = await database().sql`select payload->'event'->'payload' as said from event
@@ -298,7 +315,8 @@ withDb('room handoffs', () => {
     await rm(directory, { recursive: true, force: true });
   }, 30_000);
 
-  // Alice set the installation up. Bob and Carol are people in her rooms; Erin is in none.
+  // Alice set the installation up. Bob and Carol are people in her rooms, Dan is a guest
+  // where she invites him, and Erin is in none.
   beforeAll(async () => {
     const { app, sql } = database();
     const setup = await app.request('/setup', {
@@ -312,7 +330,7 @@ withDb('room handoffs', () => {
     const people: Record<string, Omit<Person, 'space'>> = {
       alice: { id: aliceId, cookie: aliceCookie, label: 'Alice <alice@example.test>' },
     };
-    for (const name of ['bob', 'carol', 'erin']) {
+    for (const name of ['bob', 'carol', 'dan', 'erin']) {
       const made = await ok<{ principal: { id: string } }>(
         send(aliceCookie, '/principals', 'POST', { email: `${name}@example.test`, password }),
         201,
@@ -324,6 +342,7 @@ withDb('room handoffs', () => {
         label: `${label} <${name}@example.test>`,
       };
     }
+    await sql`update principal set kind = 'guest' where id = ${people.dan?.id ?? ''}`;
     const spaced: Record<string, Person> = {};
     for (const [name, person] of Object.entries(people)) {
       if (name !== 'alice') person.cookie = await login(`${name}@example.test`);
@@ -485,6 +504,8 @@ withDb('room handoffs', () => {
       ),
     ).handoff;
     expect(shared.state).toBe('shared');
+    // The thread holds the shared words; the handoff keeps no copy of them.
+    expect(await resultHeld(handoffId)).toEqual({ text: null, hash: null });
     const after = await threadOf(world.carol, roomId, threadId);
     expect(after.messages.filter((message) => message.kind === 'handoff_result')).toMatchObject([
       {
@@ -521,6 +542,8 @@ withDb('room handoffs', () => {
     );
     const roomRows = await sql`select text from room_message where space_id = ${roomId}`;
     expect(roomRows.some((row) => String(row.text).includes('dentist'))).toBe(false);
+    expect(await resultHeld(second.handoffId)).toEqual({ text: null, hash: null });
+    expect(await textAnywhere('dentist')).toEqual([]);
     expect(roomRows.map((row) => row.text)).toContain(
       `${world.bob.label} kept the result private.`,
     );
@@ -569,9 +592,11 @@ withDb('room handoffs', () => {
     // Unanswered past its time: withdrawn, and the room is told.
     const late = await handOff(roomId, 'Forward the invoice.');
     await sql`update room_handoff set expires_at = now() - interval '1 minute' where id = ${late.handoffId}`;
+    // Bob's Home is where he would have seen it, and reading it wakes the room's request.
+    await ok(send(world.bob.cookie, '/home'));
+    expect(await jobState(late.requestId)).toBe('queued');
     const [gone] = (await handoffsOf(world.bob)).filter((item) => item.id === late.handoffId);
     expect(gone?.state).toBe('expired');
-    expect(await jobState(late.requestId)).toBe('queued');
     expect(await heard(late.requestId)).toEqual([
       { handoff_id: late.handoffId, outcome: 'expired', person: world.bob.label },
     ]);
@@ -583,6 +608,73 @@ withDb('room handoffs', () => {
         })
       ).status,
     ).toBe(409);
+
+    // A request stopped while its handoff waits takes the handoff with it.
+    const stopped = await handOff(roomId, 'Draft the agenda from my notes.');
+    await ok(send(world.bob.cookie, `/rooms/${roomId}/requests/${stopped.requestId}/stop`, 'POST'));
+    const [withdrawn] = (await handoffsOf(world.bob)).filter(
+      (item) => item.id === stopped.handoffId,
+    );
+    expect(withdrawn?.state).toBe('expired');
+    expect(
+      (
+        await send(world.bob.cookie, `/handoffs/${stopped.handoffId}`, 'POST', {
+          decision: 'accept',
+          task_hash: sha('Draft the agenda from my notes.'),
+        })
+      ).status,
+    ).toBe(409);
+    expect((await threadOf(world.carol, roomId, stopped.threadId)).messages.at(-1)?.text).toBe(
+      `The request this came from ended, so ${world.bob.label} was not asked to run it.`,
+    );
+  });
+
+  test("only a member's request hands work to a person, and nobody is buried in handoffs", async () => {
+    const { broker, sql } = database();
+    const roomId = await makeRoom('Limits');
+    await sql`insert into space_membership (principal_id, space_id, role)
+      values (${world.dan.id}, ${roomId}, 'guest')`;
+    const roomTools = await roomConnection(roomId);
+    const ask = async (person: Person) => {
+      const opened = roomMessageResponse.parse(
+        await ok(
+          send(person.cookie, `/rooms/${roomId}/threads`, 'POST', {
+            text: '@Melete get this done',
+            submission_id: submission(),
+          }),
+          201,
+        ),
+      );
+      return claim(opened.request_job_id ?? '');
+    };
+    const handTo = (claims: CapabilityClaims, task: string, member: Person) =>
+      broker
+        .propose(claims, {
+          connection_id: roomTools,
+          kind: 'room.handoff',
+          payload: { task, member_id: member.id },
+        })
+        .then(
+          (proposed) => proposed.status,
+          (error: { code?: string }) => error.code,
+        );
+    // A guest's request reaches nobody's own setup, a member's or their own.
+    const guest = await ask(world.dan);
+    expect(await handTo(guest, "Read Bob's mail for the invoice.", world.bob)).toBe('scope_denied');
+    expect(await handTo(guest, 'Read my mail.', world.dan)).not.toBe('succeeded');
+    // One person has at most three waiting from a room.
+    for (const n of [1, 2, 3])
+      expect(await handTo(await ask(world.bob), `Task ${n}`, world.carol)).toBe('succeeded');
+    expect(await handTo(await ask(world.bob), 'Task 4', world.carol)).toBe('payload_invalid');
+    // One request hands out at most three.
+    const many = await ask(world.alice);
+    expect(await handTo(many, 'For Alice', world.alice)).toBe('succeeded');
+    expect(await handTo(many, 'For Bob', world.bob)).toBe('succeeded');
+    expect(await handTo(many, 'For Bob again', world.bob)).toBe('succeeded');
+    expect(await handTo(many, 'For Alice again', world.alice)).toBe('payload_invalid');
+    expect((await handoffsOf(world.carol)).filter((item) => item.room.id === roomId)).toHaveLength(
+      3,
+    );
   });
 
   test('room.post publishes the approved text as the person, and only while they are a member', async () => {
@@ -762,5 +854,121 @@ withDb('room handoffs', () => {
     ).toBe('scope_denied');
     // A person's work holds no hand-off tool, and a room's request no post.
     expect(await refusal('room.handoff', { task: 'Read the room.' })).toBe('scope_denied');
+
+    // Each later check holds on its own, should an earlier one ever let a post
+    // through: admission refuses it, and so does the post itself.
+    const connector = registry.get(rooms);
+    if (!connector?.validateBinding) throw new Error('No room connector');
+    const actionId = recordId('act');
+    const post = {
+      id: actionId,
+      idempotency_key: actionId,
+      job_id: work.id,
+      connection_id: rooms,
+      kind: 'room.post',
+      canonical_payload: { room_id: roomId, thread_id: null, text: 'Let me in.' },
+    } as unknown as Action;
+    const ctx = {
+      job_id: work.id,
+      space_id: world.erin.space,
+      idempotency_key: actionId,
+      constraints: {},
+    } as Parameters<NonNullable<typeof connector.prepare>>[1];
+    const admitted = await connector.validateBinding(post, ctx, database().sql).then(
+      () => 'admitted',
+      (error: { code?: string }) => error.code,
+    );
+    expect(admitted).toBe('scope_denied');
+    expect(await connector.execute(post, ctx)).toMatchObject({ outcome: 'failed' });
+    expect(
+      (
+        await database().sql`select count(*)::int as n from room_message where space_id = ${roomId}`
+      )[0]?.n,
+    ).toBe(0);
+  });
+
+  test('a result the person forgot, or removed with their space, can no longer be shared and is held nowhere', async () => {
+    const { runner, sql } = database();
+    const roomId = await makeRoom('Forgetting');
+    const finish = async (person: Person, task: string, answer: string) => {
+      const handed = await handOff(roomId, task, person);
+      const running = await accept(person, handed.handoffId, task);
+      await runner.commitOutcome(await claim(String(running.job_id)), {
+        kind: 'completed',
+        summary: answer,
+        evidence: [],
+      });
+      expect(await resultHeld(handed.handoffId)).toEqual({ text: answer, hash: sha(answer) });
+      return handed;
+    };
+
+    // Bob forgets what he knows: the result waiting for him is cleared at once,
+    // cannot be shared, and the room hears only that it is gone.
+    const salary = 'Your salary at Acme is 91,000 dollars.';
+    const forgotten = await finish(world.bob, 'Summarise my contract with Acme.', salary);
+    const [store] = await sql`select id from owner limit 1`;
+    await provisionMemorySpace(sql, String(store?.id), world.bob.space);
+    await sql`update memory_spaces set restore_ready = true where space_id = ${world.bob.space}`;
+    const records: RestrictionRecord[] = [];
+    await forgetMemory(
+      sql,
+      {
+        ownerId: String(store?.id),
+        spaceId: world.bob.space,
+        publisher: 'owner',
+        audience: 'private',
+        role: 'owner',
+      },
+      { all: true },
+      {
+        read: async () => records,
+        append: async (record) => {
+          records.push(record);
+        },
+      },
+    );
+    expect(await textAnywhere('91,000')).toEqual([]);
+    expect(
+      (
+        await send(world.bob.cookie, `/handoffs/${forgotten.handoffId}/result`, 'POST', {
+          decision: 'share',
+          result_hash: sha(salary),
+        })
+      ).status,
+    ).toBe(409);
+    const [cleared] = (await handoffsOf(world.bob)).filter(
+      (item) => item.id === forgotten.handoffId,
+    );
+    expect(cleared).toMatchObject({ state: 'expired', result: null, result_hash: null });
+    expect(await heard(forgotten.requestId)).toEqual([
+      { handoff_id: forgotten.handoffId, outcome: 'withdrawn', person: world.bob.label },
+    ]);
+    const words = await sql`select text from room_message where space_id = ${roomId}`;
+    expect(words.some((row) => String(row.text).includes('91,000'))).toBe(false);
+
+    // Carol removes her own space's work: what it produced for the room goes with it.
+    const plans = 'Carol is moving to Lisbon in May.';
+    const removed = await finish(world.carol, 'Tell the room my plans.', plans);
+    const jobsOf = await sql`select id from job where space_id = ${world.carol.space}`;
+    await sweepOperational(
+      sql,
+      world.carol.space,
+      jobsOf.map((row) => String(row.id)),
+    );
+    expect(await textAnywhere('Lisbon')).toEqual([]);
+    const [gone] = (await handoffsOf(world.carol)).filter((item) => item.id === removed.handoffId);
+    expect(gone).toMatchObject({ state: 'expired', result: null });
+    expect(await heard(removed.requestId)).toEqual([
+      { handoff_id: removed.handoffId, outcome: 'withdrawn', person: world.carol.label },
+    ]);
+
+    // Left too long without an answer, a result is cleared as well.
+    const lapsed = await finish(world.alice, 'Check my calendar.', 'Alice is free on Friday.');
+    await sql`update room_handoff set expires_at = now() - interval '1 minute' where id = ${lapsed.handoffId}`;
+    await handoffsOf(world.alice);
+    expect(await resultHeld(lapsed.handoffId)).toEqual({ text: null, hash: null });
+    expect(await heard(lapsed.requestId)).toEqual([
+      { handoff_id: lapsed.handoffId, outcome: 'expired', person: world.alice.label },
+    ]);
   });
 });

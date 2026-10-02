@@ -2,6 +2,7 @@ CREATE TABLE "room_handoff" (
 	"id" text PRIMARY KEY NOT NULL,
 	"space_id" text NOT NULL,
 	"room_job_id" text,
+	"room_turn_id" text,
 	"thread_id" text NOT NULL,
 	"action_id" text NOT NULL,
 	"connection_id" text,
@@ -29,4 +30,5 @@ ALTER TABLE "room_handoff" ADD CONSTRAINT "room_handoff_target_principal_id_prin
 ALTER TABLE "room_handoff" ADD CONSTRAINT "room_handoff_personal_job_id_job_id_fk" FOREIGN KEY ("personal_job_id") REFERENCES "public"."job"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "room_handoff_target_idx" ON "room_handoff" USING btree ("target_principal_id","created_at");--> statement-breakpoint
 CREATE INDEX "room_handoff_personal_job_idx" ON "room_handoff" USING btree ("personal_job_id");--> statement-breakpoint
-CREATE INDEX "room_handoff_room_idx" ON "room_handoff" USING btree ("space_id");
+CREATE INDEX "room_handoff_room_idx" ON "room_handoff" USING btree ("space_id");--> statement-breakpoint
+CREATE INDEX "room_handoff_due_idx" ON "room_handoff" USING btree ("state","expires_at");

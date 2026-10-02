@@ -96,6 +96,11 @@ export async function sweepOperational(
     // One statement takes attempts, actions, approvals, events, triggers, the
     // ledger, background operations, repair candidates, tool contexts, turns,
     // milestones, browser bindings and the learning rows below a job.
+    // A room keeps its handoffs, but no result of this space's work: one not
+    // yet shared is cleared, and the room is told it is no longer there.
+    await tx`update room_handoff set result_text = null, result_hash = null,
+        state = case when state in ('running', 'settled') then 'settled' else state end
+      where personal_job_id in (select id from job where space_id = ${spaceId})`;
     await tx`delete from job where space_id = ${spaceId}`;
     // Artifacts outlive their job by design: `job_id` is nulled, not cascaded.
     // They belong to the space, and they go with it, taking their validation

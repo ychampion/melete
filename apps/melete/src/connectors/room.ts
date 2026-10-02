@@ -33,6 +33,8 @@ import { event, job, schema, trigger } from '../db/schema.ts';
 import { serviceTransaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import {
+  HANDOFF_OPEN_PER_PERSON,
+  HANDOFF_PER_REQUEST,
   HANDOFF_TASK_LIMIT,
   HANDOFF_TTL_MS,
   handoffEventName,
@@ -207,6 +209,12 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
     const job = await facts(tx, ctx.job_id);
     if (job.audience !== 'room' || job.space_id !== ctx.space_id)
       throw new BrokerFault('scope_denied', "Only a room's request hands work to a person.");
+    // Only a member's request reaches into someone's own setup: a guest's never does.
+    if (!(await memberRole(tx, ctx.space_id, job.requested_by_principal_id)))
+      throw new BrokerFault(
+        'scope_denied',
+        'Only a request from a member of this room hands work to a person.',
+      );
     const target =
       typeof payload.member_id === 'string' ? payload.member_id : job.requested_by_principal_id;
     if (!(await memberRole(tx, ctx.space_id, target)))
@@ -214,6 +222,17 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
         'payload_invalid',
         'Hand work only to a person in this room who is not a guest.',
       );
+    const [open] = await tx`select
+        count(*) filter (where target_principal_id = ${target} and state = 'pending')::int as waiting,
+        count(*) filter (where room_job_id = ${ctx.job_id})::int as asked
+      from room_handoff where space_id = ${ctx.space_id}`;
+    if (Number(open?.waiting ?? 0) >= HANDOFF_OPEN_PER_PERSON)
+      throw new BrokerFault(
+        'payload_invalid',
+        'That person already has requests from this room waiting for them. Wait for them to answer.',
+      );
+    if (Number(open?.asked ?? 0) >= HANDOFF_PER_REQUEST)
+      throw new BrokerFault('payload_invalid', 'This request has handed out as much as it may.');
     return { job, target: target as string };
   };
 
@@ -337,6 +356,8 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
       if (
         request?.audience !== 'room' ||
         !request.roomThreadId ||
+        !request.requestedByPrincipalId ||
+        !(await roomMemberRole(tx, ctx.space_id, request.requestedByPrincipalId)) ||
         !target ||
         !(await roomMemberRole(tx, ctx.space_id, target))
       )
@@ -370,6 +391,7 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
           id,
           spaceId: ctx.space_id,
           roomJobId: request.id,
+          roomTurnId: request.currentTurnId,
           threadId: request.roomThreadId,
           actionId: action.id,
           connectionId: action.connection_id,

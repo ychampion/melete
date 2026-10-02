@@ -148,6 +148,8 @@ export const roomHandoff = pgTable(
       .references(() => space.id, { onDelete: 'cascade' }),
     /** The room's request that asked for it. */
     roomJobId: text('room_job_id').references(() => job.id, { onDelete: 'set null' }),
+    /** The turn of that request that asked: stopping it withdraws the handoff. */
+    roomTurnId: text('room_turn_id'),
     threadId: text('thread_id')
       .notNull()
       .references(() => roomThread.id, { onDelete: 'cascade' }),
@@ -175,6 +177,7 @@ export const roomHandoff = pgTable(
     index('room_handoff_target_idx').on(t.targetPrincipalId, t.createdAt),
     index('room_handoff_personal_job_idx').on(t.personalJobId),
     index('room_handoff_room_idx').on(t.spaceId),
+    index('room_handoff_due_idx').on(t.state, t.expiresAt),
     check(
       'room_handoff_state',
       sql`${t.state} in ('pending', 'accepted', 'declined', 'running', 'settled', 'shared', 'kept', 'expired')`,

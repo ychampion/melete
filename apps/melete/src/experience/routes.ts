@@ -104,7 +104,9 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       : undefined;
   const home = new ExperienceHome(deps.db, ownerEffects);
   // Work rooms handed the person, shown on their Home and with their approvals.
-  const handoffs = deps.jobs ? new HandoffService({ db: deps.db, jobs: deps.jobs }) : undefined;
+  const handoffs = deps.jobs
+    ? new HandoffService({ db: deps.db, jobs: deps.jobs, triggers: deps.triggers })
+    : undefined;
   const planning = new ExperiencePlanning(service, deps.triggers);
   const events = new ExperienceEvents(
     deps.db,

@@ -11,11 +11,20 @@
  * when they accept, and the result's, checked when they share.
  */
 import { createHash } from 'node:crypto';
-import { type AttemptOutcome, type RoomHandoff, roomHandoff } from '@melete/contracts';
-import { and, desc, eq, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { type AttemptOutcome, type RoomHandoff, roomHandoff, waitSpec } from '@melete/contracts';
+import { and, desc, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { attempt, connection, job, principal, space, spaceMembership } from '../db/schema.ts';
+import {
+  attempt,
+  connection,
+  experienceTurn,
+  job,
+  principal,
+  space,
+  spaceMembership,
+  trigger,
+} from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { answerText } from '../experience/answer-filter.ts';
@@ -33,6 +42,9 @@ type Reader = Pick<Transaction, 'select'>;
 
 /** How long a handoff waits for its person before the room is told it went unanswered. */
 export const HANDOFF_TTL_MS = 7 * 24 * 60 * 60_000;
+/** How many handoffs waiting on one person one room may hold, and one request may make. */
+export const HANDOFF_OPEN_PER_PERSON = 3;
+export const HANDOFF_PER_REQUEST = 3;
 /** The most of a task a handoff carries. The person reads all of it. */
 export const HANDOFF_TASK_LIMIT = 8000;
 
@@ -228,6 +240,9 @@ export class HandoffService {
     const outcome = await this.deps.jobs.transaction(async (tx) => {
       const row = await this.locked(tx, id, actor);
       if (row.state !== 'pending') return { row, refusal: stateRefusal(row) };
+      // Past its time, or its request has ended: it is withdrawn, not run.
+      const ended = await this.withdrawIfOver(tx, row);
+      if (ended) return { row: ended, refusal: stateRefusal(ended) };
       const label = await this.labelOf(tx, actor);
       if (input.decision === 'decline') {
         const updated = await this.move(tx, row, { state: 'declined', decidedAt: new Date() });
@@ -307,7 +322,12 @@ export class HandoffService {
         };
       const label = await this.labelOf(tx, actor);
       if (input.decision === 'keep') {
-        const updated = await this.move(tx, row, { state: 'kept' });
+        // Kept means kept: no copy of it stays with the room's records.
+        const updated = await this.move(tx, row, {
+          state: 'kept',
+          resultText: null,
+          resultHash: null,
+        });
         await this.note(tx, updated, `${label} kept the result private.`);
         await this.tell(tx, updated, 'kept', { by: label });
         return { row: updated };
@@ -335,7 +355,12 @@ export class HandoffService {
         text: row.resultText,
         key: `handoff:${row.id}:result`,
       });
-      const updated = await this.move(tx, row, { state: 'shared' });
+      // The thread holds the shared copy now; the handoff keeps none.
+      const updated = await this.move(tx, row, {
+        state: 'shared',
+        resultText: null,
+        resultHash: null,
+      });
       await this.tell(tx, updated, 'shared', { by: label, result: row.resultText });
       return { row: updated };
     });
@@ -374,7 +399,7 @@ export class HandoffService {
   private async tell(
     tx: Transaction,
     row: HandoffRow,
-    outcome: 'declined' | 'expired' | 'shared' | 'kept' | 'failed',
+    outcome: 'declined' | 'expired' | 'shared' | 'kept' | 'failed' | 'withdrawn',
     detail: { by: string; result?: string },
   ) {
     if (!row.connectionId) return;
@@ -404,9 +429,64 @@ export class HandoffService {
       },
       dedupKey: `connector:${row.connectionId}:${dedup}`,
     });
-    if (!row.roomJobId || !this.deps.triggers) return;
+    if (!row.roomJobId || !row.triggerId || !this.deps.triggers) return;
+    // Only a request waiting on this very handoff is woken here. One waiting on
+    // something else hears it when it next waits; the person's answer never
+    // depends on what the request happens to be waiting for.
     const waiting = await this.deps.jobs.lock(tx, row.roomJobId);
-    if (waiting?.spaceId === source.spaceId) await this.deps.triggers.registerWait(tx, waiting);
+    const wait = waitSpec.safeParse(waiting?.wait);
+    if (
+      waiting?.spaceId !== source.spaceId ||
+      waiting.state !== 'waiting_for_event_or_time' ||
+      !wait.success ||
+      wait.data.kind !== 'event' ||
+      wait.data.trigger_id !== row.triggerId
+    )
+      return;
+    const [registration] = await tx
+      .select({ enabled: trigger.enabled })
+      .from(trigger)
+      .where(eq(trigger.id, row.triggerId));
+    if (registration?.enabled) await this.deps.triggers.registerWait(tx, waiting);
+  }
+
+  /**
+   * Withdraw a pending handoff that is past its time, or whose request has
+   * ended or was stopped. Returns the withdrawn row, or null when it stands.
+   */
+  private async withdrawIfOver(tx: Transaction, row: HandoffRow, now = new Date()) {
+    if (row.state !== 'pending') return null;
+    const label = await this.labelOf(tx, row.targetPrincipalId);
+    if (row.expiresAt.getTime() <= now.getTime()) {
+      const updated = await this.move(tx, row, { state: 'expired', decidedAt: now });
+      await this.note(tx, updated, `${label} did not answer in time, so this was not run.`);
+      await this.tell(tx, updated, 'expired', { by: label });
+      return updated;
+    }
+    if (!(await this.requestEnded(tx, row))) return null;
+    const updated = await this.move(tx, row, { state: 'expired', decidedAt: now });
+    await this.note(
+      tx,
+      updated,
+      `The request this came from ended, so ${label} was not asked to run it.`,
+    );
+    return updated;
+  }
+
+  /** Whether the room's request that asked has ended, or the turn that asked was stopped. */
+  private async requestEnded(reader: Reader, row: HandoffRow) {
+    if (!row.roomJobId) return true;
+    const [request] = await reader
+      .select({ state: job.state })
+      .from(job)
+      .where(eq(job.id, row.roomJobId));
+    if (!request || ENDED_STATES.includes(request.state)) return true;
+    if (!row.roomTurnId) return false;
+    const [turn] = await reader
+      .select({ status: experienceTurn.status })
+      .from(experienceTurn)
+      .where(eq(experienceTurn.id, row.roomTurnId));
+    return turn?.status === 'stopped';
   }
 
   /**
@@ -426,14 +506,16 @@ export class HandoffService {
         ? answerText(outcome.summary).trim()
         : '';
     if (answer) {
+      // The person has as long again to share or keep it; after that it is cleared.
       await this.move(tx, handoff, {
         state: 'settled',
         resultText: answer,
         resultHash: sha256(answer),
+        expiresAt: new Date(Date.now() + HANDOFF_TTL_MS),
       });
       return;
     }
-    const updated = await this.move(tx, handoff, { state: 'settled' });
+    const updated = await this.move(tx, handoff, { state: 'expired' });
     const label = await this.labelOf(tx, handoff.targetPrincipalId);
     await this.note(tx, updated, `The work ${label} ran with their own setup did not finish.`);
     await this.tell(tx, updated, 'failed', { by: label });
@@ -448,38 +530,85 @@ export class HandoffService {
   }
 
   /**
-   * Withdraw handoffs nobody answered in time, and settle any whose work ended
-   * while no hook was listening, each in its own transaction. Run on reads and
-   * with the recovery scan.
+   * Withdraw handoffs that are past their time or whose request ended, clear
+   * results nobody shared or kept in time or whose words the person has since
+   * forgotten, and settle any whose work ended while no hook was listening.
+   * Each row is its own transaction, and one that fails leaves the others to
+   * go ahead. Run on reads and with the recovery scan.
    */
   async expireDue(now = new Date()) {
-    const due = await this.deps.db
+    const each = async (ids: string[], work: (tx: Transaction, id: string) => Promise<void>) => {
+      for (const id of ids)
+        await serviceTransaction(this.deps.db, (tx) => work(tx, id)).catch(() => {
+          process.stderr.write(`handoff ${id} could not be brought up to date\n`);
+        });
+    };
+    const lockedRow = async (tx: Transaction, id: string, state: string) => {
+      const [row] = await tx
+        .select()
+        .from(handoffTable)
+        .where(and(eq(handoffTable.id, id), eq(handoffTable.state, state)))
+        .for('update');
+      return row;
+    };
+    const pending = (await this.deps.db.execute(sql`select h.id from room_handoff h
+        left join job j on j.id = h.room_job_id
+        left join experience_turn t on t.id = h.room_turn_id
+      where h.state = 'pending' and (h.expires_at <= ${now.toISOString()}::timestamptz or j.id is null
+        or j.state in ('cancelled', 'failed', 'completed') or t.status = 'stopped')
+      limit 100`)) as unknown as { id: string }[];
+    await each(
+      pending.map((row) => row.id),
+      async (tx, id) => {
+        const row = await lockedRow(tx, id, 'pending');
+        if (row) await this.withdrawIfOver(tx, row, now);
+      },
+    );
+    // A result nobody shared or kept in time, or one cleared because the
+    // person forgot what it was built from or removed their space.
+    const results = await this.deps.db
       .select({ id: handoffTable.id })
       .from(handoffTable)
-      .where(and(eq(handoffTable.state, 'pending'), lte(handoffTable.expiresAt, now)))
+      .where(
+        and(
+          eq(handoffTable.state, 'settled'),
+          or(isNull(handoffTable.resultHash), lte(handoffTable.expiresAt, now)),
+        ),
+      )
       .limit(100);
-    for (const { id } of due)
-      await serviceTransaction(this.deps.db, async (tx) => {
-        const [row] = await tx
-          .select()
-          .from(handoffTable)
-          .where(and(eq(handoffTable.id, id), eq(handoffTable.state, 'pending')))
-          .for('update');
+    await each(
+      results.map((row) => row.id),
+      async (tx, id) => {
+        const row = await lockedRow(tx, id, 'settled');
         if (!row) return;
-        const updated = await this.move(tx, row, { state: 'expired', decidedAt: now });
+        const lapsed = row.resultHash !== null;
+        const updated = await this.move(tx, row, {
+          state: 'expired',
+          resultText: null,
+          resultHash: null,
+          decidedAt: now,
+        });
         const label = await this.labelOf(tx, row.targetPrincipalId);
-        await this.note(tx, updated, `${label} did not answer in time, so this was not run.`);
-        await this.tell(tx, updated, 'expired', { by: label });
-      });
+        await this.note(
+          tx,
+          updated,
+          lapsed
+            ? `${label} did not share or keep the result in time, so it was not shared.`
+            : `The result of the work ${label} ran is no longer kept, so it was not shared.`,
+        );
+        await this.tell(tx, updated, lapsed ? 'expired' : 'withdrawn', { by: label });
+      },
+    );
     const ended = await this.deps.db
-      .select({ id: handoffTable.id, jobId: handoffTable.personalJobId })
+      .select({ jobId: handoffTable.personalJobId })
       .from(handoffTable)
       .innerJoin(job, eq(job.id, handoffTable.personalJobId))
       .where(and(eq(handoffTable.state, 'running'), inArray(job.state, [...ENDED_STATES])))
       .limit(100);
-    for (const { jobId } of ended)
-      await serviceTransaction(this.deps.db, async (tx) => {
-        const row = jobId ? await this.deps.jobs.lock(tx, jobId) : undefined;
+    await each(
+      ended.flatMap((row) => (row.jobId ? [row.jobId] : [])),
+      async (tx, jobId) => {
+        const row = await this.deps.jobs.lock(tx, jobId);
         if (!row) return;
         const [last] = await tx
           .select({ detail: attempt.outcomeDetail })
@@ -488,7 +617,8 @@ export class HandoffService {
           .orderBy(desc(attempt.startedAt), desc(attempt.id))
           .limit(1);
         await this.settle(tx, row, (last?.detail ?? undefined) as AttemptOutcome | undefined);
-      });
+      },
+    );
   }
 }
 
