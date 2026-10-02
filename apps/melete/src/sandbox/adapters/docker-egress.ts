@@ -33,7 +33,13 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { connect, isIP, type Socket } from 'node:net';
 import { publicPin, type ResolvedAddress, resolveHost } from '../../connectors/web.ts';
 import type { EgressCredentialPort } from '../../egress/credentials.ts';
-import { type InterceptOptions, interceptTunnel } from '../../egress/intercept.ts';
+import {
+  type BodyBudget,
+  DEFAULT_HOLD_MAX_BYTES,
+  type InterceptOptions,
+  interceptTunnel,
+  MAX_HELD_PER_COMPUTER,
+} from '../../egress/intercept.ts';
 import type { EgressRecordSink } from '../../egress/records.ts';
 import {
   type EgressAttribution,
@@ -145,6 +151,8 @@ type Grant = {
   records: RecordWindow;
   /** Requests of this computer held for an answer right now. */
   held: { count: number };
+  /** Request-body bytes of this computer in memory right now. */
+  bodies: BodyBudget;
 };
 
 export type SandboxEgressGrantOptions = {
@@ -167,11 +175,19 @@ export class SandboxEgressGuard {
   private listening?: Promise<number>;
   /** The tokens of commands running in granted computers. */
   readonly tokens = new EgressTokens();
+  /** Request-body bytes every computer together has in memory right now. */
+  private readonly bodies: BodyBudget;
   private readonly now: () => number;
   private readonly flusher: ReturnType<typeof setInterval>;
 
   constructor(private readonly options: SandboxEgressOptions = {}) {
     this.now = options.now ?? Date.now;
+    this.bodies = {
+      used: 0,
+      max:
+        options.intercept?.globalBodyBytes ??
+        4 * MAX_HELD_PER_COMPUTER * (options.intercept?.holdMaxBytes ?? DEFAULT_HOLD_MAX_BYTES),
+    };
     this.flusher = setInterval(() => this.flushRecords(), RECORD_FLUSH_MS);
     this.flusher.unref?.();
     this.resolve = options.resolve ?? resolveHost;
@@ -225,6 +241,12 @@ export class SandboxEgressGuard {
       tunnels: new Set(),
       records: this.freshWindow(),
       held: { count: 0 },
+      bodies: {
+        used: 0,
+        max:
+          this.options.intercept?.computerBodyBytes ??
+          MAX_HELD_PER_COMPUTER * (this.options.intercept?.holdMaxBytes ?? DEFAULT_HOLD_MAX_BYTES),
+      },
     });
   }
 
@@ -492,6 +514,7 @@ export class SandboxEgressGuard {
         port: input.port,
         counters,
         held: grant.held,
+        budgets: [grant.bodies, this.bodies],
         onRead: () => {
           reads += 1;
           if (counters) counters.reads = (counters.reads ?? 0) + 1;

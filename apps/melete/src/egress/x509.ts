@@ -170,6 +170,8 @@ export function leafCertificate(input: {
   caCommonName: string;
   notBefore: Date;
   notAfter: Date;
+  /** Left out only by a test that forges a certificate naming its host in the subject alone. */
+  withoutSubjectAltName?: boolean;
 }): Buffer {
   const spki = input.keys.publicKey.export({ type: 'spki', format: 'der' });
   const caKeyId = keyIdentifier(new X509Certificate(input.caCert).publicKey);
@@ -188,7 +190,9 @@ export function leafCertificate(input: {
         // digitalSignature.
         extension('2.5.29.15', true, bits(Buffer.from([0x80]), 7)),
         extension('2.5.29.37', false, sequence(objectId('1.3.6.1.5.5.7.3.1'))),
-        extension('2.5.29.17', false, sequence(tlv(0x82, Buffer.from(input.host, 'ascii')))),
+        ...(input.withoutSubjectAltName
+          ? []
+          : [extension('2.5.29.17', false, sequence(tlv(0x82, Buffer.from(input.host, 'ascii'))))]),
         extension('2.5.29.14', false, octets(keyIdentifier(input.keys.publicKey))),
         extension('2.5.29.35', false, sequence(tlv(0x80, caKeyId))),
       ),

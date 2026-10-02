@@ -56,7 +56,7 @@ export type Classification =
        */
       payload: JsonObject;
       summary: CardSummary;
-      /** Deletes or overwrites something: shown as such, and never covered by a standing rule. */
+      /** Deletes or overwrites something: shown as such on the card. */
       destructive: boolean;
     }
   | { kind: 'refuse'; reason: string };

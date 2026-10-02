@@ -23,8 +23,10 @@ passes the encrypted bytes through and never sees them.
 
 For each request inside a terminated connection:
 
-- The computer's own `Authorization`, `Proxy-*` and `Cookie` headers, and any
-  header carrying one of the account's placeholders, are removed.
+- The computer's own `Authorization`, `Proxy-*` and `Cookie` headers, any
+  header naming a different method (`X-HTTP-Method-Override`, `X-HTTP-Method`,
+  `X-Method-Override`), and any header carrying one of the account's
+  placeholders, are removed.
 - The request must name the connection's host, in its `Host` header and in any
   absolute address. HTTP/1.1 only; upgrades and tunnels inside the connection
   are refused.
@@ -34,9 +36,14 @@ For each request inside a terminated connection:
 - **A read** goes out with the account added. The answer comes back
   uncompressed, without `Alt-Svc` or `Set-Cookie`, and with every form of the
   secret replaced by `[redacted]`, even if the service echoes it.
-- **A change** is held while Melete asks. The approval card shows the request
-  exactly, summarised by the adapter, with the full request under Details; a
-  change that deletes or overwrites something says so. If the person answers
+- **A change** is held while Melete asks. The approval is bound to the request
+  as it will be sent: its method, address, the digest of its exact body bytes,
+  and every header that goes with it (only `User-Agent`, `Date`, `Traceparent`,
+  `Tracestate` and `X-Request-Id` are left out), and the change forwards exactly
+  those. A request that differs in any of them is a new approval. The card
+  shows the adapter's summary, the headers, and the body as text or JSON; a
+  binary body is shown by its size and digest, and a long one says how much is
+  not shown. A change that deletes or overwrites something says so. If the person answers
   within about 90 seconds (`MELETE_EGRESS_APPROVAL_HOLD_SECONDS`, always ending
   ten seconds before the command's own time), the change goes out inside the
   same command. If not, the command is told, in plain words, to wait, and the
@@ -45,10 +52,13 @@ For each request inside a terminated connection:
   what already happened. A change whose answer was lost after it was sent is
   never sent again.
 - Changes larger than `MELETE_EGRESS_HOLD_MAX_BYTES` (64 MiB) are refused with
-  a plain message, and a computer has at most four changes waiting at once.
+  a plain message. A computer has at most four requests that may be changes in
+  hand at once, checked before a body is read, and the bodies the relay holds
+  stay within a budget of four such requests per computer and sixteen for the
+  whole installation; past either, the request is refused and nothing is sent.
 
 Each change is an ordinary Melete action: its scope, its approval bound to the
-exact request, the job's revision, standing rules, the budget, and a receipt
+request as above, the job's revision, the budget, and a receipt
 from the service's answer. Every connection the computer opens has an egress
 record; a connection that used an account also records its reads, its changes
 and their actions, and the command's step lists the hosts it reached.

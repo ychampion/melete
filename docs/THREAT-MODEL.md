@@ -480,11 +480,15 @@ holds only placeholders, the egress CA's certificate and per-command tokens.
   header back.
 - **Misuse as the person (confused deputy).** Every request is classified at
   the wire; anything the adapter cannot read or does not list counts as a
-  change, and every change asks with the exact request, as an ordinary action
-  under the `write_external` class and the person's auto-review tier. The
-  approval is bound to the request's canonical form and the job's revision; a
-  different request is a different approval. A re-run after approval is
-  admitted once; a lost answer is never sent again.
+  change, and every change asks, as an ordinary action under the
+  `write_external` class and the person's auto-review tier. The approval is
+  bound to the job's revision and to the request as it will be sent: method,
+  address, the digest of its exact body bytes and every forwarded header (a
+  short list of headers that say nothing about the change excepted), and only
+  those headers are forwarded. Headers that name another method are removed
+  from every request. A request that differs in any bound part is a different
+  approval. A re-run after approval is admitted once; a lost answer is never
+  sent again.
 - **After the command.** A token works only from its own computer and only
   until its command ends; a connection opened under it is closed when it ends,
   and every request on it checks the token again.
@@ -503,7 +507,10 @@ holds only placeholders, the egress CA's certificate and per-command tokens.
   elsewhere is limited by the account's own permissions and the computer's
   egress setting; `connected_hosts_only` keeps such a computer to the account's
   hosts and the operator's list. Holding a change for an answer holds its body
-  in memory, bounded by `MELETE_EGRESS_HOLD_MAX_BYTES` and four per computer.
+  in memory: each body is bounded by `MELETE_EGRESS_HOLD_MAX_BYTES`, a computer
+  has at most four possible changes in hand (checked before a body is read),
+  and the bodies held stay within four such requests' worth per computer and
+  sixteen for the installation.
 
 ## Credentials, host and storage
 

@@ -110,7 +110,18 @@ async function setup(options: { holdSeconds: number }) {
       and kind = 'egress.test_write' order by created_at desc limit 1`;
     return row;
   };
-  return { sql, claims, connectionId, broker, mint, push, actionRow, relayPort, caPem };
+  return {
+    sql,
+    claims,
+    connectionId,
+    broker,
+    mint,
+    push,
+    actionRow,
+    relayPort,
+    caPem,
+    credentials,
+  };
 }
 
 const waitFor = async <T>(read: () => Promise<T | undefined>, ms = 10_000): Promise<T> => {
@@ -227,5 +238,57 @@ withDb('a connected command-line account', () => {
         (error: Error) => error.message,
       );
     expect(refused).toContain('Commands in the agent');
+  });
+});
+
+withDb('where an account is offered', () => {
+  test('a command approved and run by a later attempt can still ask for its changes', async () => {
+    const { mint, claims, push, actionRow, sql } = await setup({ holdSeconds: 0 });
+    // The command was proposed by the first attempt and carried out by the next.
+    const token = mint(claims.attempt_id);
+    const next = recordId('att');
+    await sql`update attempt set outcome = 'completed', ended_at = now() where id = ${claims.attempt_id}`;
+    await sql`update job set lease_epoch = 2 where id = ${claims.job_id}`;
+    await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+      values (${next}, ${claims.job_id}, 2, 'fake', 'fake', 'scripted')`;
+    const answer = await push(token);
+    expect(answer?.body).toContain('Waiting for your approval in Melete');
+    const row = await actionRow();
+    expect(row?.status).toBe('needs_approval');
+    expect(row?.attempt_id).toBe(next);
+  }, 30_000);
+
+  test('a shared space, another audience or a public compartment is never offered the account', async () => {
+    const { claims, credentials, sql } = await setup({ holdSeconds: 0 });
+    const ask = () =>
+      credentials.find({
+        space: claims.space_id,
+        attribution: {
+          kind: 'command',
+          sessionId: 'sbx_one',
+          jobId: claims.job_id,
+          attemptId: claims.attempt_id,
+          actionId: 'act_cmd',
+        },
+        host: HOST,
+      });
+    expect((await ask())?.connectionId).toBeString();
+    expect(await credentials.computer(claims.space_id)).not.toBeNull();
+    const refused = async () => {
+      expect(await ask()).toBeNull();
+      expect(await credentials.computer(claims.space_id)).toBeNull();
+      expect(await credentials.hosts(claims.space_id)).toEqual([]);
+    };
+    await sql`update space set kind = 'shared' where id = ${claims.space_id}`;
+    await refused();
+    // Any kind other than a person's own fails closed, including ones added later.
+    await sql`update space set kind = 'room' where id = ${claims.space_id}`;
+    await refused();
+    await sql`update space set kind = 'personal', audience = 'public' where id = ${claims.space_id}`;
+    await refused();
+    await sql`update space set audience = 'owner' where id = ${claims.space_id}`;
+    await sql`update job set constraints = constraints || '{"public_compartment": true}'::jsonb
+      where id = ${claims.job_id}`;
+    expect(await ask()).toBeNull();
   });
 });

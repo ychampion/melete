@@ -106,8 +106,14 @@ export function createCommandLineConnector(adapter: CredentialAdapterId): Connec
       );
       context.result = result;
       if (result.outcome === 'lost') return { outcome: 'unknown', reason: result.reason };
+      // Nothing left, but only the command holds these bytes, and this request
+      // is settled for this turn: the person asks again for it to be run again.
       if (result.outcome === 'not_sent')
-        return { outcome: 'failed', reason: result.reason, retryable: true };
+        return {
+          outcome: 'failed',
+          reason: `${result.reason}; nothing was sent. Ask again in a new message to run the command again.`,
+          retryable: false,
+        };
       const { status } = result.response;
       if (status >= 400)
         return {

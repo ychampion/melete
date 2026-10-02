@@ -7,7 +7,12 @@
  */
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { connect } from 'node:net';
-import type { EgressWriteInput, EgressWriteOutcome } from '../broker/egress-admission.ts';
+import { canonicalizePayload } from '@melete/contracts';
+import {
+  type EgressWriteInput,
+  type EgressWriteOutcome,
+  egressPayload,
+} from '../broker/egress-admission.ts';
 import { SandboxEgressGuard } from '../sandbox/adapters/docker-egress.ts';
 import { fixtureUpstream, memoryCredentialPort, rawRequest, throughRelay } from './fixtures.ts';
 import type { EgressRecordClose, EgressRecordOpen } from './records.ts';
@@ -31,6 +36,7 @@ async function setup(
     admitWrite?: (input: EgressWriteInput) => Promise<EgressWriteOutcome>;
     none?: boolean;
     holdMaxBytes?: number;
+    computerBodyBytes?: number;
     deadlineAt?: number;
   } = {},
 ) {
@@ -57,6 +63,7 @@ async function setup(
       upstream: () => route,
       upstreamCa: upstream.ca,
       ...(options.holdMaxBytes ? { holdMaxBytes: options.holdMaxBytes } : {}),
+      ...(options.computerBodyBytes ? { computerBodyBytes: options.computerBodyBytes } : {}),
     },
   });
   const relayPort = await guard.listen(0, '127.0.0.1');
@@ -275,12 +282,13 @@ describe('a write', () => {
     expect(answer?.body).toContain('Waiting for your approval in Melete');
     expect(upstream.seen).toEqual([]);
     // Classified as the exact request, and held only while the command has time left.
-    expect(asked[0]?.write.payload).toEqual({
+    expect(asked[0]?.write.payload).toMatchObject({
       host: HOST,
       method: 'POST',
       url_path: '/repos',
       query: 'draft=1',
-      body: { json: { a: 1, b: 2 } },
+      body: { bytes: 13, json: { a: 1, b: 2 } },
+      request: { headers: [['content-type', 'application/json']], body_bytes: 13 },
     });
     expect(asked[0]?.connectionId).toBe('conn_TEST');
     expect(asked[0]?.holdMs).toBeLessThanOrEqual(deadlineAt - Date.now() - 9_000);
@@ -340,5 +348,196 @@ describe('a write', () => {
     const answers = await Promise.all(held);
     expect(fifth?.status).toBe(429);
     expect(answers.map(([answer]) => answer?.status)).toEqual([403, 403, 403, 403]);
+  });
+});
+
+describe('what a write is bound to', () => {
+  /** The payload hash each request would be approved under. */
+  const approvals = async (
+    requests: Array<{ headers?: Record<string, string>; body: string; method?: string }>,
+  ) => {
+    const seen: EgressWriteInput[] = [];
+    const { relayPort, token, ca } = await setup({
+      admitWrite: async (input) => {
+        seen.push(input);
+        return { kind: 'sent', actionId: 'act_BOUND', result: await input.forward() };
+      },
+    });
+    for (const request of requests)
+      await throughRelay({
+        relayPort,
+        host: HOST,
+        ca,
+        token,
+        requests: [
+          rawRequest(request.method ?? 'POST', HOST, '/repos/a/b', {
+            headers: { 'content-type': 'application/json', ...request.headers },
+            body: request.body,
+          }),
+        ],
+      });
+    return seen.map((input) => canonicalizePayload(egressPayload(input.write)).hash);
+  };
+
+  test("a request that differs only in a header or in its body's bytes is a new approval", async () => {
+    const hashes = await approvals([
+      { body: '{"a":1}' },
+      { body: '{"a":1}', headers: { 'content-type': 'application/merge-patch+json' } },
+      { body: '{"a":1}', headers: { 'content-type': 'application/json-patch+json' } },
+      { body: '{"a":1}', headers: { 'x-amz-acl': 'public-read' } },
+      { body: '{"title":"benign"}' },
+      { body: '{"title":"EVIL","title":"benign"}' },
+      { body: '{"n":9007199254740993}' },
+      { body: '{"n":9007199254740992}' },
+    ]);
+    expect(hashes).toHaveLength(8);
+    expect(new Set(hashes).size).toBe(8);
+  });
+
+  test('a method override never goes upstream, on a write or a read', async () => {
+    const seen: EgressWriteInput[] = [];
+    const { relayPort, token, ca } = await setup({
+      admitWrite: async (input) => {
+        seen.push(input);
+        return { kind: 'sent', actionId: 'act_OVERRIDE', result: await input.forward() };
+      },
+    });
+    const override = {
+      'x-http-method-override': 'DELETE',
+      'x-http-method': 'DELETE',
+      'x-method-override': 'DELETE',
+    };
+    await throughRelay({
+      relayPort,
+      host: HOST,
+      ca,
+      token,
+      requests: [
+        rawRequest('POST', HOST, '/repos/a/b', { headers: override, body: 'x' }),
+        rawRequest('GET', HOST, '/repos/a/b', { headers: override }),
+      ],
+    });
+    expect(upstream.seen.map((request) => request.method)).toEqual(['POST', 'GET']);
+    for (const request of upstream.seen)
+      for (const name of Object.keys(override)) expect(request.headers[name]).toBeUndefined();
+    // The approval never names a header that is not sent.
+    expect(JSON.stringify(seen[0]?.write.payload)).not.toContain('override');
+  });
+
+  test('a write sends exactly the headers its approval names, and shows them', async () => {
+    const seen: EgressWriteInput[] = [];
+    const { relayPort, token, ca } = await setup({
+      admitWrite: async (input) => {
+        seen.push(input);
+        return { kind: 'sent', actionId: 'act_HEADERS', result: await input.forward() };
+      },
+    });
+    await throughRelay({
+      relayPort,
+      host: HOST,
+      ca,
+      token,
+      requests: [
+        rawRequest('POST', HOST, '/repos/a/b', {
+          headers: {
+            'content-type': 'text/plain',
+            'x-github-api-version': '2022-11-28',
+            'user-agent': 'git/2.39',
+          },
+          body: 'hello',
+        }),
+      ],
+    });
+    const binding = seen[0]?.write.payload.request as { headers: string[][]; body_sha256: string };
+    expect(binding.headers).toEqual([
+      ['content-type', 'text/plain'],
+      ['x-github-api-version', '2022-11-28'],
+    ]);
+    // Upstream gets the bound headers, the volatile ones, and what the relay itself sets.
+    // (`accept` is the HTTP client's own default when the computer sent none.)
+    const relaySets = new Set([
+      'accept',
+      'accept-encoding',
+      'authorization',
+      'connection',
+      'content-length',
+      'host',
+    ]);
+    const sent = Object.keys(upstream.seen[0]?.headers ?? {}).filter(
+      (name) => !relaySets.has(name),
+    );
+    expect(sent.sort()).toEqual(['content-type', 'user-agent', 'x-github-api-version']);
+    expect(seen[0]?.write.summary.facts).toContainEqual({
+      label: 'Headers',
+      value: 'content-type: text/plain\nx-github-api-version: 2022-11-28',
+    });
+    expect(seen[0]?.write.summary.facts).toContainEqual({ label: 'Details', value: 'hello' });
+  });
+});
+
+describe('memory held for writes', () => {
+  test('a fifth large write is refused before its body is read', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let asked = 0;
+    const { relayPort, token, ca } = await setup({
+      admitWrite: async () => {
+        asked += 1;
+        await gate;
+        return { kind: 'waiting', actionId: 'act_HELD', message: 'Waiting.' };
+      },
+    });
+    const send = () =>
+      throughRelay({
+        relayPort,
+        host: HOST,
+        ca,
+        token,
+        requests: [rawRequest('POST', HOST, '/held', { body: 'x'.repeat(200_000) })],
+      });
+    const held = [send(), send(), send(), send()];
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const [fifth] = await send();
+    release();
+    await Promise.all(held);
+    expect(fifth?.status).toBe(429);
+    expect(fifth?.headers['x-melete-egress']).toBe('too_many_held');
+    expect(asked).toBe(4);
+  });
+
+  test("a computer's request bodies in memory stay within its budget", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { relayPort, token, ca } = await setup({
+      holdMaxBytes: 4096,
+      computerBodyBytes: 3000,
+      admitWrite: async () => {
+        await gate;
+        return { kind: 'waiting', actionId: 'act_HELD', message: 'Waiting.' };
+      },
+    });
+    const send = () =>
+      throughRelay({
+        relayPort,
+        host: HOST,
+        ca,
+        token,
+        requests: [rawRequest('POST', HOST, '/held', { body: 'y'.repeat(2000) })],
+      });
+    const first = send();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const [second] = await send();
+    release();
+    const [answer] = await first;
+    expect(second?.status).toBe(429);
+    expect(second?.headers['x-melete-egress']).toBe('too_much_held');
+    expect(answer?.status).toBe(403);
+    // Released once answered: the next one fits again.
+    const [third] = await send();
+    expect(third?.status).toBe(403);
   });
 });

@@ -21,6 +21,7 @@ import path from 'node:path';
 import { resolveHost } from '../../connectors/web.ts';
 import { fixtureUpstream, memoryCredentialPort } from '../../egress/fixtures.ts';
 import type { EgressRecordOpen } from '../../egress/records.ts';
+import { certificateAuthority, leafCertificate, newKeyPair, pem } from '../../egress/x509.ts';
 import { sandboxConformance } from '../conformance.ts';
 import { serviceContainerId } from '../docker-default.ts';
 import { openSandbox, sandboxLabels } from '../manifest.ts';
@@ -493,6 +494,93 @@ if (!live) {
       }
     });
   });
+
+  // The computer's own git (curl with GnuTLS) holds the egress CA to its name
+  // constraints: a leaf the CA's key signed for another name is refused, with or
+  // without a subject alternative name, while one inside them is trusted.
+  test("the computer's git refuses a leaf the egress CA signed outside its constraints", async () => {
+    const ca = newKeyPair();
+    const notBefore = new Date(Date.now() - 60_000);
+    const notAfter = new Date(Date.now() + 3_600_000);
+    const caCert = certificateAuthority({
+      keys: ca,
+      commonName: 'Melete egress CA',
+      permitted: ['test'],
+      notBefore,
+      notAfter,
+    });
+    const leaf = (host: string, withoutSubjectAltName = false) => {
+      const keys = newKeyPair();
+      return {
+        cert: pem(
+          'CERTIFICATE',
+          leafCertificate({
+            host,
+            keys,
+            caCert,
+            caKey: ca.privateKey,
+            caCommonName: 'Melete egress CA',
+            notBefore,
+            notAfter,
+            withoutSubjectAltName,
+          }),
+        ),
+        key: keys.privateKey.export({ type: 'pkcs8', format: 'pem' }) as string,
+      };
+    };
+    const cases = [
+      { name: 'inside', host: 'ok.creds.test', port: 8443, pair: leaf('ok.creds.test') },
+      { name: 'outside', host: 'evil.example', port: 8444, pair: leaf('evil.example') },
+      { name: 'cn_only', host: 'evil.example', port: 8445, pair: leaf('evil.example', true) },
+    ];
+    const b64 = (value: string) => Buffer.from(value).toString('base64');
+    const server = [
+      'import socket, ssl, sys, threading, time',
+      'def serve(port, cert, key):',
+      '    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)',
+      '    ctx.load_cert_chain(cert, key)',
+      '    s = socket.socket()',
+      '    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)',
+      "    s.bind(('127.0.0.1', port))",
+      '    s.listen(8)',
+      '    while True:',
+      '        c, _ = s.accept()',
+      '        try:',
+      '            t = ctx.wrap_socket(c, server_side=True)',
+      '            t.recv(65536)',
+      "            t.sendall(b'HTTP/1.1 404 Not Found\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n')",
+      '            t.close()',
+      '        except Exception:',
+      '            c.close()',
+      ...cases.map(
+        (each) =>
+          `threading.Thread(target=serve, args=(${each.port}, '/tmp/${each.name}.crt', '/tmp/${each.name}.key'), daemon=True).start()`,
+      ),
+      'time.sleep(40)',
+    ].join('\n');
+    const script = [
+      `echo ${b64(pem('CERTIFICATE', caCert))} | base64 -d > /tmp/egress-ca.pem`,
+      ...cases.flatMap((each) => [
+        `echo ${b64(each.pair.cert)} | base64 -d > /tmp/${each.name}.crt`,
+        `echo ${b64(each.pair.key)} | base64 -d > /tmp/${each.name}.key`,
+      ]),
+      `echo ${b64(server)} | base64 -d > /tmp/serve.py`,
+      'python3 /tmp/serve.py >/dev/null 2>&1 & SERVER=$!; sleep 2',
+      ...cases.map(
+        (each) =>
+          `echo ${each.name}=$(env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy GIT_SSL_CAINFO=/tmp/egress-ca.pem GIT_TERMINAL_PROMPT=0 git -c http.curloptResolve=${each.host}:${each.port}:127.0.0.1 ls-remote https://${each.host}:${each.port}/r.git 2>&1 | grep -ciE 'certificate|issuer|verif')`,
+      ),
+      `echo reached=$(env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy GIT_SSL_CAINFO=/tmp/egress-ca.pem GIT_TERMINAL_PROMPT=0 git -c http.curloptResolve=ok.creds.test:8443:127.0.0.1 ls-remote https://ok.creds.test:8443/r.git 2>&1 | grep -ciE '404|not found')`,
+      'git --version; curl --version | head -1; kill $SERVER',
+    ].join('; ');
+    const probe = await shell(await open(), script);
+    process.stdout.write(`docker live, git trust: ${probe.text}\n`);
+    expect(probe.text).toMatch(/GnuTLS/i);
+    expect(probe.text).toContain('inside=0');
+    expect(probe.text).toMatch(/reached=[1-9]/);
+    expect(probe.text).toMatch(/outside=[1-9]/);
+    expect(probe.text).toMatch(/cn_only=[1-9]/);
+  }, 120_000);
 
   describe.skipIf(!selfId)('docker sandbox live: open egress through the service', () => {
     test('public HTTPS goes through the guard; nothing else leaves', async () => {

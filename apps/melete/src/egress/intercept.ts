@@ -20,6 +20,8 @@
  * The token that opened the tunnel is checked again on every request: once
  * its command has settled, the tunnel carries the account no more.
  */
+
+import { createHash } from 'node:crypto';
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
 import { createServer as createHttpsServer, request as httpsRequest } from 'node:https';
 import { connect, type Socket } from 'node:net';
@@ -55,6 +57,10 @@ export type UpstreamRoute = (
 
 export type InterceptOptions = {
   holdMaxBytes?: number;
+  /** Request-body bytes one computer may have in memory at once (default four requests' worth). */
+  computerBodyBytes?: number;
+  /** Request-body bytes every computer together may have in memory at once (default sixteen requests' worth). */
+  globalBodyBytes?: number;
   approvalHoldSeconds?: number;
   upstream?: UpstreamRoute;
   /** Extra trust for upstream certificates; only a test fixture passes one. */
@@ -72,6 +78,8 @@ export type InterceptContext = {
   counters: EgressHostCounters | null;
   /** Shared by every tunnel of one computer. */
   held: { count: number };
+  /** Request bodies in memory: this computer's, then the installation's. */
+  budgets: readonly BodyBudget[];
   onRead: () => void;
   onWrite: (actionId: string | null) => void;
   options: InterceptOptions;
@@ -92,6 +100,10 @@ const DROPPED_UP = new Set([
   'content-length',
   'accept-encoding',
   'http2-settings',
+  // A method named in a header could turn an approved POST into a DELETE upstream.
+  'x-http-method-override',
+  'x-http-method',
+  'x-method-override',
 ]);
 /** Headers that never travel back to the computer. */
 const DROPPED_DOWN = new Set([
@@ -155,32 +167,79 @@ function plain(
   response.end(body);
 }
 
-/** The request body, whole, or null once it passes the limit (and the connection is closed). */
-function readBody(request: IncomingMessage, max: number): Promise<Buffer | null> {
+/**
+ * Bytes of request bodies the relay holds in memory: one computer's, and the
+ * whole installation's. A body is counted as it arrives and released when its
+ * request is answered.
+ */
+export type BodyBudget = { used: number; max: number };
+
+/**
+ * The request body, whole; or `too_large` once it passes the per-request
+ * limit, or `over_budget` once the computer's or the installation's budget is
+ * spent. Either way the rest is read and dropped while the answer goes back.
+ */
+function readBody(
+  request: IncomingMessage,
+  max: number,
+  budgets: readonly BodyBudget[],
+  reserved: { bytes: number },
+): Promise<Buffer | 'too_large' | 'over_budget'> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let size = 0;
     let over = false;
+    const stop = (why: 'too_large' | 'over_budget') => {
+      over = true;
+      chunks.length = 0;
+      resolve(why);
+    };
     request.on('data', (chunk: Buffer) => {
       if (over) return;
       size += chunk.length;
-      if (size > max) {
-        // Answered at once; the rest is read and dropped until the connection closes.
-        over = true;
-        chunks.length = 0;
-        resolve(null);
-        return;
-      }
+      if (size > max) return stop('too_large');
+      if (budgets.some((budget) => budget.used + chunk.length > budget.max))
+        return stop('over_budget');
+      for (const budget of budgets) budget.used += chunk.length;
+      reserved.bytes += chunk.length;
       chunks.push(chunk);
     });
     request.once('end', () => {
       if (!over) resolve(Buffer.concat(chunks));
     });
     request.once('error', () => {
-      if (!over) resolve(null);
-      over = true;
+      if (!over) stop('too_large');
     });
   });
+}
+
+/**
+ * Headers that carry nothing about what a request does, sent as they come
+ * and left out of what a person approves. Every other forwarded header is
+ * bound into a write's approval.
+ */
+export const VOLATILE_HEADERS: ReadonlySet<string> = new Set([
+  'user-agent',
+  'traceparent',
+  'tracestate',
+  'x-request-id',
+  'date',
+]);
+
+/**
+ * What a write's approval is bound to besides the adapter's own payload: the
+ * exact body bytes, and every header that will be forwarded, by lower-case
+ * name and value in name order.
+ */
+export function requestBinding(headers: Record<string, string>, body: Buffer) {
+  return {
+    headers: Object.entries(headers)
+      .filter(([name]) => !VOLATILE_HEADERS.has(name))
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([name, value]) => [name, value]),
+    body_sha256: createHash('sha256').update(body).digest('hex'),
+    body_bytes: body.length,
+  };
 }
 
 /** The path and query a request names, when it names this tunnel's host; otherwise null. */
@@ -401,12 +460,14 @@ function forwarder(
   write: ClassifiedWrite,
   max: number,
 ): () => Promise<ForwardResult> {
-  return () =>
+  let started = false;
+  const attempt = () =>
     use.withSecret(
       (secret) =>
         new Promise<ForwardResult>((resolve) => {
           const outbound = use.adapter.authorize(base, secret, use.config);
           const redactor = new ByteRedactor(use.adapter.redactions(secret));
+          started = true;
           send(
             context,
             outbound,
@@ -436,6 +497,15 @@ function forwarder(
               ),
           );
         }),
+    );
+  // A failure before anything was sent (the secret could not be opened, the
+  // request could not be signed) is not a send whose answer was lost.
+  return () =>
+    attempt().catch(
+      (error: unknown): ForwardResult =>
+        started
+          ? { outcome: 'lost', reason: String((error as Error)?.message ?? error) }
+          : { outcome: 'not_sent', reason: 'the account could not be used for this request' },
     );
 }
 
@@ -513,15 +583,58 @@ async function handle(
       'destination_denied',
       'A request may only name this tunnel’s host.',
     );
-  const body = await readBody(request, max);
-  if (!body) {
+  const method = (request.method ?? 'GET').toUpperCase();
+  // A request that may be a change takes its place among the held ones before
+  // its body is read, so a computer cannot buffer more than its share.
+  const mayWrite = method !== 'GET' && method !== 'HEAD';
+  if (mayWrite && context.held.count >= MAX_HELD_PER_COMPUTER) {
     response.shouldKeepAlive = false;
     return plain(
       response,
-      413,
-      'too_large',
-      `This request is larger than the ${Math.floor(max / (1024 * 1024))} MiB the relay holds for an approval, so it was not sent.`,
+      429,
+      'too_many_held',
+      'Too many changes from this computer are already waiting for an answer. Try again shortly.',
     );
+  }
+  if (mayWrite) context.held.count += 1;
+  const reserved = { bytes: 0 };
+  try {
+    await handleBody(context, request, response, { method, target, max, reserved });
+  } finally {
+    if (mayWrite) context.held.count -= 1;
+    for (const budget of context.budgets) budget.used -= reserved.bytes;
+  }
+}
+
+async function handleBody(
+  context: InterceptContext,
+  request: IncomingMessage,
+  response: ServerResponse,
+  input: {
+    method: string;
+    target: { path: string; query: string };
+    max: number;
+    reserved: { bytes: number };
+  },
+) {
+  const { host } = context;
+  const { method, target, max } = input;
+  const body = await readBody(request, max, context.budgets, input.reserved);
+  if (body === 'too_large' || body === 'over_budget') {
+    response.shouldKeepAlive = false;
+    return body === 'too_large'
+      ? plain(
+          response,
+          413,
+          'too_large',
+          `This request is larger than the ${Math.floor(max / (1024 * 1024))} MiB the relay holds for an approval, so it was not sent.`,
+        )
+      : plain(
+          response,
+          429,
+          'too_much_held',
+          'Too much from this computer is waiting to be sent. Nothing was sent; try again shortly.',
+        );
   }
   const use = await context.port
     .find({ space: context.space, attribution: context.token.attribution, host })
@@ -536,14 +649,14 @@ async function handle(
   const placeholders = Object.values(use.adapter.placeholders(use.config));
   const intercepted: InterceptedRequest = {
     host,
-    method: (request.method ?? 'GET').toUpperCase(),
+    method,
     path: target.path,
     query: target.query,
     headers: upstreamHeaders(request.headers, placeholders),
     body,
   };
   const base: OutboundRequest = {
-    method: intercepted.method,
+    method,
     target: `${target.path}${target.query ? `?${target.query}` : ''}`,
     headers: intercepted.headers,
     body,
@@ -551,13 +664,34 @@ async function handle(
   const verdict = classifySafely(use, intercepted);
   if (verdict.kind === 'refuse') return plain(response, 403, 'refused', verdict.reason);
   if (verdict.kind === 'read') return read(context, use, base, response, max);
-  if (context.held.count >= MAX_HELD_PER_COMPUTER)
-    return plain(
-      response,
-      429,
-      'too_many_held',
-      'Too many changes from this computer are already waiting for an answer. Try again shortly.',
-    );
+  // The approval binds the exact bytes and every header that will be sent;
+  // the write forwards exactly those, plus headers that say nothing about it.
+  const binding = requestBinding(intercepted.headers, body);
+  const write: ClassifiedWrite = {
+    ...verdict,
+    payload: { ...verdict.payload, request: binding },
+    summary: {
+      ...verdict.summary,
+      facts: [
+        ...verdict.summary.facts,
+        ...(binding.headers.length
+          ? [
+              {
+                label: 'Headers',
+                value: binding.headers.map(([name, value]) => `${name}: ${value}`).join('\n'),
+              },
+            ]
+          : []),
+      ],
+    },
+  };
+  const bound: OutboundRequest = {
+    ...base,
+    headers: Object.fromEntries([
+      ...binding.headers.map(([name, value]) => [name as string, value as string]),
+      ...Object.entries(intercepted.headers).filter(([name]) => VOLATILE_HEADERS.has(name)),
+    ]),
+  };
   const now = context.options.now?.() ?? Date.now();
   const holdSeconds = context.options.approvalHoldSeconds ?? DEFAULT_APPROVAL_HOLD_SECONDS;
   const deadline = context.token.attribution.deadlineAt;
@@ -568,7 +702,6 @@ async function handle(
       deadline === undefined ? Infinity : deadline - now - HOLD_MARGIN_MS,
     ),
   );
-  context.held.count += 1;
   const aborted = new AbortController();
   const hungUp = () => aborted.abort();
   response.once('close', hungUp);
@@ -577,15 +710,15 @@ async function handle(
       attribution: context.token.attribution,
       connectionId: use.connectionId,
       adapter: use.adapter.id,
-      write: verdict,
+      write,
       holdMs,
-      forward: forwarder(context, use, base, verdict, max),
+      forward: forwarder(context, use, bound, write, max),
       signal: aborted.signal,
+      live: () => context.tokens.isLive(context.token),
     });
     if (outcome.kind === 'sent') context.onWrite(outcome.actionId);
     answer(response, outcome);
   } finally {
-    context.held.count -= 1;
     response.off('close', hungUp);
   }
 }

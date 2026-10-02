@@ -122,6 +122,11 @@ export function postgresEgressCredentials(options: {
     }
     return usable;
   };
+  /** A person's own space, for the owner's audience: the only kind an account reaches. */
+  const personal = async (space: string) => {
+    const [row] = await sql`select kind, audience from space where id = ${space}`;
+    return row?.kind === 'personal' && (row.audience ?? 'owner') === 'owner';
+  };
   return {
     ca,
     async find({ space, attribution, host }) {
@@ -138,7 +143,8 @@ export function postgresEgressCredentials(options: {
       if (
         !job ||
         job.space_id !== space ||
-        job.space_kind === 'shared' ||
+        // Only a person's own space: a room, or any kind added later, gets no account.
+        job.space_kind !== 'personal' ||
         (job.audience ?? 'owner') !== 'owner' ||
         (job.constraints as { public_compartment?: boolean } | null)?.public_compartment === true
       )
@@ -157,14 +163,14 @@ export function postgresEgressCredentials(options: {
       };
     },
     async hosts(space) {
-      if (!space) return [];
+      if (!space || !(await personal(space))) return [];
       return (await accounts(space))
         .filter((account) => account.scopes.includes(egressReadScope(account.adapter.id)))
         .flatMap((account) => account.adapter.hosts(account.config))
         .filter((host) => ca.permits(host.replace(/^\./, '')));
     },
     async computer(space) {
-      if (!space) return null;
+      if (!space || !(await personal(space))) return null;
       const usable = await accounts(space);
       if (!usable.length) return null;
       const certificate = await ca.certificate();

@@ -46,6 +46,8 @@ export type EgressWriteInput = {
   forward: () => Promise<ForwardResult>;
   /** The computer hung up: stop holding. */
   signal?: AbortSignal;
+  /** Whether the command is still running; once it is not, nothing more is sent for it. */
+  live?: () => boolean;
 };
 
 export type EgressWriteOutcome =
@@ -82,11 +84,15 @@ async function relayClaims(
       'scope_denied',
       'This command is not part of a conversation, so its changes cannot be asked for.',
     );
-  const [row] = await broker.sql`select j.id as job_id, j.space_id, j.budget, a.epoch,
-      a.revision, a.principal_id, a.membership_generation
+  // The attempt that proposed the command, or, when the command was approved
+  // and carried out by a later attempt of the same job, that live attempt: an
+  // action keeps the attempt that proposed it.
+  const [row] = await broker.sql`select j.id as job_id, j.space_id, j.budget, a.id as attempt_id,
+      a.epoch, a.revision, a.principal_id, a.membership_generation
     from attempt a join job j on j.id = a.job_id
-    where a.id = ${attribution.attemptId} and j.id = ${attribution.jobId}
-      and a.outcome is null`;
+    where j.id = ${attribution.jobId} and a.outcome is null
+      and (a.id = ${attribution.attemptId} or a.epoch = j.lease_epoch)
+    order by (a.id = ${attribution.attemptId}) desc, a.epoch desc limit 1`;
   if (!row) throw new BrokerFault('stale_epoch', 'The work that ran this command has ended.');
   const [connection] = await broker.sql`select scopes from connection
     where id = ${connectionId} and space_id = ${row.space_id} and status = 'active'`;
@@ -101,7 +107,7 @@ async function relayClaims(
         }
       : {}),
     job_id: String(row.job_id),
-    attempt_id: attribution.attemptId,
+    attempt_id: String(row.attempt_id),
     space_id: String(row.space_id),
     epoch: Number(row.epoch),
     revision: Number(row.revision),
@@ -159,6 +165,8 @@ export function egressAdmission(
       const [row] = await broker.sql`select status from action where id = ${actionId}`;
       status = String(row?.status ?? 'failed');
       if (status !== 'approved') continue;
+      // Approved, but the command hung up or ended meanwhile: it is sent on the next run.
+      if (input.signal?.aborted || input.live?.() === false) break;
       try {
         attempt = await propose();
       } catch (error) {
