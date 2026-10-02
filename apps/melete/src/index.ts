@@ -605,7 +605,10 @@ export async function bootstrap(
       instances = new InstanceRegistry(handle.sql, instanceId(env.MELETE_INSTANCE_ID));
       await instances.start();
       // Its own connection: a lease is a lock held by that one session.
-      if (env.DATABASE_URL) leases = new Leases(openDatabase(env.DATABASE_URL, 1).sql);
+      if (env.DATABASE_URL) {
+        const url = env.DATABASE_URL;
+        leases = new Leases(() => openDatabase(url, 1).sql);
+      }
       await closeInterruptedScans(handle.db);
       await expireEpisodes(handle.sql);
       // One sign-in service, so the API and the gateway share one refresh per provider.

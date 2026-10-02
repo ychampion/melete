@@ -170,8 +170,14 @@ describeWithDb('two service instances on one database', () => {
     const [one, two] = pools();
     const sweeps = [0, 0];
     const leases = [
-      new Leases(openDatabase(one.url, 1).sql, () => {}),
-      new Leases(openDatabase(one.url, 1).sql, () => {}),
+      new Leases(
+        () => openDatabase(one.url, 1).sql,
+        () => {},
+      ),
+      new Leases(
+        () => openDatabase(one.url, 1).sql,
+        () => {},
+      ),
     ];
     const wirings = [0, 1].map((index) =>
       startSandboxes({
@@ -216,8 +222,14 @@ describeWithDb('two service instances on one database', () => {
 
   test('a lease let go on shutdown passes to another instance at once', async () => {
     const [one] = pools();
-    const first = new Leases(openDatabase(one.url, 1).sql, () => {});
-    const second = new Leases(openDatabase(one.url, 1).sql, () => {});
+    const first = new Leases(
+      () => openDatabase(one.url, 1).sql,
+      () => {},
+    );
+    const second = new Leases(
+      () => openDatabase(one.url, 1).sql,
+      () => {},
+    );
     try {
       expect(await first.leads('learning-drain')).toBe(true);
       expect(await second.leads('learning-drain')).toBe(false);
