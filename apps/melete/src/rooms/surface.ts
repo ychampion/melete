@@ -13,9 +13,14 @@
  * is by name. The web's sign-in has already proved the person; a platform's
  * account counts only through a link to a person here (`principal_identity`),
  * and an account with no link is refused, never taken for a guest.
+ *
+ * Links are made by a platform's adapter, after the platform's own sign-in has
+ * proved who holds the account. Melete records the link; it does not see that
+ * proof. A person lists and removes their own links, and a new password removes
+ * them all.
  */
 import type { RoomStreamFrame } from '@melete/contracts';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { principal } from '../db/schema.ts';
@@ -33,6 +38,8 @@ export const WEB_SURFACE = 'web';
 const PROVIDER = /^[a-z][a-z0-9_-]{0,31}$/;
 /** The account kinds a link may point to. A room's own principal speaks for nobody. */
 const LINKABLE = ['person', 'guest'];
+/** The longest id a platform may give an account or a message. */
+const EXTERNAL_ID_MAX = 200;
 
 /** One frame of a thread, on its way out to one person on one surface. */
 export type RoomOutbound = {
@@ -42,7 +49,11 @@ export type RoomOutbound = {
   to: string;
   /** A message with its author's room label, or one event of a request: answer, card, receipt or decision. */
   frame: RoomStreamFrame;
-  /** For a message: the surface it was written on, and that surface's id for it. */
+  /**
+   * For a message, on a platform: the surface it was written on, and that
+   * surface's id for it when it is this platform's own. Another platform's ids
+   * are never passed on. Null on the web.
+   */
   origin: { surface: string; external_ref: string | null } | null;
 };
 
@@ -59,11 +70,7 @@ export interface RoomSurface {
 export type RoomSurfaceDeps = { db: Database; rooms: RoomService; changes?: EventChanges };
 
 const unlinked = () =>
-  new ServiceError(
-    'unlinked_account',
-    'This account is not linked to anyone here. Link it from Melete first.',
-    403,
-  );
+  new ServiceError('unlinked_account', 'This account is not linked to anyone here.', 403);
 
 /**
  * The doors of one surface, bound to it: a platform's gate resolves only its
@@ -110,14 +117,14 @@ export class RoomGate {
   }
 
   /**
-   * Link a platform account to a person. Call it only once the platform has
-   * proved who holds the account and the person, signed in here, has said it
-   * is theirs. A link is never moved: an account linked to someone else stays
-   * theirs until it is unlinked.
+   * Link a platform account to a person. The platform's adapter calls this
+   * once the platform's own sign-in has proved who holds the account; Melete
+   * records the link and does not check that proof itself. A link is never
+   * moved: an account linked to someone else stays theirs until it is unlinked.
    */
   async link(externalId: string, principalId: string) {
     if (!this.platform) throw new Error('The web has no accounts to link');
-    if (externalId.length < 1 || externalId.length > 200)
+    if (externalId.length < 1 || externalId.length > EXTERNAL_ID_MAX)
       throw new ServiceError(
         'invalid_account',
         'That account id is not one a platform gives.',
@@ -178,6 +185,8 @@ export class RoomGate {
     /** The platform's own id for the message. */
     external_ref?: string;
   }) {
+    if (input.external_ref !== undefined && input.external_ref.length > EXTERNAL_ID_MAX)
+      throw new ServiceError('invalid_message_ref', 'That message id is too long.', 400);
     const actor = await this.principalOf(input.author);
     return this.deps.rooms.post(
       input.room,
@@ -287,7 +296,12 @@ export class RoomGate {
         if (signal.aborted) return 'stopped';
         changed = false;
         if (!(await stillIn())) return 'left';
-        const next = await rooms.frames(room, thread, person, cursor).catch(() => null);
+        // Refused now means the person may no longer read the thread; anything
+        // else is a fault, and is reported as one.
+        const next = await rooms.frames(room, thread, person, cursor).catch((error: unknown) => {
+          if (error instanceof ServiceError) return null;
+          throw error;
+        });
         if (!next) return 'left';
         buffered = next;
         if (!buffered.length && Date.now() - lastWrite >= ROOM_POLL_MS && input.idle) {
@@ -303,10 +317,14 @@ export class RoomGate {
     }
   }
 
-  /** Where each message among these frames was written. */
+  /**
+   * Where each message among these frames was written, for a platform: its
+   * own messages with its own ids, and any other surface's by name only.
+   */
   private async originsOf(frames: RoomStreamFrame[]) {
-    const ids = frames.flatMap((frame) => (frame.kind === 'message' ? [frame.message.id] : []));
     const origins = new Map<string, { surface: string; external_ref: string | null }>();
+    if (!this.platform) return origins;
+    const ids = frames.flatMap((frame) => (frame.kind === 'message' ? [frame.message.id] : []));
     if (!ids.length) return origins;
     const rows = await this.deps.db
       .select({
@@ -317,7 +335,46 @@ export class RoomGate {
       .from(roomMessage)
       .where(inArray(roomMessage.id, ids));
     for (const row of rows)
-      origins.set(row.id, { surface: row.surface, external_ref: row.externalRef });
+      origins.set(row.id, {
+        surface: row.surface,
+        external_ref: row.surface === this.surface ? row.externalRef : null,
+      });
     return origins;
   }
+}
+
+/** The chat platform accounts linked to a person. */
+export async function linkedAccounts(db: Database, principalId: string) {
+  const rows = await db
+    .select()
+    .from(principalIdentity)
+    .where(eq(principalIdentity.principalId, principalId))
+    .orderBy(asc(principalIdentity.createdAt), asc(principalIdentity.provider));
+  return {
+    accounts: rows.map((row) => ({
+      provider: row.provider,
+      external_id: row.externalId,
+      created_at: row.createdAt.toISOString(),
+    })),
+  };
+}
+
+/** Unlink one of a person's own accounts. Someone else's link is never touched. */
+export async function unlinkOwnAccount(
+  db: Database,
+  principalId: string,
+  provider: string,
+  externalId: string,
+) {
+  const removed = await db
+    .delete(principalIdentity)
+    .where(
+      and(
+        eq(principalIdentity.provider, provider),
+        eq(principalIdentity.externalId, externalId),
+        eq(principalIdentity.principalId, principalId),
+      ),
+    )
+    .returning();
+  return { removed: removed.length > 0 };
 }

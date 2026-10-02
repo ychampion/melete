@@ -261,16 +261,22 @@ the room's messages, answers, cards and decisions go out, and people answer
 the room's permissions. The web uses the same doors, so every rule on this page
 holds on a platform too.
 
-A platform account speaks only for the person it is linked to. A link is made
-once the platform has proved who holds the account and the person, signed in
-here, has said it is theirs. Then:
+A platform account speaks only for the person it is linked to. The platform
+links an account after its own sign-in proves who holds it; Melete keeps the
+link for that platform alone and never moves it to someone else. Then:
 
 - their messages appear in the room under their own label, whatever name the
   platform shows;
 - they answer a permission only where the room's rule names them, and a guest
   keeps a guest's limits;
 - what goes out to them is the threads of the rooms they are in, and it stops
-  when they leave the room or the account is unlinked.
+  when they leave the room or the account is unlinked;
+- a message written on another platform reaches them with that platform's
+  name, never its own id for the message.
+
+A person sees the accounts linked to them (`GET /me/linked-accounts`) and
+unlinks any of them (`DELETE /me/linked-accounts/{provider}/{account}`).
+Changing or resetting their password unlinks them all.
 
 An account with no link is refused: it cannot post, answer or follow a thread,
 and it never becomes a guest.

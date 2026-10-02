@@ -656,4 +656,126 @@ withDb('rooms on a chat platform', () => {
     await ok(send(world.alice.cookie, `/rooms/${roomId}/members/${world.bob.id}`, 'DELETE'));
     expect(await bobs.ended).toBe('left');
   }, 90_000);
+
+  test('a person lists and unlinks only their own platform accounts, and a new password unlinks them all', async () => {
+    type Accounts = { accounts: { provider: string; external_id: string }[] };
+    const mine = async (person: Person) =>
+      (await ok<Accounts>(send(person.cookie, '/me/linked-accounts'))).accounts.map(
+        (account) => `${account.provider}/${account.external_id}`,
+      );
+    await elsewhere.gate.link('E-ERIN', world.erin.id);
+    expect(await mine(world.erin)).toEqual(['chatter/U-ERIN', 'elsewhere/E-ERIN']);
+    expect(await mine(world.bob)).not.toContain('chatter/U-ERIN');
+    // A guest sees their own links too.
+    expect(await mine(world.dan)).toEqual(['chatter/U-DAN']);
+    // Someone else's link is never theirs to remove.
+    expect(
+      await ok<{ removed: boolean }>(
+        send(world.bob.cookie, '/me/linked-accounts/chatter/U-ERIN', 'DELETE'),
+      ),
+    ).toEqual({ removed: false });
+    expect(await mine(world.erin)).toContain('chatter/U-ERIN');
+    expect(
+      await ok<{ removed: boolean }>(
+        send(world.erin.cookie, '/me/linked-accounts/elsewhere/E-ERIN', 'DELETE'),
+      ),
+    ).toEqual({ removed: true });
+    expect(await mine(world.erin)).toEqual(['chatter/U-ERIN']);
+    expect(
+      await refusal(
+        elsewhere.message({ user: 'E-ERIN', user_name: 'Erin', room: 'sp_none', text: 'Hi' }),
+      ),
+    ).toBe('unlinked_account 403');
+    // A new password is how someone shuts out whoever else had the account.
+    await ok(
+      send(world.erin.cookie, '/account/password', 'POST', {
+        current_password: password,
+        new_password: 'another-long-enough-password',
+      }),
+    );
+    expect(await mine(world.erin)).toEqual([]);
+    expect(
+      await refusal(
+        chatter.message({ user: 'U-ERIN', user_name: 'Erin', room: 'sp_none', text: 'Hi' }),
+      ),
+    ).toBe('unlinked_account 403');
+  }, 60_000);
+
+  test("a platform hears another surface's messages by name only, and its submission ids never meet the web's", async () => {
+    const { sql } = database();
+    const { roomId } = await makeRoom('Two platforms');
+    await elsewhere.gate.link('E-BOB', world.bob.id);
+    const opened = roomMessageResponse.parse(
+      await chatter.message({
+        user: 'U-BOB',
+        user_name: 'Bob',
+        room: roomId,
+        text: 'Hello from one platform',
+        ts: 'T-ONE',
+      }),
+    );
+    const threadId = opened.thread.id;
+    const origin = async (platform: FakePlatform, user: string) => {
+      const watching = follow(platform, roomId, threadId, user);
+      const out = await until(
+        () =>
+          platform
+            .to(user)
+            .find(
+              (entry) =>
+                entry.frame.kind === 'message' && entry.frame.message.id === opened.message.id,
+            ),
+        `the message on ${platform.provider}`,
+      );
+      watching.stop();
+      await watching.ended;
+      return out.origin;
+    };
+    expect(await origin(chatter, 'U-BOB')).toEqual({ surface: 'chatter', external_ref: 'T-ONE' });
+    expect(await origin(elsewhere, 'E-BOB')).toEqual({ surface: 'chatter', external_ref: null });
+
+    // The same id from the web, the same id from a platform, and a web id
+    // spelled like a platform's are three messages, never one replayed.
+    const ids = new Set<string>();
+    for (const id of ['sameid1', 'chatter:sameid1'])
+      ids.add(
+        roomMessageResponse.parse(
+          await ok(
+            send(world.bob.cookie, `/rooms/${roomId}/threads/${threadId}/messages`, 'POST', {
+              text: 'Same words',
+              submission_id: id,
+            }),
+          ),
+        ).message.id,
+      );
+    ids.add(
+      roomMessageResponse.parse(
+        await chatter.message({
+          user: 'U-BOB',
+          user_name: 'Bob',
+          room: roomId,
+          thread: threadId,
+          text: 'Same words',
+          ts: 'sameid1',
+        }),
+      ).message.id,
+    );
+    expect(ids.size).toBe(3);
+    const [count] = await sql`select count(*)::int as n from room_message
+      where thread_id = ${threadId} and text = 'Same words'`;
+    expect(Number(count?.n)).toBe(3);
+    // A platform's message id is bounded, like its account ids.
+    expect(
+      await refusal(
+        chatter.message({
+          user: 'U-BOB',
+          user_name: 'Bob',
+          room: roomId,
+          thread: threadId,
+          text: 'Long id',
+          ts: 'x'.repeat(201),
+        }),
+      ),
+    ).toBe('invalid_message_ref 400');
+  }, 60_000);
 });

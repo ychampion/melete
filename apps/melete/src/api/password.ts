@@ -51,8 +51,9 @@ export function resetUrl(publicUrl: string, token: string): string {
 /**
  * Sets an account's password and signs out its sessions, apart from the one
  * named in `keep`. Sign-in links still waiting for the account stop working,
- * and so does what connected apps were granted: a new password is how someone
- * shuts out whoever else had the account.
+ * and so do what connected apps were granted and the chat platform accounts
+ * linked to it: a new password is how someone shuts out whoever else had the
+ * account.
  */
 async function setPassword(
   tx: TransactionSql,
@@ -69,6 +70,8 @@ async function setPassword(
   await tx`update magic_link set used_at = now() where owner_id = ${principalId} and used_at is null`;
   await tx`update mcp_token set revoked_at = now()
     where principal_id = ${principalId} and revoked_at is null`;
+  // Chat platform accounts linked to the person stop speaking as them.
+  await tx`delete from principal_identity where principal_id = ${principalId}`;
 }
 
 /** Operator command and routes share this: an account by its sign-in address. */

@@ -88,6 +88,10 @@ export const roomMessage = pgTable(
       .where(sql`${t.requestState} = 'pending'`),
     check('room_message_kind', sql`${t.kind} in ('person', 'handoff_result', 'system')`),
     check('room_message_request_state', sql`${t.requestState} in ('none', 'pending', 'started')`),
+    check(
+      'room_message_external_ref',
+      sql`${t.externalRef} is null or length(${t.externalRef}) between 1 and 200`,
+    ),
   ],
 );
 

@@ -9826,6 +9826,104 @@
         }
       }
     },
+    "/me/linked-accounts": {
+      "get": {
+        "tags": [
+          "rooms"
+        ],
+        "summary": "The chat platform accounts linked to the signed-in person",
+        "description": "A linked account speaks, answers permissions and hears threads in the rooms the person is in, as them. A chat platform links an account after its own sign-in proves who holds it.",
+        "responses": {
+          "200": {
+            "description": "Linked accounts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accounts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "provider": {
+                            "type": "string"
+                          },
+                          "external_id": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "$ref": "#/components/schemas/__schema163"
+                          }
+                        },
+                        "required": [
+                          "provider",
+                          "external_id",
+                          "created_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "accounts"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/linked-accounts/{provider}/{externalId}": {
+      "delete": {
+        "tags": [
+          "rooms"
+        ],
+        "summary": "Unlink one of the signed-in person's chat platform accounts",
+        "description": "From then on the account can no longer post, answer or hear anything as the person. Changing or resetting the password unlinks every account too.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "externalId",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether a link of this person was removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "removed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "removed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/rooms/{id}/presence": {
       "post": {
         "tags": [

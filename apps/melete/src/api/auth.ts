@@ -141,6 +141,9 @@ export const INVITE_PUBLIC_PATHS = ['/invites/view', '/invites/accept'];
 export function guestMayUse(method: string, path: string): boolean {
   if (path === '/rooms' || path.startsWith('/rooms/')) return true;
   if (path === '/me') return method === 'GET' || method === 'PATCH';
+  // Their own linked chat platform accounts, to see and to unlink.
+  if (path === '/me/linked-accounts') return method === 'GET';
+  if (/^\/me\/linked-accounts\/[^/]+\/[^/]+$/.test(path)) return method === 'DELETE';
   if (method === 'POST' && ['/signout', '/account/password'].includes(path)) return true;
   if (method === 'GET' && /^\/artifacts\/[^/]+\/content$/.test(path)) return true;
   // Watching a room's computer; taking it over is for the room's owners.

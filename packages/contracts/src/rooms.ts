@@ -379,3 +379,15 @@ export const acceptInviteRequest = z.strictObject({
   display_name: displayNameText.optional(),
 });
 export const acceptInviteResponse = z.strictObject({ room_id: roomId });
+
+/**
+ * A chat platform account linked to the signed-in person. While it is linked,
+ * that account speaks, answers and hears in the person's rooms as them.
+ */
+export const linkedAccount = z.strictObject({
+  provider: z.string(),
+  external_id: z.string(),
+  created_at: timestamp,
+});
+export const linkedAccountList = z.strictObject({ accounts: z.array(linkedAccount) });
+export const linkedAccountRemoval = z.strictObject({ removed: z.boolean() });

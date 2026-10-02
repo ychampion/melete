@@ -11,4 +11,5 @@ CREATE TABLE "principal_identity" (
 ALTER TABLE "room_message" ADD COLUMN "surface" text DEFAULT 'web' NOT NULL;--> statement-breakpoint
 ALTER TABLE "room_message" ADD COLUMN "external_ref" text;--> statement-breakpoint
 ALTER TABLE "principal_identity" ADD CONSTRAINT "principal_identity_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "principal_identity_principal_idx" ON "principal_identity" USING btree ("principal_id");
+CREATE INDEX "principal_identity_principal_idx" ON "principal_identity" USING btree ("principal_id");--> statement-breakpoint
+ALTER TABLE "room_message" ADD CONSTRAINT "room_message_external_ref" CHECK ("room_message"."external_ref" is null or length("room_message"."external_ref") between 1 and 200);

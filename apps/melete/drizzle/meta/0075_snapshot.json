@@ -1,5 +1,5 @@
 {
-  "id": "aeff8380-51e0-4806-b544-b7f667eb36fd",
+  "id": "53115c4f-b884-413b-8311-1c4af3c8e910",
   "prevId": "e52661fd-e397-46e6-b828-6e61aa7452f7",
   "version": "7",
   "dialect": "postgresql",
@@ -14193,6 +14193,10 @@
         "room_message_request_state": {
           "name": "room_message_request_state",
           "value": "\"room_message\".\"request_state\" in ('none', 'pending', 'started')"
+        },
+        "room_message_external_ref": {
+          "name": "room_message_external_ref",
+          "value": "\"room_message\".\"external_ref\" is null or length(\"room_message\".\"external_ref\") between 1 and 200"
         }
       },
       "isRLSEnabled": false

@@ -239,6 +239,8 @@ import {
   createRoomThreadRequest,
   inviteView,
   inviteViewRequest,
+  linkedAccountList,
+  linkedAccountRemoval,
   meResponse,
   peopleList,
   peopleQuery,
@@ -1108,6 +1110,30 @@ function roomsPaths() {
           '409': problem(
             'No result yet, already shared or kept, the result changed, or the person is no longer in the room',
           ),
+        },
+      },
+    },
+    '/me/linked-accounts': {
+      get: {
+        tags: ['rooms'],
+        summary: 'The chat platform accounts linked to the signed-in person',
+        description:
+          'A linked account speaks, answers permissions and hears threads in the rooms the ' +
+          'person is in, as them. A chat platform links an account after its own sign-in proves ' +
+          'who holds it.',
+        responses: { '200': jsonResponse('Linked accounts', linkedAccountList) },
+      },
+    },
+    '/me/linked-accounts/{provider}/{externalId}': {
+      delete: {
+        tags: ['rooms'],
+        summary: "Unlink one of the signed-in person's chat platform accounts",
+        description:
+          'From then on the account can no longer post, answer or hear anything as the person. ' +
+          'Changing or resetting the password unlinks every account too.',
+        requestParams: { path: z.object({ provider: z.string(), externalId: z.string() }) },
+        responses: {
+          '200': jsonResponse('Whether a link of this person was removed', linkedAccountRemoval),
         },
       },
     },

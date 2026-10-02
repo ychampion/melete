@@ -400,10 +400,15 @@ export class RoomService {
     /** Where the message was written, when not on the web: the platform and its id for it. */
     origin?: { surface: string; external_ref?: string },
   ) {
-    // A platform's submission ids are its own: they never meet the web's, or another platform's.
-    const scope = origin ? `${origin.surface}:` : '';
+    // A platform's submission ids are its own: they never meet the web's, or
+    // another platform's. The web's key keeps its form; a platform's is a tuple,
+    // which no web key can spell.
     const key = createHash('sha256')
-      .update(`${spaceId}:${actor}:${scope}${input.submission_id}`)
+      .update(
+        origin
+          ? JSON.stringify(['surface', spaceId, actor, origin.surface, input.submission_id])
+          : `${spaceId}:${actor}:${input.submission_id}`,
+      )
       .digest('hex');
     const result = await this.deps.jobs.transaction(async (tx) => {
       const { role } = await this.access(tx, spaceId, actor, true);

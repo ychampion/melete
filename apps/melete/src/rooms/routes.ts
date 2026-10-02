@@ -29,7 +29,13 @@ import { InviteService, mountInvites } from './invites.ts';
 import { mountRoomMemory } from './memory.ts';
 import { releaseAll, releaseOnTransition, releaseThread } from './release.ts';
 import { type RoomDeps, RoomService } from './service.ts';
-import { RoomGate, type RoomOutbound, type RoomSurface } from './surface.ts';
+import {
+  linkedAccounts,
+  RoomGate,
+  type RoomOutbound,
+  type RoomSurface,
+  unlinkOwnAccount,
+} from './surface.ts';
 
 export { ROOM_POLL_MS } from './surface.ts';
 
@@ -194,6 +200,11 @@ export function mountRooms(
       ),
     );
   });
+  // The chat platform accounts that speak as the signed-in person, and unlinking one.
+  app.get('/me/linked-accounts', async (c) => c.json(await linkedAccounts(deps.db, actor(c))));
+  app.delete('/me/linked-accounts/:provider/:externalId', async (c) =>
+    c.json(await unlinkOwnAccount(deps.db, actor(c), param(c, 'provider'), param(c, 'externalId'))),
+  );
   app.post('/rooms/:id/presence', async (c) =>
     c.json(await service.presence(param(c, 'id'), actor(c))),
   );
@@ -231,7 +242,7 @@ export function mountRooms(
  * the moment they are not: removing someone ends what they can read at once,
  * not on their next request.
  */
-function threadStream(
+export function threadStream(
   web: RoomGate,
   start: {
     spaceId: string;
