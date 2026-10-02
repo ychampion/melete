@@ -148,9 +148,11 @@ class BrokerClient:
         """Only the broker may supply a schema and its fixed connection."""
         return self._call("POST", "/tools/load", arguments)
 
-    def call_native(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def call_native(
+        self, name: str, arguments: Dict[str, Any], timeout: Optional[float] = None
+    ) -> Dict[str, Any]:
         """Native catalog tools still execute on the service side of the gate."""
-        return self._call("POST", "/tools/call", {"name": name, "arguments": arguments})
+        return self._call("POST", "/tools/call", {"name": name, "arguments": arguments}, timeout)
     def wait(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Request a typed lifecycle wait; authority remains on the broker."""
         return self._call("POST", "/attempt/wait", payload)

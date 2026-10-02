@@ -790,6 +790,7 @@ const NATIVE: Record<string, [ToolKind, doing: string, done: string]> = {
   'job.wait': ['tool', 'Scheduling a follow-up', 'Scheduled a follow-up'],
   'run.start': ['tool', 'Starting work in the background', 'Started work in the background'],
   'run.log': ['tool', 'Noting progress', 'Noted progress'],
+  'run.try': ['sandbox', 'Trying something and measuring it', 'Tried something and measured it'],
   'run.delegate': ['tool', 'Handing part to a helper', 'Handed part to a helper'],
   'run.checkpoint': ['tool', 'Saving where it got to', 'Saved where it got to'],
   'run.finish': ['tool', 'Wrapping up', 'Wrapped up'],

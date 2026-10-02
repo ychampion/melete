@@ -22,6 +22,7 @@ import {
   type JobState,
   RUN_ACTIVE_STEP_LIMIT,
   RUN_IDLE_SHIFT_LIMIT,
+  RUN_TRY_LIMITS,
   type RunEntry,
   type RunLimit,
   type RunStatus,
@@ -33,6 +34,7 @@ import {
   runLimit,
   runLogInput,
   runStartInput,
+  runTryInput,
   runView,
 } from '@melete/contracts';
 import {
@@ -79,6 +81,17 @@ import {
   stepsOf,
   valueShown,
 } from './record.ts';
+import {
+  better,
+  MAX_COMMAND_CHARS,
+  metricValue,
+  patternValue,
+  type SandboxRun,
+  type TrySandbox,
+  tail,
+  timeoutMs,
+  tryCommand,
+} from './try.ts';
 
 /**
  * What one shift may use. These only stop a runaway shift: a run goes on in
@@ -286,6 +299,181 @@ export class RunService {
           }
         : {}),
     };
+  }
+
+  /**
+   * A try the harness measures (`run.try`). The commands run in the space's
+   * sandbox through the broker, outside any transaction here; the record is
+   * then written from what they printed, never from what the model says. A
+   * try is kept when it beats the best measured value so far.
+   */
+  async measure(claims: CapabilityClaims, raw: unknown, sandbox: TrySandbox): Promise<unknown> {
+    if (!claims.scopes.includes('run.try'))
+      throw new ServiceError('scope_denied', 'run.try is not available here.', 403);
+    const input = runTryInput.parse(raw);
+    const files = input.files ?? {};
+    const tries = [
+      { label: null as string | null, command: input.command },
+      ...(input.variants ?? []),
+    ];
+    const first = tryCommand(input.command, files);
+    if (first.length > MAX_COMMAND_CHARS)
+      throw new ServiceError(
+        'payload_invalid',
+        `The files and command come to ${first.length} characters, more than the ${MAX_COMMAND_CHARS} one command may be. Write fewer or shorter files.`,
+        400,
+      );
+    const metric = await this.jobs.transaction(async (tx) => {
+      const { job: row } = await requireCurrentAttempt(tx, claims);
+      const state = await this.stateOf(tx, row.id);
+      const [root] = state.parentRunId
+        ? await tx.select().from(runState).where(eq(runState.jobId, state.parentRunId))
+        : [state];
+      return root?.metric ?? null;
+    });
+    const timeout = timeoutMs(input.timeout_seconds, RUN_TRY_LIMITS.default_timeout_seconds);
+    // The first command writes the files and opens the computer; the others
+    // then run alongside each other in it.
+    const ran: SandboxRun[] = [await sandbox({ command: first, timeout_ms: timeout })];
+    ran.push(
+      ...(await Promise.all(
+        tries.slice(1).map((entry) =>
+          sandbox({ command: entry.command, timeout_ms: timeout }).catch(
+            (error): SandboxRun => ({
+              status: 'failed',
+              action_id: null,
+              reason: (error as Error).message,
+            }),
+          ),
+        ),
+      )),
+    );
+    const results = await Promise.all(
+      ran.map(async (result) => {
+        if (result.status !== 'ran') return { result, value: null, error: null };
+        if (result.timed_out)
+          return { result, value: null, error: `It ran past its ${timeout / 1000}s limit.` };
+        if (result.exit_code !== 0)
+          return { result, value: null, error: `It exited with status ${result.exit_code}.` };
+        let value: number | null;
+        try {
+          value = input.value_pattern
+            ? await patternValue(result.output, input.value_pattern)
+            : metricValue(result.output, metric?.name ?? null);
+        } catch (error) {
+          return { result, value: null, error: `${(error as Error).message}.` };
+        }
+        if (value !== null) return { result, value, error: null };
+        const wanted = input.value_pattern
+          ? 'Nothing in the output matched value_pattern.'
+          : `No line \`METRIC ${metric?.name ?? '<name>'}=<number>\` was printed.`;
+        return {
+          result,
+          value: null,
+          error: result.truncated
+            ? `${wanted} The output was longer than what is kept for reading; print the value near the start or print less.`
+            : wanted,
+        };
+      }),
+    );
+    return this.jobs.transaction(async (tx) => {
+      // Settling: a command the person must approve may have parked the job meanwhile.
+      const { job: row } = await requireCurrentAttempt(tx, claims, { settling: true });
+      const state = await this.stateOf(tx, row.id);
+      const run = this.rootOf(state);
+      // One writer at a time decides what is best.
+      await tx.select().from(runState).where(eq(runState.jobId, run)).for('update');
+      const direction = metric?.direction ?? 'higher';
+      const previous = bestExperiment(
+        await tx
+          .select()
+          .from(runEntry)
+          .where(and(eq(runEntry.runJobId, run), eq(runEntry.kind, 'experiment'))),
+        direction,
+      );
+      const before = previous ? object(previous.data) : null;
+      const bestBefore =
+        before?.checked === true && typeof before.value === 'number' ? before.value : null;
+      // Only the best of this batch can be kept, and only if it beats the best so far.
+      let winner = -1;
+      let winning: number | null = null;
+      for (const [index, entry] of results.entries()) {
+        if (entry.value === null) continue;
+        if (winning === null || better(entry.value, winning, direction)) {
+          winner = index;
+          winning = entry.value;
+        }
+      }
+      const kept =
+        winning !== null && (bestBefore === null || better(winning, bestBefore, direction));
+      const tried = [];
+      for (const [index, { result, value, error }] of results.entries()) {
+        const label = tries[index]?.label ?? null;
+        const title = label ? `${input.title}: ${label}` : input.title;
+        if (result.status === 'waiting') {
+          tried.push({ title, status: 'waiting_for_approval', action_id: result.action_id });
+          continue;
+        }
+        const ok = result.status === 'ran' && value !== null;
+        const outcome = !ok ? 'failed' : kept && index === winner ? 'kept' : 'discarded';
+        const command = tries[index]?.command ?? input.command;
+        const data: Record<string, unknown> = {
+          measured: true,
+          checked: ok,
+          value: ok ? value : null,
+          outcome,
+          ...(input.hypothesis ? { hypothesis: input.hypothesis } : {}),
+          ...(label ? { variant: label } : {}),
+          command,
+          files,
+          ...(metric && !input.value_pattern ? { metric: metric.name } : {}),
+          ...(input.value_pattern ? { value_pattern: input.value_pattern } : {}),
+          timeout_seconds: timeout / 1000,
+          evidence: result.action_id ? [result.action_id] : [],
+        };
+        if (result.status === 'ran') {
+          Object.assign(data, {
+            exit_code: result.exit_code,
+            timed_out: result.timed_out,
+            duration_ms: result.duration_ms,
+            output_tail: tail(result.output),
+          });
+        }
+        const why = result.status === 'failed' ? `It did not run: ${result.reason}` : error;
+        if (why) data.error = why;
+        const entry = await this.write(tx, {
+          run,
+          step: state.parentRunId ? row.id : null,
+          attemptId: claims.attempt_id,
+          kind: 'experiment',
+          title,
+          body: why ?? '',
+          data,
+        });
+        tried.push({
+          title,
+          entry_id: entry.id,
+          value: data.value,
+          outcome,
+          ...(why ? { error: why } : {}),
+          ...(result.status === 'ran' && !ok ? { output_tail: tail(result.output, 600) } : {}),
+        });
+      }
+      const waiting = tried.some((entry) => entry.status === 'waiting_for_approval');
+      return {
+        status: 'measured',
+        tries: tried,
+        new_best: kept,
+        best: kept ? winning : bestBefore,
+        ...(metric ? { metric: metric.name, direction } : {}),
+        ...(waiting
+          ? {
+              instruction:
+                "The person's approval rules ask them before this command runs, and nothing of it ran. Say in your handoff that it waits for them; once they approve, call run.try again with the same arguments to run and record it.",
+            }
+          : {}),
+      };
+    });
   }
 
   /** Whether a succeeded action of this run or its helpers shows the value in its output. */
@@ -934,26 +1122,49 @@ export class RunService {
       const by = entry.stepJobId
         ? ` (helper: ${steps.get(entry.stepJobId) ?? entry.stepJobId})`
         : '';
-      lines.push(
-        `## ${entry.createdAt.toISOString()} · ${ENTRY_LABELS[entry.kind] ?? 'Note'}${by}: ${entry.title}`,
-        '',
-      );
-      if (entry.body) lines.push(entry.body, '');
       const data = object(entry.data);
+      const label =
+        entry.kind === 'experiment' && data.measured === true
+          ? 'Measured'
+          : (ENTRY_LABELS[entry.kind] ?? 'Note');
+      lines.push(`## ${entry.createdAt.toISOString()} · ${label}${by}: ${entry.title}`, '');
+      if (entry.body) lines.push(entry.body, '');
       if (entry.kind === 'experiment') {
         const facts = [
           typeof data.hypothesis === 'string' ? `Idea: ${data.hypothesis}` : null,
           typeof data.value === 'number' ? `Value: ${data.value}` : null,
           `Outcome: ${String(data.outcome ?? '')}`,
-          `Confirmed from its output: ${data.checked === true ? 'yes' : 'no'}`,
+          data.measured === true
+            ? `Measured by Melete from the command's output${typeof data.exit_code === 'number' ? `, exit status ${data.exit_code}` : ''}${typeof data.duration_ms === 'number' ? `, ${data.duration_ms} ms` : ''}`
+            : `Confirmed from its output: ${data.checked === true ? 'yes' : 'no'}`,
           Array.isArray(data.evidence) && data.evidence.length
             ? `Evidence: ${data.evidence.join(', ')}`
             : null,
         ].filter(Boolean);
         lines.push(...facts.map((fact) => `- ${fact}`), '');
+        if (typeof data.command === 'string') lines.push(...fence('sh', data.command), '');
+        if (typeof data.output_tail === 'string' && data.output_tail)
+          lines.push('Output (the end):', '', ...fence('', data.output_tail), '');
       }
       if (entry.kind === 'checkpoint' && typeof data.next === 'string')
         lines.push(`Next: ${data.next}`, '');
+    }
+    const best = bestExperiment(
+      entries.filter((entry) => entry.kind === 'experiment'),
+      view.metric?.direction ?? 'higher',
+    );
+    const again = best ? object(best.data) : null;
+    if (best && again?.measured === true && typeof again.command === 'string') {
+      // The best measured try, as someone would run it again by hand.
+      lines.push(
+        '## Run the best try again',
+        '',
+        `${best.title}${typeof again.value === 'number' ? `, which measured ${again.value}` : ''}. In an empty folder, write these files and run the command:`,
+        '',
+      );
+      for (const [path, text] of Object.entries(object(again.files)))
+        lines.push(`\`${path}\`:`, '', ...fence('', String(text)), '');
+      lines.push(...fence('sh', again.command), '');
     }
     return `${lines.join('\n').trimEnd()}\n`;
   }
@@ -1084,6 +1295,13 @@ export class RunService {
       .set({ limit: limit ? runLimit.parse(limit) : null })
       .where(eq(runState.jobId, row.id));
   }
+}
+
+/** A fenced block that the text inside cannot close early. */
+function fence(language: string, text: string): string[] {
+  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((run) => run[0].length));
+  const ticks = '`'.repeat(Math.max(3, longest + 1));
+  return [`${ticks}${language}`, text.replace(/\n$/, ''), ticks];
 }
 
 function entryView(entry: Entry): RunEntry {

@@ -11,6 +11,7 @@
  */
 import { z } from 'zod';
 import { timestamp } from './common.ts';
+import { EXEC_LIMITS } from './execution.ts';
 import type { ToolSpec } from './runtime.ts';
 
 export const RUN_KINDS = ['run', 'run_step'] as const;
@@ -102,6 +103,79 @@ export const runLogInput = z
   .strict();
 export type RunLogInput = z.infer<typeof runLogInput>;
 
+/** What one measured try may carry. Its files and command travel as one sandbox command. */
+export const RUN_TRY_LIMITS = {
+  command_chars: 4000,
+  files: 8,
+  file_path_chars: 200,
+  /** All files' text together. */
+  file_chars: 12_000,
+  variants: 4,
+  default_timeout_seconds: 60,
+  max_timeout_seconds: EXEC_LIMITS.max_timeout_ms / 1000,
+  pattern_chars: 200,
+} as const;
+
+/** A relative path inside the workspace: plain names, no `.` or `..` parts. */
+const workspacePath = z
+  .string()
+  .max(RUN_TRY_LIMITS.file_path_chars)
+  .refine(
+    (path) =>
+      path
+        .split('/')
+        .every((part) => /^[A-Za-z0-9._-]+$/.test(part) && part !== '.' && part !== '..'),
+    'a file path is relative, made of letters, digits, dots, dashes and underscores',
+  );
+
+/** How many capture groups a pattern has; null when it is not a pattern. */
+export function captureGroups(pattern: string): number | null {
+  try {
+    return (new RegExp(`${pattern}|`).exec('')?.length ?? 1) - 1;
+  } catch {
+    return null;
+  }
+}
+
+const tryCommand = z.string().trim().min(1).max(RUN_TRY_LIMITS.command_chars);
+
+export const runTryInput = z
+  .object({
+    title,
+    hypothesis: z.string().max(2000).optional(),
+    command: tryCommand,
+    /** Text files written into the workspace before the command runs, by relative path. */
+    files: z
+      .record(workspacePath, z.string())
+      .refine((files) => Object.keys(files).length <= RUN_TRY_LIMITS.files, {
+        message: `at most ${RUN_TRY_LIMITS.files} files`,
+      })
+      .refine(
+        (files) =>
+          Object.values(files).reduce((sum, text) => sum + text.length, 0) <=
+          RUN_TRY_LIMITS.file_chars,
+        { message: `at most ${RUN_TRY_LIMITS.file_chars} characters of files in all` },
+      )
+      .optional(),
+    timeout_seconds: z.number().int().min(1).max(RUN_TRY_LIMITS.max_timeout_seconds).optional(),
+    /** A regular expression with one capture group that finds the value in the output. */
+    value_pattern: z
+      .string()
+      .min(1)
+      .max(RUN_TRY_LIMITS.pattern_chars)
+      .refine((pattern) => captureGroups(pattern) === 1, {
+        message: 'value_pattern must be a regular expression with exactly one capture group',
+      })
+      .optional(),
+    /** Other commands tried alongside, each recorded as its own try. */
+    variants: z
+      .array(z.object({ label: z.string().trim().min(1).max(80), command: tryCommand }).strict())
+      .max(RUN_TRY_LIMITS.variants)
+      .optional(),
+  })
+  .strict();
+export type RunTryInput = z.infer<typeof runTryInput>;
+
 export const runDelegateInput = z
   .object({
     task: z.string().trim().min(1).max(4000),
@@ -189,6 +263,25 @@ export const RUN_LOG_TOOL: ToolSpec = {
   ),
 };
 
+/** Kept small: it shares the core catalog. How the value is read is in the brief. */
+export const RUN_TRY_TOOL: ToolSpec = {
+  name: 'run.try',
+  description: 'Run a command in the sandbox and record the value it prints as a measured try.',
+  effect_class: 'write_reversible',
+  connection_id: null,
+  input_schema: obj(
+    {
+      title: { type: 'string' },
+      command: { type: 'string' },
+      files: { type: 'object' },
+      variants: { type: 'array' },
+      value_pattern: { type: 'string' },
+      timeout_seconds: { type: 'integer' },
+    },
+    ['title', 'command'],
+  ),
+};
+
 export const RUN_DELEGATE_TOOL: ToolSpec = {
   name: 'run.delegate',
   description:
@@ -235,6 +328,7 @@ export const RUN_FINISH_TOOL: ToolSpec = {
 export const RUN_TOOLS = [
   RUN_START_TOOL,
   RUN_LOG_TOOL,
+  RUN_TRY_TOOL,
   RUN_DELEGATE_TOOL,
   RUN_CHECKPOINT_TOOL,
   RUN_FINISH_TOOL,
@@ -244,8 +338,8 @@ export const RUN_TOOL_NAMES: readonly string[] = RUN_TOOLS.map((tool) => tool.na
 /** The run tools an attempt of this kind of job is offered. */
 export function runScopes(kind: string): string[] {
   if (kind === 'chat') return ['run.start'];
-  if (kind === 'run') return ['run.log', 'run.delegate', 'run.checkpoint', 'run.finish'];
-  if (kind === 'run_step') return ['run.log', 'run.checkpoint', 'run.finish'];
+  if (kind === 'run') return ['run.log', 'run.try', 'run.delegate', 'run.checkpoint', 'run.finish'];
+  if (kind === 'run_step') return ['run.log', 'run.try', 'run.checkpoint', 'run.finish'];
   return [];
 }
 
@@ -272,7 +366,7 @@ export const runExperimentView = z.object({
   title: z.string(),
   value: z.number().nullable(),
   outcome: z.enum(['kept', 'discarded', 'failed']).nullable(),
-  /** The value appears in the output of an action the experiment cited. */
+  /** The value appears in the output of an action the experiment cited, or the harness measured it. */
   checked: z.boolean(),
   created_at: timestamp,
 });
