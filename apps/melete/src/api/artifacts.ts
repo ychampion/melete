@@ -58,7 +58,7 @@ async function readArtifact(
   const location = artifactLocation(roots, spaceId, row);
   // Every component is checked, so a link anywhere on the way is refused.
   const file = await noLinks(await realpath(location.root), location.segments, false);
-  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     if (!(await handle.stat()).isFile()) throw notFound();
     return new Uint8Array(await handle.readFile());

@@ -1,11 +1,31 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { connectorManifest } from '@melete/contracts';
 import { asConnectorFault } from './faults.ts';
-import { createFilesConnector, filesManifest } from './files.ts';
+import {
+  createFilesConnector,
+  descriptorPath,
+  filesManifest,
+  openedAt,
+  pinDirectory,
+} from './files.ts';
 import { connectorAction, connectorContext } from './test-fixtures.ts';
 
 let root: string;
@@ -185,3 +205,83 @@ test('move verifies by content hash and refuses to clobber a destination', async
   await execute('files.write', { path: 'to.txt', area: 'artifacts', content: 'changed' });
   expect((await connector().verify(action, connectorContext(action))).decision).toBe('undecided');
 });
+
+const linux = process.platform === 'linux';
+
+test('an opened file the descriptor places elsewhere is refused, even when the path looks clean', async () => {
+  const work = await realpath(path.join(root, 'work', 'job_01'));
+  const named = path.join(work, 'notes.txt');
+  await writeFile(named, 'mine');
+  const handle = await open(named, 'r+');
+  try {
+    // The path lookups answer as a parent flipped back to a real directory would.
+    const lookups = {
+      descriptor: async () => path.join(root, 'outside', 'notes.txt'),
+      realpath,
+      lstat,
+    };
+    await expect(openedAt(handle, named, lookups)).rejects.toThrow('not where it was opened');
+    await openedAt(handle, named, { ...lookups, descriptor: async () => named });
+  } finally {
+    await handle.close();
+  }
+});
+
+test.skipIf(!linux)(
+  'the descriptor names where a file opened through a swapped parent really is',
+  async () => {
+    const outside = await realpath(path.join(root, 'outside'));
+    const work = await realpath(path.join(root, 'work', 'job_01'));
+    await writeFile(path.join(outside, 'notes.txt'), 'kept');
+    await symlink(outside, path.join(work, 'flip'), 'dir');
+    const named = path.join(work, 'flip', 'notes.txt');
+    const handle = await open(named, 'r+');
+    try {
+      expect(await descriptorPath(handle)).toBe(path.join(outside, 'notes.txt'));
+      // The flip back to a real directory, as the path lookups would then see it.
+      const opened = await handle.stat();
+      const clean = {
+        descriptor: descriptorPath,
+        realpath: async () => named,
+        lstat: async () => opened,
+      };
+      await expect(openedAt(handle, named, clean as never)).rejects.toThrow(
+        'not where it was opened',
+      );
+    } finally {
+      await handle.close();
+    }
+    expect(await readFile(path.join(outside, 'notes.txt'), 'utf8')).toBe('kept');
+  },
+);
+
+test.skipIf(!linux)(
+  'a held directory keeps receiving entries after its name is swapped for a link',
+  async () => {
+    const outside = await realpath(path.join(root, 'outside'));
+    const work = await realpath(path.join(root, 'work', 'job_01'));
+    await mkdir(path.join(work, 'sub'));
+    const held = await pinDirectory(path.join(work, 'sub'));
+    try {
+      await rename(path.join(work, 'sub'), path.join(work, 'sub-moved'));
+      await symlink(outside, path.join(work, 'sub'), 'dir');
+      await writeFile(held.at('report.txt'), 'here');
+    } finally {
+      await held.close();
+    }
+    expect(await readdir(outside)).toEqual([]);
+    expect(await readFile(path.join(work, 'sub-moved', 'report.txt'), 'utf8')).toBe('here');
+    await expect(pinDirectory(path.join(work, 'sub'))).rejects.toThrow();
+  },
+);
+
+test.skipIf(!linux)(
+  'a pipe planted at a name fails the read or write instead of waiting',
+  async () => {
+    const work = path.join(root, 'work', 'job_01');
+    expect(spawnSync('mkfifo', [path.join(work, 'pipe.txt')]).status).toBe(0);
+    await expect(execute('files.write', { path: 'pipe.txt', content: 'x' })).rejects.toThrow();
+    await expect(execute('files.read', { path: 'pipe.txt' })).rejects.toThrow();
+  },
+  4000,
+);

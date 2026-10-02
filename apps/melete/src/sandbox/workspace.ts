@@ -16,7 +16,7 @@
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { noLinks, openedAt, segmentsFor } from '../connectors/files.ts';
+import { noLinks, openedAt, pinDirectory, segmentsFor } from '../connectors/files.ts';
 import type { SandboxHandle, SandboxProvider } from './types.ts';
 
 const MiB = 1024 * 1024;
@@ -134,24 +134,30 @@ async function writeConfined(
 ): Promise<void> {
   const base = await jobBase(workRoot, jobId);
   const target = await noLinks(base, [jobId, ...portable(relative)], true);
-  // Non-blocking, so a pipe planted at the name fails the open instead of hanging it.
-  const file = await open(
-    target,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    mode,
-  );
+  // The checked directory is held, so the file is created in it and nowhere else.
+  const directory = await pinDirectory(path.dirname(target));
   try {
-    await openedAt(file, target).catch((error: unknown) => {
-      throw new SyncRefusal('not_regular', `${(error as Error).message}: ${relative}`);
-    });
-    await file.truncate(0);
-    await file.writeFile(bytes);
-    await file.sync();
-    // The open mode is filtered by the umask; set it on the open file, never by
-    // path, which would follow a link swapped in after the write.
-    await file.chmod(mode);
+    // Non-blocking, so a pipe planted at the name fails the open instead of hanging it.
+    const file = await open(
+      directory.at(path.basename(target)),
+      constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      mode,
+    );
+    try {
+      await openedAt(file, target).catch((error: unknown) => {
+        throw new SyncRefusal('not_regular', `${(error as Error).message}: ${relative}`);
+      });
+      await file.truncate(0);
+      await file.writeFile(bytes);
+      await file.sync();
+      // The open mode is filtered by the umask; set it on the open file, never by
+      // path, which would follow a link swapped in after the write.
+      await file.chmod(mode);
+    } finally {
+      await file.close();
+    }
   } finally {
-    await file.close();
+    await directory.close();
   }
 }
 
@@ -165,7 +171,7 @@ export async function readWorkspaceFile(
   checkJob(jobId);
   const base = await realpath(workRoot);
   const target = await noLinks(base, [jobId, ...portable(relative)], false);
-  const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await file.stat();
     if (!stat.isFile()) throw new SyncRefusal('not_regular', `not a regular file: ${relative}`);
@@ -230,7 +236,10 @@ export async function syncIn(options: SyncOptions): Promise<SyncReport> {
   async function* read() {
     for (const file of files) {
       const target = await noLinks(base, [options.jobId, ...portable(file.relative)], false);
-      const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const handle = await open(
+        target,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
       try {
         const stat = await handle.stat();
         if (!stat.isFile() || stat.size !== file.size)
