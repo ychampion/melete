@@ -27,6 +27,8 @@ const OWNER = 'com.melete.attempt-supervisor';
 const PROJECT = 'com.melete.project';
 const ATTEMPT = 'com.melete.attempt';
 const JOB = 'com.melete.job';
+/** The service instance that started a cell, when several share one engine. */
+const INSTANCE = 'com.melete.instance';
 /**
  * Marks an engine container started ahead of its attempt; its labels name no
  * attempt or job. Once an attempt takes it, its container name is that attempt's.
@@ -127,6 +129,13 @@ export type DockerRuntimeOptions = {
   spares?: number;
   /** Docker supplies HOSTNAME as the service container's short id. */
   selfId?: string;
+  /**
+   * This service instance, when several share the engine and the workspace
+   * volume. Its cells and their directories carry its id, and reconciliation
+   * removes only its own, unlabelled ones, and those of instances `running`
+   * no longer lists. Left out, every cell of the project is this service's.
+   */
+  instance?: { id: string; running: () => Promise<ReadonlySet<string>> };
   docker?: DockerApi;
   fetch?: FetchLike;
 };
@@ -241,7 +250,32 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
       [PROJECT]: this.options.project,
       [ATTEMPT]: bundle.attempt.id,
       [JOB]: bundle.attempt.job_id,
+      ...this.instanceLabel(),
     };
+  }
+
+  private instanceLabel(): Labels {
+    return this.options.instance ? { [INSTANCE]: this.options.instance.id } : {};
+  }
+
+  /** A spare's or a set-aside workspace's directory carries the instance, as `<instance>.<name>`. */
+  private scoped(prefix: string, name: string): string {
+    return this.options.instance
+      ? `${prefix}${this.options.instance.id}.${name}`
+      : `${prefix}${name}`;
+  }
+
+  /**
+   * Which instances' leftovers may be removed: at a start, this instance's own
+   * and those of instances no longer running; later, only the latter. Cells
+   * from before instances were labelled count as this instance's at a start.
+   */
+  private async removable(starting: boolean): Promise<(owner: string | undefined) => boolean> {
+    const instance = this.options.instance;
+    if (!instance) return () => starting;
+    const running = await instance.running();
+    return (owner) =>
+      owner === undefined || owner === instance.id ? starting : !running.has(owner);
   }
 
   private owned(labels?: Labels): boolean {
@@ -288,6 +322,24 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
       throw new Error('The runtime image must carry the pinned Hermes commit and plugin digest');
     // Resolve the mutable local tag once. Every child uses this exact image id.
     this.image = image.Id;
+    const removable = await this.removable(true);
+    await this.removeLeftovers(removable);
+    await this.reconcileWorkspaces(removable);
+  }
+
+  /**
+   * Removes the cells of instances that stopped while this one runs. With
+   * several instances on one engine, one of them does this now and then.
+   */
+  async removeStopped(): Promise<void> {
+    await this.initialize();
+    const removable = await this.removable(false);
+    await this.removeLeftovers(removable);
+    await this.reconcileWorkspaces(removable);
+  }
+
+  private async removeLeftovers(removable: (owner: string | undefined) => boolean) {
+    const ours = (labels: Labels) => removable(labels[INSTANCE]);
     const filter = encodeURIComponent(
       JSON.stringify({ label: [`${OWNER}=v1`, `${PROJECT}=${this.options.project}`] }),
     );
@@ -301,7 +353,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     }>;
     for (const container of containers) {
       const names = this.expectedNames(container.Labels);
-      if (!names) continue;
+      if (!names || !ours(container.Labels)) continue;
       // A spare an attempt took carries that attempt's name; its network and home keep the spare's.
       const named =
         container.Names.includes(`/${names.container}`) ||
@@ -317,14 +369,21 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     }>;
     for (const network of networks) {
       const names = this.expectedNames(network.Labels);
-      if (!names) continue;
+      if (!names || !ours(network.Labels)) continue;
       if (network.Name !== names.network)
         throw new Error('An owned attempt network has an unexpected name');
       const detail = (await this.docker.request('GET', `/networks/${network.Id}`)) as {
         Containers: Record<string, unknown>;
       };
-      if (Object.keys(detail.Containers ?? {}).some((id) => id !== this.self))
+      if (Object.keys(detail.Containers ?? {}).some((id) => id !== this.self)) {
+        // Another instance's network may still hold its own service container.
+        if (
+          network.Labels[INSTANCE] !== undefined &&
+          network.Labels[INSTANCE] !== this.options.instance?.id
+        )
+          continue;
         throw new Error('An abandoned attempt network contains an unexpected peer');
+      }
       if (detail.Containers?.[this.self])
         await this.docker.request('POST', `/networks/${network.Id}/disconnect`, {
           Container: this.self,
@@ -337,12 +396,11 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     };
     for (const volume of volumes.Volumes ?? []) {
       const names = this.expectedNames(volume.Labels);
-      if (!names) continue;
+      if (!names || !ours(volume.Labels)) continue;
       if (volume.Name !== names.home)
         throw new Error('An owned runtime home has an unexpected name');
       await this.remove('DELETE', `/volumes/${volume.Name}`);
     }
-    await this.reconcileWorkspaces();
   }
 
   /**
@@ -350,15 +408,23 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
    * and a spare directory no attempt took is removed. Both are left only by a
    * service that stopped in between; no attempt runs until this is done.
    */
-  private async reconcileWorkspaces() {
+  private async reconcileWorkspaces(removable: (owner: string | undefined) => boolean) {
     // No workspace root yet means no attempt has ever left anything in it.
     if (!(await lstat(resolve(this.options.workRoot)).catch(() => undefined))) return;
     const root = await this.workspaceRoot();
+    // `<prefix><instance>.<name>`, or `<prefix><name>` from before instances were named.
+    const owner = (rest: string) => {
+      const dot = rest.indexOf('.');
+      return dot < 0 ? { name: rest } : { instance: rest.slice(0, dot), name: rest.slice(dot + 1) };
+    };
     for (const entry of await readdir(root)) {
       if (entry.startsWith(ADOPTING)) {
-        const jobId = prefixedId('job').parse(entry.slice(ADOPTING.length));
+        const found = owner(entry.slice(ADOPTING.length));
+        if (!removable(found.instance)) continue;
+        const jobId = prefixedId('job').parse(found.name);
         await this.restoreSetAside(join(root, entry), join(root, jobId));
       } else if (entry.startsWith(SPARE_DIRECTORY)) {
+        if (!removable(owner(entry.slice(SPARE_DIRECTORY.length)).instance)) continue;
         const path = join(root, entry);
         if ((await lstat(path)).isDirectory()) await rm(path, { recursive: true, force: true });
       }
@@ -439,7 +505,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     }
     if (!existing.isDirectory() || existing.isSymbolicLink())
       throw new Error('Refusing a symlink or non-directory job workspace');
-    const aside = join(root, `${ADOPTING}${jobId}`);
+    const aside = join(root, this.scoped(ADOPTING, jobId));
     await rename(job, aside);
     try {
       await rename(spare, job);
@@ -707,7 +773,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
       id,
       key: setup.key,
       apiKey: randomBytes(32).toString('hex'),
-      directory: `${SPARE_DIRECTORY}${id}`,
+      directory: this.scoped(SPARE_DIRECTORY, id),
       resources: this.spareNames(id),
       loaded: false,
       ready: Promise.resolve(false),
@@ -737,7 +803,12 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     await this.initialize();
     signal.throwIfAborted();
     await this.ownedDirectory(spare.directory);
-    const labels = { [OWNER]: 'v1', [PROJECT]: this.options.project, [SPARE]: spare.id };
+    const labels = {
+      [OWNER]: 'v1',
+      [PROJECT]: this.options.project,
+      [SPARE]: spare.id,
+      ...this.instanceLabel(),
+    };
     await this.provisionCell(spare.resources, labels, signal);
     spare.url = await this.startContainer(
       spare.resources,

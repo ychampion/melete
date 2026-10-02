@@ -132,7 +132,10 @@ export class PostgresSignInStore implements SignInStore {
   private sweep(now: number) {
     if (now < this.nextSweep) return;
     this.nextSweep = now + 60_000;
-    void this.sql`delete from signin_pending where expires_at <= ${new Date(now)}`.catch(() => {});
+    void this
+      .sql`delete from signin_pending where expires_at <= ${new Date(now).toISOString()}`.catch(
+      () => {},
+    );
   }
 
   async put<T>(kind: string, key: string, value: T, expiresAt: number, subject?: string) {
@@ -140,7 +143,7 @@ export class PostgresSignInStore implements SignInStore {
     const payload = await this.seal(row, value);
     await this
       .sql`insert into signin_pending (state_hash, kind, subject, sealed_payload, expires_at)
-      values (${row}, ${kind}, ${subject ?? null}, ${payload}, ${new Date(expiresAt)})
+      values (${row}, ${kind}, ${subject ?? null}, ${payload}, ${new Date(expiresAt).toISOString()})
       on conflict (state_hash) do update set subject = excluded.subject,
         sealed_payload = excluded.sealed_payload, expires_at = excluded.expires_at`;
   }
@@ -150,7 +153,7 @@ export class PostgresSignInStore implements SignInStore {
     const row = signInKey(kind, key);
     const [found] = await this.sql<{ sealed_payload: string }[]>`
       select sealed_payload from signin_pending
-      where state_hash = ${row} and expires_at > ${new Date(now)}`;
+      where state_hash = ${row} and expires_at > ${new Date(now).toISOString()}`;
     return found ? this.open<T>(row, found.sealed_payload) : undefined;
   }
 
@@ -159,7 +162,7 @@ export class PostgresSignInStore implements SignInStore {
     const [found] = await this.sql<{ sealed_payload: string; expires_at: Date }[]>`
       delete from signin_pending where state_hash = ${row}
       returning sealed_payload, expires_at`;
-    if (!found || found.expires_at.getTime() <= now) return undefined;
+    if (!found || new Date(found.expires_at).getTime() <= now) return undefined;
     return this.open<T>(row, found.sealed_payload);
   }
 
@@ -173,7 +176,7 @@ export class PostgresSignInStore implements SignInStore {
 
   async hasSubject(kind: string, subject: string, now: number) {
     const [found] = await this.sql`select 1 from signin_pending
-      where kind = ${kind} and subject = ${subject} and expires_at > ${new Date(now)} limit 1`;
+      where kind = ${kind} and subject = ${subject} and expires_at > ${new Date(now).toISOString()} limit 1`;
     return Boolean(found);
   }
 }

@@ -320,5 +320,12 @@ export async function resetTestRows(
     // The lock matches the old reset boundary while the small row sets use ordinary deletes.
     await tx.unsafe(`lock table ${names.join(',')} in access exclusive mode;
 ${names.map((name) => `delete from ${name};`).join('\n')}`);
+    // Request limits and waiting sign-ins name nobody by key, so no reference
+    // reaches them; each test starts with none, as a fresh process did.
+    const [shared] = await tx<{ limits: boolean; signins: boolean }[]>`select
+      to_regclass('public.rate_limit_window') is not null as limits,
+      to_regclass('public.signin_pending') is not null as signins`;
+    if (shared?.limits) await tx`delete from rate_limit_window`;
+    if (shared?.signins) await tx`delete from signin_pending`;
   });
 }

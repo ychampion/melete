@@ -94,24 +94,27 @@ export class PostgresLimitStore implements LimitStore {
       if (!row) {
         // The first check for a key makes its row; a concurrent first check waits on it.
         await tx`insert into rate_limit_window (key, scope, state, expires_at)
-          values (${id}, ${scope}, null, ${new Date(0)})
+          values (${id}, ${scope}, null, ${new Date(0).toISOString()})
           on conflict (key) do nothing`;
         [row] = await read();
       }
       const live =
-        row && row.state !== null && row.expires_at.getTime() > now ? row.state : undefined;
+        row && row.state !== null && new Date(row.expires_at).getTime() > now
+          ? row.state
+          : undefined;
       const next = step(live);
       if (next.state === null) await tx`delete from rate_limit_window where key = ${id}`;
       else
         await tx`update rate_limit_window
-          set state = ${tx.json(next.state as never)}, expires_at = ${new Date(next.expiresAt)},
+          set state = ${JSON.stringify(next.state)}::jsonb, expires_at = ${new Date(next.expiresAt).toISOString()},
             updated_at = now()
           where key = ${id}`;
       return [next.result] as const;
     });
     if (now >= this.nextSweep) {
       this.nextSweep = now + SWEEP_MS;
-      void this.sql`delete from rate_limit_window where expires_at <= ${new Date(now)}`.catch(
+      void this
+        .sql`delete from rate_limit_window where expires_at <= ${new Date(now).toISOString()}`.catch(
         () => {},
       );
     }

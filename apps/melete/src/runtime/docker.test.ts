@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -127,7 +127,11 @@ class Daemon implements DockerApi {
 }
 
 const fixtures: Array<{ root: string; runtime: DockerHermesRuntimeAdapter }> = [];
-async function setup(pendingWait?: () => Promise<WaitSpec | null>, brokerPort?: number) {
+async function setup(
+  pendingWait?: () => Promise<WaitSpec | null>,
+  brokerPort?: number,
+  instance?: { id: string; running: () => Promise<ReadonlySet<string>> },
+) {
   const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-test-'));
   const daemon = new Daemon();
   const httpCalls: string[] = [];
@@ -147,6 +151,7 @@ async function setup(pendingWait?: () => Promise<WaitSpec | null>, brokerPort?: 
     parkedActions: async () => [],
     pendingWait,
     brokerPort,
+    instance,
     fetch: async (url) => {
       httpCalls.push(url);
       if (mode.unavailable) throw new Error('Not listening yet');
@@ -407,6 +412,75 @@ describe('Docker attempt supervision', () => {
     expect(
       f.daemon.calls.filter((call) => call.method === 'DELETE').map((call) => call.path),
     ).toEqual(['/containers/owned-cell?force=true']);
+  });
+
+  test("a second instance's start leaves the first instance's running cells alone", async () => {
+    const f = await setup(undefined, undefined, {
+      id: 'second',
+      running: async () => new Set(['first']),
+    });
+    const cell = (index: number, instance?: string) => ({
+      Id: `cell-of-${instance ?? 'nobody'}`,
+      Names: [`/test-melete-${identity('att', index).toLowerCase()}`],
+      Labels: { ...labels(index), ...(instance ? { 'com.melete.instance': instance } : {}) },
+    });
+    f.daemon.stale = [cell(1, 'first'), cell(2, 'second'), cell(3, 'stopped'), cell(4)];
+    const spare = (instance: string) => `.spare-${instance}.${'c'.repeat(24)}`;
+    for (const directory of [
+      spare('first'),
+      spare('second'),
+      spare('stopped'),
+      `.spare-${'d'.repeat(24)}`,
+    ])
+      await mkdir(join(f.root, directory));
+    await f.runtime.initialize();
+    expect(
+      f.daemon.calls.filter((call) => call.method === 'DELETE').map((call) => call.path),
+    ).toEqual([
+      '/containers/cell-of-second?force=true',
+      '/containers/cell-of-stopped?force=true',
+      '/containers/cell-of-nobody?force=true',
+    ]);
+    expect((await readdir(f.root)).sort()).toEqual([spare('first')]);
+  });
+
+  test('a running instance removes only the cells of instances that stopped', async () => {
+    const running = new Set(['first']);
+    const f = await setup(undefined, undefined, { id: 'second', running: async () => running });
+    await f.runtime.initialize();
+    const cell = (index: number, instance?: string) => ({
+      Id: `cell-of-${instance ?? 'nobody'}`,
+      Names: [`/test-melete-${identity('att', index).toLowerCase()}`],
+      Labels: { ...labels(index), ...(instance ? { 'com.melete.instance': instance } : {}) },
+    });
+    f.daemon.stale = [cell(1, 'first'), cell(2, 'second'), cell(4)];
+    f.daemon.calls = [];
+    await f.runtime.removeStopped();
+    expect(f.daemon.calls.filter((call) => call.method === 'DELETE')).toHaveLength(0);
+    running.delete('first');
+    await f.runtime.removeStopped();
+    expect(
+      f.daemon.calls.filter((call) => call.method === 'DELETE').map((call) => call.path),
+    ).toEqual(['/containers/cell-of-first?force=true']);
+  });
+
+  test('every cell an instance starts carries its name', async () => {
+    const f = await setup(undefined, undefined, {
+      id: 'second',
+      running: async () => new Set(),
+    });
+    await f.runtime.start(bundle(), f.sink, new AbortController().signal);
+    const created = f.daemon.calls.filter(
+      (call) =>
+        call.path === '/networks/create' ||
+        call.path === '/volumes/create' ||
+        call.path.startsWith('/containers/create?'),
+    );
+    expect(created).toHaveLength(3);
+    for (const call of created)
+      expect((call.body as { Labels: Record<string, string> }).Labels['com.melete.instance']).toBe(
+        'second',
+      );
   });
 
   test('a non-durable child cannot start a run and all its resources are removed', async () => {
