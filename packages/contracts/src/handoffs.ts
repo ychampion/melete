@@ -33,7 +33,7 @@ export const roomHandoff = z.strictObject({
   id: z.string().min(1).max(240),
   room: z.strictObject({ id: prefixedId(ID_PREFIXES.space), name: z.string() }),
   thread_id: z.string().min(1).max(240),
-  /** The person whose request in the room led to this, as `Name <email>`. */
+  /** The person whose request in the room led to this, as the room labels them: `Name <handle>`. */
   asked_by: z.strictObject({ principal_id: principalId, display_name: z.string() }).nullable(),
   /** The whole task, exactly as it will run. */
   task: z.string(),

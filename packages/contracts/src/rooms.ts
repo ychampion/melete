@@ -130,6 +130,11 @@ export const meResponse = z.strictObject({
     email: z.email(),
     created_at: timestamp,
     display_name: z.string().nullable(),
+    /**
+     * `guest`: an account invited into rooms. Its sign-in reaches only rooms and
+     * its own account; every other route answers 403 `guests_use_rooms`.
+     */
+    kind: z.enum(['person', 'guest']).optional(),
   }),
 });
 

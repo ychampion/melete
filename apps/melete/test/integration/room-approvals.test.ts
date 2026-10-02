@@ -382,6 +382,8 @@ withDb('room approvals', () => {
     expect(seen.why.join(' ')).toContain(
       `Waiting for ${labelOf(world.bob, roomId)}, who asked for it.`,
     );
+    // The card names the exact content, so the room's page can answer for what it shows.
+    expect(seen.payload_hash).toBe(asked.hash);
     const body = { option: 'allow_once' as const, version: seen.version, payload_hash: asked.hash };
     // The owner, another member and the guest are refused; someone outside finds nothing.
     for (const person of [world.alice, world.carol, world.dan])

@@ -8405,6 +8405,8 @@ export interface paths {
                                 /** Format: email */
                                 email: string;
                                 id: string;
+                                /** @enum {string} */
+                                kind?: "person" | "guest";
                             };
                         };
                     };
@@ -19152,6 +19154,7 @@ export interface components {
             };
             id: components["schemas"]["__schema228"];
             options: components["schemas"]["__schema252"][];
+            payload_hash?: components["schemas"]["__schema228"];
             preview: components["schemas"]["__schema243"] | null;
             requested_by?: components["schemas"]["__schema254"];
             review?: components["schemas"]["__schema247"];

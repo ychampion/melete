@@ -208,6 +208,11 @@ export const permissionCard = z.strictObject({
    * else in the room sees the card and cannot answer it.
    */
   eligible_approvers: z.array(permissionPerson).optional(),
+  /**
+   * In a room: the hash of exactly what this would do. An answer names it, so
+   * nobody answers for content they did not see.
+   */
+  payload_hash: id.optional(),
 });
 export type PermissionCard = z.infer<typeof permissionCard>;
 

@@ -217,6 +217,7 @@ export class ExperiencePermissions {
       ...card,
       ...(room.requestedBy ? { requested_by: person(room.requestedBy) } : {}),
       eligible_approvers: eligible.map(person),
+      payload_hash: String(row.payload_hash),
     });
   }
 
