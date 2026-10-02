@@ -239,9 +239,27 @@ export function sandboxCredentialRefusal(adapter: SandboxAdapter, key: string): 
  * egress relay holds the account and adds it on the wire; the computer only
  * ever holds a placeholder.
  */
-export const COMMAND_LINE_ADAPTERS = ['github'] as const;
+export const COMMAND_LINE_ADAPTERS = ['github', 'aws'] as const;
 export const commandLineConnectionConfig = z
-  .object({ adapter: z.enum(COMMAND_LINE_ADAPTERS) })
+  .object({
+    adapter: z.enum(COMMAND_LINE_ADAPTERS),
+    /** AWS: the region commands use unless they name another, and where a role is assumed. */
+    region: z
+      .string()
+      .regex(/^[a-z]{2}(?:-[a-z]+)+-\d{1,2}$/)
+      .optional(),
+    /** AWS: a role this server assumes for each command, with the key. */
+    role_arn: z
+      .string()
+      .max(2048)
+      .regex(/^arn:aws:iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/)
+      .optional(),
+    /** AWS: the external ID the role's trust policy asks for, if any. */
+    external_id: z
+      .string()
+      .regex(/^[\w+=,.@:/-]{2,1224}$/)
+      .optional(),
+  })
   .strict()
   .meta({ id: 'CommandLineConnectionConfig' });
 export type CommandLineConnectionConfig = z.infer<typeof commandLineConnectionConfig>;
@@ -253,6 +271,13 @@ export const commandLineCredentials = z
       .min(1)
       .max(1024)
       .regex(/^[!-~]+$/),
+  })
+  .strict();
+/** An AWS access key: its ID and its secret, as IAM issues them. */
+export const awsCommandLineCredentials = z
+  .object({
+    access_key_id: z.string().regex(/^[A-Z0-9]{16,128}$/),
+    secret_access_key: z.string().regex(/^[A-Za-z0-9/+=]{16,128}$/),
   })
   .strict();
 
@@ -271,7 +296,12 @@ export const CONNECTION_KIND_SCOPES = {
     'computer.scroll',
   ],
   // Reading through the relay at all, and the changes it brings to the broker.
-  command_line: ['egress.github_read', 'egress.github_write'],
+  command_line: [
+    'egress.github_read',
+    'egress.github_write',
+    'egress.aws_read',
+    'egress.aws_write',
+  ],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
 export const createConnectionRequest = z.object({
@@ -336,7 +366,9 @@ export type ConnectionInstallation =
       kind: 'command_line';
       provider: 'command_line';
       config: CommandLineConnectionConfig;
-      credentials: z.infer<typeof commandLineCredentials>;
+      credentials:
+        | z.infer<typeof commandLineCredentials>
+        | z.infer<typeof awsCommandLineCredentials>;
       scopes: string[];
     };
 
@@ -381,11 +413,28 @@ export function connectionInstallation(
   const scopes = request.scopes.length ? request.scopes : [...allowed];
   if (kind === 'command_line') {
     if (!request.command_line) return err('Supply the service in command_line.');
-    const credentials = commandLineCredentials.safeParse(request.credentials);
-    if (!credentials.success) return err('A command-line account needs credentials.token only.');
     const adapter = request.command_line.adapter;
+    const { region, role_arn, external_id } = request.command_line;
+    if (adapter === 'aws' && !region) return err('An AWS account needs command_line.region.');
+    if (adapter !== 'aws' && (region || role_arn || external_id))
+      return err('Only an AWS account takes a region, a role or an external ID.');
+    if (external_id && !role_arn) return err('An external ID goes with a role to assume.');
+    const credentials =
+      adapter === 'aws'
+        ? awsCommandLineCredentials.safeParse(request.credentials)
+        : commandLineCredentials.safeParse(request.credentials);
+    if (!credentials.success)
+      return err(
+        adapter === 'aws'
+          ? 'An AWS account needs credentials.access_key_id and credentials.secret_access_key only.'
+          : 'A command-line account needs credentials.token only.',
+      );
+    // Left out, the grants are this service's own read and write.
+    const granted = request.scopes.length
+      ? scopes
+      : allowed.filter((scope) => scope.startsWith(`egress.${adapter}_`));
     // Each service's grants are its own: egress.<service>_read and _write.
-    if (!scopes.every((scope) => scope.startsWith(`egress.${adapter}_`)))
+    if (!granted.every((scope) => scope.startsWith(`egress.${adapter}_`)))
       return err(
         `A ${adapter} account grants only egress.${adapter}_read and egress.${adapter}_write.`,
       );
@@ -394,7 +443,7 @@ export function connectionInstallation(
       provider: 'command_line',
       config: request.command_line,
       credentials: credentials.data,
-      scopes,
+      scopes: granted,
     });
   }
   if (kind === 'sandbox') {
@@ -1267,6 +1316,49 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
       {
         scope: 'egress.github_write',
         label: 'Push and make changes (asks you each time)',
+        effect_class: 'write_external',
+        asks_first: true,
+        default: true,
+      },
+    ],
+  },
+  {
+    id: 'command_line_aws',
+    kind: 'command_line',
+    title: 'AWS for the agent’s computer',
+    description:
+      'Lets the aws command line and AWS SDKs in the agent’s computer use your AWS account. The key stays on this server and the computer never holds it: this server signs each request. Reads just work; every change asks you first. Works with the computer on this server (Docker).',
+    fixed: [
+      { path: 'provider', value: 'command_line' },
+      { path: 'command_line.adapter', value: 'aws' },
+    ],
+    fields: [
+      text('credentials.access_key_id', 'Access key ID', {
+        help: 'An access key of an IAM user that has only the permissions the agent needs.',
+      }),
+      text('credentials.secret_access_key', 'Secret access key', {
+        input: 'password',
+        secret: true,
+      }),
+      text('command_line.region', 'Default region', { placeholder: 'us-east-1' }),
+      text('command_line.role_arn', 'Role to assume', {
+        required: false,
+        placeholder: 'arn:aws:iam::123456789012:role/agent',
+        help: 'This server assumes the role for each command and names the session after it, so CloudTrail shows which command made each call.',
+      }),
+      text('command_line.external_id', 'External ID for the role', { required: false }),
+    ],
+    scopes: [
+      {
+        scope: 'egress.aws_read',
+        label: 'Read your AWS resources',
+        effect_class: 'read',
+        asks_first: false,
+        default: true,
+      },
+      {
+        scope: 'egress.aws_write',
+        label: 'Make changes (asks you each time)',
         effect_class: 'write_external',
         asks_first: true,
         default: true,

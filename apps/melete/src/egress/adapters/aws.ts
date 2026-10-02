@@ -37,8 +37,8 @@ import { XMLParser } from 'fast-xml-parser';
 import { z } from 'zod';
 import {
   AWS_REGION,
-  AwsSessions,
   type AwsAccessKey,
+  AwsSessions,
   callerIdentity,
   parseAwsSecret,
   ROLE_ARN,
