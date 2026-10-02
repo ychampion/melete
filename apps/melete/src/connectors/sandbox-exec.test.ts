@@ -10,11 +10,13 @@ import path from 'node:path';
 import type { SandboxConnectionConfig } from '@melete/contracts';
 import { type Action, canonicalizePayload, connectorManifest } from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
+import type { AttributedCommand, EgressAttribution, EgressHostSummary } from '../egress/tokens.ts';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
 import { sandboxSpecFor } from '../sandbox/connection.ts';
 import { FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
 import { seedSessionScope } from '../sandbox/session-fixtures.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
+import type { SandboxHandle } from '../sandbox/types.ts';
 import { ConnectorRegistry } from './registry.ts';
 import {
   createSandboxExecConnector,
@@ -130,11 +132,13 @@ withDb('a command in a remote sandbox', () => {
       engine?: FakeSandboxEngine;
       workspaceWaitMs?: number;
       egress?: SandboxConnectionConfig['egress'];
+      provider?: FakeSandboxProvider;
     } = {},
   ) => {
     if (!handle) throw new Error('Postgres is unavailable');
     const scope = await seedSessionScope(handle.sql);
-    const provider = new FakeSandboxProvider(over.engine ? { engine: over.engine } : {});
+    const provider =
+      over.provider ?? new FakeSandboxProvider(over.engine ? { engine: over.engine } : {});
     const sessions = new SandboxSessions(handle.sql, {
       leaseSeconds: 300,
       workspaceRetentionSeconds: 3_600,
@@ -674,4 +678,94 @@ withDb('a command in a remote sandbox', () => {
     expect(lost.reason).not.toContain('inside that computer');
     expect(lost.reason).toContain('may also have reached outside');
   }, 60_000);
+
+  test('a command in a guarded computer carries its own proxy address, and its receipt lists the hosts it reached', async () => {
+    const provider = new GuardedFake();
+    const s = await setup({ egress: 'open', provider });
+    const first = await s.run({ command: 'printf %s "$HTTPS_PROXY"' });
+    if (first.result.outcome !== 'succeeded') throw new Error(JSON.stringify(first.result));
+    expect(first.result.receipt.detail.output).toBe(
+      `http://cmd:token-${first.action.id}@melete-egress:8791`,
+    );
+    expect(first.result.receipt.detail.egress_hosts).toEqual(REACHED);
+    expect(provider.attributed).toEqual([
+      {
+        kind: 'command',
+        sessionId: String(first.result.receipt.detail.session_id),
+        jobId: s.scope.jobId,
+        attemptId: s.attemptId,
+        actionId: first.action.id,
+      },
+    ]);
+    // Ended with the command, so a later command never shares its token.
+    expect(provider.settled).toEqual([first.action.id]);
+    const second = await s.run({ command: 'printf %s "$https_proxy"' });
+    if (second.result.outcome !== 'succeeded') throw new Error(JSON.stringify(second.result));
+    expect(second.result.receipt.detail.output).toBe(
+      `http://cmd:token-${second.action.id}@melete-egress:8791`,
+    );
+    expect(provider.settled).toEqual([first.action.id, second.action.id]);
+  }, 60_000);
+
+  test('a computer with no network gets no token, and its receipt says it reached nothing', async () => {
+    const provider = new GuardedFake();
+    const s = await setup({ provider });
+    const { result } = await s.run({ command: 'printf "[%s]" "$HTTPS_PROXY"' });
+    if (result.outcome !== 'succeeded') throw new Error(JSON.stringify(result));
+    expect(result.receipt.detail.output).toBe('[]');
+    expect(result.receipt.detail).toMatchObject({ egress: 'deny_all', egress_hosts: [] });
+    expect(provider.attributed).toEqual([]);
+  }, 60_000);
+
+  test("where the provider's own network carries a command, its receipt does not claim to know the hosts", async () => {
+    const s = await setup({ egress: 'open' });
+    const { result } = await s.run({ command: 'printf ok' });
+    if (result.outcome !== 'succeeded') throw new Error(JSON.stringify(result));
+    expect(result.receipt.detail).toMatchObject({ egress: 'open', egress_hosts: null });
+  }, 60_000);
+
+  test('a receipt read back later takes its hosts from the egress records', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const s = await setup({ egress: 'open', provider: new GuardedFake() });
+    const ran = await s.run({ command: 'printf ok' });
+    if (ran.result.outcome !== 'succeeded') throw new Error(JSON.stringify(ran.result));
+    const session = String(ran.result.receipt.detail.session_id);
+    await handle.sql`insert into egress_record (id, session_id, space_id, action_id, token_kind,
+        host, port, verdict, reason, bytes_up, bytes_down, opened_at, closed_at)
+      values
+        ('egr_one', ${session}, ${s.scope.spaceId}, ${ran.action.id}, 'command', 'github.com',
+          443, 'tunnel', null, 300, 9000, now(), now()),
+        ('egr_two', ${session}, ${s.scope.spaceId}, ${ran.action.id}, 'command', 'github.com',
+          22, 'refused', 'destination_denied', 0, 0, now(), now()),
+        ('egr_three', ${session}, ${s.scope.spaceId}, null, null, 'example.com',
+          443, 'unattributed', null, 5, 5, now(), now())`;
+    const verdict = await s.connector.verify?.(ran.action, s.context(ran.action));
+    if (verdict?.decision !== 'succeeded' || !verdict.receipt)
+      throw new Error(JSON.stringify(verdict));
+    expect(verdict.receipt.detail.egress_hosts).toEqual([
+      { host: 'github.com', tunnels: 1, refused: 1, bytes_up: 300, bytes_down: 9000 },
+    ]);
+  }, 60_000);
 });
+
+const REACHED: EgressHostSummary[] = [
+  { host: 'example.com', tunnels: 2, refused: 0, bytes_up: 120, bytes_down: 4096 },
+];
+
+/** The fake, behind a guard that gives each command its own proxy address. */
+class GuardedFake extends FakeSandboxProvider {
+  readonly attributed: EgressAttribution[] = [];
+  readonly settled: string[] = [];
+
+  attributeCommand(_handle: SandboxHandle, attribution: EgressAttribution): AttributedCommand {
+    this.attributed.push(attribution);
+    const proxy = `http://cmd:token-${attribution.actionId}@melete-egress:8791`;
+    return {
+      env: { HTTPS_PROXY: proxy, https_proxy: proxy, HTTP_PROXY: proxy, http_proxy: proxy },
+      settle: () => {
+        this.settled.push(attribution.actionId ?? '');
+        return REACHED;
+      },
+    };
+  }
+}

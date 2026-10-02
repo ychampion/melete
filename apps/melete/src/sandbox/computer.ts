@@ -86,7 +86,7 @@ type Binding = {
   jobId: string;
   agentId: string | null;
   status: 'ready' | 'paused';
-  egress: 'deny_all' | 'open';
+  egress: 'deny_all' | 'connected_hosts_only' | 'open';
   provider: DockerSandboxProvider;
 };
 
@@ -180,7 +180,7 @@ export class SandboxComputerService {
       jobId: String(row.job_id),
       agentId: (row.agent_id as string | null) ?? null,
       status: row.status === 'ready' ? 'ready' : 'paused',
-      egress: egress === 'open' ? 'open' : 'deny_all',
+      egress: egress === 'open' || egress === 'connected_hosts_only' ? egress : 'deny_all',
       provider,
     };
   }

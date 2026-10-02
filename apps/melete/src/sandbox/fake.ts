@@ -334,6 +334,8 @@ export function fakeEgress(policy: EgressPolicy, host: string, port: number | nu
     case 'open':
       return 'allowed';
     case 'deny_all':
+    // The fake has no egress guard to name hosts with.
+    case 'connected_hosts_only':
       return 'blocked';
     case 'cidr_allowlist':
       return policy.cidrs.some((cidr) => cidrContains(cidr, literal ? host : FAKE_ADDRESS))

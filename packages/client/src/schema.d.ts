@@ -2177,7 +2177,7 @@ export interface paths {
                             adapter: "e2b" | "daytona" | "modal" | "docker";
                             cidrs?: components["schemas"]["__schema87"][];
                             /** @enum {string} */
-                            egress: "deny_all" | "cidr_allowlist" | "open";
+                            egress: "deny_all" | "cidr_allowlist" | "connected_hosts_only" | "open";
                             image: string;
                             lifetime_seconds: number;
                             /** @enum {string} */
@@ -18097,7 +18097,7 @@ export interface components {
             width: 1024;
         };
         /** @enum {string} */
-        __schema497: "deny_all" | "open";
+        __schema497: "deny_all" | "connected_hosts_only" | "open";
         __schema498: string;
         __schema499: number;
         __schema500: string;

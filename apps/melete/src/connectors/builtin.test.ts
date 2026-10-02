@@ -80,6 +80,10 @@ describe('default connections', () => {
       defaultSandboxConfig({ ...env, MELETE_SANDBOX_DOCKER_EGRESS: 'deny_all' }, inContainer)
         ?.egress,
     ).toBe('deny_all');
+    // Held to connected hosts is still the service's guard, so it narrows the same way.
+    const held = { ...env, MELETE_SANDBOX_DOCKER_EGRESS: 'connected_hosts_only' as const };
+    expect(defaultSandboxConfig(held, inContainer)?.egress).toBe('connected_hosts_only');
+    expect(defaultSandboxConfig(held, 'laptop')?.egress).toBe('deny_all');
     const wanted = BUILTIN_CONNECTIONS.find((builtin) => builtin.key === 'sandbox');
     const sandbox = defaultSandboxConfig(env, inContainer);
     expect(

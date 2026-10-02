@@ -107,14 +107,39 @@ instead.
   are refused, and there is no DNS inside the container. Commands and the
   browser are pointed at the guard. These are the same rules the browser worker
   follows.
+- `connected_hosts_only`: the same way out, through the same guard, to the
+  sites of the space's connected command-line accounts and the hosts listed in
+  `MELETE_SANDBOX_EGRESS_EXTRA_HOSTS` (for example a package registry), and
+  nothing else. Entries are names, or `.example.com` for every name below one.
+  The list is read again at each connection, so a newly connected account takes
+  effect without restarting the computer.
 - `deny_all`: no network at all.
 
 An allow-list of address ranges is not offered by this provider; asking for one
 is refused rather than widened.
 
-`open` needs the service to run in a container on the same engine, as it does
-in the Compose deployment, so that it can be the one way out. Where it does not,
-the default Computer connection is created with `deny_all` instead.
+`open` and `connected_hosts_only` need the service to run in a container on the
+same engine, as it does in the Compose deployment, so that it can be the one way
+out. Where it does not, the default Computer connection is created with
+`deny_all` instead.
+
+### Where each command reached
+
+Each command the agent runs gets its own proxy address, carrying a token that
+names that command. The guard accepts the token only from the computer it was
+made for, and only while the command runs. Every connection the computer opens,
+or tries to open, is recorded: the host and port, whether it was tunnelled or
+refused and why, the bytes each way, and the command it belonged to. Each
+command's result lists the hosts it reached.
+
+A connection that carries no live token, such as one from a background process
+a command left running, goes out under the same rules and is recorded as
+unattributed. Processes inside one computer run as the same user, so one can
+borrow another's token; that only changes which of that computer's commands a
+connection is recorded against.
+
+Records are kept for `MELETE_EGRESS_RECORD_DAYS` (30 by default) and are removed
+with their space.
 
 The sandbox browser starts with a clean profile and none of your sessions. If
 you take over and sign in to a site there, the agent can use that session after

@@ -69,6 +69,7 @@ import { migrateDatabase } from './db/migrate.ts';
 import { connection } from './db/schema.ts';
 import { mountDevices } from './devices/routes.ts';
 import { DeviceService } from './devices/service.ts';
+import { startEgressRetention } from './egress/records.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { mountExperience } from './experience/routes.ts';
@@ -511,6 +512,7 @@ export async function bootstrap(
   let browser: Awaited<ReturnType<typeof configuredBrowserSessions>>;
   let connections: ConfiguredConnection[] = [];
   let episodeRetention: ReturnType<typeof setInterval> | undefined;
+  let stopEgressRetention: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
@@ -534,6 +536,7 @@ export async function bootstrap(
     // it as active. Interrupt that wait before runner.stop drains its wakes.
     supervisedRuntime?.beginShutdown();
     clearInterval(episodeRetention);
+    stopEgressRetention?.();
     sandboxes?.stop();
     let failure: unknown;
     for (const stop of [
@@ -589,6 +592,7 @@ export async function bootstrap(
         );
       }, 60_000);
       episodeRetention.unref();
+      stopEgressRetention = startEgressRetention(handle.sql, env.MELETE_EGRESS_RECORD_DAYS);
     }
     if (handle) {
       // Before the registry is built, so an upgraded database gains its default connectors now.

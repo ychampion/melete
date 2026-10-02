@@ -131,7 +131,17 @@ export const sandboxAdapterTakesKey = (adapter: SandboxAdapter): boolean => adap
 /** The adapters whose sandboxes have a desktop for the `computer.*` tools. */
 export const sandboxAdapterHasDesktop = (adapter: SandboxAdapter): boolean => adapter === 'docker';
 
-export const SANDBOX_EGRESS_KINDS = ['deny_all', 'cidr_allowlist', 'open'] as const;
+/**
+ * `connected_hosts_only` lets out the hosts of the space's connected
+ * command-line accounts and the operator's own list, and nothing else. It needs
+ * the service's egress guard, so only the docker adapter offers it.
+ */
+export const SANDBOX_EGRESS_KINDS = [
+  'deny_all',
+  'cidr_allowlist',
+  'connected_hosts_only',
+  'open',
+] as const;
 export const SANDBOX_PERSISTENCE = ['ephemeral', 'pause', 'snapshot'] as const;
 
 /**
@@ -1104,6 +1114,10 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         options: [
           { value: 'deny_all', label: 'Nothing at all' },
           { value: 'cidr_allowlist', label: 'Only the ranges below' },
+          {
+            value: 'connected_hosts_only',
+            label: 'Only the sites of connected accounts (Docker)',
+          },
           { value: 'open', label: 'Anything (not recommended)' },
         ],
         default: 'deny_all',

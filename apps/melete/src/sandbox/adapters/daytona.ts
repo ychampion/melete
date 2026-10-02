@@ -265,6 +265,10 @@ function networkFor(egress: EgressPolicy): Record<string, unknown> {
       return { networkBlockAll: false };
     case 'domain_allowlist':
       throw new SandboxAdapterRefusal('the daytona adapter does not offer a domain allow-list');
+    case 'connected_hosts_only':
+      throw new SandboxAdapterRefusal(
+        "the daytona adapter cannot hold traffic to connected accounts' sites",
+      );
   }
 }
 
@@ -289,6 +293,7 @@ function recordedEgress(record: SandboxRecord, egress: EgressPolicy): boolean {
     case 'open':
       return !blockAll && allowList.trim() === '';
     case 'domain_allowlist':
+    case 'connected_hosts_only':
       return false;
   }
 }
