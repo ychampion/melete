@@ -14,13 +14,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import { JobService } from '../../apps/melete/src/jobs/service.ts';
-import { LocalBlobStore } from '../../apps/melete/src/storage/local.ts';
 import { FileRestrictionJournal, restoreMemory } from '../../apps/melete/src/memory/restore.ts';
 import {
   type BrowserTeardown,
   type SandboxTeardown,
   SpaceRemovalService,
 } from '../../apps/melete/src/spaces/removal.ts';
+import { LocalBlobStore } from '../../apps/melete/src/storage/local.ts';
 import { BrowserSiteService } from '../../apps/melete/src/workers/browser/sites.ts';
 import { testDatabase } from '../../apps/melete/test/helpers/database.ts';
 import {
