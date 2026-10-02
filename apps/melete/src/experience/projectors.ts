@@ -147,6 +147,8 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'artifact.publish': ['Publishing a file', 'Published a file'],
   'apps.publish': ['Publishing an app', 'Published an app'],
   'apps.rollback': ['Changing the version of an app', 'Changed the version of an app'],
+  'apps.list': ['Looking through your apps', 'Looked through your apps'],
+  'apps.read_submissions': ['Reading responses to an app', 'Read responses to an app'],
   'audio.synthesize': ['Making audio', 'Made audio'],
   'audio.transcribe': ['Transcribing a recording', 'Transcribed a recording'],
   'test.read': ['Checking the connected app', 'Checked the connected app'],

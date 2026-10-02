@@ -14,7 +14,7 @@
  * make and do not ask.
  */
 import { z } from 'zod';
-import { timestamp } from './common.ts';
+import { jsonObject, jsonValue, timestamp } from './common.ts';
 
 /** What one app version may hold. A bundle over any of these is refused before anything asks. */
 export const APP_LIMITS = {
@@ -27,6 +27,14 @@ export const APP_LIMITS = {
   max_collections: 20,
   /** The largest record a collection may be declared to take. */
   max_collection_record_bytes: 16 * 1024,
+  /** The largest file a data binding serves. */
+  max_data_bytes: 2 * 1024 * 1024,
+  /** Responses one person may send one app in a minute. */
+  submissions_per_minute: 30,
+  /** Responses one app keeps at most; past this, new ones are refused until some are deleted. */
+  max_submissions_per_app: 10_000,
+  /** Responses one page of the list, or one read by the agent, holds at most. */
+  max_submission_page: 100,
 } as const;
 
 /**
@@ -67,7 +75,8 @@ export const appId = z.string().regex(/^app_[0-9A-Za-z]{1,64}$/);
 /** A version is named by the sha256 of its app and its manifest. */
 export const appVersionId = z.string().regex(/^[0-9a-f]{64}$/);
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
-const bindingName = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,39}$/);
+export const appBindingName = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,39}$/);
+const bindingName = appBindingName;
 
 /** Where one data binding reads from. Only the newest version of a file a conversation wrote, for now. */
 export const appDataBinding = z.strictObject({
@@ -75,6 +84,11 @@ export const appDataBinding = z.strictObject({
   path: z.string().min(1).max(1024),
   /** The conversation whose newest file at `path` is read. */
   source_job_id: z.string().min(1).max(200),
+  /**
+   * Present when the publisher reviews each new version of the file before
+   * viewers see it. Left out, viewers see each new version as it is written.
+   */
+  review: z.literal(true).optional(),
 });
 export type AppDataBinding = z.infer<typeof appDataBinding>;
 
@@ -150,8 +164,19 @@ export const appDetail = z.strictObject({
   /** The current version's files, as published. */
   files: z.array(z.strictObject({ path: z.string(), size: z.number().int(), mime: z.string() })),
   data: z.array(
-    z.strictObject({ name: z.string(), kind: z.literal('artifact'), path: z.string() }),
+    z.strictObject({
+      name: z.string(),
+      kind: z.literal('artifact'),
+      path: z.string(),
+      /** Whether each new version waits for the publisher before viewers see it. */
+      review: z.boolean(),
+    }),
   ),
+  /**
+   * How many new data versions wait for review. Null unless this person can
+   * release them: the publisher while they belong to the space, or its owner.
+   */
+  data_waiting: z.number().int().min(0).nullable(),
   collections: z.array(z.strictObject({ name: z.string(), max_bytes: z.number().int() })),
   /** Every version, newest first, with what changed from the one before it. Managers only. */
   versions: z
@@ -196,3 +221,83 @@ export const appView = z.strictObject({
   expires_at: timestamp,
 });
 export type AppView = z.infer<typeof appView>;
+
+/**
+ * One data binding's value, as a viewer of the app gets it. A JSON file is
+ * returned parsed and any other text file as a string. `state` is `none`
+ * before the file has been written, or, when the publisher reviews updates,
+ * before they have let a version through.
+ */
+export const appDataValue = z.strictObject({
+  name: appBindingName,
+  state: z.enum(['ready', 'none']),
+  format: z.enum(['json', 'text']).nullable(),
+  value: jsonValue,
+  /** When the version shown was written. */
+  updated_at: timestamp.nullable(),
+});
+export type AppDataValue = z.infer<typeof appDataValue>;
+
+/** A new version of a reviewed data file, waiting for the publisher. */
+export const appDataUpdate = z.strictObject({
+  binding: appBindingName,
+  path: z.string(),
+  /** The recorded version waiting; releasing names it. */
+  artifact_id: z.string(),
+  written_at: timestamp,
+  size: z.number().int().min(0),
+  /** The size of the version viewers see now; null when they see none yet. */
+  size_before: z.number().int().min(0).nullable(),
+  /** For JSON: top-level keys (or, for a list, its length) added, removed and changed. */
+  changes: z
+    .strictObject({
+      added: z.array(z.string()),
+      removed: z.array(z.string()),
+      changed: z.array(z.string()),
+      truncated: z.boolean(),
+    })
+    .nullable(),
+  /** One line a person reads: what changed, in words. */
+  summary: z.string(),
+});
+export type AppDataUpdate = z.infer<typeof appDataUpdate>;
+
+export const appDataUpdates = z.strictObject({ updates: z.array(appDataUpdate) });
+export type AppDataUpdates = z.infer<typeof appDataUpdates>;
+
+export const appDataReleaseRequest = z.strictObject({
+  binding: appBindingName,
+  artifact_id: z.string().min(1).max(200),
+});
+
+/** A response a viewer sends from an app, for a collection its version declares. */
+export const appSubmissionRequest = z.strictObject({
+  collection: appBindingName,
+  record: jsonObject,
+});
+export type AppSubmissionRequest = z.infer<typeof appSubmissionRequest>;
+
+export const appSubmissionAccepted = z.strictObject({
+  id: z.string(),
+  created_at: timestamp,
+});
+
+export const appSubmission = z.strictObject({
+  id: z.string(),
+  collection: appBindingName,
+  version_id: appVersionId,
+  /** Who sent it; null once their account is gone. */
+  by: person.nullable(),
+  data: jsonObject,
+  created_at: timestamp,
+});
+export type AppSubmission = z.infer<typeof appSubmission>;
+
+export const appSubmissionList = z.strictObject({
+  submissions: z.array(appSubmission),
+  /** Pass as `before` for the next, older page; null on the last page. */
+  next_before: z.string().nullable(),
+});
+export type AppSubmissionList = z.infer<typeof appSubmissionList>;
+
+export const appSubmissionDeleted = z.strictObject({ id: z.string(), deleted: z.literal(true) });

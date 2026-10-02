@@ -433,7 +433,26 @@ export async function setCurrentVersion(
 }
 
 /**
- * Remove the app, its versions and its grants. The versions' references go
+ * Whether `principalId` speaks for the app as its owner: its publisher while
+ * they belong to its space, or the space's owner. Only they change who
+ * manages it, delete it, or let a reviewed data version through.
+ */
+export async function ownsApp(
+  q: Sql | TransactionSql,
+  appId: string,
+  principalId: string,
+): Promise<boolean> {
+  const [row] = await q<{ owner: boolean }[]>`select (s.owner_principal_id = ${principalId}
+      or (a.publisher_principal_id = ${principalId} and exists (
+        select 1 from space_membership m where m.space_id = a.space_id
+          and m.principal_id = ${principalId} and m.revoked_at is null))) as owner
+    from app a join space s on s.id = a.space_id
+    where a.id = ${appId} and s.removed_at is null`;
+  return row?.owner === true;
+}
+
+/**
+ * Remove the app, its versions, grants, responses and released data. The references go
  * with them, so blobs nothing else uses are collected after the grace period.
  */
 export async function deleteApp(sql: Sql, appId: string): Promise<boolean> {
@@ -445,6 +464,14 @@ export async function deleteApp(sql: Sql, appId: string): Promise<boolean> {
     for (const version of versions)
       for (const file of Object.values(version.manifest.files))
         await releaseBlob(tx, blobKey(file.sha256), { kind: APP_VERSION_OWNER, id: version.id });
+    // Data versions let through to viewers are kept as blobs too.
+    const releases = await tx<{ id: string; content_hash: string }[]>`
+      select id, content_hash from app_data_release where app_id = ${appId}`;
+    for (const release of releases)
+      await releaseBlob(tx, blobKey(release.content_hash), {
+        kind: 'app_data_release',
+        id: release.id,
+      });
     await tx`delete from app where id = ${appId}`;
     return true;
   });
