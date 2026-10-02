@@ -95,6 +95,7 @@ export function App() {
     return result;
   }, []);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [removedAgents, setRemovedAgents] = useState<Agent[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationsError, setConversationsError] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<Decisions>(NO_DECISIONS);
@@ -111,7 +112,9 @@ export function App() {
   const refreshAgents = useCallback(() => {
     // A list that failed to load keeps what was last read; it never decides setup.
     void adapter.agents().then((result) => {
-      if (result.data) setAgents(result.data.agents);
+      if (!result.data) return;
+      setAgents(result.data.agents);
+      setRemovedAgents(result.data.removed ?? []);
     });
   }, []);
   // One refresh reads the conversations and what waits on the person, so the
@@ -214,6 +217,7 @@ export function App() {
       onboarded,
       setOnboarded,
       agents,
+      removedAgents,
       conversations,
       conversationsError,
       decisions,
@@ -231,6 +235,7 @@ export function App() {
       onboarded,
       setOnboarded,
       agents,
+      removedAgents,
       conversations,
       conversationsError,
       decisions,

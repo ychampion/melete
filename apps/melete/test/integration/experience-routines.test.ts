@@ -14,7 +14,6 @@ import { eq } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
 import { owner, space, trigger } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
-import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { buildAttemptSkeleton } from '../../src/jobs/bundle.ts';
@@ -23,6 +22,7 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -135,7 +135,7 @@ withDb('routines, time zone and setup as the person sees them', () => {
 
   test('each run writes its answer into the routine thread, the list and Home', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     const routine = automationResponse.parse(
       await (
@@ -215,7 +215,7 @@ withDb('routines, time zone and setup as the person sees them', () => {
 
   test('changing the time zone moves every routine and keeps its local hour across DST', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     const routine = automationResponse.parse(
       await (
@@ -268,7 +268,7 @@ withDb('routines, time zone and setup as the person sees them', () => {
 
   test('a routine can be paused, resumed and deleted, and a failed or stopped one says so', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     const create = async (title: string) =>
       automationResponse.parse(
@@ -370,7 +370,7 @@ withDb('routines, time zone and setup as the person sees them', () => {
 
   test('a stopped routine starts again with the same settings in the old one’s place', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     const created = automationResponse.parse(
       await (
@@ -445,7 +445,7 @@ withDb('routines, time zone and setup as the person sees them', () => {
 
   test('a routine is told the open tasks, and a plan’s chat and steps are told the plan', async () => {
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (await request('/agents', 'POST', freshAgent())).json(),
     ).agent;
     expect(
       (await request('/tasks', 'POST', { title: 'Renew the passport', due_at: null })).status,

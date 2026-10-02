@@ -157,16 +157,6 @@ export type BrokerOptions = {
    * existing is never a delivery, and nothing here invents a revision.
    */
   reviseOutput?: (input: { action: Action; fault: ConnectorFault }) => Promise<JsonObject | null>;
-  /**
-   * How the jobs module parks a responsibility: end the attempt, release the
-   * worker, and put the job on a timer, all inside the broker's transaction.
-   * Without one the broker performs the equivalent itself, which is correct on
-   * its own but does not know about anything the service layer adds later.
-   */
-  parkAttempt?: (
-    tx: Query,
-    input: { job_id: string; attempt_id: string; wake_at: string; reason: string },
-  ) => Promise<void>;
   catalog?: Pick<CatalogOptions, 'coreTokenBudget' | 'skills'>;
   /** The execution cell supplies this; omission keeps composition unavailable. */
   composeExecutor?: ComposeExecutor;
@@ -2138,18 +2128,6 @@ export class BrokerService implements BrokerOperations {
       });
       if (['cancelled', 'failed', 'completed'].includes(job.state))
         return loadAction(tx, action.id);
-      if (this.options.parkAttempt) {
-        // The jobs module owns attempt and worker lifecycle. Where it has
-        // supplied its own release, the broker asks for the wait and stays out
-        // of the state machine entirely.
-        await this.options.parkAttempt(tx, {
-          job_id: job.id,
-          attempt_id: current.attempt_id,
-          wake_at: wakeAt,
-          reason: 'rate_limited',
-        });
-        return loadAction(tx, action.id);
-      }
       await this.moveJob(tx, job, 'waiting_for_event_or_time', { kind: 'timer', wake_at: wakeAt });
       await tx`update job set next_wake_at = ${wakeAt},
         substrate_disposition = 'timer_or_event' where id = ${job.id}`;

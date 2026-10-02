@@ -1,6 +1,6 @@
 #!/bin/sh
-# Two things the image cannot bake in, done at boot because the container is one
-# attempt and both values belong to that attempt.
+# What the image cannot bake in, done at boot because the container is one
+# attempt and these values belong to that attempt.
 #
 # 1. HERMES_HOME has to be writable. The API server's run-idempotency
 #    reservations are a SQLite file under it; without a writable path the store
@@ -76,8 +76,6 @@ def whole(variable):
     return int(raw)
 
 
-# The pinned resolver reads model.provider, not a top-level provider field.
-config.pop("provider", None)
 model_config = config.get("model")
 model_section = {**(model_config if isinstance(model_config, dict) else {}), "provider": "melete-gateway", "default": model}
 context_length = whole("MELETE_ENGINE_CONTEXT_LENGTH")

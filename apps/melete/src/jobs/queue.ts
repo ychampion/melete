@@ -34,7 +34,6 @@ export const QUEUES = {
   pushDispatch: 'melete.push-dispatch',
 } as const;
 
-export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 export const ATTEMPT_QUEUES: Record<SchedulingClass, string> = {
   interactive: QUEUES.attempt,
   background: QUEUES.background,

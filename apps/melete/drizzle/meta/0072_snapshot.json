@@ -1,5 +1,5 @@
 {
-  "id": "ae6cdba0-c5c3-4b61-ab0c-b07e463fe4be",
+  "id": "72aabfe0-0b1c-4bdc-a432-333525f7fd22",
   "prevId": "9f1b247c-5c1f-4520-b27e-49aa01677aa7",
   "version": "7",
   "dialect": "postgresql",
@@ -778,6 +778,12 @@
         "face_image": {
           "name": "face_image",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -3349,12 +3355,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
-        },
-        "supports_vision": {
-          "name": "supports_vision",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": false
         },
         "owner_id": {
           "name": "owner_id",

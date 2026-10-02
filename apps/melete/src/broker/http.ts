@@ -261,12 +261,3 @@ export function createBrokerApp(options: {
   }
   return app;
 }
-
-/** Bind explicitly to loopback locally, or the internal interface in the container. */
-export function serveBroker(
-  app: ReturnType<typeof createBrokerApp>,
-  hostname = '127.0.0.1',
-  port = 3112,
-) {
-  return Bun.serve({ hostname, port, maxRequestBodySize: 1_048_576, fetch: app.fetch });
-}

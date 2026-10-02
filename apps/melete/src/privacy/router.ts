@@ -26,7 +26,6 @@ import { createHash } from 'node:crypto';
 import {
   type AttemptBundle,
   modelSupportsVision,
-  PRIVACY_CATEGORY_NAMES,
   type PrivacyCategory,
   type PrivacyPreview,
   type PrivacyReceipt,
@@ -779,6 +778,3 @@ function receiptFor(
 function declinedText(): string {
   return 'Nothing was sent. To work on this privately, add a local model in Settings → Privacy and ask again.';
 }
-
-/** For the settings screen: a readable name per category. */
-export const categoryName = (category: PrivacyCategory) => PRIVACY_CATEGORY_NAMES[category];

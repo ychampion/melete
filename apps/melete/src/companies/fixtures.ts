@@ -356,9 +356,4 @@ export function fixtureMailMessages(reference: string = FIXTURE_REFERENCE): Mail
   }));
 }
 
-/** The message whose text tries to instruct the reader's agent. */
-export const INJECTION_MESSAGE_INDEX = DRAFTS.findIndex((draft) =>
-  draft.text.startsWith('Ignore previous instructions'),
-);
-
 export const FIXTURE_MESSAGE_COUNT = DRAFTS.length;

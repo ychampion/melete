@@ -119,6 +119,13 @@ export const AGENT_TEMPLATES = agentTemplateList.parse({
 });
 
 /**
+ * What an agent that keeps no memory is told, so it never says it will
+ * remember something. Melete always keeps memory, so it is the one to offer.
+ */
+export const NO_MEMORY_NOTE =
+  "You don't keep details from your chats. If the person asks you to remember something, don't say you will: tell them you don't keep details, and offer to have Melete remember it instead.";
+
+/**
  * The persona a conversation's agent adds on top of Melete's identity: a name,
  * a tone and a standing instruction. Melete's own identity and voice rules
  * reach every attempt whole; this only says who is speaking in this chat.
@@ -127,12 +134,13 @@ export const AGENT_TEMPLATES = agentTemplateList.parse({
 export function agentIdentity(
   input: Pick<ExperienceAgent, 'name' | 'tone' | 'standing_instruction'> & {
     is_default?: boolean;
+    writes_memory?: boolean;
   },
 ): string {
   // Melete is already who answers; only what the person asked of it is added.
   const text = input.is_default
     ? `Tone: ${input.tone}.${input.standing_instruction ? ` Standing instruction: ${input.standing_instruction}` : ''}`
-    : `In this conversation you are ${input.name}, one of the person's agents. Tone: ${input.tone}. Standing instruction: ${input.standing_instruction}`;
+    : `In this conversation you are ${input.name}, one of the person's agents. Tone: ${input.tone}. Standing instruction: ${input.standing_instruction}${input.writes_memory === false ? ` ${NO_MEMORY_NOTE}` : ''}`;
   if (text.length > 1000)
     throw new ServiceError('invalid_request', 'Keep the agent description shorter.', 400);
   return text;

@@ -128,6 +128,8 @@ const required = <T>(map: Map<string, T>, id: string): T => {
 /** Scenario records go through the same deterministic presentation functions as real rows. */
 export class ExperienceMock {
   readonly agents = new Map<string, C.ExperienceAgent>();
+  /** Deleted agents, kept only to name the turns they answered. */
+  readonly removedAgents = new Map<string, C.ExperienceAgent>();
   readonly chats = new Map<string, Chat>();
   readonly permissions = new Map<string, C.PermissionCard>();
   readonly permissionDrafts = new Map<string, string>();
@@ -1572,10 +1574,18 @@ export class ExperienceMock {
       throw error;
     }
     switch (key) {
-      case 'GET /agents/templates':
-        return AGENT_TEMPLATES;
+      case 'GET /agents/templates': {
+        const taken = [...this.agents.values()].map((agent) => agent.name);
+        return {
+          templates: AGENT_TEMPLATES.templates.map((template) => ({
+            ...template,
+            agent: { ...template.agent, name: C.freeAgentName(template.agent.name, taken) },
+          })),
+        };
+      }
       case 'GET /agents':
         return {
+          removed: [...this.removedAgents.values()],
           agents: [...this.agents.values()].map((agent) => ({
             ...agent,
             usage: {
@@ -1597,7 +1607,19 @@ export class ExperienceMock {
           if (error instanceof ServiceError) throw new MockExperienceError(400, error.message);
           throw error;
         }
-        const allowed = C.agentInput.parse(input).allowed_connection_ids ?? [];
+        const parsed = C.agentInput.parse(input);
+        if (!existing || !C.sameAgentName(existing.name, parsed.name)) {
+          const taken = [...this.agents.values()]
+            .filter((agent) => agent.id !== id)
+            .map((agent) => agent.name);
+          if (taken.some((name) => C.sameAgentName(name, parsed.name)))
+            throw new MockExperienceError(
+              409,
+              `You already have an agent called ${parsed.name.trim()}. Try ${C.freeAgentName(parsed.name, taken)}.`,
+              'name_taken',
+            );
+        }
+        const allowed = parsed.allowed_connection_ids ?? [];
         if (allowed.some((id) => !this.connections().some((connection) => connection.id === id)))
           throw new MockExperienceError(400, 'Choose connections from this space.');
         const agent = C.experienceAgent.parse({
@@ -1610,6 +1632,38 @@ export class ExperienceMock {
         });
         this.agents.set(agent.id, agent);
         return { agent };
+      }
+      case 'DELETE /agents/{id}': {
+        const target = required(this.agents, id);
+        if (target.is_default) throw new MockExperienceError(400, 'Melete is always here.');
+        const melete = this.defaultAgent();
+        if (
+          [...this.chats.values()].some(
+            (chat) =>
+              chat.view.agent_id === id &&
+              ['queued', 'working', 'streaming', 'needs_you', 'paused'].includes(chat.view.status),
+          )
+        )
+          throw new MockExperienceError(
+            409,
+            `${target.name} is in the middle of something. Try again when it finishes.`,
+            'agent_busy',
+          );
+        // The turns it answered keep its name.
+        let conversations = 0;
+        for (const chat of this.chats.values())
+          if (chat.view.agent_id === id) {
+            chat.view.agent_id = melete.id;
+            conversations += 1;
+          }
+        for (const plan of this.plans.values())
+          for (const step of plan.milestones)
+            if (step.assignee.kind === 'agent' && step.assignee.agent_id === id)
+              step.assignee = { kind: 'agent', agent_id: melete.id };
+        this.agents.delete(id);
+        this.removedAgents.set(id, target);
+        // The mock's routines carry no agent of their own.
+        return { id, moved_to: melete.id, conversations, routines: 0, routines_paused: 0 };
       }
       case 'GET /conversations': {
         // Most recently active first, a page at a time, as the service answers.

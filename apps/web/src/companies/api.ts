@@ -10,7 +10,8 @@
  * has no `not_available` arm to unwrap. The space id is read from `GET /spaces`,
  * which is the one place the interface learns which space it is looking at.
  */
-import { API_BASE_URL, client, type Result } from '../experience/adapter.ts';
+import type { Result } from '../experience/adapter.ts';
+import { call } from '../experience/call.ts';
 import { markValueMoment } from '../experience/push.ts';
 import type {
   CompanyMap,
@@ -21,35 +22,6 @@ import type {
   ScanStarted,
   WaitingOn,
 } from '../experience/types.ts';
-
-const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
-
-type Failure = { error?: { message?: string } };
-
-async function call<T>(
-  path: string,
-  init: { method?: string; body?: unknown } = {},
-): Promise<Result<T>> {
-  try {
-    const response = await client.options.fetch(`${API_BASE_URL}${path}`, {
-      method: init.method ?? 'GET',
-      headers: {
-        ...client.options.headers,
-        ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
-      },
-      credentials: client.options.credentials,
-      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-    });
-    const body: unknown = await response.json().catch(() => null);
-    if (!response.ok) {
-      const said = (body as Failure | null)?.error?.message;
-      return { data: null, error: said ?? OFFLINE, unavailable: null };
-    }
-    return { data: body as T, error: null, unavailable: null };
-  } catch {
-    return { data: null, error: OFFLINE, unavailable: null };
-  }
-}
 
 /** Which space this browser is looking at. The map and the scan are scoped to it. */
 export async function currentSpaceId(): Promise<Result<string>> {

@@ -150,9 +150,3 @@ export function microsoftProvider(
     }),
   };
 }
-
-/** The code Graph names in an error body, such as `ErrorIrresolvableConflict`. */
-export function graphErrorCode(body: unknown): string | undefined {
-  const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
-  return typeof code === 'string' ? code : undefined;
-}

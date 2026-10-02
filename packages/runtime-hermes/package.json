@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Runtime adapter for a pinned, unmodified Hermes release: container image, Melete plugin, and typed HTTP client.",
+  "description": "Runtime adapter for a pinned Hermes release: container image, Melete plugin, and typed HTTP client.",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
@@ -15,7 +15,6 @@
   },
   "scripts": {
     "test": "bun test",
-    "test:plugin": "uv run --no-project --python 3.12 --with pytest==9.1.1 python -m pytest tests -q",
     "test:engine-surface": "bun run tests/engine-surface.ts"
   },
   "dependencies": {

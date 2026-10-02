@@ -68,7 +68,7 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
     provider: '',
   });
   expect(config.skills).toBeUndefined();
-  // environment_probe is read under `agent:` (agent/agent_init.py:1336);
+  // environment_probe is read under `agent:` (agent/agent_init.py);
   // host_prompt is the checked prompt seam in patches/observer_bridge.py.
   expect(config.agent).toEqual({
     max_turns: DEFAULT_ENGINE_MAX_TURNS,
@@ -76,7 +76,7 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
     host_prompt: false,
     image_input_mode: 'text',
   });
-  // platform_hints is read at the top level (agent/agent_init.py:1352).
+  // platform_hints is read at the top level (agent/agent_init.py).
   expect(config.platform_hints).toEqual({ api_server: { replace: API_SERVER_HINT } });
   expect(config.tool_loop_guardrails).toEqual({ hard_stop_enabled: true });
   expect(config.checkpoints).toEqual({ enabled: false });
@@ -112,20 +112,12 @@ test('a feature switch renders the section it belongs to and nothing else', () =
     ...base,
     features: {
       toolsets: ['melete', 'terminal', 'file'],
-      toolSearch: true,
-      skills: true,
       terminalBackend: 'melete_sandbox',
     },
   }) as Record<string, Record<string, unknown>>;
   expect(config.platform_toolsets).toEqual({ api_server: ['melete', 'terminal', 'file'] });
-  expect(config.tools).toEqual({ tool_search: { enabled: 'on' } });
+  expect(config.tools).toEqual({ tool_search: { enabled: 'off' } });
   expect(config.terminal).toEqual({ backend: 'melete_sandbox', cwd: '/work' });
-  expect(config.skills).toEqual({
-    project_discovery: false,
-    external_dirs: [],
-    inline_shell: false,
-    write_approval: false,
-  });
 });
 
 test('the capability is written into the model headers as well as the provider', () => {

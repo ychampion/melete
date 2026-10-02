@@ -510,14 +510,21 @@
       "idx": 72,
       "version": "7",
       "when": 1789232400052,
-      "tag": "0072_model_vision",
+      "tag": "0072_agent_deleted_at",
       "breakpoints": true
     },
     {
       "idx": 73,
       "version": "7",
       "when": 1789232400053,
-      "tag": "0073_device_cloud_screenshots",
+      "tag": "0073_model_vision",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1789232400054,
+      "tag": "0074_device_cloud_screenshots",
       "breakpoints": true
     }
   ]

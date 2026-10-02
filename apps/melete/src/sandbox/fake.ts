@@ -34,7 +34,6 @@ import {
 
 const EMPTY = new Uint8Array(0);
 const encode = (value: string): Uint8Array => new TextEncoder().encode(value);
-const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
 export const FAKE_CAPABILITIES: SandboxCapabilities = {
   adapter: 'fake',
@@ -1438,5 +1437,3 @@ export class FakeSandboxProvider implements SandboxProvider {
     return destroyed;
   }
 }
-
-export const fakeText = decode;

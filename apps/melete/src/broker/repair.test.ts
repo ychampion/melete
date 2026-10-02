@@ -34,7 +34,6 @@ import {
   DEFAULT_REPAIR_LIMITS,
   decideRepair,
   evaluateMapping,
-  isCompletion,
   proposeMapping,
   type RepairExecution,
   type RepairPorts,
@@ -272,7 +271,7 @@ describe('the typed repair policy fixes causes and never duplicates an effect', 
 
   test('completions and safe stops are counted apart, never summed', async () => {
     const rows = await Promise.all(names.map(async (name) => (await runCase(name)).run));
-    const completed = rows.filter((run) => run && isCompletion(run.disposition)).length;
+    const completed = rows.filter((run) => run?.disposition === 'completed').length;
     const safeStops = rows.filter((run) => run && isSafeStop(run.disposition)).length;
     expect(completed).toBe(6);
     expect(safeStops).toBe(names.length - 6);

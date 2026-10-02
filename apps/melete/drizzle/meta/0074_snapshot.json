@@ -1,6 +1,6 @@
 {
-  "id": "5d6843e8-7b24-4fa5-a499-4922288803e2",
-  "prevId": "72aabfe0-0b1c-4bdc-a432-333525f7fd22",
+  "id": "d6c9d5f5-1c9b-40b1-9882-9d56196d9de2",
+  "prevId": "5d6843e8-7b24-4fa5-a499-4922288803e2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -12730,6 +12730,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
+        },
+        "cloud_screenshots": {
+          "name": "cloud_screenshots",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
         },
         "companion_version": {
           "name": "companion_version",

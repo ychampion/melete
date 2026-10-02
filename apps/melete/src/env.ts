@@ -616,9 +616,3 @@ export function demonstrationWarnings(env: Env): string[] {
       : []),
   ];
 }
-
-/**
- * Secret writes require the master key; parsing and decryption stay in the
- * service-owned sealed store.
- */
-export const canSealSecrets = (env: Env): boolean => Boolean(env.MELETE_MASTER_KEY);

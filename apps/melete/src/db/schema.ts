@@ -236,6 +236,11 @@ export const agent = pgTable(
     /** Melete, the agent every space has: one per space, never removed. */
     isDefault: boolean('is_default').notNull().default(false),
     faceImage: text('face_image'),
+    /**
+     * Set when the person deleted it. The row stays so the turns it answered
+     * keep naming it; it is no longer listed, picked or mentioned.
+     */
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: created(),
   },
   (t) => [uniqueIndex('agent_default_space_idx').on(t.spaceId).where(sql`is_default`)],

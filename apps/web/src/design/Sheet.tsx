@@ -33,8 +33,6 @@ import {
   Toggle,
 } from './primitives.tsx';
 
-export type SheetExtra = { title: string; body: ReactNode }[];
-
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="col" style={{ gap: 14 }}>
@@ -63,7 +61,7 @@ function Lab({ text, children }: { text: string; children: ReactNode }) {
 
 const NOVA = { color: '#4aa3f7', eyes: 'white' as const, shape: 'blob' as const };
 
-export function Sheet({ extra = [] }: { extra?: SheetExtra }) {
+export function Sheet() {
   const [checked, setChecked] = useState(true);
   const [toggled, setToggled] = useState(true);
   const [seg, setSeg] = useState<'table' | 'board'>('table');
@@ -399,12 +397,6 @@ export function Sheet({ extra = [] }: { extra?: SheetExtra }) {
           </div>
         </div>
       </Section>
-
-      {extra.map((section) => (
-        <Section key={section.title} title={section.title}>
-          {section.body}
-        </Section>
-      ))}
 
       <Section title="Logos · only where a person checks a connection or a source">
         <Wrap gap={10}>

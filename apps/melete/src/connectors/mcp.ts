@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import {
   type Action,
   type ConnectorHealth,
@@ -52,18 +51,6 @@ const endpoint = z.discriminatedUnion('transport', [
 /** Parsed from authenticated operator installation or configuration, never a tool call. */
 export const mcpServerConfig = mcpOperatorPolicy.safeExtend({ endpoint });
 export type McpServerConfig = z.infer<typeof mcpServerConfig>;
-
-export async function readMcpConfig(path?: string): Promise<McpServerConfig[]> {
-  if (!path) return [];
-  const config = z
-    .array(mcpServerConfig)
-    .max(64)
-    .parse(JSON.parse(await readFile(path, 'utf8')));
-  if (new Set(config.map((server) => server.id)).size !== config.length) {
-    throw new Error('Duplicate MCP installation id');
-  }
-  return config;
-}
 
 const serverTool = z.object({
   name: z.string().min(1).max(128),

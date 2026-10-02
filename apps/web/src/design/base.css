@@ -378,11 +378,6 @@ img {
   box-shadow: var(--shadow-sheet);
   overflow: hidden;
 }
-.lifted {
-  background: var(--surface);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-lift);
-}
 
 .status-pill,
 .status-quiet {
@@ -490,10 +485,6 @@ img {
   font-weight: 600;
   background: var(--line);
   color: var(--text);
-}
-.count[data-active="true"] {
-  background: var(--surface);
-  color: var(--primary);
 }
 .kbd {
   display: inline-flex;
@@ -976,19 +967,6 @@ img {
 .pop {
   animation: pop 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateX(-14px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-.slidein {
-  animation: slideIn 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
 
 /* agent faces */
 .af-eyes,
@@ -1129,7 +1107,6 @@ img {
   .af *,
   .af,
   .pop,
-  .slidein,
   .dot-live,
   [data-tone="working"] > .status-dot {
     animation: none;
@@ -1162,10 +1139,6 @@ img {
   transition:
     box-shadow 0.15s,
     transform 0.15s;
-}
-.look-swatch[data-compact="true"] {
-  height: 30px;
-  border-radius: 8px;
 }
 .look-swatch:hover {
   transform: translateY(-1px);

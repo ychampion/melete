@@ -9,7 +9,7 @@ import { ingest, loadEvidence } from './evidence.ts';
 import { deleteMemorySource, forgetMemory } from './forget.ts';
 import type { MarkdownViews } from './markdown.ts';
 import { pendingRepairBriefs, recordOutput } from './outputs.ts';
-import { type RecallOptions, recall } from './recall.ts';
+import { recall } from './recall.ts';
 import type { RestrictionJournal } from './restore.ts';
 import { createTrustResolver } from './trust.ts';
 
@@ -19,7 +19,6 @@ export type MemoryRouteOptions = {
   /** Authentication resolves membership and purpose outside request metadata. Missing auth fails closed. */
   resolveScope?: (request: Request) => Promise<MemoryScope | null>;
   markdown?: MarkdownViews;
-  recallOptions?: RecallOptions;
   /**
    * Provision a space's memory the first time its owner uses it, through the
    * same restore gate as every other first use. A principal who is not the
@@ -118,7 +117,6 @@ export function createMemoryRouter(options: MemoryRouteOptions) {
     c.json(
       // The person reads their own memory here, including what was learned privately.
       await recall(options.sql, c.get('memoryScope'), await body(c.req.raw), {
-        ...options.recallOptions,
         privateOrigin: true,
       }),
     ),

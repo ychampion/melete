@@ -1,9 +1,10 @@
 # The Melete runtime: pinned Hermes configured thin with an observer-only bridge.
 #
-# The three source seams in patches/observer_bridge.py are checked against the
-# audited pin before application. They add compaction observation, bind the
-# plugin's observers to the HTTP run queue and put the model's reasoning on the
-# run's event stream. They change no broker decision.
+# The seams in patches/observer_bridge.py are checked against the audited pin
+# before application. They add compaction observation, bind the plugin's
+# observers to the HTTP run queue, put the model's reasoning on the run's event
+# stream and keep the engine's own install out of the system prompt. They change
+# no broker decision.
 # Thin configuration keys are cited in .agents/notes/0009-hermes-surface.md.
 #
 # The container has no route to the internet. docker-compose attaches it only to

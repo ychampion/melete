@@ -110,7 +110,7 @@ const object = (properties: Record<string, unknown>, required: string[] = []) =>
 export const DEVICE_TOOL_SHAPES: Record<DeviceTool, ToolShape> = {
   status: {
     description:
-      "Check the person's connected computer: whether it is online, what it allows, and the names of its shared folders.",
+      "Check the person's connected computer: whether it is online, what it allows, and the names of its shared folders. It is theirs, not yours: what it allows says nothing about your own computer and terminal.",
     input_schema: object({}),
     effect_class: 'read',
     requires_approval: false,
@@ -146,7 +146,7 @@ export const DEVICE_TOOL_SHAPES: Record<DeviceTool, ToolShape> = {
   },
   run: {
     description:
-      "Run a shell command on the person's computer, as them, in one of their shared folders. The person approves the exact command first.",
+      "Run a shell command on the person's computer, as them, in one of their shared folders. The person approves the exact command first. Use it only when they ask for their computer; run other commands on your own.",
     input_schema: object(
       {
         command: { type: 'string', minLength: 1, maxLength: DEVICE_LIMITS.max_command_chars },

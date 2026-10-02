@@ -105,5 +105,5 @@ grep -h '^OPENAI_API_KEY=' path/to/openai.env | cut -d= -f2- \
   | bunx wrangler secret put OPENAI_API_KEY --name melete-tryit
 ```
 
-`LANDING_URL` in `wrangler.toml` is the one place the landing site's address
-appears.
+`LANDING_URL` in `wrangler.toml` sets the landing site's address; `src/index.ts`
+falls back to the same address when it is unset.
