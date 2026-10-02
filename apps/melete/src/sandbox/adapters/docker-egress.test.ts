@@ -9,7 +9,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { connect, createServer, type Server, type Socket } from 'node:net';
 import type { ResolvedAddress } from '../../connectors/web.ts';
 import type { EgressRecordClose, EgressRecordOpen } from '../../egress/records.ts';
-import type { EgressAttribution } from '../../egress/tokens.ts';
+import { type EgressAttribution, MAX_RECEIPT_HOSTS, OTHER_HOSTS } from '../../egress/tokens.ts';
 import {
   clientAddress,
   hostListed,
@@ -520,4 +520,27 @@ test('narrowing a computer to its listed hosts ends the tunnels it opened while 
   guard.allow('127.0.0.1', 'melete-sbx-a', { mode: 'connected_hosts_only' });
   await wide.closed;
   expect((await ask(port, connectTo('example.com:443'))).reason).toBe('host_not_connected');
+});
+
+test('a command that tries many hosts names at most 64 on its receipt and counts the rest together', async () => {
+  const { guard, port } = await guarded({}, undefined, { connectedHosts: () => [] });
+  guard.allow('127.0.0.1', 'melete-sbx-a', { mode: 'connected_hosts_only', session: 'sbx_a' });
+  const token = guard.mint('melete-sbx-a', attribution('act_many'));
+  const auth = Buffer.from(`cmd:${token}`).toString('base64');
+  await blast(
+    port,
+    (index) =>
+      `CONNECT h${index}.invalid:443 HTTP/1.1\r\nHost: h${index}.invalid:443\r\nProxy-Authorization: Basic ${auth}\r\n\r\n`,
+    200,
+  );
+  const hosts = guard.tokens.settle(token);
+  expect(hosts).toHaveLength(MAX_RECEIPT_HOSTS + 1);
+  expect(hosts.find((each) => each.host === OTHER_HOSTS)).toEqual({
+    host: OTHER_HOSTS,
+    tunnels: 0,
+    refused: 200 - MAX_RECEIPT_HOSTS,
+    bytes_up: 0,
+    bytes_down: 0,
+  });
+  expect(hosts.reduce((sum, each) => sum + each.refused, 0)).toBe(200);
 });

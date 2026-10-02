@@ -38,6 +38,7 @@ import {
   type EgressHostCounters,
   type EgressTokenEntry,
   EgressTokens,
+  hostCounters,
 } from '../../egress/tokens.ts';
 
 export type SandboxEgressMode = 'open' | 'connected_hosts_only';
@@ -345,13 +346,7 @@ export class SandboxEgressGuard {
   }
 
   private counters(token: EgressTokenEntry | null, host: string): EgressHostCounters | null {
-    if (!token) return null;
-    let counters = token.hosts.get(host);
-    if (!counters) {
-      counters = { tunnels: 0, refused: 0, bytesUp: 0, bytesDown: 0 };
-      token.hosts.set(host, counters);
-    }
-    return counters;
+    return token ? hostCounters(token.hosts, host) : null;
   }
 
   /** One refusal of a granted computer, on its record and its command's receipt. */

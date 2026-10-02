@@ -11,7 +11,13 @@
  */
 import type { Sql } from 'postgres';
 import type { EgressVerdict } from './schema.ts';
-import type { EgressHostSummary, EgressTokenKind } from './tokens.ts';
+import {
+  type EgressHostCounters,
+  type EgressHostSummary,
+  type EgressTokenKind,
+  hostCounters,
+  summarize,
+} from './tokens.ts';
 
 export type EgressRecordOpen = {
   id: string;
@@ -155,13 +161,15 @@ export async function egressHostsFor(sql: Sql, actionId: string): Promise<Egress
       coalesce(sum(bytes_down), 0)::float8 as bytes_down
     from egress_record where action_id = ${actionId} and verdict <> 'suppressed'
     group by host order by host`;
-  return rows.map((row) => ({
-    host: row.host,
-    tunnels: Number(row.tunnels),
-    refused: Number(row.refused),
-    bytes_up: Number(row.bytes_up),
-    bytes_down: Number(row.bytes_down),
-  }));
+  const hosts = new Map<string, EgressHostCounters>();
+  for (const row of rows) {
+    const counters = hostCounters(hosts, row.host);
+    counters.tunnels += Number(row.tunnels);
+    counters.refused += Number(row.refused);
+    counters.bytesUp += Number(row.bytes_up);
+    counters.bytesDown += Number(row.bytes_down);
+  }
+  return summarize(hosts);
 }
 
 /** Removes records older than the retention period; answers how many went. */

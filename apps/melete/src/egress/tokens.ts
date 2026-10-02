@@ -94,6 +94,31 @@ export class EgressTokens {
   }
 }
 
+/**
+ * The most hosts one command's receipt names. Past them, the rest are counted
+ * together on one `(other hosts)` entry, so a command that tries many names
+ * leaves a receipt of bounded size.
+ */
+export const MAX_RECEIPT_HOSTS = 64;
+export const OTHER_HOSTS = '(other hosts)';
+
+/** The counters a connection to `host` adds to: its own, or the shared one past the cap. */
+export function hostCounters(
+  hosts: Map<string, EgressHostCounters>,
+  host: string,
+): EgressHostCounters {
+  const own = hosts.get(host);
+  if (own) return own;
+  const named = hosts.size - (hosts.has(OTHER_HOSTS) ? 1 : 0);
+  const key = named < MAX_RECEIPT_HOSTS ? host : OTHER_HOSTS;
+  let counters = hosts.get(key);
+  if (!counters) {
+    counters = { tunnels: 0, refused: 0, bytesUp: 0, bytesDown: 0 };
+    hosts.set(key, counters);
+  }
+  return counters;
+}
+
 export function summarize(hosts: ReadonlyMap<string, EgressHostCounters>): EgressHostSummary[] {
   return [...hosts]
     .map(([host, each]) => ({
