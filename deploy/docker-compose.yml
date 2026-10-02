@@ -88,6 +88,14 @@ services:
       MELETE_APPROVAL_KEY: ${MELETE_APPROVAL_KEY:?run bun run deploy/scripts/configure.ts}
       MELETE_SPACES_DIR: /data/spaces
       MELETE_ARTIFACTS_DIR: /data/artifacts
+      # Blobs stay on the artifacts volume unless MELETE_BLOB_STORE=s3 names a bucket.
+      MELETE_BLOB_STORE: ${MELETE_BLOB_STORE:-}
+      MELETE_BLOB_S3_ENDPOINT: ${MELETE_BLOB_S3_ENDPOINT:-}
+      MELETE_BLOB_S3_BUCKET: ${MELETE_BLOB_S3_BUCKET:-}
+      MELETE_BLOB_S3_REGION: ${MELETE_BLOB_S3_REGION:-}
+      MELETE_BLOB_S3_PREFIX: ${MELETE_BLOB_S3_PREFIX:-}
+      MELETE_BLOB_S3_ACCESS_KEY_ID: ${MELETE_BLOB_S3_ACCESS_KEY_ID:-}
+      MELETE_BLOB_S3_SECRET_ACCESS_KEY: ${MELETE_BLOB_S3_SECRET_ACCESS_KEY:-}
       MELETE_RESTRICTIONS_DIR: /data/restrictions
       MELETE_BROKER_BIND: 0.0.0.0:8788
       # The service reads each attempt's tool catalog from its own broker listener.

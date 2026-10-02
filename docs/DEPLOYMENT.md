@@ -1048,6 +1048,35 @@ installation's sandboxes at the provider; keep it. The other `MELETE_SANDBOX_*`
 settings and `MELETE_E2B_PLAN` are optional, with their defaults listed in
 `deploy/.env.example`. Set them in `deploy/.env` and recreate the service.
 
+## Storage
+
+Files the service keeps whole and unchanged are stored by their content: each
+one is named by its SHA-256, kept once however many things use it, and checked
+against that name when it is read back. By default they live on the
+`artifacts` volume, under `/data/artifacts`, and need no setting.
+
+To keep them in an S3-compatible bucket instead (AWS S3, Cloudflare R2, MinIO
+and the like), set these in `deploy/.env` and recreate the service:
+
+| Setting | Value |
+|---|---|
+| `MELETE_BLOB_STORE` | `s3` |
+| `MELETE_BLOB_S3_BUCKET` | the bucket, which must already exist |
+| `MELETE_BLOB_S3_ACCESS_KEY_ID`, `MELETE_BLOB_S3_SECRET_ACCESS_KEY` | keys that may read, write, list and delete in the bucket |
+| `MELETE_BLOB_S3_ENDPOINT` | the service's address, such as `https://<account>.r2.cloudflarestorage.com`; empty is AWS |
+| `MELETE_BLOB_S3_REGION` | the bucket's region; empty is `us-east-1` |
+| `MELETE_BLOB_S3_PREFIX` | optional; every key goes under it, so installations can share one bucket |
+
+The keys are read by the service alone and never reach an agent's computer. The
+service stops at start-up with `s3` and a missing bucket or key. Files already
+on the volume stay there when the setting changes, so copy each file under
+`/data/artifacts/sha256/` into the bucket first, as `<prefix>/sha256/<hash>`.
+
+Each file records what uses it. Once a day the service deletes any file that
+nothing uses and that was stored more than seven days ago. Removing a space deletes at once every file
+only that space used, and the removal finishes only when the store confirms
+they are gone.
+
 ## Company map
 
 A scan reads the connected mailbox with the installation's own model, once the
