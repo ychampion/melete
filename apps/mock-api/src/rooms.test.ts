@@ -338,6 +338,12 @@ test('a handoff waits on Home, runs the task the person read, and reaches the ro
   ).handoff;
   expect(accepted.state).toBe('settled');
   if (!accepted.result || !accepted.result_hash) throw new Error('The work ended with a result');
+  // Sharing names the exact text the person read; any other text is refused.
+  const stale = await call(mock, 'POST', `/handoffs/${waiting.id}/result`, {
+    decision: 'share',
+    result_hash: 'e'.repeat(64),
+  });
+  expect(stale.status).toBe(409);
   const shared = C.handoffResponse.parse(
     (
       await call(mock, 'POST', `/handoffs/${waiting.id}/result`, {
