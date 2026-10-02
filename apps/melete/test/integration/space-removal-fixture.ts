@@ -286,6 +286,16 @@ export async function seedSpace(
       ${jobId}, ${scanId})`;
 
   await seedMemory(sql, { spaceId, ownerId, jobId, attemptId });
+  // A room's thread, a message in it, who was looking, and what memory did with the message.
+  const threadId = newId('rth');
+  const messageId = newId('rmg');
+  await sql`insert into room_thread (id, space_id, title, created_by)
+    values (${threadId}, ${spaceId}, 'Plans', ${principalId})`;
+  await sql`insert into room_message (id, space_id, thread_id, author_principal_id, text, submission_id)
+    values (${messageId}, ${spaceId}, ${threadId}, ${principalId}, 'Thursday works.', ${newId('rmg')})`;
+  await sql`insert into room_presence (space_id, principal_id) values (${spaceId}, ${principalId})`;
+  await sql`insert into memory_room_capture (message_id, space_id, outcome)
+    values (${messageId}, ${spaceId}, 'skipped:asked')`;
   const claim = await sql<
     { id: string }[]
   >`select id from memory_claims where space_id = ${spaceId}`;

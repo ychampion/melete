@@ -54,6 +54,8 @@ export async function startServiceMemory(
         captureChat: true;
         /** Why a chat message is private, recorded on what memory learns from it. */
         privacyOrigin: CaptureOptions['privacyOrigin'];
+        /** Why a message said in a room is private; left out, nothing said in a room is kept. */
+        roomPrivacyOrigin?: CaptureOptions['roomPrivacyOrigin'];
       } = {},
 ) {
   const journal = new FileRestrictionJournal(join(spacesRoot, '.memory', 'restrictions.jsonl'));
@@ -86,6 +88,32 @@ export async function startServiceMemory(
   });
   const recompute = onJobRecompute ? startJobRecompute(sql, onJobRecompute) : undefined;
 
+  /**
+   * A space's memory as the service itself holds it, provisioned the first
+   * time it is used: the installation owner stores every space's memory, as
+   * the deployment path does, whoever the space belongs to. Room memory is
+   * written, and a shared detail read, through it.
+   */
+  async function storageScope(spaceId: string): Promise<MemoryScope> {
+    const [row] = await sql`select s.kind, s.removed_at, m.owner_id as memory_owner_id, m.revoked,
+      (select id from owner limit 1) as installation_owner_id
+      from space s left join memory_spaces m on m.space_id = s.id where s.id = ${spaceId}`;
+    if (!row || row.removed_at || row.revoked) throw new MemoryError('scope_denied');
+    const ownerId = (row.memory_owner_id ?? row.installation_owner_id) as string | null;
+    if (!ownerId) throw new MemoryError('scope_denied');
+    if (!row.memory_owner_id) {
+      await prepareSpaceRepository(spacesRoot, spaceId);
+      await provisionMemorySpace(sql, ownerId, spaceId);
+      await replayForNewMemory(sql, journal, ownerId, spaceId);
+    }
+    return {
+      ownerId,
+      spaceId,
+      publisher: 'service',
+      audience: row.kind === 'personal' ? 'private' : 'space',
+      role: 'owner',
+    };
+  }
   async function scopeForSpace(principalId: string, spaceId: string): Promise<MemoryScope> {
     const [authorized] = await sql`select s.kind,
       coalesce(s.owner_principal_id, (select id from owner limit 1)) as owner_id,
@@ -95,12 +123,12 @@ export async function startServiceMemory(
     const isOwner = authorized?.owner_id === principalId;
     if (!authorized || (authorized.kind === 'personal' ? !isOwner : !authorized.role))
       throw new MemoryError('scope_denied');
-    const ownerId = authorized.owner_id as string;
     await prepareSpaceRepository(spacesRoot, spaceId);
     // The storage owner is not the reader. Retaining the reader's identity and
     // membership generation lets every memory transaction fence later revocation.
-    const scope: MemoryScope = {
-      ownerId,
+    const stored = await storageScope(spaceId);
+    return {
+      ownerId: stored.ownerId,
       principalId,
       membershipGeneration: Number(authorized.generation ?? 0),
       spaceId,
@@ -108,12 +136,6 @@ export async function startServiceMemory(
       audience: isOwner ? 'private' : 'space',
       role: isOwner ? 'owner' : 'reader',
     };
-    const [known] = await sql`select space_id from memory_spaces where space_id = ${spaceId}`;
-    if (!known) {
-      await provisionMemorySpace(sql, ownerId, spaceId);
-      await replayForNewMemory(sql, journal, ownerId, spaceId);
-    }
-    return scope;
   }
   async function scopeForJob(jobId: string): Promise<MemoryScope> {
     const [row] =
@@ -131,6 +153,9 @@ export async function startServiceMemory(
         scopeForJob,
         onError,
         privacyOrigin: automatic.privacyOrigin,
+        ...(automatic.roomPrivacyOrigin
+          ? { roomScope: storageScope, roomPrivacyOrigin: automatic.roomPrivacyOrigin }
+          : {}),
       })
     : undefined;
   return {
@@ -143,6 +168,7 @@ export async function startServiceMemory(
     journal,
     markdown,
     scopeForJob,
+    storageScope,
     async provision(spaceId: string, principalId: string) {
       await scopeForSpace(principalId, spaceId);
     },

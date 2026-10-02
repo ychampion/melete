@@ -20,13 +20,18 @@ import {
 import type { Context, Hono } from 'hono';
 import { readEventCursor } from '../api/events.ts';
 import type { EventChanges } from '../experience/events.ts';
+import type { MemoryRouteOptions } from '../memory/routes.ts';
+import { mountRoomMemory } from './memory.ts';
 import { releaseAll, releaseOnTransition, releaseThread } from './release.ts';
 import { type RoomDeps, RoomService } from './service.ts';
 
 /** How long a thread stream waits for new frames when nothing says one was committed. */
 export const ROOM_POLL_MS = 1000;
 
-export function mountRooms(app: Hono, deps: RoomDeps & { changes?: EventChanges }): RoomService {
+export function mountRooms(
+  app: Hono,
+  deps: RoomDeps & { changes?: EventChanges; memory?: MemoryRouteOptions },
+): RoomService {
   const service = new RoomService(deps);
   // A request that stops holding its thread lets the thread's next ask go:
   // when it changes state, when an attempt the broker parked ends, and on
@@ -148,6 +153,8 @@ export function mountRooms(app: Hono, deps: RoomDeps & { changes?: EventChanges 
   app.post('/rooms/:id/presence', async (c) =>
     c.json(await service.presence(param(c, 'id'), actor(c))),
   );
+  // What the room remembers, and what its people shared into it.
+  mountRoomMemory(app, service, deps.memory);
   return service;
 }
 

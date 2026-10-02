@@ -13,8 +13,9 @@ import {
 } from './db.ts';
 import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './invalidate.ts';
 import type { RestrictionJournal, RestrictionRecord } from './restore.ts';
+import { applyRoomRecord, invalidateSharedInRooms, isRoomRecord } from './room-records.ts';
 
-type Removal = {
+export type Removal = {
   operation: RestrictionRecord['operation'];
   claimId?: string;
   sourceId?: string;
@@ -70,6 +71,10 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
   const [space] =
     await tx`select * from memory_spaces where space_id = ${record.space_id} and owner_id = ${record.owner_id} for update`;
   if (!space) throw new MemoryError('scope_denied');
+  if (isRoomRecord(record)) {
+    await applyRoomRecord(tx, record);
+    return generation(space);
+  }
   const [applied] =
     await tx`select id from memory_suppressions where id = ${record.id} and space_id = ${record.space_id}`;
   if (applied) {
@@ -171,6 +176,9 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
     audience: 'private',
   };
   await invalidateDependencies(tx, scope, [...affected], dataRevision, record.all);
+  // A detail shared into a room is read there from here, so the rooms it was
+  // shared into lose it in the same transaction.
+  await invalidateSharedInRooms(tx, record.space_id, [...affected], record.all);
   // Invalidation waits for active job transactions; include episodes they committed while removal waited.
   await restrictEpisodes(tx, record, [...affected]);
   await enqueue(tx, record.space_id, 'cleanup', record.id);
@@ -281,6 +289,23 @@ async function scrubCopies(
       await tx`update memory_digests set items = ${JSON.stringify(items)}::text::jsonb where id = ${digest.id}`;
   }
 }
+/** The lock every journal append takes, in one order across service processes. */
+export async function lockRestrictions(tx: MemoryTx) {
+  await lockEventOrder(tx);
+  // One journal append order across service processes, released automatically on process death.
+  await tx`select pg_advisory_xact_lock(hashtext('melete-memory-restrictions'))`;
+}
+/** Plan, journal and apply one removal in the caller's transaction, which holds `lockRestrictions`. */
+export async function restrictWithin(
+  tx: MemoryTx,
+  scope: MemoryScope,
+  removal: Removal,
+  journal: RestrictionJournal,
+) {
+  const record = await planRestriction(tx, scope, removal);
+  await journal.append(record);
+  return applyRestriction(tx, record);
+}
 async function restrict(
   sql: MemorySql,
   scope: MemoryScope,
@@ -288,12 +313,11 @@ async function restrict(
   journal: RestrictionJournal,
 ): Promise<MemoryOperationResponse> {
   const result = await sql.begin(async (tx) => {
-    await lockEventOrder(tx);
-    // One journal append order across service processes, released automatically on process death.
-    await tx`select pg_advisory_xact_lock(hashtext('melete-memory-restrictions'))`;
-    const record = await planRestriction(tx, scope, removal);
-    await journal.append(record);
-    return { generation: await applyRestriction(tx, record), cleanup: 'pending' as const };
+    await lockRestrictions(tx);
+    return {
+      generation: await restrictWithin(tx, scope, removal, journal),
+      cleanup: 'pending' as const,
+    };
   });
   await notifyInvalidated(sql, scope.spaceId);
   return result;
@@ -320,6 +344,27 @@ export const deleteMemorySource = (
   sourceId: string,
   journal: RestrictionJournal,
 ) => restrict(sql, scope, { operation: 'delete', sourceId, all: false }, journal);
+/**
+ * Whether a person may forget a detail from a room's memory: a room's owner
+ * any detail in it, anyone else only a detail every piece of evidence for
+ * which is their own words.
+ */
+export async function mayForgetRoomClaim(
+  sql: MemorySql | MemoryTx,
+  spaceId: string,
+  claimId: string,
+  principalId: string,
+) {
+  const [row] = await sql`select
+      exists (select 1 from memory_claims c where c.id = ${claimId} and c.space_id = ${spaceId}) as here,
+      exists (select 1 from space_membership m where m.space_id = ${spaceId}
+        and m.principal_id = ${principalId} and m.revoked_at is null and m.role = 'owner') as owner,
+      exists (select 1 from memory_references ref where ref.claim_id = ${claimId}) as cited,
+      not exists (select 1 from memory_references ref left join memory_sources s on s.id = ref.source_id
+        where ref.claim_id = ${claimId} and (s.id is null or s.space_id <> ${spaceId}
+          or s.author_principal_id is distinct from ${principalId})) as own`;
+  return Boolean(row?.here && (row.owner || (row.cited && row.own)));
+}
 export const revokeMemorySource = (
   sql: MemorySql,
   scope: MemoryScope,
