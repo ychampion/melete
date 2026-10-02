@@ -370,6 +370,7 @@ export function createApp(deps: AppDeps) {
       computers: deps.sandboxComputers,
       memory: deps.memory,
       env: deps.env,
+      triggers: deps.triggers,
     });
   if (deps.db)
     mountCompanies(app, {

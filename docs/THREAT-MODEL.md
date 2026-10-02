@@ -543,15 +543,38 @@ person deletes only their own messages, and the deletion scrubs the copies the
 service made of them. Every such removal is journaled and replayed on restore
 ([rooms-memory.test.ts](../apps/melete/test/integration/rooms-memory.test.ts)).
 
+Nothing crosses between a room and a person's own space except through the
+built-in room connection, and each crossing is a person's own act. A room's
+request cannot reach anyone's mail, files or memory; it can only hand a person a
+task. The person sees the whole task and accepts it by its hash, so what runs in
+their own space is exactly the text they read, recorded as coming from the room:
+an address or amount it names carries a warning on their own card, and no
+standing rule they made admits it. The result reaches the room only when they
+approve that exact text, also by its hash; keeping it private tells the room
+only that they kept it, and a decline or an unanswered handoff tells the room
+nothing more. A result is held with the handoff only while it waits for that
+choice: sharing, keeping, seven days without an answer, the person forgetting
+anything in their own memory, or removing their space clears it, and a cleared
+result cannot be shared. A guest's request hands nothing to anyone, a person
+has at most three handoffs from one room waiting, and a handoff whose request
+was stopped or ended is withdrawn. Only the person a handoff names sees or answers it. From their own
+work a person posts to a room, or copies a checked file into its files, only
+with their approval of the exact room, thread and text or file, and only while
+they are in the room: membership is read again when the action is proposed,
+admitted and carried out. A file never replaces a different one of the same
+name in the room. A person's work lists only the rooms they are in and is
+refused, without detail, for any other
+([room-handoffs.test.ts](../apps/melete/test/integration/room-handoffs.test.ts)).
+
 What remains: what a member says in a room stays in the room after they leave,
 unless they delete it first or an owner forgets it. The words of a deleted
 message stay in any answer the agent already gave that quoted them, and in the
-agent's working session for the request that read them. Under the default rule
-a member answers the permissions of their own request, so a member can have the
-room's agent act through the room's connections with their own approval; owners
-who want to see every such action choose the `owners` rule. Isolation between a
-room and the rest of the installation is an application check, as it is between
-accounts.
+agent's working session for the request that read them.
+Under the default rule a member answers the permissions of their own request,
+so a member can have the room's agent act through the room's connections with
+their own approval; owners who want to see every such action choose the
+`owners` rule. Isolation between a room and the rest of the installation is an
+application check, as it is between accounts.
 
 ## Credentials, host and storage
 

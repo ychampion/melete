@@ -607,13 +607,18 @@ export class BrokerService implements BrokerOperations {
       tool.effect_class !== 'read' && tool.name !== 'email.draft' && tool.name !== 'email.discard';
     const agentAsks = Boolean(access.agentId && access.asksBeforeActing);
     const provider = this.options.connectors.get(action.connection_id)?.manifest.provider ?? '';
+    // A hand-off from a room puts a task in front of a person, who reads it
+    // whole and runs or declines it: their answer is the approval, so the
+    // agent's own "ask before acting" does not ask again. "Ask me for
+    // everything" still does.
+    const handsOff = tool.name === 'room.handoff' && provider === 'room';
     // The connector itself says the person decides this one, whatever the settings.
     const connectorAsks =
       this.options.connectors.get(action.connection_id)?.asksFirst?.(action) === true;
     const requiresApproval =
       needsApproval(tool) ||
       connectorAsks ||
-      (agentAsks && changes) ||
+      (agentAsks && changes && !handsOff) ||
       // "Ask me for everything": every change waits for the person.
       (settings?.mode === 'ask' && changes) ||
       // With the sandbox switch off, work in the agent's own workspace asks too.

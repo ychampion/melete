@@ -101,7 +101,12 @@ const journey = late ? await database() : null;
       const listed = connectionListResponse.parse(
         await (await running.app.request('/connections', { headers: { cookie } })).json(),
       ).connections;
-      expect(listed.map((row) => row.provider).sort()).toEqual(['artifacts', 'files', 'web']);
+      expect(listed.map((row) => row.provider).sort()).toEqual([
+        'artifacts',
+        'files',
+        'room',
+        'web',
+      ]);
       expect(listed.every((row) => row.builtin === true && row.status === 'active')).toBe(true);
       // Settings is told which connections the service keeps, so it offers no removal for them.
       const shown = (await (
@@ -109,6 +114,7 @@ const journey = late ? await database() : null;
       ).json()) as { connections: Array<{ label: string; builtin?: boolean }> };
       expect(shown.connections.map((row) => [row.label, row.builtin])).toEqual([
         ['Files', true],
+        ['Rooms', true],
         ['Saved results', true],
         ['Web', true],
       ]);
@@ -214,7 +220,7 @@ const journey = late ? await database() : null;
     let webId = '';
     try {
       // Speech and transcription are two rows of the generation provider.
-      const expected = ['artifacts', 'files', 'generation', 'generation', 'web'];
+      const expected = ['artifacts', 'files', 'generation', 'generation', 'room', 'web'];
       expect(await providers(personal)).toEqual(expected);
       // A grant the owner already made is kept as it is, never doubled.
       expect(await providers(seeded)).toEqual(expected);
@@ -294,7 +300,7 @@ const journey = late ? await database() : null;
       const ownerConnections = (
         await fixture.sql`select id from connection where space_id = ${ownerSpace} order by id`
       ).map((row) => row.id);
-      expect(ownerConnections).toHaveLength(3);
+      expect(ownerConnections).toHaveLength(4);
 
       const login = await running.app.request('/login', {
         method: 'POST',
@@ -310,6 +316,7 @@ const journey = late ? await database() : null;
       ).json()) as { connections: Array<{ id: string; label: string; builtin?: boolean }> };
       expect(shown.connections.map((row) => [row.label, row.builtin])).toEqual([
         ['Files', true],
+        ['Rooms', true],
         ['Saved results', true],
         ['Web', true],
       ]);
@@ -370,7 +377,7 @@ const journey = late ? await database() : null;
       });
       expect(shared.status).toBe(201);
       const made = ((await shared.json()) as { space: { id: string } }).space.id;
-      expect(await providers(made)).toEqual(['artifacts', 'files', 'web']);
+      expect(await providers(made)).toEqual(['artifacts', 'files', 'room', 'web']);
       expect(await providers(bare)).toEqual([]);
 
       // A provisioned account is furnished in its own personal space, and only there.
@@ -384,7 +391,7 @@ const journey = late ? await database() : null;
       const [theirs] =
         await fixture.sql`select id from space where owner_principal_id = ${account3}`;
       if (!theirs) throw new Error('A provisioned account has no space');
-      expect(await providers(theirs.id)).toEqual(['artifacts', 'files', 'web']);
+      expect(await providers(theirs.id)).toEqual(['artifacts', 'files', 'room', 'web']);
       expect(await providers(bare)).toEqual([]);
 
       // What it was given is its own, and its first attempt is handed the tools.
