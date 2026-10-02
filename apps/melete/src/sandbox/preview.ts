@@ -47,7 +47,7 @@ import { ServiceError } from '../api/errors.ts';
 import { sessionLive } from '../apps/serve.ts';
 import { terminalText } from '../experience/computer.ts';
 import { framedRequest, viewHeaders } from '../viewer/headers.ts';
-import { sessionTag, ViewTokens } from '../viewer/tokens.ts';
+import { sessionTag, VIEW_TTL_SECONDS, ViewTokens } from '../viewer/tokens.ts';
 import { PREVIEW_PREFIX } from './preview-path.ts';
 import { helperComputer, type ProcessComputer } from './process-helper.ts';
 import {
@@ -90,7 +90,10 @@ export function sqlPreviewAccess(sql: Sql, providers: ProcessProviders): Preview
               and connection_id = p.connection_id and status = 'ready'
             order by opened_at desc limit 1) w on true
         where p.id = ${processId} and s.removed_at is null and n.status = 'active'
-          and coalesce(j.principal_id, (select id from owner limit 1)) = ${principalId}
+          -- A job with no recorded person is the space owner's, as everywhere else; only a
+          -- personal space with no recorded owner falls back to the installation's.
+          and coalesce(j.principal_id, s.owner_principal_id,
+            case when s.kind = 'personal' then (select id from owner limit 1) end) = ${principalId}
           and ((s.kind = 'personal'
               and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${principalId})
             or (s.kind = 'shared' and exists (select 1 from space_membership m
@@ -144,6 +147,15 @@ export function previewBinding(row: ProcessRow, computer: WatchedProcess['comput
     )
     .digest('hex');
 }
+
+/**
+ * When a preview ends: half an hour after it was opened. A view token is
+ * signed to last the app viewer's longer time, so the preview's own end is
+ * counted from when it was issued; the computer view opens a new one before
+ * then while the preview is on screen.
+ */
+export const previewEnds = (tokenExpiresAt: number): number =>
+  tokenExpiresAt - VIEW_TTL_SECONDS + PREVIEW_LIMITS.ttl_seconds;
 
 /** The view token key, kept apart from the app viewer's: an app's token never opens a preview. */
 const previewKey = (masterKey: string | undefined) =>
@@ -246,8 +258,44 @@ function capped(body: ReadableStream<Uint8Array>, limit: number): ReadableStream
   );
 }
 
-async function readCapped(body: ReadableStream<Uint8Array>, limit: number): Promise<Uint8Array> {
-  return new Uint8Array(await new Response(capped(body, limit)).arrayBuffer());
+/**
+ * The whole body when it fits under `limit`, or null. On null the body is not
+ * lost: `rest` replays what was read, then the remainder as it arrives.
+ */
+async function readUpTo(
+  body: ReadableStream<Uint8Array>,
+  limit: number,
+): Promise<{ bytes: Uint8Array } | { bytes: null; rest: ReadableStream<Uint8Array> }> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    size += value.byteLength;
+    if (size > limit) {
+      const rest = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(chunk);
+        },
+        async pull(controller) {
+          const next = await reader.read();
+          if (next.done) controller.close();
+          else controller.enqueue(next.value);
+        },
+        cancel: (reason) => reader.cancel(reason),
+      });
+      return { bytes: null, rest };
+    }
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return { bytes };
 }
 
 /** A plain refusal from the preview itself, with the isolation headers. */
@@ -326,15 +374,22 @@ export async function forwardPreview(input: {
     await upstream.body?.cancel();
     return new Response(null, { status, headers: answered });
   }
-  if (REWRITTEN.has(essence(type))) {
-    let bytes: Uint8Array;
-    try {
-      bytes = await readCapped(upstream.body, PREVIEW_LIMITS.response_max_bytes);
-    } catch {
-      return plain(502, 'That answer is too large to preview.');
+  // A page, script or style small enough is read whole to keep its links
+  // inside the preview. A larger one is passed on as it arrives, unchanged,
+  // so no answer is ever held whole in memory past that size.
+  if (
+    REWRITTEN.has(essence(type)) &&
+    !(Number.isFinite(length) && length > PREVIEW_LIMITS.rewrite_max_bytes)
+  ) {
+    const read = await readUpTo(upstream.body, PREVIEW_LIMITS.rewrite_max_bytes);
+    if (read.bytes) {
+      const text = keepInside(new TextDecoder().decode(read.bytes), rootFrom(rest));
+      return new Response(text, { status, headers: answered });
     }
-    const text = keepInside(new TextDecoder().decode(bytes), rootFrom(rest));
-    return new Response(text, { status, headers: answered });
+    return new Response(capped(read.rest, PREVIEW_LIMITS.response_max_bytes), {
+      status,
+      headers: answered,
+    });
   }
   return new Response(capped(upstream.body, PREVIEW_LIMITS.response_max_bytes), {
     status,
@@ -357,12 +412,14 @@ const COMPUTER_MS = 15_000;
 export class SandboxPreviews {
   readonly tokens: ViewTokens;
   private readonly computerFor: NonNullable<SandboxPreviewsOptions['computerFor']>;
+  private readonly now: () => number;
 
   constructor(
     private readonly access: PreviewAccess,
     private readonly options: SandboxPreviewsOptions = {},
   ) {
-    this.tokens = new ViewTokens(previewKey(options.masterKey), options.now);
+    this.now = options.now ?? Date.now;
+    this.tokens = new ViewTokens(previewKey(options.masterKey), this.now);
     this.computerFor =
       options.computerFor ??
       ((provider, handle) =>
@@ -418,7 +475,7 @@ export class SandboxPreviews {
     }
     if (!ports.includes(port))
       throw refused(`Nothing in that process is listening on port ${port} yet. Try again shortly.`);
-    const { token, expiresAt } = this.tokens.issue({
+    const { token, expiresAt: outer } = this.tokens.issue({
       principalId,
       appId: processId,
       versionId: previewBinding(watched.row, computer),
@@ -429,7 +486,7 @@ export class SandboxPreviews {
       process_id: processId,
       path: `${PREVIEW_PREFIX}${token}/`,
       port,
-      expires_at: new Date(expiresAt * 1000).toISOString(),
+      expires_at: new Date(previewEnds(outer) * 1000).toISOString(),
     });
   }
 
@@ -448,7 +505,7 @@ export class SandboxPreviews {
     const slash = below.indexOf('/');
     if (slash < 1) throw ended('Its address is incomplete.');
     const claims = this.tokens.verify(below.slice(0, slash));
-    if (!claims) throw ended('It expired.');
+    if (!claims || previewEnds(claims.expiresAt) * 1000 <= this.now()) throw ended('It expired.');
     if (!(await this.access.sessionLive(claims.principalId, claims.sessionTag)))
       throw ended('The session that opened it signed out.');
     let live: Awaited<ReturnType<SandboxPreviews['live']>>;

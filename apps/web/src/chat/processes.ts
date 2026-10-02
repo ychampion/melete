@@ -28,3 +28,10 @@ export function runningFor(ms: number): string {
   const rest = minutes % 60;
   return rest ? `${hours} h ${rest} min` : `${hours} h`;
 }
+
+/** A preview this close to its end is replaced by a new one. */
+export const RENEW_BEFORE_MS = 5 * 60_000;
+
+/** Whether the preview the frame loaded should be replaced now. */
+export const previewDue = (expiresAt: string, now: number): boolean =>
+  Date.parse(expiresAt) - now < RENEW_BEFORE_MS;

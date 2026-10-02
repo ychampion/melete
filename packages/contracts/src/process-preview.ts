@@ -11,8 +11,10 @@ import { PROCESS_STATES } from './execution.ts';
 export const PREVIEW_LIMITS = {
   /** The most one answer from the previewed server may carry. */
   response_max_bytes: 50 * 1024 * 1024,
-  /** Pages, scripts and styles up to this size have their own-site links kept inside the preview. */
-  rewrite_max_bytes: 8 * 1024 * 1024,
+  /** Pages, scripts and styles up to this size have their own-site links kept inside the preview; larger ones pass unchanged. */
+  rewrite_max_bytes: 5 * 1024 * 1024,
+  /** How long a preview lasts; the computer view opens a new one before then while it is shown. */
+  ttl_seconds: 30 * 60,
   /** How long the server has to start answering one request. */
   upstream_timeout_ms: 30_000,
   /** How much of the end of a process's output the person is shown. */

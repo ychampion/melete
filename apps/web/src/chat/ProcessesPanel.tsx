@@ -9,21 +9,29 @@
  * Melete's cookies, storage or API, and reaches only that port of that
  * computer. It has no Melete data to ask for.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { Button, IconButton } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import type { ComputerProcess } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 import { type FrameCalls, FramedView } from '../viewer/FramedView.tsx';
-import { processLive, processStateWords, runningFor } from './processes.ts';
+import { previewDue, processLive, processStateWords, runningFor } from './processes.ts';
 import './processes.css';
 
 /** A preview has no Melete data: the bridge refuses whatever the page asks for. */
 const NO_DATA = async () => ({ ok: false as const, error: 'A preview has no Melete data.' });
 const PREVIEW_CALLS: FrameCalls = { data: NO_DATA, submit: NO_DATA };
 
-type Preview = { processId: string; name: string; port: number; src: string; loads: number };
+type Preview = {
+  processId: string;
+  name: string;
+  port: number;
+  src: string;
+  /** When the preview the frame loaded ends; a new one replaces it before then. */
+  expiresAt: string;
+  loads: number;
+};
 
 function useNow(everyMs: number): number {
   const [now, setNow] = useState(() => Date.now());
@@ -178,9 +186,40 @@ export function ProcessesPanel({
       name: process.name,
       port: result.data.port,
       src: adapter.previewSource(result.data),
+      expiresAt: result.data.expires_at,
       loads: 0,
     });
   };
+
+  // A preview lasts half an hour. While it is on screen, a new one is opened
+  // shortly before it ends and the frame loads it; one that cannot be renewed
+  // (the server stopped, or the person lost access) closes with a word why.
+  const renewing = useRef(false);
+  useEffect(() => {
+    if (!preview || ended || renewing.current || !previewDue(preview.expiresAt, now)) return;
+    renewing.current = true;
+    void adapter.processPreview(preview.processId).then((result) => {
+      renewing.current = false;
+      if (result.data === null) {
+        toast({
+          kind: 'err',
+          title: result.error ?? result.unavailable ?? 'The preview could not be renewed',
+        });
+        setPreview(null);
+        return;
+      }
+      const renewed = result.data;
+      setPreview((current) =>
+        current?.processId === renewed.process_id
+          ? {
+              ...current,
+              src: adapter.previewSource(renewed),
+              expiresAt: renewed.expires_at,
+            }
+          : current,
+      );
+    });
+  }, [preview, ended, now]);
 
   if (processes.length === 0) return null;
   return (

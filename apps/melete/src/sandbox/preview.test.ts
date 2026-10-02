@@ -24,6 +24,11 @@ import type { PreviewAddress, SandboxProvider } from './types.ts';
 
 type Seen = { path: string; headers: Record<string, string> };
 
+/** A script past the rewrite limit, with a root link that must pass through unchanged. */
+const BIG_SCRIPT = `import "/src/a.js";
+//${'x'.repeat(6 * 1024 * 1024)}
+`;
+
 let declared: ReturnType<typeof Bun.serve>;
 let other: ReturnType<typeof Bun.serve>;
 const reached: Seen[] = [];
@@ -69,6 +74,20 @@ beforeAll(() => {
         return new Response(new Uint8Array(51 * 1024 * 1024), {
           headers: { 'content-type': 'application/octet-stream' },
         });
+      if (url.pathname === '/big.js')
+        return new Response(BIG_SCRIPT, { headers: { 'content-type': 'text/javascript' } });
+      if (url.pathname === '/big-streamed.js')
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              const bytes = new TextEncoder().encode(BIG_SCRIPT);
+              for (let at = 0; at < bytes.byteLength; at += 256 * 1024)
+                controller.enqueue(bytes.slice(at, at + 256 * 1024));
+              controller.close();
+            },
+          }),
+          { headers: { 'content-type': 'text/javascript' } },
+        );
       if (url.pathname === '/stream') {
         let sent = 0;
         return new Response(
@@ -429,4 +448,32 @@ test('the proxy itself passes on none of the server cookies or its own policy, b
   expect(answer.headers.has('clear-site-data')).toBe(false);
   expect(answer.headers.get('content-security-policy')).toBe(VIEW_POLICY);
   expect(reached.at(-1)?.headers.cookie).toBeUndefined();
+});
+
+test('a page, script or style past the rewrite limit is passed on unchanged as it arrives, not held whole', async () => {
+  const service = previews();
+  const { path } = await service.open(world.row.id, PERSON, DIGEST);
+  const app = serviceWith(service);
+  for (const file of ['big.js', 'big-streamed.js']) {
+    const answer = await app.request(`${path}${file}`, { headers: { 'sec-fetch-dest': 'script' } });
+    expect(answer.status).toBe(200);
+    expect(answer.headers.get('content-security-policy')).toBe(VIEW_POLICY);
+    const text = await answer.text();
+    expect(text.length).toBe(BIG_SCRIPT.length);
+    expect(text.startsWith('import "/src/a.js";')).toBe(true);
+  }
+});
+
+test('a preview lasts half an hour from when it was opened, and is refused after', async () => {
+  let clock = Date.parse('2026-10-03T10:00:00Z');
+  const service = new SandboxPreviews(access, { computerFor: () => helper, now: () => clock });
+  const opened = await service.open(world.row.id, PERSON, DIGEST);
+  expect(Date.parse(opened.expires_at) - clock).toBe(30 * 60_000);
+  const app = serviceWith(service);
+  clock += 29 * 60_000;
+  expect((await app.request(opened.path, { headers: framed })).status).toBe(200);
+  clock += 2 * 60_000;
+  const late = await app.request(opened.path, { headers: framed });
+  expect(late.status).toBe(404);
+  expect(await late.text()).toContain('It expired.');
 });
