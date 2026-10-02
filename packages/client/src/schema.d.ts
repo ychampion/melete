@@ -542,6 +542,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             agents: components["schemas"]["__schema246"][];
+                            removed?: components["schemas"]["__schema246"][];
                         } | components["schemas"]["__schema221"];
                     };
                 };
@@ -618,6 +619,7 @@ export interface paths {
                             id: components["schemas"]["__schema215"];
                             moved_to: components["schemas"]["__schema215"];
                             routines: number;
+                            routines_paused: number;
                         } | components["schemas"]["__schema221"];
                     };
                 };

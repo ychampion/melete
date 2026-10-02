@@ -449,7 +449,7 @@ export const adapter = {
     ),
 
   /* ---------- agents, memory ---------- */
-  agents: () => guard<{ agents: Agent[] }>(() => api.GET('/agents')),
+  agents: () => guard<{ agents: Agent[]; removed?: Agent[] }>(() => api.GET('/agents')),
   agentTemplates: () => guard<{ templates: AgentTemplate[] }>(() => api.GET('/agents/templates')),
   createAgent: (body: AgentInput) => guard<{ agent: Agent }>(() => api.POST('/agents', { body })),
   updateAgent: (id: string, body: AgentInput) =>

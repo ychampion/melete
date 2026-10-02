@@ -647,7 +647,7 @@ withDb('an agent that keeps no memory never promises to remember', () => {
 });
 
 withDb('deleting an agent', () => {
-  test('its chats, routines, plan steps and turns move to Melete, which stays', async () => {
+  test('its chats, routines and plan steps move to Melete; its turns keep its name', async () => {
     if (!db || !experience) return;
     const scope = await createScope(db);
     const melete = await experience.defaultAgent(scope.spaceId);
@@ -662,6 +662,9 @@ withDb('deleting an agent', () => {
     const chat = await start('Draft');
     const routine = await start('Weekly note');
     await db.sql`update job set kind = 'routine' where id = ${routine}`;
+    const schedule = newId('trg');
+    await db.sql`insert into trigger (id, job_id, kind, spec) values (${schedule}, ${routine},
+      'schedule', ${JSON.stringify({ kind: 'schedule', cron: '0 9 * * 1' })}::jsonb)`;
     await principalContext.run(scope.ownerId, () =>
       experience.message(scope.spaceId, chat, { text: 'Draft a note' }, newId('turn')),
     );
@@ -676,9 +679,19 @@ withDb('deleting an agent', () => {
       status: 409,
     });
     await db.sql`update experience_turn set status = 'done' where job_id = ${chat}`;
+    // Nor while any work bound to it has an attempt running, with no turn at all.
+    const attempt = newId('att');
+    await db.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+      values (${attempt}, ${routine}, 1, 'fake', 'fake', 'scripted')`;
+    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, quill.id))).toMatchObject({
+      code: 'agent_busy',
+      status: 409,
+    });
+    await db.sql`update attempt set ended_at = now(), outcome = 'completed' where id = ${attempt}`;
     // An older turn a later message replaced keeps the status it had; it holds nothing.
+    const earlier = newId('turn');
     await db.sql`insert into experience_turn (id, job_id, agent_id, submission_id, text, status)
-      values (${newId('turn')}, ${chat}, ${quill.id}, ${`sub_${newId('turn')}`}, 'Earlier', 'needs_you')`;
+      values (${earlier}, ${chat}, ${quill.id}, ${`sub_${earlier}`}, 'Earlier', 'needs_you')`;
     // Not while it is marked private: its chats would leave that protection.
     await db.sql`insert into privacy_settings (space_id, settings)
       values (${scope.spaceId}, ${JSON.stringify({ private_agent_ids: [quill.id] })}::jsonb)`;
@@ -693,17 +706,38 @@ withDb('deleting an agent', () => {
       moved_to: melete.id,
       conversations: 1,
       routines: 1,
+      routines_paused: 1,
     });
     const jobs = await db.sql`select agent_id from job where id in (${chat}, ${routine})`;
     expect(jobs.map((row) => row.agent_id)).toEqual([melete.id, melete.id]);
-    const [turn] = await db.sql`select agent_id from experience_turn where job_id = ${chat}`;
-    expect(turn?.agent_id).toBe(melete.id);
+    // What it said stays its own.
+    const turns =
+      await db.sql`select distinct agent_id from experience_turn where job_id = ${chat}`;
+    expect(turns.map((row) => row.agent_id)).toEqual([quill.id]);
     const [planned] = await db.sql`select agent_id from plan_milestone where id = ${step}`;
     expect(planned?.agent_id).toBe(melete.id);
-    const { agents } = await experience.agents(scope.spaceId);
-    expect(agents.map((agent) => agent.name)).toEqual(['Melete']);
+    // Melete reaches more than Quill did, so the routine waits for the person.
+    const [paused] = await db.sql`select enabled from trigger where id = ${schedule}`;
+    expect(paused?.enabled).toBe(false);
+    // It is listed only to name its turns, and is no longer picked or mentioned.
+    const listed = await experience.agents(scope.spaceId);
+    expect(listed.agents.map((agent) => agent.name)).toEqual(['Melete']);
+    expect(listed.removed?.map((agent) => agent.name)).toEqual(['Quill']);
+    expect(await rejectionOf(experience.requireAgent(scope.spaceId, quill.id))).toMatchObject({
+      status: 404,
+    });
+    await db.sql`update job set state = 'waiting_for_input', current_turn_id = null where id = ${chat}`;
+    await principalContext.run(scope.ownerId, () =>
+      experience.message(scope.spaceId, chat, { text: '@Quill one more line' }, newId('turn')),
+    );
+    const [latest] =
+      await db.sql`select agent_id from experience_turn where job_id = ${chat} order by created_at desc, id desc limit 1`;
+    expect(latest?.agent_id).toBe(melete.id);
+    // Its name is free again.
+    const again = await experience.saveAgent(scope.spaceId, template('Quill'));
+    expect(again.agent.name).toBe('Quill');
 
-    // Melete is never deleted, and a missing agent is not here.
+    // Melete is never deleted, and a deleted agent is not here.
     expect(await rejectionOf(experience.deleteAgent(scope.spaceId, melete.id))).toMatchObject({
       code: 'default_agent_fixed',
       status: 400,
@@ -713,7 +747,7 @@ withDb('deleting an agent', () => {
     });
   });
 
-  test('in a shared space only the owner deletes one, and members keep their chats', async () => {
+  test('in a shared space only the owner deletes one; members keep their chats and routines run on', async () => {
     if (!db || !experience) return;
     const h = await household();
     const service = experience;
@@ -724,6 +758,11 @@ withDb('deleting an agent', () => {
       )
     ).agent;
     const theirs = await h.chat(h.member, helper.id);
+    const routine = await h.chat(h.member, helper.id);
+    await db.sql`update job set kind = 'routine' where id = ${routine.id}`;
+    const schedule = newId('trg');
+    await db.sql`insert into trigger (id, job_id, kind, spec) values (${schedule}, ${routine.id},
+      'schedule', ${JSON.stringify({ kind: 'schedule', cron: '0 9 * * 1' })}::jsonb)`;
     expect(
       await rejectionOf(
         principalContext.run(h.member, () => service.deleteAgent(h.shared, helper.id)),
@@ -732,7 +771,15 @@ withDb('deleting an agent', () => {
     const deleted = await principalContext.run(h.owner, () =>
       service.deleteAgent(h.shared, helper.id),
     );
-    expect(deleted).toMatchObject({ moved_to: melete.id, conversations: 1 });
+    expect(deleted).toMatchObject({
+      moved_to: melete.id,
+      conversations: 1,
+      routines: 1,
+      routines_paused: 0,
+    });
+    // Melete's reach here is what the owner chose, so the routine runs on.
+    const [kept] = await db.sql`select enabled from trigger where id = ${schedule}`;
+    expect(kept?.enabled).toBe(true);
     // The member's chat is still theirs, now with Melete and Melete's reach.
     expect(await h.say(h.member, theirs.id, 'Still here?')).toEqual({
       agent: melete.id,

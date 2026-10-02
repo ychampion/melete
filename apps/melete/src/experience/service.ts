@@ -18,7 +18,7 @@ import {
   sameAgentName,
   unavailable,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import {
@@ -42,12 +42,6 @@ import { AGENT_TEMPLATES, agentValues, agentView, MELETE_AGENT, mentionedAgent }
 import { answerStream } from './answer-filter.ts';
 import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
 
-/** A row still names one being deleted (Postgres 23503), however the driver wraps it. */
-const foreignKeyViolation = (error: unknown): boolean =>
-  typeof error === 'object' &&
-  error !== null &&
-  (('code' in error && error.code === '23503') ||
-    ('cause' in error && foreignKeyViolation((error as { cause: unknown }).cause)));
 /** Turn statuses of work not yet over: an agent is not deleted under one. */
 const UNDER_WAY = ['queued', 'working', 'streaming', 'needs_you', 'paused'];
 /** Turn statuses whose answer may still grow. */
@@ -139,7 +133,7 @@ export class ExperienceService {
               await tx
                 .select({ id: agent.id, name: agent.name })
                 .from(agent)
-                .where(eq(agent.spaceId, row.spaceId)),
+                .where(and(eq(agent.spaceId, row.spaceId), isNull(agent.deletedAt))),
             )
           : null;
         const agentId = mentioned?.id ?? row.agentId;
@@ -209,11 +203,12 @@ export class ExperienceService {
     return id ? this.requireAgent(spaceId, id) : this.defaultAgent(spaceId);
   }
 
+  /** An agent of this space that has not been deleted. */
   async requireAgent(spaceId: string, id: string) {
     const [row] = await this.db
       .select()
       .from(agent)
-      .where(and(eq(agent.id, id), eq(agent.spaceId, spaceId)));
+      .where(and(eq(agent.id, id), eq(agent.spaceId, spaceId), isNull(agent.deletedAt)));
     if (!row) throw experienceMissing();
     return row;
   }
@@ -235,11 +230,13 @@ export class ExperienceService {
       .from(job)
       .where(and(eq(job.spaceId, spaceId), eq(job.kind, 'chat'), ownJob()))
       .groupBy(job.agentId);
+    const view = (row: (typeof rows)[number]) => {
+      const use = stats.find((item) => item.agentId === row.id);
+      return agentView(row, use?.count ?? 0, use?.last ? new Date(use.last) : null, shared);
+    };
     return {
-      agents: rows.map((row) => {
-        const use = stats.find((item) => item.agentId === row.id);
-        return agentView(row, use?.count ?? 0, use?.last ? new Date(use.last) : null, shared);
-      }),
+      agents: rows.filter((row) => !row.deletedAt).map(view),
+      removed: rows.filter((row) => row.deletedAt).map(view),
     };
   }
 
@@ -268,7 +265,10 @@ export class ExperienceService {
   /** The templates, each with a name no agent in the space has yet. */
   async agentTemplates(spaceId: string) {
     const taken = (
-      await this.db.select({ name: agent.name }).from(agent).where(eq(agent.spaceId, spaceId))
+      await this.db
+        .select({ name: agent.name })
+        .from(agent)
+        .where(and(eq(agent.spaceId, spaceId), isNull(agent.deletedAt)))
     ).map((row) => row.name);
     return agentTemplateList.parse({
       templates: AGENT_TEMPLATES.templates.map((template) => ({
@@ -304,7 +304,7 @@ export class ExperienceService {
           await tx
             .select({ id: agent.id, name: agent.name })
             .from(agent)
-            .where(eq(agent.spaceId, spaceId))
+            .where(and(eq(agent.spaceId, spaceId), isNull(agent.deletedAt)))
         )
           .filter((other) => other.id !== id)
           .map((other) => other.name);
@@ -332,22 +332,29 @@ export class ExperienceService {
   }
 
   /**
-   * Delete an agent other than Melete. Whatever named it moves to Melete: its
-   * chats (everyone's, in a shared space), routines and plan steps, and the
-   * turns it answered, since a turn must name an agent that exists. Refused
-   * while one of its turns is under way, so nothing changes hands mid-answer.
+   * Delete an agent other than Melete. Its chats (everyone's, in a shared
+   * space), routines and plan steps move to Melete. The agent itself is only
+   * marked deleted, so the turns it answered keep its name. In a personal
+   * space Melete reaches everything, more than a narrow agent did, so its
+   * routines are paused until the person turns them back on. Refused while any
+   * of its work is running, so nothing changes hands mid-step.
    */
   async deleteAgent(spaceId: string, id: string) {
-    await this.requireAgentOwner(spaceId);
+    const authority = await this.requireAgentOwner(spaceId);
     const target = await this.requireAgent(spaceId, id);
     if (target.isDefault)
       throw new ServiceError('default_agent_fixed', 'Melete is always here.', 400);
     await this.defaultAgent(spaceId);
     return this.db.transaction(async (tx) => {
       const melete = await this.lockAgents(tx, spaceId);
-      // Only a turn still current counts: an older one a later message replaced
+      const busy = new ServiceError(
+        'agent_busy',
+        `${target.name} is in the middle of something. Try again when it finishes.`,
+        409,
+      );
+      // A turn of its still current: an older one a later message replaced
       // may keep the status it had then.
-      const [busy] = await tx
+      const [turn] = await tx
         .select({ id: experienceTurn.id })
         .from(experienceTurn)
         .innerJoin(
@@ -362,12 +369,16 @@ export class ExperienceService {
           ),
         )
         .limit(1);
-      if (busy)
-        throw new ServiceError(
-          'agent_busy',
-          `${target.name} is in the middle of something. Try again when it finishes.`,
-          409,
-        );
+      if (turn) throw busy;
+      // Any attempt still running for work it is bound to: a plan step, a
+      // routine run, a job with no turn at all.
+      const running = await tx.execute(sql`select 1 from attempt a
+        join job j on j.id = a.job_id
+        left join experience_turn t on t.id = j.current_turn_id
+        where j.space_id = ${spaceId} and a.ended_at is null
+          and (j.agent_id = ${id} or t.agent_id = ${id})
+        limit 1`);
+      if (running.length) throw busy;
       // A private agent's chats are kept off models that leave this machine.
       // Moved to Melete they would not be, so its chats go first.
       const privately = await tx.execute(sql`select 1 from privacy_settings
@@ -386,36 +397,41 @@ export class ExperienceService {
         .update(job)
         .set({ agentId: melete.id })
         .where(and(eq(job.agentId, id), eq(job.spaceId, spaceId)))
-        .returning({ kind: job.kind });
-      await tx
-        .update(experienceTurn)
-        .set({ agentId: melete.id })
-        .where(eq(experienceTurn.agentId, id));
+        .returning({ id: job.id, kind: job.kind });
       await tx
         .update(planMilestone)
         .set({ agentId: melete.id })
         .where(eq(planMilestone.agentId, id));
-      // A message or a routine run that named it after the check above holds
-      // it in place; the deletion waits for that like any other work.
-      const [gone] = await tx
-        .delete(agent)
-        .where(and(eq(agent.id, id), eq(agent.spaceId, spaceId), eq(agent.isDefault, false)))
-        .returning({ id: agent.id })
-        .catch((error: unknown) => {
-          if (foreignKeyViolation(error))
-            throw new ServiceError(
-              'agent_busy',
-              `${target.name} is in the middle of something. Try again when it finishes.`,
-              409,
-            );
-          throw error;
-        });
-      if (!gone) throw experienceMissing();
+      // Paused the way the person pauses one: a resumed routine waits for its
+      // next time rather than catching up.
+      const routines = moved.filter((row) => row.kind === 'routine').map((row) => row.id);
+      const paused =
+        authority.space.kind === 'shared' || !routines.length
+          ? []
+          : await tx
+              .update(trigger)
+              .set({
+                enabled: false,
+                cursor: sql`(select coalesce(max(${event.seq}), 0)::text from ${event})`,
+              })
+              .where(
+                and(
+                  inArray(trigger.jobId, routines),
+                  eq(trigger.kind, 'schedule'),
+                  eq(trigger.enabled, true),
+                ),
+              )
+              .returning({ jobId: trigger.jobId });
+      await tx
+        .update(agent)
+        .set({ deletedAt: new Date() })
+        .where(and(eq(agent.id, id), eq(agent.spaceId, spaceId), eq(agent.isDefault, false)));
       return agentDeleted.parse({
         id,
         moved_to: melete.id,
         conversations: moved.filter((row) => row.kind === 'chat').length,
-        routines: moved.filter((row) => row.kind === 'routine').length,
+        routines: routines.length,
+        routines_paused: new Set(paused.map((row) => row.jobId)).size,
       });
     });
   }

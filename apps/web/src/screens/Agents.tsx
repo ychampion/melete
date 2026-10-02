@@ -764,7 +764,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
         return;
       }
       setDeleting(null);
-      const { conversations, routines } = result.data;
+      const { conversations, routines, routines_paused: paused } = result.data;
       const moved = [
         conversations ? `${conversations} chat${conversations === 1 ? '' : 's'}` : '',
         routines ? `${routines} routine${routines === 1 ? '' : 's'}` : '',
@@ -772,7 +772,9 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
       toast({
         kind: 'ok',
         title: `${gone.name} deleted`,
-        sub: moved.length ? `Melete now looks after its ${moved.join(' and ')}.` : undefined,
+        sub: moved.length
+          ? `Melete now looks after its ${moved.join(' and ')}.${paused ? ` ${paused === 1 ? 'The routine is' : 'They are'} paused until you turn ${paused === 1 ? 'it' : 'them'} back on.` : ''}`
+          : undefined,
       });
       refreshAgents();
       templates.reload();
@@ -1039,7 +1041,11 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
         icon="trash"
         tone="danger"
         title={`Delete ${deleting?.name ?? 'this agent'}?`}
-        sub={`Its chats and routines move to Melete, which answers there from now on. What ${deleting?.name ?? 'it'} said stays in those chats.`}
+        sub={
+          agents.find((agent) => agent.is_default)?.fixed_reach
+            ? `Its chats move to Melete, which can use everything you've connected. Its routines are paused until you turn them back on. What ${deleting?.name ?? 'it'} said stays in those chats.`
+            : `Its chats and routines move to Melete, which can use only what you've chosen for it here. What ${deleting?.name ?? 'it'} said stays in those chats.`
+        }
         footer={
           <>
             <Button variant="outline" disabled={removing} onClick={() => setDeleting(null)}>

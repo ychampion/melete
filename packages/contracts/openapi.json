@@ -4562,6 +4562,12 @@
                           "items": {
                             "$ref": "#/components/schemas/__schema246"
                           }
+                        },
+                        "removed": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/__schema246"
+                          }
                         }
                       },
                       "required": [
@@ -4819,13 +4825,19 @@
                           "type": "integer",
                           "minimum": 0,
                           "maximum": 9007199254740991
+                        },
+                        "routines_paused": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
                         }
                       },
                       "required": [
                         "id",
                         "moved_to",
                         "conversations",
-                        "routines"
+                        "routines",
+                        "routines_paused"
                       ],
                       "additionalProperties": false
                     },

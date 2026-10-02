@@ -419,7 +419,11 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'POST /agents': (spaceId, _c, input) => service.saveAgent(spaceId, input),
     'PATCH /agents/{id}': (spaceId, c, input) =>
       service.saveAgent(spaceId, input, c.req.param('id') ?? ''),
-    'DELETE /agents/{id}': (spaceId, c) => service.deleteAgent(spaceId, c.req.param('id') ?? ''),
+    'DELETE /agents/{id}': async (spaceId, c) => {
+      const deleted = await service.deleteAgent(spaceId, c.req.param('id') ?? '');
+      if (deleted.routines_paused) await deps.triggers?.syncSchedules();
+      return deleted;
+    },
     'GET /conversations': (spaceId, c) => service.conversations(spaceId, c.req.query()),
     'POST /conversations': (spaceId, _c, input) => service.createConversation(spaceId, input),
     'GET /conversations/{id}': async (spaceId, c) => ({

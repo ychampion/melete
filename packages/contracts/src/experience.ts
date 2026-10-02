@@ -672,7 +672,14 @@ export const experienceAgent = agentInput.extend({
 });
 export type ExperienceAgent = z.infer<typeof experienceAgent>;
 export const agentTemplate = z.strictObject({ id, title: text, agent: agentInput });
-export const agentList = z.strictObject({ agents: z.array(experienceAgent) });
+export const agentList = z.strictObject({
+  agents: z.array(experienceAgent),
+  /**
+   * Agents deleted from the space, only to name the turns they answered. They
+   * are never offered to pick or to @mention.
+   */
+  removed: z.array(experienceAgent).optional(),
+});
 export const agentResponse = z.strictObject({ agent: experienceAgent });
 export const agentTemplateList = z.strictObject({ templates: z.array(agentTemplate) });
 /** What deleting an agent did: its chats and routines now belong to Melete. */
@@ -682,6 +689,11 @@ export const agentDeleted = z.strictObject({
   moved_to: id,
   conversations: z.number().int().nonnegative(),
   routines: z.number().int().nonnegative(),
+  /**
+   * Routines paused on the move, because Melete can reach more than the
+   * deleted agent could. The person turns each back on themselves.
+   */
+  routines_paused: z.number().int().nonnegative(),
 });
 
 export const memoryItem = z.strictObject({
@@ -1047,7 +1059,8 @@ export const experienceOperations = {
   'PATCH /agents/{id}': { request: agentInput, response: agentResponse },
   /**
    * Deletes an agent other than Melete. Its chats, routines and plan steps move
-   * to Melete. Refused while one of its turns is still under way.
+   * to Melete; the turns it answered keep its name. In a personal space its
+   * routines are paused. Refused while any of its work is still running.
    */
   'DELETE /agents/{id}': { response: agentDeleted },
   'GET /memory/items': {

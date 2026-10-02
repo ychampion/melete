@@ -140,10 +140,7 @@ type Pending = {
   speaker_id: string | null;
   text: string;
   created_at: Date;
-  /**
-   * False when the agent it was said to keeps nothing in memory, or has been
-   * deleted since; null with no agent.
-   */
+  /** False when the agent it was said to keeps nothing in memory; null with no agent. */
   writes_memory: boolean | null;
 };
 
@@ -164,10 +161,7 @@ export async function captureChat(options: CaptureOptions, limit = 50): Promise<
       coalesce(j.principal_id, (select id from owner limit 1)) as principal_id,
       case when e.type = 'job_created' then j.objective else e.payload->>'text' end as text,
       case when e.type = 'job_created' then j.principal_id else e.payload->>'principal_id' end as speaker_id,
-      -- An agent deleted since keeps nothing: what was said to one that kept
-      -- no memory must not be kept because the agent is gone.
-      case when coalesce(e.payload->>'agent_id', j.agent_id) is not null and a.id is null
-        then false else a.writes_memory end as writes_memory
+      a.writes_memory
     from fresh f join event e on e.seq = f.seq join job j on j.id = e.job_id
     -- The agent the message was said to; an older message names none and was said to the chat's.
     left join agent a on a.id = coalesce(e.payload->>'agent_id', j.agent_id) and a.space_id = j.space_id

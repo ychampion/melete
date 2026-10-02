@@ -128,6 +128,8 @@ const required = <T>(map: Map<string, T>, id: string): T => {
 /** Scenario records go through the same deterministic presentation functions as real rows. */
 export class ExperienceMock {
   readonly agents = new Map<string, C.ExperienceAgent>();
+  /** Deleted agents, kept only to name the turns they answered. */
+  readonly removedAgents = new Map<string, C.ExperienceAgent>();
   readonly chats = new Map<string, Chat>();
   readonly permissions = new Map<string, C.PermissionCard>();
   readonly permissionDrafts = new Map<string, string>();
@@ -1583,6 +1585,7 @@ export class ExperienceMock {
       }
       case 'GET /agents':
         return {
+          removed: [...this.removedAgents.values()],
           agents: [...this.agents.values()].map((agent) => ({
             ...agent,
             usage: {
@@ -1646,21 +1649,21 @@ export class ExperienceMock {
             `${target.name} is in the middle of something. Try again when it finishes.`,
             'agent_busy',
           );
+        // The turns it answered keep its name.
         let conversations = 0;
-        for (const chat of this.chats.values()) {
+        for (const chat of this.chats.values())
           if (chat.view.agent_id === id) {
             chat.view.agent_id = melete.id;
             conversations += 1;
           }
-          for (const turn of chat.turns) if (turn.agent_id === id) turn.agent_id = melete.id;
-        }
         for (const plan of this.plans.values())
           for (const step of plan.milestones)
             if (step.assignee.kind === 'agent' && step.assignee.agent_id === id)
               step.assignee = { kind: 'agent', agent_id: melete.id };
         this.agents.delete(id);
+        this.removedAgents.set(id, target);
         // The mock's routines carry no agent of their own.
-        return { id, moved_to: melete.id, conversations, routines: 0 };
+        return { id, moved_to: melete.id, conversations, routines: 0, routines_paused: 0 };
       }
       case 'GET /conversations': {
         // Most recently active first, a page at a time, as the service answers.
