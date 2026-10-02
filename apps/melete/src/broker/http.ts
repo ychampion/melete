@@ -19,6 +19,7 @@ import { AuthenticationError, matchesServiceKey, verifyCapability } from './capa
 import type { ToolCatalog } from './catalog.ts';
 import type { ComposeService } from './compose.ts';
 import { BrokerFault } from './errors.ts';
+import { RepeatGuard } from './repeats.ts';
 
 export interface BrokerOperations {
   discovery?: ToolCatalog;
@@ -85,6 +86,7 @@ export function createBrokerApp(options: {
     throw new Error('approval and attempt signing keys must be distinct');
   }
   const app = new Hono<{ Variables: { claims: CapabilityClaims } }>();
+  const repeats = new RepeatGuard();
   app.onError((error, c) => {
     if (error instanceof AuthenticationError) {
       return c.json({ error: { code: 'unauthorized', message: error.message } }, 401);
@@ -177,6 +179,7 @@ export function createBrokerApp(options: {
       .strict()
       .parse(await c.req.json());
     if (!options.broker.discovery) throw new BrokerFault('unknown_tool');
+    repeats.note(c.get('claims'), body.name, body.arguments);
     if (body.name === 'chase.follow_up') {
       const claims = c.get('claims');
       const catalog = await options.broker.catalog(claims);
@@ -222,12 +225,16 @@ export function createBrokerApp(options: {
     await options.broker.say(c.get('claims'), input.text, input.ref);
     return c.json({ status: 'ok' });
   });
-  app.post('/actions', async (c) =>
-    c.json(
-      await options.broker.propose(c.get('claims'), proposeActionRequest.parse(await c.req.json())),
-      201,
-    ),
-  );
+  app.post('/actions', async (c) => {
+    const request = proposeActionRequest.parse(await c.req.json());
+    repeats.note(
+      c.get('claims'),
+      request.kind,
+      { connection_id: request.connection_id, payload: request.payload },
+      request.client_ref,
+    );
+    return c.json(await options.broker.propose(c.get('claims'), request), 201);
+  });
   app.post('/reactions', async (c) =>
     c.json(
       await options.broker.react(c.get('claims'), reactRequest.parse(await c.req.json())),
