@@ -129,6 +129,7 @@ import { mountPrivacy } from './privacy/routes.ts';
 import { engineProtocol, providerAddress, servicePrivacyRouter } from './privacy/service.ts';
 import { mountPush } from './push/routes.ts';
 import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
+import { attachRuns, RunService } from './runs/service.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
 import { assertDockerEngine } from './runtime/docker-engine.ts';
@@ -161,6 +162,8 @@ const TEST_CONNECTOR_SCOPES = ['test.send', 'test.read'];
 export type AppDeps = {
   env: Env;
   db: Database | null;
+  /** Long work in the background; built from `jobs` when left out. */
+  runs?: RunService;
   loginThrottle?: LoginThrottle;
   jobs?: JobService;
   triggers?: TriggerService;
@@ -352,6 +355,7 @@ export function createApp(deps: AppDeps) {
       changes: deps.events,
       browser: Boolean(deps.browserSessions),
       privacy,
+      runs: deps.runs ?? deps.runner?.runs ?? (deps.jobs ? new RunService(deps.jobs) : undefined),
     });
   if (deps.db)
     mountCompanies(app, {
@@ -493,6 +497,7 @@ export async function bootstrap(
   const privacy = handle ? servicePrivacyRouter(handle.sql, env) : defaultPrivacyRouter();
   let queue: Awaited<ReturnType<typeof startQueue>> | null = null;
   let jobs: JobService | undefined;
+  let runs: RunService | undefined;
   let runner: AttemptRunner | undefined;
   let triggers: TriggerService | undefined;
   let approvals: ApprovalService | undefined;
@@ -662,6 +667,7 @@ export async function bootstrap(
     }
     if (env.DATABASE_URL) queue = await startQueue(env.DATABASE_URL);
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
+    runs = jobs ? new RunService(jobs) : undefined;
     // A job memory invalidated is queued with no wake of its own; this enqueues
     // one. Both memory startups deliver through it.
     const activeJobs = jobs;
@@ -770,6 +776,7 @@ export async function bootstrap(
           throw new Error('MELETE_CAPABILITY_KEY is required to issue attempt capabilities.');
         effectBoundary = await startEffectBoundary(handle, env, {
           privacy,
+          runs,
           fakeProvider: options.fakeProvider,
           browserSessions: browser?.sessions,
           connections,
@@ -891,6 +898,7 @@ export async function bootstrap(
       // attempt has ended however it ended, finished, stopped, fenced, lost or
       // cut short by shutdown, and never inside the outcome transaction: both
       // are provider calls, and that transaction holds the event order lock.
+      if (runs) attachRuns(runner, runs);
       if (sandboxes) runner.onSettled.push((attemptId) => sandboxes?.afterAttempt(attemptId));
       // Where the broker runs here, what a finished attempt left dispatched with
       // nobody waiting on it is settled before the attempt commits.
@@ -915,6 +923,7 @@ export async function bootstrap(
       );
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
+      if (runs) runs.triggers = triggers;
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
       operations = new OperationService(jobs, runner);
@@ -956,6 +965,7 @@ export async function bootstrap(
           signIn,
           privacy,
           modelSettings,
+          runs,
         });
       // A removal outlives the request that asked for it and the process that
       // was running it, so it is resumed at startup and every minute after.
@@ -1072,6 +1082,7 @@ export async function bootstrap(
     evaluator,
     runtimeAdapter: options.runtime ? 'injected' : env.MELETE_RUNTIME_ADAPTER,
     runner,
+    runs,
     broker: effectBoundary?.broker,
     registry,
     sql: handle?.sql,

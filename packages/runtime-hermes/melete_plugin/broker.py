@@ -14,6 +14,7 @@ verify step, not to a forwarder.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import urllib.error
@@ -148,9 +149,11 @@ class BrokerClient:
         """Only the broker may supply a schema and its fixed connection."""
         return self._call("POST", "/tools/load", arguments)
 
-    def call_native(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def call_native(
+        self, name: str, arguments: Dict[str, Any], timeout: Optional[float] = None
+    ) -> Dict[str, Any]:
         """Native catalog tools still execute on the service side of the gate."""
-        return self._call("POST", "/tools/call", {"name": name, "arguments": arguments})
+        return self._call("POST", "/tools/call", {"name": name, "arguments": arguments}, timeout)
     def wait(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Request a typed lifecycle wait; authority remains on the broker."""
         return self._call("POST", "/attempt/wait", payload)
@@ -160,6 +163,20 @@ class BrokerClient:
         result = self._call("GET", f"/actions/{action_id}")
         action = result.get("action") if isinstance(result, dict) else None
         return action if isinstance(action, dict) else {}
+
+    def screenshot(self, action_id: str) -> Optional[bytes]:
+        """A succeeded screenshot's picture, read by the service; None when it has none."""
+        try:
+            result = self._call("GET", f"/actions/{urllib.parse.quote(action_id, safe='')}/screenshot")
+        except BrokerError:
+            return None
+        data = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(data, str):
+            return None
+        try:
+            return base64.b64decode(data, validate=True)
+        except ValueError:
+            return None
 
     def start_execution(self, action_id: str) -> Dict[str, Any]:
         """Claim one admitted intent once; a lost response is never replayed."""

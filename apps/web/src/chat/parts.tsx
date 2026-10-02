@@ -7,7 +7,7 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { AgentFace, faceStateFor } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
-import { Logo, type LogoName } from '../design/logos.tsx';
+import type { LogoName } from '../design/logos.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import {
   Avatar,
@@ -21,12 +21,10 @@ import {
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
-import { lastActivity, spanOf } from '../experience/duration.ts';
 import { lookOf } from '../experience/hooks.ts';
 import { plainTitle } from '../experience/plain.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
 import { OPEN_TEXT_LIMIT_BYTES } from '../experience/text-prefix.ts';
-import { toolOf } from '../experience/trace.ts';
 import type {
   ActionResolution,
   ActionReview,
@@ -41,12 +39,10 @@ import type {
   Receipt,
   ResultCard as ResultCardData,
   RuleBounds,
-  Source,
-  TrailStep,
   TurnStatus,
 } from '../experience/types.ts';
 import { href } from '../router.ts';
-import { ActivityRow, ThinkingBlock } from './activity.tsx';
+import { longMessage } from './worklog.ts';
 
 export const timeOf = (iso: string) =>
   new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -105,15 +101,6 @@ const ICON_BY_APP: Record<string, IconName> = {
 export const appIcon = (app: string, label?: string): IconName =>
   ICON_BY_APP[(label ?? '').toLowerCase()] ?? ICON_BY_APP[app.toLowerCase()] ?? 'connectors';
 
-const KIND_ICON: Record<Source['kind'], IconName> = {
-  event: 'calendar',
-  message: 'messages',
-  draft: 'messages',
-  file: 'fileText',
-  page: 'globe',
-  task: 'check',
-};
-
 /* ---------- user bubble ---------- */
 
 export function UserBubble({
@@ -127,12 +114,33 @@ export function UserBubble({
   onRetry?: () => void;
 }) {
   const delivery = turn.delivery;
+  const [whole, setWhole] = useState(false);
+  const bodyId = useId();
   // A turn started elsewhere is drawn from its events before its message is read.
   if (!turn.turn.text) return null;
+  const long = longMessage(turn.turn.text);
   return (
     <div className="bubble-wrap">
-      <div className="bubble" data-pending={delivery ? 'true' : undefined}>
-        {turn.turn.text}
+      <div
+        className="bubble"
+        data-pending={delivery ? 'true' : undefined}
+        data-folded={long && !whole ? 'true' : undefined}
+      >
+        <div className="bubble-text" id={bodyId}>
+          {turn.turn.text}
+        </div>
+        {long ? (
+          <button
+            type="button"
+            className="bubble-more"
+            aria-expanded={whole}
+            aria-controls={bodyId}
+            onClick={() => setWhole(!whole)}
+          >
+            {whole ? 'Show less' : 'Show more'}
+            <Icon name="chevronDown" size={14} />
+          </button>
+        ) : null}
       </div>
       {reactions.length ? <ReactionRow reactions={reactions} /> : null}
       <div className="bubble-meta">
@@ -166,99 +174,8 @@ export function UserBubble({
   );
 }
 
-/* ---------- trail ---------- */
+/* ---------- a stopped turn ---------- */
 
-function SourceChip({ source }: { source: Source }) {
-  const logo = logoFor(source.app);
-  const inner = logo ? (
-    <Logo name={logo} size={16} />
-  ) : (
-    <span style={{ color: 'var(--muted)', display: 'flex' }}>
-      <Icon name={KIND_ICON[source.kind]} size={13} />
-    </span>
-  );
-  const body = (
-    <>
-      {inner}
-      <span>{source.title}</span>
-    </>
-  );
-  return source.url ? (
-    <a className="trail-chip" href={source.url} target="_blank" rel="noreferrer" title={source.app}>
-      {body}
-    </a>
-  ) : (
-    <span className="trail-chip" title={source.app}>
-      {body}
-    </span>
-  );
-}
-
-const actionIcon = (step: Extract<TrailStep, { type: 'action' }>): IconName => {
-  const kinds = step.sources.map((s) => s.kind);
-  const apps = step.sources.map((s) => s.app.toLowerCase());
-  if (apps.some((a) => a.includes('calendar'))) return 'calendar';
-  if (apps.some((a) => a.includes('maps'))) return 'mapPin';
-  if (kinds.includes('draft') || kinds.includes('message')) return 'messages';
-  if (kinds.includes('file')) return 'fileText';
-  if (kinds.includes('event')) return 'calendar';
-  if (kinds.includes('page')) return 'search';
-  const label = step.label.toLowerCase();
-  if (label.includes('calendar')) return 'calendar';
-  if (label.includes('draft') || label.includes('message')) return 'messages';
-  if (label.includes('browser') || label.includes('opened')) return 'globe';
-  if (label.includes('slot') || label.includes('chose')) return 'cursor';
-  return 'search';
-};
-
-const RUNNING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
-
-/** A step the trail tells without a tool entry: grouped app work and its sources. */
-function GroupStep({
-  step,
-  chipsOnly,
-}: {
-  step: Extract<TrailStep, { type: 'action' }>;
-  /** The rows above already name the work, so only the sources are added. */
-  chipsOnly: boolean;
-}) {
-  const chips = step.sources.length ? (
-    <div className="trail-chips">
-      {step.sources.map((source) => (
-        <SourceChip key={`${source.app}-${source.title}`} source={source} />
-      ))}
-    </div>
-  ) : null;
-  if (chipsOnly) return chips ? <li className="act-sources">{chips}</li> : null;
-  return (
-    <li className="col">
-      <div className="trail-row">
-        <span className="trail-icon">
-          <span style={{ color: 'var(--secondary)', display: 'flex' }}>
-            <Icon name={actionIcon(step)} size={15} />
-          </span>
-        </span>
-        <span style={{ flex: 1, fontSize: 13, color: 'var(--secondary)', minWidth: 0 }}>
-          {step.label}
-          {step.meta ? <span style={{ color: 'var(--muted)' }}> · {step.meta}</span> : null}
-        </span>
-      </div>
-      {chips}
-    </li>
-  );
-}
-
-/**
- * What the agent did for a turn, drawn above its answer: an ordered list of
- * the work, one row per tool entry as it starts, finishing in place, with the
- * model's reasoning closed between rows. The header is live while the turn
- * runs and says how long it took and how many steps once it ends. The list is
- * open while the agent works and nothing has been said yet, and closed once
- * the answer arrives or the turn ends, unless the person opened or closed it,
- * or the job kept going after it first settled (a chase: the send, then the
- * reply and the follow-up), which stays open so what it did after the send is
- * in view.
- */
 /**
  * The line under a stopped turn's header: how many steps it took, the same
  * count the header shows, and the last of them.
@@ -269,196 +186,6 @@ export function stoppedLine(tools: { title: string }[]): string {
   return `Stopped before it finished, after ${tools.length} step${
     tools.length === 1 ? '' : 's'
   }. Last: ${last.title}. Ask it to carry on when you’re ready.`;
-}
-
-export function Trail({
-  turn,
-  now,
-  answering = false,
-}: {
-  turn: TranscriptTurn;
-  now: number;
-  /** Whether the answer is being drawn beneath. */
-  answering?: boolean;
-}) {
-  const running = RUNNING.includes(turn.status);
-  const dones = turn.trail.filter(
-    (s): s is Extract<TrailStep, { type: 'done' }> => s.type === 'done',
-  );
-  const doneStep = running ? undefined : dones.at(-1);
-  const continued =
-    turn.trail.findIndex((s) => s.type === 'done') < turn.trail.length - 1 && dones.length > 0;
-  const [open, setOpen] = useState<boolean | null>(null);
-  const stepsId = useId();
-  const steps = turn.trail.filter((s) => s.type !== 'done');
-  if (turn.trail.length === 0 && !running) return null;
-  const tools = steps.flatMap((step) => {
-    const tool = toolOf(step);
-    return tool ? [tool] : [];
-  });
-  const hasRows = tools.length > 0;
-  const expandable = steps.length > 0;
-  const expanded = expandable && (open ?? (running ? !answering : continued));
-  // A turn that ended without a closing step ended where its last tool entry did, so
-  // its time stops there instead of counting on for as long as the chat is open.
-  const ended = running || doneStep ? null : lastActivity(tools);
-  const started = new Date(turn.turn.created_at).getTime();
-  const elapsed = doneStep
-    ? Math.max(1, doneStep.elapsed_ms / 1000)
-    : running
-      ? Math.max(0, (now - started) / 1000)
-      : ended !== null
-        ? Math.max(1, (ended - started) / 1000)
-        : null;
-  const took = elapsed === null ? null : spanOf(elapsed);
-  const failures = tools.filter((tool) => tool.status === 'failed').length;
-  const rest =
-    doneStep || turn.status === 'stopped'
-      ? [
-          tools.length ? `${tools.length} step${tools.length === 1 ? '' : 's'}` : '',
-          failures ? `${failures} didn’t work` : '',
-          doneStep && !hasRows && doneStep.source_count
-            ? `${doneStep.source_count} source${doneStep.source_count === 1 ? '' : 's'}`
-            : '',
-        ]
-          .filter(Boolean)
-          .join(' · ')
-      : '';
-  // What a stopped turn got done, counted the way the header counts its steps.
-  const stoppedSummary = turn.status === 'stopped' ? stoppedLine(tools) : null;
-  const underWay = [...tools].reverse().find((tool) => tool.status === 'running');
-  const currentTitle = turn.live?.title ?? underWay?.title;
-  const head = running ? (
-    <>
-      <span className="working-dots" aria-hidden="true">
-        <span className="pulse" />
-        <span className="pulse" style={{ animationDelay: '.2s' }} />
-        <span className="pulse" style={{ animationDelay: '.4s' }} />
-      </span>
-      <span>{turn.status === 'paused' ? `Paused · ${took}` : `Working · ${took}`}</span>
-      {!expanded && currentTitle ? (
-        <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
-          · {currentTitle}
-        </span>
-      ) : null}
-    </>
-  ) : (
-    <>
-      {turn.status === 'stopped' ? (
-        <span>{took ? `Stopped after ${took}` : 'Stopped'}</span>
-      ) : turn.status === 'needs_you' ? (
-        <span>Waiting for you</span>
-      ) : turn.status === 'failed' ? (
-        <span>Stopped without finishing</span>
-      ) : (
-        <span>{took ? `Worked for ${took}` : 'Done'}</span>
-      )}
-      {rest ? (
-        <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
-          · {rest}
-        </span>
-      ) : null}
-    </>
-  );
-  const last = steps.at(-1);
-  // A running row or reasoning being written already shows the work under way.
-  const showsWork =
-    underWay !== undefined || (last?.type === 'reasoning' && running) || turn.status === 'paused';
-  return (
-    <div className="col trail" style={{ gap: 4 }}>
-      {expandable ? (
-        <button
-          type="button"
-          className="trail-head"
-          aria-expanded={expanded}
-          aria-controls={stepsId}
-          onClick={() => setOpen(!expanded)}
-        >
-          <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={14} />
-          {head}
-        </button>
-      ) : (
-        <div className="trail-head" data-static="true">
-          {head}
-        </div>
-      )}
-      {stoppedSummary ? (
-        <p
-          style={{
-            margin: '2px 0 0 20px',
-            fontFamily: 'var(--font-body)',
-            fontSize: 13,
-            lineHeight: '19px',
-            color: 'var(--muted)',
-          }}
-        >
-          {stoppedSummary}
-        </p>
-      ) : null}
-      {expanded ? (
-        <ol className="trail-steps act-list" id={stepsId} aria-label="What it did">
-          {steps.map((step, index) => {
-            const key =
-              step.type === 'action' && step.tool ? step.tool.id : `${step.type}-${index}`;
-            if (step.type === 'reasoning')
-              return (
-                <ThinkingBlock
-                  key={key}
-                  text={step.text}
-                  live={running && index === steps.length - 1}
-                />
-              );
-            if (step.type === 'say')
-              return (
-                <li key={key} className="trail-say">
-                  {step.text}
-                </li>
-              );
-            if (step.type === 'note')
-              return (
-                <li key={key} className="trail-row" data-note="true">
-                  <span className="trail-icon">
-                    <span
-                      style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: 999,
-                        background: 'var(--control)',
-                      }}
-                    />
-                  </span>
-                  <span style={{ flex: 1, fontSize: 13, color: 'var(--muted)' }}>{step.text}</span>
-                </li>
-              );
-            if (step.type !== 'action') return null;
-            const tool = toolOf(step);
-            if (tool) return <ActivityRow key={key} tool={tool} now={now} live={running} />;
-            return <GroupStep key={key} step={step} chipsOnly={hasRows} />;
-          })}
-          {running && !showsWork ? (
-            <li className="trail-row">
-              <span className="trail-icon">
-                <span style={{ color: 'var(--primary)', display: 'flex' }}>
-                  <Icon name="loader" size={14} stroke={2} className="spin" />
-                </span>
-              </span>
-              <span style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>
-                {turn.live?.title ?? 'Still working'}
-              </span>
-            </li>
-          ) : null}
-          {turn.status === 'paused' ? (
-            <li className="trail-row">
-              <span className="trail-icon">
-                <Icon name="clock" size={14} />
-              </span>
-              <span style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>Paused</span>
-            </li>
-          ) : null}
-        </ol>
-      ) : null}
-    </div>
-  );
 }
 
 /** A message body as paragraphs: a blank line is a gap, a single break stays a break. */
@@ -1272,6 +999,8 @@ export function Questionnaire({
           <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
             Press 1–{options.length + 1}
           </span>
+        ) : answered === 'withdrawn' ? (
+          <Status tone="kind">Withdrawn</Status>
         ) : null}
       </div>
       {options.map((option, index) => {
@@ -1476,6 +1205,12 @@ export function UnknownCard({
 /** The glyphs a person can answer with in one tap. Anything else is a message. */
 export const REACTION_SET = ['\u{1F44D}', '\u{1F44E}', '\u2764\uFE0F', '\u{1F64F}'] as const;
 
+/** Under an answer, the two that say whether it helped, sent as the same reactions. */
+const FEEDBACK: { emoji: (typeof REACTION_SET)[number]; icon: IconName; label: string }[] = [
+  { emoji: '\u{1F44D}', icon: 'thumbsUp', label: 'Good answer' },
+  { emoji: '\u{1F44E}', icon: 'thumbsDown', label: 'Not a good answer' },
+];
+
 /**
  * Reactions drawn on the message they belong to, never as a row of their own.
  * The same glyph from both sides shows once, with a count.
@@ -1529,23 +1264,23 @@ export function ActionBar({
       <div className="action-bar">
         <IconButton name="copy" label="Copy" size={s} iconSize={i} onClick={onCopy} />
         {onReact && reactionMessageSeq(turn) !== null
-          ? REACTION_SET.map((emoji) => (
+          ? FEEDBACK.map(({ emoji, icon, label }) => (
               <button
                 key={emoji}
                 type="button"
                 className="react-btn"
                 style={{ width: s, height: s }}
-                aria-label={`React with ${emoji}`}
+                aria-label={label}
+                title={label}
                 aria-pressed={mine.has(emoji)}
                 data-on={mine.has(emoji) ? 'true' : undefined}
                 onClick={() => onReact(emoji)}
               >
-                <span aria-hidden="true">{emoji}</span>
+                <Icon name={icon} size={i} />
               </button>
             ))
           : null}
-        <div className="grow" />
-        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{timeOf(turn.turn.created_at)}</span>
+        <span className="answer-time">{timeOf(turn.turn.created_at)}</span>
       </div>
     </div>
   );

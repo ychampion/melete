@@ -217,10 +217,11 @@ withDb('the agent asks the person and waits for the answer', () => {
     });
     const [closed] = await questionsOf(id);
     expect(closed).toMatchObject({ state: 'answered', answer: 'Thursday' });
-    // The next attempt reads the answer as the person's new message.
+    // The next attempt reads the answer as the person's new message: a pick
+    // from its own options, not words the person said.
     const next = await claim(id, 'input');
     expect(next.bundle.inputs.new_user_messages.map((message) => message.content)).toEqual([
-      'You chose: Thursday',
+      'The person picked your option: Thursday',
     ]);
     pickedSeq = picked.seq;
   });

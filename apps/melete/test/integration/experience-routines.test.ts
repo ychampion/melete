@@ -422,7 +422,7 @@ withDb('routines, time zone and setup as the person sees them', () => {
     const restarted = await request(`/automations/${routine.id}/restart`, 'POST');
     expect(restarted.status).toBe(200);
     const migration = readFileSync(
-      new URL('../../drizzle/0075_orphaned_routine_threads.sql', import.meta.url),
+      new URL('../../drizzle/0076_orphaned_routine_threads.sql', import.meta.url),
       'utf8',
     );
     const listing = migration.split('--> statement-breakpoint')[1] ?? '';

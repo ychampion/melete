@@ -46,6 +46,7 @@ import type {
 } from '../experience/types.ts';
 import { isWaiting, waitingOn } from '../experience/waiting.ts';
 import { href, navigate } from '../router.ts';
+import { InProgress } from '../runs/RunCards.tsx';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { PushOffer } from './Notifications.tsx';
 import { RoutineResults } from './RoutineResults.tsx';
@@ -1068,6 +1069,7 @@ export function HomeScreen() {
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
           <WaitingOnSection now={now} />
           <RoutineResults results={data?.routine_results ?? []} now={now} />
+          <InProgress now={now} />
           <InMotion now={now} />
         </div>
         <DayColumn now={now} />

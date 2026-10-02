@@ -39,8 +39,24 @@ export type TurnBlock =
       permission: Permission;
       decided: PermissionOption | 'replaced' | 'withdrawn' | 'outdated' | 'closed' | null;
     }
-  /** `answered` is the option id, or `closed` when the turn moved on after an answer given elsewhere. */
+  /**
+   * `answered` is the option id, `withdrawn` when the person stopped the turn
+   * while it waited, or `closed` when the turn moved on after an answer given elsewhere.
+   */
   | { type: 'question'; question: Question; answered: string | null };
+
+/**
+ * What a turn did, in the order it happened: each stretch of the agent's own
+ * words between two pieces of work is its own `text` entry, so a message
+ * written before a tool call is never run together with the one after it.
+ * Tool rows and blocks are named by id and read from `trail` and `blocks`,
+ * which hold their latest copies. Reasoning has no place here.
+ */
+export type FlowEntry =
+  | { type: 'text'; text: string }
+  | { type: 'tool'; id: string }
+  | { type: 'step'; step: Exclude<TrailStep, { type: 'reasoning' }> }
+  | { type: 'block'; id: string };
 
 export type TranscriptTurn = {
   id: string;
@@ -51,6 +67,8 @@ export type TranscriptTurn = {
   status: TurnStatus;
   trail: TrailStep[];
   blocks: TurnBlock[];
+  /** Messages, work and blocks in the order they arrived. */
+  flow: FlowEntry[];
   /** True while text_delta items are arriving for this turn. */
   streaming: boolean;
   delivery: Turn['delivery'];
@@ -108,6 +126,7 @@ const fromTurn = (turn: Turn): TranscriptTurn => ({
   status: turn.status,
   trail: [],
   blocks: [],
+  flow: [],
   streaming: false,
   delivery: turn.delivery,
   messageSeq: null,
@@ -167,7 +186,7 @@ export function answerOf(turn: TranscriptTurn): string {
 const FINAL = new Set<TurnStatus>(['done', 'failed', 'stopped']);
 
 /** A card, receipt, permission or question already drawn is not drawn twice. */
-const blockId = (block: TurnBlock): string =>
+export const blockId = (block: TurnBlock): string =>
   block.type === 'card'
     ? block.card.id
     : block.type === 'receipt'
@@ -365,6 +384,26 @@ function placeTool(trail: TrailStep[], tool: ToolEntry): TrailStep[] {
   return next;
 }
 
+/** A tool entry's row is placed, and the flow names it where it first appeared. */
+function withTool(turn: TranscriptTurn, tool: ToolEntry): TranscriptTurn {
+  const trail = placeTool(turn.trail, tool);
+  if (trail.length <= turn.trail.length) return { ...turn, trail };
+  return { ...turn, trail, flow: [...turn.flow, { type: 'tool', id: tool.id }] };
+}
+
+/**
+ * Add streamed words to the flow: to the message being written, or as a new
+ * message when work came between. A restart drops what the lost attempt said.
+ */
+export function flowText(flow: FlowEntry[], text: string, restart = false): FlowEntry[] {
+  const kept = restart ? flow.filter((entry) => entry.type !== 'text') : flow;
+  const last = kept.at(-1);
+  if (last?.type === 'text' && !restart)
+    return [...kept.slice(0, -1), { type: 'text', text: last.text + text }];
+  if (!text.trim()) return kept;
+  return [...kept, { type: 'text', text }];
+}
+
 function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
   const item = event.item;
   switch (item.type) {
@@ -372,18 +411,20 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
       // A finished step that is one tool entry joins that entry's row.
       if (item.tool) {
         const tool = item.tool;
-        return patchTurn(base, event.turn_id, (turn) => ({
-          ...turn,
-          trail: placeTool(turn.trail, tool),
-        }));
+        return patchTurn(base, event.turn_id, (turn) => withTool(turn, tool));
       }
-      return patchTurn(base, event.turn_id, (turn) => ({ ...turn, trail: [...turn.trail, item] }));
+      return patchTurn(base, event.turn_id, (turn) => ({
+        ...turn,
+        trail: [...turn.trail, item],
+        flow: [...turn.flow, { type: 'step', step: item }],
+      }));
     case 'say':
     case 'note':
     case 'done':
       return patchTurn(base, event.turn_id, (turn) => ({
         ...turn,
         trail: [...turn.trail, item],
+        flow: [...turn.flow, { type: 'step', step: item }],
         streaming: item.type === 'done' ? false : turn.streaming,
       }));
     case 'reasoning':
@@ -400,11 +441,12 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
     case 'text_delta':
       return patchTurn(base, event.turn_id, (turn) =>
         // A finished turn read with its saved answer already holds this text,
-        // and it is not working again.
+        // and it is not working again; its flow still learns where each message fell.
         FINAL.has(turn.status) && turn.turn.answer
-          ? turn
+          ? { ...turn, flow: flowText(turn.flow, item.text, item.restart) }
           : {
               ...turn,
+              flow: flowText(turn.flow, item.text, item.restart),
               // A retried turn's answer replaces the lost attempt's partial one.
               streamed: item.restart ? item.text : turn.streamed + item.text,
               streaming: true,
@@ -414,6 +456,7 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
       return patchTurn(base, event.turn_id, (turn) => ({
         ...turn,
         blocks: [...turn.blocks, { type: 'card', card: item.card }],
+        flow: [...turn.flow, { type: 'block', id: item.card.id }],
       }));
     case 'receipt': {
       // A reversal names the change it undid; the original is drawn as reversed.
@@ -428,6 +471,7 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
           ),
           { type: 'receipt', receipt: item.receipt, reversed: false },
         ],
+        flow: [...turn.flow, { type: 'block', id: item.receipt.id }],
       }));
     }
     case 'permission':
@@ -437,11 +481,13 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
           ...turn.blocks,
           { type: 'permission', permission: item.permission, decided: null },
         ],
+        flow: [...turn.flow, { type: 'block', id: item.permission.id }],
       }));
     case 'question':
       return patchTurn(base, event.turn_id, (turn) => ({
         ...turn,
         blocks: [...turn.blocks, { type: 'question', question: item.question, answered: null }],
+        flow: [...turn.flow, { type: 'block', id: item.question.id }],
       }));
     case 'status': {
       if (replayedStatus(base, event)) return base;
@@ -466,8 +512,7 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
       const tool = item.tool;
       const underWay = tool.status === 'running' || tool.status === 'needs_approval';
       return patchTurn(base, event.turn_id, (turn) => ({
-        ...turn,
-        trail: placeTool(turn.trail, tool),
+        ...withTool(turn, tool),
         live: underWay
           ? { id: tool.id, title: tool.title }
           : turn.live?.id === tool.id
@@ -482,6 +527,81 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
 
 export function applyEvents(transcript: Transcript, events: ExperienceEvent[]): Transcript {
   return events.reduce(applyEvent, transcript);
+}
+
+/** A turn read from the service's saved copy, rather than drawn from events or sent here. */
+const savedTurn = (transcript: Transcript, turnId: string | null): TranscriptTurn | undefined => {
+  const turn = turnId ? transcript.turns.find((entry) => entry.id === turnId) : undefined;
+  return turn && !turn.unread && !turn.id.startsWith('local_') ? turn : undefined;
+};
+
+/**
+ * Replay a conversation's history over its saved turns. The saved copy and the
+ * conversation's own status are the latest known state, so a status the history
+ * passes through ("working" on the way to "needs you") never shows: the turn and
+ * the composer keep what the service said. Everything else a status implies, such
+ * as a question it shows was answered elsewhere, is kept. Statuses of turns the
+ * saved copy did not have are applied as they come.
+ */
+export function applyHistory(transcript: Transcript, events: ExperienceEvent[]): Transcript {
+  return events.reduce((current, event) => {
+    const held = event.item.type === 'status' ? savedTurn(current, event.turn_id) : undefined;
+    const next = applyEvent(current, event);
+    if (!held || next === current) return next;
+    return {
+      ...next,
+      composer: current.composer,
+      status: current.status,
+      turns: next.turns.map((turn) =>
+        turn.id === held.id
+          ? {
+              ...turn,
+              status: held.status,
+              streaming: held.streaming,
+              live: held.live,
+              delivery: held.delivery,
+              turn: held.turn,
+            }
+          : turn,
+      ),
+    };
+  }, transcript);
+}
+
+/**
+ * Take the statuses of a fresh read of the saved turns and the conversation,
+ * once the history has been replayed: anything that changed while it was read
+ * is in this copy.
+ */
+export function adoptSaved(
+  transcript: Transcript,
+  saved: Turn[],
+  composer: ComposerState,
+  status: TurnStatus,
+): Transcript {
+  return {
+    ...transcript,
+    composer,
+    status,
+    turns: transcript.turns.map((turn) => {
+      const copy = saved.find((entry) => entry.id === turn.id);
+      if (!copy || turn.unread) return turn;
+      return {
+        ...turn,
+        status: copy.status,
+        streaming: false,
+        live: UNDER_WAY.has(copy.status) ? turn.live : null,
+        delivery: copy.delivery,
+        turn: {
+          ...turn.turn,
+          status: copy.status,
+          delivery: copy.delivery,
+          answer: copy.answer || turn.turn.answer,
+        },
+        ...(FINAL.has(copy.status) ? { finished: true } : {}),
+      };
+    }),
+  };
 }
 
 export function applyGap(transcript: Transcript, gap: StreamGap): Transcript {
@@ -536,6 +656,7 @@ export function acceptLocalTurn(
                     status: early.status,
                     trail: early.trail,
                     blocks: early.blocks,
+                    flow: early.flow,
                     streaming: early.streaming,
                     messageSeq: early.messageSeq,
                     live: early.live,
@@ -607,7 +728,12 @@ export function applyDecision(transcript: Transcript, decision: ExperienceDecisi
             option.label === decision.answer || option.label.split(' · ')[0] === decision.answer,
         )
       : undefined;
-  return markQuestion(transcript, decision.id, chosen?.id ?? 'closed');
+  // A question withdrawn by a stop says so, rather than reading as answered elsewhere.
+  return markQuestion(
+    transcript,
+    decision.id,
+    chosen?.id ?? (decision.outcome === 'withdrawn' ? 'withdrawn' : 'closed'),
+  );
 }
 
 export function markQuestion(transcript: Transcript, id: string, optionId: string): Transcript {

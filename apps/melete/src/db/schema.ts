@@ -924,6 +924,74 @@ export const planMilestone = pgTable('plan_milestone', {
   scheduleAt: timestamp('schedule_at', { withTimezone: true }),
 });
 
+/**
+ * A run: long work an assistant keeps at across shifts. One row per run job
+ * and per helper step; a step names the run it belongs to. The job row holds
+ * the state machine; this row holds what the loop between shifts decides on.
+ */
+export const runState = pgTable(
+  'run_state',
+  {
+    jobId: text('job_id')
+      .primaryKey()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    /** The run a helper step works for; null on a run itself. */
+    parentRunId: text('parent_run_id').references(() => job.id, { onDelete: 'cascade' }),
+    /** The conversation it was started from, when it was. */
+    conversationId: text('conversation_id').references(() => job.id, { onDelete: 'set null' }),
+    goal: text('goal').notNull(),
+    doneWhen: text('done_when'),
+    metric: jsonb('metric').$type<{ name: string; direction: 'higher' | 'lower' } | null>(),
+    /** An overall limit the person chose; null is none. */
+    limit: jsonb('limit').$type<Record<string, number> | null>(),
+    shifts: integer('shifts').notNull().default(0),
+    idleShifts: integer('idle_shifts').notNull().default(0),
+    /** The run sleeps until its helpers are done (or a fallback time). */
+    waitingOnSteps: boolean('waiting_on_steps').notNull().default(false),
+    lastReportAt: timestamp('last_report_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    /** A result is confirmed by a separate check before the run is called done. */
+    checkResult: boolean('check_result').notNull().default(true),
+    /** On a helper that checks a result: the proposed result entry it checks. */
+    checking: text('checking'),
+    createdAt: created(),
+  },
+  (t) => [
+    index('run_state_parent_idx').on(t.parentRunId),
+    index('run_state_conversation_idx').on(t.conversationId),
+    index('run_state_space_idx').on(t.spaceId),
+  ],
+);
+
+/**
+ * The record a run keeps: append-only, ordered by `seq`. Entries written by a
+ * helper are filed under the run it works for, with `stepJobId` naming it.
+ */
+export const runEntry = pgTable(
+  'run_entry',
+  {
+    id: text('id').primaryKey(),
+    seq: bigserial('seq', { mode: 'number' }).notNull(),
+    runJobId: text('run_job_id')
+      .notNull()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    stepJobId: text('step_job_id').references(() => job.id, { onDelete: 'set null' }),
+    attemptId: text('attempt_id'),
+    kind: text('kind').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull().default(''),
+    data: jsonb('data').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: created(),
+  },
+  (t) => [
+    index('run_entry_run_seq_idx').on(t.runJobId, t.seq),
+    index('run_entry_attempt_idx').on(t.attemptId),
+  ],
+);
+
 export const experienceRule = pgTable(
   'experience_rule',
   {

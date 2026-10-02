@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChatScreen } from './chat/Chat.tsx';
 import { MeleteMark } from './design/mark.tsx';
 import { Button } from './design/primitives.tsx';
 import { Sheet } from './design/Sheet.tsx';
 import { adapter } from './experience/adapter.ts';
+import { agentIdsIn, throttled, unknownAgentIds } from './experience/agent-freshness.ts';
 import {
   AppContext,
   type AppContextValue,
@@ -23,6 +24,7 @@ import { OnboardingScreen, SignInScreen } from './screens/Onboarding.tsx';
 import { PasswordResetScreen } from './screens/PasswordReset.tsx';
 import { PlansScreen } from './screens/Plans.tsx';
 import { SettingsScreen } from './screens/Settings.tsx';
+import { WorkScreen } from './screens/Work.tsx';
 import { toast } from './shell/Shell.tsx';
 import { TimeZonePrompt } from './shell/TimeZonePrompt.tsx';
 import { useTheme } from './theme.ts';
@@ -96,6 +98,7 @@ export function App() {
   }, []);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [removedAgents, setRemovedAgents] = useState<Agent[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationsError, setConversationsError] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<Decisions>(NO_DECISIONS);
@@ -115,8 +118,11 @@ export function App() {
       if (!result.data) return;
       setAgents(result.data.agents);
       setRemovedAgents(result.data.removed ?? []);
+      setAgentsLoaded(true);
     });
   }, []);
+  // One read for a burst of reasons (sign-in, a view change, focus).
+  const refreshAgentsSoon = useMemo(() => throttled(refreshAgents, 2000), [refreshAgents]);
   // One refresh reads the conversations and what waits on the person, so the
   // sidebar's dots, Home's count and the queue always agree.
   const refreshConversations = useCallback(() => {
@@ -148,7 +154,7 @@ export function App() {
   }, [profile.reload]);
   useEffect(() => {
     if (!signedIn) return;
-    refreshAgents();
+    refreshAgentsSoon();
     refreshConversations();
     // Capabilities are learned from the calls that would serve them.
     void adapter.home().then((home) => {
@@ -163,7 +169,40 @@ export function App() {
         browser: session.unavailable === null && session.error === null,
       }));
     });
-  }, [signedIn, refreshAgents, refreshConversations]);
+  }, [signedIn, refreshAgentsSoon, refreshConversations]);
+
+  // Agents are made elsewhere too (the API, another tab), so the list is read
+  // again when the view changes and when the person comes back to the window.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the view changing is the reason to read again
+  useEffect(() => {
+    if (signedIn) refreshAgentsSoon();
+  }, [route.path, signedIn, refreshAgentsSoon]);
+  useEffect(() => {
+    if (!signedIn) return;
+    const back = () => {
+      if (document.visibilityState === 'visible') refreshAgentsSoon();
+    };
+    window.addEventListener('focus', back);
+    document.addEventListener('visibilitychange', back);
+    return () => {
+      window.removeEventListener('focus', back);
+      document.removeEventListener('visibilitychange', back);
+    };
+  }, [signedIn, refreshAgentsSoon]);
+  // A link, a new chat or a chat in the list that names an agent this app has
+  // not read yet: read the list again, once for that agent.
+  const askedAgents = useRef(new Set<string>());
+  useEffect(() => {
+    if (!signedIn || !agentsLoaded) return;
+    const unknown = unknownAgentIds(
+      agentIdsIn(route, conversations),
+      [...agents, ...removedAgents],
+      askedAgents.current,
+    );
+    if (!unknown.length) return;
+    for (const id of unknown) askedAgents.current.add(id);
+    refreshAgents();
+  }, [signedIn, agentsLoaded, route, conversations, agents, removedAgents, refreshAgents]);
 
   // Conversations move while the person is elsewhere; keep the sidebar honest.
   useEffect(() => {
@@ -192,6 +231,7 @@ export function App() {
       return;
     }
     setAgents([]);
+    setAgentsLoaded(false);
     setConversations([]);
     setConversationsError(null);
     setDecisions(NO_DECISIONS);
@@ -278,6 +318,8 @@ export function App() {
     screen = <PlansScreen selected={second ?? null} />;
   } else if (head === 'companies') {
     screen = <CompaniesScreen />;
+  } else if (head === 'runs') {
+    screen = <WorkScreen key={second ?? 'all'} id={second ?? null} />;
   } else if (head === 'automations') {
     screen = <AutomationsScreen />;
   } else if (head === 'settings') {

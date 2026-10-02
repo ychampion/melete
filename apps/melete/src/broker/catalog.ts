@@ -5,6 +5,8 @@ import {
   type ConnectionHealth,
   type JsonObject,
   REACT_TOOL_NAME,
+  RUN_TOOL_NAMES,
+  RUN_TOOLS,
   SKILL_READ_TOOL_NAME,
   type Skill,
   type ToolSpec,
@@ -205,6 +207,7 @@ const granted = (item: CatalogItem) => (item.entry.source === 'mcp' ? 0 : 1);
 function pinOf(tool: ToolSpec, context: CoreSelectionContext): number {
   if (tool.connection_id !== null) return tool.name === OWN_TERMINAL_TOOL ? 1 : 0;
   if (
+    RUN_TOOL_NAMES.includes(tool.name) ||
     (context.resumable === true && tool.name === RESUME_ACTION_TOOL.name) ||
     (context.followable === true && tool.name === CHASE_FOLLOW_UP_TOOL.name)
   )
@@ -242,6 +245,12 @@ export function selectCore(
   if (!Number.isSafeInteger(budget) || budget < toolTokens(META_TOOLS))
     throw new Error('Core catalog budget cannot hold discovery tools');
   const tools = structuredClone(META_TOOLS);
+  // The tools long work runs on are how its shifts work, not entries
+  // competing for the catalog: they get room of their own on top of it.
+  const harness = items.filter(
+    (item) => item.tool.connection_id === null && RUN_TOOL_NAMES.includes(item.tool.name),
+  );
+  if (harness.length) budget += toolTokens(harness.map((item) => item.tool));
   const query = terms(context.text ?? '');
   const scored = items
     .filter((item) => item.entry.health !== 'failing')
@@ -550,6 +559,8 @@ export class ToolCatalog {
     const resumable = await hasResumableAction(tx, job);
     for (const tool of [...(this.options.nativeTools ?? []), ...(access.chat ? [SAY_TOOL] : [])]) {
       if (tool.name === RUNTIME_WAIT_TOOL.name && !claims.scopes.includes(tool.name)) continue;
+      // Long work's tools belong to the kinds of job its scopes were given to.
+      if (RUN_TOOL_NAMES.includes(tool.name) && !claims.scopes.includes(tool.name)) continue;
       // Offered only while there is a skill this attempt may read.
       if (tool.name === SKILL_READ_TOOL.name && skills.length === 0) continue;
       // Offered only while the owner's approval is waiting to be carried out.
@@ -563,6 +574,7 @@ export class ToolCatalog {
             ASK_PERSON_TOOL,
             RESUME_ACTION_TOOL,
             CHASE_FOLLOW_UP_TOOL,
+            ...RUN_TOOLS,
           ].some(
             (typed) =>
               tool.name === typed.name &&
