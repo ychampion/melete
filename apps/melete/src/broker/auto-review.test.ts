@@ -174,3 +174,18 @@ describe('verdicts', () => {
     );
   });
 });
+
+describe('a change from the command line', () => {
+  test('is always the person’s to decide, and a destructive one says so', () => {
+    const write = tool('egress.test_write', 'write_external', true);
+    expect(tier(write, 'command_line', { method: 'POST', destructive: false })).toMatchObject({
+      tier: 'person',
+      actionClass: null,
+    });
+    expect(tier(write, 'command_line', { method: 'DELETE', destructive: true }).reason).toContain(
+      'deletes or overwrites',
+    );
+    // Even dressed up as a reversible write, it stays with the person.
+    expect(tier(tool('egress.test_write', 'write_reversible'), 'exec').tier).toBe('person');
+  });
+});

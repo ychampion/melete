@@ -13660,7 +13660,8 @@
                       "generation",
                       "mcp",
                       "sandbox",
-                      "device"
+                      "device",
+                      "command_line"
                     ]
                   },
                   "label": {
@@ -30855,7 +30856,8 @@
           "generation",
           "mcp",
           "sandbox",
-          "device"
+          "device",
+          "command_line"
         ]
       },
       "__schema395": {

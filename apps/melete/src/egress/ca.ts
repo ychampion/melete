@@ -214,12 +214,25 @@ export class EgressCertificateAuthority {
   }
 
   private async load() {
-    const row = await this.options.store.current(async (current) =>
+    const open = (row: EgressCaRow) =>
+      this.options.sealer.openForPurpose(EGRESS_CA_PURPOSE, row.id, row.sealedKey).then(
+        (value) => value,
+        () => null,
+      );
+    let row = await this.options.store.current(async (current) =>
       current && !this.stale(current) ? null : this.create(),
     );
-    const key = createPrivateKey(
-      await this.options.sealer.openForPurpose(EGRESS_CA_PURPOSE, row.id, row.sealedKey),
-    );
+    let sealed = await open(row);
+    if (sealed === null) {
+      // A key this master key cannot open (the master key was replaced) is
+      // superseded by a new authority; computers receive it at their next command.
+      row = await this.options.store.current(async (current) =>
+        current && current.id !== row.id && (await open(current)) !== null ? null : this.create(),
+      );
+      sealed = await open(row);
+      if (sealed === null) throw new Error('the egress CA key could not be opened');
+    }
+    const key = createPrivateKey(sealed);
     const loaded = { row, key, cert: derOf('CERTIFICATE', row.certPem) };
     this.active = loaded;
     this.leaves.clear();
