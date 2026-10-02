@@ -636,6 +636,16 @@ export async function buildAttemptSkeleton(
     ];
   });
   const constraints = jobConstraints.parse(row.constraints);
+  const [activeTurn] = row.currentTurnId
+    ? await tx.select().from(experienceTurn).where(eq(experienceTurn.id, row.currentTurnId))
+    : [];
+  const personaId = activeTurn?.agentId ?? row.agentId;
+  const [persona] = personaId
+    ? await tx
+        .select()
+        .from(agent)
+        .where(and(eq(agent.id, personaId), eq(agent.spaceId, row.spaceId)))
+    : [];
   const procedures = await selectProcedureSkills(tx, row, model, runtimeVersion);
   const context = await selectedContext(
     tx,
@@ -645,6 +655,8 @@ export async function buildAttemptSkeleton(
     history.inputs.new_user_messages.at(-1)?.content ?? '',
     constraints.public_compartment,
     await procedureReach(tx, procedures),
+    // An agent that keeps no memory is not offered a skill that promises to.
+    persona?.writesMemory !== false,
   );
   const wait = waitSpec.parse(row.wait);
   // A transition into queued clears the wait. A queued job that still holds an
@@ -700,16 +712,6 @@ export async function buildAttemptSkeleton(
     previous ? { id: previous.id, endedAt: previous.endedAt } : null,
     readDeferred(row),
   );
-  const [activeTurn] = row.currentTurnId
-    ? await tx.select().from(experienceTurn).where(eq(experienceTurn.id, row.currentTurnId))
-    : [];
-  const personaId = activeTurn?.agentId ?? row.agentId;
-  const [persona] = personaId
-    ? await tx
-        .select()
-        .from(agent)
-        .where(and(eq(agent.id, personaId), eq(agent.spaceId, row.spaceId)))
-    : [];
   const [profile] = await tx
     .select({ timeZone: experienceProfile.timeZone })
     .from(experienceProfile)

@@ -6,13 +6,20 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { attemptBundle, type DispatchResult, type RuntimeAdapter } from '@melete/contracts';
+import { META_TOOLS, toolTokens } from '../../src/broker/catalog.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { emailManifest } from '../../src/connectors/email.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { openDatabase } from '../../src/db/client.ts';
 import { agentAccess } from '../../src/experience/access.ts';
-import { AGENT_TEMPLATES, MELETE_AGENT } from '../../src/experience/agents.ts';
+import {
+  AGENT_TEMPLATES,
+  agentIdentity,
+  agentView,
+  MELETE_AGENT,
+  NO_MEMORY_NOTE,
+} from '../../src/experience/agents.ts';
 import { removeJobs } from '../../src/experience/removal.ts';
 import { ExperienceService } from '../../src/experience/service.ts';
 import { newId } from '../../src/ids.ts';
@@ -26,6 +33,7 @@ import { MemoryError, type MemoryScope } from '../../src/memory/db.ts';
 import { recordOutput } from '../../src/memory/outputs.ts';
 import { buildViews } from '../../src/memory/views.ts';
 import { principalContext } from '../../src/principals/authority.ts';
+import { selectedContext, turnAgentKeepsMemory } from '../../src/principals/context.ts';
 import { PrincipalService } from '../../src/principals/service.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { createJobAttempt, createJournal } from './lifecycle-fixtures.ts';
@@ -126,8 +134,13 @@ withDb('Melete, the agent every space has', () => {
       melete.id,
     );
     expect(saved.agent).toMatchObject({ name: 'Melete', tone: 'Brisk', is_default: true });
-    // A specialist made from the same values is never a second Melete.
-    const copy = await experience.saveAgent(scope.spaceId, MELETE_AGENT);
+    // A specialist made from the same values is never a second Melete, and
+    // never another agent called Melete.
+    expect(await rejectionOf(experience.saveAgent(scope.spaceId, MELETE_AGENT))).toMatchObject({
+      code: 'name_taken',
+      status: 409,
+    });
+    const copy = await experience.saveAgent(scope.spaceId, { ...MELETE_AGENT, name: 'Mel' });
     expect(copy.agent.is_default).toBe(false);
   });
 
@@ -530,6 +543,270 @@ withDb('each agent’s permissions hold at the boundary', () => {
         where c.job_id = ${id} order by c.event_seq`;
       expect(outcomes[0]).toMatchObject({ outcome: 'skipped:agent', agent_id: quiet });
       expect(outcomes[1]?.outcome).not.toMatch(/^skipped/);
+    } finally {
+      await journal.close();
+    }
+  });
+});
+
+withDb('a paired computer leaves the agent its own terminal', () => {
+  test("its tools never crowd the agent's own terminal out of what it starts with", async () => {
+    if (!db) return;
+    const read = emailManifest.tools.find((tool) => tool.name === 'email.search');
+    if (!read) throw new Error('no read tool');
+    // A paired computer that can't run commands: status and files, all of them
+    // matching "my computer" and "my laptop".
+    const device = [
+      'device.status',
+      'device.list_files',
+      'device.read_file',
+      'device.write_file',
+      'device.open_url',
+    ];
+    const scopes = [...device, 'terminal.run'];
+    const spec = (name: string) => ({ ...read, name, required_scopes: [name] });
+    const connector: Connector = {
+      manifest: { ...emailManifest, provider: 'test' as const, tools: scopes.map(spec) },
+      catalog: {
+        audience: 'owner',
+        source: 'connector',
+        examples: Object.fromEntries(
+          device.map((name) => [name, ['my computer', 'my laptop', 'files on my laptop']]),
+        ),
+      },
+      async execute(): Promise<DispatchResult> {
+        throw new Error('not dispatched here');
+      },
+      async verify() {
+        return { decision: 'unsupported', reason: 'fixture' };
+      },
+      async health() {
+        return { status: 'ok', detail: 'fixture', checked_at: new Date().toISOString() };
+      },
+    };
+    const seed = await seedJob(db.sql, { provider: 'test', scopes });
+    await db.sql`update job set objective = 'Check my computer and list the files on my laptop'
+      where id = ${seed.claims.job_id}`;
+    // Room for a few of these tools beside discovery and the reaction, so
+    // ranking decides which ones the attempt starts with.
+    const one = (name: string) => ({
+      name,
+      description: read.description,
+      input_schema: read.input_schema,
+      effect_class: read.effect_class,
+      connection_id: seed.connectionId,
+    });
+    const broker = new BrokerService({
+      sql: db.sql,
+      connectors: new ConnectorRegistry().register(seed.connectionId, connector),
+      catalog: {
+        coreTokenBudget: toolTokens([
+          ...META_TOOLS,
+          one('terminal.run'),
+          one('device.status'),
+          one('device.read_file'),
+          one('device.list_files'),
+        ]),
+      },
+    });
+    const offered = (await broker.catalog(seed.claims)).map((tool) => tool.name);
+    expect(offered).toContain('terminal.run');
+    expect(offered.some((name) => name.startsWith('device.'))).toBe(true);
+  });
+});
+
+withDb('an agent that keeps no memory never promises to remember', () => {
+  test('it is not offered the skill that says "Got it", and is told to offer Melete', async () => {
+    if (!db || !experience || !handle) return;
+    const scope = await createScope(db);
+    const quiet = await specialist(scope.spaceId, { writes_memory: false });
+    const created = await principalContext.run(scope.ownerId, () =>
+      experience.createConversation(scope.spaceId, { title: 'Tea', agent_id: quiet }),
+    );
+    if (!('conversation' in created)) throw new Error('conversation not created');
+    const id = created.conversation.id;
+    const ask = 'Please remember for later: my favourite tea is oolong';
+    const skills = (keeps: boolean) =>
+      handle.db.transaction(async (tx) =>
+        (
+          await selectedContext(tx, scope.spaceId, null, ask, ask, false, undefined, keeps)
+        ).skills.map((skill) => skill.name),
+      );
+    expect(await skills(true)).toContain('remember-this');
+    expect(await skills(false)).not.toContain('remember-this');
+    // Whether the chat's agent keeps memory is read from the agent answering it.
+    expect(await handle.db.transaction((tx) => turnAgentKeepsMemory(tx, id))).toBe(false);
+    const melete = await experience.defaultAgent(scope.spaceId);
+    await db.sql`update job set agent_id = ${melete.id} where id = ${id}`;
+    expect(await handle.db.transaction((tx) => turnAgentKeepsMemory(tx, id))).toBe(true);
+    // Its instructions say it keeps nothing, and that Melete can.
+    const row = await experience.requireAgent(scope.spaceId, quiet);
+    expect(agentIdentity(agentView(row))).toContain(NO_MEMORY_NOTE);
+    expect(agentIdentity(agentView(melete))).not.toContain(NO_MEMORY_NOTE);
+  });
+});
+
+withDb('deleting an agent', () => {
+  test('its chats, routines, plan steps and turns move to Melete, which stays', async () => {
+    if (!db || !experience) return;
+    const scope = await createScope(db);
+    const melete = await experience.defaultAgent(scope.spaceId);
+    const quill = (await experience.saveAgent(scope.spaceId, template('Quill'))).agent;
+    const start = async (title: string) => {
+      const created = await principalContext.run(scope.ownerId, () =>
+        experience.createConversation(scope.spaceId, { title, agent_id: quill.id }),
+      );
+      if (!('conversation' in created)) throw new Error('conversation not created');
+      return created.conversation.id;
+    };
+    const chat = await start('Draft');
+    const routine = await start('Weekly note');
+    await db.sql`update job set kind = 'routine' where id = ${routine}`;
+    await principalContext.run(scope.ownerId, () =>
+      experience.message(scope.spaceId, chat, { text: 'Draft a note' }, newId('turn')),
+    );
+    const step = newId('mile');
+    await db.sql`insert into plan_milestone (id, plan_id, title, ordinal, agent_id)
+      values (${step}, ${chat}, 'Write it', 0, ${quill.id})`;
+
+    // Not while it is answering.
+    await db.sql`update experience_turn set status = 'working' where job_id = ${chat}`;
+    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, quill.id))).toMatchObject({
+      code: 'agent_busy',
+      status: 409,
+    });
+    await db.sql`update experience_turn set status = 'done' where job_id = ${chat}`;
+    // An older turn a later message replaced keeps the status it had; it holds nothing.
+    await db.sql`insert into experience_turn (id, job_id, agent_id, submission_id, text, status)
+      values (${newId('turn')}, ${chat}, ${quill.id}, ${`sub_${newId('turn')}`}, 'Earlier', 'needs_you')`;
+    // Not while it is marked private: its chats would leave that protection.
+    await db.sql`insert into privacy_settings (space_id, settings)
+      values (${scope.spaceId}, ${JSON.stringify({ private_agent_ids: [quill.id] })}::jsonb)`;
+    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, quill.id))).toMatchObject({
+      code: 'agent_private',
+      status: 409,
+    });
+    await db.sql`delete from privacy_settings where space_id = ${scope.spaceId}`;
+
+    expect(await experience.deleteAgent(scope.spaceId, quill.id)).toEqual({
+      id: quill.id,
+      moved_to: melete.id,
+      conversations: 1,
+      routines: 1,
+    });
+    const jobs = await db.sql`select agent_id from job where id in (${chat}, ${routine})`;
+    expect(jobs.map((row) => row.agent_id)).toEqual([melete.id, melete.id]);
+    const [turn] = await db.sql`select agent_id from experience_turn where job_id = ${chat}`;
+    expect(turn?.agent_id).toBe(melete.id);
+    const [planned] = await db.sql`select agent_id from plan_milestone where id = ${step}`;
+    expect(planned?.agent_id).toBe(melete.id);
+    const { agents } = await experience.agents(scope.spaceId);
+    expect(agents.map((agent) => agent.name)).toEqual(['Melete']);
+
+    // Melete is never deleted, and a missing agent is not here.
+    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, melete.id))).toMatchObject({
+      code: 'default_agent_fixed',
+      status: 400,
+    });
+    expect(await rejectionOf(experience.deleteAgent(scope.spaceId, quill.id))).toMatchObject({
+      status: 404,
+    });
+  });
+
+  test('in a shared space only the owner deletes one, and members keep their chats', async () => {
+    if (!db || !experience) return;
+    const h = await household();
+    const service = experience;
+    const melete = await service.defaultAgent(h.shared);
+    const helper = (
+      await principalContext.run(h.owner, () =>
+        service.saveAgent(h.shared, { ...template('Sage'), allowed_connection_ids: [h.narrow] }),
+      )
+    ).agent;
+    const theirs = await h.chat(h.member, helper.id);
+    expect(
+      await rejectionOf(
+        principalContext.run(h.member, () => service.deleteAgent(h.shared, helper.id)),
+      ),
+    ).toMatchObject({ code: 'scope_denied', status: 403 });
+    const deleted = await principalContext.run(h.owner, () =>
+      service.deleteAgent(h.shared, helper.id),
+    );
+    expect(deleted).toMatchObject({ moved_to: melete.id, conversations: 1 });
+    // The member's chat is still theirs, now with Melete and Melete's reach.
+    expect(await h.say(h.member, theirs.id, 'Still here?')).toEqual({
+      agent: melete.id,
+      allowed: [],
+    });
+  });
+});
+
+withDb('agent names', () => {
+  test('two agents in a space never share a name, and templates suggest a free one', async () => {
+    if (!db || !experience) return;
+    const scope = await createScope(db);
+    const nova = (await experience.saveAgent(scope.spaceId, template('Nova'))).agent;
+    for (const name of ['Nova', ' nova ', 'NOVA'])
+      expect(
+        await rejectionOf(experience.saveAgent(scope.spaceId, { ...template('Nova'), name })),
+      ).toMatchObject({ code: 'name_taken', status: 409 });
+    expect(
+      ((await rejectionOf(experience.saveAgent(scope.spaceId, template('Nova')))) as Error).message,
+    ).toBe('You already have an agent called Nova. Try Nova 2.');
+    // Saving an agent under the name it already has is fine; taking another's is not.
+    await experience.saveAgent(scope.spaceId, { ...template('Nova'), tone: 'Brisk' }, nova.id);
+    const sage = (await experience.saveAgent(scope.spaceId, template('Sage'))).agent;
+    expect(
+      await rejectionOf(experience.saveAgent(scope.spaceId, template('Nova'), sage.id)),
+    ).toMatchObject({ code: 'name_taken' });
+    // The Planner template is offered under a name no agent here has.
+    const { templates } = await experience.agentTemplates(scope.spaceId);
+    const names = Object.fromEntries(templates.map((entry) => [entry.id, entry.agent.name]));
+    expect(names).toMatchObject({ planner: 'Nova 2', study: 'Sage 2', travel: 'Atlas' });
+    expect(
+      (
+        await experience.saveAgent(scope.spaceId, {
+          ...template('Nova'),
+          name: names.planner ?? '',
+        })
+      ).agent.name,
+    ).toBe('Nova 2');
+  });
+});
+
+withDb('what was said to a deleted agent', () => {
+  test('is not kept when the agent kept no memory', async () => {
+    if (!db || !experience) return;
+    const scope = await createScope(db);
+    const owner: MemoryScope = { ...scope, principalId: scope.ownerId };
+    const journal = await createJournal();
+    const quiet = (
+      await experience.saveAgent(scope.spaceId, { ...template('Quill'), writes_memory: false })
+    ).agent;
+    const created = await principalContext.run(scope.ownerId, () =>
+      experience.createConversation(scope.spaceId, { title: 'Tea', agent_id: quiet.id }),
+    );
+    if (!('conversation' in created)) throw new Error('conversation not created');
+    const id = created.conversation.id;
+    await principalContext.run(scope.ownerId, () =>
+      experience.message(scope.spaceId, id, { text: 'My favourite tea is oolong' }, newId('turn')),
+    );
+    await db.sql`update experience_turn set status = 'done' where job_id = ${id}`;
+    // Deleted before memory looked at the message.
+    await experience.deleteAgent(scope.spaceId, quiet.id);
+    try {
+      await captureChat({
+        privacyOrigin: async () => null,
+        sql: db.sql,
+        journal: journal.journal,
+        scopeForJob: async (jobId) => {
+          const [job] = await db.sql`select space_id from job where id = ${jobId}`;
+          if (job?.space_id !== scope.spaceId) throw new MemoryError('scope_denied');
+          return owner;
+        },
+      });
+      const outcomes = await db.sql`select outcome from memory_capture where job_id = ${id}`;
+      expect(outcomes.map((row) => row.outcome)).toEqual(['skipped:agent']);
     } finally {
       await journal.close();
     }

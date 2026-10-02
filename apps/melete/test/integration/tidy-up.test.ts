@@ -123,8 +123,12 @@ async function call(path: string, method = 'GET', body?: unknown, as = personal.
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
 }
+let agents = 0;
 async function makeAgent(as = personal.value) {
-  const response = await call('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent, as);
+  // Two agents in a space never share a name.
+  const template = AGENT_TEMPLATES.templates[0]?.agent;
+  const body = template ? { ...template, name: `${template.name} ${++agents}` } : undefined;
+  const response = await call('/agents', 'POST', body, as);
   expect(response.status).toBe(200);
   return agentResponse.parse(await response.json()).agent;
 }
@@ -396,6 +400,109 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
     expect(activity.find((entry) => entry.reference === 'msg-9')?.destination).toBe(
       'billing@example.test',
     );
+  });
+
+  test('deleting a chat takes every memory record that names it, a cited output included', async () => {
+    const sql = required(handle).sql;
+    const chat = await makeChat('Cited by memory');
+    await provisionMemorySpace(sql, ownerId, spaceId);
+    const attemptId = newId('att');
+    const outputRow = `mout_${randomBytes(8).toString('hex')}`;
+    // One row in every memory table that names a job, as an attempt leaves them.
+    const seeded: Record<string, () => Promise<unknown>> = {
+      memory_outputs: () => sql`insert into memory_outputs (id, space_id, job_id, attempt_id, kind,
+          output_id, output_version, attributed)
+        values (${outputRow}, ${spaceId}, ${chat.id}, ${attemptId}, 'artifact',
+          ${`art_${randomBytes(8).toString('hex')}`}, '1', true)`,
+      memory_contexts: () => sql`insert into memory_contexts (id, space_id, job_id, attempt_id,
+          job_revision, policy_generation, data_revision, access_generation, audience, purpose,
+          items, recipe, token_budget, recall_status)
+        values (${`mctx_${randomBytes(8).toString('hex')}`}, ${spaceId}, ${chat.id}, ${attemptId},
+          0, 0, 0, 0, '{}'::jsonb, 'attempt', '[]'::jsonb, 'r1', '{}'::jsonb, 'ok')`,
+      memory_prepared: () => sql`insert into memory_prepared (id, space_id, job_id, kind, items,
+          data_revision)
+        values (${`mprep_${randomBytes(8).toString('hex')}`}, ${spaceId}, ${chat.id}, 'brief',
+          '[]'::jsonb, 0)`,
+      memory_action_basis: () => sql`insert into memory_action_basis (action_id, space_id, job_id,
+          attempt_id, items)
+        values (${newId('act')}, ${spaceId}, ${chat.id}, ${attemptId}, '[]'::jsonb)`,
+      memory_repair_briefs: () => sql`insert into memory_repair_briefs (id, space_id, job_id,
+          changed_handle, old_value, new_value, affected)
+        values (${`mrep_${randomBytes(8).toString('hex')}`}, ${spaceId}, ${chat.id}, 'c@1',
+          'before', 'after', '[]'::jsonb)`,
+      memory_invalidations: () => sql`insert into memory_invalidations (id, space_id, type, job_id,
+          claim_ids, data_revision)
+        values (${`minv_${randomBytes(8).toString('hex')}`}, ${spaceId}, 'correction', ${chat.id},
+          '[]'::jsonb, 0)`,
+      memory_capture: async () => {
+        const [seq] =
+          await sql`select coalesce(max(event_seq), 0) + 1000 as next from memory_capture`;
+        await sql`insert into memory_capture (event_seq, job_id, space_id, outcome)
+          values (${Number(seq?.next)}, ${chat.id}, ${spaceId}, 'skipped')`;
+      },
+    };
+    // Every memory table with a job column is seeded here, so a new one has to
+    // be thought about for deletion before this passes.
+    const named = await sql`select table_name from information_schema.columns
+      where table_schema = 'public' and table_name like 'memory\_%' and column_name = 'job_id'`;
+    expect(named.map((row) => String(row.table_name)).sort()).toEqual(Object.keys(seeded).sort());
+    for (const insert of Object.values(seeded)) await insert();
+    // The output's manifest names the output row: this is what made the delete fail.
+    await sql`insert into memory_output_uses (output_row_id, handle, handle_kind, claim_id, revision)
+      values (${outputRow}, 'c@1', 'claim', 'clm_cited', 1)`;
+
+    const response = await call(`/conversations/${chat.id}`, 'DELETE');
+    expect(response.status).toBe(200);
+    expect(await listed()).not.toContain(chat.id);
+    for (const table of Object.keys(seeded).filter((name) => name !== 'memory_capture')) {
+      const [left] =
+        await sql`select count(*)::int as n from ${sql(table)} where job_id = ${chat.id}`;
+      expect([table, left?.n]).toEqual([table, 0]);
+    }
+    const [uses] =
+      await sql`select count(*)::int as n from memory_output_uses where output_row_id = ${outputRow}`;
+    expect(uses?.n).toBe(0);
+    // The capture log stays, no longer naming the chat.
+    const [capture] =
+      await sql`select count(*)::int as n from memory_capture where job_id = ${chat.id}`;
+    expect(capture?.n).toBe(0);
+  });
+
+  test('a running command holds a delete, and the refusal says so', async () => {
+    const db = required(handle).db;
+    const { chat, claims } = await runningChat('Long command');
+    const connectionId = newId('conn');
+    await db
+      .insert(connection)
+      .values({ id: connectionId, spaceId, label: 'Computer', provider: 'sandbox' });
+    const actionId = newId('act');
+    await db.insert(action).values({
+      id: actionId,
+      jobId: chat.id,
+      attemptId: claims.attempt_id,
+      connectionId,
+      kind: 'terminal.run',
+      effectClass: 'write_reversible',
+      canonicalPayload: { command: 'sleep 50' },
+      payloadHash: '1'.repeat(64),
+      idempotencyKey: actionId,
+      status: 'dispatched',
+      dispatchedAt: new Date(),
+    });
+    const refused = await call(`/conversations/${chat.id}`, 'DELETE');
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({
+      error: {
+        code: 'still_sending',
+        message: 'A command is still running. Try again when it finishes.',
+      },
+    });
+    expect(await listed()).toContain(chat.id);
+    await db
+      .update(action)
+      .set({ status: 'succeeded', resolvedAt: new Date() })
+      .where(eq(action.id, actionId));
+    expect((await call(`/conversations/${chat.id}`, 'DELETE')).status).toBe(200);
   });
 
   test('asked to, deleting a chat also forgets what it taught, through source deletion', async () => {

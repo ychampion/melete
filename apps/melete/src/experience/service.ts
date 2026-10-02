@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import {
+  agentDeleted,
   agentResponse,
+  agentTemplateList,
   type Conversation,
   type ConversationProgress,
   conversation,
@@ -11,13 +13,24 @@ import {
   conversationTurn,
   decodeConversationCursor,
   encodeConversationCursor,
+  freeAgentName,
   type SubmissionReceipt,
+  sameAgentName,
   unavailable,
 } from '@melete/contracts';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { agent, connection, event, experienceTurn, job, space, trigger } from '../db/schema.ts';
+import {
+  agent,
+  connection,
+  event,
+  experienceTurn,
+  job,
+  planMilestone,
+  space,
+  trigger,
+} from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
@@ -25,10 +38,18 @@ import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { inConversation, withdrawPermissions } from '../jobs/withdraw.ts';
 import { ownJob, requestPrincipal, spaceAuthority } from '../principals/authority.ts';
-import { agentValues, agentView, MELETE_AGENT, mentionedAgent } from './agents.ts';
+import { AGENT_TEMPLATES, agentValues, agentView, MELETE_AGENT, mentionedAgent } from './agents.ts';
 import { answerStream } from './answer-filter.ts';
 import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
 
+/** A row still names one being deleted (Postgres 23503), however the driver wraps it. */
+const foreignKeyViolation = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  (('code' in error && error.code === '23503') ||
+    ('cause' in error && foreignKeyViolation((error as { cause: unknown }).cause)));
+/** Turn statuses of work not yet over: an agent is not deleted under one. */
+const UNDER_WAY = ['queued', 'working', 'streaming', 'needs_you', 'paused'];
 /** Turn statuses whose answer may still grow. */
 const STILL_WRITING = new Set(['queued', 'working', 'streaming']);
 export const experienceMissing = () => new ServiceError('not_found', 'That item is not here.', 404);
@@ -222,11 +243,44 @@ export class ExperienceService {
     };
   }
 
-  async saveAgent(spaceId: string, raw: unknown, id?: string) {
-    // Agents belong to the space: in a shared space only its owner makes or changes one.
+  /** Only the space's owner makes, changes or deletes its agents. */
+  private async requireAgentOwner(spaceId: string) {
     const authority = await spaceAuthority(this.db, spaceId, requestPrincipal());
     if (authority.role !== 'owner')
       throw new ServiceError('scope_denied', 'Only the space’s owner changes its agents.', 403);
+    return authority;
+  }
+
+  /**
+   * Locks the space's agents for a change that depends on all of them: a name
+   * check, or a deletion. Melete's row is always there, so it is the lock.
+   */
+  private async lockAgents(tx: Transaction, spaceId: string) {
+    const [melete] = await tx
+      .select()
+      .from(agent)
+      .where(and(eq(agent.spaceId, spaceId), eq(agent.isDefault, true)))
+      .for('update');
+    if (!melete) throw experienceMissing();
+    return melete;
+  }
+
+  /** The templates, each with a name no agent in the space has yet. */
+  async agentTemplates(spaceId: string) {
+    const taken = (
+      await this.db.select({ name: agent.name }).from(agent).where(eq(agent.spaceId, spaceId))
+    ).map((row) => row.name);
+    return agentTemplateList.parse({
+      templates: AGENT_TEMPLATES.templates.map((template) => ({
+        ...template,
+        agent: { ...template.agent, name: freeAgentName(template.agent.name, taken) },
+      })),
+    });
+  }
+
+  async saveAgent(spaceId: string, raw: unknown, id?: string) {
+    // Agents belong to the space: in a shared space only its owner makes or changes one.
+    const authority = await this.requireAgentOwner(spaceId);
     const shared = authority.space.kind === 'shared';
     const existing = id ? await this.requireAgent(spaceId, id) : null;
     const isDefault = existing?.isDefault === true;
@@ -240,18 +294,130 @@ export class ExperienceService {
       : [];
     if (new Set(chosen).size !== found.length)
       throw new ServiceError('invalid_request', 'Choose connections from this space.', 400);
-    const [row] = id
-      ? await this.db
-          .update(agent)
-          .set(values)
-          .where(and(eq(agent.id, id), eq(agent.spaceId, spaceId)))
-          .returning()
-      : await this.db
-          .insert(agent)
-          .values({ id: newId('agent'), spaceId, ...values })
-          .returning();
+    await this.defaultAgent(spaceId);
+    const row = await this.db.transaction(async (tx) => {
+      await this.lockAgents(tx, spaceId);
+      // "@name" picks one agent, so two in a space never share a name. An
+      // agent saved under the name it already has is left alone.
+      if (!existing || !sameAgentName(existing.name, values.name)) {
+        const taken = (
+          await tx
+            .select({ id: agent.id, name: agent.name })
+            .from(agent)
+            .where(eq(agent.spaceId, spaceId))
+        )
+          .filter((other) => other.id !== id)
+          .map((other) => other.name);
+        if (taken.some((name) => sameAgentName(name, values.name)))
+          throw new ServiceError(
+            'name_taken',
+            `You already have an agent called ${values.name.trim()}. Try ${freeAgentName(values.name, taken)}.`,
+            409,
+          );
+      }
+      const [saved] = id
+        ? await tx
+            .update(agent)
+            .set(values)
+            .where(and(eq(agent.id, id), eq(agent.spaceId, spaceId)))
+            .returning()
+        : await tx
+            .insert(agent)
+            .values({ id: newId('agent'), spaceId, ...values })
+            .returning();
+      return saved;
+    });
     if (!row) throw experienceMissing();
     return agentResponse.parse({ agent: agentView(row, 0, null, shared) });
+  }
+
+  /**
+   * Delete an agent other than Melete. Whatever named it moves to Melete: its
+   * chats (everyone's, in a shared space), routines and plan steps, and the
+   * turns it answered, since a turn must name an agent that exists. Refused
+   * while one of its turns is under way, so nothing changes hands mid-answer.
+   */
+  async deleteAgent(spaceId: string, id: string) {
+    await this.requireAgentOwner(spaceId);
+    const target = await this.requireAgent(spaceId, id);
+    if (target.isDefault)
+      throw new ServiceError('default_agent_fixed', 'Melete is always here.', 400);
+    await this.defaultAgent(spaceId);
+    return this.db.transaction(async (tx) => {
+      const melete = await this.lockAgents(tx, spaceId);
+      // Only a turn still current counts: an older one a later message replaced
+      // may keep the status it had then.
+      const [busy] = await tx
+        .select({ id: experienceTurn.id })
+        .from(experienceTurn)
+        .innerJoin(
+          job,
+          and(eq(job.id, experienceTurn.jobId), eq(job.currentTurnId, experienceTurn.id)),
+        )
+        .where(
+          and(
+            eq(experienceTurn.agentId, id),
+            eq(job.spaceId, spaceId),
+            inArray(experienceTurn.status, UNDER_WAY),
+          ),
+        )
+        .limit(1);
+      if (busy)
+        throw new ServiceError(
+          'agent_busy',
+          `${target.name} is in the middle of something. Try again when it finishes.`,
+          409,
+        );
+      // A private agent's chats are kept off models that leave this machine.
+      // Moved to Melete they would not be, so its chats go first.
+      const privately = await tx.execute(sql`select 1 from privacy_settings
+        where space_id = ${spaceId} and jsonb_exists(settings->'private_agent_ids', ${id})`);
+      const [chats] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(job)
+        .where(and(eq(job.agentId, id), eq(job.spaceId, spaceId)));
+      if (privately.length && Number(chats?.n ?? 0) > 0)
+        throw new ServiceError(
+          'agent_private',
+          `${target.name} keeps its chats private. Delete them, or turn off private for ${target.name} in Settings, Privacy, first.`,
+          409,
+        );
+      const moved = await tx
+        .update(job)
+        .set({ agentId: melete.id })
+        .where(and(eq(job.agentId, id), eq(job.spaceId, spaceId)))
+        .returning({ kind: job.kind });
+      await tx
+        .update(experienceTurn)
+        .set({ agentId: melete.id })
+        .where(eq(experienceTurn.agentId, id));
+      await tx
+        .update(planMilestone)
+        .set({ agentId: melete.id })
+        .where(eq(planMilestone.agentId, id));
+      // A message or a routine run that named it after the check above holds
+      // it in place; the deletion waits for that like any other work.
+      const [gone] = await tx
+        .delete(agent)
+        .where(and(eq(agent.id, id), eq(agent.spaceId, spaceId), eq(agent.isDefault, false)))
+        .returning({ id: agent.id })
+        .catch((error: unknown) => {
+          if (foreignKeyViolation(error))
+            throw new ServiceError(
+              'agent_busy',
+              `${target.name} is in the middle of something. Try again when it finishes.`,
+              409,
+            );
+          throw error;
+        });
+      if (!gone) throw experienceMissing();
+      return agentDeleted.parse({
+        id,
+        moved_to: melete.id,
+        conversations: moved.filter((row) => row.kind === 'chat').length,
+        routines: moved.filter((row) => row.kind === 'routine').length,
+      });
+    });
   }
 
   /** A conversation is a job: it exists only for the principal who owns it. */

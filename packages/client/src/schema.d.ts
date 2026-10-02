@@ -592,7 +592,37 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * DELETE /agents/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            conversations: number;
+                            id: components["schemas"]["__schema215"];
+                            moved_to: components["schemas"]["__schema215"];
+                            routines: number;
+                        } | components["schemas"]["__schema221"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         /**
@@ -14975,6 +15005,7 @@ export interface paths {
                                 frontmatter: {
                                     audience?: ("private" | "space" | "public") | string;
                                     description: string;
+                                    keeps_memory?: boolean;
                                     /** @default 400 */
                                     max_tokens: number;
                                     name: string;

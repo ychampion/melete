@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { agentInput } from '@melete/contracts';
+import { agentInput, freeAgentName, sameAgentName } from '@melete/contracts';
 import { estimateTokens } from '@melete/skills';
 import { ServiceError } from '../api/errors.ts';
 import {
@@ -8,6 +8,7 @@ import {
   agentValues,
   MELETE_AGENT,
   mentionedAgent,
+  NO_MEMORY_NOTE,
 } from './agents.ts';
 
 test('agent identity accepts multibyte text within the contract character limits', () => {
@@ -61,4 +62,33 @@ test('Melete keeps its name and reach, and speaks without a persona line', () =>
   expect(() => agentValues({ ...MELETE_AGENT, name: 'House' }, true, false)).toThrow(ServiceError);
   expect(agentIdentity({ ...MELETE_AGENT, is_default: true })).toBe('Tone: Warm and clear.');
   expect(agentIdentity({ ...MELETE_AGENT, name: 'Scout' })).toContain('you are Scout');
+});
+
+test('an agent that keeps no memory is told so, within the identity cap', () => {
+  const longest = agentInput.parse({
+    ...AGENT_TEMPLATES.templates[0]?.agent,
+    name: 'n'.repeat(40),
+    tone: 't'.repeat(80),
+    standing_instruction: 's'.repeat(200),
+    writes_memory: false,
+  });
+  const text = agentIdentity(longest);
+  expect(text).toContain(NO_MEMORY_NOTE);
+  expect(NO_MEMORY_NOTE).toContain('Melete');
+  expect(estimateTokens(text)).toBeLessThanOrEqual(250);
+  expect(agentIdentity({ ...longest, writes_memory: true })).not.toContain(NO_MEMORY_NOTE);
+  // Melete always keeps memory; its identity never carries the note.
+  expect(agentIdentity({ ...MELETE_AGENT, is_default: true, writes_memory: false })).not.toContain(
+    NO_MEMORY_NOTE,
+  );
+});
+
+test('a free agent name is the one wanted, or the next numbered one', () => {
+  expect(freeAgentName('Nova', ['Melete'])).toBe('Nova');
+  expect(freeAgentName('Nova', ['Melete', 'nova'])).toBe('Nova 2');
+  expect(freeAgentName('Nova', ['Nova', 'Nova 2', 'NOVA 3'])).toBe('Nova 4');
+  const long = 'x'.repeat(40);
+  expect(freeAgentName(long, [long])).toBe(`${'x'.repeat(38)} 2`);
+  expect(sameAgentName(' Scout ', 'scout')).toBe(true);
+  expect(sameAgentName('Scout', 'Scout 2')).toBe(false);
 });

@@ -2,6 +2,8 @@ import { basename, dirname, join } from 'node:path';
 import { type KnowledgeExcerpt, normalizeAudience, type SkillPayload } from '@melete/contracts';
 import { loadSpace, spacePaths } from '@melete/knowledge';
 import { chooseSkills, type LoadedSkill, loadSkills } from '@melete/skills';
+import { and, eq, sql } from 'drizzle-orm';
+import { agent, experienceTurn, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { overlapsProcedure, type ProcedureReach } from '../learning/triggers.ts';
 import { spaceAuthority } from './authority.ts';
@@ -29,6 +31,8 @@ export async function usableSkills(
   publicCompartment = false,
   offered: (tools: readonly string[]) => boolean = () => true,
   beside?: ProcedureReach,
+  /** False for an agent that keeps no memory: skills that keep something are left out. */
+  keepsMemory = true,
 ): Promise<LoadedSkill[]> {
   const access = await spaceAuthority(tx, spaceId, principalId, true);
   const loaded = loadSkills(
@@ -39,12 +43,33 @@ export async function usableSkills(
       (skill.source === 'builtin' ||
         audienceVisible(skill.frontmatter.audience, spaceId, access.role === 'owner')) &&
       offered(skill.frontmatter.tools) &&
+      (keepsMemory || !skill.frontmatter.keeps_memory) &&
       !(
         skill.source === 'builtin' &&
         beside &&
         overlapsProcedure(skill.frontmatter.triggers, beside)
       ),
   );
+}
+
+/**
+ * Whether the agent answering this job's current turn keeps memory. Work with
+ * no agent of its own is not narrowed here.
+ */
+export async function turnAgentKeepsMemory(tx: Transaction, jobId: string): Promise<boolean> {
+  const [row] = await tx
+    .select({ writes: agent.writesMemory })
+    .from(job)
+    .leftJoin(experienceTurn, eq(experienceTurn.id, job.currentTurnId))
+    .leftJoin(
+      agent,
+      and(
+        eq(agent.id, sql`coalesce(${experienceTurn.agentId}, ${job.agentId})`),
+        eq(agent.spaceId, job.spaceId),
+      ),
+    )
+    .where(eq(job.id, jobId));
+  return row?.writes !== false;
 }
 
 /** A skill as an attempt is given it in full. */
@@ -65,8 +90,17 @@ export async function selectedSkills(
   offered: (tools: readonly string[]) => boolean = () => true,
   /** What a delivered learned procedure covers; a built-in covering the same work gives way to it. */
   beside?: ProcedureReach,
+  keepsMemory = true,
 ): Promise<SkillPayload[]> {
-  const eligible = await usableSkills(tx, spaceId, principalId, publicCompartment, offered, beside);
+  const eligible = await usableSkills(
+    tx,
+    spaceId,
+    principalId,
+    publicCompartment,
+    offered,
+    beside,
+    keepsMemory,
+  );
   return chooseSkills(objective, latestMessage, eligible, 3).map(({ skill }) =>
     skillPayloadOf(skill, spaceId),
   );
@@ -81,6 +115,7 @@ export async function selectedContext(
   latestMessage: string,
   publicCompartment = false,
   beside?: ProcedureReach,
+  keepsMemory = true,
 ): Promise<{ skills: SkillPayload[]; knowledge: KnowledgeExcerpt[] }> {
   const skills = await selectedSkills(
     tx,
@@ -91,6 +126,7 @@ export async function selectedContext(
     publicCompartment,
     undefined,
     beside,
+    keepsMemory,
   );
   const access = await spaceAuthority(tx, spaceId, principalId, true);
   if (publicCompartment) return { skills, knowledge: [] };

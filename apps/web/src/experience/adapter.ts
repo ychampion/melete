@@ -20,6 +20,7 @@ import type {
   ActivityList,
   Agent,
   AgentComputer,
+  AgentDeleted,
   AgentInput,
   AgentTemplate,
   ApprovalSettings,
@@ -453,6 +454,8 @@ export const adapter = {
   createAgent: (body: AgentInput) => guard<{ agent: Agent }>(() => api.POST('/agents', { body })),
   updateAgent: (id: string, body: AgentInput) =>
     guard<{ agent: Agent }>(() => api.PATCH('/agents/{id}', { ...path(id), body })),
+  /** Melete can't be deleted; another agent's chats and routines move to Melete. */
+  deleteAgent: (id: string) => guard<AgentDeleted>(() => api.DELETE('/agents/{id}', path(id))),
   memory: () => guard<{ items: MemoryItem[] }>(() => api.GET('/memory/items')),
   /** A detail the person states outright; the same key again replaces the value. */
   createMemoryItem: (body: MemoryItemCreate) =>

@@ -52,27 +52,54 @@ const IN_FLIGHT = ['admitted', 'dispatched', 'unknown', 'unresolved'];
 /** Effects that changed something outside Melete. */
 const OUTWARD = ['write_external', 'write_reversible', 'spend'];
 
+/** Commands, which run rather than send. */
+const COMMANDS = ['terminal.run', 'device.run'];
+
+/**
+ * Why a deletion has to wait, worded by what is in flight: a command still
+ * running, a step on a computer, or something on its way out.
+ */
+function inFlightRefusal(rows: readonly { status: string; kind: string }[]): ServiceError | null {
+  const going = rows.filter((row) => row.status === 'admitted' || row.status === 'dispatched');
+  if (going.some((row) => COMMANDS.includes(row.kind)))
+    return new ServiceError(
+      'still_sending',
+      'A command is still running. Try again when it finishes.',
+      409,
+    );
+  if (going.some((row) => row.kind.startsWith('computer.') || row.kind.startsWith('device.')))
+    return new ServiceError(
+      'still_sending',
+      'A step on a computer is still under way. Try again when it finishes.',
+      409,
+    );
+  if (going.length)
+    return new ServiceError(
+      'still_sending',
+      'Something is still being sent. Try again in a moment.',
+      409,
+    );
+  if (rows.length)
+    return new ServiceError(
+      'outcome_unclear',
+      'Melete is not sure whether something from here went through. Settle it first, then delete.',
+      409,
+    );
+  return null;
+}
+
 /**
  * A deletion waits for what is on its way out. The broker settles a send and
  * reconciles a late receipt against its action row; deleting the row first
  * would leave an effect that happened with nothing to record it against.
  */
 async function refuseInFlight(query: Sql | TransactionSql, list: readonly string[]) {
-  const [row] = await query`select status from action
-    where job_id = any(${[...list]}) and status = any(${IN_FLIGHT})
-    order by (status in ('admitted', 'dispatched')) desc limit 1`;
-  if (!row) return;
-  if (row.status === 'admitted' || row.status === 'dispatched')
-    throw new ServiceError(
-      'still_sending',
-      'Something is still being sent. Try again in a moment.',
-      409,
-    );
-  throw new ServiceError(
-    'outcome_unclear',
-    'Melete is not sure whether something from here went through. Settle it first, then delete.',
-    409,
+  const rows = await query`select status, kind from action
+    where job_id = any(${[...list]}) and status = any(${IN_FLIGHT})`;
+  const refusal = inFlightRefusal(
+    rows.map((row) => ({ status: String(row.status), kind: String(row.kind) })),
   );
+  if (refusal) throw refusal;
 }
 
 /** Where an effect went, never what it said. */
@@ -169,18 +196,11 @@ export async function removeJobs(
     // Checked after the stop, which refuses anything parked. What is left is
     // on its way out, and the whole deletion waits for it: this rolls back.
     const pending = await tx
-      .select({ status: action.status })
+      .select({ status: action.status, kind: action.kind })
       .from(action)
       .where(and(inArray(action.jobId, list), inArray(action.status, IN_FLIGHT)));
-    const sending = pending.some((row) => ['admitted', 'dispatched'].includes(row.status));
-    if (pending.length)
-      throw new ServiceError(
-        sending ? 'still_sending' : 'outcome_unclear',
-        sending
-          ? 'Something is still being sent. Try again in a moment.'
-          : 'Melete is not sure whether something from here went through. Settle it first, then delete.',
-        409,
-      );
+    const refusal = inFlightRefusal(pending);
+    if (refusal) throw refusal;
     return { stopped, withdrawn, cancelled };
   });
   // The fence is committed; now the runtime lets go before the rows go.
@@ -216,7 +236,10 @@ export async function removeJobs(
     await tx`delete from privacy_conversation where conversation_id = any(${list})`;
     await tx`delete from privacy_request where job_id = any(${list}) or conversation_id = any(${list})`;
     // What memory handed these jobs and what their outputs used. Memory itself,
-    // the details and their sources, is untouched here.
+    // the details and their sources, is untouched here. An output's manifest
+    // names the output row, so it goes before the output.
+    await tx`delete from memory_output_uses
+      where output_row_id in (select id from memory_outputs where job_id = any(${list}))`;
     await tx`delete from memory_action_basis where job_id = any(${list})`;
     await tx`delete from memory_contexts where job_id = any(${list})`;
     await tx`delete from memory_prepared where job_id = any(${list})`;

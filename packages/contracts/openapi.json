@@ -4777,6 +4777,67 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "DELETE /agents/{id}",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "$ref": "#/components/schemas/__schema215"
+                        },
+                        "moved_to": {
+                          "$ref": "#/components/schemas/__schema215"
+                        },
+                        "conversations": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "routines": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "moved_to",
+                        "conversations",
+                        "routines"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema221"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/memory/items": {
@@ -16908,6 +16969,9 @@
                                 "items": {
                                   "type": "string"
                                 }
+                              },
+                              "keeps_memory": {
+                                "type": "boolean"
                               },
                               "max_tokens": {
                                 "default": 400,

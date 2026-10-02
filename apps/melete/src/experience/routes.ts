@@ -28,7 +28,6 @@ import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
 import { listActivity } from './activity.ts';
-import { AGENT_TEMPLATES } from './agents.ts';
 import { ExperienceBeliefs } from './beliefs.ts';
 import { type ComputerBinding, projectComputer } from './computer.ts';
 import { ExperienceEffects } from './effects.ts';
@@ -87,6 +86,7 @@ const SPACE_OWNER_SURFACES = new Set([
   'PUT /approval-settings',
   'POST /agents',
   'PATCH /agents/{id}',
+  'DELETE /agents/{id}',
   'DELETE /space/members/{id}',
 ]);
 
@@ -415,10 +415,11 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       return { drafts };
     },
     'GET /agents': (spaceId) => service.agents(spaceId),
-    'GET /agents/templates': () => AGENT_TEMPLATES,
+    'GET /agents/templates': (spaceId) => service.agentTemplates(spaceId),
     'POST /agents': (spaceId, _c, input) => service.saveAgent(spaceId, input),
     'PATCH /agents/{id}': (spaceId, c, input) =>
       service.saveAgent(spaceId, input, c.req.param('id') ?? ''),
+    'DELETE /agents/{id}': (spaceId, c) => service.deleteAgent(spaceId, c.req.param('id') ?? ''),
     'GET /conversations': (spaceId, c) => service.conversations(spaceId, c.req.query()),
     'POST /conversations': (spaceId, _c, input) => service.createConversation(spaceId, input),
     'GET /conversations/{id}': async (spaceId, c) => ({

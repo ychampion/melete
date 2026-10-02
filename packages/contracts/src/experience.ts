@@ -675,6 +675,14 @@ export const agentTemplate = z.strictObject({ id, title: text, agent: agentInput
 export const agentList = z.strictObject({ agents: z.array(experienceAgent) });
 export const agentResponse = z.strictObject({ agent: experienceAgent });
 export const agentTemplateList = z.strictObject({ templates: z.array(agentTemplate) });
+/** What deleting an agent did: its chats and routines now belong to Melete. */
+export const agentDeleted = z.strictObject({
+  id,
+  /** Melete, which now answers where the deleted agent did. */
+  moved_to: id,
+  conversations: z.number().int().nonnegative(),
+  routines: z.number().int().nonnegative(),
+});
 
 export const memoryItem = z.strictObject({
   id,
@@ -1037,6 +1045,11 @@ export const experienceOperations = {
   'POST /agents': { request: agentInput, response: agentResponse },
   'GET /agents/templates': { response: agentTemplateList },
   'PATCH /agents/{id}': { request: agentInput, response: agentResponse },
+  /**
+   * Deletes an agent other than Melete. Its chats, routines and plan steps move
+   * to Melete. Refused while one of its turns is still under way.
+   */
+  'DELETE /agents/{id}': { response: agentDeleted },
   'GET /memory/items': {
     query: z.strictObject({ after: id.optional() }),
     response: memoryItemList,
