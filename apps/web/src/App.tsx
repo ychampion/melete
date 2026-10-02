@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AppsScreen } from './apps/AppsScreen.tsx';
+import { AppViewer } from './apps/AppViewer.tsx';
 import { ChatScreen } from './chat/Chat.tsx';
 import { MeleteMark } from './design/mark.tsx';
 import { Button } from './design/primitives.tsx';
@@ -275,6 +277,8 @@ export function App() {
     screen = <CompaniesScreen />;
   } else if (head === 'automations') {
     screen = <AutomationsScreen />;
+  } else if (head === 'apps') {
+    screen = second ? <AppViewer key={second} id={second} /> : <AppsScreen />;
   } else if (head === 'settings') {
     // What Melete learned now lives under Memory; old links land there.
     if (second === 'learned') window.location.replace('#/settings/memory');

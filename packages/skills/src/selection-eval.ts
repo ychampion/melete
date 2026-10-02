@@ -112,6 +112,8 @@ export const SELECTION_REQUESTS: readonly EvalRequest[] = [
   { text: "I'm waiting on a reply from the builder", expect: ['chase-reply'] },
   // speech
   { text: 'Make a podcast about the history of tea', expect: ['make-a-podcast'] },
+  // apps
+  { text: 'Make me a dashboard of open deals', expect: ['build-an-app'] },
   // nothing to select
   { text: 'Thanks!', expect: [] },
   { text: 'Hi there', expect: [] },
@@ -138,6 +140,7 @@ export const DAY_ONE_TOOLS: readonly string[] = [
   'files.move',
   'web.fetch',
   'artifact.publish',
+  'apps.publish',
   'audio.synthesize',
   'email.search',
   'email.read',
@@ -250,6 +253,7 @@ export const HELD_OUT_REQUESTS: readonly EvalRequest[] = [
     expect: ['plan-a-responsibility'],
   },
   { text: 'Put my tax documents into folders', expect: ['organize-documents'] },
+  { text: 'Build an app where the team can log lunch orders', expect: ['build-an-app'] },
   { text: "Don't forget that my daughter is allergic to nuts", expect: ['remember-this'] },
   { text: 'My energy supplier still has not paid back the credit', expect: ['refund-owed'] },
   { text: 'I was billed for a delivery that never came', expect: ['wrong-charge'] },

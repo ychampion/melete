@@ -20,6 +20,7 @@ import {
   type SandboxTeardown,
   SpaceRemovalService,
 } from '../../apps/melete/src/spaces/removal.ts';
+import { LocalBlobStore } from '../../apps/melete/src/storage/local.ts';
 import { BrowserSiteService } from '../../apps/melete/src/workers/browser/sites.ts';
 import { testDatabase } from '../../apps/melete/test/helpers/database.ts';
 import {
@@ -42,6 +43,8 @@ const withDb = handle ? describe : describe.skip;
 
 const root = await mkdtemp(join(tmpdir(), 'melete-conformance-9-'));
 const spacesRoot = join(root, 'spaces');
+// Where the installation keeps blobs; a space's own go with it.
+const blobs = new LocalBlobStore(join(root, 'blobs'));
 const workRoot = join(root, 'work');
 await mkdir(spacesRoot, { recursive: true });
 await mkdir(workRoot, { recursive: true });
@@ -193,6 +196,7 @@ withDb(`conformance 9: ${s.title}`, () => {
       jobs: new JobService(handle.db, noQueue),
       journal,
       roots: { spacesRoot, workRoot },
+      blobs,
       sandboxes,
       browser,
       leaseMs: 5_000,
@@ -293,6 +297,7 @@ withDb(`conformance 9: ${s.title}`, () => {
       jobs: new JobService(handle.db, noQueue),
       journal: await newJournal(),
       roots: { spacesRoot, workRoot },
+      blobs,
       sandboxes: {
         providerFor: () => ({}),
         destroyWorkspacesForSpace: async () => {
@@ -324,6 +329,7 @@ withDb(`conformance 9: ${s.title}`, () => {
       jobs: new JobService(handle.db, noQueue),
       journal: await newJournal(),
       roots: { spacesRoot, workRoot },
+      blobs,
       leaseMs: 5_000,
     });
     const fenced = await service.fence(personal.principalId, personal.spaceId, 'Personal');
@@ -355,6 +361,7 @@ withDb(`conformance 9: ${s.title}`, () => {
       jobs: new JobService(handle.db, noQueue),
       journal: await newJournal(),
       roots: { spacesRoot, workRoot },
+      blobs,
       leaseMs: 5_000,
     });
     await expect(service.fence(shared.memberId, shared.spaceId, 'Guarded')).rejects.toThrow(

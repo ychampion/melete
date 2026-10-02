@@ -74,6 +74,8 @@ export const CONNECTION_PROVIDERS = [
   'sandbox',
   /** A person's own computer, reached through the companion they paired it with. */
   'device',
+  /** Publishes a folder of web files as an app people can open. */
+  'apps',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;

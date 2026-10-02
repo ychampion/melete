@@ -20,6 +20,8 @@ export default defineConfig({
     './src/devices/schema.ts',
     './src/feedback/schema.ts',
     './src/privacy/schema.ts',
+    './src/storage/schema.ts',
+    './src/apps/schema.ts',
   ],
   out: './drizzle',
   strict: true,

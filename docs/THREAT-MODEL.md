@@ -433,6 +433,64 @@ installation and is rate-limited per address; a registration alone grants
 nothing. Consent keys are per process, so a restart between showing the consent
 page and answering it asks the person to start again.
 
+## Attacker 9: a published app and its viewers
+
+An app is a folder of web files the agent wrote and a person allowed to publish
+(see [APPS](APPS.md)). Its code may be hostile: written under a prompt
+injection, or changed by someone who manages it. The aims are to act as the
+viewer in Melete, to read their session, storage or other work, to send what
+the app shows somewhere else, to keep showing it after the viewer was removed,
+and to frame Melete itself to trick a person into a click.
+
+Every file of an app is served under `/api/apps/view/<token>/` with
+`Content-Security-Policy: sandbox allow-scripts allow-forms allow-downloads`,
+so the page runs with an opaque origin: it has no cookies, no storage, and no
+same-origin access to Melete, however it is opened. The Apps screen also frames
+it with the same `sandbox` attribute and without `allow-same-origin`. The rest
+of the policy lets it load scripts, styles, images and fonts only from its own
+files, and fetch nothing (`connect-src 'none'`), post no form, frame nothing,
+open no window and move no page but its own frame. Melete's own pages carry
+`frame-src 'self'`, so even that frame cannot be moved to another site. The
+headers are set in one place, and a response under that path that lacks the
+exact policy is replaced by a 500 before it leaves the service; the web server
+checks again and passes nothing on without it.
+
+A file is served only to a browser that says it is loading it inside a page
+(`Sec-Fetch-Dest`). A file asked for as a page of its own is refused, because a
+page opened on its own could move itself to another site and take what it
+holds with it.
+
+The page holds no credential. The token in its path names one person, one app,
+one version, the app's grant generation and the browser session it was opened
+from. It lasts at most twelve hours and is signed with a key derived from the
+master key; without a master key the key lasts as long as the process, so
+installations with more than one service instance need one. Every file
+request checks all of them again: any change to who may open the app, to the
+version it shows, or signing out ends the view on its next file request. A
+page already loaded keeps showing what it has until the Apps screen next
+checks, within a minute. The token names the person by their account id,
+which the app can read in its own address. The web server forwards these requests
+without the session cookie, and the app's own requests arrive marked
+cross-site, so no cookie travels with them anyway. Bytes are read whole and
+checked against the manifest's hash before they are sent.
+
+What the app may ask for, it asks the Melete page around it with
+`postMessage`: the data the publish approval listed, read with the viewer's own
+session, and an https link, which opens in a new tab only after the person
+confirms it. The page answers only its own frame's window.
+
+Melete's own pages send `frame-ancestors 'self'` and `X-Frame-Options:
+SAMEORIGIN`, so another site cannot frame them.
+
+**WebRTC is open.** Browsers let any page, sandboxed or not, open WebRTC
+connections, and no header in today's browsers stops them: an app can reach a
+STUN or TURN server it names, and send what it shows, or what a viewer types
+into it, to that server. Names the page looks up can carry data the same way.
+Neither carries the viewer's session. The question to publish warns when the
+app's code uses WebRTC by name (`RTCPeerConnection`, `RTCDataChannel`,
+`getUserMedia`); code that hides those names is not found. Apps are for code
+the person trusts with the data it shows.
+
 ## Credentials, host and storage
 
 Connector secrets have tested sealing and scope checks: `stores randomized

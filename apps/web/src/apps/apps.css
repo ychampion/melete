@@ -1,0 +1,162 @@
+/* Apps: the list, and one app framed under Melete's own header. */
+
+.apps-sub {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--muted);
+}
+
+.app-list {
+  overflow: hidden;
+}
+.app-list > .app-row:first-child {
+  border-top: 0;
+}
+.app-row {
+  min-height: 64px;
+  padding: 10px 16px;
+}
+.app-row-text {
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.app-row-name {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+.app-row-meta {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.app-empty,
+.app-ended {
+  align-items: center;
+  gap: 8px;
+  padding: 32px 24px;
+  text-align: center;
+}
+.app-empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.app-empty-sub {
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 420px;
+}
+
+/* One app. The page scrolls only when the app asks for more height than there is. */
+.app-page {
+  gap: 16px;
+  padding-top: 24px;
+}
+.app-head {
+  align-items: flex-end;
+}
+.app-back {
+  align-self: flex-start;
+}
+.app-title {
+  overflow-wrap: anywhere;
+}
+.app-byline {
+  overflow-wrap: anywhere;
+}
+.app-actions {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.app-frame {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 420px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-block, 12px);
+  overflow: hidden;
+  background: var(--surface);
+}
+.framed-view {
+  display: block;
+  flex: 1;
+  width: 100%;
+  min-height: 420px;
+  border: 0;
+  /* An app draws on the white page a browser gives it, whatever Melete's theme. */
+  background: #ffffff;
+  color-scheme: light;
+}
+.framed-link {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--soft);
+}
+
+.app-versions,
+.app-people {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.app-version {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.app-version:first-child {
+  border-top: 0;
+}
+.app-version-name {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.app-share-everyone {
+  gap: 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.app-person {
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+.app-person-email {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 767px) {
+  .app-page {
+    padding: 16px;
+  }
+  .app-back {
+    display: none;
+  }
+  .app-frame,
+  .framed-view {
+    min-height: 360px;
+  }
+  .app-row {
+    padding: 10px 12px;
+  }
+}

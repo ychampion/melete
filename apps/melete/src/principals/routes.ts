@@ -20,6 +20,7 @@ import {
 } from '../db/schema.ts';
 import type { JobService } from '../jobs/service.ts';
 import { mcpPublicPath } from '../mcp-server/actor.ts';
+import { viewPath } from '../viewer/headers.ts';
 import { requireJobAccess, spaceAuthority } from './authority.ts';
 import { PrincipalService } from './service.ts';
 
@@ -41,6 +42,8 @@ export function mountPrincipals(
       return next();
     // A paired computer's companion has no session; each of its routes checks its token.
     if (c.req.path.startsWith('/device/')) return next();
+    // A framed app's file read carries a token, not a session; apps/serve.ts checks it.
+    if (viewPath(c.req.method, c.req.path) && !c.get('owner')) return next();
     const actor = c.get('owner').id;
     const path = c.req.path;
     const parts = path.split('/').filter(Boolean);

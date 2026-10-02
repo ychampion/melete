@@ -145,6 +145,8 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'browser.read': ['Reading the page', 'Read the page'],
   'browser.submit': ['Submitting a form', 'Submitted a form'],
   'artifact.publish': ['Publishing a file', 'Published a file'],
+  'apps.publish': ['Publishing an app', 'Published an app'],
+  'apps.rollback': ['Changing the version of an app', 'Changed the version of an app'],
   'audio.synthesize': ['Making audio', 'Made audio'],
   'audio.transcribe': ['Transcribing a recording', 'Transcribed a recording'],
   'test.read': ['Checking the connected app', 'Checked the connected app'],
@@ -174,6 +176,7 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
 /** The past-tense verbs of the labels above, as a permission card asks for them. */
 const ASKED: Record<string, string> = {
   Added: 'Add',
+  Changed: 'Change',
   Chose: 'Choose',
   Clicked: 'Click',
   Created: 'Create',
@@ -347,6 +350,124 @@ function sandboxFacts(kind: string, payload: Record<string, unknown>) {
     {
       label: 'Computer',
       value: "The agent's own computer, not yours",
+    },
+  ];
+}
+
+const KB = 1024;
+const appBytes = (bytes: number) =>
+  bytes < KB
+    ? `${bytes} bytes`
+    : bytes < KB * KB
+      ? `${Math.round(bytes / KB)} KB`
+      : `${(bytes / KB / KB).toFixed(1)} MB`;
+
+/** What a permission card asks for an app: its name, never only "an app". */
+function appAsk(kind: string, payload: Record<string, unknown>): string | null {
+  const text = (value: unknown) => (typeof value === 'string' ? plainText(value, '', 200) : '');
+  const name = text(payload.name);
+  // A new version is named by the app it replaces, as it is called now.
+  const current = text(payload.current_name);
+  if (kind === 'apps.publish') {
+    if (payload.create === true) return name ? `Publish ${name}` : null;
+    return current ? `Publish a new version of ${current}` : null;
+  }
+  if (kind === 'apps.rollback') return name ? `Change which version of ${name} people see` : null;
+  return null;
+}
+
+/** The data an app shows, as one card line. */
+const dataFact = (shown: unknown) => {
+  const lines = Array.isArray(shown) ? shown.map(String) : [];
+  return {
+    label: 'Data it shows',
+    value: lines.length
+      ? plainText(`${lines.join('; ')}. Viewers see each new version automatically.`, 'None')
+      : 'None',
+  };
+};
+
+const collectionsFact = (names: string[]) =>
+  names.length
+    ? [{ label: 'Responses it collects', value: plainText(names.join(', '), 'None') }]
+    : [];
+
+/**
+ * Everything a person needs to decide on publishing an app, or on changing
+ * which version people see: which app, how much it is, who will be able to
+ * open it, and which data it shows them, all bound into the payload before the
+ * question was asked.
+ */
+function appFacts(kind: string, payload: Record<string, unknown>) {
+  if (kind === 'apps.rollback') {
+    const at = typeof payload.version_published_at === 'string' ? payload.version_published_at : '';
+    const viewers = typeof payload.viewers_now === 'string' ? payload.viewers_now : 'only you';
+    return [
+      ...(typeof payload.name === 'string'
+        ? [{ label: 'App', value: plainText(payload.name, 'App', 200) }]
+        : []),
+      { label: 'Version', value: at ? `The one published ${at}` : 'An earlier version' },
+      {
+        label: 'Viewers',
+        value: plainText(viewers.charAt(0).toUpperCase() + viewers.slice(1), 'Only you'),
+      },
+      dataFact(payload.data_shown),
+      ...collectionsFact(
+        Array.isArray(payload.collections_shown) ? payload.collections_shown.map(String) : [],
+      ),
+    ];
+  }
+  if (kind !== 'apps.publish') return [];
+  const audience = object(payload.audience);
+  const emails = Array.isArray(audience.emails) ? audience.emails.map(String) : [];
+  const viewers =
+    audience.kind === 'everyone'
+      ? 'Everyone with an account here'
+      : audience.kind === 'people' && emails.length
+        ? `You and ${emails.join(', ')}`
+        : audience.kind === 'unchanged' && typeof audience.now === 'string'
+          ? `Unchanged: ${audience.now}`
+          : 'Only you';
+  const files = typeof payload.file_count === 'number' ? payload.file_count : 0;
+  const bytes = typeof payload.total_bytes === 'number' ? payload.total_bytes : 0;
+  const name = typeof payload.name === 'string' ? plainText(payload.name, 'App', 200) : null;
+  const current =
+    typeof payload.current_name === 'string' ? plainText(payload.current_name, 'App', 200) : null;
+  return [
+    ...(current
+      ? [
+          { label: 'App', value: current },
+          // A new name is part of what is asked, never done unseen.
+          ...(name && name !== current ? [{ label: 'Renames it to', value: name }] : []),
+        ]
+      : name
+        ? [{ label: 'App', value: name }]
+        : []),
+    {
+      label: 'Files',
+      value: `${files} ${files === 1 ? 'file' : 'files'}, ${appBytes(bytes)}`,
+    },
+    { label: 'Viewers', value: plainText(viewers, 'Only you') },
+    dataFact(payload.data_shown),
+    ...collectionsFact(Object.keys(object(payload.collections))),
+    ...connectionsFact(payload.opens_connections),
+  ];
+}
+
+/**
+ * A warning, never a refusal: the app's code uses WebRTC, which can send what
+ * it shows, or what a viewer types into it, to another server.
+ */
+function connectionsFact(files: unknown) {
+  const named = Array.isArray(files) ? files.map(String).filter(Boolean) : [];
+  if (!named.length) return [];
+  return [
+    {
+      label: 'Warning',
+      value: plainText(
+        `Its code can open direct connections to other servers (WebRTC, in ${named.join(', ')}), which can send what the app shows, or what a viewer types into it, anywhere. Publish it only if you trust that code with that data.`,
+        'Its code can open direct connections to other servers.',
+      ),
     },
   ];
 }
@@ -727,7 +848,10 @@ export function projectPermission(input: {
     ? `${base} to ${recipientText(payload)}`
     : file
       ? `Save ${file.path}`
-      : (DEVICE_ASKS[input.action.kind] ?? SANDBOX_ASKS[input.action.kind] ?? base);
+      : (DEVICE_ASKS[input.action.kind] ??
+        SANDBOX_ASKS[input.action.kind] ??
+        appAsk(input.action.kind, payload) ??
+        base);
   const facts = [
     ...(file
       ? [
@@ -737,6 +861,7 @@ export function projectPermission(input: {
       : []),
     ...deviceFacts(input.action.kind, payload),
     ...sandboxFacts(input.action.kind, payload),
+    ...appFacts(input.action.kind, payload),
     ...(draft
       ? [
           ...(input.connection.sender ? [{ label: 'From', value: input.connection.sender }] : []),
