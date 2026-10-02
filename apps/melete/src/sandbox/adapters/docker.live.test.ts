@@ -571,11 +571,12 @@ if (!live) {
           `echo ${each.name}=$(env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy GIT_SSL_CAINFO=/tmp/egress-ca.pem GIT_TERMINAL_PROMPT=0 git -c http.curloptResolve=${each.host}:${each.port}:127.0.0.1 ls-remote https://${each.host}:${each.port}/r.git 2>&1 | grep -ciE 'certificate|issuer|verif')`,
       ),
       `echo reached=$(env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy GIT_SSL_CAINFO=/tmp/egress-ca.pem GIT_TERMINAL_PROMPT=0 git -c http.curloptResolve=ok.creds.test:8443:127.0.0.1 ls-remote https://ok.creds.test:8443/r.git 2>&1 | grep -ciE '404|not found')`,
-      'git --version; curl --version | head -1; kill $SERVER',
+      // git's own HTTPS helper links its own libcurl; the curl command may use another TLS library.
+      'git --version; echo tls=$(ldd "$(git --exec-path)/git-remote-https" | grep -oE "libgnutls|libssl" | head -1); kill $SERVER',
     ].join('; ');
     const probe = await shell(await open(), script);
     process.stdout.write(`docker live, git trust: ${probe.text}\n`);
-    expect(probe.text).toMatch(/GnuTLS/i);
+    expect(probe.text).toContain('tls=libgnutls');
     expect(probe.text).toContain('inside=0');
     expect(probe.text).toMatch(/reached=[1-9]/);
     expect(probe.text).toMatch(/outside=[1-9]/);
