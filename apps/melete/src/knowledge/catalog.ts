@@ -9,7 +9,7 @@ import { connection } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { RunnerOptions } from '../jobs/runner.ts';
 import { learnedSkills, procedureReach } from '../learning/selection.ts';
-import { skillPayloadOf, usableSkills } from '../principals/context.ts';
+import { skillPayloadOf, turnAgentKeepsMemory, usableSkills } from '../principals/context.ts';
 
 /**
  * Every tool name an attempt can reach: all it was granted, not the first few
@@ -67,6 +67,7 @@ export class RuntimeCatalog {
       bundle.job.constraints.public_compartment === true,
       (needed) => needed.every((tool) => reachable.has(tool)),
       await procedureReach(tx, procedures),
+      await turnAgentKeepsMemory(tx, bundle.attempt.job_id),
     );
     // Triggers now only rank: the likeliest few are given in full, and every
     // other usable skill is named in the index for the attempt to read itself.

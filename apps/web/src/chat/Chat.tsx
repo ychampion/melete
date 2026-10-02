@@ -27,6 +27,7 @@ import {
   agentById,
   defaultAgentOf,
   messageKey,
+  turnAgent,
   useApp,
   useConversation,
   useMedia,
@@ -311,9 +312,9 @@ function TurnView({
   /** Resend this turn's message when it failed to send. */
   onRetry?: (localId: string) => void;
 }) {
-  const { agents } = useApp();
+  const { agents, removedAgents } = useApp();
   const { transcript } = useTranscript();
-  const agent = agentById(agents, turn.turn.agent_id);
+  const agent = turnAgent(agents, removedAgents, turn.turn.agent_id);
   const finished = FINISHED.includes(turn.status);
   const text = answerOf(turn);
   const open = openQuestion(transcript);

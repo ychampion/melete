@@ -192,7 +192,31 @@ const namespace = (name: string) => (name.includes('.') ? name.slice(0, name.ind
 const writesOutside = (item: CatalogItem) =>
   item.entry.effect_class === 'write_external' || item.entry.effect_class === 'spend';
 /** Whether the installation vouches for this entry's own words. An MCP server writes its own. */
+/** The agent's own computer's terminal, which the engine builds its terminal from. */
+const OWN_TERMINAL_TOOL = 'terminal.run';
 const granted = (item: CatalogItem) => (item.entry.source === 'mcp' ? 0 : 1);
+
+/**
+ * How firmly a tool holds a place in the core list, ahead of relevance. The
+ * agent's own terminal always has one: ranked by the job's words it can lose
+ * to a paired computer's tools ("my computer"), and without it the engine is
+ * built with no terminal at all, so the agent believes it has none.
+ */
+function pinOf(tool: ToolSpec, context: CoreSelectionContext): number {
+  if (tool.connection_id !== null) return tool.name === OWN_TERMINAL_TOOL ? 1 : 0;
+  if (
+    (context.resumable === true && tool.name === RESUME_ACTION_TOOL.name) ||
+    (context.followable === true && tool.name === CHASE_FOLLOW_UP_TOOL.name)
+  )
+    return 2;
+  if (
+    (context.waitable === true && tool.name === RUNTIME_WAIT_TOOL.name) ||
+    (context.conversational === true && tool.name === REACT_TOOL_NAME) ||
+    (context.readable === true && tool.name === SKILL_READ_TOOL.name)
+  )
+    return 1;
+  return 0;
+}
 
 /**
  * Budget the serialized provider schemas, including the two always-on meta-tools.
@@ -224,17 +248,7 @@ export function selectCore(
     .map((item) => ({
       item,
       score: relevance(query, item.entry),
-      pinned:
-        item.tool.connection_id !== null
-          ? 0
-          : (context.resumable === true && item.tool.name === RESUME_ACTION_TOOL.name) ||
-              (context.followable === true && item.tool.name === CHASE_FOLLOW_UP_TOOL.name)
-            ? 2
-            : (context.waitable === true && item.tool.name === RUNTIME_WAIT_TOOL.name) ||
-                (context.conversational === true && item.tool.name === REACT_TOOL_NAME) ||
-                (context.readable === true && item.tool.name === SKILL_READ_TOOL.name)
-              ? 1
-              : 0,
+      pinned: pinOf(item.tool, context),
     }))
     .sort(
       (a, b) =>
@@ -402,7 +416,10 @@ export class ToolCatalog {
       join job j on j.id = a.job_id where j.space_id = ${job.space_id} and a.status = 'succeeded'
       group by a.connection_id, a.kind`;
     const items: ScopedCatalogItem[] = [];
-    const skills = await this.skills(tx, job, claims);
+    // An agent that keeps no memory is not offered a skill that promises to.
+    const skills = (await this.skills(tx, job, claims)).filter(
+      (skill) => access.writesMemory || !skill.frontmatter.keeps_memory,
+    );
     const nativeNames = new Set(
       [...META_TOOLS, ...(this.options.nativeTools ?? [])].map((tool) => tool.name),
     );

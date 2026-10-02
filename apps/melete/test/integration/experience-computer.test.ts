@@ -20,7 +20,6 @@ import {
 } from '@melete/contracts';
 import { createBrowserConnector } from '../../src/connectors/browser.ts';
 import { loadEnv } from '../../src/env.ts';
-import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
@@ -29,6 +28,7 @@ import { browserArtifactSink } from '../../src/workers/browser/artifacts.ts';
 import { chromiumAvailable, chromiumMissingReason } from '../../src/workers/browser/available.ts';
 import { BrowserWorkerPool } from '../../src/workers/browser/client.ts';
 import { BrowserSessionService } from '../../src/workers/browser/routes.ts';
+import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const database = await testDatabase();
@@ -94,9 +94,7 @@ async function people(app: App, friend: string) {
     }),
   );
   const persona = agentResponse.parse(
-    await (
-      await call('/agents', { method: 'POST', body: AGENT_TEMPLATES.templates[0]?.agent })
-    ).json(),
+    await (await call('/agents', { method: 'POST', body: freshAgent() })).json(),
   ).agent;
   const conversation = async (title: string) =>
     conversationResponse.parse(

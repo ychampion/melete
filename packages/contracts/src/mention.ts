@@ -16,3 +16,22 @@ export function mentionedAgent<T extends { name: string }>(
   }
   return null;
 }
+
+/** Two agent names are the same when "@name" could not tell them apart. */
+export const sameAgentName = (a: string, b: string): boolean =>
+  a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
+
+/**
+ * A name no agent in the space has yet: the wanted one when it is free,
+ * otherwise the first of "Nova 2", "Nova 3", … that is.
+ */
+export function freeAgentName(wanted: string, taken: readonly string[]): string {
+  const base = wanted.trim();
+  const free = (name: string) => !taken.some((other) => sameAgentName(other, name));
+  if (free(base)) return base;
+  for (let n = 2; ; n += 1) {
+    const suffix = ` ${n}`;
+    const name = `${base.slice(0, 40 - suffix.length)}${suffix}`;
+    if (free(name)) return name;
+  }
+}
