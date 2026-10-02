@@ -120,6 +120,38 @@ export async function recordSettled(
     on conflict (dedup_key) do nothing`);
 }
 
+/**
+ * A room's permissions that wait for this person: those of the room's work in
+ * rooms they are in, that the room's rule lets them answer now (see
+ * `rooms/approvals.ts`). Nobody else in the room is told.
+ */
+function roomDecisions(principalId: string, since: Date) {
+  // Several people may be told of one permission, so each one's key names them.
+  return sql`select 'approval:' || a.id || ':' || ${principalId}, j.id, r.title,
+           'Because it can’t go on until someone it names decides.', a.requested_at,
+           '/#/rooms/' || r.space_id || coalesce('/' || r.room_thread_id, '')
+    from approval a
+    join action ac on ac.id = a.action_id
+    join job j on j.id = ac.job_id
+    left join job parent on parent.id = j.experience_parent_id and parent.space_id = j.space_id
+    join job r on r.id = case when parent.audience = 'room' then parent.id else j.id end
+    join principal holder on holder.id = j.principal_id
+    join space s on s.id = r.space_id and s.kind = 'shared' and s.removed_at is null
+    join space_membership m on m.space_id = r.space_id and m.principal_id = ${principalId}
+      and m.revoked_at is null and m.role in ('owner', 'member')
+    join principal p on p.id = m.principal_id and p.kind = 'person'
+    left join room_policy rp on rp.space_id = r.space_id
+    where a.decided_at is null
+      and (a.expires_at is null or a.expires_at > now())
+      and (parent.audience = 'room' or j.audience = 'room' or holder.kind = 'room')
+      and case coalesce(rp.approvers, 'requester')
+        when 'requester' then r.requested_by_principal_id = m.principal_id
+        when 'any_member' then true
+        when 'owners' then m.role = 'owner'
+        else false end
+      and a.requested_at >= ${since.toISOString()}::timestamptz`;
+}
+
 export class PushService {
   constructor(
     readonly db: Database,
@@ -290,7 +322,8 @@ export class PushService {
     if (!pacing.decisions) return;
     const open = (await this.db.execute(sql`
       select 'approval:' || a.id as key, j.id as job_id, j.title as title,
-             'Because it can’t go on until you decide.' as because, a.requested_at as at
+             'Because it can’t go on until you decide.' as because, a.requested_at as at,
+             '/#/chat/' || j.id as url
       from approval a
       join action ac on ac.id = a.action_id
       join job j on j.id = ac.job_id
@@ -302,11 +335,19 @@ export class PushService {
       select 'question:' || q.id, j.id, q.text,
              coalesce('Because ' || lower(left(q.because->>0, 1)) || substr(q.because->>0, 2),
                       'Because it asked you something only you can answer.'),
-             q.created_at
+             q.created_at, '/#/chat/' || j.id
       from question q
       join job j on j.id = q.job_id
       where q.state = 'open' and j.principal_id = ${principalId} and q.created_at >= ${since.toISOString()}::timestamptz
-    `)) as unknown as Array<{ key: string; job_id: string; title: string; because: string }>;
+      union all
+      ${roomDecisions(principalId, since)}
+    `)) as unknown as Array<{
+      key: string;
+      job_id: string;
+      title: string;
+      because: string;
+      url: string;
+    }>;
     for (const row of open) {
       await this.db
         .insert(pushIntent)
@@ -317,7 +358,7 @@ export class PushService {
           title: 'One decision is waiting',
           body: clip(row.title, 300),
           because: clip(row.because.replace(/^Because because /i, 'Because '), 200),
-          url: `/#/chat/${row.job_id}`,
+          url: row.url,
           dedupKey: `decision:${row.key}`,
         })
         .onConflictDoNothing({ target: pushIntent.dedupKey });

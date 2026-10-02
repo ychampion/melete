@@ -27,6 +27,7 @@ import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import { agentValues, agentView } from './agents.ts';
 import { answerStream } from './answer-filter.ts';
 import type { ExperienceEvents } from './events.ts';
+import type { ExperiencePermissions } from './permissions.ts';
 import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
 
 /** Turn statuses whose answer may still grow. */
@@ -83,6 +84,8 @@ export async function withdrawPendingPermissions(
 export class ExperienceService {
   /** The conversation projector the routes mounted beside this service, for the rooms routes. */
   events?: ExperienceEvents;
+  /** The permission cards and answers mounted beside this service, for the rooms routes. */
+  permissions?: ExperiencePermissions;
   constructor(
     readonly db: Database,
     readonly jobs?: JobService,

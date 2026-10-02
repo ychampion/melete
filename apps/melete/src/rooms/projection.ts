@@ -6,6 +6,7 @@
  */
 import {
   conversationTurn,
+  type PermissionCard,
   type RoomMessage,
   type RoomRequest,
   type RoomThread,
@@ -15,7 +16,7 @@ import {
 } from '@melete/contracts';
 import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
-import { action, artifact, connection, experienceTurn, job } from '../db/schema.ts';
+import { action, approval, artifact, connection, experienceTurn, job } from '../db/schema.ts';
 import { answerStream } from '../experience/answer-filter.ts';
 import {
   answerText,
@@ -25,7 +26,9 @@ import {
 } from '../experience/projectors.ts';
 import { conversationView } from '../experience/service.ts';
 import type { JobRow } from '../jobs/service.ts';
+import { ENDED_STATES } from '../jobs/withdraw.ts';
 import type { roomMessage, roomThread } from './schema.ts';
+import { namesOf } from './transcript.ts';
 
 /** Turn statuses whose answer may still grow. */
 const STILL_WRITING = new Set(['queued', 'working', 'streaming']);
@@ -76,6 +79,8 @@ export async function requestView(
   db: Database,
   row: JobRow,
   names: ReadonlyMap<string, string>,
+  /** The card of one of the room's waiting permissions; left out, none are shown. */
+  permissionCard?: (approvalId: string) => Promise<PermissionCard>,
 ): Promise<RoomRequest> {
   const turns = await db
     .select()
@@ -100,6 +105,42 @@ export async function requestView(
     .where(
       and(eq(artifact.spaceId, row.spaceId), or(...jobIds.map((id) => eq(artifact.jobId, id)))),
     );
+  // Every permission the request and its steps asked for: those still waiting,
+  // with who may answer them, and those answered, with who answered.
+  const asked = await db
+    .select({ approval, effect: action, owner: job })
+    .from(approval)
+    .innerJoin(action, eq(action.id, approval.actionId))
+    .innerJoin(job, eq(job.id, action.jobId))
+    .where(and(inArray(action.jobId, jobIds), eq(job.spaceId, row.spaceId)))
+    .orderBy(asc(approval.requestedAt), asc(approval.id));
+  const now = Date.now();
+  const waiting = asked.filter(
+    ({ approval: question, effect, owner }) =>
+      question.decision === null &&
+      effect.status === 'needs_approval' &&
+      question.jobRevision === owner.revision &&
+      !ENDED_STATES.includes(owner.state) &&
+      (!question.expiresAt || question.expiresAt.getTime() > now),
+  );
+  const permissions = permissionCard
+    ? await Promise.all(waiting.map(({ approval: question }) => permissionCard(question.id)))
+    : [];
+  const answered = asked.filter(({ approval: question }) => question.decision !== null);
+  const deciders = await namesOf(
+    db,
+    answered.flatMap(({ approval: question }) => (question.decidedBy ? [question.decidedBy] : [])),
+  );
+  const decisions = answered.map(({ approval: question }) => ({
+    approval_id: question.id,
+    decision: question.decision === 'approved' ? ('approved' as const) : ('denied' as const),
+    // Only a person is named: a withdrawal or the room's settings name nobody.
+    decided_by:
+      question.decidedBy && deciders.has(question.decidedBy)
+        ? author(deciders, question.decidedBy)
+        : null,
+    decided_at: (question.decidedAt ?? question.requestedAt).toISOString(),
+  }));
   const receipts = effects.flatMap(({ action: effect, connection: source }) => {
     const receipt = projectReceipt(effect, source);
     return receipt ? [receipt] : [];
@@ -128,5 +169,7 @@ export async function requestView(
       ...files.map(projectArtifact),
     ],
     receipts,
+    permissions,
+    decisions,
   });
 }

@@ -9,6 +9,7 @@ import {
   conversationTurn,
   experienceEvent,
   experienceReceipt,
+  permissionCard,
   resultCard,
   turnStatus,
 } from './experience.ts';
@@ -44,12 +45,33 @@ export const roomMember = z.strictObject({
 });
 export type RoomMember = z.infer<typeof roomMember>;
 
-/** How the room works: who decides its permissions, when its agent answers, and whether guests may ask. */
+/**
+ * Who decides the permissions a room's request asks for: the person who asked
+ * it, any member who is not a guest, or the room's owners. Guests and the
+ * room's agent never decide.
+ */
+export const roomApprovers = z.enum(['requester', 'any_member', 'owners']);
+export type RoomApprovers = z.infer<typeof roomApprovers>;
+
+/**
+ * How the room works: who decides its permissions, when its agent answers,
+ * whether guests may ask it, and how many asks the room, and each person in
+ * it, may make in an hour.
+ */
 export const roomPolicy = z.strictObject({
-  approvers: z.enum(['requester', 'any_member', 'owners']),
+  approvers: roomApprovers,
+  /** `asked`: the agent answers when asked. `every_message`: every message asks it, which uses more of the model. */
   agent_turns: z.enum(['asked', 'every_message']),
   guests_may_ask: z.boolean(),
+  requests_per_hour: z.number().int().min(1).max(1000),
+  requests_per_person_hour: z.number().int().min(1).max(1000),
 });
+export type RoomPolicy = z.infer<typeof roomPolicy>;
+/** A change to how a room works; what it leaves out stays as it is. Owners only. */
+export const roomPolicyUpdate = roomPolicy
+  .partial()
+  .refine((value) => Object.keys(value).length > 0, 'Change at least one setting.');
+export const roomPolicyResponse = z.strictObject({ policy: roomPolicy });
 
 export const roomDetail = z.strictObject({
   room: roomSummary.extend({ agent_name: z.string() }),
@@ -127,6 +149,16 @@ export const roomMessage = z.strictObject({
 });
 export type RoomMessage = z.infer<typeof roomMessage>;
 
+/** A permission of a room's request that has been answered, and who answered it. */
+export const roomDecision = z.strictObject({
+  approval_id: id,
+  decision: z.enum(['approved', 'denied']),
+  /** The person who answered; null when Melete withdrew it or decided it by the room's settings. */
+  decided_by: roomAuthor.nullable(),
+  decided_at: timestamp,
+});
+export type RoomDecision = z.infer<typeof roomDecision>;
+
 /** One ask of the room's agent: its answer, cards and receipts, and who asked. */
 export const roomRequest = z.strictObject({
   job_id: id,
@@ -135,6 +167,10 @@ export const roomRequest = z.strictObject({
   turns: z.array(conversationTurn),
   cards: z.array(resultCard),
   receipts: z.array(experienceReceipt),
+  /** Permissions waiting now, each naming who may answer it. */
+  permissions: z.array(permissionCard),
+  /** Permissions answered, with who answered each. */
+  decisions: z.array(roomDecision),
 });
 export type RoomRequest = z.infer<typeof roomRequest>;
 
@@ -187,3 +223,31 @@ export const roomStopResponse = z.strictObject({ request: roomRequest });
 export const roomPresenceResponse = z.strictObject({ present: z.array(principalId) });
 export const roomMembershipResponse = z.strictObject({ member: roomMember });
 export const roomLeaveResponse = z.strictObject({ removed: principalId });
+
+/**
+ * An answer to one of a room's permissions. It names the exact content
+ * (`payload_hash`) and the card it answers (`version`); either having changed,
+ * the answer is refused. Only the people the room's rule names may answer.
+ */
+export const roomPermissionDecision = z.discriminatedUnion('option', [
+  z.strictObject({ option: z.literal('allow_once'), version: id, payload_hash: id }),
+  z.strictObject({ option: z.literal('deny'), version: id, payload_hash: id }),
+]);
+export const roomPermissionOutcome = z.strictObject({
+  status: z.literal('ok'),
+  option: z.enum(['allow_once', 'deny']),
+  decided_by: roomAuthor,
+});
+
+/** A connection in a room's space, and whether it serves the room's requests. */
+export const roomConnection = z.strictObject({
+  id,
+  label: z.string(),
+  provider: z.string(),
+  status: z.string(),
+  /** `room`: the agent uses it for the room's requests. `owner`: it serves only the owner's own work. */
+  shared_use: z.enum(['owner', 'room']),
+});
+export const roomConnectionList = z.strictObject({ connections: z.array(roomConnection) });
+export const roomConnectionUpdate = z.strictObject({ shared_use: z.enum(['owner', 'room']) });
+export const roomConnectionResponse = z.strictObject({ connection: roomConnection });

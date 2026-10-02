@@ -7,6 +7,7 @@ import type { Database } from '../db/client.ts';
 import { connection } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { RunnerOptions } from '../jobs/runner.ts';
+import { connectionServesJob, typedAudience } from '../jobs/scopes.ts';
 import { learnedSkills, procedureReach } from '../learning/selection.ts';
 import { skillPayloadOf, usableSkills } from '../principals/context.ts';
 
@@ -31,20 +32,31 @@ export class RuntimeCatalog {
     private readonly connectors: ConnectorLookup,
   ) {}
 
+  /**
+   * The tools of a space's active connections that the scopes grant. With a
+   * job, only the connections that serve that job: two connections can grant
+   * the same scope, and a room's request is offered only the room's.
+   */
   async toolsForSpace(
     spaceId: string,
     scopes?: readonly string[],
     query: Database | Transaction = this.db,
+    jobId?: string,
   ): Promise<ToolSpec[]> {
     const connections = await query
       .select()
       .from(connection)
       .where(and(eq(connection.spaceId, spaceId), eq(connection.status, 'active')));
-    return grantedToolCatalog(connections, this.connectors, scopes);
+    const audience = jobId ? await typedAudience(query, jobId) : null;
+    if (jobId && !audience) return [];
+    const serving = audience
+      ? connections.filter((row) => connectionServesJob(audience, row.sharedUse))
+      : connections;
+    return grantedToolCatalog(serving, this.connectors, scopes);
   }
 
   forAttempt: NonNullable<RunnerOptions['loadCatalog']> = async (tx, claims, bundle) => {
-    const granted = await this.toolsForSpace(claims.space_id, claims.scopes, tx);
+    const granted = await this.toolsForSpace(claims.space_id, claims.scopes, tx, claims.job_id);
     const tools = granted.slice(0, CONTEXT_LIMITS.max_tools);
     const reachable = reachableToolNames(granted, claims.scopes);
     // The same selection bundle construction made, with its audience rules, now
