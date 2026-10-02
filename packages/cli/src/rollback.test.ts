@@ -68,7 +68,7 @@ describe('melete rollback', () => {
 
     expect(await runRollback(rig.context, [], false, rig.dependencies)).toBe(3);
     const printed = rig.context.printed();
-    expect(printed).toContain('The database holds 69 migrations and aaaaaaa knows 68');
+    expect(printed).toContain('The database records 1 migration(s) that aaaaaaa does not know');
     expect(printed).toContain('Nothing was changed.');
     expect(printed).toContain(`${backup}/database.dump`);
     expect(printed).toContain('docker volume rm melete_pgdata');

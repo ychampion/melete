@@ -5,7 +5,7 @@ import { runDeploy } from './commands/deploy.ts';
 import { DEPLOY_FILE } from './deploy-config.ts';
 import { readHistory } from './history.ts';
 import { temporaryDeployDir } from './testing.ts';
-import { deployRig, NEW, OLD, REGISTRY, release } from './testing-engine.ts';
+import { deployRig, NEW, OLD, REGISTRY, release, whens } from './testing-engine.ts';
 
 const MB = 1024 ** 2;
 const short = (commit: string) => commit.slice(0, 7);
@@ -206,8 +206,66 @@ describe('melete deploy', () => {
       { backup: { dir: join(deployDir, '..', 'backups'), keep: 3 } },
     );
     expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(0);
-    expect(rig.context.printed()).toMatch(/ok\s+verify\.migrations\s+69 migrations/);
+    expect(rig.context.printed()).toMatch(
+      /ok\s+verify\.migrations\s+Every one of the 69 migrations in the journal is recorded/,
+    );
     expect(readHistory(deployDir)[0]?.backup).toMatch(/melete-\d{8}T\d{6}Z$/);
+  });
+
+  test('a release whose migrations are not all recorded after it starts fails the deploy', async () => {
+    const deployDir = temporaryDeployDir();
+    const rig = deployRig(
+      deployDir,
+      {
+        commits: new Map([
+          [OLD, 68],
+          [NEW, 69],
+        ]),
+        migrateOnUp: false,
+      },
+      { backup: { dir: join(deployDir, '..', 'backups'), keep: 3 } },
+    );
+    expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(3);
+    expect(rig.context.printed()).toMatch(
+      /fail\s+verify\.migrations\s+The database has not recorded 1 of the 69 migrations/,
+    );
+    expect(rig.context.printed()).toContain('it prints the database restore');
+    expect(rig.state.removed).toEqual([]);
+  });
+
+  test('a migration recorded by another build is reported, and the release runs beside it', async () => {
+    const deployDir = temporaryDeployDir();
+    // The database already ran the release's newest migration and one more from elsewhere.
+    const rig = deployRig(deployDir, {
+      commits: new Map([
+        [OLD, 68],
+        [NEW, 69],
+      ]),
+      recorded: [...whens(69), whens(70).at(-1) ?? 0],
+    });
+    expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(0);
+    const printed = rig.context.printed();
+    expect(printed).toMatch(/warn\s+migrations\.unknown\s+The database records 1 migration/);
+    // Nothing is pending, so nothing is backed up first.
+    expect(printed).toMatch(/ok\s+backup\.database\s+bbbbbbb adds no migrations/);
+    expect(printed).toMatch(/ok\s+verify\.migrations\s+Every one of the 69 migrations/);
+  });
+
+  test('a release migration older than the newest recorded one is refused, since it would never run', async () => {
+    const deployDir = temporaryDeployDir();
+    const rig = deployRig(deployDir, {
+      commits: new Map([
+        [OLD, 68],
+        [NEW, 70],
+      ]),
+      // 0068 and a later one from elsewhere are recorded; the release's 0069 is not.
+      recorded: [...whens(68), (whens(70).at(-1) ?? 0) + 5],
+    });
+    expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(2);
+    expect(rig.context.printed()).toMatch(
+      /fail\s+migrations\.would_skip\s+2 of bbbbbbb's migrations/,
+    );
+    expect(rig.state.pulls).toEqual([]);
   });
 
   test('a release that knows fewer migrations than the database is refused', async () => {

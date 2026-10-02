@@ -20,6 +20,10 @@ export const POSTGRES =
 export const REGISTRY = 'ghcr.io/ychampion';
 export const RELEASES = ['melete-service', 'melete-runtime', 'melete-web'] as const;
 
+/** The journal times of a release with this many migrations: one per index, in order. */
+export const whens = (count: number) =>
+  Array.from({ length: count }, (_, index) => 1_789_232_400_000 + index);
+
 export const OLD = 'a'.repeat(40);
 export const NEW = 'b'.repeat(40);
 
@@ -48,11 +52,14 @@ export type Engine = {
   /** Commits the checkout has, with their journal's migration count. */
   commits: Map<string, number>;
   dirty: string[];
-  applied: number;
+  /** Journal times of the migrations the database records. */
+  recorded: number[];
   databaseBytes: number;
   /** A pull of a reference starting with one of these fails. */
   failPulls: string[];
   failUp: boolean;
+  /** Whether starting the service records its journal's migrations. */
+  migrateOnUp: boolean;
   ups: number;
   restarts: number;
   pulls: string[];
@@ -108,10 +115,11 @@ export function engine(overrides: Partial<Engine> = {}): Engine {
       [NEW, 68],
     ]),
     dirty: [],
-    applied: 68,
+    recorded: whens(68),
     databaseBytes: 40 * MB,
     failPulls: [],
     failUp: false,
+    migrateOnUp: true,
     ups: 0,
     restarts: 0,
     pulls: [],
@@ -235,15 +243,18 @@ export function engineRun(state: Engine, root: string) {
       state.ups += 1;
       if (state.failUp)
         return no('dependency failed to start: container melete-melete-1 is unhealthy');
-      state.applied = state.commits.get(state.head) ?? state.applied;
+      if (state.migrateOnUp)
+        state.recorded = [
+          ...new Set([...state.recorded, ...whens(state.commits.get(state.head) ?? 0)]),
+        ];
       return ok();
     }
     if (text.startsWith('docker compose restart melete')) {
       state.restarts += 1;
       return ok();
     }
-    if (text.includes('select count(*) from drizzle.__drizzle_migrations'))
-      return ok(`${state.applied}\n`);
+    if (text.includes('select created_at from drizzle.__drizzle_migrations'))
+      return ok(`${[...state.recorded].sort((a, b) => a - b).join('\n')}\n`);
     if (text.includes('select pg_database_size')) return ok(`${state.databaseBytes}\n`);
     if (text.startsWith(`git -C ${root} `)) return gitRun(state, command.slice(3));
     return no('no such command in this test');
@@ -265,7 +276,9 @@ function gitRun(state: Engine, args: readonly string[]): CommandOutput {
     if (!commit || !state.commits.has(commit)) return no('bad revision');
     if (path === 'apps/melete/drizzle/meta/_journal.json')
       return ok(
-        JSON.stringify({ entries: Array.from({ length: state.commits.get(commit) ?? 0 }) }),
+        JSON.stringify({
+          entries: whens(state.commits.get(commit) ?? 0).map((when) => ({ when })),
+        }),
       );
     if (path?.startsWith('deploy/'))
       return ok(readFileSync(join(REAL_DEPLOY_DIR, path.slice(7)), 'utf8'));

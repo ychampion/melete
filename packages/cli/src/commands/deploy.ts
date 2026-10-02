@@ -68,6 +68,7 @@ import {
   type DeployPlan,
   type ImageTarget,
   judgeDeploy,
+  migrationDelta,
 } from '../plan.ts';
 import { EXIT, type ExitCode, type Result, report } from '../schema.ts';
 import { BackupRefusal, expandHome, parseSshTarget, takeBackup } from './backup.ts';
@@ -151,8 +152,8 @@ function git(context: Context, args: string[], timeoutMs?: number) {
   return context.run(['git', '-C', context.root, ...args], timeoutMs);
 }
 
-/** The journal's migration count at a commit, or in the working tree when no commit is given. */
-export function journalCount(context: Context, revision: string | null): number | null {
+/** The journal's entry times at a commit, or in the working tree when no commit is given. */
+export function journalWhens(context: Context, revision: string | null): number[] | null {
   let text: string | null = null;
   if (revision === null) {
     const path = join(context.root, JOURNAL);
@@ -162,15 +163,20 @@ export function journalCount(context: Context, revision: string | null): number 
     text = shown.code === 0 ? shown.stdout : null;
   }
   try {
-    const entries = (JSON.parse(text ?? '') as { entries?: unknown[] }).entries;
-    return Array.isArray(entries) ? entries.length : null;
+    const entries = (JSON.parse(text ?? '') as { entries?: { when?: unknown }[] }).entries;
+    if (!Array.isArray(entries)) return null;
+    const whens = entries.map((entry) => Number(entry.when));
+    return whens.every(Number.isFinite) ? whens : null;
   } catch {
     return null;
   }
 }
 
-/** Migrations the database has recorded; null when it did not answer. */
-export function appliedMigrations(context: Context, compose: readonly string[]): number | null {
+export const journalCount = (context: Context, revision: string | null): number | null =>
+  journalWhens(context, revision)?.length ?? null;
+
+/** The migrations the database has recorded, by journal time; null when it did not answer. */
+export function recordedMigrations(context: Context, compose: readonly string[]): number[] | null {
   const output = context.run([
     ...compose,
     'exec',
@@ -178,10 +184,14 @@ export function appliedMigrations(context: Context, compose: readonly string[]):
     'postgres',
     'sh',
     '-c',
-    'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "select count(*) from drizzle.__drizzle_migrations"',
+    'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "select created_at from drizzle.__drizzle_migrations order by created_at"',
   ]);
-  const text = output.stdout.trim();
-  return output.code === 0 && /^\d+$/.test(text) ? Number(text) : null;
+  if (output.code !== 0) return null;
+  const lines = output.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.every((line) => /^\d+$/.test(line)) ? lines.map(Number) : null;
 }
 
 export function databaseBytes(context: Context, compose: readonly string[]): number | null {
@@ -374,8 +384,9 @@ export function gatherDeploy(
       knownLayers,
       freeBytes,
       migrations: {
-        applied: appliedMigrations(context, compose),
-        target: revision !== null && revisionAvailable ? journalCount(context, revision) : null,
+        recorded: recordedMigrations(context, compose),
+        current: journalWhens(context, head),
+        target: revision !== null && revisionAvailable ? journalWhens(context, revision) : null,
       },
       databaseBytes: databaseBytes(context, compose),
       backup,
@@ -575,7 +586,10 @@ export async function runDeploy(
         target.revision !== facts.head
           ? { from: facts.head, branch: branchBefore, to: target.revision }
           : null,
-      migrations: { from: facts.migrations.applied, to: facts.migrations.target },
+      migrations: {
+        from: facts.migrations.recorded?.length ?? null,
+        to: facts.migrations.target?.length ?? null,
+      },
       backup,
       result,
       detail,
@@ -767,12 +781,13 @@ export async function runDeploy(
       });
     }
 
+    const pending = migrationDelta(facts.migrations).pending.length;
     const failed = (id: string, detail: string) => {
       steps.add({
         id,
         level: 'fail',
         detail,
-        fix: `See ${compose.join(' ')} logs --tail=100. To go back: bun run melete rollback${facts.migrations.target !== null && facts.migrations.applied !== null && facts.migrations.target > facts.migrations.applied ? ` (it prints the database restore, from ${backupLocation ?? 'your backup'}, because migrations may have run)` : ''}.`,
+        fix: `See ${compose.join(' ')} logs --tail=100. To go back: bun run melete rollback${pending > 0 ? ` (it prints the database restore, from ${backupLocation ?? 'your backup'}, because migrations may have run)` : ''}.`,
       });
       appendHistory(context.deployDir, entry('failed', detail, backupLocation));
       outcome = 'failed';
@@ -834,22 +849,24 @@ export async function runDeploy(
       level: 'ok',
       detail: `${healthUrl}: ok, database ${String(health.database ?? 'ok')}.`,
     });
-    if (facts.migrations.target !== null) {
-      let applied: number | null = null;
+    const expected = facts.migrations.target;
+    if (expected !== null) {
+      let missing: number[] = expected;
       for (let poll = 0; poll < HEALTH_POLLS; poll += 1) {
         if (poll > 0) await context.sleep(POLL_MS);
-        applied = appliedMigrations(context, compose);
-        if (applied === facts.migrations.target) break;
+        const recorded = new Set(recordedMigrations(context, compose) ?? []);
+        missing = expected.filter((when) => !recorded.has(when));
+        if (missing.length === 0) break;
       }
-      if (applied !== facts.migrations.target)
+      if (missing.length > 0)
         return failed(
           'verify.migrations',
-          `The database records ${applied ?? 'no'} migrations; ${target.tag}'s journal has ${facts.migrations.target}.`,
+          `The database has not recorded ${missing.length} of the ${expected.length} migrations in ${target.tag}'s journal.`,
         );
       steps.add({
         id: 'verify.migrations',
         level: 'ok',
-        detail: `${applied} migrations, the journal's count.`,
+        detail: `Every one of the ${expected.length} migrations in the journal is recorded.`,
       });
     }
     const after = await dependencies.status(context, installation);

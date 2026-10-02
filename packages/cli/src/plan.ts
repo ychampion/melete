@@ -54,7 +54,7 @@ export type DeployFacts = {
   /** Uncompressed layer digests the engine holds under the stack's repositories. */
   knownLayers: ReadonlySet<string>;
   freeBytes: number | null;
-  migrations: { applied: number | null; target: number | null };
+  migrations: MigrationFacts;
   databaseBytes: number | null;
   backup: BackupTarget;
 };
@@ -81,11 +81,54 @@ const orderOf = (ref: string) => {
   return index === -1 ? PULL_ORDER.length : index;
 };
 
-/** The migrations rule: a target that knows fewer migrations than the database holds needs a restore, not a deploy. */
-export function migrationsAdded(facts: Pick<DeployFacts, 'migrations'>): boolean {
-  const { applied, target } = facts.migrations;
-  return applied === null || target === null || target > applied;
+/**
+ * Migrations by their journal time (`when`), which the database records as
+ * `created_at`. The service applies, at startup, each journal entry newer than
+ * the newest one recorded; so an entry is pending when it is not recorded, and
+ * one older than the newest recorded entry would never run.
+ */
+export type MigrationFacts = {
+  /** What the database records; null when it did not answer. */
+  recorded: number[] | null;
+  /** The journal at the checkout's commit, the release running now. */
+  current: number[] | null;
+  /** The journal at the target commit; null when that commit is not here to read. */
+  target: number[] | null;
+};
+
+export type MigrationDelta = {
+  /** Both the database and the target journal were read. */
+  known: boolean;
+  /** Target entries the database has not recorded: they run when the target starts. */
+  pending: number[];
+  /** Pending entries older than the newest recorded one: the service would skip them. */
+  skipped: number[];
+  /** Recorded entries the running release has and the target lacks: going back past them. */
+  behind: number[];
+  /** Recorded entries neither release has, from some other build. */
+  foreign: number[];
+};
+
+export function migrationDelta(facts: MigrationFacts): MigrationDelta {
+  const { recorded, current, target } = facts;
+  if (recorded === null || target === null)
+    return { known: false, pending: [], skipped: [], behind: [], foreign: [] };
+  const done = new Set(recorded);
+  const wanted = new Set(target);
+  const running = new Set(current ?? []);
+  const newest = Math.max(-Infinity, ...recorded);
+  const pending = target.filter((when) => !done.has(when));
+  return {
+    known: true,
+    pending,
+    skipped: pending.filter((when) => when <= newest),
+    behind: recorded.filter((when) => !wanted.has(when) && running.has(when)),
+    foreign: recorded.filter((when) => !wanted.has(when) && !running.has(when)),
+  };
 }
+
+const runs = (delta: MigrationDelta) =>
+  delta.known ? `${delta.pending.length} new migration(s)` : 'migrations it could not count';
 
 export function judgeDeploy(facts: DeployFacts): DeployPlan {
   const results: Result[] = [];
@@ -165,13 +208,25 @@ export function judgeDeploy(facts: DeployFacts): DeployPlan {
       'Pass --checkout to check out the commit the images were built from, or --allow-compose-mismatch to run them with this Compose file.',
     );
 
-  const { applied, target: expected } = facts.migrations;
-  if (applied !== null && expected !== null && expected < applied)
+  const delta = migrationDelta(facts.migrations);
+  if (delta.behind.length > 0)
     fail(
       'migrations.forward_only',
-      `The database holds ${applied} migrations; ${target.tag} knows ${expected}. Migrations only go forward.`,
-      'Going back to it means restoring the database from the backup taken before the newer release: bun run melete rollback prints the steps.',
+      `The database records ${delta.behind.length} migration(s) the running release ran and ${target.tag} does not know. Migrations only go forward.`,
+      'Going back past them means restoring the database from the backup taken before them: bun run melete rollback prints the steps.',
     );
+  if (delta.skipped.length > 0)
+    fail(
+      'migrations.would_skip',
+      `${delta.skipped.length} of ${target.tag}'s migrations are older than the newest one the database records, so the service would never run them.`,
+      'The database has migrations from a build outside this release line; restore it from a backup taken before them, or deploy a release that includes them.',
+    );
+  if (delta.foreign.length > 0)
+    results.push({
+      id: 'migrations.unknown',
+      level: 'warn',
+      detail: `The database records ${delta.foreign.length} migration(s) that neither the running release nor ${target.tag} has; they came from another build, and ${target.tag} runs beside them as the running release does.`,
+    });
 
   // Images: what each needs, in pull order, counting a layer shared by two images once.
   const known = new Set(facts.knownLayers);
@@ -214,19 +269,20 @@ export function judgeDeploy(facts: DeployFacts): DeployPlan {
 
   // Backup before a switch that runs migrations.
   plan.backupNeeded =
-    migrationsAdded(facts) && !(target.tag === facts.from.tag && plan.pulls.length === 0);
+    (!delta.known || delta.pending.length > 0) &&
+    !(target.tag === facts.from.tag && plan.pulls.length === 0);
   let backupOnDockerDisk = 0;
   if (!plan.backupNeeded)
     results.push({
       id: 'backup.database',
       level: 'ok',
-      detail: `${target.tag} adds no migrations (${applied} recorded), so the database is not backed up first.`,
+      detail: `${target.tag} adds no migrations (${facts.migrations.recorded?.length ?? 0} recorded), so the database is not backed up first.`,
     });
   else if (facts.backup.kind === 'skip')
     results.push({
       id: 'backup.database',
       level: 'warn',
-      detail: `${target.tag} runs ${expected === null || applied === null ? 'migrations' : `${expected - applied} new migration(s)`}, and --skip-backup was given.`,
+      detail: `${target.tag} runs ${runs(delta)}, and --skip-backup was given.`,
     });
   else if (facts.backup.kind === 'ssh')
     results.push({
@@ -253,7 +309,7 @@ export function judgeDeploy(facts: DeployFacts): DeployPlan {
       results.push({
         id: 'backup.database',
         level: 'ok',
-        detail: `${target.tag} runs ${expected === null || applied === null ? 'migrations' : `${expected - applied} new migration(s)`}; the database (about ${mb(facts.databaseBytes)}) is dumped to ${facts.backup.location} first.`,
+        detail: `${target.tag} runs ${runs(delta)}; the database (about ${mb(facts.databaseBytes)}) is dumped to ${facts.backup.location} first.`,
       });
   }
 

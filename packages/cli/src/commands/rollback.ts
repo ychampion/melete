@@ -14,14 +14,14 @@ import type { Context } from '../context.ts';
 import { composeCommand } from '../deploy-config.ts';
 import { lastDeployed, readHistory } from '../history.ts';
 import { readInstallation } from '../installation.ts';
-import { restoreSteps } from '../plan.ts';
+import { migrationDelta, restoreSteps } from '../plan.ts';
 import { EXIT, type ExitCode } from '../schema.ts';
 import { writersOf } from './backup.ts';
 import {
-  appliedMigrations,
   type DeployDependencies,
   immutableTag,
-  journalCount,
+  journalWhens,
+  recordedMigrations,
   runDeploy,
 } from './deploy.ts';
 
@@ -65,10 +65,15 @@ export async function runRollback(
 
   const installation = readInstallation(context.deployDir, context.machine.platform);
   const compose = composeCommand(context.deployDir, installation.config);
-  const applied = appliedMigrations(context, compose);
-  const known = previous.revision ? journalCount(context, previous.revision) : null;
-  const before = known ?? last.migrations.from;
-  if (applied === null || before === null || applied > before) {
+  // Against the release being left, which is the one whose migrations may have run.
+  const delta = migrationDelta({
+    recorded: recordedMigrations(context, compose),
+    current: last.to.revision
+      ? journalWhens(context, last.to.revision)
+      : journalWhens(context, null),
+    target: previous.revision ? journalWhens(context, previous.revision) : null,
+  });
+  if (!delta.known || delta.behind.length > 0 || delta.skipped.length > 0) {
     const steps = restoreSteps({
       root: context.root,
       project: installation.config.project,
@@ -79,10 +84,9 @@ export async function runRollback(
       freshHost: false,
       journalArchive: null,
     });
-    const reason =
-      applied === null || before === null
-        ? `The database's migrations could not be compared with ${tag}'s`
-        : `The database holds ${applied} migrations and ${tag} knows ${before}`;
+    const reason = !delta.known
+      ? `The database's migrations could not be compared with ${tag}'s`
+      : `The database records ${delta.behind.length + delta.skipped.length} migration(s) that ${tag} does not know`;
     const where = last.backup
       ? `The backup taken before the deploy is ${last.backup}${last.backup.startsWith('ssh://') ? '; copy it back to this machine first' : ''}.`
       : 'No backup was recorded with that deploy; use your newest backup from before it.';
