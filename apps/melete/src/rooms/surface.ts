@@ -10,7 +10,7 @@
  * Behind each door the room checks what it checks for the web: the person is
  * in the room now, a guest keeps a guest's limits, and only the people the
  * room's rule names may answer a permission. A surface never says who someone
- * is by name. The web's session has already proved the person; a platform's
+ * is by name. The web's sign-in has already proved the person; a platform's
  * account counts only through a link to a person here (`principal_identity`),
  * and an account with no link is refused, never taken for a guest.
  */

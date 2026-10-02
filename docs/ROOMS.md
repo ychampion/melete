@@ -252,3 +252,25 @@ When the people in a room change, work under way in it starts again with the
 new roster, and permissions its requests were waiting on are withdrawn. The
 requests someone asked end when they leave, since only they could answer them
 (a turn under way stops), and an ask of theirs still waiting its turn is dropped.
+
+## Talking to a room from a chat platform
+
+A room can be reached from a chat platform as well as from the web. Each
+platform plugs in as a surface with three doors: people's messages come in,
+the room's messages, answers, cards and decisions go out, and people answer
+the room's permissions. The web uses the same doors, so every rule on this page
+holds on a platform too.
+
+A platform account speaks only for the person it is linked to. A link is made
+once the platform has proved who holds the account and the person, signed in
+here, has said it is theirs. Then:
+
+- their messages appear in the room under their own label, whatever name the
+  platform shows;
+- they answer a permission only where the room's rule names them, and a guest
+  keeps a guest's limits;
+- what goes out to them is the threads of the rooms they are in, and it stops
+  when they leave the room or the account is unlinked.
+
+An account with no link is refused: it cannot post, answer or follow a thread,
+and it never becomes a guest.
