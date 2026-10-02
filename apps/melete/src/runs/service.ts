@@ -19,8 +19,11 @@ import {
   isRunKind,
   isTerminal,
   type JobBudget,
+  type JobConstraints,
   type JobState,
+  jobConstraints,
   RUN_ACTIVE_STEP_LIMIT,
+  RUN_CHECK_LIMIT,
   RUN_IDLE_SHIFT_LIMIT,
   type RunEntry,
   type RunLimit,
@@ -46,6 +49,7 @@ import {
   isNull,
   ne,
   notInArray,
+  or,
   sql,
 } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
@@ -55,6 +59,7 @@ import {
   agent,
   attempt,
   budgetLedger,
+  event,
   experienceTurn,
   job,
   pushIntent,
@@ -70,13 +75,14 @@ import type { AttemptRunner } from '../jobs/runner.ts';
 import { DEFAULT_BUDGET, type JobRow, type JobService } from '../jobs/service.ts';
 import { ownJob, principalContext, requestPrincipal } from '../principals/authority.ts';
 import {
-  bestExperiment,
   clip,
   type Entry,
+  gapsOf,
   object,
   runStatusOf,
   type State,
-  stepsOf,
+  stepsOfRuns,
+  textOf,
   valueShown,
 } from './record.ts';
 
@@ -99,6 +105,10 @@ const HELPER_FALLBACK_MS = 30 * 60_000;
 const REPORT_EVERY_MS = 24 * 60 * 60_000;
 /** Runs one space may have going at once. */
 const ACTIVE_RUN_LIMIT = 10;
+/** Progress notifications one run sends at most this often; its result and questions always go. */
+const PUSH_EVERY_MS = 30 * 60_000;
+/** Kinds of entry that mark where a result stands: offered, checked, given. */
+const RESULT_KINDS = ['proposed', 'check', 'finished'];
 
 const missing = () => new ServiceError('not_found', 'That piece of work was not found.', 404);
 
@@ -179,9 +189,17 @@ export class RunService {
     tx: Transaction,
     spaceId: string,
     raw: unknown,
-    origin: { conversation?: JobRow; agentId?: string | null; principalId?: string | null },
+    origin: {
+      conversation?: JobRow;
+      agentId?: string | null;
+      principalId?: string | null;
+      /** The person typed the goal themselves. */
+      typed?: boolean;
+    },
   ) {
     const input = runCreateRequest.parse(raw);
+    // Counted inside a service transaction, which holds the event order lock:
+    // two starts at once are counted one after the other.
     const [active] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(job)
@@ -209,8 +227,10 @@ export class RunService {
           scheduling_class: 'background',
           importance: 'routine',
           budget: RUN_SHIFT_BUDGET,
+          constraints: carried(origin.conversation?.constraints),
         },
         { kind: 'run', agentId: origin.agentId ?? undefined },
+        origin.typed ? 'owner_request' : 'derived',
       );
     const principal = origin.principalId ?? null;
     const row = principal ? await principalContext.run(principal, create) : await create();
@@ -222,6 +242,7 @@ export class RunService {
       doneWhen: input.done_when ?? null,
       metric: input.metric ?? null,
       limit: input.limit ?? null,
+      checkResult: input.check_result ?? true,
     });
     return row;
   }
@@ -250,7 +271,7 @@ export class RunService {
     const state = await this.stateOf(tx, row.id);
     const input = runLogInput.parse(raw);
     const run = this.rootOf(state);
-    const data: Record<string, unknown> = {};
+    const data: Record<string, unknown> = input.dead_end ? { dead_end: true } : {};
     if (input.kind === 'experiment') {
       if (input.hypothesis) data.hypothesis = input.hypothesis;
       if (input.value !== undefined) data.value = input.value;
@@ -304,15 +325,41 @@ export class RunService {
           sql`(${action.jobId} = ${run} or ${action.jobId} in ${steps})`,
         ),
       );
-    return rows.some((entry) => valueShown(value, JSON.stringify(entry.receipt ?? '')));
+    return rows.some((entry) => valueShown(value, textOf(entry.receipt)));
   }
 
-  /** A report reaches the person: noted on the run and sent as a notification. */
-  private async reported(tx: Transaction, run: string, row: JobRow, title: string, body: string) {
+  /**
+   * A report reaches the person: noted on the run and sent as a notification.
+   * Progress is sent at most once per `PUSH_EVERY_MS` for a run; the rest stays
+   * in the record and the view. The result is always sent.
+   */
+  private async reported(
+    tx: Transaction,
+    run: string,
+    row: JobRow,
+    title: string,
+    body: string,
+    final = false,
+  ) {
     await tx.update(runState).set({ lastReportAt: new Date() }).where(eq(runState.jobId, run));
     const [root] = await tx.select().from(job).where(eq(job.id, run));
     const principal = root?.principalId ?? row.principalId;
     if (!principal || !root) return;
+    if (!final) {
+      const since = new Date((await databaseNow(tx)).getTime() - PUSH_EVERY_MS);
+      const [recent] = await tx
+        .select({ id: pushIntent.id })
+        .from(pushIntent)
+        .where(
+          and(
+            eq(pushIntent.principalId, principal),
+            gt(pushIntent.createdAt, since),
+            sql`starts_with(${pushIntent.dedupKey}, ${`run-report:${run}:`})`,
+          ),
+        )
+        .limit(1);
+      if (recent) return;
+    }
     await tx
       .insert(pushIntent)
       .values({
@@ -333,6 +380,23 @@ export class RunService {
       throw new ServiceError('scope_denied', 'A helper cannot start helpers of its own.', 403);
     const state = await this.stateOf(tx, row.id);
     const input = runDelegateInput.parse(raw);
+    const [given] = await tx
+      .select({ id: runEntry.id })
+      .from(runEntry)
+      .where(
+        and(
+          eq(runEntry.runJobId, row.id),
+          eq(runEntry.attemptId, attemptId),
+          inArray(runEntry.kind, ['proposed', 'finished']),
+        ),
+      )
+      .limit(1);
+    if (given)
+      throw new ServiceError(
+        'already_finished',
+        'The result is already given in this shift, so no helper can start now. End the shift.',
+        409,
+      );
     const [active] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(runState)
@@ -361,6 +425,7 @@ export class RunService {
           scheduling_class: 'background',
           importance: 'routine',
           budget: RUN_SHIFT_BUDGET,
+          constraints: carried(row.constraints),
         },
         { kind: 'run_step', agentId: assistant ?? undefined },
       );
@@ -430,28 +495,129 @@ export class RunService {
   private async finish(tx: Transaction, row: JobRow, attemptId: string, raw: unknown) {
     const state = await this.stateOf(tx, row.id);
     const input = runFinishInput.parse(raw);
-    // A result written while helpers are still out would leave their findings behind.
-    const working = state.parentRunId ? 0 : await this.activeSteps(tx, row.id);
-    if (working)
+    const step = state.parentRunId ? row.id : null;
+    if (state.checking) {
+      if (!input.verdict || (input.verdict === 'gaps' && !input.gaps?.length))
+        throw new ServiceError(
+          'payload_invalid',
+          'Give a verdict: "passes", or "gaps" with each gap named in gaps.',
+          400,
+        );
+    } else if (input.verdict || input.gaps)
       throw new ServiceError(
-        'helpers_working',
-        `${working} helper${working === 1 ? ' is' : 's are'} still working. End this shift with run.checkpoint and next_shift "when_helpers_finish", and finish once their results are in.`,
-        409,
+        'payload_invalid',
+        'A verdict is given only when checking a result. Leave out verdict and gaps.',
+        400,
       );
+    if (!step) {
+      if (await this.checkUnderWay(tx, row.id))
+        throw new ServiceError(
+          'check_in_progress',
+          'The result you gave is being checked right now. End this shift with run.checkpoint and next_shift "when_helpers_finish"; what the check finds comes back here.',
+          409,
+        );
+      // A result written while helpers are still out would leave their findings behind.
+      const working = await this.activeSteps(tx, row.id);
+      if (working)
+        throw new ServiceError(
+          'helpers_working',
+          `${working} helper${working === 1 ? ' is' : 's are'} still working. End this shift with run.checkpoint and next_shift "when_helpers_finish", and finish once their results are in.`,
+          409,
+        );
+    }
+    const title = clip(input.summary.split('\n')[0] ?? input.summary, 200);
+    const data = {
+      ...(input.evidence?.length ? { evidence: input.evidence } : {}),
+      ...(input.verdict ? { verdict: input.verdict, gaps: input.gaps ?? [] } : {}),
+    };
+    // Work with a definition of done is not done on its own say-so: a
+    // separate check confirms the result first.
+    if (!step && state.checkResult && state.doneWhen) {
+      const proposal = await this.write(tx, {
+        run: row.id,
+        attemptId,
+        kind: 'proposed',
+        title,
+        body: input.summary,
+        data,
+      });
+      await this.startCheck(tx, row, proposal);
+      return {
+        status: 'checking',
+        instruction:
+          'A separate check now confirms the result before it is given to the person. End this shift now with one short line.',
+      };
+    }
     await this.write(tx, {
       run: this.rootOf(state),
-      step: state.parentRunId ? row.id : null,
+      step,
       attemptId,
       kind: 'finished',
-      title: clip(input.summary.split('\n')[0] ?? input.summary, 200),
+      title,
       body: input.summary,
+      data,
     });
     await tx.update(runState).set({ finishedAt: new Date() }).where(eq(runState.jobId, row.id));
-    if (!state.parentRunId) await this.reported(tx, row.id, row, 'Done', input.summary);
+    if (!step) await this.reported(tx, row.id, row, 'Done', input.summary, true);
     return {
       status: 'finished',
       instruction: 'Recorded. End now with the result in one or two sentences.',
     };
+  }
+
+  /** A helper with a fresh start checks a proposed result against the record. */
+  private async startCheck(tx: Transaction, row: JobRow, proposal: Entry) {
+    const title = 'Checking the result';
+    const create = () =>
+      this.jobs.createInTransaction(
+        tx,
+        {
+          space_id: row.spaceId,
+          title,
+          objective: 'Check whether a result is really done before it is given to the person.',
+          scheduling_class: 'background',
+          importance: 'routine',
+          budget: RUN_SHIFT_BUDGET,
+          constraints: carried(row.constraints),
+        },
+        { kind: 'run_step', agentId: row.agentId ?? undefined },
+      );
+    const step = row.principalId
+      ? await principalContext.run(row.principalId, create)
+      : await create();
+    await tx.insert(runState).values({
+      jobId: step.id,
+      spaceId: row.spaceId,
+      parentRunId: row.id,
+      goal: title,
+      checking: proposal.id,
+    });
+    await this.write(tx, {
+      run: row.id,
+      step: step.id,
+      attemptId: proposal.attemptId,
+      kind: 'step_started',
+      title,
+      body: 'A separate check of the result before it is called done.',
+      data: { check: true },
+    });
+  }
+
+  /** Whether a check of this run's result is still going. */
+  private async checkUnderWay(tx: Transaction, run: string): Promise<boolean> {
+    const [row] = await tx
+      .select({ id: runState.jobId })
+      .from(runState)
+      .innerJoin(job, eq(job.id, runState.jobId))
+      .where(
+        and(
+          eq(runState.parentRunId, run),
+          isNotNull(runState.checking),
+          notInArray(job.state, ['completed', 'failed', 'cancelled']),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
   }
 
   // -------------------------------------------------------------------------
@@ -459,13 +625,32 @@ export class RunService {
 
   /**
    * How many more failed shifts in a row this run may have before it stops to
-   * ask. A finished shift resets the count; shifts that went well do not use it.
+   * ask. A finished shift resets the count; shifts that went well do not use it,
+   * and the person's word ("continue", or anything else) starts it again.
    */
   async failuresRemaining(tx: Transaction, row: JobRow, budget: JobBudget): Promise<number> {
+    const [answered] = await tx
+      .select({ at: event.createdAt })
+      .from(event)
+      .where(
+        and(
+          eq(event.jobId, row.id),
+          eq(event.type, 'notice'),
+          sql`${event.payload}->>'kind' = 'user_message'`,
+        ),
+      )
+      .orderBy(desc(event.seq))
+      .limit(1);
     const recent = await tx
       .select({ outcome: attempt.outcome, lease: attempt.leaseStatus })
       .from(attempt)
-      .where(and(eq(attempt.jobId, row.id), isNotNull(attempt.endedAt)))
+      .where(
+        and(
+          eq(attempt.jobId, row.id),
+          isNotNull(attempt.endedAt),
+          answered ? gt(attempt.startedAt, answered.at) : undefined,
+        ),
+      )
       .orderBy(desc(attempt.epoch))
       .limit(budget.max_attempts + 1);
     let streak = 0;
@@ -544,6 +729,11 @@ export class RunService {
     if (finished) return { kind: 'completed', summary: finished.body, evidence: [] };
     if (step && outcome.kind === 'waiting_for_input')
       return ask(outcome.question, `It stopped to ask: ${clip(outcome.question, 1000)}`);
+    if (step && outcome.kind === 'unknown_check')
+      return ask(
+        outcome.message,
+        `It could not tell whether an action went through: ${clip(outcome.message, 1000)}`,
+      );
     // The person or an approval is needed: that wait stands as it is.
     if (
       outcome.kind === 'waiting_for_input' ||
@@ -552,6 +742,22 @@ export class RunService {
       outcome.kind === 'waiting_for_event_or_time'
     )
       return outcome;
+
+    // A result was given and is being checked: the run rests until the check
+    // is done. Whatever else the shift ended with, the result stands.
+    if (!step && mine.some((entry) => entry.kind === 'proposed')) {
+      const now = (await databaseNow(tx)).getTime();
+      const checking = await this.checkUnderWay(tx, row.id);
+      if (checking)
+        await tx.update(runState).set({ waitingOnSteps: true }).where(eq(runState.jobId, row.id));
+      return {
+        kind: 'waiting_for_event_or_time',
+        wait: {
+          kind: 'timer',
+          wake_at: new Date(now + (checking ? HELPER_FALLBACK_MS : 1000)).toISOString(),
+        },
+      };
+    }
 
     if (outcome.kind === 'failed') {
       const remaining = await this.failuresRemaining(tx, row, RUN_SHIFT_BUDGET);
@@ -723,6 +929,8 @@ export class RunService {
    * until its helpers are done is woken once none is left. The run's row is
    * taken only if it is free: a run busy right now looks at its helpers itself
    * at the end of its shift, and a sleeping one also wakes on its own timer.
+   * A helper ending and its run ending a shift cannot interleave: both happen
+   * in service transactions, which take the event order lock first.
    */
   async stepEnded(tx: Transaction, row: JobRow, outcome: AttemptOutcome) {
     if (row.kind !== 'run_step' || !isTerminal(row.state as JobState)) return;
@@ -738,14 +946,19 @@ export class RunService {
     const said =
       result?.body ??
       ('summary' in outcome ? outcome.summary : 'reason' in outcome ? outcome.reason : '');
+    const ended =
+      row.state === 'completed' ? 'done' : row.state === 'cancelled' ? 'stopped' : 'failed';
     await this.write(tx, {
       run,
       step: row.id,
       kind: 'step_finished',
-      title: `${row.title}: ${row.state === 'completed' ? 'done' : row.state}`,
+      title: `${row.title}: ${ended}`,
       body: clip(said, 4000),
       data: { state: row.state },
     });
+    const [root] = await tx.select({ state: job.state }).from(job).where(eq(job.id, run));
+    if (!root || isTerminal(root.state as JobState)) return;
+    if (state.checking) await this.checked(tx, run, state, row, result, said);
     const [parent] = await tx.select().from(runState).where(eq(runState.jobId, run));
     if (!parent?.waitingOnSteps || (await this.activeSteps(tx, run))) return;
     const locked = await this.jobs.lock(tx, run, true);
@@ -754,8 +967,168 @@ export class RunService {
     await this.jobs.move(tx, locked, { kind: 'timer_fired' }, { reason: 'timer' });
   }
 
-  private steps(tx: Transaction, run: string) {
-    return stepsOf(tx, run);
+  /**
+   * A check of a result ended. What it found goes into the record. The run is
+   * given its result when the check passed, when it could not reach a verdict,
+   * or when it has found gaps `RUN_CHECK_LIMIT` times: then the result says
+   * plainly what could not be confirmed. Otherwise the gaps go back to the run.
+   */
+  private async checked(
+    tx: Transaction,
+    run: string,
+    state: State,
+    row: JobRow,
+    result: Entry | undefined,
+    said: string,
+  ) {
+    const [proposal] = state.checking
+      ? await tx.select().from(runEntry).where(eq(runEntry.id, state.checking))
+      : [];
+    if (!proposal) return;
+    const found = object(result?.data);
+    const verdict =
+      row.state === 'completed' && (found.verdict === 'passes' || found.verdict === 'gaps')
+        ? found.verdict
+        : null;
+    const gaps = verdict === 'gaps' ? gapsOf(found) : [];
+    // Checks that found gaps since the work was last given a result.
+    const [given] = await tx
+      .select({ seq: runEntry.seq })
+      .from(runEntry)
+      .where(
+        and(eq(runEntry.runJobId, run), eq(runEntry.kind, 'finished'), isNull(runEntry.stepJobId)),
+      )
+      .orderBy(desc(runEntry.seq))
+      .limit(1);
+    const [before] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(runEntry)
+      .where(
+        and(
+          eq(runEntry.runJobId, run),
+          eq(runEntry.kind, 'check'),
+          sql`${runEntry.data}->>'verdict' = 'gaps'`,
+          gt(runEntry.seq, given?.seq ?? 0),
+        ),
+      );
+    const settle = verdict !== 'gaps' || Number(before?.n ?? 0) + 1 >= RUN_CHECK_LIMIT;
+    const listed = gaps.map((gap) => `- ${gap}`).join('\n');
+    const final =
+      verdict === 'passes'
+        ? proposal.body
+        : verdict === 'gaps'
+          ? `${proposal.body}\n\nWhat a separate check could not confirm:\n${listed}`
+          : `${proposal.body}\n\nA separate check of this could not be finished${said ? `: ${clip(said, 300)}` : '.'}`;
+    await this.write(tx, {
+      run,
+      step: row.id,
+      kind: 'check',
+      title:
+        verdict === 'passes'
+          ? 'The result checks out'
+          : verdict === 'gaps'
+            ? `The check found ${gaps.length} gap${gaps.length === 1 ? '' : 's'}`
+            : 'The check could not be finished',
+      body: verdict === 'gaps' ? listed : clip(said, 4000),
+      data: {
+        verdict,
+        gaps,
+        settle,
+        proposal: proposal.id,
+        ...(settle ? { result: final } : {}),
+      },
+    });
+  }
+
+  /** The newest entry that says where the run's result stands, if any. */
+  private async lastResult(tx: Transaction, run: string): Promise<Entry | undefined> {
+    const [last] = await tx
+      .select()
+      .from(runEntry)
+      .where(
+        and(
+          eq(runEntry.runJobId, run),
+          inArray(runEntry.kind, RESULT_KINDS),
+          or(eq(runEntry.kind, 'check'), isNull(runEntry.stepJobId)),
+        ),
+      )
+      .orderBy(desc(runEntry.seq))
+      .limit(1);
+    return last;
+  }
+
+  /**
+   * A run whose result has been through its check is given it now, by a
+   * shift that only records it: no model call. Null when there is work to do.
+   */
+  async settle(tx: Transaction, row: JobRow, attemptId: string): Promise<AttemptOutcome | null> {
+    if (row.kind !== 'run') return null;
+    const last = await this.lastResult(tx, row.id);
+    const data = object(last?.data);
+    if (last?.kind !== 'check' || data.settle !== true || typeof data.result !== 'string')
+      return null;
+    const [proposal] =
+      typeof data.proposal === 'string'
+        ? await tx.select().from(runEntry).where(eq(runEntry.id, data.proposal))
+        : [];
+    await this.write(tx, {
+      run: row.id,
+      attemptId,
+      kind: 'finished',
+      title: clip(data.result.split('\n')[0] ?? data.result, 200),
+      body: data.result,
+      data: {
+        ...object(proposal?.data),
+        check: data.verdict === 'passes' ? 'passed' : 'not_confirmed',
+        gaps: gapsOf(data),
+      },
+    });
+    await tx.update(runState).set({ finishedAt: new Date() }).where(eq(runState.jobId, row.id));
+    await this.reported(tx, row.id, row, 'Done', data.result, true);
+    return { kind: 'completed', summary: data.result, evidence: [] };
+  }
+
+  /**
+   * What an attempt lost after it gave its result stands for: that result,
+   * not a retry. Null when it gave none, or an action of the work is still
+   * under way and the loss has to be handled as one.
+   */
+  async recordedFinish(
+    tx: Transaction,
+    row: JobRow,
+    attemptId: string,
+  ): Promise<AttemptOutcome | null> {
+    const [given] = await tx
+      .select()
+      .from(runEntry)
+      .where(
+        and(
+          eq(runEntry.attemptId, attemptId),
+          inArray(runEntry.kind, ['proposed', 'finished']),
+          row.kind === 'run_step' ? eq(runEntry.stepJobId, row.id) : isNull(runEntry.stepJobId),
+        ),
+      )
+      .limit(1);
+    if (!given) return null;
+    const [pending] = await tx
+      .select({ id: action.id })
+      .from(action)
+      .where(
+        and(
+          eq(action.jobId, row.id),
+          inArray(action.status, [
+            'needs_approval',
+            'approved',
+            'admitted',
+            'dispatched',
+            'unknown',
+            'unresolved',
+          ]),
+        ),
+      )
+      .limit(1);
+    if (pending) return null;
+    return { kind: 'completed', summary: given.body, evidence: [] };
   }
 
   // -------------------------------------------------------------------------
@@ -771,109 +1144,185 @@ export class RunService {
   }
 
   async view(row: JobRow): Promise<RunView> {
+    const [view] = await this.views([row]);
+    if (!view) throw missing();
+    return view;
+  }
+
+  /** Views of several runs, read together: the same few queries however many there are. */
+  async views(rows: JobRow[]): Promise<RunView[]> {
+    if (!rows.length) return [];
+    const ids = rows.map((entry) => entry.id);
     return this.jobs.transaction(async (tx) => {
-      const state = await this.stateOf(tx, row.id);
-      const entries = await tx
-        .select()
+      const states = new Map(
+        (await tx.select().from(runState).where(inArray(runState.jobId, ids))).map((state) => [
+          state.jobId,
+          state,
+        ]),
+      );
+      const latest = await tx
+        .selectDistinctOn([runEntry.runJobId, runEntry.kind])
         .from(runEntry)
         .where(
           and(
-            eq(runEntry.runJobId, row.id),
+            inArray(runEntry.runJobId, ids),
             inArray(runEntry.kind, ['plan', 'report', 'checkpoint', 'finished']),
             isNull(runEntry.stepJobId),
           ),
         )
-        .orderBy(desc(runEntry.seq))
-        .limit(200);
-      const newest = (kind: string) => entries.find((entry) => entry.kind === kind);
-      const experiments = await tx
-        .select()
+        .orderBy(runEntry.runJobId, runEntry.kind, desc(runEntry.seq));
+      const results = await tx
+        .selectDistinctOn([runEntry.runJobId])
         .from(runEntry)
-        .where(and(eq(runEntry.runJobId, row.id), eq(runEntry.kind, 'experiment')))
+        .where(
+          and(
+            inArray(runEntry.runJobId, ids),
+            inArray(runEntry.kind, RESULT_KINDS),
+            or(eq(runEntry.kind, 'check'), isNull(runEntry.stepJobId)),
+          ),
+        )
+        .orderBy(runEntry.runJobId, desc(runEntry.seq));
+      const counts = await tx
+        .select({
+          run: runEntry.runJobId,
+          kind: runEntry.kind,
+          n: sql<number>`count(*)::int`,
+        })
+        .from(runEntry)
+        .where(
+          and(inArray(runEntry.runJobId, ids), inArray(runEntry.kind, ['experiment', 'finding'])),
+        )
+        .groupBy(runEntry.runJobId, runEntry.kind);
+      // The ten newest tries of each run.
+      const ranked = tx
+        .select({
+          id: runEntry.id,
+          rank: sql<number>`row_number() over (partition by ${runEntry.runJobId} order by ${runEntry.seq} desc)`.as(
+            'rank',
+          ),
+        })
+        .from(runEntry)
+        .where(and(inArray(runEntry.runJobId, ids), eq(runEntry.kind, 'experiment')))
+        .as('ranked');
+      const recent = await tx
+        .select({ entry: runEntry })
+        .from(runEntry)
+        .innerJoin(ranked, eq(ranked.id, runEntry.id))
+        .where(sql`${ranked.rank} <= 10`)
         .orderBy(desc(runEntry.seq));
-      const [findings] = await tx
-        .select({ n: sql<number>`count(*)::int` })
+      // The best try of each run, ordered as `bestExperiment` orders them:
+      // checked first, then the better value in the run's direction, then newest.
+      const best = await tx
+        .selectDistinctOn([runEntry.runJobId], { entry: runEntry })
         .from(runEntry)
-        .where(and(eq(runEntry.runJobId, row.id), eq(runEntry.kind, 'finding')));
-      const [open] = await tx
-        .select({ text: question.text })
+        .innerJoin(runState, eq(runState.jobId, runEntry.runJobId))
+        .where(
+          and(
+            inArray(runEntry.runJobId, ids),
+            eq(runEntry.kind, 'experiment'),
+            sql`jsonb_typeof(${runEntry.data}->'value') = 'number'`,
+            sql`coalesce(${runEntry.data}->>'outcome', '') <> 'failed'`,
+          ),
+        )
+        .orderBy(
+          runEntry.runJobId,
+          sql`coalesce(${runEntry.data}->'checked' = 'true'::jsonb, false) desc`,
+          sql`case when ${runState.metric}->>'direction' = 'lower'
+            then (${runEntry.data}->>'value')::float8
+            else -((${runEntry.data}->>'value')::float8) end`,
+          desc(runEntry.seq),
+        );
+      const open = await tx
+        .selectDistinctOn([question.jobId], { job: question.jobId, text: question.text })
         .from(question)
-        .where(and(eq(question.jobId, row.id), eq(question.state, 'open')))
-        .limit(1);
-      const steps = await this.steps(tx, row.id);
-      const status = runStatusOf(row.state, row.paused);
-      const metric = state.metric ?? null;
-      const best = bestExperiment(experiments, metric?.direction ?? 'higher');
-      const experimentView = (entry: Entry) => {
-        const data = object(entry.data);
-        return {
-          id: entry.id,
-          title: entry.title,
-          value: typeof data.value === 'number' ? data.value : null,
-          outcome: ['kept', 'discarded', 'failed'].includes(String(data.outcome))
-            ? (data.outcome as 'kept' | 'discarded' | 'failed')
-            : null,
-          checked: data.checked === true,
-          created_at: entry.createdAt.toISOString(),
-        };
-      };
-      const wait = object(row.wait);
-      const question_ =
-        open?.text ??
-        (wait.kind === 'user_input' && typeof wait.question === 'string' ? wait.question : null);
-      const report = newest('report');
-      const handoff = newest('checkpoint');
-      const finished = newest('finished');
-      return runView.parse({
-        id: row.id,
-        title: row.title,
-        goal: state.goal,
-        done_when: state.doneWhen,
-        status,
-        status_line: statusLine({
-          status,
-          paused: row.paused,
-          experiments: experiments.length,
-          best: best ? object(best.data).value : undefined,
-          metric: metric?.name,
-          helpersWorking: steps.filter(
-            (entry) => entry.status === 'working' || entry.status === 'waiting',
-          ).length,
-          waitingOnSteps: state.waitingOnSteps,
-          nextWakeAt: row.state === 'waiting_for_event_or_time' ? row.nextWakeAt : null,
-          question: question_,
-        }),
-        conversation_id: state.conversationId,
-        agent_id: row.agentId,
-        started_at: state.createdAt.toISOString(),
-        finished_at:
-          state.finishedAt?.toISOString() ??
-          (isTerminal(row.state as JobState) ? row.updatedAt.toISOString() : null),
-        next_shift_at:
-          row.state === 'waiting_for_event_or_time'
-            ? (row.nextWakeAt?.toISOString() ?? null)
-            : null,
-        shifts: state.shifts,
-        metric,
-        limit: state.limit ? runLimit.parse(state.limit) : null,
-        plan: (() => {
-          const plan = newest('plan');
-          return plan ? plan.body || plan.title : null;
-        })(),
-        latest_report: report
-          ? { title: report.title, body: report.body, created_at: report.createdAt.toISOString() }
-          : null,
-        next: handoff ? String(object(handoff.data).next ?? '') || null : null,
-        result: finished?.body ?? null,
-        experiments: {
-          count: experiments.length,
-          best: best ? experimentView(best) : null,
-          recent: experiments.slice(0, 10).map(experimentView),
-        },
-        findings: Number(findings?.n ?? 0),
-        steps,
-        question: status === 'needs_you' ? question_ : null,
-      });
+        .where(and(inArray(question.jobId, ids), eq(question.state, 'open')))
+        .orderBy(question.jobId);
+      const helpers = await stepsOfRuns(tx, ids);
+      const views: RunView[] = [];
+      for (const row of rows) {
+        const state = states.get(row.id);
+        if (!state) continue;
+        const newest = (kind: string) =>
+          latest.find((entry) => entry.runJobId === row.id && entry.kind === kind);
+        const count = (kind: string) =>
+          Number(counts.find((entry) => entry.run === row.id && entry.kind === kind)?.n ?? 0);
+        const tries = recent
+          .filter(({ entry }) => entry.runJobId === row.id)
+          .map(({ entry }) => entry);
+        const top = best.find(({ entry }) => entry.runJobId === row.id)?.entry ?? null;
+        const steps = helpers.get(row.id) ?? [];
+        const status = runStatusOf(row.state, row.paused);
+        const metric = state.metric ?? null;
+        const check = checkOf(
+          state,
+          results.find((entry) => entry.runJobId === row.id),
+        );
+        const wait = object(row.wait);
+        const asked = open.find((entry) => entry.job === row.id)?.text;
+        const question_ =
+          asked ??
+          (wait.kind === 'user_input' && typeof wait.question === 'string' ? wait.question : null);
+        const report = newest('report');
+        const handoff = newest('checkpoint');
+        const finished = newest('finished');
+        const plan = newest('plan');
+        views.push(
+          runView.parse({
+            id: row.id,
+            title: row.title,
+            goal: state.goal,
+            done_when: state.doneWhen,
+            status,
+            status_line: statusLine({
+              status,
+              paused: row.paused,
+              experiments: count('experiment'),
+              best: top ? object(top.data).value : undefined,
+              metric: metric?.name,
+              helpersWorking: steps.filter(
+                (entry) => entry.status === 'working' || entry.status === 'waiting',
+              ).length,
+              waitingOnSteps: state.waitingOnSteps,
+              nextWakeAt: row.state === 'waiting_for_event_or_time' ? row.nextWakeAt : null,
+              question: question_,
+              check: check.state,
+            }),
+            conversation_id: state.conversationId,
+            agent_id: row.agentId,
+            started_at: state.createdAt.toISOString(),
+            finished_at:
+              state.finishedAt?.toISOString() ??
+              (isTerminal(row.state as JobState) ? row.updatedAt.toISOString() : null),
+            next_shift_at:
+              row.state === 'waiting_for_event_or_time'
+                ? (row.nextWakeAt?.toISOString() ?? null)
+                : null,
+            shifts: state.shifts,
+            metric,
+            limit: state.limit ? runLimit.parse(state.limit) : null,
+            plan: plan ? plan.body || plan.title : null,
+            latest_report: report
+              ? {
+                  title: report.title,
+                  body: report.body,
+                  created_at: report.createdAt.toISOString(),
+                }
+              : null,
+            next: handoff ? String(object(handoff.data).next ?? '') || null : null,
+            result: finished?.body ?? null,
+            experiments: {
+              count: count('experiment'),
+              best: top ? experimentView(top) : null,
+              recent: tries.map(experimentView),
+            },
+            findings: count('finding'),
+            steps,
+            question: status === 'needs_you' ? question_ : null,
+            check,
+          }),
+        );
+      }
+      return views;
     });
   }
 
@@ -892,9 +1341,7 @@ export class RunService {
       )
       .orderBy(desc(job.updatedAt))
       .limit(100);
-    const runs = [];
-    for (const entry of rows) runs.push(await this.view(entry.job));
-    return { runs };
+    return { runs: await this.views(rows.map((entry) => entry.job)) };
   }
 
   async record(row: JobRow, after?: string, limit = 100) {
@@ -1078,11 +1525,16 @@ export class RunService {
     });
   }
 
-  async setLimit(row: JobRow, limit: RunLimit | null) {
-    await this.db
-      .update(runState)
-      .set({ limit: limit ? runLimit.parse(limit) : null })
-      .where(eq(runState.jobId, row.id));
+  /** The person's settings for the work: a limit (null clears it) and whether results are checked. */
+  async setLimit(row: JobRow, settings: { limit?: RunLimit | null; check_result?: boolean }) {
+    const changes = {
+      ...(settings.limit !== undefined
+        ? { limit: settings.limit ? runLimit.parse(settings.limit) : null }
+        : {}),
+      ...(settings.check_result !== undefined ? { checkResult: settings.check_result } : {}),
+    };
+    if (!Object.keys(changes).length) return;
+    await this.db.update(runState).set(changes).where(eq(runState.jobId, row.id));
   }
 }
 
@@ -1109,8 +1561,52 @@ const ENTRY_LABELS: Record<string, string> = {
   checkpoint: 'Progress saved',
   step_started: 'Helper started',
   step_finished: 'Helper finished',
+  proposed: 'Result given for checking',
+  check: 'Checked',
   finished: 'Done',
 };
+
+function experimentView(entry: Entry) {
+  const data = object(entry.data);
+  return {
+    id: entry.id,
+    title: entry.title,
+    value: typeof data.value === 'number' ? data.value : null,
+    outcome: ['kept', 'discarded', 'failed'].includes(String(data.outcome))
+      ? (data.outcome as 'kept' | 'discarded' | 'failed')
+      : null,
+    checked: data.checked === true,
+    created_at: entry.createdAt.toISOString(),
+  };
+}
+
+/** Where the check of the run's result stands, from the newest entry about its result. */
+function checkOf(state: State, last: Entry | undefined): RunView['check'] {
+  const enabled = state.checkResult && Boolean(state.doneWhen);
+  const data = object(last?.data);
+  if (last?.kind === 'proposed') return { enabled, state: 'checking', gaps: [] };
+  if (last?.kind === 'check')
+    return {
+      enabled,
+      state: data.settle !== true ? 'gaps' : data.verdict === 'passes' ? 'passed' : 'not_confirmed',
+      gaps: gapsOf(data),
+    };
+  if (last?.kind === 'finished' && (data.check === 'passed' || data.check === 'not_confirmed'))
+    return { enabled, state: data.check, gaps: gapsOf(data) };
+  return { enabled, state: null, gaps: [] };
+}
+
+/**
+ * What a run keeps from the job it came from: which sites it may read and
+ * whether it stays out of private knowledge. Not a deliverable: that one was
+ * the conversation's own.
+ */
+function carried(constraints: unknown) {
+  const parsed = jobConstraints.safeParse(constraints ?? {});
+  if (!parsed.success) return {};
+  const { allowed_domains, public_compartment, notes }: JobConstraints = parsed.data;
+  return { allowed_domains, public_compartment, ...(notes ? { notes } : {}) };
+}
 
 /** One line on where the work stands, in the person's words: no shifts, no internals. */
 function statusLine(input: {
@@ -1123,6 +1619,7 @@ function statusLine(input: {
   waitingOnSteps: boolean;
   nextWakeAt: Date | null;
   question: string | null;
+  check: RunView['check']['state'];
 }): string {
   const tried =
     input.experiments > 0
@@ -1135,7 +1632,15 @@ function statusLine(input: {
   const join = (...parts: (string | null)[]) => parts.filter(Boolean).join(' · ');
   switch (input.status) {
     case 'done':
-      return join('Done', tried);
+      return join(
+        'Done',
+        input.check === 'passed'
+          ? 'checked'
+          : input.check === 'not_confirmed'
+            ? 'not fully confirmed'
+            : null,
+        tried,
+      );
     case 'stopped':
       return 'Stopped';
     case 'failed':
@@ -1143,9 +1648,10 @@ function statusLine(input: {
     case 'needs_you':
       return input.question ? clip(input.question, 200) : 'Waiting for you';
     case 'working':
-      return join('Working on it', tried);
+      return join(input.check === 'checking' ? 'Checking the result' : 'Working on it', tried);
     default:
       if (input.paused) return join('Paused', tried);
+      if (input.check === 'checking') return join('Checking the result', tried);
       if (input.waitingOnSteps)
         return join(
           `Waiting for ${input.helpersWorking} helper${input.helpersWorking === 1 ? '' : 's'}`,
@@ -1159,8 +1665,14 @@ function statusLine(input: {
 
 export { isRunKind };
 
-/** Puts long work on a runner: its shifts are decided here, and a helper's end wakes its run. */
+/**
+ * Puts long work on a runner: its shifts are decided here, and a helper's
+ * end, however it ends, wakes its run.
+ */
 export function attachRuns(runner: AttemptRunner, runs: RunService) {
   runner.runs = runs;
   runner.onFinished.push((tx, row, outcome) => runs.stepEnded(tx, row, outcome));
+  runs.jobs.cancelledInTransaction.push((tx, row) =>
+    runs.stepEnded(tx, row, { kind: 'failed', retryable: false, reason: 'It was stopped.' }),
+  );
 }

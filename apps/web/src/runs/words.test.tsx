@@ -46,6 +46,7 @@ const run = (over: Partial<Run> = {}): Run => ({
   findings: 0,
   steps: [],
   question: null,
+  check: { enabled: false, state: null, gaps: [] },
   ...over,
 });
 

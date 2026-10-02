@@ -934,6 +934,10 @@ export const runState = pgTable(
     waitingOnSteps: boolean('waiting_on_steps').notNull().default(false),
     lastReportAt: timestamp('last_report_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
+    /** A result is confirmed by a separate check before the run is called done. */
+    checkResult: boolean('check_result').notNull().default(true),
+    /** On a helper that checks a result: the proposed result entry it checks. */
+    checking: text('checking'),
     createdAt: created(),
   },
   (t) => [

@@ -136,6 +136,8 @@ export type JobFaults = {
 
 export class JobService {
   onCancelled?: (id: string) => void;
+  /** Called inside the transaction that cancelled a job, with its cancelled row. */
+  readonly cancelledInTransaction: Array<(tx: Transaction, row: JobRow) => Promise<void>> = [];
   /** Ends a conversation's turn in flight as Stop does; see `AttemptRunner.stopTurn`. */
   stopTurn?: (tx: Transaction, row: JobRow) => Promise<boolean>;
   constructor(
@@ -452,6 +454,7 @@ export class JobService {
         { kind: 'cancelled' },
         { payload: { reason: reason ?? null } },
       );
+      for (const handler of this.cancelledInTransaction) await handler(tx, updated);
       const interrupted = await tx
         .update(attempt)
         .set({

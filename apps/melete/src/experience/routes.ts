@@ -174,7 +174,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       const agentId = typeof input.agent_id === 'string' ? input.agent_id : undefined;
       if (agentId) await service.requireAgent(spaceId, agentId);
       const row = await jobs.transaction((tx) =>
-        runs.create(tx, spaceId, input, { agentId: agentId ?? null }),
+        runs.create(tx, spaceId, input, { agentId: agentId ?? null, typed: true }),
       );
       return { run: await runs.view(row) };
     },
@@ -226,7 +226,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       const runs = deps.runs;
       if (!runs) return unavailable(RUNS_UNAVAILABLE);
       const row = await runs.requireRun(spaceId, c.req.param('id') ?? '');
-      await runs.setLimit(row, runLimitRequest.parse(input).limit);
+      await runs.setLimit(row, runLimitRequest.parse(input));
       return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
     },
     'GET /experience/connections': (spaceId) => home.connections(spaceId),

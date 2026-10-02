@@ -7106,6 +7106,9 @@
                   },
                   "limit": {
                     "$ref": "#/components/schemas/__schema23"
+                  },
+                  "check_result": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -7230,6 +7233,8 @@
                                   "checkpoint",
                                   "step_started",
                                   "step_finished",
+                                  "proposed",
+                                  "check",
                                   "finished"
                                 ]
                               },
@@ -7545,11 +7550,11 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "check_result": {
+                    "type": "boolean"
                   }
                 },
-                "required": [
-                  "limit"
-                ],
                 "additionalProperties": false
               }
             }
@@ -28872,6 +28877,42 @@
               "string",
               "null"
             ]
+          },
+          "check": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "state": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "checking",
+                      "passed",
+                      "gaps",
+                      "not_confirmed"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "gaps": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "enabled",
+              "state",
+              "gaps"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -28896,7 +28937,8 @@
           "experiments",
           "findings",
           "steps",
-          "question"
+          "question",
+          "check"
         ],
         "additionalProperties": false
       },
