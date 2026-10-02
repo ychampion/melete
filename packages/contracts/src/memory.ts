@@ -345,6 +345,8 @@ export const recallResult = z.strictObject({
       'index_failure',
       'restore_pending',
       'public_compartment',
+      /** The agent answering was set not to read memory, so nothing was looked up. */
+      'withheld',
     ]),
   }),
   recipe: boundedIdentity,

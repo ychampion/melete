@@ -5,12 +5,11 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { DeleteChatsDialog, RenameChatDialog } from '../chat/ChatActions.tsx';
-import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
-import { MeleteAvatar } from '../design/mark.tsx';
 import { Button, Checkbox } from '../design/primitives.tsx';
+import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { agentById, faceOf, lookOf, useApp, useDecisions, useNow } from '../experience/hooks.ts';
+import { agentById, faceOf, useApp, useDecisions, useNow } from '../experience/hooks.ts';
 import type { Conversation } from '../experience/types.ts';
 import { isWaiting, waitingOn } from '../experience/waiting.ts';
 import { href, navigate } from '../router.ts';
@@ -151,15 +150,11 @@ export function ChatsScreen() {
             const agent = agentById(agents, chat.agent_id);
             const body = (
               <>
-                {agent ? (
-                  <AgentFace
-                    look={lookOf(agent)}
-                    size={28}
-                    state={faceOf(isWaiting(chat, waiting) ? 'needs_you' : chat.status)}
-                  />
-                ) : (
-                  <MeleteAvatar size={28} />
-                )}
+                <AgentAvatar
+                  agent={agent}
+                  size={28}
+                  state={faceOf(isWaiting(chat, waiting) ? 'needs_you' : chat.status)}
+                />
                 <span className="col grow" style={{ gap: 2, minWidth: 0 }}>
                   <span
                     className="clamp1"

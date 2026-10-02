@@ -6,11 +6,10 @@
  * it back. Both live views use the same wire shapes, so one screen draws both.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
 import { Button, IconButton } from '../design/primitives.tsx';
+import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter, followLive, type LiveDown } from '../experience/adapter.ts';
-import { lookOf } from '../experience/hooks.ts';
 import type {
   Agent,
   AgentComputer,
@@ -755,7 +754,7 @@ export function ComputerPanel({
   return (
     <aside className="side-panel computer-panel" aria-label={`${agentName}’s computer`}>
       <div className="computer-head">
-        {agent ? <AgentFace look={lookOf(agent)} size={24} /> : <Icon name="monitor" size={18} />}
+        {agent ? <AgentAvatar agent={agent} size={24} /> : <Icon name="monitor" size={18} />}
         <span className="computer-name clamp1">{agentName}’s computer</span>
         <div className="grow" />
         <IconButton name="x" label="Close the computer" onClick={onClose} />

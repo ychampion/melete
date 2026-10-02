@@ -48,7 +48,7 @@ import {
   type ConnectorContext,
   connectorAllowsAudience,
 } from '../connectors/types.ts';
-import { agentAccess, directSend } from '../experience/access.ts';
+import { agentAccess, computerTool, directSend } from '../experience/access.ts';
 import { plainText, tooLongToAsk } from '../experience/projectors.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
@@ -418,6 +418,8 @@ export class BrokerService implements BrokerOperations {
       throw new BrokerFault('scope_denied');
     const tool = resolveToolAlias(connector, connectionId, kind);
     if (!tool) throw new BrokerFault('unknown_tool');
+    // An agent set not to use the computer is refused it here, whatever the catalog offered.
+    if (!access.usesComputer && computerTool(tool.name)) throw new BrokerFault('scope_denied');
     const required = new Set([...tool.required_scopes, tool.name]);
     if (!grantsConnectionScopes(claims, connection.scopes, [...required])) {
       throw new BrokerFault('scope_denied');

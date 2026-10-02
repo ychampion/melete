@@ -135,6 +135,20 @@
   max-width: 100%;
   transition: border-color 0.15s;
 }
+.home-agents {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.home-agents-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+a.suggestion:hover {
+  text-decoration: none;
+  border-color: var(--blue-line);
+}
 .suggestion > span {
   min-width: 0;
   overflow: hidden;

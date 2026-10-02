@@ -443,7 +443,7 @@ export class ExperiencePlanning {
     const input = automationCreate.parse(raw);
     if (!this.triggers || !this.service.jobs)
       return unavailable('Scheduled routines are not connected yet.');
-    await this.service.requireAgent(spaceId, input.agent_id);
+    const runner = await this.service.agentOrDefault(spaceId, input.agent_id);
     const [profile] = await this.db
       .select()
       .from(experienceProfile)
@@ -466,7 +466,7 @@ export class ExperiencePlanning {
           scheduling_class: 'background',
           importance: 'routine',
         },
-        { kind: 'routine', agentId: input.agent_id, dormant: true },
+        { kind: 'routine', agentId: runner.id, dormant: true },
       );
       const [registration] = await tx
         .insert(trigger)

@@ -17,18 +17,15 @@ import { Composer } from '../chat/Composer.tsx';
 import { companiesApi, currentSpaceId } from '../companies/api.ts';
 import { amountWords, matches, money } from '../companies/format.ts';
 import { statusOf } from '../companies/Ledger.tsx';
-import { AgentFace } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
-import { MeleteAvatar } from '../design/mark.tsx';
 import { Button, Checkbox, Input, Status } from '../design/primitives.tsx';
+import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { decisionKey, pressOf, useInFlight } from '../experience/decide.ts';
-import { agentForFirstMessage } from '../experience/first-agent.ts';
 import {
   agentById,
   faceOf,
-  lookOf,
   messageKey,
   useApp,
   useDecisions,
@@ -50,7 +47,6 @@ import type {
 import { isWaiting, waitingOn } from '../experience/waiting.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
-import { blankAgent } from './Agents.tsx';
 import { PushOffer } from './Notifications.tsx';
 import { RoutineResults } from './RoutineResults.tsx';
 import './home.css';
@@ -279,11 +275,7 @@ export function frontOf(
 }
 
 function Face({ agent, size, state }: { agent: Agent | null; size: number; state?: 'idle' }) {
-  return agent ? (
-    <AgentFace look={lookOf(agent)} size={size} state={state ?? 'idle'} />
-  ) : (
-    <MeleteAvatar size={size} />
-  );
+  return <AgentAvatar agent={agent} size={size} state={state ?? 'idle'} />;
 }
 
 function DecisionCard({
@@ -668,17 +660,11 @@ function InMotion({ now }: { now: number }) {
           const agent = agentById(agents, conversation.agent_id);
           return (
             <a key={conversation.id} className="motion-row" href={href(`/chat/${conversation.id}`)}>
-              {agent ? (
-                <AgentFace
-                  look={lookOf(agent)}
-                  size={28}
-                  state={faceOf(
-                    isWaiting(conversation, waiting) ? 'needs_you' : conversation.status,
-                  )}
-                />
-              ) : (
-                <MeleteAvatar size={28} />
-              )}
+              <AgentAvatar
+                agent={agent}
+                size={28}
+                state={faceOf(isWaiting(conversation, waiting) ? 'needs_you' : conversation.status)}
+              />
               <span className="col grow" style={{ gap: 1, minWidth: 0 }}>
                 <span className="clamp1 motion-title">{conversation.title}</span>
                 <span className="clamp1 motion-line">
@@ -909,7 +895,7 @@ function DayColumn({ now }: { now: number }) {
 /* ---------- the screen ---------- */
 
 export function HomeScreen() {
-  const { agents, profile, refreshAgents, refreshConversations } = useApp();
+  const { agents, profile, refreshConversations } = useApp();
   const home = useLoad(() => adapter.home(), []);
   const decisions = useDecisions();
   const [map, setMap] = useState<CompanyMap | null>(null);
@@ -935,21 +921,9 @@ export function HomeScreen() {
     const clean = body.trim();
     if (!clean || busy) return;
     setBusy(true);
-    // Skipping setup leaves no agent yet: make the default one so the first
-    // message still goes somewhere.
-    const agent = await agentForFirstMessage(
-      agents[0]?.id,
-      { ...blankAgent(), name: 'Nova', role: 'Concierge' },
-      adapter,
-    );
-    if ('error' in agent) {
-      setBusy(false);
-      toast({ kind: 'err', title: 'Couldn’t set up your agent', sub: agent.error });
-      return;
-    }
-    if (agent.created) refreshAgents();
+    // Home talks to Melete; "@Scout …" still hands the message to Scout.
     const title = shortTitle(clean, 60) || 'New chat';
-    const created = await adapter.createConversation({ title, agent_id: agent.id });
+    const created = await adapter.createConversation({ title });
     if (created.data === null) {
       setBusy(false);
       toast({
@@ -1046,6 +1020,24 @@ export function HomeScreen() {
                 </button>
               ))}
             </div>
+            {agents.some((agent) => !agent.is_default) ? (
+              <nav className="home-agents" aria-label="Your agents">
+                <span className="home-agents-label">Or start with</span>
+                {agents
+                  .filter((agent) => !agent.is_default)
+                  .map((agent) => (
+                    <a
+                      key={agent.id}
+                      className="suggestion"
+                      href={href(`/chat/new?agent=${agent.id}`)}
+                      title={`${agent.name} · ${agent.role}`}
+                    >
+                      <AgentAvatar agent={agent} size={16} />
+                      <span>{agent.name}</span>
+                    </a>
+                  ))}
+              </nav>
+            ) : null}
           </div>
           <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />

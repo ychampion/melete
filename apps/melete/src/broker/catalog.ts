@@ -16,7 +16,7 @@ import { supersededExecution } from '../connectors/catalog.ts';
 import { MAX_TOOL_SCHEMA_BYTES, toolSchemaFits } from '../connectors/schema-budget.ts';
 import { type Connector, connectorAllowsAudience } from '../connectors/types.ts';
 import { offersPersonsBrowser, routedDescription } from '../devices/routing.ts';
-import { type AgentAccess, agentAccess, directSend } from '../experience/access.ts';
+import { type AgentAccess, agentAccess, computerTool, directSend } from '../experience/access.ts';
 import { appendToolTrace } from '../experience/tools.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
 import { spaceRole } from '../principals/authority.ts';
@@ -443,6 +443,7 @@ export class ToolCatalog {
       if (!connectorAllowsAudience(connector, job.constraints, row.audience)) continue;
       for (const declared of connector.manifest.tools) {
         if (access.chat && directSend(declared.name)) continue;
+        if (!access.usesComputer && computerTool(declared.name)) continue;
         const scopes = [declared.name, ...declared.required_scopes];
         if (!grantsConnectionScopes(claims, row.scopes, scopes)) continue;
         if (

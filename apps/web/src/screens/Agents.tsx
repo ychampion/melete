@@ -1,7 +1,8 @@
 /**
- * Agents: a face for each job. Profiles, a wall of faces to pick from,
- * templates, and an editor with Look, Behaviour and Access, all on the
- * contract's agent record. The nine face states derive from turn status.
+ * Agents: Melete, who is always here and can use everything, and a face for
+ * each specialist job. Profiles, a wall of faces to pick from, templates, and
+ * an editor with Look, Behaviour and Access, all on the contract's agent
+ * record. The nine face states derive from turn status.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { logoFor } from '../chat/parts.tsx';
@@ -15,6 +16,7 @@ import {
 import { Icon } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
+import { MeleteAvatar } from '../design/mark.tsx';
 import {
   Badge,
   Button,
@@ -27,6 +29,7 @@ import {
   Select,
   Toggle,
 } from '../design/primitives.tsx';
+import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { lookOf, useApp, useLoad } from '../experience/hooks.ts';
 import type { Agent, AgentInput, AgentTemplate, Connection } from '../experience/types.ts';
@@ -65,7 +68,23 @@ export const blankAgent = (): AgentInput => ({
   standing_instruction: '',
   allowed_connection_ids: null,
   asks_before_acting: true,
+  uses_computer: true,
+  reads_memory: true,
+  writes_memory: true,
 });
+
+/** What an agent may use besides its connections, in a few words. */
+export function reachWords(agent: Pick<Agent, 'uses_computer' | 'reads_memory' | 'writes_memory'>) {
+  const memory =
+    agent.reads_memory && agent.writes_memory
+      ? 'remembers'
+      : agent.reads_memory
+        ? 'reads memory only'
+        : agent.writes_memory
+          ? 'keeps memory, reads none'
+          : 'no memory';
+  return `${agent.uses_computer ? 'uses the computer' : 'no computer'} · ${memory}`;
+}
 
 /** Null reaches every connection, including ones connected later. */
 export const reaches = (ids: string[] | null, id: string) => ids === null || ids.includes(id);
@@ -202,8 +221,42 @@ export function LookFields({
   );
 }
 
+/** A switch on its own row: a title, one line of what it means, and the toggle. */
+function SwitchRow({
+  title,
+  hint,
+  on,
+  onChange,
+}: {
+  title: string;
+  hint: string;
+  on: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  return (
+    <div
+      className="row"
+      style={{
+        gap: 12,
+        padding: '12px 14px',
+        borderRadius: 12,
+        background: 'var(--soft)',
+        border: '1px solid var(--line)',
+      }}
+    >
+      <div className="col grow" style={{ gap: 1 }}>
+        <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>{title}</span>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{hint}</span>
+      </div>
+      <Toggle on={on} label={title} onChange={onChange} />
+    </div>
+  );
+}
+
 function AgentEditor({
   agentId,
+  isDefault = false,
+  fixedReach = false,
   initial,
   connections,
   connectionsError = null,
@@ -212,6 +265,10 @@ function AgentEditor({
   onClose,
 }: {
   agentId: string | null;
+  /** Melete: its name and reach are fixed, so only how it sounds is edited. */
+  isDefault?: boolean;
+  /** Melete in a personal space: it reaches everything, and that is not edited. */
+  fixedReach?: boolean;
   initial: AgentInput;
   connections: Connection[];
   /** Why the connections could not be read; the Access tab says so instead of "none". */
@@ -221,7 +278,7 @@ function AgentEditor({
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<AgentInput>(initial);
-  const [tab, setTab] = useState<'look' | 'behaviour' | 'access'>('look');
+  const [tab, setTab] = useState<'look' | 'behaviour' | 'access'>(isDefault ? 'behaviour' : 'look');
   const [state, setState] = useState<(typeof FACE_STATES)[number][0]>('idle');
   const [busy, setBusy] = useState(false);
   // A background refresh hands a new copy of the same agent; only a real change
@@ -282,7 +339,7 @@ function AgentEditor({
           value={tab}
           onChange={setTab}
           options={[
-            { value: 'look', label: 'Look' },
+            ...(isDefault ? [] : [{ value: 'look' as const, label: 'Look' }]),
             { value: 'behaviour', label: 'Behaviour' },
             { value: 'access', label: 'Access' },
           ]}
@@ -405,6 +462,15 @@ function AgentEditor({
           </>
         ) : tab === 'behaviour' ? (
           <>
+            {isDefault ? (
+              <div className="row" style={{ gap: 12 }}>
+                <MeleteAvatar size={40} />
+                <p style={{ fontSize: 13, color: 'var(--secondary)', lineHeight: '19px' }}>
+                  Melete is always here. It takes every chat, routine and message from Home unless
+                  you choose another agent, and its name stays Melete.
+                </p>
+              </div>
+            ) : null}
             <Field label="Tone">
               <Select
                 label="Tone"
@@ -431,36 +497,42 @@ function AgentEditor({
                 placeholder="One option first, not five. Confirm before paying."
               />
             </Field>
-            <div
-              className="row"
-              style={{
-                gap: 12,
-                padding: '12px 14px',
-                borderRadius: 12,
-                background: 'var(--soft)',
-                border: '1px solid var(--line)',
-              }}
-            >
-              <div className="col grow" style={{ gap: 1 }}>
-                <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
-                  Asks before acting
-                </span>
-                <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                  Anything that sends, books or pays waits for your yes.
-                </span>
-              </div>
-              <Toggle
-                on={draft.asks_before_acting}
-                label="Asks before acting"
-                onChange={(on) => setDraft({ ...draft, asks_before_acting: on })}
-              />
-            </div>
+            <SwitchRow
+              title="Asks before acting"
+              hint="Anything that sends, books or pays waits for your yes."
+              on={draft.asks_before_acting}
+              onChange={(on) => setDraft({ ...draft, asks_before_acting: on })}
+            />
           </>
+        ) : fixedReach ? (
+          <p style={{ fontSize: 13, color: 'var(--secondary)', lineHeight: '19px' }}>
+            Melete can use everything you connect, including what you connect later, the computer
+            and what it remembers about you. To keep something narrower, make an agent for that job
+            and choose what it can use.
+          </p>
         ) : (
           <>
+            <SwitchRow
+              title="Uses the computer"
+              hint="The agent's computer and your paired computers."
+              on={draft.uses_computer ?? true}
+              onChange={(on) => setDraft({ ...draft, uses_computer: on })}
+            />
+            <SwitchRow
+              title="Reads memory"
+              hint="What Melete remembers about you is brought into its work."
+              on={draft.reads_memory ?? true}
+              onChange={(on) => setDraft({ ...draft, reads_memory: on })}
+            />
+            <SwitchRow
+              title="Keeps memory"
+              hint="What you tell it is remembered for later."
+              on={draft.writes_memory ?? true}
+              onChange={(on) => setDraft({ ...draft, writes_memory: on })}
+            />
             <p style={{ fontSize: 13, color: 'var(--muted)' }}>
-              Access is per agent. Tick what this one may look at; with everything ticked, it also
-              reaches what you connect later.
+              Connections are per agent. Tick what this one may look at; with everything ticked, it
+              also reaches what you connect later.
             </p>
             <div className="col" style={{ gap: 6 }}>
               {connections.map((connection) => {
@@ -573,7 +645,7 @@ const WALL = [
   ['#5ab4a0', 'gear'],
 ] as const;
 
-const inputOf = (agent: Agent): AgentInput => ({
+export const inputOf = (agent: Agent): AgentInput => ({
   name: agent.name,
   role: agent.role,
   colour: agent.colour,
@@ -583,6 +655,9 @@ const inputOf = (agent: Agent): AgentInput => ({
   standing_instruction: agent.standing_instruction,
   allowed_connection_ids: agent.allowed_connection_ids,
   asks_before_acting: agent.asks_before_acting,
+  uses_computer: agent.uses_computer,
+  reads_memory: agent.reads_memory,
+  writes_memory: agent.writes_memory,
   ...(agent.face_image ? { face_image: agent.face_image } : {}),
 });
 
@@ -631,6 +706,8 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
     <AgentEditor
       key={current?.id ?? 'new'}
       agentId={current?.id ?? null}
+      isDefault={current?.is_default === true}
+      fixedReach={current?.fixed_reach === true}
       initial={initial}
       connections={connections.data?.connections.filter((c) => c.status === 'connected') ?? []}
       connectionsError={connections.error}
@@ -659,7 +736,8 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
           <div className="col" style={{ gap: 4 }}>
             <h1>Agents</h1>
             <p style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 520 }}>
-              Give Melete a face for each job. Each agent keeps its own tone, tools and memory.
+              Melete handles everything by default. Give it a face for a particular job, with its
+              own tone and only the tools it needs. Type @ and a name in any chat to ask one.
             </p>
           </div>
           <Button
@@ -700,16 +778,20 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
                 }}
               >
                 <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
-                  <AgentFace look={lookOf(agent)} size={48} />
+                  <AgentAvatar agent={agent} size={48} />
                   <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
                     <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--heading)' }}>
                       {agent.name}{' '}
                       <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· {agent.role}</span>
                     </span>
                     <span style={{ fontSize: 13, color: 'var(--secondary)', lineHeight: '18px' }}>
-                      {agent.standing_instruction || agent.tone}
+                      {agent.is_default
+                        ? agent.standing_instruction ||
+                          'Takes every chat unless you choose another agent.'
+                        : agent.standing_instruction || agent.tone}
                     </span>
                   </div>
+                  {agent.is_default ? <Badge>Always here</Badge> : null}
                 </div>
                 <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                   <span className="row" style={{ gap: 4 }}>
@@ -737,10 +819,12 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
                     })}
                   </span>
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                    {allowed.length
-                      ? `reaches ${allowed.map((c) => c.label).join(', ')}`
-                      : 'reaches nothing yet'}{' '}
-                    · {agent.tone.toLowerCase()}
+                    {agent.fixed_reach
+                      ? 'reaches everything you connect'
+                      : allowed.length
+                        ? `reaches ${allowed.map((c) => c.label).join(', ')}`
+                        : 'reaches nothing yet'}{' '}
+                    · {reachWords(agent)}
                   </span>
                   <div className="grow" />
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>{usedWhen(agent)}</span>

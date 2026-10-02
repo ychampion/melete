@@ -3,7 +3,8 @@ import type { Query } from '../broker/records.ts';
 /** The active turn pins its agent; changing the header selects the following turn. */
 export async function agentAccess(tx: Query, jobId: string) {
   const [row] =
-    await tx`select j.kind, j.paused, j.current_turn_id, coalesce(t.agent_id, j.agent_id) as bound_agent_id, a.id, a.allowed_connection_ids, a.asks_before_acting
+    await tx`select j.kind, j.paused, j.current_turn_id, coalesce(t.agent_id, j.agent_id) as bound_agent_id, a.id, a.allowed_connection_ids, a.asks_before_acting,
+      a.uses_computer, a.reads_memory, a.writes_memory
     from job j left join experience_turn t on t.id = j.current_turn_id
     left join agent a on a.id = coalesce(t.agent_id, j.agent_id) and a.space_id = j.space_id
     where j.id = ${jobId}`;
@@ -17,9 +18,22 @@ export async function agentAccess(tx: Query, jobId: string) {
     agentId: row?.id as string | undefined,
     allowed: (row?.allowed_connection_ids ?? undefined) as string[] | undefined,
     asksBeforeActing: row?.asks_before_acting !== false,
+    /** Work with no agent of its own (a job, an evaluation) is not narrowed here. */
+    usesComputer: row?.uses_computer !== false,
+    readsMemory: row?.reads_memory !== false,
+    writesMemory: row?.writes_memory !== false,
   };
 }
 
 export type AgentAccess = Awaited<ReturnType<typeof agentAccess>>;
 
 export const directSend = (kind: string) => /(?:^|[._])send(?:$|[._])/i.test(kind);
+
+/**
+ * The computer is the agent's own (its browser, terminal and code in the
+ * workspace) and the person's paired computers. An agent the person set not to
+ * use it is offered none of these tools, and the broker refuses them if asked
+ * anyway.
+ */
+export const computerTool = (kind: string) =>
+  /^(?:browser|computer|terminal|exec|device)\./.test(kind);

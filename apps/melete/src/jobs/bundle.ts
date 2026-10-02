@@ -758,6 +758,8 @@ export type BundleAssembly = {
   catalog: (bundle: AttemptBundle) => Promise<AttemptBundle['tools']>;
   /** Recall what was learned in private conversations: only for an attempt that stays on the person's own model. */
   privateOrigin?: boolean;
+  /** The agent answering may not read memory. */
+  withheld?: boolean;
 };
 
 /** Complete the bundle after the lease commits, before any model request. */
@@ -776,7 +778,11 @@ export async function buildBundle(
       mode: 'current',
       max_tokens: CONTEXT_LIMITS.knowledge_tokens,
     },
-    { includeProfile: true, privateOrigin: options.privateOrigin === true },
+    {
+      includeProfile: true,
+      privateOrigin: options.privateOrigin === true,
+      withheld: options.withheld === true,
+    },
   );
   const tools = (await options.catalog(skeleton)).slice(0, CONTEXT_LIMITS.max_tools);
   const repairBriefs = await pendingRepairBriefs(sql, scope, jobId);

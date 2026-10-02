@@ -210,24 +210,34 @@ export const connection = pgTable(
   (t) => [index('connection_space_idx').on(t.spaceId)],
 );
 
-export const agent = pgTable('agent', {
-  id: text('id').primaryKey(),
-  spaceId: text('space_id')
-    .notNull()
-    .references(() => space.id, { onDelete: 'cascade' }),
-  name: text('name').notNull(),
-  role: text('role').notNull(),
-  colour: text('colour').notNull(),
-  surface: text('surface').notNull(),
-  eyeColour: text('eye_colour').notNull(),
-  tone: text('tone').notNull(),
-  standingInstruction: text('standing_instruction').notNull(),
-  /** Null reaches every connection in the space, including ones added later; a list narrows it. */
-  allowedConnectionIds: jsonb('allowed_connection_ids').$type<string[] | null>(),
-  asksBeforeActing: boolean('asks_before_acting').notNull().default(true),
-  faceImage: text('face_image'),
-  createdAt: created(),
-});
+export const agent = pgTable(
+  'agent',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    role: text('role').notNull(),
+    colour: text('colour').notNull(),
+    surface: text('surface').notNull(),
+    eyeColour: text('eye_colour').notNull(),
+    tone: text('tone').notNull(),
+    standingInstruction: text('standing_instruction').notNull(),
+    /** Null reaches every connection in the space, including ones added later; a list narrows it. */
+    allowedConnectionIds: jsonb('allowed_connection_ids').$type<string[] | null>(),
+    asksBeforeActing: boolean('asks_before_acting').notNull().default(true),
+    /** The browser, the terminal and code in the workspace. */
+    usesComputer: boolean('uses_computer').notNull().default(true),
+    readsMemory: boolean('reads_memory').notNull().default(true),
+    writesMemory: boolean('writes_memory').notNull().default(true),
+    /** Melete, the agent every space has: one per space, never removed. */
+    isDefault: boolean('is_default').notNull().default(false),
+    faceImage: text('face_image'),
+    createdAt: created(),
+  },
+  (t) => [uniqueIndex('agent_default_space_idx').on(t.spaceId).where(sql`is_default`)],
+);
 
 export const job = pgTable(
   'job',
