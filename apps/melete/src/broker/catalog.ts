@@ -136,7 +136,7 @@ export const META_TOOLS: ToolSpec[] = [
 export const SAY_TOOL: ToolSpec = {
   name: 'say',
   description:
-    'Tell the person in one or two first-person sentences what you will do next. Do not include reasoning, internal names, or technical details. This narration has no action cost and needs no approval.',
+    'Tell the person in one or two first-person sentences what you will do next, or what you just found. Do not include reasoning, internal names, or technical details. This narration has no action cost and needs no approval.',
   input_schema: {
     type: 'object',
     properties: { text: { type: 'string', minLength: 1, maxLength: 600 } },

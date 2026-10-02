@@ -107,16 +107,27 @@ export const PLAIN_WORDS: readonly string[] = [
 ];
 
 /**
+ * What the person sees while the work runs. Text written between tool calls is
+ * shown as a short note in the work log, so it has to be written for them.
+ */
+export const PROGRESS_NOTES: readonly string[] = [
+  'While you work, the person sees what you write between tool calls. Before a batch',
+  'of actions, write one short plain sentence about what you will check or do; after',
+  'a finding, one sentence about what you found. Write to them, not to yourself: no',
+  'reasoning and no plans for yourself, and when you mention them, say "you".',
+];
+
+/**
  * When to stop and ask the person, and when to carry on. Asking is for a real
  * ambiguity or a choice that belongs to the person; an approval is never asked
  * this way, because proposing the action is what asks for it.
  */
 export const ASKING: readonly string[] = [
-  "If the request is genuinely ambiguous, or the choice is the owner's to make (a date,",
+  "If the request is genuinely ambiguous, or the choice is the person's to make (a date,",
   'an amount, which of two things), call ask_person with one short question and up to',
   'four choices, then end your turn; the answer comes back as their next message.',
   'Otherwise make a sensible choice, say what you chose, and carry on. Never use',
-  'ask_person to ask permission for an action: propose the action and the owner is asked.',
+  'ask_person to ask permission for an action: propose the action and the person is asked.',
 ];
 
 /**
@@ -133,14 +144,15 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
           `The person's time zone is ${bundle.time_zone}. "Today", "now" and every date and time you give mean that zone, not UTC.`,
         ]
       : []),
-    'Answer in your reply. Save a file only when the owner asks for one.',
+    'Answer in your reply. Save a file only when the person asks for one.',
     `Budget: at most ${bundle.budget.max_turns} turns and ${bundle.budget.max_actions} actions.`,
     'Every tool call is checked and recorded before it runs, and some need the',
-    "owner's approval. A tool that answers `needs_approval` has NOT happened: stop,",
+    "person's approval. A tool that answers `needs_approval` has NOT happened: stop,",
     'say what you are waiting on, and end your turn.',
     ...ASKING,
     ...PLAIN_WORDS,
-    'Reusable owner corrections go through learning.propose when it is in the catalog.',
+    ...PROGRESS_NOTES,
+    'Reusable corrections from the person go through learning.propose when it is in the catalog.',
     'It refers the recorded intervention for evaluation; it never installs a live skill.',
   ].join('\n');
 
@@ -158,7 +170,7 @@ export function renderConstraints(constraints: AttemptBundle['job']['constraints
     lines.push(`- Done means a file matching ${done.path_glob} exists in the workspace.`);
   else if (done?.kind === 'message_sent')
     lines.push(`- Done means a message was sent through ${done.connection_id}.`);
-  else if (done?.kind === 'answer') lines.push('- Done means the owner has an answer.');
+  else if (done?.kind === 'answer') lines.push('- Done means the person has an answer.');
   if (public_compartment === true)
     lines.push(
       '- Public research: no private knowledge is loaded, and any public site may be read.',
@@ -188,7 +200,7 @@ export function renderInput(bundle: AttemptBundle): string {
     );
   // Disposable engines have no session history. The service's bounded ledger
   // is the source of prior messages and completed tool-call identities.
-  // A new message is written once, under "From the owner" below.
+  // A new message is written once, under "From the person" below.
   const fresh = new Set(bundle.inputs.new_user_messages.map((message) => JSON.stringify(message)));
   const prior = bundle.transcript.filter((message) => !fresh.has(JSON.stringify(message)));
   if (prior.length)
@@ -235,7 +247,7 @@ export function renderInput(bundle: AttemptBundle): string {
     lines.push('', '## Something happened', '', JSON.stringify(event));
   }
   for (const message of bundle.inputs.new_user_messages) {
-    lines.push('', '## From the owner', '', message.content);
+    lines.push('', '## From the person', '', message.content);
   }
 
   return lines.join('\n');
@@ -252,8 +264,8 @@ function renderDecision(approval: AttemptBundle['inputs']['approval_results'][nu
   const what = approval.kind ? `${approval.action_id} (${approval.kind})` : approval.action_id;
   // Withdrawn by Melete, not refused by anyone: the request moved on first.
   if (approval.note === APPROVAL_OUTDATED_NOTE)
-    return `${what} was withdrawn before the owner answered, because the request changed. It was not carried out, and nobody refused it. If it is still needed, propose it again with the current details and the owner will be asked again; do not say an approval is still pending.`;
-  const note = approval.note ? ` The owner said: ${approval.note}` : '';
+    return `${what} was withdrawn before the person answered, because the request changed. It was not carried out, and nobody refused it. If it is still needed, propose it again with the current details and the person will be asked again; do not say an approval is still pending.`;
+  const note = approval.note ? ` The person said: ${approval.note}` : '';
   if (approval.decision === 'denied')
     return `${what} was denied. It was not carried out and it will not be.${note}`;
   if (approval.status === undefined) return `${what} was approved.${note}`;

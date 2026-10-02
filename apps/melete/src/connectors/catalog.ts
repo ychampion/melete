@@ -5,7 +5,7 @@ import type { Connector } from './types.ts';
 export const REACT_TOOL: ToolSpec = {
   name: REACT_TOOL_NAME,
   description:
-    "React to the owner's latest message with one emoji instead of replying, when it needs only acknowledgement.",
+    "React to the person's latest message with one emoji instead of replying, when it needs only acknowledgement.",
   input_schema: reactToolSchema as unknown as ToolSpec['input_schema'],
   effect_class: 'read',
   connection_id: null,
