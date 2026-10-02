@@ -12,6 +12,7 @@ import {
   resultCard,
   turnStatus,
 } from './experience.ts';
+import { claimId } from './memory.ts';
 import { submissionId } from './responsibility.ts';
 
 const principalId = prefixedId(ID_PREFIXES.owner);
@@ -187,3 +188,54 @@ export const roomStopResponse = z.strictObject({ request: roomRequest });
 export const roomPresenceResponse = z.strictObject({ present: z.array(principalId) });
 export const roomMembershipResponse = z.strictObject({ member: roomMember });
 export const roomLeaveResponse = z.strictObject({ removed: principalId });
+
+/**
+ * Room memory: what people said in the room that the room's agent remembers,
+ * each detail with the people whose words it rests on, and the details people
+ * shared into the room from their own memory.
+ */
+export const roomMemoryItem = z.strictObject({
+  claim_id: claimId,
+  key: z.string().nullable(),
+  /** The detail in a few plain words, e.g. "venue: deposit". */
+  label: z.string(),
+  content: z.string(),
+  /** Whose words in the room this detail rests on. */
+  said_by: z.array(roomAuthor),
+  /** An owner of the room may forget any detail; anyone else only one from their own words. */
+  can_forget: z.boolean(),
+  recorded_at: timestamp,
+});
+export type RoomMemoryItem = z.infer<typeof roomMemoryItem>;
+/**
+ * A detail a person shared into the room from their own memory. It is a
+ * reference: forgetting it in their own memory takes it out of the room, and
+ * `content` is null once the room can no longer read it.
+ */
+export const roomShare = z.strictObject({
+  id,
+  claim_id: claimId,
+  shared_by: roomAuthor,
+  /** Kept out of the agent's work while a guest is in the room. */
+  members_only: z.boolean(),
+  label: z.string().nullable(),
+  content: z.string().nullable(),
+  created_at: timestamp,
+  /** The person who shared it, or an owner of the room, may withdraw it. */
+  can_withdraw: z.boolean(),
+});
+export type RoomShare = z.infer<typeof roomShare>;
+export const roomMemoryView = z.strictObject({
+  items: z.array(roomMemoryItem),
+  shares: z.array(roomShare),
+});
+export const shareToRoomRequest = z.strictObject({
+  /** A detail in the person's own memory. */
+  claim_id: claimId,
+  /** Defaults to true: kept out of the agent's work while a guest is in the room. */
+  members_only: z.boolean().optional(),
+});
+export const roomShareResponse = z.strictObject({ share: roomShare });
+export const roomShareWithdrawn = z.strictObject({ withdrawn: id });
+export const roomMemoryForgotten = z.strictObject({ forgotten: claimId });
+export const roomMessageDeleted = z.strictObject({ message: roomMessage });

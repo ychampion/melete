@@ -13,18 +13,32 @@ import { lockJob } from '../broker/records.ts';
 import { memoryKeyLabel } from '../experience/evidence.ts';
 import { appendMemoryTool } from '../experience/tools.ts';
 import { buildBundle } from '../jobs/bundle.ts';
+import { sharedRevisionEligible, withSharedItems } from '../rooms/shares.ts';
 import { withStyleCheck } from '../runtime/style.ts';
 import { eligibleRevision } from './claims.ts';
-import { iso, lockSpace, MemoryError, type MemoryScope, type MemorySql, newId } from './db.ts';
+import {
+  iso,
+  lockSpace,
+  MemoryError,
+  type MemoryScope,
+  type MemorySql,
+  type MemoryTx,
+  newId,
+} from './db.ts';
 import { lockEventOrder, notifyInvalidated, registerMemoryAttempt } from './invalidate.ts';
 import { markRepairBriefsDelivered, pendingRepairBriefs } from './outputs.ts';
-import {
-  asKnowledge,
-  attemptRecallQuery,
-  effectiveAudience,
-  type RecallOptions,
-  recall,
-} from './recall.ts';
+import { attemptRecallQuery, effectiveAudience, type RecallOptions, recall } from './recall.ts';
+
+/**
+ * Whether an attempt may hold this revision: one of its space's own, or a
+ * detail someone shared into its room that the room may still read.
+ */
+async function heldRevision(tx: MemoryTx, scope: MemoryScope, claimId: string, revision: number) {
+  return (
+    (await eligibleRevision(tx, scope, claimId, revision)) ||
+    (await sharedRevisionEligible(tx, scope.spaceId, claimId, revision))
+  );
+}
 
 export async function recordAttemptContext(
   sql: MemorySql,
@@ -56,7 +70,7 @@ export async function recordAttemptContext(
       throw new MemoryError('stale_context');
     if (audience.publicCompartment && result.items.length) throw new MemoryError('scope_denied');
     for (const item of result.items)
-      if (!(await eligibleRevision(tx, scope, item.claim_id, item.revision)))
+      if (!(await heldRevision(tx, scope, item.claim_id, item.revision)))
         throw new MemoryError('stale_context');
     const [prior] = await tx`select id from memory_contexts where attempt_id = ${attemptId}`;
     if (prior) throw new MemoryError('context_already_recorded');
@@ -183,7 +197,7 @@ export async function assertContextCurrent(sql: MemorySql, scope: MemoryScope, a
     )
       throw new MemoryError('context_invalidated');
     for (const item of row.items as ContextRecord['items']) {
-      if (!(await eligibleRevision(tx, scope, item.claim_id, item.revision)))
+      if (!(await heldRevision(tx, scope, item.claim_id, item.revision)))
         throw new MemoryError('context_invalidated');
       const [head] = await tx`select head_revision from memory_claims where id = ${item.claim_id}`;
       if (head?.head_revision !== item.revision) throw new MemoryError('context_invalidated');
@@ -231,9 +245,24 @@ export async function assembleAttemptKnowledge(
         includeProfile: true,
       },
     );
+    // A room's request is also handed what people shared into the room.
+    const recalled = await withSharedItems(
+      sql,
+      scope,
+      jobId,
+      result,
+      options.privateOrigin === true,
+    );
     try {
-      const context = await recordAttemptContext(sql, scope, attemptId, jobId, result, startedAt);
-      return { knowledge: result.items.map(asKnowledge), context, recall: result };
+      const context = await recordAttemptContext(
+        sql,
+        scope,
+        attemptId,
+        jobId,
+        recalled.recall,
+        startedAt,
+      );
+      return { knowledge: recalled.knowledge, context, recall: recalled.recall };
     } catch (error) {
       if (!(error instanceof MemoryError) || error.code !== 'stale_context' || retry === 2)
         throw error;

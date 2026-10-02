@@ -403,6 +403,17 @@ export class PrivacyRouter {
    * Memory records this on what it learns from the message. A topic found here
    * is kept on the conversation, as the router would keep it.
    */
+  /**
+   * Why a message said in a room is private, or null: the room is marked
+   * private, or the message is about a sensitive topic. A room message may
+   * reach no request at all, so it is read by its room rather than a job.
+   */
+  async captureOriginInSpace(spaceId: string, text: string): Promise<PrivateOrigin | null> {
+    const settings = await this.settingsFor(spaceId);
+    if (settings.privateSpace) return 'space';
+    return classify(text, settings.topics);
+  }
+
   async captureOrigin(jobId: string, text: string): Promise<PrivateOrigin | null> {
     const scope = await this.store.scope(jobId, '');
     if (!scope.spaceId) return null;

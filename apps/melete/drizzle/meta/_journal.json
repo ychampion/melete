@@ -498,6 +498,13 @@
       "when": 1789232400050,
       "tag": "0070_rooms",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1789232400051,
+      "tag": "0071_room_memory",
+      "breakpoints": true
     }
   ]
 }

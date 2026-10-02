@@ -484,7 +484,23 @@ which starts again with the new roster; the requests they asked end.
 [rooms.test.ts](../apps/melete/test/integration/rooms.test.ts) holds each of
 these as a test, including the room computer through the service's own routes.
 
-What remains: what a member says in a room stays in the room after they leave.
+A room's memory holds what its people said there, each piece of evidence under
+the person who said it, at `external_content` trust, so a member's words never
+raise what an approval card trusts. A room's requests recall the room's shared
+details and never a `private` one, the room owner's included. A person's own
+memory reaches a room only through a share they made of one detail: a
+reference read through one narrow path while the share stands, they are still
+in the room and the detail is still remembered at its source, and capped at
+`external_content` trust. Forgetting the detail at its source invalidates any
+room attempt that held it. Members-only shares stay out while a guest is in the
+room. Only a room's owners forget another person's words from its memory; a
+person deletes only their own messages, and the deletion scrubs the copies the
+service made of them. Every such removal is journaled and replayed on restore
+([rooms-memory.test.ts](../apps/melete/test/integration/rooms-memory.test.ts)).
+
+What remains: what a member says in a room stays in the room after they leave,
+unless they delete it first or an owner forgets it. The words of a deleted
+message stay in any answer the agent already gave that quoted them.
 Isolation between a room and the rest of the installation is an application
 check, as it is between accounts.
 
