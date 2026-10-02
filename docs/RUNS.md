@@ -54,6 +54,55 @@ The best try is chosen by the service: checked tries first, then the better
 value in the run's direction. A value nobody measured does not win over one
 that was measured.
 
+## Measured tries
+
+`run.try` lets the harness measure a try itself, so its value is a fact read
+from real output rather than a number the model reports. The model gives a
+title, a shell command and, optionally, text files to write into the workspace
+first (at most 8, 12,000 characters in all), a timeout (60 seconds unless set,
+at most 120), and up to four variants (`{label, command}`) to run alongside.
+
+The command goes through the same path a model's own command in the space's
+sandbox takes: it is proposed to the broker as `terminal.run` on the sandbox
+connection, so admission, the person's approval rules, the sandbox's egress
+policy and settings, and the action receipt all apply unchanged. The files are
+written by that same command, ahead of the try's own, so one approval and one
+receipt cover both. The first command runs alone (it writes the files and opens
+the computer); the variants then run side by side.
+
+When the commands finish, the service writes one experiment entry per command:
+
+- the value, read from the last `METRIC <name>=<number>` line the command
+  printed (the run's metric name when it has one), or from the capture group of
+  `value_pattern`, a regular expression run in a worker that is stopped if it
+  takes too long;
+- `measured: true` and `checked: true`, so a measured try always ranks as
+  checked;
+- the exit status, duration, timeout, command, files, the end of the output
+  (stdout and stderr together, as the sandbox captures them) and the action id
+  as evidence.
+
+A nonzero exit, a command past its time limit, or no value found is a failed
+try with the reason and the end of the output, and no value. Whether a try is
+kept is the service's call: the best value of the batch is kept when it beats
+the best measured value so far in the run's direction; the rest are discarded.
+The tool result tells the model each value, whether there is a new best, and
+the best so far.
+
+A space with no sandbox refuses `run.try` with a reason the model can act on:
+use its usual tools and log the try with `run.log`. A command the person's
+rules ask about waits like any parked action, and nothing is recorded; once it
+is approved, calling `run.try` again with the same arguments runs that same
+approved command and records it.
+
+The tool's schema is kept small because it shares the core catalog; the shift
+brief says how to use it (the `METRIC` line with the run's metric name, files,
+variants, the time limit). The brief lists tries with their commands, and the
+Markdown export marks them "Measured", shows each command and the end of its
+output, and ends with a section for running the best measured try again: its
+files and its command. `run.log` with `kind: "experiment"` keeps working for
+tries the harness did not run.
+
 ## Helpers
 
 `run.delegate` starts a helper: a separate job on the same or another
@@ -73,6 +122,7 @@ its next shift, and a waiting run also wakes on its own after 30 minutes.
 | --- | --- | --- |
 | `run.start` | conversations | starts a run tied to the conversation |
 | `run.log` | runs and helpers | adds to the record; a `report` also notifies the person |
+| `run.try` | runs and helpers | runs a try in the sandbox and records its measured value |
 | `run.delegate` | runs | starts a helper |
 | `run.checkpoint` | runs and helpers | ends the shift with a handoff and when to continue |
 | `run.finish` | runs and helpers | records the result; the work completes |
@@ -99,4 +149,8 @@ update gets a short one written from its record.
 handoff, the automatic handoff, idle and failure stops, limits, per-shift
 budgets, helpers waking their run, pause, resume and stop, checked tries, and
 the broker path (which tools each kind of job is offered, and refusals a model
-can read).
+can read). `apps/melete/test/integration/runs-try.test.ts` covers measured
+tries against the in-memory sandbox: files and `METRIC` lines, `value_pattern`,
+nonzero exits and missing values, variants, the best by direction, a command
+waiting for approval and then running, the refusal without a sandbox, and the
+tool over the broker's HTTP surface.

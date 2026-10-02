@@ -3,7 +3,7 @@
  * best experiment. Read-only, so the attempt bundle can use it without the
  * service that writes it.
  */
-import type { RunStatus } from '@melete/contracts';
+import { RUN_TRY_LIMITS, type RunStatus } from '@melete/contracts';
 import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { job, runEntry, runState } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -102,7 +102,18 @@ export async function runBrief(tx: Transaction, row: JobRow): Promise<string> {
     const show = (entry: Entry) => {
       const data = object(entry.data);
       const value = typeof data.value === 'number' ? ` = ${data.value}` : '';
-      return `${clip(entry.title, 120)}${value} (${String(data.outcome ?? 'kept')}${data.checked ? ', checked' : ''})`;
+      const how = data.measured === true ? ', measured' : data.checked ? ', checked' : '';
+      const command =
+        typeof data.command === 'string'
+          ? `
+  command: ${clip(data.command, 300)}`
+          : '';
+      const error =
+        typeof data.error === 'string'
+          ? `
+  ${clip(data.error, 200)}`
+          : '';
+      return `${clip(entry.title, 120)}${value} (${String(data.outcome ?? 'kept')}${how})${command}${error}`;
     };
     lines.push(
       [
@@ -141,7 +152,11 @@ export async function runBrief(tx: Transaction, row: JobRow): Promise<string> {
   lines.push(
     step
       ? 'Record what you learn with run.log. Call run.finish with the result when your part is done, or run.checkpoint to continue in another shift.'
-      : 'Record what you learn with run.log (measured results as experiments, citing the action that shows the value). End each shift with run.checkpoint. Use run.delegate for parts that can go in parallel. Call run.finish once it is done.',
+      : 'Record what you learn with run.log. End each shift with run.checkpoint. Use run.delegate for parts that can go in parallel. Call run.finish once it is done.',
+  );
+  // The tool's own schema stays small in the shared catalog; how to use it is here.
+  lines.push(
+    `To test an idea, use run.try: it runs the command in the sandbox and records the value the command prints, so the result is measured rather than reported. Print a line \`METRIC ${metric?.name ?? '<name>'}=<number>\`, or give value_pattern, a regular expression with one capture group. files maps relative paths to text written before the command runs; variants, up to 4 of {label, command}, run alongside and are recorded as tries of their own; timeout_seconds is at most ${RUN_TRY_LIMITS.max_timeout_seconds}. Where there is no sandbox, log tries with run.log kind "experiment", citing the action whose output shows the value.`,
   );
   return lines.join('\n\n');
 }
