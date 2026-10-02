@@ -234,8 +234,27 @@ const variables = z.object({
 
   /** Where space git repositories and workspace files live. */
   MELETE_SPACES_DIR: z.string().default('/data/spaces'),
+  /** The root of the local blob store, which keeps write-once files by their sha256. */
   MELETE_ARTIFACTS_DIR: z.string().default('/data/artifacts'),
   MELETE_RESTRICTIONS_DIR: z.string().default('/data/restrictions'),
+  /**
+   * Where blobs are kept: `local` is MELETE_ARTIFACTS_DIR, `s3` an
+   * S3-compatible bucket named by the MELETE_BLOB_S3_* settings.
+   */
+  MELETE_BLOB_STORE: unsetWhenBlank(z.enum(['local', 's3']).default('local')),
+  /** Left out, the AWS endpoint for the region. */
+  MELETE_BLOB_S3_ENDPOINT: unsetWhenBlank(z.string().url().optional()),
+  MELETE_BLOB_S3_BUCKET: unsetWhenBlank(z.string().min(3).max(63).optional()),
+  MELETE_BLOB_S3_REGION: unsetWhenBlank(z.string().default('us-east-1')),
+  /** Every key is written under this prefix, so one bucket can serve more than one installation. */
+  MELETE_BLOB_S3_PREFIX: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/, 'letters, digits, ".", "_", "-" and "/" only')
+      .optional(),
+  ),
+  MELETE_BLOB_S3_ACCESS_KEY_ID: unsetWhenBlank(z.string().min(1).optional()),
+  MELETE_BLOB_S3_SECRET_ACCESS_KEY: unsetWhenBlank(z.string().min(1).optional()),
 
   /** The address the runtime container reaches the broker on, internal network only. */
   MELETE_BROKER_BIND: z
@@ -549,6 +568,18 @@ export const envSchema = variables.transform((value, context) => {
       path: ['MELETE_SANDBOX_PROJECT'],
       message: `MELETE_SANDBOX_PROVIDER=${value.MELETE_SANDBOX_PROVIDER} needs MELETE_SANDBOX_PROJECT, the label that says which sandboxes are this installation's`,
     });
+  if (value.MELETE_BLOB_STORE === 's3')
+    for (const name of [
+      'MELETE_BLOB_S3_BUCKET',
+      'MELETE_BLOB_S3_ACCESS_KEY_ID',
+      'MELETE_BLOB_S3_SECRET_ACCESS_KEY',
+    ] as const)
+      if (!value[name])
+        context.addIssue({
+          code: 'custom',
+          path: [name],
+          message: `MELETE_BLOB_STORE=s3 needs ${name}`,
+        });
   if (Boolean(value.GOOGLE_OAUTH_CLIENT_ID) !== Boolean(value.GOOGLE_OAUTH_CLIENT_SECRET))
     context.addIssue({
       code: 'custom',
