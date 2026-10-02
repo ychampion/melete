@@ -121,28 +121,36 @@ for (const [name, engine] of engines) {
 
     test('an app cannot fetch, load or navigate anywhere outside its bundle', async () => {
       stack.hits.length = 0;
+      const datagrams = stack.webrtcPackets();
       page = await browser.newPage();
       await page.goto(`${stack.web}/`);
-      await page.waitForFunction('window.__results', null, { timeout: 20_000 });
-      // The frames post a form elsewhere and then move themselves elsewhere; give both time.
-      await settle(2_000);
-      expect(stack.hits).toEqual([]);
+      await page.waitForFunction('window.__results', null, { timeout: 30_000 });
+      const results = (await page.evaluate('window.__results')) as Record<string, string>;
+      // The frames that leave: a form posted elsewhere, a meta refresh, a data:
+      // or blob: page, a download, a ping, and the frame moving itself. Give them time.
+      await settle(3_000);
+      // Melete's own page reached the other site, so its silence below means something.
+      expect(stack.hits).toContain('/control');
+      expect(stack.hits.filter((path) => path !== '/control')).toEqual([]);
+      expect(results.worker).not.toStartWith('LEAKED');
+      expect(results.speculation).toBe('attempted');
+      // WebRTC is outside what any header stops: recorded as a known residual, not refused.
+      expect(results.webrtc).toBeDefined();
+      process.stdout.write(
+        `${name}: WebRTC ${results.webrtc}; ${stack.webrtcPackets() - datagrams} datagrams reached the other site (known residual)\n`,
+      );
       await page.close();
     });
 
     test('the Melete app refuses to be framed by another site', async () => {
+      stack.observed.length = 0;
       page = await browser.newPage();
       await page.goto(`${stack.elsewhere}/frames-melete.html`);
-      await settle(1_000);
-      const child = page.frames().find((frame) => frame !== page.mainFrame());
-      let title = '';
-      try {
-        // A frame that loaded answers at once; a blocked one may never answer.
-        title = (await Promise.race([child?.title(), settle(5_000).then(() => '')])) ?? '';
-      } catch {
-        title = '';
-      }
-      expect(title).not.toBe('Melete');
+      await settle(2_000);
+      // The browser asked for Melete inside the other site's frame...
+      expect(stack.observed.some((seen) => seen.path === '/' && seen.dest === 'iframe')).toBe(true);
+      // ...and did not run it: a Melete page that rendered would load its script.
+      expect(stack.observed.filter((seen) => seen.path === '/parent.js')).toEqual([]);
       await page.close();
     });
   });

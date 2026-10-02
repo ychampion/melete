@@ -106,6 +106,29 @@ await attempt('websocket', () => new Promise((resolve, reject) => {
   socket.onerror = () => reject(new Error('closed'));
 }));
 await attempt('popup', () => { const opened = window.open('${elsewhere}/popup'); return opened ? leaked('opened') : 'blocked: null'; });
+// A worker, a ping and speculation rules: each would reach elsewhere if its policy let it.
+await attempt('worker', () => new Promise((resolve, reject) => {
+  const worker = new Worker(URL.createObjectURL(new Blob(["fetch('${elsewhere}/worker')"], { type: 'text/javascript' })));
+  worker.onerror = () => reject(new Error('refused'));
+  setTimeout(() => resolve('created'), 300);
+}));
+await attempt('speculation', () => {
+  const rules = document.createElement('script');
+  rules.type = 'speculationrules';
+  rules.textContent = JSON.stringify({ prefetch: [{ source: 'list', urls: ['${elsewhere}/speculation'] }] });
+  document.head.append(rules);
+  return 'attempted';
+});
+// WebRTC is the channel no header closes in today's browsers. The attempt is
+// recorded, and the stack counts what reaches its listener: a known residual.
+await attempt('webrtc', async () => {
+  const peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:${elsewhere.replace(/^http:\/\/[^:]+/, '127.0.0.1')}' }] });
+  peer.createDataChannel('x');
+  await peer.setLocalDescription(await peer.createOffer());
+  await wait(1500);
+  peer.close();
+  return 'attempted';
+});
 // Opened on its own, the page is the top: moving it anywhere is allowed, which
 // is why the service refuses to serve one that way. Framed, it is refused.
 if (!top_) await attempt('topNavigation', () => { top.location.href = '${elsewhere}/top'; return 'attempted'; });
@@ -125,9 +148,29 @@ document.getElementById('out').textContent = JSON.stringify(results);
 parent.postMessage({ type: 'fixture.results', results }, '*');
 // Last, because each can end the page: a form posted elsewhere, then the
 // app moving its own frame somewhere else.
+// Each of these leaves the page, so each runs in a frame of its own. Only
+// Melete's own \`frame-src 'self'\` stops most of them.
 const leave = new URLSearchParams(location.search).get('leave');
-if (leave === 'form') setTimeout(() => document.getElementById('form').submit(), 200);
-if (leave === 'nav') setTimeout(() => { location.href = '${elsewhere}/nav'; }, 200);
+const click = (attributes) => {
+  const link = Object.assign(document.createElement('a'), attributes);
+  document.body.append(link);
+  link.click();
+};
+setTimeout(() => {
+  if (leave === 'form') document.getElementById('form').submit();
+  if (leave === 'nav') location.href = '${elsewhere}/nav';
+  if (leave === 'meta') {
+    const refresh = document.createElement('meta');
+    refresh.httpEquiv = 'refresh';
+    refresh.content = '0;url=${elsewhere}/meta';
+    document.head.append(refresh);
+  }
+  if (leave === 'data') location.href = 'data:text/html,<img src="${elsewhere}/data-page">';
+  if (leave === 'blob')
+    location.href = URL.createObjectURL(new Blob(['<img src="${elsewhere}/blob-page">'], { type: 'text/html' }));
+  if (leave === 'download') click({ href: '${elsewhere}/download', download: 'x' });
+  if (leave === 'ping') click({ href: '${elsewhere}/ping-target', ping: '${elsewhere}/ping' });
+}, 200);
 `;
 
 const PIXEL = Uint8Array.from(
@@ -171,16 +214,21 @@ function bundle(elsewhere: string): Record<string, { body: string | Uint8Array; 
 const PARENT_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>Melete</title></head>
 <body><h1>Apps</h1><iframe id="app" title="Probe" sandbox="allow-scripts allow-forms allow-downloads"
 referrerpolicy="no-referrer" style="width:800px;height:400px"></iframe>
-<iframe id="form-frame" title="Probe, posting a form" sandbox="allow-scripts allow-forms allow-downloads"
-referrerpolicy="no-referrer" style="width:200px;height:100px"></iframe>
+<div id="leaving"></div>
 <pre id="results">waiting</pre><pre id="bridge"></pre><script type="module" src="/parent.js"></script></body></html>`;
 
 /** The parent page: sign in, frame the app, run the real bridge, and keep what the app reports. */
 const BRIDGE = fileURLToPath(new URL('../../../web/src/apps/bridge.ts', import.meta.url))
   .split(sep)
   .join('/');
-const PARENT_ENTRY = `
+/** The ways an app could try to leave its frame, each tried in a frame of its own. */
+export const LEAVING = ['form', 'meta', 'data', 'blob', 'download', 'ping'];
+const PARENT_ENTRY = (elsewhere: string) => `
 import { connectBridge } from '${BRIDGE}';
+const LEAVING = ${JSON.stringify(LEAVING)};
+// The other site is reachable from Melete's own page: without this, silence
+// from it would prove nothing.
+document.body.append(Object.assign(new Image(), { src: '${elsewhere}/control' }));
 const shown = { asked: [], size: null };
 const show = () => { document.getElementById('bridge').textContent = JSON.stringify(shown); };
 localStorage.setItem('melete-secret', 'parent-local-secret');
@@ -202,7 +250,15 @@ window.addEventListener('message', (event) => {
   document.getElementById('results').textContent = JSON.stringify(event.data.results);
 });
 frame.src = '/api${VIEW_PREFIX}tok/index.html?leave=nav';
-document.getElementById('form-frame').src = '/api${VIEW_PREFIX}tok/index.html?leave=form';
+for (const leave of LEAVING) {
+  const other = document.createElement('iframe');
+  other.title = 'Probe, leaving by ' + leave;
+  other.setAttribute('sandbox', 'allow-scripts allow-forms allow-downloads');
+  other.referrerPolicy = 'no-referrer';
+  other.style.cssText = 'width:120px;height:80px';
+  other.src = '/api${VIEW_PREFIX}tok/index.html?leave=' + leave;
+  document.getElementById('leaving').append(other);
+}
 `;
 
 export type IsolationStack = {
@@ -214,6 +270,8 @@ export type IsolationStack = {
   hits: string[];
   /** Every request a browser made to Melete, as it arrived. */
   observed: Observed[];
+  /** Datagrams that reached the other site over WebRTC: a known residual, counted, not refused. */
+  webrtcPackets: () => number;
   stop: () => Promise<void>;
 };
 
@@ -242,7 +300,20 @@ export async function startIsolationStack(): Promise<IsolationStack> {
     },
     websocket: { message() {} },
   });
-  const elsewhere = `http://127.0.0.1:${other.port}`;
+  // Another site, not another port of this one: `localhost` and `127.0.0.1`
+  // are different sites to a browser.
+  const elsewhere = `http://localhost:${other.port}`;
+  // A listener for what WebRTC sends there, which no header stops.
+  let webrtcPackets = 0;
+  const udp = await Bun.udpSocket({
+    hostname: '127.0.0.1',
+    port: other.port ?? 0,
+    socket: {
+      data() {
+        webrtcPackets += 1;
+      },
+    },
+  });
   const files = bundle(elsewhere);
 
   // The stand-in API, with the view path behind the real isolation.
@@ -280,7 +351,7 @@ export async function startIsolationStack(): Promise<IsolationStack> {
   const root = await mkdtemp(join(tmpdir(), 'melete-isolation-'));
   await writeFile(join(root, 'index.html'), PARENT_HTML);
   const entry = join(root, 'parent-entry.ts');
-  await writeFile(entry, PARENT_ENTRY);
+  await writeFile(entry, PARENT_ENTRY(elsewhere));
   const built = await Bun.build({ entrypoints: [entry], target: 'browser', format: 'esm' });
   if (!built.success) throw new Error(`the parent page did not build: ${built.logs.join('\n')}`);
   const [output] = built.outputs;
@@ -302,7 +373,10 @@ export async function startIsolationStack(): Promise<IsolationStack> {
     async fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === '/__report')
-        return Response.json({ hits, observed }, { headers: { 'cache-control': 'no-store' } });
+        return Response.json(
+          { hits, observed, webrtcPackets },
+          { headers: { 'cache-control': 'no-store' } },
+        );
       observed.push({
         path: url.pathname,
         method: request.method,
@@ -333,7 +407,9 @@ export async function startIsolationStack(): Promise<IsolationStack> {
     elsewhere,
     hits,
     observed,
+    webrtcPackets: () => webrtcPackets,
     stop: async () => {
+      udp.close();
       recorder.stop(true);
       staticServer.stop(true);
       apiServer.stop(true);
