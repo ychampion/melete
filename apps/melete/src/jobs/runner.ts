@@ -34,7 +34,6 @@ import {
   action,
   attempt,
   budgetLedger,
-  connection,
   event,
   experienceTurn,
   job,
@@ -65,6 +64,7 @@ import {
   QUEUES,
   RECOVERY_SCAN_SECONDS,
 } from './queue.ts';
+import { connectionScopesForJob } from './scopes.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
 import { withdrawOutdatedPermissions } from './withdraw.ts';
@@ -206,13 +206,6 @@ export class AttemptRunner {
         .where(eq(event.jobId, row.id));
       const attemptId = newId('att');
       const epoch = row.leaseEpoch + 1;
-      const available =
-        this.options.scopes === undefined
-          ? await tx
-              .select({ scopes: connection.scopes })
-              .from(connection)
-              .where(and(eq(connection.spaceId, row.spaceId), eq(connection.status, 'active')))
-          : [];
       const claims: CapabilityClaims = {
         ...(access.principalId
           ? { principal_id: access.principalId, membership_generation: access.generation }
@@ -227,10 +220,10 @@ export class AttemptRunner {
         access.principalId
           ? { live_connection_scopes: true }
           : {}),
-        scopes: this.options.scopes ??
-          (await this.options.scopesForJob?.(tx, row)) ?? [
-            ...new Set(available.flatMap((item) => item.scopes)),
-          ],
+        scopes:
+          this.options.scopes ??
+          (await this.options.scopesForJob?.(tx, row)) ??
+          (await connectionScopesForJob(tx, row)),
         budget: {
           max_actions: budget.max_actions,
           max_output_tokens: budget.max_output_tokens,

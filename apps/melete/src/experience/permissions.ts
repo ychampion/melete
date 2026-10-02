@@ -11,7 +11,7 @@ import { appendEvent, loadAction, lockJob } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import { ENDED_NOTE, ENDED_STATES } from '../jobs/withdraw.ts';
 import { actionBecause } from '../memory/basis.ts';
-import { ownJobClause } from '../principals/authority.ts';
+import { ownJobClause, requestPrincipal } from '../principals/authority.ts';
 import { actionProjectionRow, type ExperienceEffects } from './effects.ts';
 import { explainHandles } from './evidence.ts';
 import {
@@ -255,6 +255,8 @@ export class ExperiencePermissions {
         values (${ruleId}, ${spaceId}, ${action.connection_id}, ${action.kind}, ${JSON.stringify(recipient)}::jsonb,
         ${label}, 'connector_verified', ${input.bounds.count_cap}, ${input.bounds.expires_at}, ${input.bounds.reconsent_after_days})`;
       },
+      // The answer is recorded as the signed-in person's.
+      requestPrincipal(),
     );
     // The request changed before this was answered: it is withdrawn, a Deny
     // agrees with that, and an Allow is told why it cannot.

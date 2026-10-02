@@ -121,6 +121,7 @@ function view(row: typeof connection.$inferSelect) {
     ...(Array.isArray(row.configuration.needs_scope) && row.configuration.needs_scope.length
       ? { needs_scope: row.configuration.needs_scope }
       : {}),
+    shared_use: row.sharedUse,
     last_checked_at: row.lastCheckedAt?.toISOString() ?? null,
     created_at: row.createdAt.toISOString(),
   });

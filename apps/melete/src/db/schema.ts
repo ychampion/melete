@@ -205,9 +205,18 @@ export const connection = pgTable(
     generation: integer('generation').notNull().default(0),
     health: text('health').notNull().default('unknown'),
     lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+    /**
+     * Whose work a connection in a shared space serves: `owner` is the space
+     * owner's own jobs, `room` is work the room asks for. A personal space's
+     * connections serve its owner whatever this says.
+     */
+    sharedUse: text('shared_use').notNull().default('owner'),
     createdAt: created(),
   },
-  (t) => [index('connection_space_idx').on(t.spaceId)],
+  (t) => [
+    index('connection_space_idx').on(t.spaceId),
+    check('connection_shared_use', sql`${t.sharedUse} in ('owner', 'room')`),
+  ],
 );
 
 export const agent = pgTable('agent', {

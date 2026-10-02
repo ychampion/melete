@@ -18,6 +18,7 @@ import { type Connector, connectorAllowsAudience } from '../connectors/types.ts'
 import { offersPersonsBrowser, routedDescription } from '../devices/routing.ts';
 import { type AgentAccess, agentAccess, directSend } from '../experience/access.ts';
 import { appendToolTrace } from '../experience/tools.ts';
+import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
 import { spaceRole } from '../principals/authority.ts';
 import { audienceVisible } from '../principals/context.ts';
@@ -385,9 +386,14 @@ export class ToolCatalog {
   ): Promise<ScopedCatalogItem[]> {
     // A job bound to a persona that no longer resolves fails closed: nothing is offered.
     if (access.missingAgent) return [];
-    const connections = await tx`select c.id, c.provider, c.scopes, c.health, s.audience
+    // Only the connections this job may use: a member's job in a shared space
+    // is offered none of the connections its owner installed there.
+    const audience = await jobConnectionAudience(tx, job.id);
+    const connections = (
+      await tx`select c.id, c.provider, c.scopes, c.health, c.shared_use, s.audience
       from connection c join space s on s.id = c.space_id
-      where c.space_id = ${job.space_id} and c.status = 'active' order by c.id`;
+      where c.space_id = ${job.space_id} and c.status = 'active' order by c.id`
+    ).filter((row) => audience && connectionServesJob(audience, String(row.shared_use)));
     const usage = await tx`select a.connection_id, a.kind, count(*)::int as uses from action a
       join job j on j.id = a.job_id where j.space_id = ${job.space_id} and a.status = 'succeeded'
       group by a.connection_id, a.kind`;
