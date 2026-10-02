@@ -150,14 +150,20 @@ test('a required renderer stays non-advisory when it is unavailable', () => {
   expect(named(broken, 'render:markdown').advisory).toBe(false);
 });
 
-test('a declared critique and a declared acceptance start out pending', () => {
+test('a declared critique starts out pending and advisory', () => {
   const results = validateArtifact(
-    artifactExpectation.parse({ kind: 'markdown', critique: 'is this readable?', human: true }),
+    artifactExpectation.parse({ kind: 'markdown', critique: 'is this readable?' }),
     utf8('# Title\n\nbody\n'),
   );
   expect(named(results, 'critique')).toMatchObject({ status: 'pending', advisory: true });
-  expect(named(results, 'human')).toMatchObject({ status: 'pending', advisory: false });
-  // The model reads this line back in the write's result, and repeats it to the person.
-  expect(named(results, 'human').detail).toBe('waiting for the person to look over the file');
-  expect(named(results, 'human').detail).not.toMatch(/accept|owner|artifact|human/i);
+});
+
+test('a write cannot declare a check that nothing could ever pass', () => {
+  // Nothing records a person's acceptance, so a declared one would hold the job forever.
+  const results = validateArtifact(
+    artifactExpectation.parse({ kind: 'markdown', human: true }),
+    utf8('# Title\n\nbody\n'),
+  );
+  expect(results.some((result) => result.class === 'human')).toBe(false);
+  expect(results.some((result) => result.status === 'pending')).toBe(false);
 });

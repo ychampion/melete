@@ -146,7 +146,7 @@ test('a stored output is declared as an artifact of this job', async () => {
     size: content.length,
     content_hash: digest(content),
   });
-  expect(detail.expectation).toMatchObject({ kind: 'text', render: false, human: false });
+  expect(detail.expectation).toMatchObject({ kind: 'text', render: false });
   const validations = detail.validations as Array<{ name: string; status: string }>;
   expect(validations.map((v) => v.name)).toEqual(['text.parses']);
   expect(validations[0]?.status).toBe('passed');

@@ -19,8 +19,8 @@
  *                    like one. `unavailable` when no renderer exists yet.
  * - `critique`       a model read it and said something. Always advisory: it
  *                    is recorded, it is shown, it never gates a completion.
- * - `human`          a person accepted it. The only one that can speak for
- *                    whether the thing was worth making.
+ * - `human`          a person accepted it. No write declares one; the class
+ *                    stays so results already recorded under it still read.
  */
 import { z } from 'zod';
 import { ID_PREFIXES, jsonObject, jsonSchema, prefixedId, timestamp } from './common.ts';
@@ -49,8 +49,8 @@ export const artifactValidatorClass = z.enum(ARTIFACT_VALIDATOR_CLASSES);
 export type ArtifactValidatorClass = z.infer<typeof artifactValidatorClass>;
 
 /**
- * `pending` is a real resting state and it blocks: a declared human acceptance
- * that nobody has given yet is not a pass. `unavailable` also blocks unless the
+ * `pending` is a real resting state and it blocks unless the result is
+ * advisory: a check that has not answered yet is not a pass. `unavailable` also blocks unless the
  * result is explicitly advisory; it never borrows `passed`.
  */
 export const ARTIFACT_VALIDATION_STATUSES = ['passed', 'failed', 'pending', 'unavailable'] as const;
@@ -146,8 +146,6 @@ export const artifactExpectation = z.object({
   render: z.boolean().default(true),
   /** Ask a model to read it. Advisory, recorded, never a gate. */
   critique: z.string().min(1).max(2000).nullable().default(null),
-  /** Require a person to accept it before the job may complete. */
-  human: z.boolean().default(false),
   /** The template this was produced from, if any. Carried onto the record. */
   template: z.string().min(1).max(200).nullable().default(null),
 });
