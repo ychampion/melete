@@ -236,6 +236,8 @@ export const CONNECTION_KIND_SCOPES = {
     'process.signal',
     'process.stop',
     'process.extend',
+    'process.wait',
+    'process.watch',
   ],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
@@ -1179,6 +1181,8 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
           ['process.signal', 'Send a signal to that work', 'write_reversible'],
           ['process.stop', 'Stop that work', 'write_reversible'],
           ['process.extend', 'Give that work more time', 'write_reversible'],
+          ['process.wait', 'Wait a short while for that work to finish or print', 'read'],
+          ['process.watch', 'Pick the conversation up when that work finishes or prints', 'write_reversible'],
         ] as const
       ).map(([scope, label, effect_class]) => ({
         scope,

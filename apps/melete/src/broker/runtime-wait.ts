@@ -37,7 +37,8 @@ export const RUNTIME_WAIT_TOOL: ToolSpec = {
       },
       event_name: {
         type: 'string',
-        description: 'For event waits, instead of trigger_id: that trigger event name.',
+        description:
+          'For event waits, instead of trigger_id: that trigger event name, or process:<process_id> for a background process this job watches.',
       },
       deadline_at: {
         type: ['string', 'null'],
@@ -57,6 +58,7 @@ const eventWaitInput = z.object({
   deadline_at: z.string().nullable().optional(),
 });
 const triggerId = prefixedId(ID_PREFIXES.trigger);
+const PROCESS_EVENT = /^process:(prc_[A-Za-z0-9]{8,64})$/;
 
 export async function requestRuntimeWait(sql: Sql, claims: CapabilityClaims, input: unknown) {
   const event = eventWaitInput.safeParse(input);
@@ -83,14 +85,35 @@ export async function requestRuntimeWait(sql: Sql, claims: CapabilityClaims, inp
     const job = await lockJob(tx, claims.job_id);
     await checkAttempt(tx, job, claims);
     if (name !== undefined) {
-      const matches = await tx`SELECT id FROM trigger WHERE job_id=${job.id} AND enabled=true
-        AND spec->>'event_name'=${name} ORDER BY id LIMIT 2`;
+      // `process:<id>` names this job's watch on that background process.
+      const processId = PROCESS_EVENT.exec(name)?.[1];
+      const matches = processId
+        ? await tx`SELECT id FROM trigger WHERE job_id=${job.id} AND enabled=true AND kind='watch'
+            AND spec #>> '{predicate,all,0,field}' = 'process_id'
+            AND spec #>> '{predicate,all,0,value}' = ${processId} ORDER BY id LIMIT 2`
+        : await tx`SELECT id FROM trigger WHERE job_id=${job.id} AND enabled=true
+            AND spec->>'event_name'=${name} ORDER BY id LIMIT 2`;
+      if (matches.length === 0 && processId) {
+        const [process] =
+          await tx`SELECT state FROM sandbox_process WHERE id=${processId} AND space_id=${job.space_id}`;
+        if (process && !['starting', 'running'].includes(String(process.state)))
+          throw new BrokerFault(
+            'payload_invalid',
+            `That process has already ended (${String(process.state)}); read what it printed with process.read instead of waiting.`,
+          );
+        throw new BrokerFault(
+          'scope_denied',
+          'Nothing in this job watches that process. Start it with notify, or call process.watch, then wait.',
+        );
+      }
       if (matches.length === 0)
         throw new BrokerFault('scope_denied', 'No active trigger in this job has that event name.');
       if (matches.length > 1)
         throw new BrokerFault(
           'payload_invalid',
-          'Several triggers in this job share that event name; pass its trigger_id.',
+          processId
+            ? 'Several watches in this job follow that process; pass the trigger_id of the one to wait for.'
+            : 'Several triggers in this job share that event name; pass its trigger_id.',
         );
       wait = waitSpec.parse({ kind: 'event', trigger_id: matches[0]?.id, deadline_at: deadline });
     }

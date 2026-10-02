@@ -141,6 +141,7 @@ import {
 } from './runtime/supervisor.ts';
 import { mountSandboxComputers, SandboxComputerService } from './sandbox/computer.ts';
 import { sandboxKeyCheck } from './sandbox/connection.ts';
+import { startProcessMonitor } from './sandbox/process-monitor.ts';
 import { startProcesses } from './sandbox/processes.ts';
 import {
   type SandboxWiring,
@@ -531,6 +532,8 @@ export async function bootstrap(
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   let sandboxComputers: SandboxComputerService | undefined;
   let processSweep: { stop(): void } | undefined;
+  let processMonitor: { stop(): void } | undefined;
+  let processFactory: Parameters<typeof startProcessMonitor>[0] | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
@@ -538,6 +541,7 @@ export async function bootstrap(
     clearInterval(episodeRetention);
     sandboxes?.stop();
     processSweep?.stop();
+    processMonitor?.stop();
     let failure: unknown;
     for (const stop of [
       () =>
@@ -649,6 +653,7 @@ export async function bootstrap(
         );
       }
       processSweep = startProcesses(connectors);
+      processFactory = connectors;
       // Boot reconciliation, before any attempt can open a session of its own.
       if (sandboxes) {
         await sandboxes.reconcile(AbortSignal.timeout(120_000));
@@ -999,6 +1004,8 @@ export async function bootstrap(
         await operations.start();
         await triggers.start();
         await runner.start();
+        if (handle && processFactory)
+          processMonitor = startProcessMonitor(processFactory, handle.sql, triggers);
         // A chase spends most of its life waiting on a reply, and the wait it
         // holds is an event wait on a `mail.new` trigger. Without something
         // putting that event there, only the deadline ever wakes the job, and a
