@@ -6,7 +6,7 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { LedgerAction } from '../experience/types.ts';
-import { RETRY_HINT, UnknownCard } from './parts.tsx';
+import { ownComputerStep, RETRY_HINT, UnknownCard } from './parts.tsx';
 
 const action = (status: string) =>
   ({
@@ -33,4 +33,11 @@ test('once the person says it did not, the card says Melete may try again and as
   expect(html).toContain('It did not');
   expect(html).toContain(RETRY_HINT);
   expect(html).not.toContain('It arrived</button>');
+});
+
+test("a step on the agent's own computer is never put to the person", () => {
+  expect(ownComputerStep({ kind: 'terminal.run' })).toBe(true);
+  expect(ownComputerStep({ kind: 'computer.click' })).toBe(true);
+  expect(ownComputerStep({ kind: 'email.send' })).toBe(false);
+  expect(ownComputerStep({ kind: 'device.run' })).toBe(false);
 });

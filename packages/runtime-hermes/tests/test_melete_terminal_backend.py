@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime_support"))
 from melete_plugin import register  # noqa: E402
 from melete_plugin.broker import BrokerError  # noqa: E402
 from melete_plugin.execution import child_environment  # noqa: E402
-from melete_plugin.results import UNCERTAIN_INSTRUCTION  # noqa: E402
+from melete_plugin.results import OWN_COMPUTER_INSTRUCTION  # noqa: E402
 from melete_plugin.terminal_backend import (  # noqa: E402
     BACKEND_NAME,
     INTERRUPTED_STATUS,
@@ -358,7 +358,7 @@ def test_a_command_that_did_not_run_never_reads_as_killed_by_a_signal():
         "message": "workspace_busy: another attempt is using this agent's workspace",
     }
     refused = environment(broker).execute("echo hello")
-    assert refused["output"].startswith("[failed] workspace_busy")
+    assert refused["output"].startswith("[not run] workspace_busy")
     assert refused["returncode"] != 0 and not _reads_as_a_signal(refused["returncode"])
     broker.response = {"action_id": ACTION, "status": "needs_approval", "requires_approval": True}
     parked = environment(broker).execute("echo hello")
@@ -377,8 +377,7 @@ def test_a_refusal_says_the_command_did_not_run():
     assert result["returncode"] != 0 and result["output"].startswith("[not run] scope_denied")
     broker.error = None
     broker.response = {"action_id": ACTION, "status": "failed", "message": "the provider refused the start"}
-    # A failure carries the broker's reason, which says whether any of it ran.
-    assert "[failed] the provider refused the start" in environment(broker).execute("x")["output"]
+    assert "[not run] the provider refused the start" in environment(broker).execute("x")["output"]
     broker.response = {"action_id": ACTION, "status": "needs_approval", "requires_approval": True}
     assert "not run" in environment(broker).execute("x")["output"]
 
@@ -393,7 +392,7 @@ def test_a_lost_acknowledgement_is_unknown_and_is_never_sent_again(error):
     result = environment(broker).execute("deploy.sh")
     assert result["returncode"] != 0
     assert result["output"].startswith("[outcome unknown]")
-    assert UNCERTAIN_INSTRUCTION in result["output"]
+    assert OWN_COMPUTER_INSTRUCTION in result["output"]
     assert len(broker.proposals) == 1
     assert broker.reads == []
 
@@ -441,7 +440,7 @@ def test_every_result_without_output_says_there_is_none():
     broker.receipt = None
     assert "You received no output" in environment(broker).execute("date")["output"]
     broker.response = {"action_id": ACTION, "status": "failed", "message": "the computer is busy"}
-    assert "It has no output" in environment(broker).execute("date")["output"]
+    assert "did not run, so it has no output" in environment(broker).execute("date")["output"]
     broker.response = {"action_id": ACTION, "status": "unknown", "message": "lost"}
     assert "no output came back" in environment(broker).execute("date")["output"]
 
@@ -460,7 +459,7 @@ def test_an_interrupt_stops_the_wait_and_reports_the_outcome_unknown():
         broker.hold.set()
         timer.cancel()
     assert result["returncode"] == INTERRUPTED_STATUS
-    assert "already sent" in result["output"] and UNCERTAIN_INSTRUCTION in result["output"]
+    assert "already sent" in result["output"] and OWN_COMPUTER_INSTRUCTION in result["output"]
     assert len(broker.proposals) == 1
     assert beats, "the engine's activity heartbeat ran while the command was waited on"
 

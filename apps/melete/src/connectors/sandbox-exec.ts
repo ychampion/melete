@@ -660,6 +660,8 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
 
     dispatchBudgetMs: sandboxDispatchBudgetMs,
 
+    ownComputer: true,
+
     async execute(action, ctx) {
       checkIdentity(action, ctx);
       ctx.signal?.throwIfAborted();
@@ -729,11 +731,10 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     verify,
 
     async abandoned(action, ctx) {
-      // A click has no record to read back, but the agent can look at its own
-      // screen, which the person cannot do any better: it is settled, and the
-      // agent is told to look before it tries again.
+      // A click has no record to read back: it stays unknown, for the agent
+      // to check by looking at its own screen.
       if (COMPUTER_TOOL_NAMES.has(action.kind))
-        return { outcome: 'failed', reason: DESKTOP_UNCONFIRMED, retryable: false };
+        return { outcome: 'unknown', reason: DESKTOP_UNCONFIRMED };
       let verdict: VerifyResult;
       try {
         verdict = await verify(action, { ...ctx, signal: AbortSignal.timeout(30_000) });
@@ -762,11 +763,8 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       } catch {
         // Not known: said as the wider case.
       }
-      return {
-        outcome: 'failed',
-        reason: closed ? INTERRUPTED : INTERRUPTED_WITH_NETWORK,
-        retryable: false,
-      };
+      // Not known to have failed: it stays unknown, and a late answer still lands.
+      return { outcome: 'unknown', reason: closed ? INTERRUPTED : INTERRUPTED_WITH_NETWORK };
     },
 
     close: options.close,

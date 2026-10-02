@@ -1367,6 +1367,13 @@ export function describeAction(action: LedgerAction): string {
   return 'one step of this task';
 }
 
+/**
+ * A step on the agent's own computer: a command or a desktop step there. Its
+ * open outcome is the agent's to check, so the person is never asked about it.
+ */
+export const ownComputerStep = (action: Pick<LedgerAction, 'kind'>): boolean =>
+  /^(?:terminal\.run|computer\.)/.test(action.kind);
+
 /** Whether a step that went unconfirmed was a message to someone, which "arrives". */
 const isMessage = (action: LedgerAction): boolean => {
   const to = (action.canonical_payload as Record<string, unknown>).to;

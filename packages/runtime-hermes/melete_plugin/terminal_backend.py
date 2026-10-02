@@ -15,8 +15,7 @@ What the engine is told follows the ledger, not a guess:
   service kept, with the truncation, capture limit and binary marking it
   recorded.
 * A command the broker refused, or that parked for approval, returns a nonzero
-  status and says it did not run. One the broker settled as failed returns a
-  nonzero status with the broker's reason, which says whether any of it ran.
+  status and says it did not run.
 * A command whose answer never arrived -- the broker said `unknown`, the
   connection dropped, or the wait was interrupted -- is reported as unknown and
   is never sent again from here. `execute()` never raises once a command may
@@ -43,7 +42,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from .broker import BrokerClient, BrokerError
-from .results import END_TURN_INSTRUCTION, FAILURE_INSTRUCTION, SUCCEEDED, UNCERTAIN_INSTRUCTION
+from .results import END_TURN_INSTRUCTION, FAILURE_INSTRUCTION, OWN_COMPUTER_INSTRUCTION, SUCCEEDED
 
 logger = logging.getLogger("melete.plugin.terminal")
 
@@ -159,21 +158,9 @@ def _unknown(reason: str, action_id: Optional[str] = None) -> Dict[str, Any]:
     named = f" (action {action_id})" if action_id else ""
     return _result(
         f"[outcome unknown{named}] {reason}. The command may have run in the sandbox, "
-        "and no output came back for it. " + UNCERTAIN_INSTRUCTION,
+        "and no output came back for it. " + OWN_COMPUTER_INSTRUCTION,
         UNKNOWN_STATUS,
     )
-
-
-#: What a failed command tells the engine: the broker's reason says whether it ran.
-FAILED_INSTRUCTION = (
-    "The reason above says whether any of it ran. Do not claim it worked, and do not "
-    "run it again until you have checked what it changed."
-)
-
-
-def _failed(message: str) -> Dict[str, Any]:
-    """A command the broker settled as failed: it may not have started, or its result was lost."""
-    return _result(f"[failed] {message}. It has no output. {FAILED_INSTRUCTION}", REFUSED_STATUS)
 
 
 def _refused(message: str) -> Dict[str, Any]:
@@ -262,7 +249,7 @@ class SandboxTerminal:
                 return {
                     "result": _result(
                         "[Command interrupted] The command was already sent to the sandbox and "
-                        "its outcome is unknown here. " + UNCERTAIN_INSTRUCTION,
+                        "its outcome is unknown here. " + OWN_COMPUTER_INSTRUCTION,
                         INTERRUPTED_STATUS,
                     )
                 }
@@ -282,10 +269,8 @@ class SandboxTerminal:
         message = str(response.get("message") or status or "no reason given")
         if status == "needs_approval" or (status == "proposed" and response.get("requires_approval")):
             return _result(f"[waiting for approval, not run] {END_TURN_INSTRUCTION}", REFUSED_STATUS)
-        if status == "denied":
+        if status in ("failed", "denied"):
             return _refused(message)
-        if status == "failed":
-            return _failed(message)
         if status != SUCCEEDED or not action_id:
             return _unknown(message, str(action_id) if action_id else None)
         receipt = self._receipt(str(action_id))

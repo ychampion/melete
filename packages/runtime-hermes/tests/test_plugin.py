@@ -23,6 +23,7 @@ from melete_plugin import TOOLSET, build_handler, register, tool_schema  # noqa:
 from melete_plugin.broker import BrokerClient, BrokerError  # noqa: E402
 from melete_plugin.results import (  # noqa: E402
     END_TURN_INSTRUCTION,
+    OWN_COMPUTER_INSTRUCTION,
     UNCERTAIN_INSTRUCTION,
 )
 
@@ -383,6 +384,15 @@ def test_an_unknown_dispatch_is_never_presented_as_either_outcome(client, broker
     assert result["status"] == "unknown"
     assert result["instruction"] == UNCERTAIN_INSTRUCTION
     assert "receipt" not in result
+
+
+def test_an_unknown_step_on_its_own_computer_is_checked_not_put_to_the_owner(client, broker):
+    broker.propose_response = {"action_id": ACTION, "status": "unknown", "own_computer": True}
+    result = build_handler(client, CATALOG[0])(to=["a@example.com"], subject="s", body="b")
+
+    assert result["status"] == "unknown"
+    assert result["instruction"] == OWN_COMPUTER_INSTRUCTION
+    assert "Check first" in result["instruction"] and "not asked" in result["instruction"]
 
 
 def test_a_failed_dispatch_says_so(client, broker):
