@@ -21,6 +21,7 @@ export default defineConfig({
     './src/feedback/schema.ts',
     './src/privacy/schema.ts',
     './src/egress/schema.ts',
+    './src/storage/schema.ts',
   ],
   out: './drizzle',
   strict: true,

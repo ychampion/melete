@@ -561,6 +561,13 @@
       "when": 1789232400059,
       "tag": "0079_sandbox_processes",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1789232400060,
+      "tag": "0080_blob_refs",
+      "breakpoints": true
     }
   ]
 }
