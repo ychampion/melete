@@ -181,48 +181,72 @@ describe('finding a quote', () => {
 });
 
 describe('a list the person adds to', () => {
-  const item = (url: string, op: 'add' | 'supersede' = 'add') =>
+  const CLAIM = 'k_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+  const item = (content: string, op: 'add' | 'supersede' = 'add', domain = 'reading_list') =>
     ({
       ...add,
-      ...(op === 'supersede'
-        ? { op, claim_id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FAV', expected_revision: 1 }
-        : {}),
-      domain_key: 'reading_list',
-      key: 'reading_list',
-      content: `Reading list: ${url}`,
+      ...(op === 'supersede' ? { op, claim_id: CLAIM, expected_revision: 1 } : {}),
+      domain_key: domain,
+      key: domain,
+      content,
     }) as ExtractionProposal;
+  const keyOf = (proposal: ExtractionProposal | undefined) =>
+    proposal && 'domain_key' in proposal ? proposal.domain_key : null;
+  const first = 'Reading list: https://en.wikipedia.org/wiki/Container_ship';
+  const second = 'Reading list: https://en.wikipedia.org/wiki/Suez_Canal';
+  const held = [{ domain_key: 'reading_list', content: first }];
 
-  test('names a whole list by its key, not a single detail', () => {
-    for (const key of ['reading_list', 'user.reading-list', 'gift_ideas', 'travel.wishlist'])
+  test('a list is named by its key; a setting or a preference is one answer', () => {
+    for (const key of ['reading_list', 'user.reading_list', 'gift_ideas', 'travel.wishlist'])
       expect(isCollectionKey(key)).toBe(true);
-    for (const key of ['pref.coffee.order', 'person.maya.city', 'reading_list.item.cities_x1'])
+    for (const key of [
+      'preferences.mailing_list',
+      'pref.reading.list',
+      'settings.watchlist',
+      'pref.coffee.order',
+      'person.maya.city',
+      'reading_list.item_x1',
+      'user.reading-list',
+    ])
       expect(isCollectionKey(key)).toBe(false);
   });
 
-  test('each item gets its own key, and a second item is added beside the first', () => {
-    const [first] = keepListItems([item('https://en.wikipedia.org/wiki/Container_ship')]);
-    const [second] = keepListItems([item('https://en.wikipedia.org/wiki/Suez_Canal', 'supersede')]);
-    expect(first?.op).toBe('add');
-    expect(second?.op).toBe('add');
-    expect(second && 'claim_id' in second).toBe(false);
-    expect(second && 'key' in second).toBe(false);
-    const keys = [first, second].map((proposal) =>
-      proposal && 'domain_key' in proposal ? proposal.domain_key : '',
-    );
-    expect(keys[0]).toStartWith('reading_list.en_wikipedia_org_wiki_container_ship_');
-    expect(keys[1]).toStartWith('reading_list.en_wikipedia_org_wiki_suez_canal_');
-    // The same item said twice lands on the same key, so it is not kept twice.
-    const [again] = keepListItems([item('https://en.wikipedia.org/wiki/Container_ship')]);
-    expect(again && 'domain_key' in again ? again.domain_key : '').toBe(keys[0] ?? '');
+  test('the first item stays where it was put; a second gets a key of its own beside it', () => {
+    const [kept] = keepListItems([item(first)]);
+    expect(kept).toEqual(item(first));
+    const [added] = keepListItems([item(second)], held);
+    expect(added?.op).toBe('add');
+    expect(keyOf(added)).toStartWith('reading_list.en_wikipedia_org_wiki_suez_canal_');
+    expect(added && 'key' in added).toBe(false);
+    // Two in one message: the first takes the list's key, the second its own.
+    const both = keepListItems([item(first), item(second)]);
+    expect(keyOf(both[0])).toBe('reading_list');
+    expect(keyOf(both[1])).toStartWith('reading_list.en_wikipedia_org_wiki_suez_canal_');
   });
 
-  test('a correction of one item, and anything that is not a list, is left as it is', () => {
-    const correction = {
-      ...item('https://example.com/b', 'supersede'),
-      domain_key: 'reading_list.example_com_a_1a2b3c',
-    } as ExtractionProposal;
-    expect(keepListItems([correction])).toEqual([correction]);
-    const plain = add as ExtractionProposal;
-    expect(keepListItems([plain])).toEqual([plain]);
+  test('a supersede on a list key stays a supersede', () => {
+    const replaced = item(second, 'supersede');
+    expect(keepListItems([replaced], held)).toEqual([replaced]);
+  });
+
+  test('the same item in the same wording is not added twice', () => {
+    expect(keepListItems([item(`  ${first.toUpperCase()}. `)], held)).toEqual([
+      { op: 'no-op', sources: add.sources },
+    ]);
+    const twice = keepListItems([item(second), item(`${second}.`)], held);
+    expect(twice[0]?.op).toBe('add');
+    expect(twice[1]).toEqual({ op: 'no-op', sources: add.sources });
+    // Already kept under its own item key, it is not added again either.
+    const itemKey = keyOf(twice[0]) ?? '';
+    expect(
+      keepListItems([item(second)], [...held, { domain_key: itemKey, content: second }]),
+    ).toEqual([{ op: 'no-op', sources: add.sources }]);
+  });
+
+  test('a preference that names a list is never split, even when it already has a value', () => {
+    const answer = item('Keep me off every mailing list', 'add', 'preferences.mailing_list');
+    expect(
+      keepListItems([answer], [{ domain_key: 'preferences.mailing_list', content: 'None' }]),
+    ).toEqual([answer]);
   });
 });

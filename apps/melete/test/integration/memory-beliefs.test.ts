@@ -716,7 +716,8 @@ ${JSON.stringify({
       'https://en.wikipedia.org/wiki/Container_ship',
       'https://en.wikipedia.org/wiki/Suez_Canal',
     ];
-    for (const [index, link] of links.entries()) {
+    // The third message sends the first link again.
+    for (const [index, link] of [...links, links[0] ?? ''].entries()) {
       const text = `Add ${link} to my reading list.`;
       const identity = `reading-${index}`;
       await ingest(db.sql, scope, {
@@ -731,25 +732,17 @@ ${JSON.stringify({
       const [work] =
         await db.sql`select w.id from memory_work w join memory_sources s on s.id = w.source_id
         where s.space_id = ${scope.spaceId} and s.source_identity = ${identity}`;
-      // The model puts the whole list on one key, and the second time replaces
-      // the first item with the second, as a live model did.
+      // The model puts every item on the list's one key, as a live model did.
       const gateway: ExtractionGateway = {
         async chat({ messages }) {
           const input = JSON.parse(messages[1]?.content ?? '{}') as {
             evidence: { source: { source_id: string } };
-            claims: { id: string; domain_key: string; current: { revision: number } }[];
           };
-          const head = input.claims.find((claim) => claim.domain_key === 'reading_list');
           return JSON.stringify({
             proposals: [
               {
-                ...(head
-                  ? {
-                      op: 'supersede',
-                      claim_id: head.id,
-                      expected_revision: head.current.revision,
-                    }
-                  : { op: 'add', expected_revision: null }),
+                op: 'add',
+                expected_revision: null,
                 domain_key: 'reading_list',
                 content: `Reading list: ${link}`,
                 kind: 'user_statement',
@@ -783,8 +776,15 @@ ${JSON.stringify({
       );
       expect(errors).toEqual([]);
     }
-    const kept = (await listBeliefs(db.sql, scope, 'UTC')).map((belief) => belief.value).sort();
-    expect(kept).toEqual(links.map((link) => `Reading list: ${link}`).sort());
+    // Both links are kept, each once, and neither is in dispute.
+    const beliefs = await listBeliefs(db.sql, scope, 'UTC');
+    expect(beliefs.map((belief) => belief.value).sort()).toEqual(
+      links.map((link) => `Reading list: ${link}`).sort(),
+    );
+    expect(beliefs.map((belief) => [belief.disputed, belief.earlier])).toEqual([
+      [false, 0],
+      [false, 0],
+    ]);
   });
 
   test('an answer with nothing readable is tried once more, then set aside with its reason', async () => {

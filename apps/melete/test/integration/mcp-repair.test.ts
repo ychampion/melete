@@ -73,7 +73,17 @@ for (const failure of ['terminated', 'unauthorized', 'lost-ack'] as const) {
               result:
                 message.method === 'initialize'
                   ? { protocolVersion: '2025-11-25', capabilities: { tools: {} } }
-                  : { tools: [{ name: 'read', inputSchema: { type: 'object' } }] },
+                  : {
+                      // The server vouches for the read, so a lost answer to it
+                      // is settled rather than put to the person.
+                      tools: [
+                        {
+                          name: 'read',
+                          inputSchema: { type: 'object' },
+                          annotations: { readOnlyHint: true },
+                        },
+                      ],
+                    },
             },
             {
               headers:

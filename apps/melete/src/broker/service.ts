@@ -1909,7 +1909,7 @@ export class BrokerService implements BrokerOperations {
       cellClaim.claimed();
       return prepared.action;
     }
-    const readOnly = prepared.action.effect_class === 'read';
+    const readOnly = await this.plainRead(prepared.action);
     if (!connector)
       return this.recordResult(
         id,
@@ -2301,10 +2301,10 @@ export class BrokerService implements BrokerOperations {
     const original = await loadAction(this.sql, id);
     // A read changed nothing outside, so its outcome is never in doubt: one that
     // did not answer failed and can be tried again. It never asks the person.
-    if (original.effect_class === 'read' && result.outcome === 'unknown')
+    const plainRead = await this.plainRead(original);
+    if (plainRead && result.outcome === 'unknown')
       result = { outcome: 'failed', reason: result.reason, retryable: true };
-    if (original.effect_class !== 'read' || result.outcome !== 'succeeded')
-      return this.landResult(id, original, result);
+    if (!plainRead || result.outcome !== 'succeeded') return this.landResult(id, original, result);
     try {
       return await this.landResult(id, original, result);
     } catch (error) {
@@ -2317,6 +2317,23 @@ export class BrokerService implements BrokerOperations {
         retryable: false,
       });
     }
+  }
+
+  /**
+   * A read whose outcome is never put to the person: one from a built-in
+   * connector, or from an MCP server that declares the tool read-only. An MCP
+   * tool the installer's policy calls a read, with no such declaration from
+   * its server, is asked about like any other effect.
+   */
+  private async plainRead(action: Pick<Action, 'effect_class' | 'connection_id' | 'kind'>) {
+    if (action.effect_class !== 'read') return false;
+    const connector = this.options.connectors.get(action.connection_id);
+    if (connector?.catalog?.source === 'mcp')
+      return connector.readOnlyDeclared?.(action.kind) === true;
+    if (connector) return true;
+    const [row] = await this
+      .sql`select provider from connection where id = ${action.connection_id}`;
+    return row?.provider !== 'mcp';
   }
 
   private async landResult(id: string, original: Action, result: DispatchResult): Promise<Action> {
@@ -2404,6 +2421,27 @@ export class BrokerService implements BrokerOperations {
           kind: 'user_input',
           question: this.reconcileQuestion(action),
         });
+      }
+      // A read settled from uncertain takes with it the "did it arrive?"
+      // question it raised, in this same transaction: nothing is left to ask.
+      if (wasUncertain && result.outcome !== 'unknown' && action.effect_class === 'read') {
+        const asked = await tx`select distinct payload->>'question_id' as id from event
+          where job_id = ${job.id} and type = 'notice'
+            and payload->>'phase' = 'repair_escalated' and payload->>'action_id' = ${id}
+            and payload->>'question_id' is not null`;
+        for (const entry of asked) {
+          const [closed] = await tx`update question set state = 'withdrawn', answer = null,
+              answer_submission_id = null, answered_at = now()
+            where id = ${entry.id} and job_id = ${job.id} and state = 'open' returning id`;
+          if (closed)
+            await appendEvent(tx, job.id, action.attempt_id, 'notice', {
+              kind: 'question_closed',
+              question_id: closed.id,
+              state: 'withdrawn',
+              reason: 'read_settled',
+              submission_id: null,
+            });
+        }
       }
       if (
         wasUncertain &&
@@ -2640,7 +2678,9 @@ export class BrokerService implements BrokerOperations {
         if (new Date(row.dispatched_at).getTime() > now - budgetMs) continue;
       }
       const fallback = uncertainResult(
-        row.effect_class === 'read',
+        await this.plainRead(
+          row as unknown as Pick<Action, 'effect_class' | 'connection_id' | 'kind'>,
+        ),
         orphaned
           ? 'The service stopped before this dispatch answered'
           : 'Dispatch ended without a durable receipt',
@@ -2659,10 +2699,13 @@ export class BrokerService implements BrokerOperations {
       recovered += 1;
     }
     // A read left uncertain before reads always settled is settled now: it
-    // changed nothing, so it failed, and the person is no longer asked.
-    const reads = await this.sql`select id from action
+    // changed nothing, so it failed, and the person is no longer asked. Its
+    // "did it arrive?" question goes in the same transaction.
+    const reads = await this.sql`select id, connection_id, kind, effect_class from action
       where effect_class = 'read' and status in ('unknown', 'unresolved')`;
     for (const row of reads) {
+      const read = row as unknown as Pick<Action, 'effect_class' | 'connection_id' | 'kind'>;
+      if (!(await this.plainRead(read))) continue;
       await this.recordResult(row.id as string, {
         outcome: 'failed',
         reason: 'This read never answered; it changed nothing and can be tried again',

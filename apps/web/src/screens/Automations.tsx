@@ -176,7 +176,7 @@ export function RoutineCard({
       toast({
         kind: 'info',
         title: `${automation.title} is deleted`,
-        sub: 'It will not run again.',
+        sub: 'It will not run again. Its thread and results are gone; what it did outside Melete stays in Activity.',
       });
     });
   };
@@ -279,8 +279,16 @@ export function RoutineCard({
         ) : null}
         {confirming ? (
           <>
+            <span
+              id={`delete-${automation.id}`}
+              style={{ fontSize: 13, color: 'var(--secondary)' }}
+            >
+              This also deletes its thread and every result in it. What it did outside Melete stays
+              in Activity.
+            </span>
             <Button
               size="sm"
+              aria-describedby={`delete-${automation.id}`}
               variant="destructive"
               loading={busy === 'remove'}
               disabled={busy !== null}

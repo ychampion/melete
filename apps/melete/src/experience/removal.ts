@@ -17,7 +17,7 @@
  * "forget that" uses; see `memorySourcesOf`.
  */
 import { isTerminal, type JobState } from '@melete/contracts';
-import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { Sql, TransactionSql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { action, attempt, job, trigger } from '../db/schema.ts';
@@ -49,8 +49,10 @@ export type ForgetSources = (sourceIds: readonly string[]) => Promise<number>;
 
 /**
  * Effects that may still go out, or whose outcome is still being worked out.
- * A read is never one: it changed nothing outside, so it never holds up a
- * deletion, whatever state it is in.
+ * A read from a built-in connector is never one: it changed nothing outside,
+ * so it never holds up a deletion, whatever state it is in. A tool of an
+ * installed MCP server is held to the rule for effects even when its policy
+ * calls it a read, since only its server can say it changes nothing.
  */
 const IN_FLIGHT = ['admitted', 'dispatched', 'unknown', 'unresolved'];
 /** Effects that changed something outside Melete. */
@@ -99,7 +101,9 @@ function inFlightRefusal(rows: readonly { status: string; kind: string }[]): Ser
  */
 async function refuseInFlight(query: Sql | TransactionSql, list: readonly string[]) {
   const rows = await query`select status, kind from action
-    where job_id = any(${[...list]}) and status = any(${IN_FLIGHT}) and effect_class <> 'read'`;
+    where job_id = any(${[...list]}) and status = any(${IN_FLIGHT})
+      and not (effect_class = 'read' and exists (select 1 from connection c
+        where c.id = action.connection_id and c.provider <> 'mcp'))`;
   const refusal = inFlightRefusal(
     rows.map((row) => ({ status: String(row.status), kind: String(row.kind) })),
   );
@@ -206,7 +210,8 @@ export async function removeJobs(
         and(
           inArray(action.jobId, list),
           inArray(action.status, IN_FLIGHT),
-          ne(action.effectClass, 'read'),
+          sql`not (${action.effectClass} = 'read' and exists (select 1 from connection c
+            where c.id = ${action.connectionId} and c.provider <> 'mcp'))`,
         ),
       );
     const refusal = inFlightRefusal(pending);
@@ -286,25 +291,31 @@ export async function memorySourcesOf(sql: Sql, jobIds: readonly string[]): Prom
 
 /**
  * Threads left by routines deleted before a deleted routine took its thread
- * with it: no schedule names them any more, and their job was cancelled
- * because the routine was deleted. Each goes the way a deleted chat goes. One
- * that cannot go yet is left for the next start. Answers how many went.
+ * with it. A migration listed them once (`orphaned_routine_thread`); each goes
+ * the way a deleted chat goes, is logged, and comes off the list. One that
+ * cannot go yet stays listed for the next start. Nothing else is scanned, so
+ * once the list is empty a start costs one read of an empty table. Answers
+ * how many went.
  */
-export async function removeDeletedRoutineThreads(deps: JobRemovalDeps): Promise<number> {
-  const rows = await deps.sql`select j.id from job j
-    where j.kind = 'routine' and j.state = 'cancelled'
-      and not exists (select 1 from trigger t where t.job_id = j.id)
-      and exists (select 1 from event e where e.job_id = j.id
-        and e.type = 'job_state_changed' and e.payload->>'reason' = 'routine_deleted')
-    order by j.id`;
+export async function removeDeletedRoutineThreads(
+  deps: JobRemovalDeps,
+  log: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
+): Promise<number> {
+  const rows = await deps.sql`select job_id from orphaned_routine_thread order by job_id`;
   let removed = 0;
   for (const row of rows) {
+    const id = String(row.job_id);
     try {
-      await removeJobs(deps, [String(row.id)]);
-      removed += 1;
+      const [still] = await deps.sql`select kind from job where id = ${id}`;
+      if (still?.kind === 'routine') {
+        await removeJobs(deps, [id]);
+        log(`removed the thread ${id} that a deleted routine left behind`);
+        removed += 1;
+      }
+      await deps.sql`delete from orphaned_routine_thread where job_id = ${id}`;
     } catch (error) {
-      process.stderr.write(
-        `a deleted routine's thread could not be removed yet: ${error instanceof Error ? error.message : 'unknown error'}\n`,
+      log(
+        `the thread ${id} that a deleted routine left behind could not be removed yet: ${error instanceof Error ? error.message : 'unknown error'}`,
       );
     }
   }

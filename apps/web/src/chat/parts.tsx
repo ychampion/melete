@@ -1380,10 +1380,6 @@ export function describeAction(action: LedgerAction): string {
 export const ownComputerStep = (action: Pick<LedgerAction, 'kind'>): boolean =>
   /^(?:terminal\.run|computer\.)/.test(action.kind);
 
-/** A read changed nothing, so whether it finished is never the person's question. */
-export const isRead = (action: Pick<LedgerAction, 'effect_class'>): boolean =>
-  action.effect_class === 'read';
-
 /** Whether a step that went unconfirmed was a message to someone, which "arrives". */
 const isMessage = (action: LedgerAction): boolean => {
   const to = (action.canonical_payload as Record<string, unknown>).to;

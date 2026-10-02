@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
   agentResponse,
   automationResponse,
@@ -413,18 +414,29 @@ withDb('routines, time zone and setup as the person sees them', () => {
     expect((await request(`/conversations/${opened}`, 'DELETE')).status).toBe(200);
     expect((await request(`/conversations/${opened}`)).status).toBe(404);
 
-    // The rest are removed when the service starts; an ended routine's thread
-    // kept after it was started again is not one of them.
+    // The rest are listed once by the migration and removed when the service
+    // starts; an ended routine's thread kept after it was started again is not
+    // one of them.
     const swept = await orphan('Left behind, removed at start');
     await required(jobs).cancel(routine.conversation_id);
     const restarted = await request(`/automations/${routine.id}/restart`, 'POST');
     expect(restarted.status).toBe(200);
-    const removed = await removeDeletedRoutineThreads({
-      jobs: required(jobs),
-      sql,
-      runner: required(runner),
-    });
-    expect(removed).toBe(1);
+    const migration = readFileSync(
+      new URL('../../drizzle/0075_orphaned_routine_threads.sql', import.meta.url),
+      'utf8',
+    );
+    const listing = migration.split('--> statement-breakpoint')[1] ?? '';
+    await sql.unsafe(listing);
+    const listed = await sql`select job_id from orphaned_routine_thread`;
+    expect(listed.map((row) => row.job_id)).toEqual([swept]);
+    const logged: string[] = [];
+    const deps = { jobs: required(jobs), sql, runner: required(runner) };
+    expect(await removeDeletedRoutineThreads(deps, (line) => logged.push(line))).toBe(1);
+    expect(logged).toEqual([`removed the thread ${swept} that a deleted routine left behind`]);
+    // It happens once: the list is empty, and the next start removes nothing.
+    expect(await sql`select job_id from orphaned_routine_thread`).toHaveLength(0);
+    expect(await removeDeletedRoutineThreads(deps, (line) => logged.push(line))).toBe(0);
+    expect(logged).toHaveLength(1);
     expect((await request(`/conversations/${swept}`)).status).toBe(404);
     expect((await request(`/conversations/${routine.conversation_id}`)).status).toBe(200);
     const fresh = automationResponse.parse(await restarted.json()).automation;

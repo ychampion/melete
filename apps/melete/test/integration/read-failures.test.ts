@@ -10,6 +10,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { ConnectorManifest } from '@melete/contracts';
+import { appendEvent, recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createFilesConnector } from '../../src/connectors/files.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -208,6 +209,79 @@ databaseTest(
       expect((row.reconciliation as { retryable: boolean }).retryable).toBe(true);
     }
     expect(await standing(ctx.sql, ctx.claims.job_id)).toEqual({ state: 'running', questions: 0 });
+  },
+  SLOW,
+);
+
+/** A read left unknown by an earlier version, with the question it raised still open. */
+async function leftUnknown(ctx: Awaited<ReturnType<typeof setup>>) {
+  const id = newId('act');
+  await ctx.sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+      canonical_payload, payload_hash, idempotency_key, status, dispatched_at)
+    values (${id}, ${ctx.claims.job_id}, ${ctx.claims.attempt_id}, ${ctx.connectionId},
+      'test.lookup', 'read', '{}'::jsonb, ${'c'.repeat(64)}, ${id}, 'unknown', now())`;
+  const questionId = recordId('qst');
+  await ctx.sql.begin(async (tx) => {
+    await tx`insert into question
+        (id, source, job_id, attempt_id, text, because, if_ignored, blocks_external_effect)
+      values (${questionId}, 'job', ${ctx.claims.job_id}, ${ctx.claims.attempt_id},
+        'Did it arrive?', '["It never answered."]'::jsonb, 'It waits.', true)`;
+    await appendEvent(tx, ctx.claims.job_id, ctx.claims.attempt_id, 'notice', {
+      action_id: id,
+      phase: 'repair_escalated',
+      disposition: 'needs_reconciliation',
+      question_id: questionId,
+    });
+  });
+  return { id, questionId };
+}
+
+databaseTest(
+  'settling a read left unknown withdraws the question it raised, in the same pass',
+  async () => {
+    const ctx = await setup(['test.lookup'], 'test', () => failingLookup('unused'));
+    const { id, questionId } = await leftUnknown(ctx);
+    await ctx.broker.recoverDispatched();
+    const [action] = await ctx.sql`select status from action where id = ${id}`;
+    expect(action?.status).toBe('failed');
+    const [question] = await ctx.sql`select state from question where id = ${questionId}`;
+    expect(question?.state).toBe('withdrawn');
+    const [closed] = await ctx.sql`select payload from event
+      where job_id = ${ctx.claims.job_id} and payload->>'kind' = 'question_closed'`;
+    expect(closed?.payload).toMatchObject({ question_id: questionId, reason: 'read_settled' });
+  },
+  SLOW,
+);
+
+databaseTest(
+  'an MCP tool its policy calls a read is still asked about unless its server says it is read-only',
+  async () => {
+    for (const declared of [false, true]) {
+      const ctx = await setup(['test.lookup'], 'mcp', () => ({
+        ...failingLookup('unused'),
+        catalog: { source: 'mcp' as const },
+        readOnlyDeclared: (kind: string) => declared && kind === 'test.lookup',
+      }));
+      const { id, questionId } = await leftUnknown(ctx);
+      await ctx.broker.recoverDispatched();
+      // A call the tool never answered: settled only when the server vouches for it.
+      const abandoned = newId('act');
+      await ctx.sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+          canonical_payload, payload_hash, idempotency_key, status, dispatched_at)
+        values (${abandoned}, ${ctx.claims.job_id}, ${ctx.claims.attempt_id}, ${ctx.connectionId},
+          'test.lookup', 'read', '{"q":1}'::jsonb, ${'b'.repeat(64)}, ${abandoned}, 'dispatched', now())`;
+      await ctx.broker.settleAbandoned(ctx.claims.attempt_id);
+      const rows = await ctx.sql`select id, status from action where id = any(${[id, abandoned]})`;
+      const statuses = Object.fromEntries(rows.map((row) => [row.id, row.status]));
+      const [question] = await ctx.sql`select state from question where id = ${questionId}`;
+      if (declared) {
+        expect(statuses).toEqual({ [id]: 'failed', [abandoned]: 'failed' });
+        expect(question?.state).toBe('withdrawn');
+      } else {
+        expect(statuses).toEqual({ [id]: 'unknown', [abandoned]: 'unknown' });
+        expect(question?.state).toBe('open');
+      }
+    }
   },
   SLOW,
 );

@@ -6,7 +6,7 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { LedgerAction } from '../experience/types.ts';
-import { describeAction, isRead, ownComputerStep, RETRY_HINT, UnknownCard } from './parts.tsx';
+import { describeAction, ownComputerStep, RETRY_HINT, UnknownCard } from './parts.tsx';
 
 const action = (status: string) =>
   ({
@@ -42,9 +42,7 @@ test("a step on the agent's own computer is never put to the person", () => {
   expect(ownComputerStep({ kind: 'device.run' })).toBe(false);
 });
 
-test('a read is never put to the person, and a file step says what it did to the file', () => {
-  expect(isRead({ effect_class: 'read' })).toBe(true);
-  expect(isRead({ effect_class: 'write_reversible' })).toBe(false);
+test('a file step says what it did to the file', () => {
   const file = (kind: string) =>
     describeAction({
       id: 'act_2',

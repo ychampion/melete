@@ -157,16 +157,36 @@ export async function proposeExtraction(
       on conflict do nothing`;
   }
   // The model read the evidence redacted: its offsets are moved to where its quotes are.
-  return keepListItems(reanchorSpans(reply.proposals, batch.text, batch.work.segment_start));
+  return keepListItems(
+    reanchorSpans(reply.proposals, batch.text, batch.work.segment_start),
+    batch.claims.map((claim) => ({ domain_key: claim.domain_key, content: claim.current.content })),
+  );
 }
 
 /** The last part of a key that names a collection rather than one detail. */
-const COLLECTION = /^(?:[a-z0-9]+[_-])*(?:list|lists|ideas|links|bookmarks|wishlist|watchlist)$/;
+/** The last part of a key that names a collection of items rather than one detail. */
+const COLLECTION =
+  /^(?:[a-z0-9]+_)*(?:reading_list|list|ideas|links|bookmarks|wishlist|watchlist)$/;
+/** Parts of a key that make it a setting or a preference, which hold one answer. */
+const ONE_ANSWER = new Set(['pref', 'prefs', 'preference', 'preferences', 'setting', 'settings']);
 
-/** Whether a key names a whole list, where only one value at a time could live. */
+/**
+ * Whether a key could name a whole list, where only one value at a time could
+ * live: its last part names a collection and nothing marks it as a setting or
+ * a preference (`preferences.mailing_list` is one answer about mailing lists).
+ */
 export function isCollectionKey(domainKey: string): boolean {
-  return COLLECTION.test(domainKey.split('.').at(-1) ?? '');
+  const parts = domainKey.split('.');
+  return COLLECTION.test(parts.at(-1) ?? '') && !parts.some((part) => ONE_ANSWER.has(part));
 }
+
+/** Wording compared without case, spacing or a closing full stop. */
+const sameWording = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[\s.!]+$/, '')
+    .trim();
 
 /** A short, stable name for one item: its link when it has one, else what it says. */
 function itemName(content: string): string {
@@ -178,33 +198,53 @@ function itemName(content: string): string {
     .replace(/^_+|_+$/g, '')
     .slice(0, 40)
     .replace(/_+$/, '');
-  return `${words || 'item'}_${stableId(base).slice(-6)}`;
+  return `${words || 'item'}_${stableId(sameWording(base)).slice(-6)}`;
 }
 
+/** A detail memory already holds, as the extractor was handed it. */
+export type HeldDetail = { domain_key: string; content: string | null };
+
 /**
- * A key holds one value at a time, so a whole list on one key keeps only its
- * newest item and every addition replaces the one before. A proposal that puts
- * an item on a list's own key is moved to a key of its own inside the list,
- * as an add: the items already kept stay, each under its own key. An item
- * proposed on an item key (a correction of that item) is left as it is.
+ * A key holds one value at a time, so a second item added on a list's own key
+ * would contest the first. Only an `add` is changed:
+ * - an item already on the list in the same wording is not added again;
+ * - an item added to a list that already holds one gets a key of its own
+ *   inside the list, so the items before it stay;
+ * - the first item of a list stays where the model put it.
+ * A `supersede` is the model saying the person replaced what was there, and
+ * is kept as one; so is everything on a key that is not a list.
  */
-export function keepListItems(proposals: ExtractionProposal[]): ExtractionProposal[] {
+export function keepListItems(
+  proposals: ExtractionProposal[],
+  held: readonly HeldDetail[] = [],
+): ExtractionProposal[] {
+  const listOf = (key: string) => {
+    if (isCollectionKey(key)) return key;
+    const parent = key.split('.').slice(0, -1).join('.');
+    return parent && isCollectionKey(parent) ? parent : null;
+  };
+  const occupied = new Set<string>();
+  const items = new Set<string>();
+  for (const detail of held) {
+    const list = listOf(detail.domain_key);
+    if (!list) continue;
+    occupied.add(list);
+    if (detail.content) items.add(`${list}\n${sameWording(detail.content)}`);
+  }
   return proposals.map((proposal) => {
-    if (proposal.op !== 'add' && proposal.op !== 'supersede') return proposal;
-    if (!isCollectionKey(proposal.domain_key)) return proposal;
-    const {
-      claim_id: _claim,
-      key: _key,
-      ...rest
-    } = proposal as ExtractionProposal & {
-      claim_id?: string;
-      key?: string;
-    };
+    if (proposal.op !== 'add' || !isCollectionKey(proposal.domain_key)) return proposal;
+    const list = proposal.domain_key;
+    const item = `${list}\n${sameWording(proposal.content)}`;
+    if (items.has(item)) return { op: 'no-op', sources: proposal.sources };
+    items.add(item);
+    if (!occupied.has(list)) {
+      occupied.add(list);
+      return proposal;
+    }
+    const { key: _key, ...rest } = proposal as ExtractionProposal & { key?: string };
     return {
       ...rest,
-      op: 'add',
-      expected_revision: null,
-      domain_key: `${proposal.domain_key}.${itemName(proposal.content)}`,
+      domain_key: `${list}.${itemName(proposal.content)}`,
     } as ExtractionProposal;
   });
 }
