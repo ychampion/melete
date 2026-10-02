@@ -9,9 +9,10 @@ import { adapter, type Result, subscribeConversation } from './adapter.ts';
 import {
   acceptLocalTurn,
   addLocalTurn,
+  adoptSaved,
   applyEvent,
-  applyEvents,
   applyGap,
+  applyHistory,
   applyMessageEvent,
   emptyTranscript,
   fillAnswers,
@@ -26,6 +27,7 @@ import type {
   Agent,
   Capabilities,
   Conversation,
+  ExperienceEvent,
   Permission,
   Profile,
   Question,
@@ -247,14 +249,55 @@ export function useConversation(id: string | null): ConversationState {
         head.data.conversation.status,
       );
       initial = setDrafts(initial, drafts.data?.drafts ?? []);
-      initial = applyEvents(initial, page.data?.events ?? []);
-      // Saved answers already contain what the replayed deltas said.
-      initial = {
-        ...initial,
-        turns: initial.turns.map((turn) => ({ ...turn, streamed: '', streaming: false })),
+      // The saved turns and the conversation say where things stand; the
+      // history only fills in what happened. A status it passes through is
+      // not shown, so an old turn never reads as working while it replays.
+      initial = applyHistory(initial, page.data?.events ?? []);
+      // Where the history last left each turn. Read beside the saved turns, it
+      // may be newer than them; where the two differ, they are read again.
+      const ended = new Map<string, TurnStatus>();
+      const note = (events: readonly ExperienceEvent[]) => {
+        for (const event of events)
+          if (event.item.type === 'status' && event.turn_id)
+            ended.set(event.turn_id, event.item.status);
       };
+      note(page.data?.events ?? []);
+      // Saved answers already contain what the replayed deltas said.
+      const quiet = (transcript: Transcript): Transcript => ({
+        ...transcript,
+        turns: transcript.turns.map((turn) => ({ ...turn, streamed: '', streaming: false })),
+      });
+      initial = quiet(initial);
       setTranscriptState(initial);
       setLoading(false);
+
+      // The rest of a long history is read the same way before the stream
+      // opens, and the saved state read again after it: anything that changed
+      // while the history was read is in that copy, and the stream carries on
+      // from the last event read.
+      let cursor = Math.max(initial.lastSeq, page.data?.next_cursor ?? 0);
+      let more = page.data?.has_more === true;
+      while (more) {
+        const next = await adapter.eventsSince(id, cursor);
+        if (controller.signal.aborted) return;
+        if (!next.data || next.data.next_cursor <= cursor) break;
+        const events = next.data.events;
+        note(events);
+        setTranscriptState((previous) => quiet(applyHistory(previous, events)));
+        cursor = next.data.next_cursor;
+        more = next.data.has_more;
+      }
+      const savedTurns = turns.data?.turns ?? [];
+      if (savedTurns.some((turn) => (ended.get(turn.id) ?? turn.status) !== turn.status)) {
+        const [fresh, saved] = await Promise.all([adapter.conversation(id), adapter.turns(id)]);
+        if (controller.signal.aborted) return;
+        if (fresh.data && saved.data) {
+          const { composer, status } = fresh.data.conversation;
+          const turns = saved.data.turns;
+          setConversation(fresh.data.conversation);
+          setTranscriptState((previous) => adoptSaved(previous, turns, composer, status));
+        }
+      }
 
       // Start after the saved turns are installed so their state cannot overwrite message identities.
       void (async () => {
@@ -286,7 +329,7 @@ export function useConversation(id: string | null): ConversationState {
         });
       };
       for await (const item of subscribeConversation(id, {
-        after: initial.lastSeq,
+        after: cursor,
         signal: controller.signal,
       })) {
         if (controller.signal.aborted) return;

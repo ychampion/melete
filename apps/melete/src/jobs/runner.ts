@@ -767,9 +767,12 @@ export class AttemptRunner {
     // when it is due. The answer wakes the routine on its own.
     // A turn that parked for approval keeps its question: the person sees both,
     // and an answer given while the approval waits is read by the next attempt.
+    // The park is either already on the job (the broker moved it) or is this
+    // outcome (the broker left the move to the runner, as a deployment does).
+    const parked = brokerParked || outcome.kind === 'waiting_for_approval';
     const explicit =
-      (posed !== original && outcome.kind === 'waiting_for_input') || brokerParked ? asked : null;
-    const routineAsk = explicit && !brokerParked ? await routineRest(tx, row) : null;
+      (posed !== original && outcome.kind === 'waiting_for_input') || parked ? asked : null;
+    const routineAsk = explicit && !parked ? await routineRest(tx, row) : null;
     if (routineAsk) {
       input = { kind: 'attempt_waiting_for_event_or_time' };
       wait = routineAsk;
@@ -803,8 +806,8 @@ export class AttemptRunner {
       attemptId,
       carried,
       askable:
-        (brokerParked && explicit !== null) ||
-        (!brokerParked && (wait.kind === 'user_input' || routineAsk !== null) && !chatComplete),
+        (parked && explicit !== null) ||
+        (!parked && (wait.kind === 'user_input' || routineAsk !== null) && !chatComplete),
       fallback: wait.kind === 'user_input' && !chatComplete ? wait.question : undefined,
       ...(explicit ? { explicit } : {}),
     });

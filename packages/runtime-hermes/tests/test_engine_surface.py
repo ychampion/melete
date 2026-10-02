@@ -1010,6 +1010,94 @@ def test_the_sandbox_toolset_gives_the_terminal_and_no_background_processes(herm
         assert "process_manage" in model_tools._select_tool_names(["terminal"], None, True)
 
 
+class _CatalogBroker(http.server.BaseHTTPRequestHandler):
+    """Serves one attempt's catalog on `GET /tools` and nothing else."""
+
+    def do_GET(self):  # noqa: N802 - http.server's name
+        payload = json.dumps({"tools": self.server.catalog}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args):
+        return
+
+
+def _entry(name: str, connection_id: str) -> dict:
+    return {"name": name, "description": f"{name} probe", "connection_id": connection_id,
+            "effect_class": "read", "input_schema": {"type": "object", "properties": {}}}
+
+
+#: A paired computer with commands off offers its other tools beside the
+#: sandbox's own terminal and desktop. Sorted by name, these come first.
+PAIRED_DEVICE_TOOLS = [f"device.{tool}" for tool in (
+    "status", "list_files", "read_file", "write_file", "open_url", "screenshot",
+    "browser_open", "browser_read", "browser_click", "browser_type", "browser_screenshot")]
+
+
+@pytest.mark.parametrize("toolsets, terminal", [
+    # What engine-config.ts renders for a space with a sandbox (SANDBOX_TERMINAL_TOOLSET).
+    (["melete", "terminal_tools"], True),
+    # Without the terminal toolset, the plugin still hands the terminal to the
+    # engine, so the model is left with none. The bundle must select it.
+    (["melete"], False),
+])
+def test_the_model_is_offered_a_terminal_beside_a_paired_computer(hermes_home, monkeypatch, toolsets, terminal):
+    """The plugin registered from a broker catalog with a paired computer
+    online, and the tool definitions the engine then gives the model."""
+    import model_tools
+    from agent import terminal_env_registry
+    from melete_plugin import TOOLSET, register_tools
+    from melete_plugin.broker import BrokerClient
+    from tools.registry import discover_builtin_tools, registry
+
+    discover_builtin_tools()
+    monkeypatch.setenv("TERMINAL_ENV", "melete_sandbox")
+    monkeypatch.setenv("TERMINAL_CWD", "/work")
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _CatalogBroker)
+    server.catalog = (
+        [_entry(name, "conn_laptop") for name in PAIRED_DEVICE_TOOLS]
+        + [_entry(name, "conn_sandbox") for name in ("computer.screenshot", "computer.key", "terminal.run")]
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    class _Ctx:
+        def register_tool(self, name, toolset, schema, handler, description="", emoji=""):
+            registry.register(name=name, toolset=toolset, schema=schema, handler=handler,
+                              description=description, emoji=emoji)
+
+        def register_terminal_environment_provider(self, provider):
+            terminal_env_registry.register_provider(provider)
+            return provider
+
+    client = BrokerClient(base_url=f"http://127.0.0.1:{server.server_port}", token="cap", timeout=5)
+    registered: list = []
+    try:
+        registered = register_tools(_Ctx(), client)
+        assert TOOLSET in toolsets
+        config = {"platform_toolsets": {"api_server": toolsets},
+                  "tools": {"tool_search": {"enabled": "off"}}}
+        write_config(hermes_home, config)
+        from hermes_cli.tools_config import _get_platform_tools
+        enabled = sorted(_get_platform_tools(config, "api_server"))
+        names = {d["function"]["name"] for d in
+                 model_tools.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)}
+        assert "device.status" in names and "computer.key" in names
+        # One terminal at most, and it is the engine's, pinned to the sandbox.
+        assert "terminal.run" not in names
+        assert ("terminal" in names) is terminal
+    finally:
+        for name in registered:
+            with contextlib.suppress(Exception):
+                registry.deregister(name)
+        terminal_env_registry._registry.reset_for_tests()
+        server.shutdown()
+        server.server_close()
+
+
 # --- Probe: a screenshot reaches the provider as a picture -------------------
 # agent/tool_executor.py:1025 hands each tool result to
 # agent/vision_message_prep.py:206 `_tool_result_content_for_active_model`,

@@ -147,6 +147,36 @@ describe('durable attempt context', () => {
     expect(assembleHistory(events, [], 6).inputs.new_user_messages).toEqual([]);
   });
 
+  test("a picked option reads to the agent as a pick from its own options, not the person's words", () => {
+    const result = assembleHistory(
+      [
+        {
+          seq: 1,
+          type: 'notice',
+          payload: {
+            kind: 'user_message',
+            text: 'You chose: Window',
+            chosen: { question_id: 'qst_1', option_id: 'choice_2', offered_by: 'agent' },
+          },
+          createdAt: new Date(at),
+        },
+        {
+          seq: 2,
+          type: 'notice',
+          payload: { kind: 'user_message', text: 'You chose: I always prefer an aisle seat' },
+          createdAt: new Date(later),
+        },
+      ],
+      [],
+      0,
+    );
+    expect(result.inputs.new_user_messages.map((entry) => entry.content)).toEqual([
+      'The person picked your option: Window',
+      // Typed by the person, whatever it starts with, it stays their own words.
+      'You chose: I always prefer an aisle seat',
+    ]);
+  });
+
   test('retains durable tool results and only committed, unfenced summaries or drafts', () => {
     const result = assembleHistory(
       [

@@ -51,7 +51,23 @@ export const UNANSWERED_CONSEQUENCE =
  * off as the person's own words, and it carries a marker that memory and the
  * reviewer read: an offered choice is never the person's own statement.
  */
-export const chosenText = (label: string): string => `You chose: ${label}`;
+const CHOSEN = 'You chose: ';
+export const chosenText = (label: string): string => `${CHOSEN}${label}`;
+
+/**
+ * The same pick as the agent reads it. "You chose" is written to the person;
+ * read by the agent, it sounds like something the person said. The agent is
+ * told instead that the person picked one of its own options.
+ */
+export function pickedForAgent(text: string, chosen: unknown): string {
+  const offered =
+    typeof chosen === 'object' &&
+    chosen !== null &&
+    (chosen as { offered_by?: unknown }).offered_by === 'agent';
+  return offered && text.startsWith(CHOSEN)
+    ? `The person picked your option: ${text.slice(CHOSEN.length)}`
+    : text;
+}
 export type OfferedChoice = { id: string; label: string };
 const chosenMarker = (questionId: string, option: OfferedChoice) => ({
   question_id: questionId,
