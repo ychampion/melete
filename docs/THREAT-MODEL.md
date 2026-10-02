@@ -368,8 +368,9 @@ sent, undone or steered.
 Inside a shared space, a job's memory and connections follow the job's
 principal too. A member's job recalls what the space shares with its members,
 never what is private to the owner, on every memory deployment. A shared
-space's connections, built-in tools included, serve its owner unless marked
-for the room. A member's own job is offered none of them, cannot act through
+space's connections serve its owner unless marked for the room, and the
+built-in tools a room is given are marked for the room's requests. A member's
+own job is offered none of them, cannot act through
 them, and cannot watch what they receive, and the broker checks this again
 before anything is sent. Every answer to a permission records the person who
 gave it; one made with the operator's approval key is recorded as the service's.
@@ -443,6 +444,46 @@ read through the six tools. Registration is open to anyone who can reach the
 installation and is rate-limited per address; a registration alone grants
 nothing. Consent keys are per process, so a restart between showing the consent
 page and answering it asks the person to start again.
+
+## Attacker 9: another member of a room
+
+A room is a shared space where several people talk to one agent (see
+[ROOMS](ROOMS.md)). Another member may be hostile. The aims are to read what a
+person keeps outside the room, to make the room's agent act on someone else's
+behalf, to steer or withdraw someone else's request, and to keep reading after
+being removed.
+
+The room's agent acts as the room's own principal, not as any member. That
+principal has no password and never holds a session: sign-in refuses it before
+any password is checked, at the cost of an unknown email, and a session written
+for it by any other means is not accepted. It is never listed among people or a
+room's members, and it is never added to a room. Its membership generation is
+the room's roster generation, bumped with every change of who is in the room,
+so a capability minted before the change is refused at the broker.
+
+Each ask is its own request job, recorded with the person who asked, and only
+that person's words reach it: another member's message starts their own request
+or none, never touches someone else's, and so never withdraws their pending
+permission. A request reads the room's own material and the thread with each
+speaker's name, and acts only through the room's tools and the connections
+marked for the room. Nothing from a member's personal space reaches it.
+
+Every room route checks, on each request, that the caller is in the room now.
+A room's requests belong to the room's principal, so every personal surface
+(chats, plans, approvals, the job and event routes) hides them by its existing
+own-job rule; three paths admit room readers on purpose: a request's files, the
+room computer's view (owners alone take it over), and the room's own routes. A
+thread's live stream checks membership before every frame and closes when the
+reader is removed. Removing someone, or their leaving, fences work in flight,
+which starts again with the new roster.
+[rooms.test.ts](../apps/melete/test/integration/rooms.test.ts) holds each of
+these as a test, and `the room computer can be watched by members and taken
+over only by owners` in [computer.test.ts](../apps/melete/src/sandbox/computer.test.ts)
+holds the computer.
+
+What remains: what a member says in a room stays in the room after they leave.
+Isolation between a room and the rest of the installation is an application
+check, as it is between accounts.
 
 ## Credentials, host and storage
 
