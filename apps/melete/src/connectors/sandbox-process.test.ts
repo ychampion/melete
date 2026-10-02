@@ -13,7 +13,12 @@ import path from 'node:path';
 import { type Action, canonicalizePayload, type SandboxConnectionConfig } from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { type FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
-import type { ProcessComputer, ProcessFacts, StartRequest } from '../sandbox/process-helper.ts';
+import {
+  type ProcessComputer,
+  type ProcessFacts,
+  ProcessHelperLost,
+  type StartRequest,
+} from '../sandbox/process-helper.ts';
 import { coveredSeconds, type ProcessLimits, SandboxProcesses } from '../sandbox/processes.ts';
 import { seedSessionScope } from '../sandbox/session-fixtures.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
@@ -249,7 +254,7 @@ withDb('background processes in the agent computer', () => {
     const computers = over.computers ?? new FakeComputers();
     const processes = new SandboxProcesses(handle.sql, {
       limits: { ...LIMITS, ...over.limits },
-      computerFor: computers.computerFor,
+      computerFor: (provider, target) => computers.computerFor(provider, target),
       log: () => {},
     });
     const connector = createSandboxExecConnector({
@@ -651,5 +656,91 @@ withDb('background processes in the agent computer', () => {
     expect(bad.result).toMatchObject({ outcome: 'failed', retryable: false });
     expect(provider.calls.create).toBe(0);
     expect(computers.calls).toEqual([]);
+  }, 60_000);
+
+  test('a copy of a process read before it was stopped never reopens it', async () => {
+    const { run, detail, processes, computers } = await setup();
+    const id = String(detail(await run('process.start', { command: 'serve' })).process_id);
+    // The sweep reads the row while it runs, and asks the computer.
+    const stale = await processes.get(id);
+    const sandbox = [...computers.processes.keys()][0] as string;
+    const facts = await computers
+      .computerFor(null as never, { providerSandboxId: sandbox, imageDigest: null, region: null })
+      .status([id], AbortSignal.timeout(5_000));
+    // Meanwhile a stop closes it.
+    detail(await run('process.stop', { process_id: id }));
+    if (!stale || !facts.processes[0]) throw new Error('expected a row and facts');
+    const after = await processes.apply(
+      stale,
+      { ...facts.processes[0], state: 'running' },
+      facts.boot,
+    );
+    expect(after).toMatchObject({ state: 'stopped', endReason: 'it was stopped' });
+    expect(after.endedAt).not.toBeNull();
+    const [row] =
+      await db()`select state, end_reason, ended_at from sandbox_process where id = ${id}`;
+    expect(row).toMatchObject({ state: 'stopped', end_reason: 'it was stopped' });
+    expect(row?.ended_at).not.toBeNull();
+  }, 60_000);
+
+  test('a start whose action is still being sent is not taken for lost, however long it takes', async () => {
+    const { run, detail, processes, scope, computers, firstAttempt } = await setup();
+    detail(await run('process.start', { command: 'first' }));
+    // A second start, admitted long ago, whose directory the computer has not made yet.
+    const action = `act_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
+    await db()`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+        canonical_payload, payload_hash, idempotency_key, status)
+      values (${action}, ${scope.jobId}, ${firstAttempt}, ${scope.connectionId}, 'process.start',
+        'write_reversible', '{}'::jsonb, 'hash', ${action}, 'dispatched')`;
+    const id = 'prc_SLOWSTART0001';
+    await db()`insert into sandbox_process (id, space_id, agent_id, connection_id, action_id,
+        command_redacted, command_digest, cwd, name, state, expires_at, created_at)
+      values (${id}, ${scope.spaceId}, ${scope.agentId}, ${scope.connectionId}, ${action},
+        'slow', 'd', '.', 'slow', 'starting', now() + interval '1 hour', now() - interval '10 minutes')`;
+    const sandbox = [...computers.processes.keys()][0] as string;
+    const computer = computers.computerFor(null as never, {
+      providerSandboxId: sandbox,
+      imageDigest: null,
+      region: null,
+    });
+    await processes.reconcile(scope.spaceId, scope.agentId, computer, AbortSignal.timeout(5_000));
+    expect((await processes.get(id))?.state).toBe('starting');
+    // Once its dispatch has settled, a start that never reached the computer is lost.
+    await db()`update action set status = 'failed' where id = ${action}`;
+    await processes.reconcile(scope.spaceId, scope.agentId, computer, AbortSignal.timeout(5_000));
+    expect((await processes.get(id))?.state).toBe('lost');
+  }, 60_000);
+
+  test('a signal to a process that has ended is refused, and nothing is sent', async () => {
+    const { run, detail, computers } = await setup();
+    const id = String(detail(await run('process.start', { command: 'serve' })).process_id);
+    detail(await run('process.stop', { process_id: id }));
+    const before = computers.calls.length;
+    const signalled = await run('process.signal', { process_id: id, signal: 'TERM' });
+    expect(signalled.result).toMatchObject({ outcome: 'failed', retryable: false });
+    expect(computers.calls.slice(before).filter((call) => call.startsWith('signal'))).toEqual([]);
+  }, 60_000);
+
+  test('a computer that does not answer still has its expired processes closed, without waiting on it', async () => {
+    const { run, detail, processes, providers, computers } = await setup();
+    const id = String(detail(await run('process.start', { command: 'serve' })).process_id);
+    await db()`update sandbox_process set expires_at = now() - interval '1 second' where id = ${id}`;
+    const answering = computers.computerFor;
+    computers.computerFor = (provider, handle) => ({
+      ...answering(provider, handle),
+      status: async () => {
+        throw new ProcessHelperLost('the computer took too long to answer');
+      },
+      // A computer that did not answer would keep a stop waiting for its whole budget.
+      stop: (_id, _grace, signal) =>
+        new Promise((_resolve, reject) =>
+          signal.addEventListener('abort', () => reject(new Error('no answer'))),
+        ),
+    });
+    const began = Date.now();
+    const swept = await processes.sweep(providers, AbortSignal.timeout(10_000));
+    expect(Date.now() - began).toBeLessThan(10_000);
+    expect(swept.ended).toEqual([id]);
+    expect((await processes.get(id))?.state).toBe('expired');
   }, 60_000);
 });

@@ -150,7 +150,7 @@ export type AdmitRequest = {
 
 const DAY_MS = 86_400_000;
 /** How long a start may take to reach the computer before its missing directory means it never did. */
-const STARTING_GRACE_MS = 120_000;
+const STARTING_GRACE_MS = 300_000;
 /** A time as Postgres reads it; the driver is given text, never a Date. */
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -304,7 +304,12 @@ export class SandboxProcesses {
       where id = ${id} and state = 'starting'`;
   }
 
-  /** Bring one row up to what the computer says about its process. */
+  /**
+   * Bring one row up to what the computer says about its process. The row is
+   * changed only while it is still in the state it was read in: a copy read
+   * before a stop, an expiry or a cancellation closed it never reopens it, and
+   * a final state stays final. When the row moved on, it is read again.
+   */
   async apply(row: ProcessRow, facts: ProcessFacts, boot: string): Promise<ProcessRow> {
     const recordedBoot = row.bootId ?? boot;
     let state: ProcessState = row.state;
@@ -331,9 +336,11 @@ export class SandboxProcesses {
         output_cursor = greatest(output_cursor, ${facts.cursor}),
         last_line = coalesce(${facts.last_line}, last_line),
         last_output_at = case when ${grew} then now() else last_output_at end
-      where id = ${row.id}
+      where id = ${row.id} and state = ${row.state}
+        and state in ('starting', 'running')
       returning *`;
-    return updated ? rowOf(updated) : row;
+    if (updated) return rowOf(updated);
+    return (await this.get(row.id)) ?? row;
   }
 
   /** Close a row the service ended, with the reason it ended. */
@@ -369,6 +376,17 @@ export class SandboxProcesses {
   }
 
   /**
+   * Whether a start may still be on its way: its action is still being
+   * dispatched, or it is younger than the longest a start's dispatch may take.
+   */
+  private async stillStarting(row: ProcessRow): Promise<boolean> {
+    if (this.now().getTime() - row.createdAt.getTime() < STARTING_GRACE_MS) return true;
+    if (!row.actionId) return false;
+    const [action] = await this.sql`select status from action where id = ${row.actionId}`;
+    return action?.status === 'dispatched';
+  }
+
+  /**
    * Reconcile one computer's rows with what its helper reports, and end what
    * the service has decided must end. Returns the rows as they now stand.
    */
@@ -387,10 +405,7 @@ export class SandboxProcesses {
       if (LIVE_STATES.includes(row.state)) {
         if (!facts) {
           // A start still on its way to the computer has not made its directory yet.
-          if (
-            row.state === 'starting' &&
-            this.now().getTime() - row.createdAt.getTime() < STARTING_GRACE_MS
-          ) {
+          if (row.state === 'starting' && (await this.stillStarting(row))) {
             out.push(row);
             continue;
           }
@@ -400,11 +415,21 @@ export class SandboxProcesses {
           );
           continue;
         }
-        out.push(await this.apply(row, facts, status.boot));
+        const applied = await this.apply(row, facts, status.boot);
+        out.push(applied);
+        // A supervisor that died leaves the process lost, while what it started may run on.
+        if (orphaned(facts, row, status.boot))
+          await computer.stop(row.id, 0, signal).catch((error) => {
+            this.say(`process ${row.id} could not be killed: ${String(error)}`);
+          });
         continue;
       }
       // Ended here and still running there: the service's decision stands.
-      if (facts && facts.state === 'running' && (row.bootId ?? status.boot) === status.boot) {
+      if (
+        facts &&
+        (facts.state === 'running' || orphaned(facts, row, status.boot)) &&
+        (row.bootId ?? status.boot) === status.boot
+      ) {
         await computer.stop(row.id, 0, signal).catch((error) => {
           this.say(`process ${row.id} could not be killed: ${String(error)}`);
         });
@@ -498,6 +523,10 @@ export class SandboxProcesses {
         continue;
       }
       if (!held) continue;
+      // Each computer has its own budget: a slow or broken one cannot use up
+      // the time the others' limits are enforced in.
+      if (signal.aborted) break;
+      const budget = AbortSignal.timeout(COMPUTER_SWEEP_MS);
       const handle: SandboxHandle = {
         providerSandboxId: String(session.provider_sandbox_id),
         imageDigest: (session.image_digest as string | null) ?? null,
@@ -505,7 +534,7 @@ export class SandboxProcesses {
       };
       let reachable = false;
       try {
-        const where = await held.provider.inspect(handle, signal);
+        const where = await held.provider.inspect(handle, budget);
         if (where === 'gone') {
           for (const { row } of members) {
             await this.close(row.id, 'lost', END_REASONS.computer_gone);
@@ -517,24 +546,28 @@ export class SandboxProcesses {
         // is closed here, and killed the next time the computer is used.
         reachable = where === 'running' && session.status !== 'opening';
       } catch (error) {
+        // Not reached: what must end is still closed below.
         this.say(`the computer of ${agentId} could not be inspected: ${String(error)}`);
-        continue;
       }
-      const computer = reachable ? this.computer(held.provider, handle) : null;
+      let computer = reachable ? this.computer(held.provider, handle) : null;
       let current = members.map((each) => each.row);
       if (computer) {
         try {
-          current = (await this.reconcile(spaceId, agentId, computer, signal)).filter((row) =>
+          current = (await this.reconcile(spaceId, agentId, computer, budget)).filter((row) =>
             LIVE_STATES.includes(row.state),
           );
         } catch (error) {
           if (
             !(error instanceof ProcessHelperLost) &&
             !(error instanceof ProcessHelperRefusal) &&
-            !(error instanceof ProcessHelperUnavailable)
+            !(error instanceof ProcessHelperUnavailable) &&
+            !budget.aborted
           )
             throw error;
           this.say(`the processes of ${agentId} could not be read: ${String(error)}`);
+          // What must end is closed here without waiting on it, and killed the
+          // next time the computer answers.
+          computer = null;
         }
       }
       const now = this.now().getTime();
@@ -547,7 +580,7 @@ export class SandboxProcesses {
           ending = { state: 'stopped', reason: END_REASONS.allowance };
         else if (member?.jobGone) ending = { state: 'stopped', reason: END_REASONS.job };
         if (!ending) continue;
-        await this.end(row, computer, ending.state, ending.reason, signal);
+        await this.end(row, computer, ending.state, ending.reason, budget);
         ended.push(row.id);
       }
     }
@@ -557,19 +590,33 @@ export class SandboxProcesses {
   /** Run the sweep on a timer. */
   start(providers: ProcessProviders, everyMs = 60_000): { stop(): void } {
     let running = false;
+    // Only stopping the service ends a sweep early; each computer has its own budget.
+    const stopping = new AbortController();
     const timer = setInterval(() => {
       if (running) return;
       running = true;
-      void this.sweep(providers, AbortSignal.timeout(Math.max(everyMs * 2, 120_000)))
+      void this.sweep(providers, stopping.signal)
         .catch((error) => this.say(`process sweep failed: ${String(error)}`))
         .finally(() => {
           running = false;
         });
     }, everyMs);
     timer.unref?.();
-    return { stop: () => clearInterval(timer) };
+    return {
+      stop: () => {
+        clearInterval(timer);
+        stopping.abort();
+      },
+    };
   }
 }
+
+/** Lost under the same boot, with members of its session still alive. */
+const orphaned = (facts: ProcessFacts, row: ProcessRow, boot: string) =>
+  facts.state === 'lost' && facts.members > 0 && (row.bootId ?? boot) === boot;
+
+/** How long the sweep gives one computer, so a slow one cannot hold up the rest. */
+const COMPUTER_SWEEP_MS = 45_000;
 
 const hours = (seconds: number) => {
   const value = seconds / 3600;

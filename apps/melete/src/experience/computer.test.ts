@@ -211,3 +211,30 @@ test("the agent's processes show the running ones first, with a scrubbed last li
   });
   expect(view.processes[1]?.last_line).toBe('[hidden]');
 });
+
+test('a process started by another person or in a sensitive conversation shows no name and no output', () => {
+  const view = projectComputer({
+    rows: [],
+    bindings: [],
+    processes: [
+      {
+        id: 'prc_theirs',
+        name: 'deploy --token=abc',
+        state: 'running',
+        started_at: at(1),
+        created_at: at(1),
+        port: 8080,
+        last_line: 'listening for the private plan',
+        attributable: false,
+      },
+    ],
+    available,
+  });
+  expect(view.processes[0]).toMatchObject({
+    id: 'prc_theirs',
+    name: 'Process',
+    state: 'running',
+    port: 8080,
+    last_line: null,
+  });
+});

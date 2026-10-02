@@ -204,6 +204,31 @@ withLinux('the process helper in a computer', () => {
     expect((await computer.status(['prc_server'], signal())).processes[0]?.ports).toEqual([]);
   }, 60_000);
 
+  test('a session number taken by another leader is never signalled', async () => {
+    await start(computer, 'prc_reused', 'sleep 300');
+    // As if every member had ended and a new session leader took the number.
+    await shell(`printf '1' > ${root}/prc_reused/sidstart`);
+    const status = await computer.status(['prc_reused'], signal());
+    expect(status.processes[0]?.members).toBe(0);
+    const sent = await computer.signal('prc_reused', 'KILL', signal());
+    expect(sent.process.members).toBe(0);
+    const alive = await shell(`kill -0 "$(cat ${root}/prc_reused/sid)" && echo alive`);
+    expect(new TextDecoder().decode(alive.output)).toContain('alive');
+    await shell(`pkill -KILL -s "$(cat ${root}/prc_reused/sid)"`);
+  }, 60_000);
+
+  test('a ring file replaced with a pipe answers at once instead of hanging', async () => {
+    await start(computer, 'prc_pipe', 'sleep 300');
+    await shell(
+      `rm ${root}/prc_pipe/out.0 && mkfifo ${root}/prc_pipe/out.0 && rm ${root}/prc_pipe/ring && mkfifo ${root}/prc_pipe/ring`,
+    );
+    const began = Date.now();
+    const status = await computer.status(['prc_pipe'], signal());
+    expect(Date.now() - began).toBeLessThan(10_000);
+    expect(status.processes[0]?.state).toBe('running');
+    await computer.stop('prc_pipe', 1_000, signal());
+  }, 60_000);
+
   test('a command that cannot start ends with 127 and says why', async () => {
     const started = await computer.start(
       {

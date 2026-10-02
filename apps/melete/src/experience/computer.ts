@@ -32,6 +32,8 @@ export type ComputerProcessRow = {
   created_at: Date;
   port: number | null;
   last_line: string | null;
+  /** False for a process started by another person or in a sensitive conversation. */
+  attributable?: boolean;
 };
 
 export type ComputerBinding = {
@@ -157,11 +159,18 @@ function processes(rows: readonly ComputerProcessRow[]): ComputerProcess[] {
     .slice(0, COMPUTER_PROCESS_LIMIT)
     .map((row) => ({
       id: row.id,
-      name: terminalText(row.name, 120, 'first').split('\n')[0] || 'process',
+      // A process this conversation may not attribute shows no name and no output.
+      name:
+        row.attributable === false
+          ? 'Process'
+          : terminalText(row.name, 120, 'first').split('\n')[0] || 'process',
       state: row.state,
       started_at: (row.started_at ?? row.created_at).toISOString(),
       port: row.port,
-      last_line: row.last_line ? terminalText(row.last_line, 240, 'last') || null : null,
+      last_line:
+        row.attributable !== false && row.last_line
+          ? terminalText(row.last_line, 240, 'last') || null
+          : null,
       // A preview of a served port is not offered from here yet.
       can_preview: false,
     }));

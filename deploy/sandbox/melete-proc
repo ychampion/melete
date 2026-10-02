@@ -6,6 +6,7 @@ this helper, one short command at a time. Each process has a directory under
 the root the service names:
 
     pid, sid, boot, started   written once the process runs
+    sidstart                  when its session's leader started, so a reused number is not it
     sup                       the supervisor's pid and start time
     half                      the size of one output segment, in bytes
     ring                      the newest segment's number
@@ -35,6 +36,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -58,12 +60,29 @@ def refuse(message, code=2):
     answer({"v": VERSION, "ok": False, "error": message}, code)
 
 
+def open_regular(path, flags=os.O_RDONLY):
+    """Open a regular file and nothing else, never waiting: the computer's user owns these files."""
+    fd = os.open(path, flags | os.O_NONBLOCK | os.O_NOFOLLOW)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError(f"{path} is not a regular file")
+    return fd
+
+
 def read_text(path, default=None):
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return handle.read().strip()
-    except OSError:
+        with os.fdopen(open_regular(path), "r", encoding="utf-8") as handle:
+            return handle.read(4096).strip()
+    except (OSError, UnicodeDecodeError):
         return default
+
+
+def regular_size(path):
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return 0
+    return info.st_size if stat.S_ISREG(info.st_mode) else 0
 
 
 def write_atomic(path, value):
@@ -129,17 +148,16 @@ class Ring:
         return os.path.join(self.directory, f"out.{segment % 2}")
 
     def lock(self, exclusive):
-        handle = open(os.path.join(self.directory, "lock"), "a+")
+        handle = os.fdopen(
+            open_regular(os.path.join(self.directory, "lock"), os.O_RDWR | os.O_CREAT), "a+"
+        )
         fcntl.flock(handle, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         return handle
 
     def state(self):
         """The newest segment, the byte cursor, and the oldest byte still held."""
         segment = int(read_text(os.path.join(self.directory, "ring"), "0") or 0)
-        try:
-            size = os.path.getsize(self.path(segment))
-        except OSError:
-            size = 0
+        size = regular_size(self.path(segment))
         total = segment * self.half + size
         return segment, total, max(0, (segment - 1) * self.half)
 
@@ -159,9 +177,12 @@ class Ring:
                     (self.half - offset) if self.half else total - position,
                     total - position,
                 )
-                with open(self.path(segment), "rb") as handle:
-                    handle.seek(offset)
-                    chunk = handle.read(want)
+                try:
+                    with os.fdopen(open_regular(self.path(segment)), "rb") as handle:
+                        handle.seek(offset)
+                        chunk = handle.read(want)
+                except OSError:
+                    break
                 if not chunk:
                     break
                 chunks.append(chunk)
@@ -234,6 +255,7 @@ def supervise(directory, cwd, command, half):
         os.close(fifo)
     write_atomic(os.path.join(directory, "pid"), str(child.pid))
     write_atomic(os.path.join(directory, "sid"), str(child.pid))
+    write_atomic(os.path.join(directory, "sidstart"), start_time(child.pid) or "")
     write_atomic(os.path.join(directory, "boot"), boot_token())
     write_atomic(os.path.join(directory, "started"), str(int(time.time() * 1000)))
     stream = child.stdout.fileno()
@@ -272,15 +294,31 @@ def daemonize(directory, cwd, command, half):
         os._exit(0)
 
 
+def session_members(directory, members, boot):
+    """The live processes of the command's session, and never another session that took its number.
+
+    While any member lives the kernel keeps the session's number, so members
+    found under it are the command's own. Once all are gone the number can be
+    reused by a new leader; that leader started at another time.
+    """
+    sid = read_text(os.path.join(directory, "sid"))
+    if not sid or read_text(os.path.join(directory, "boot")) != boot:
+        return []
+    recorded = read_text(os.path.join(directory, "sidstart"))
+    leader = start_time(sid)
+    if recorded and leader is not None and leader != recorded:
+        return []
+    return members.get(sid, [])
+
+
 def describe(root, name, members, boot):
     """One process as the service sees it."""
     directory = os.path.join(root, name)
     ring = Ring(directory)
     _, total, oldest = ring.state()
     status = read_text(os.path.join(directory, "exit"))
-    sid = read_text(os.path.join(directory, "sid"))
     recorded = read_text(os.path.join(directory, "boot"))
-    alive = members.get(sid, []) if sid and recorded == boot else []
+    alive = session_members(directory, members, boot)
     if status is not None and re.match(r"^\d{1,3}$", status):
         state, code = "exited", int(status)
     elif recorded is not None and recorded != boot:
@@ -456,11 +494,8 @@ def command_write(root, name, encoded):
 def send(root, name, members, boot, number):
     """Signal every process still in the command's session; never anything else."""
     directory = os.path.join(root, name)
-    sid = read_text(os.path.join(directory, "sid"))
-    if not sid or read_text(os.path.join(directory, "boot")) != boot:
-        return 0
     sent = 0
-    for pid in members.get(sid, []):
+    for pid in session_members(directory, members, boot):
         try:
             os.kill(pid, number)
             sent += 1
@@ -492,13 +527,13 @@ def command_stop(root, name, grace_ms):
     if not os.path.isdir(os.path.join(root, name)):
         refuse("no such process here", 3)
     boot = boot_token()
-    sid = read_text(os.path.join(root, name, "sid"))
+    directory = os.path.join(root, name)
     sent = send(root, name, sessions(), boot, signal.SIGTERM)
     deadline = time.monotonic() + grace_ms / 1000
     killed = 0
-    while sid and sessions().get(sid) and time.monotonic() < deadline:
+    while session_members(directory, sessions(), boot) and time.monotonic() < deadline:
         time.sleep(0.1)
-    if sid and sessions().get(sid):
+    if session_members(directory, sessions(), boot):
         killed = send(root, name, sessions(), boot, signal.SIGKILL)
     # The supervisor writes the exit status once the output pipe closes.
     settle = time.monotonic() + 2

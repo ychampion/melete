@@ -641,6 +641,10 @@ export function createProcessTools(options: ProcessToolOptions) {
           }
           case 'process.signal': {
             const current = row as ProcessRow;
+            // An ended process's session number may belong to something else by now.
+            if (!LIVE_STATES.includes(current.state))
+              return refused(`The process has ended (${current.state}), so no signal was sent`);
+
             const answer = await computer.signal(
               current.id,
               payload.signal as ProcessSignal,
