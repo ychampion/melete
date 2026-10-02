@@ -101,7 +101,12 @@ const journey = late ? await database() : null;
       const listed = connectionListResponse.parse(
         await (await running.app.request('/connections', { headers: { cookie } })).json(),
       ).connections;
-      expect(listed.map((row) => row.provider).sort()).toEqual(['artifacts', 'files', 'room', 'web']);
+      expect(listed.map((row) => row.provider).sort()).toEqual([
+        'artifacts',
+        'files',
+        'room',
+        'web',
+      ]);
       expect(listed.every((row) => row.builtin === true && row.status === 'active')).toBe(true);
       // Settings is told which connections the service keeps, so it offers no removal for them.
       const shown = (await (
@@ -295,7 +300,7 @@ const journey = late ? await database() : null;
       const ownerConnections = (
         await fixture.sql`select id from connection where space_id = ${ownerSpace} order by id`
       ).map((row) => row.id);
-      expect(ownerConnections).toHaveLength(3);
+      expect(ownerConnections).toHaveLength(4);
 
       const login = await running.app.request('/login', {
         method: 'POST',
