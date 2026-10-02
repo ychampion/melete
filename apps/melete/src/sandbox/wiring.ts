@@ -56,10 +56,10 @@ export type SandboxWiring = {
   settleAttempt(attemptId: string, signal: AbortSignal): Promise<void>;
   /**
    * Starts the timed sweep and reconciliation. With several service instances
-   * on one database, `leads` says whether this one runs them now, so one
-   * instance at a time does.
+   * on one database, the lease says whether this one runs them now, so one
+   * instance at a time does, and its signal stops a run whose lease was lost.
    */
-  start(leads?: () => Promise<boolean>): void;
+  start(lease?: { leads(): Promise<boolean>; signal(): AbortSignal }): void;
   stop(): void;
 };
 
@@ -145,13 +145,16 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
       pending.add(work);
     },
 
-    start(leads) {
-      const led = async () => (leads ? leads() : true);
+    start(lease) {
+      const led = async () => (lease ? lease.leads() : true);
+      // Work under a lease stops the moment the lease is found lost.
+      const bounded = (ms: number) =>
+        lease
+          ? AbortSignal.any([AbortSignal.timeout(ms), lease.signal()])
+          : AbortSignal.timeout(ms);
       timer ??= setInterval(() => {
         void led()
-          .then((leading) =>
-            leading ? wiring.sweep(AbortSignal.timeout(options.sweepMs)) : undefined,
-          )
+          .then((leading) => (leading ? wiring.sweep(bounded(options.sweepMs)) : undefined))
           .catch(() => {
             say('sandbox sweep failed');
           });
@@ -159,7 +162,7 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
       timer.unref?.();
       reconcileTimer ??= setInterval(() => {
         void led()
-          .then((leading) => (leading ? wiring.reconcile(AbortSignal.timeout(120_000)) : undefined))
+          .then((leading) => (leading ? wiring.reconcile(bounded(120_000)) : undefined))
           .catch(() => {
             say('sandbox reconciliation failed');
           });

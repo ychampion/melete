@@ -12,7 +12,7 @@ import { type FakeIssuer, startFakeIssuer } from '../../src/gateway/fixtures/fak
 import { chatgptIssuer } from '../../src/gateway/oauth.ts';
 import { createApp } from '../../src/index.ts';
 import { InstanceRegistry } from '../../src/ops/instance.ts';
-import { LEASE_SPACE, Leases } from '../../src/ops/leader.ts';
+import { LEASE_SPACE, Leases, leaseConnection } from '../../src/ops/leader.ts';
 import { PostgresSignInStore, signInKey } from '../../src/ops/signin-store.ts';
 import type { SandboxSessions } from '../../src/sandbox/sessions.ts';
 import { startSandboxes } from '../../src/sandbox/wiring.ts';
@@ -171,11 +171,11 @@ describeWithDb('two service instances on one database', () => {
     const sweeps = [0, 0];
     const leases = [
       new Leases(
-        () => openDatabase(one.url, 1).sql,
+        () => leaseConnection(one.url, 'test'),
         () => {},
       ),
       new Leases(
-        () => openDatabase(one.url, 1).sql,
+        () => leaseConnection(one.url, 'test'),
         () => {},
       ),
     ];
@@ -195,7 +195,12 @@ describeWithDb('two service instances on one database', () => {
     );
     try {
       wirings.forEach((wiring, index) => {
-        wiring.start(() => leases[index]?.leads('sandbox') ?? Promise.resolve(false));
+        const lease = leases[index];
+        if (lease)
+          wiring.start({
+            leads: () => lease.leads('sandbox'),
+            signal: () => lease.signal('sandbox'),
+          });
       });
       await Bun.sleep(400);
       const leader = (sweeps[0] ?? 0) > 0 ? 0 : 1;
@@ -214,6 +219,9 @@ describeWithDb('two service instances on one database', () => {
       const stopped = sweeps[leader] ?? 0;
       await Bun.sleep(200);
       expect(sweeps[leader]).toBe(stopped);
+      // and the signal its work runs under has ended.
+      expect(leases[leader]?.signal('sandbox').aborted).toBe(true);
+      expect(leases[follower]?.signal('sandbox').aborted).toBe(false);
     } finally {
       for (const wiring of wirings) wiring.stop();
       await Promise.all(leases.map((lease) => lease.close()));
@@ -223,11 +231,11 @@ describeWithDb('two service instances on one database', () => {
   test('a lease let go on shutdown passes to another instance at once', async () => {
     const [one] = pools();
     const first = new Leases(
-      () => openDatabase(one.url, 1).sql,
+      () => leaseConnection(one.url, 'test'),
       () => {},
     );
     const second = new Leases(
-      () => openDatabase(one.url, 1).sql,
+      () => leaseConnection(one.url, 'test'),
       () => {},
     );
     try {
@@ -245,6 +253,25 @@ describeWithDb('two service instances on one database', () => {
     } finally {
       await first.close();
       await second.close();
+    }
+  });
+
+  test('a second running process under the same instance name refuses to start', async () => {
+    const [one, two] = pools();
+    const first = new InstanceRegistry(one.sql, 'shared', { host: 'a', heartbeatMs: 100 });
+    const second = new InstanceRegistry(two.sql, 'shared', { host: 'b', heartbeatMs: 100 });
+    await first.start();
+    try {
+      await expect(second.start()).rejects.toThrow('Another running Melete service instance');
+      // A name whose last process ended without stopping is taken over after one wait.
+      await first.stop();
+      await one.sql`insert into ops_instance (id, host, nonce) values ('shared', 'a', 'gone')`;
+      await second.start();
+      const [row] = await one.sql`select host from ops_instance where id = 'shared'`;
+      expect(row?.host).toBe('b');
+    } finally {
+      await first.stop();
+      await second.stop();
     }
   });
 

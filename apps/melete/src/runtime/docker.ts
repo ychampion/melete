@@ -21,6 +21,7 @@ import {
   type ParkedActions,
 } from '@melete/runtime-hermes';
 import { modelApiMode } from '../gateway/providers.ts';
+import { type InstanceView, stoppedInstances } from '../ops/instance.ts';
 import { DOCKER_API_VERSION, type DockerVersionSource } from './docker-engine.ts';
 
 const OWNER = 'com.melete.attempt-supervisor';
@@ -61,6 +62,8 @@ export const ATTEMPT_LOG_CONFIG = {
   Config: { 'max-size': '10m', 'max-file': '5' },
 } as const;
 type Labels = Record<string, string>;
+/** Whether the leftovers of the instance that labelled them (none: from before labels) may go. */
+type Removable = (owner: string | undefined) => Promise<boolean>;
 type Method = 'GET' | 'POST' | 'DELETE';
 
 export interface DockerApi {
@@ -135,7 +138,7 @@ export type DockerRuntimeOptions = {
    * removes only its own, unlabelled ones, and those of instances `running`
    * no longer lists. Left out, every cell of the project is this service's.
    */
-  instance?: { id: string; running: () => Promise<ReadonlySet<string>> };
+  instance?: InstanceView;
   docker?: DockerApi;
   fetch?: FetchLike;
 };
@@ -270,12 +273,25 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
    * and those of instances no longer running; later, only the latter. Cells
    * from before instances were labelled count as this instance's at a start.
    */
-  private async removable(starting: boolean): Promise<(owner: string | undefined) => boolean> {
+  private async removable(starting: boolean): Promise<Removable> {
     const instance = this.options.instance;
-    if (!instance) return () => starting;
-    const running = await instance.running();
-    return (owner) =>
-      owner === undefined || owner === instance.id ? starting : !running.has(owner);
+    if (!instance) return async () => starting;
+    const stopped = await stoppedInstances(instance, (name) => this.containerRunning(name));
+    return async (owner) =>
+      owner === undefined || owner === instance.id ? starting : stopped(owner);
+  }
+
+  /** Whether a container by this name runs on this engine: another instance's service, say. */
+  private async containerRunning(name: string): Promise<boolean> {
+    try {
+      const found = (await this.docker.request('GET', `/containers/${name}/json`)) as {
+        State?: { Running?: boolean };
+      };
+      return found.State?.Running !== false;
+    } catch (error) {
+      if (error instanceof DockerError && error.status === 404) return false;
+      throw error;
+    }
   }
 
   private owned(labels?: Labels): boolean {
@@ -338,7 +354,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     await this.reconcileWorkspaces(removable);
   }
 
-  private async removeLeftovers(removable: (owner: string | undefined) => boolean) {
+  private async removeLeftovers(removable: Removable) {
     const ours = (labels: Labels) => removable(labels[INSTANCE]);
     const filter = encodeURIComponent(
       JSON.stringify({ label: [`${OWNER}=v1`, `${PROJECT}=${this.options.project}`] }),
@@ -353,7 +369,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     }>;
     for (const container of containers) {
       const names = this.expectedNames(container.Labels);
-      if (!names || !ours(container.Labels)) continue;
+      if (!names || !(await ours(container.Labels))) continue;
       // A spare an attempt took carries that attempt's name; its network and home keep the spare's.
       const named =
         container.Names.includes(`/${names.container}`) ||
@@ -369,7 +385,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     }>;
     for (const network of networks) {
       const names = this.expectedNames(network.Labels);
-      if (!names || !ours(network.Labels)) continue;
+      if (!names || !(await ours(network.Labels))) continue;
       if (network.Name !== names.network)
         throw new Error('An owned attempt network has an unexpected name');
       const detail = (await this.docker.request('GET', `/networks/${network.Id}`)) as {
@@ -396,7 +412,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     };
     for (const volume of volumes.Volumes ?? []) {
       const names = this.expectedNames(volume.Labels);
-      if (!names || !ours(volume.Labels)) continue;
+      if (!names || !(await ours(volume.Labels))) continue;
       if (volume.Name !== names.home)
         throw new Error('An owned runtime home has an unexpected name');
       await this.remove('DELETE', `/volumes/${volume.Name}`);
@@ -408,7 +424,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
    * and a spare directory no attempt took is removed. Both are left only by a
    * service that stopped in between; no attempt runs until this is done.
    */
-  private async reconcileWorkspaces(removable: (owner: string | undefined) => boolean) {
+  private async reconcileWorkspaces(removable: Removable) {
     // No workspace root yet means no attempt has ever left anything in it.
     if (!(await lstat(resolve(this.options.workRoot)).catch(() => undefined))) return;
     const root = await this.workspaceRoot();
@@ -420,11 +436,11 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     for (const entry of await readdir(root)) {
       if (entry.startsWith(ADOPTING)) {
         const found = owner(entry.slice(ADOPTING.length));
-        if (!removable(found.instance)) continue;
+        if (!(await removable(found.instance))) continue;
         const jobId = prefixedId('job').parse(found.name);
         await this.restoreSetAside(join(root, entry), join(root, jobId));
       } else if (entry.startsWith(SPARE_DIRECTORY)) {
-        if (!removable(owner(entry.slice(SPARE_DIRECTORY.length)).instance)) continue;
+        if (!(await removable(owner(entry.slice(SPARE_DIRECTORY.length)).instance))) continue;
         const path = join(root, entry);
         if ((await lstat(path)).isDirectory()) await rm(path, { recursive: true, force: true });
       }

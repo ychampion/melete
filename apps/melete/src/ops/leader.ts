@@ -7,21 +7,28 @@
  * Each kind of work has a named lease, held as a session advisory lock on a
  * connection this instance opens for leases alone. Postgres releases the
  * locks when that session ends, so an instance that dies, or loses its
- * database, lets another take over the next time that one checks. Every check
- * reads the session's backend id: a connection that ended and came back is a
- * new session holding nothing, and no work runs on a lease it lost.
+ * database, lets another take over the next time that one checks.
  *
- * Leases need a direct or session-pooled connection: a transaction pooler
- * hands each statement to any server connection, and a session lock taken
- * there is held by nobody in particular.
+ * Nothing is assumed held: every check asks Postgres whether this very
+ * session holds the lock, and takes it when nobody does. A connection that
+ * ended and came back is a new session holding nothing, whatever its backend
+ * id. While a lease is held it is checked every few seconds, and the signal
+ * given to its work ends the moment a check finds it lost.
+ *
+ * Leases need a direct connection, or a pooler that keeps one server
+ * connection per client: under a transaction pooler a session lock is held by
+ * nobody in particular.
  *
  * The approach follows qm's `LeaderLease` (MIT), re-implemented here for
  * postgres.js; no code is copied.
  */
-import type { Sql } from 'postgres';
+import postgres, { type Sql } from 'postgres';
 
 /** The first key of every lease's advisory lock, apart from the keys other code locks with. */
 export const LEASE_SPACE = 0x6d6c6561;
+
+/** How often held leases are checked while their work may be running. */
+const WATCH_MS = 5000;
 
 /** Settles with `work`, or rejects once `ms` pass without an answer. */
 function within<T>(work: Promise<T>, ms: number): Promise<T> {
@@ -32,20 +39,42 @@ function within<T>(work: Promise<T>, ms: number): Promise<T> {
   return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * The connection leases live on: never recycled by age or idleness, which
+ * would release every lease, and with short TCP keepalives on the server, so
+ * a session whose instance vanished behind a broken network ends, and its
+ * locks with it, within about half a minute.
+ */
+export function leaseConnection(url: string, instance: string): Sql {
+  return postgres(url, {
+    max: 1,
+    max_lifetime: null,
+    idle_timeout: 0,
+    onnotice: () => {},
+    connection: {
+      application_name: `melete-leases:${instance}`.slice(0, 63),
+      tcp_keepalives_idle: 10,
+      tcp_keepalives_interval: 5,
+      tcp_keepalives_count: 3,
+    },
+  });
+}
+
 export class Leases {
-  private readonly held = new Set<string>();
+  /** Held leases, each with the controller its work's signal comes from. */
+  private readonly held = new Map<string, AbortController>();
   /** The connection the held leases live on; replaced after any failure. */
   private sql?: Sql;
-  /** The backend the held leases belong to. */
-  private session?: number;
+  private watcher?: ReturnType<typeof setInterval>;
   private closed = false;
 
   constructor(
-    /** Opens a pool of one connection, used for leases alone. */
+    /** Opens a pool of one connection, used for leases alone (`leaseConnection`). */
     private readonly connect: () => Sql,
     private readonly log: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
     /** How long a check may wait for the database before the leases count as lost. */
     private readonly checkMs = 10_000,
+    private readonly watchMs = WATCH_MS,
   ) {}
 
   /** Whether this instance holds `name` now, taking it when nobody does. */
@@ -53,33 +82,28 @@ export class Leases {
     if (this.closed) return false;
     this.sql ??= this.connect();
     const sql = this.sql;
+    const key = `melete-leader:${name}`;
     try {
-      const take = this.held.has(name)
-        ? sql`false`
-        : sql`pg_try_advisory_lock(${LEASE_SPACE}, hashtext(${`melete-leader:${name}`}))`;
+      // CASE evaluates in order: the lock is only asked for when this session
+      // does not already hold it, so its count never grows.
       const [row] = await within(
-        sql<{ session: number; taken: boolean }[]>`
-          select pg_backend_pid() as session, ${take} as taken`,
+        sql<{ held: boolean }[]>`select case
+          when exists (select 1 from pg_locks where locktype = 'advisory' and granted
+            and pid = pg_backend_pid() and classid = ${LEASE_SPACE}::oid
+            and objid = hashtext(${key})::oid and objsubid = 2) then true
+          else pg_try_advisory_lock(${LEASE_SPACE}, hashtext(${key})) end as held`,
         this.checkMs,
       );
       // An answer from a connection already given up on counts for nothing.
       if (!row || sql !== this.sql || this.closed) return false;
-      if (row.session !== this.session) {
-        // A new session holds only what it took in this very statement.
-        this.lose();
-        this.session = row.session;
-      }
-      if (row.taken) {
-        this.held.add(name);
-        this.log(`leases: this instance now runs ${name}`);
-      }
-      return this.held.has(name);
+      if (row.held) this.keep(name);
+      else this.lose(name);
+      return row.held;
     } catch {
-      // The connection failed or stopped answering: nothing is assumed held,
+      // The connection failed or stopped answering: nothing is held any more,
       // and the next check starts on a fresh connection.
       if (sql === this.sql) {
-        this.lose();
-        this.session = undefined;
+        for (const lost of [...this.held.keys()]) this.lose(lost);
         this.sql = undefined;
         void sql.end({ timeout: 0 }).catch(() => {});
       }
@@ -87,15 +111,43 @@ export class Leases {
     }
   }
 
-  private lose() {
-    if (this.held.size) this.log(`leases: lost ${[...this.held].join(', ')}`);
-    this.held.clear();
+  /**
+   * Ends when this instance stops holding `name`: work started under the
+   * lease stops as soon as a check finds it lost. Aborted already when it is
+   * not held.
+   */
+  signal(name: string): AbortSignal {
+    return this.held.get(name)?.signal ?? AbortSignal.abort(new Error('Lease not held'));
+  }
+
+  private keep(name: string) {
+    if (this.held.has(name)) return;
+    this.held.set(name, new AbortController());
+    this.log(`leases: this instance now runs ${name}`);
+    this.watcher ??= setInterval(() => {
+      for (const held of [...this.held.keys()]) void this.leads(held);
+    }, this.watchMs);
+    this.watcher.unref?.();
+  }
+
+  private lose(name: string) {
+    const controller = this.held.get(name);
+    if (!controller) return;
+    this.held.delete(name);
+    this.log(`leases: lost ${name}`);
+    controller.abort(new Error('Lease lost'));
+    if (!this.held.size) {
+      clearInterval(this.watcher);
+      this.watcher = undefined;
+    }
   }
 
   /** Lets every lease go, so another instance can take them now, and ends the connection. */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    clearInterval(this.watcher);
+    for (const controller of this.held.values()) controller.abort(new Error('Leases closed'));
     this.held.clear();
     const sql = this.sql;
     this.sql = undefined;

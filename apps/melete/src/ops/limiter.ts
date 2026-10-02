@@ -113,8 +113,10 @@ export class PostgresLimitStore implements LimitStore {
     });
     if (now >= this.nextSweep) {
       this.nextSweep = now + SWEEP_MS;
-      void this
-        .sql`delete from rate_limit_window where expires_at <= ${new Date(now).toISOString()}`.catch(
+      // Expired on this instance's clock and, with a margin, on the database's,
+      // so an instance whose clock runs ahead never deletes a live penalty.
+      void this.sql`delete from rate_limit_window where expires_at <= least(
+          ${new Date(now).toISOString()}::timestamptz, now() - interval '5 minutes')`.catch(
         () => {},
       );
     }

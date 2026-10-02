@@ -21,6 +21,7 @@
  */
 import { connect } from 'node:net';
 import type { McpStdioLaunch } from '@melete/contracts';
+import { type InstanceView, stoppedInstances } from '../ops/instance.ts';
 import { type DockerApi, DockerError, DockerSocketApi } from '../runtime/docker.ts';
 import { DOCKER_API_VERSION } from '../runtime/docker-engine.ts';
 import { type EgressGrant, EgressProxy } from './mcp-egress.ts';
@@ -91,7 +92,7 @@ export type DockerStdioOptions = {
    * and those of instances `running` no longer lists. A connection's kept
    * data stays one volume, whichever instance runs its server.
    */
-  instance?: { id: string; running: () => Promise<ReadonlySet<string>> };
+  instance?: InstanceView;
 };
 
 export const DEFAULT_STDIO_IMAGES = {
@@ -914,11 +915,23 @@ export class DockerStdioLauncher implements StdioLauncher {
     { starting = true, volumes = true }: { starting?: boolean; volumes?: boolean } = {},
   ): Promise<void> {
     const instance = this.options.instance;
-    const running = instance ? await instance.running() : new Set<string>();
-    const ours = (labels: Record<string, string>) => {
+    const stopped = instance
+      ? await stoppedInstances(instance, async (name) => {
+          try {
+            const found = (await this.docker.request('GET', `/containers/${name}/json`)) as {
+              State?: { Running?: boolean };
+            };
+            return found.State?.Running !== false;
+          } catch (error) {
+            if (error instanceof DockerError && error.status === 404) return false;
+            throw error;
+          }
+        })
+      : undefined;
+    const ours = async (labels: Record<string, string>) => {
       const owner = labels[INSTANCE];
-      if (!instance || owner === undefined || owner === instance.id) return starting;
-      return !running.has(owner);
+      if (!instance || !stopped || owner === undefined || owner === instance.id) return starting;
+      return stopped(owner);
     };
     const filter = encodeURIComponent(
       JSON.stringify({ label: [`${OWNER}=v1`, `${PROJECT}=${this.options.project}`] }),
@@ -929,14 +942,14 @@ export class DockerStdioLauncher implements StdioLauncher {
       `/containers/json?all=true&filters=${filter}`,
     )) as Array<{ Id: string; Labels: Record<string, string> }>;
     for (const container of containers)
-      if (this.owned(container.Labels) && ours(container.Labels))
+      if (this.owned(container.Labels) && (await ours(container.Labels)))
         await this.remove('DELETE', `/containers/${container.Id}?force=true&v=true`);
     const networks = (await this.docker.request('GET', `/networks?filters=${filter}`)) as Array<{
       Id: string;
       Labels: Record<string, string>;
     }>;
     for (const network of networks) {
-      if (!this.owned(network.Labels) || !ours(network.Labels)) continue;
+      if (!this.owned(network.Labels) || !(await ours(network.Labels))) continue;
       if (this.options.selfId)
         await this.remove('POST', `/networks/${network.Id}/disconnect`, {
           Container: this.options.selfId,

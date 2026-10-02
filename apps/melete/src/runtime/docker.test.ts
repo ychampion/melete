@@ -9,6 +9,7 @@ import {
   type WaitSpec,
 } from '@melete/contracts';
 import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
+import type { InstanceView } from '../ops/instance.ts';
 import { type DockerApi, DockerError, DockerHermesRuntimeAdapter } from './docker.ts';
 import { attemptEnvironment } from './supervisor.ts';
 
@@ -74,6 +75,8 @@ class Daemon implements DockerApi {
   stale: Array<{ Id: string; Names: string[]; Labels: Record<string, string> }> = [];
   beforeRequest?: (call: Call) => Promise<void>;
   foreignHome = false;
+  /** Service containers on this engine by name, running or stopped; any other name is unknown. */
+  services = new Map<string, boolean>();
 
   async request(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<unknown> {
     const call = { method, path, body };
@@ -112,6 +115,12 @@ class Daemon implements DockerApi {
       this.containers.set(id, config);
       return { Id: id };
     }
+    const service = /^\/containers\/([a-z][a-z0-9-]*)\/json$/.exec(path)?.[1];
+    if (service && !this.containers.has(service) && service !== 'self') {
+      const running = this.services.get(service);
+      if (running === undefined) throw new DockerError(404, method, path);
+      return { State: { Running: running } };
+    }
     if (path.endsWith('/json') && path.startsWith('/containers/')) {
       const config = this.containers.get(path.split('/')[2] ?? '');
       if (!config) throw new Error(`Unknown fixture container ${path}`);
@@ -130,7 +139,7 @@ const fixtures: Array<{ root: string; runtime: DockerHermesRuntimeAdapter }> = [
 async function setup(
   pendingWait?: () => Promise<WaitSpec | null>,
   brokerPort?: number,
-  instance?: { id: string; running: () => Promise<ReadonlySet<string>> },
+  instance?: InstanceView,
 ) {
   const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-test-'));
   const daemon = new Daemon();
@@ -462,6 +471,36 @@ describe('Docker attempt supervision', () => {
     expect(
       f.daemon.calls.filter((call) => call.method === 'DELETE').map((call) => call.path),
     ).toEqual(['/containers/cell-of-first?force=true']);
+  });
+
+  test('an instance whose heartbeat stalled keeps its cells while its service container runs', async () => {
+    // Heartbeats within two minutes, and within ten.
+    const recent = new Set<string>();
+    const lately = new Set(['stalled', 'gone']);
+    const f = await setup(undefined, undefined, {
+      id: 'second',
+      running: async (staleAfterMs) => ((staleAfterMs ?? 0) > 120_000 ? lately : recent),
+    });
+    await f.runtime.initialize();
+    f.daemon.services.set('stalled', true);
+    const cell = (index: number, instance: string) => ({
+      Id: `cell-of-${instance}`,
+      Names: [`/test-melete-${identity('att', index).toLowerCase()}`],
+      Labels: { ...labels(index), 'com.melete.instance': instance },
+    });
+    f.daemon.stale = [cell(1, 'stalled'), cell(2, 'gone'), cell(3, 'long-gone')];
+    f.daemon.calls = [];
+    await f.runtime.removeStopped();
+    expect(
+      f.daemon.calls.filter((call) => call.method === 'DELETE').map((call) => call.path),
+    ).toEqual(['/containers/cell-of-gone?force=true', '/containers/cell-of-long-gone?force=true']);
+    // Once its service container has stopped too, its cells go.
+    f.daemon.services.set('stalled', false);
+    f.daemon.calls = [];
+    await f.runtime.removeStopped();
+    expect(
+      f.daemon.calls.filter((call) => call.method === 'DELETE').map((call) => call.path),
+    ).toContain('/containers/cell-of-stalled?force=true');
   });
 
   test('every cell an instance starts carries its name', async () => {

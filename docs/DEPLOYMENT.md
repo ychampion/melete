@@ -683,6 +683,8 @@ across a restart and across every service instance on the same database: a
 caller who spreads attempts over several instances meets one limit. Each row is
 keyed by a SHA-256 digest of the limiter and its key, so the table names no
 address, account or device, and rows are deleted once their limit has expired.
+Each limited request is one short write transaction, and a sign-in up to three;
+the per-address limit, checked first, bounds how many rows one source can add.
 A service started without a database keeps the limits in its own memory, where
 each limiter holds at most 1024 keys; further keys share one overflow bucket, so
 new keys can neither evict a live wait nor grow memory.
@@ -1241,23 +1243,38 @@ request to any of them.
 learning proposal drain, removing stdio server data for removed connections, and
 removing what stopped instances left behind each run on the instance that holds
 that work's lease. A lease is a Postgres advisory lock on a connection the
-instance keeps for leases. When that instance stops, or its connection to the
-database ends, another instance takes the lease the next time it checks for
-that work. Leases need a direct connection to Postgres, or a pooler that keeps
-one server connection per client; PgBouncer in transaction mode cannot hold them.
+instance keeps for leases alone, never recycled by age and with TCP keepalives
+of about half a minute. Every check asks Postgres whether that connection holds
+the lock; a held lease is checked every five seconds, and the sandbox sweep and
+reconciliation stop as soon as a check finds the lease lost. When an instance
+stops, its connection to the database ends, or its network to the database
+breaks, another instance takes the lease the next time it checks for that
+work. Leases need a direct connection to Postgres, or a pooler that keeps one
+server connection per client; PgBouncer in transaction mode cannot hold them.
 
 **Instances on one Docker engine.** Each instance records itself in
 `ops_instance` with a heartbeat every 30 seconds and labels every attempt
 container, network and volume it creates, and every stdio server it starts,
 with `com.melete.instance`. At start an instance removes only its own leftovers,
-unlabelled ones from before this label existed, and those of instances whose
-heartbeat stopped more than two minutes ago or that stopped cleanly. While they
-run, one instance removes what a stopped instance left, once a minute. The
-instance name is `MELETE_INSTANCE_ID` when set (lower-case letters, digits and
-hyphens), otherwise the container's host name, which Docker keeps across a
+unlabelled ones from before this label existed, and those of instances that
+stopped. An instance counts as stopped when it stopped cleanly, when its
+heartbeat is older than ten minutes, or when its heartbeat is older than two
+minutes and no container by its name runs on the engine; an instance whose
+database link stalls keeps its cells while its container runs. While they run,
+one instance removes what a stopped instance left, once a minute.
+
+The instance name is `MELETE_INSTANCE_ID` when set (lower-case letters, digits
+and hyphens), otherwise the container's host name, which Docker keeps across a
 restart of the same container. Set `MELETE_INSTANCE_ID` only where each
 instance has its own environment; replicas started from one Compose service
-share theirs and should use their host names.
+share theirs and should use their host names. An instance refuses to start
+when another running process already uses its name, and says so in its log.
+After a crash, a restarted container waits up to 45 seconds at start to tell
+its own earlier run from another process.
+
+Upgrade the running instance before starting a second one beside it: cells
+started by a release without instance labels count as the starting instance's
+own.
 
 **What stays with one instance.**
 

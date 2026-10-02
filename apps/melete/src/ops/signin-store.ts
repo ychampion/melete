@@ -132,10 +132,9 @@ export class PostgresSignInStore implements SignInStore {
   private sweep(now: number) {
     if (now < this.nextSweep) return;
     this.nextSweep = now + 60_000;
-    void this
-      .sql`delete from signin_pending where expires_at <= ${new Date(now).toISOString()}`.catch(
-      () => {},
-    );
+    // Expired on this instance's clock and, with a margin, on the database's.
+    void this.sql`delete from signin_pending where expires_at <= least(
+        ${new Date(now).toISOString()}::timestamptz, now() - interval '5 minutes')`.catch(() => {});
   }
 
   async put<T>(kind: string, key: string, value: T, expiresAt: number, subject?: string) {

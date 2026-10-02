@@ -1,6 +1,7 @@
 CREATE TABLE "ops_instance" (
 	"id" text PRIMARY KEY NOT NULL,
 	"host" text NOT NULL,
+	"nonce" text DEFAULT '' NOT NULL,
 	"started_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"heartbeat_at" timestamp with time zone DEFAULT now() NOT NULL
 );

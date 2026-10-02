@@ -52,6 +52,8 @@ export const signinPending = pgTable(
 export const opsInstance = pgTable('ops_instance', {
   id: text('id').primaryKey(),
   host: text('host').notNull(),
+  /** The running process's own mark, so two processes under one name are noticed. */
+  nonce: text('nonce').notNull().default(''),
   startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
   heartbeatAt: timestamp('heartbeat_at', { withTimezone: true, mode: 'date' })
     .notNull()

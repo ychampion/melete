@@ -322,10 +322,12 @@ export async function resetTestRows(
 ${names.map((name) => `delete from ${name};`).join('\n')}`);
     // Request limits and waiting sign-ins name nobody by key, so no reference
     // reaches them; each test starts with none, as a fresh process did.
-    const [shared] = await tx<{ limits: boolean; signins: boolean }[]>`select
+    const [shared] = await tx<{ limits: boolean; signins: boolean; instances: boolean }[]>`select
       to_regclass('public.rate_limit_window') is not null as limits,
-      to_regclass('public.signin_pending') is not null as signins`;
+      to_regclass('public.signin_pending') is not null as signins,
+      to_regclass('public.ops_instance') is not null as instances`;
     if (shared?.limits) await tx`delete from rate_limit_window`;
     if (shared?.signins) await tx`delete from signin_pending`;
+    if (shared?.instances) await tx`delete from ops_instance`;
   });
 }

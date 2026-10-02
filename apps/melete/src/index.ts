@@ -116,7 +116,7 @@ import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { startServiceMemory } from './memory/start.ts';
 import { InstanceRegistry, instanceId } from './ops/instance.ts';
-import { Leases } from './ops/leader.ts';
+import { Leases, leaseConnection } from './ops/leader.ts';
 import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
 import {
   refusedForRemoval,
@@ -461,7 +461,9 @@ export function createApp(deps: AppDeps) {
 
 /** This instance's name and the instances running beside it, for the Docker backends. */
 const instanceOf = (instances: InstanceRegistry | undefined) =>
-  instances ? { id: instances.id, running: () => instances.others() } : undefined;
+  instances
+    ? { id: instances.id, running: (staleAfterMs?: number) => instances.others(staleAfterMs) }
+    : undefined;
 
 /** Whether this instance runs the named singleton work now. Without a database, it is alone. */
 const leading = (leases: Leases | undefined, name: string) =>
@@ -607,7 +609,8 @@ export async function bootstrap(
       // Its own connection: a lease is a lock held by that one session.
       if (env.DATABASE_URL) {
         const url = env.DATABASE_URL;
-        leases = new Leases(() => openDatabase(url, 1).sql);
+        const id = instances.id;
+        leases = new Leases(() => leaseConnection(url, id));
       }
       await closeInterruptedScans(handle.db);
       await expireEpisodes(handle.sql);
@@ -684,14 +687,18 @@ export async function bootstrap(
       // Boot reconciliation, before any attempt can open a session of its own.
       // One instance at a time reconciles and sweeps; any instance may take over.
       if (sandboxes) {
-        const leads = () => leading(leases, 'sandbox');
-        const first = await leads();
-        if (first) await sandboxes.reconcile(AbortSignal.timeout(120_000));
-        sandboxes.start(leads);
+        const lease = {
+          leads: () => leading(leases, 'sandbox'),
+          signal: () => leases?.signal('sandbox') ?? new AbortController().signal,
+        };
+        const bounded = () => AbortSignal.any([AbortSignal.timeout(120_000), lease.signal()]);
+        const first = await lease.leads();
+        if (first) await sandboxes.reconcile(bounded());
+        sandboxes.start(lease);
         // Sessions left by attempts that ended with the last process are
         // settled now, not when the first timed sweep comes round.
         if (first)
-          void sandboxes.sweep(AbortSignal.timeout(120_000)).catch(() => {
+          void sandboxes.sweep(bounded()).catch(() => {
             process.stderr.write('sandbox sweep at start failed\n');
           });
       }
@@ -786,6 +793,7 @@ export async function bootstrap(
             .then(async (leads) => {
               if (!leads) return;
               await runtime.removeStopped();
+              if (leases?.signal('stopped-instances').aborted) return;
               await stdioLauncher?.reconcile(new Set(), { starting: false, volumes: false });
             })
             .catch(() => process.stderr.write("removing stopped instances' cells failed\n"));

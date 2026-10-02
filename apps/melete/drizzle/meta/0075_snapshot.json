@@ -1,5 +1,5 @@
 {
-  "id": "9f7425e6-1251-458a-a521-45a670f91152",
+  "id": "172f54d0-ab80-447e-91d3-f4b3afefc927",
   "prevId": "d6c9d5f5-1c9b-40b1-9882-9d56196d9de2",
   "version": "7",
   "dialect": "postgresql",
@@ -13342,6 +13342,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "nonce": {
+          "name": "nonce",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
         },
         "started_at": {
           "name": "started_at",
