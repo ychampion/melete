@@ -462,11 +462,13 @@ the room's roster generation, bumped with every change of who is in the room,
 so a capability minted before the change is refused at the broker.
 
 Every speaker is shown, to people and to the agent, as their chosen name
-followed by their email in angle brackets. The email is unique and nobody
-chooses it, so it is what identifies a speaker; the agent is told the name
-before it is self-chosen. A name is one line of plain text without `<`, `>` or
-`@`, so it cannot pass for an email, and where a name enters the agent's input
-it is quoted. Each ask is its own request job, recorded with the person who asked, and only
+followed by the handle the room gives them in angle brackets. The handle is
+derived from the room and the person's account, both made by the service, so
+nobody chooses it or takes another's, and it is what identifies a speaker; the
+agent is told the name before it is self-chosen. A name is one line of plain
+text without `<`, `>` or `@`, so it cannot pass for a handle or an email, and
+where a name enters the agent's input it is quoted. No label carries an email;
+people who are not guests see emails only in the room's list of people. Each ask is its own request job, recorded with the person who asked, and only
 that person's words reach it: another member's message starts their own request
 or none, never touches someone else's, and so never withdraws their pending
 permission. A request reads the room's own material and the thread with each
@@ -483,6 +485,23 @@ reader is removed. Removing someone, or their leaving, fences work in flight,
 which starts again with the new roster; the requests they asked end.
 [rooms.test.ts](../apps/melete/test/integration/rooms.test.ts) holds each of
 these as a test, including the room computer through the service's own routes.
+
+A guest is invited by an owner for a number of days, through a link that works
+once and names only the room; only the SHA-256 of its token is stored, and the
+token travels in request bodies and the link's fragment, never in a path. A link
+never sets the password of an account that already exists: a guest already here
+accepts while signed in, and a full account is added by an owner instead. A
+guest's sign-in reaches only the room routes, its own account and a room's files
+and computer view; every other route refuses it before it runs, so a surface
+that was never taught about guests never serves one. Owner-only checks ask
+whether the signed-in person owns the space rather than whether it is a member, so a new
+role is never taken for an owner. A guest never answers a permission, has no
+people list and starts no work of their own. Adding a guest fences the room's
+work like any other change of who is in it, and members-only shares leave the
+agent's next attempt. When the invite's time is up the guest reads nothing from
+that moment, and the expiry sweep ends the membership through the removal path.
+[room-guests.test.ts](../apps/melete/test/integration/room-guests.test.ts) holds
+each of these as a test.
 
 A room's permissions are answered only by the people the room's rule names: the
 person who asked (the default), any member who is not a guest, or the room's
