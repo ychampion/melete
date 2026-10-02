@@ -68,6 +68,7 @@ export function questionView(row: QuestionRow, jobTitle: string | null): OwnerQu
     key: row.key,
     text: [row.text, ...explanation].join('\n\n').slice(0, 4000),
     ...(row.options.length ? { options: row.options } : {}),
+    ...(row.why ? { why: row.why } : {}),
     because: handles.length > 0 ? handles : [`question:${row.id}`],
     if_ignored: row.ifIgnored,
     blocks_external_effect: row.blocksExternalEffect,
@@ -123,6 +124,11 @@ export type ResolveOptions = {
   askable: boolean;
   /** The frozen outcome's own question, when it has one. */
   fallback?: string;
+  /**
+   * The question the agent put to the person itself. It is the one asked when
+   * the job may ask: the agent ended its turn to wait for exactly this answer.
+   */
+  explicit?: QuestionSpecInput;
   now?: Date;
 };
 
@@ -150,15 +156,19 @@ export async function resolveQuestions(
           ),
         ]
       : [];
-  const pool = unique([...readDeferred(row), ...carried, ...derived]);
-  if (!options.askable) return { asked: null, deferred: pool };
+  const explicit = options.explicit ? questionCandidate(options.explicit, at) : null;
+  const pool = unique([...readDeferred(row), ...carried, ...derived]).filter(
+    (candidate) => candidate.text !== explicit?.text,
+  );
+  if (!options.askable) return { asked: null, deferred: explicit ? [explicit, ...pool] : pool };
   const [open] = await tx
     .select({ id: question.id })
     .from(question)
     .where(and(eq(question.jobId, row.id), eq(question.state, 'open')))
     .limit(1);
   // One open question per job. A second one waits rather than queue-jumping.
-  if (open) return { asked: null, deferred: pool };
+  if (open) return { asked: null, deferred: explicit ? [explicit, ...pool] : pool };
+  if (explicit) return { asked: explicit, deferred: pool };
   const [first, ...rest] = rankQuestions(pool);
   return { asked: first ?? null, deferred: rest };
 }
@@ -228,6 +238,7 @@ export async function persistQuestions(
       blocksExternalEffect: asked.blocks_external_effect,
       deadlineAt: asked.deadline_at ? new Date(asked.deadline_at) : null,
       options: asked.options ?? [],
+      why: asked.why ?? null,
       // A deferred question keeps the moment it was first raised, so waiting counts.
       createdAt: new Date(asked.created_at),
     });
@@ -550,11 +561,75 @@ export class QuestionService {
     return { question: after.view, job: resumed, receipt: null, status: 200 };
   }
 
+  /**
+   * A routine rests on its schedule while its question waits, and a resting
+   * routine takes no message: its runs are the schedule's. The answer is
+   * recorded on the question, written into the routine's thread as the
+   * person's words, and wakes the routine for a run of its own. The next
+   * scheduled run comes when it is due either way.
+   */
+  private async answerRoutine(
+    current: { row: QuestionRow; view: OwnerQuestion },
+    text: string,
+  ): Promise<AnswerResult> {
+    const key = answerKey(current.row.id);
+    if (current.row.state === 'answered' && current.row.answerSubmissionId === key)
+      return { question: current.view, job: null, receipt: null, status: 200 };
+    const jobId = current.row.jobId ?? '';
+    const resumed = await this.jobs.transaction(async (tx) => {
+      const row = await this.jobs.lock(tx, jobId);
+      if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
+      const speaker = requestPrincipal();
+      if (speaker) await requireJobAccess(tx, jobId, speaker);
+      const [open] = await tx
+        .select({ id: question.id })
+        .from(question)
+        .where(and(eq(question.id, current.row.id), eq(question.state, 'open')))
+        .for('update');
+      if (!open) throw new ServiceError('question_closed', 'This question is no longer open.', 409);
+      if (row.state !== 'waiting_for_event_or_time')
+        throw new ServiceError(
+          'turn_in_progress',
+          'This routine is running now. Answer once this run is over.',
+          409,
+        );
+      await closeOpen(
+        tx,
+        jobId,
+        { state: 'answered', answer: text, answerSubmissionId: key },
+        'answered',
+      );
+      // The run the answer starts is a turn in the routine's thread, like a scheduled one.
+      const turnId = newId('turn');
+      if (row.agentId)
+        await tx
+          .insert(experienceTurn)
+          .values({ id: turnId, jobId, agentId: row.agentId, submissionId: key, text });
+      await tx.update(job).set({ currentTurnId: turnId }).where(eq(job.id, jobId));
+      await appendEvent(tx, {
+        jobId,
+        type: 'notice',
+        payload: { kind: 'user_message', text, principal_id: speaker ?? row.principalId ?? null },
+        dedupKey: `${current.row.id}:answer`,
+      });
+      return this.jobs.move(
+        tx,
+        { ...row, currentTurnId: turnId },
+        { kind: 'event_fired' },
+        { reason: 'input', payload: { question_id: current.row.id } },
+      );
+    });
+    const after = await this.read(current.row.id);
+    return { question: after.view, job: resumed, receipt: null, status: 200 };
+  }
+
   async answer(id: string, input: unknown): Promise<AnswerResult> {
     const value = questionAnswerRequest.parse(input);
     const first = await this.read(id);
     if (first.row.source === 'memory') return this.settle(first, value);
     if (await this.isPrivacyQuestion(first.row)) return this.decidePrivacy(first, value.text);
+    if (first.row.jobId && (await this.jobs.get(first.row.jobId)).kind === 'routine')
+      return this.answerRoutine(first, value.text);
     const submissions = this.submissions;
     if (!submissions)
       throw new ServiceError('service_unavailable', 'Configure the submission service.', 503);

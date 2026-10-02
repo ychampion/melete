@@ -298,8 +298,10 @@ function DecisionCard({
   /** The decision's request is in flight: its actions wait for the answer. */
   busy: boolean;
   onDecide: (permission: Permission, option: 'allow_once' | 'deny') => void;
-  onAnswer: (question: Question, optionId: string) => void;
+  /** An offered answer by its id, or `{ text }` for one in the person's words. */
+  onAnswer: (question: Question, answer: string | { text: string }) => void;
 }) {
+  const [own, setOwn] = useState('');
   const chatId =
     decision.kind === 'permission'
       ? decision.permission.conversation_id
@@ -319,10 +321,13 @@ function DecisionCard({
       deny: can('deny'),
       read: Boolean(chatId),
       options,
+      own: Boolean(question?.free_text),
     });
     if (!intent) return;
     event.preventDefault();
     if (intent.kind === 'read') open();
+    else if (intent.kind === 'own' && question)
+      document.getElementById(`decision-own-${question.id}`)?.focus();
     else if (busy) return;
     else if (intent.kind === 'allow' && permission) onDecide(permission, 'allow_once');
     else if (intent.kind === 'deny' && permission) onDecide(permission, 'deny');
@@ -417,6 +422,7 @@ function DecisionCard({
       {permission && !permission.draft && permission.why.length > 0 && !from && !to ? (
         <span className="decision-meta">{permission.why[0]}</span>
       ) : null}
+      {question?.why[0] ? <span className="decision-meta">{question.why[0]}</span> : null}
       {question ? (
         <div className="col" style={{ gap: 6 }}>
           {options.map((option, index) => {
@@ -435,6 +441,25 @@ function DecisionCard({
               </button>
             );
           })}
+          {question.free_text ? (
+            <form
+              className="question-own"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (own.trim() && !busy) onAnswer(question, { text: own.trim() });
+              }}
+            >
+              <span className="kbd">{options.length + 1}</span>
+              <input
+                id={`decision-own-${question.id}`}
+                value={own}
+                onChange={(event) => setOwn(event.target.value)}
+                placeholder="Type your own"
+                aria-label="Your own answer"
+                disabled={busy}
+              />
+            </form>
+          ) : null}
         </div>
       ) : null}
       <div className="decision-actions">
@@ -535,9 +560,9 @@ export function WaitingOnYou({
       }
       settled(permission.id);
     });
-  const answer = (question: Question, optionId: string) =>
+  const answer = (question: Question, reply: string | { text: string }) =>
     void flight.run(question.id, async () => {
-      const result = await adapter.answer(question.id, optionId);
+      const result = await adapter.answer(question.id, reply);
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t answer' });
         return;

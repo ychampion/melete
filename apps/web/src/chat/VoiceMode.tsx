@@ -61,12 +61,22 @@ const PHASE_WORDS: Record<VoicePhase, string> = {
 };
 
 const DECISION = 'This needs your decision. It is on the screen.';
+/** A question the agent asked: it is answered on the screen, never by voice. */
+const ASKED = 'I’ve asked you something. It’s on your screen.';
 const UNSENT = 'I couldn’t send what you added. It’s in the message box.';
 const KEPT_AFTER_STOP = 'What you added is in the message box, for when you want it.';
 
 const WORKING = new Set(['queued', 'working', 'streaming', 'paused']);
 
 type Message = { message_type?: string; text?: string; error?: string };
+
+/** Whether the turn asked the person a question that is still open. */
+const askedOnScreen = (transcript: Transcript, index: number): boolean =>
+  Boolean(
+    transcript.turns[index]?.blocks.some(
+      (block) => block.type === 'question' && block.answered === null,
+    ),
+  );
 
 /** Whether the turn is waiting on the person: an open permission or question, or needs_you. */
 function waitingOnPerson(transcript: Transcript, index: number): boolean {
@@ -218,7 +228,7 @@ export function VoicePanel({
     if (waitingOnPerson(transcript, current.index)) {
       if (!current.told) {
         current.told = true;
-        say(DECISION);
+        say(askedOnScreen(transcript, current.index) ? ASKED : DECISION);
       }
       return;
     }
@@ -551,7 +561,7 @@ export function VoicePanel({
           ) : null}
           {waiting && !problem ? (
             <button type="button" className="voice-link" onClick={onShowDecision}>
-              Show the decision
+              {askedOnScreen(transcript, lastIndex) ? 'Show the question' : 'Show the decision'}
             </button>
           ) : null}
         </div>

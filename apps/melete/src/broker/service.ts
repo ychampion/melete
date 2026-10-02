@@ -55,6 +55,7 @@ import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import { closedComputerStep } from '../sandbox/closed-step.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
+import { ASK_PERSON_TOOL, requestPersonQuestion } from './ask-person.ts';
 import {
   bindEffect,
   type EffectAuthorityResolver,
@@ -351,6 +352,7 @@ export class BrokerService implements BrokerOperations {
       nativeTools: [
         REACT_TOOL,
         RUNTIME_WAIT_TOOL,
+        ASK_PERSON_TOOL,
         RESUME_ACTION_TOOL,
         SKILL_READ_TOOL,
         ...(options.composeExecutor ? [COMPOSE_TOOL] : []),
@@ -474,6 +476,10 @@ export class BrokerService implements BrokerOperations {
 
   requestWait(claims: CapabilityClaims, input: unknown) {
     return requestRuntimeWait(this.sql, claims, input);
+  }
+
+  askPerson(claims: CapabilityClaims, input: unknown) {
+    return requestPersonQuestion(this.sql, claims, input);
   }
 
   /**

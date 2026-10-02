@@ -21,6 +21,7 @@ import { appendToolTrace } from '../experience/tools.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
 import { spaceRole } from '../principals/authority.ts';
 import { audienceVisible } from '../principals/context.ts';
+import { ASK_PERSON_TOOL } from './ask-person.ts';
 import { CHASE_FOLLOW_UP_TOOL } from './chase.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
@@ -229,7 +230,8 @@ export function selectCore(
           : (context.resumable === true && item.tool.name === RESUME_ACTION_TOOL.name) ||
               (context.followable === true && item.tool.name === CHASE_FOLLOW_UP_TOOL.name)
             ? 2
-            : (context.waitable === true && item.tool.name === RUNTIME_WAIT_TOOL.name) ||
+            : item.tool.name === ASK_PERSON_TOOL.name ||
+                (context.waitable === true && item.tool.name === RUNTIME_WAIT_TOOL.name) ||
                 (context.conversational === true && item.tool.name === REACT_TOOL_NAME) ||
                 (context.readable === true && item.tool.name === SKILL_READ_TOOL.name)
               ? 1
@@ -531,7 +533,12 @@ export class ToolCatalog {
       if (tool.name === CHASE_FOLLOW_UP_TOOL.name && !(await this.followable(tx, job))) continue;
       if (
         !(await accept(tool.name, tool.connection_id, () => {
-          const lifecycle = [RUNTIME_WAIT_TOOL, RESUME_ACTION_TOOL, CHASE_FOLLOW_UP_TOOL].some(
+          const lifecycle = [
+            RUNTIME_WAIT_TOOL,
+            ASK_PERSON_TOOL,
+            RESUME_ACTION_TOOL,
+            CHASE_FOLLOW_UP_TOOL,
+          ].some(
             (typed) =>
               tool.name === typed.name &&
               schemaFingerprint(tool.input_schema) === schemaFingerprint(typed.input_schema) &&

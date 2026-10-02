@@ -1,6 +1,7 @@
 import { CONTEXT_LIMITS, type ToolSpec } from '@melete/contracts';
 import { chooseSkills, indexSkills } from '@melete/skills';
 import { and, eq } from 'drizzle-orm';
+import { ASK_PERSON_TOOL_NAME } from '../broker/ask-person.ts';
 import { RUNTIME_WAIT_TOOL } from '../broker/runtime-wait.ts';
 import { type ConnectorLookup, grantedToolCatalog } from '../connectors/catalog.ts';
 import type { Database } from '../db/client.ts';
@@ -12,14 +13,15 @@ import { skillPayloadOf, usableSkills } from '../principals/context.ts';
 
 /**
  * Every tool name an attempt can reach: all it was granted, not the first few
- * by name, since discovery loads the rest, and the lifecycle wait, which is the
- * broker's own tool rather than a connection's.
+ * by name, since discovery loads the rest, and the lifecycle wait and the
+ * question for the person, which are the broker's own tools rather than a
+ * connection's.
  */
 export function reachableToolNames(
   granted: readonly ToolSpec[],
   scopes: readonly string[],
 ): Set<string> {
-  const names = new Set(granted.map((tool) => tool.name));
+  const names = new Set([...granted.map((tool) => tool.name), ASK_PERSON_TOOL_NAME]);
   if (scopes.includes(RUNTIME_WAIT_TOOL.name)) names.add(RUNTIME_WAIT_TOOL.name);
   return names;
 }

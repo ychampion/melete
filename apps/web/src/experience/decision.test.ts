@@ -34,6 +34,7 @@ const QUESTION: Question = {
   text: 'Want me to hold the ryokan?',
   why: ['Your answer decides the next step.'],
   if_ignored: 'This conversation waits for your answer.',
+  free_text: true,
   options: [
     { id: 'hold', label: 'Hold it · Ask before paying the deposit' },
     { id: 'later', label: 'Not yet · Come back to it next week' },
