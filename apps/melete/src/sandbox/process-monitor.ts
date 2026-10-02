@@ -2,7 +2,7 @@
  * The process monitor: what wakes a job when something it asked about happens
  * in a background process, and nothing else.
  *
- * A job asks with a watch (`process.start` with `notify`, or `process.watch`):
+ * A job asks with a watch (`process.start` with `notify`, or `process.wait` with `later`):
  * on the process's end, on a line of output, or on a port it opens. The
  * monitor asks each computer whose processes are watched how they are, every
  * few seconds on Docker and every half minute on remote providers, in one

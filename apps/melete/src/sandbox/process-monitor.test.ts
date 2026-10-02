@@ -15,12 +15,17 @@ import {
   type Action,
   type CapabilityClaims,
   canonicalizePayload,
+  connectorManifest,
   type SandboxConnectionConfig,
   type WaitSpec,
 } from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { requestRuntimeWait } from '../broker/runtime-wait.ts';
-import { createSandboxExecConnector } from '../connectors/sandbox-exec.ts';
+import {
+  createSandboxExecConnector,
+  sandboxExecManifest,
+  sandboxTerminalManifest,
+} from '../connectors/sandbox-exec.ts';
 import type { ConnectorContext } from '../connectors/types.ts';
 import { type AttemptWake, QUEUES, startQueue } from '../jobs/queue.ts';
 import { AttemptRunner } from '../jobs/runner.ts';
@@ -55,6 +60,13 @@ afterAll(async () => {
   await handle?.close();
 }, 30_000);
 
+test('the sandbox tools, process.wait among them, are still a manifest the service accepts', () => {
+  for (const manifest of [sandboxTerminalManifest, sandboxExecManifest])
+    expect(connectorManifest.safeParse(manifest).success).toBe(true);
+  const wait = sandboxTerminalManifest.tools.find((tool) => tool.name === 'process.wait');
+  expect(wait?.effect_class).toBe('read');
+});
+
 withDb('waking a job from its background process', () => {
   beforeEach(async () => {
     if (!handle || !queue) return;
@@ -69,7 +81,7 @@ withDb('waking a job from its background process', () => {
     const triggers = new TriggerService(jobs, runner);
     const scope = await seedSessionScope(sql);
     await sql`update connection set provider = 'sandbox',
-        scopes = '["terminal.run","process.start","process.wait","process.watch"]'::jsonb
+        scopes = '["terminal.run","process.start","process.wait"]'::jsonb
       where id = ${scope.connectionId}`;
     // An agent a conversation's attempt can speak as.
     await sql`update agent set colour = '#336699', surface = 'rounded', eye_colour = '#111111'
@@ -469,22 +481,32 @@ withDb('waking a job from its background process', () => {
         ),
       );
     for (const id of ids.slice(0, 4))
-      s.detail(await s.run(first.claims, 'process.watch', { process_id: id, on: 'exit' }));
+      s.detail(
+        await s.run(first.claims, 'process.wait', { process_id: id, until: 'exit', later: true }),
+      );
     const again = s.detail(
-      await s.run(first.claims, 'process.watch', { process_id: ids[0], on: 'exit' }),
+      await s.run(first.claims, 'process.wait', { process_id: ids[0], until: 'exit', later: true }),
     );
     expect(await s.watchesOf(row.id)).toHaveLength(4);
     expect((again.watch as { trigger_id: string }).trigger_id).toBe(
       String((await s.watchesOf(row.id))[0]?.id),
     );
-    const fifth = await s.run(first.claims, 'process.watch', { process_id: ids[4], on: 'exit' });
+    const fifth = await s.run(first.claims, 'process.wait', {
+      process_id: ids[4],
+      until: 'exit',
+      later: true,
+    });
     expect(fifth).toMatchObject({ outcome: 'failed' });
     expect(JSON.stringify(fifth)).toContain('already watches 4 processes');
     // A watch on a process that has ended makes nothing to wait for.
     const sandbox = await s.sandboxOf();
     s.computers.exit(sandbox, String(ids[4]), 0);
     await s.run(first.claims, 'process.list', {});
-    const ended = await s.run(first.claims, 'process.watch', { process_id: ids[4], on: 'exit' });
+    const ended = await s.run(first.claims, 'process.wait', {
+      process_id: ids[4],
+      until: 'exit',
+      later: true,
+    });
     expect(JSON.stringify(ended)).toContain('has ended');
   }, 60_000);
 
@@ -514,7 +536,7 @@ withDb('waking a job from its background process', () => {
       }),
     );
     expect(notYet).toMatchObject({ met: false, state: 'running' });
-    expect(String(notYet.note)).toContain('process.watch');
+    expect(String(notYet.note)).toContain('later');
     s.computers.exit(sandbox, id, 0);
     expect(
       s.detail(

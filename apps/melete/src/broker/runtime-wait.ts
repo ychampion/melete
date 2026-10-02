@@ -103,7 +103,7 @@ export async function requestRuntimeWait(sql: Sql, claims: CapabilityClaims, inp
           );
         throw new BrokerFault(
           'scope_denied',
-          'Nothing in this job watches that process. Start it with notify, or call process.watch, then wait.',
+          'Nothing in this job watches that process. Start it with notify, or call process.wait with later, then wait.',
         );
       }
       if (matches.length === 0)
