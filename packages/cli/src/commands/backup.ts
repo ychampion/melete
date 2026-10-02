@@ -5,7 +5,8 @@
  * dump, checked with `pg_restore --list` while it is written, the restriction
  * journal on its own under a timestamped name, deploy/.env, deploy/config/ and
  * deploy/melete.deploy.json, and a SHA256SUMS list of all of them. Each backup
- * is a new directory, melete-<time>, private to its owner (0700, files 0600).
+ * is a new directory, melete-<time>, readable only by the account that made it
+ * (0700, files 0600).
  *
  * `--with-volumes` also archives /data and /work, with the writers stopped so
  * the database and the files agree, and starts them again afterwards.

@@ -18,5 +18,5 @@ The rules that matter most:
 - The person types every password and key, into Melete's Settings or their own
   terminal. Never ask for one in the chat, and never print `deploy/.env`.
 - Ask before installing Docker, creating a server, or deleting anything.
-- `bun run deploy/scripts/status.ts` reports where the installation stands and
+- `bun run melete status` reports where the installation stands and
   what to do next.
