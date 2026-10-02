@@ -116,6 +116,9 @@ export const SCREENSHOT_TOOLS: readonly string[] = [
   'device.browser_screenshot',
 ];
 
+/** The eight bytes every PNG file starts with. */
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
 /** The largest saved screenshot handed back to a runtime: a device's own cap is 8 MB. */
 const MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024;
 
@@ -541,6 +544,8 @@ export class BrokerService implements BrokerOperations {
     } catch {
       throw new BrokerFault('action_not_found');
     }
+    // Served as a PNG only when it is one: whatever else sits at that path is not.
+    if (!bytes.subarray(0, 8).equals(PNG_SIGNATURE)) throw new BrokerFault('action_not_found');
     return { media_type: 'image/png', data: bytes.toString('base64') };
   }
 

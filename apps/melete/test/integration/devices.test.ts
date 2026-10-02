@@ -556,10 +556,11 @@ withDb('the agent uses the computer through the broker', () => {
       kind: string,
       status: string,
       path: string,
+      bytes: Buffer = picture,
     ): Promise<string> => {
       const id = recordId('act');
       await mkdir(join(s.workRoot, job.job_id, 'device'), { recursive: true });
-      await writeFile(join(s.workRoot, job.job_id, 'device', `screenshot-${id}.png`), picture, {
+      await writeFile(join(s.workRoot, job.job_id, 'device', `screenshot-${id}.png`), bytes, {
         mode: 0o600,
       });
       const receipt = {
@@ -594,6 +595,17 @@ withDb('the agent uses the computer through the broker', () => {
       [claims, await saved(claims, 'device.read_file', 'succeeded', 'device/screenshot-{id}.png')],
       [claims, await saved(claims, 'device.screenshot', 'failed', 'device/screenshot-{id}.png')],
       [claims, await saved(claims, 'device.screenshot', 'succeeded', '../escape.png')],
+      // A file at the receipt's path that is not a PNG is not served as one.
+      [
+        claims,
+        await saved(
+          claims,
+          'device.screenshot',
+          'succeeded',
+          'device/screenshot-{id}.png',
+          Buffer.from('<html>not a picture</html>'),
+        ),
+      ],
     ] as const)
       expect(await rejectionOf(broker.screenshot(job, id))).toMatchObject({
         code: 'action_not_found',
