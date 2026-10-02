@@ -143,10 +143,8 @@ test('a thread works on one ask at a time, and stopping one lets the next start'
 
 test('a member who leaves finds no room, and the owner cannot leave', async () => {
   const mock = createMock({ speed: 0 });
-  mock.store.now = () => new Date();
   const own = await room(mock);
-  const ownerLeaves = await call(mock, 'GET', '/me');
-  const me = C.ownerResponse.parse(ownerLeaves.json).owner.id;
+  const me = C.ownerResponse.parse((await call(mock, 'GET', '/me')).json).owner.id;
   expect((await call(mock, 'DELETE', `/rooms/${own.id}/members/${me}`)).status).toBe(409);
 
   const seeded = createMock({ speed: 0, experience: { seed: true } });

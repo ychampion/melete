@@ -443,7 +443,7 @@
 
 @media (max-width: 767px) {
   .room-head {
-    padding: 14px 16px 12px;
+    padding: 10px 16px;
     align-items: center;
   }
   .room-crumb,
@@ -462,8 +462,9 @@
     border-right: 0;
     background: var(--surface);
   }
-  .room-body[data-thread="open"] .room-threads,
-  .room-body:not([data-thread="open"]) .room-thread {
+  .room[data-thread="open"] .room-threads,
+  .room:not([data-thread="open"]) .room-thread,
+  .room[data-thread="open"] .room-purpose {
     display: none;
   }
   .room-thread-head,

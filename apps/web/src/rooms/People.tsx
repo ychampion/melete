@@ -31,11 +31,16 @@ export function People({
 }) {
   const owner = detail.room.my_role === 'owner';
   const mine = detail.members.find((member) => member.principal_id === me?.id) ?? null;
-  const [leaving, setLeaving] = useState(false);
+  const [leaving, setLeaving] = useState<boolean | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // The footer's buttons change in place, so focus moves to what replaced the one pressed.
+  useEffect(() => {
+    if (leaving === null) return;
+    document.getElementById(leaving ? 'room-leave-cancel' : 'room-leave')?.focus();
+  }, [leaving]);
 
   const close = () => {
-    setLeaving(false);
+    setLeaving(null);
     onClose();
   };
 
@@ -64,7 +69,7 @@ export function People({
       return;
     }
     toast({ kind: 'ok', title: `You left ${detail.room.name}` });
-    setLeaving(false);
+    setLeaving(null);
     onLeft();
   };
 
@@ -81,7 +86,7 @@ export function People({
             <span className="people-leave-note">
               You stop seeing this room at once. What you said stays in it.
             </span>
-            <Button variant="ghost" onClick={() => setLeaving(false)}>
+            <Button id="room-leave-cancel" variant="ghost" onClick={() => setLeaving(false)}>
               Cancel
             </Button>
             <Button variant="destructive" loading={busy === me?.id} onClick={() => void leave()}>
@@ -91,7 +96,7 @@ export function People({
         ) : (
           <>
             {mine && mine.role !== 'owner' ? (
-              <Button variant="ghost" onClick={() => setLeaving(true)}>
+              <Button id="room-leave" variant="ghost" onClick={() => setLeaving(true)}>
                 Leave room
               </Button>
             ) : null}
@@ -142,7 +147,10 @@ export function People({
 /** The name the person goes by in rooms; their email always follows it. */
 function YourName({ label, onSaved }: { label: string; onSaved: () => void }) {
   const { name, email } = splitLabel(label);
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (editing === false) document.getElementById('room-rename')?.focus();
+  }, [editing]);
   const [value, setValue] = useState(name);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -167,6 +175,7 @@ function YourName({ label, onSaved }: { label: string; onSaved: () => void }) {
           You appear as <Who label={label} />
         </span>
         <Button
+          id="room-rename"
           size="sm"
           variant="outline"
           onClick={() => {

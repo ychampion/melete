@@ -18,6 +18,8 @@ const HEARTBEAT_MS = 20_000;
 
 let knownMe: Me | null = null;
 
+const peopleCount = (n: number) => (n === 1 ? '1 person' : `${n} people`);
+
 function when(iso: string): string {
   const date = new Date(iso);
   const now = new Date();
@@ -94,8 +96,7 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
           <div className="col" style={{ gap: 12, maxWidth: 520 }}>
             <h1>This room is closed to you</h1>
             <p style={{ fontSize: 14, color: 'var(--muted)' }}>
-              You are no longer in this room, or it was removed. Its threads stay with the people in
-              it.
+              You are no longer in this room, or it was removed.
             </p>
             <div>
               <Button variant="outline" onClick={() => navigate('/rooms')}>
@@ -112,9 +113,11 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
       title={room?.name ?? 'Room'}
       rail={false}
       phoneBack={() => navigate(opened ? `/rooms/${roomId}` : '/rooms')}
-      phoneSub={room ? `${detail?.members.length ?? 0} people · ${room.agent_name}` : undefined}
+      phoneSub={
+        room ? `${peopleCount(detail?.members.length ?? 0)} · ${room.agent_name}` : undefined
+      }
     >
-      <div className="room">
+      <div className="room" data-thread={opened ? 'open' : undefined}>
         <header className="room-head">
           <div className="col" style={{ gap: 4, minWidth: 0 }}>
             <a className="room-crumb" href={href('/rooms')}>
@@ -153,7 +156,7 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
             </Button>
           </div>
         ) : null}
-        <div className="room-body" data-thread={opened ? 'open' : undefined}>
+        <div className="room-body">
           <nav className="room-threads" aria-label="Threads">
             <a
               className="room-thread-new"
