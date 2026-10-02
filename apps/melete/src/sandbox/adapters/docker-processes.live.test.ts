@@ -318,7 +318,11 @@ if (!live) {
       // The next attempt takes it over, with the process still running in it.
       const next = await turn();
       const listed = await next.run('process.list', {});
-      expect(listed.processes).toEqual([
+      // The earlier cases' ended processes are listed after it.
+      const running = (listed.processes as Record<string, unknown>[]).filter(
+        (each) => each.state === 'running',
+      );
+      expect(running).toEqual([
         expect.objectContaining({ process_id: server.process_id, state: 'running' }),
       ]);
       expect([...(await computerRows())]).toEqual([
