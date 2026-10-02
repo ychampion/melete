@@ -156,6 +156,72 @@ describe('what each request the AWS SDK builds does', () => {
     });
   });
 
+  test('an operation that hands out credentials is refused wherever it is named', async () => {
+    const shaped = async (input: {
+      host: string;
+      service: string;
+      path?: string;
+      target?: string;
+    }): Promise<InterceptedRequest> => {
+      const path = input.path ?? '/';
+      const headers: Record<string, string> = {
+        'content-type': 'application/x-amz-json-1.1',
+        ...(input.target ? { 'x-amz-target': input.target } : {}),
+      };
+      const { authorization, ...rest } = await placeholderSigned({
+        method: 'POST',
+        host: input.host,
+        path,
+        service: input.service,
+        headers,
+        body: '{}',
+      });
+      return {
+        host: input.host,
+        method: 'POST',
+        path,
+        query: '',
+        headers: rest,
+        body: Buffer.from('{}'),
+        ...(authorization ? { authorization } : {}),
+      };
+    };
+    const cases = [
+      await shaped({
+        host: 'elasticmapreduce.eu-west-1.amazonaws.com',
+        service: 'elasticmapreduce',
+        target: 'ElasticMapReduce.GetClusterSessionCredentials',
+      }),
+      await shaped({
+        host: 'api.sagemaker.eu-west-1.amazonaws.com',
+        service: 'sagemaker',
+        target: 'SageMaker.CreatePresignedDomainUrl',
+      }),
+      await shaped({
+        host: 'lakeformation.eu-west-1.amazonaws.com',
+        service: 'lakeformation',
+        path: '/GetTemporaryGlueTableCredentials',
+      }),
+      await shaped({
+        host: 'oidc.eu-west-1.amazonaws.com',
+        service: 'sso-oauth',
+        target: 'AWSSSOOIDCService.CreateToken',
+      }),
+    ];
+    for (const request of cases)
+      expect(awsAdapter.classify(request, config)).toMatchObject({
+        kind: 'refuse',
+        reason: expect.stringContaining('hands out credentials'),
+      });
+    // A name that only mentions a credential report is an ordinary read.
+    const report = await shaped({
+      host: 'iam.amazonaws.com',
+      service: 'iam',
+      target: 'IAM.GetCredentialReport',
+    });
+    expect(awsAdapter.classify(report, config)).toEqual({ kind: 'read' });
+  });
+
   test('a request that names its operation twice, or none a listed service reads by, asks', () => {
     const base = corpus.requests.find((each) => each.name === 'ec2 describe instances');
     if (!base) throw new Error('missing');

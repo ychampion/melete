@@ -132,7 +132,19 @@ const MINTS: Record<string, readonly string[]> = {
   'redshift-serverless': ['GetCredentials'],
   lightsail: ['GetInstanceAccessDetails', 'GetRelationalDatabaseMasterUserPassword'],
   s3express: ['CreateSession'],
+  elasticmapreduce: ['GetClusterSessionCredentials'],
 };
+/**
+ * Names that hand out a credential in any service: getting, creating,
+ * generating or assuming credentials, a token or a presigned sign-in link.
+ * A REST call whose path ends in such a name counts too.
+ */
+const CREDENTIAL_NAME =
+  /^(?:Get|Create|Generate|Assume)[A-Za-z0-9]*(?:Credentials?|Token|Presigned[A-Za-z]*Url)$/;
+const mints = (service: string, operation: string) =>
+  MINTS[service]?.includes(operation) === true || CREDENTIAL_NAME.test(operation);
+const MINTS_REASON = (service: string, operation: string) =>
+  `${service}:${operation} hands out credentials, which would put a secret in the agent’s computer, so it was not sent.`;
 
 /** Reads by name whose answer is a stored secret: they ask like a change. */
 const SECRET_READS: Record<string, readonly string[]> = {
@@ -511,6 +523,8 @@ function classifyService(request: InterceptedRequest, signed: SigV4Authorization
   if (operation === 'ambiguous')
     return write(request, signed, `${request.method} ${request.path}`, null, true);
   if (operation === null) {
+    const last = decode(request.path.slice(request.path.lastIndexOf('/') + 1)) ?? '';
+    if (mints(service, last)) return { kind: 'refuse', reason: MINTS_REASON(service, last) };
     if (REST_READ_SERVICES.has(service) && (request.method === 'GET' || request.method === 'HEAD'))
       return { kind: 'read' };
     return write(
@@ -521,11 +535,8 @@ function classifyService(request: InterceptedRequest, signed: SigV4Authorization
       request.method === 'DELETE' || request.method === 'PUT',
     );
   }
-  if (MINTS[service]?.includes(operation))
-    return {
-      kind: 'refuse',
-      reason: `${service}:${operation} hands out credentials, which would put a secret in the agent’s computer, so it was not sent.`,
-    };
+  if (mints(service, operation))
+    return { kind: 'refuse', reason: MINTS_REASON(service, operation) };
   const secretRead =
     SECRET_READS[service]?.includes(operation) ||
     (service === 'ssm' && PARAMETER_READS.has(operation) && decrypts(request));
