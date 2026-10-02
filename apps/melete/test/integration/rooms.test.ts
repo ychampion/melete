@@ -4,7 +4,7 @@
  * attributed to the person who asked, and the room's work is read only through
  * the room's routes, by the people in the room, checked at every request.
  */
-import { afterAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -238,7 +238,8 @@ withDb('rooms', () => {
     await rm(directory, { recursive: true, force: true });
   }, 30_000);
 
-  test('setup makes three people who each name themselves', async () => {
+  // Three people, each with a name they chose: Alice set the installation up.
+  beforeAll(async () => {
     const { app } = database();
     const setup = await app.request('/setup', {
       method: 'POST',
