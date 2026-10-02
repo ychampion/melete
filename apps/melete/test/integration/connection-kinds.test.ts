@@ -891,7 +891,7 @@ withDb('installing each kind of connection through the API', () => {
     for (const created of [installed.space_id, sharedId]) {
       const defaults =
         await h.sql`select provider from connection where space_id = ${created} and configuration ? 'builtin' order by provider`;
-      expect(defaults.map((row) => row.provider)).toEqual(['artifacts', 'files', 'web']);
+      expect(defaults.map((row) => row.provider)).toEqual(['artifacts', 'files', 'room', 'web']);
     }
   }, 120_000);
 
