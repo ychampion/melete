@@ -1758,36 +1758,39 @@ export function OnboardingScreen() {
                 onChange={(on) => setVoice({ ...voice, asks_before_acting: on })}
               />
             </div>
-            {templates.data?.templates.length ? (
+            {templates.data?.templates.some((template) => template.featured) ? (
               <fieldset className="field-group col" style={{ gap: 8 }}>
                 <legend className="overline">Add a specialist too? Optional</legend>
                 <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                  A specialist keeps to one job and only the tools it needs. Ask one in any chat
-                  with @ and its name.
+                  A specialist keeps to one job and only the tools it needs: you choose those on the
+                  Agents screen, where the full library is too. Ask one in any chat with @ and its
+                  name.
                 </span>
                 <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                  {templates.data.templates.map((template) => {
-                    const on = picked.includes(template.id);
-                    return (
-                      <Chip
-                        key={template.id}
-                        on={on}
-                        aria-pressed={on}
-                        onClick={() =>
-                          setPicked(
-                            on
-                              ? picked.filter((id) => id !== template.id)
-                              : [...picked, template.id],
-                          )
-                        }
-                      >
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                          <AgentFace look={lookOf(template.agent)} size={16} />
-                          {template.agent.name} · {template.title}
-                        </span>
-                      </Chip>
-                    );
-                  })}
+                  {templates.data.templates
+                    .filter((template) => template.featured)
+                    .map((template) => {
+                      const on = picked.includes(template.id);
+                      return (
+                        <Chip
+                          key={template.id}
+                          on={on}
+                          aria-pressed={on}
+                          onClick={() =>
+                            setPicked(
+                              on
+                                ? picked.filter((id) => id !== template.id)
+                                : [...picked, template.id],
+                            )
+                          }
+                        >
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                            <AgentFace look={lookOf(template.agent)} size={16} />
+                            {template.agent.name} · {template.title}
+                          </span>
+                        </Chip>
+                      );
+                    })}
                 </div>
               </fieldset>
             ) : null}

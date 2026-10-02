@@ -5,6 +5,7 @@
  * breaks every caller that needs to know about it.
  */
 
+export * from './agent-library.ts';
 export * from './api.ts';
 export * from './artifacts.ts';
 export * from './beliefs.ts';

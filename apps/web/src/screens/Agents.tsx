@@ -37,7 +37,9 @@ import { lookOf, useApp, useLoad } from '../experience/hooks.ts';
 import type { Agent, AgentInput, AgentTemplate, Connection } from '../experience/types.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
+import { LibraryShelf, TemplateSheet, WelcomeSheet } from './AgentLibrary.tsx';
 import { draftKey, followSaved } from './agent-draft.ts';
+import { suggests, WORKS_WITH, type WorksWith } from './agent-library.ts';
 
 const ROLES = [
   'Concierge',
@@ -257,6 +259,7 @@ function AgentEditor({
   onSaved,
   onClose,
   onDelete,
+  worksWith,
 }: {
   agentId: string | null;
   /** Melete: its name and reach are fixed, so only how it sounds is edited. */
@@ -272,6 +275,8 @@ function AgentEditor({
   onClose: () => void;
   /** Asks to delete this agent; given for agents other than Melete. */
   onDelete?: () => void;
+  /** For a library agent: the kinds it works best with, marked on its connections, never ticked. */
+  worksWith?: readonly WorksWith[];
 }) {
   const [draft, setDraft] = useState<AgentInput>(initial);
   const panelRef = useRef<HTMLElement>(null);
@@ -502,12 +507,13 @@ function AgentEditor({
               />
             </Field>
             <Field
-              label="One standing instruction"
-              hint="It applies to every chat this agent handles. Up to 200 characters."
+              label="Standing instruction"
+              hint="Its brief for every chat it handles. Up to 500 characters."
             >
               <textarea
                 className="textarea"
-                maxLength={200}
+                maxLength={500}
+                rows={6}
                 value={draft.standing_instruction}
                 onChange={(event) =>
                   setDraft({ ...draft, standing_instruction: event.target.value })
@@ -552,6 +558,13 @@ function AgentEditor({
               Connections are per agent. Tick what this one may look at; with everything ticked, it
               also reaches what you connect later.
             </p>
+            {worksWith?.length ? (
+              <p style={{ fontSize: 13, color: 'var(--secondary)' }}>
+                Works best with{' '}
+                {worksWith.map((kind) => WORKS_WITH[kind].label.toLowerCase()).join(', ')}. Nothing
+                is ticked for you.
+              </p>
+            ) : null}
             <div className="col" style={{ gap: 6 }}>
               {connections.map((connection) => {
                 const on = reaches(draft.allowed_connection_ids, connection.id);
@@ -586,8 +599,14 @@ function AgentEditor({
                       </span>
                     )}
                     <span className="col grow" style={{ minWidth: 0 }}>
-                      <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
+                      <span
+                        className="row"
+                        style={{ gap: 6, fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
+                      >
                         {connection.label}
+                        {worksWith && suggests(worksWith, connection.app) ? (
+                          <span className="library-suggested">Suggested</span>
+                        ) : null}
                       </span>
                       <span className="clamp1" style={{ fontSize: 12, color: 'var(--muted)' }}>
                         {connection.app} ·{' '}
@@ -708,6 +727,10 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
   const [seed, setSeed] = useState<AgentTemplate | null>(null);
   const [deleting, setDeleting] = useState<Agent | null>(null);
   const [removing, setRemoving] = useState(false);
+  // A library template being read before it is added, and an agent just made
+  // from one, whose routine and questions are offered next.
+  const [viewing, setViewing] = useState<AgentTemplate | null>(null);
+  const [welcome, setWelcome] = useState<{ agent: Agent; template: AgentTemplate } | null>(null);
 
   const wall = useMemo(() => {
     const items = WALL.map(([colour, shape], i) => ({
@@ -773,7 +796,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
     });
   };
 
-  const panel = initial ? (
+  const editor = initial ? (
     <AgentEditor
       key={current?.id ?? `new-${seed?.id ?? 'blank'}`}
       agentId={current?.id ?? null}
@@ -786,14 +809,54 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
       onSaved={(agent) => {
         refreshAgents();
         templates.reload();
+        // A new agent from the library goes on to its routine and questions.
+        const from = !current && seed ? seed : null;
         setSeed(null);
-        toast({ kind: 'ok', title: `${agent.name} is ready.` });
+        if (from && (from.starter_routine || from.questions.length))
+          setWelcome({ agent, template: from });
+        else toast({ kind: 'ok', title: `${agent.name} is ready.` });
         navigate(`/agents/${agent.id}`);
       }}
       onClose={() => closeTo(current?.id ?? null)}
       onDelete={current && !current.is_default ? () => setDeleting(current) : undefined}
+      worksWith={!current && seed ? seed.works_best_with : undefined}
     />
   ) : undefined;
+
+  const closeSheet = (id: string) => {
+    setViewing(null);
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>(`[data-library-card="${id}"]`)?.focus(),
+    );
+  };
+
+  const panel = welcome ? (
+    <WelcomeSheet
+      key={welcome.agent.id}
+      agent={welcome.agent}
+      template={welcome.template}
+      onOpenAgent={() => {
+        setWelcome(null);
+        navigate(`/agents/${welcome.agent.id}`);
+      }}
+      onClose={() => {
+        setWelcome(null);
+        closeTo(welcome.agent.id);
+      }}
+    />
+  ) : viewing && selected === null ? (
+    <TemplateSheet
+      key={viewing.id}
+      template={viewing}
+      onAdd={() => {
+        setViewing(null);
+        fromTemplate(viewing);
+      }}
+      onClose={() => closeSheet(viewing.id)}
+    />
+  ) : (
+    editor
+  );
 
   const fromTemplate = (template: AgentTemplate) => {
     // The suggested name is one no agent here has, so "@name" stays clear.
@@ -823,6 +886,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
             onClick={() => {
               setPicked(null);
               setSeed(null);
+              setViewing(null);
               navigate('/agents/new');
             }}
           >
@@ -913,6 +977,17 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
             );
           })}
         </div>
+        {templates.data?.templates.length ? (
+          <LibraryShelf
+            templates={templates.data.templates}
+            open={viewing && selected === null ? viewing.id : null}
+            onOpen={(template) => {
+              setWelcome(null);
+              setViewing(template);
+              if (selected !== null) navigate('/agents');
+            }}
+          />
+        ) : null}
         <div
           className="col"
           style={{
@@ -974,6 +1049,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
                   onClick={() => {
                     setPicked(look);
                     setSeed(null);
+                    setViewing(null);
                     navigate('/agents/new');
                   }}
                 >
@@ -987,43 +1063,6 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
             })}
           </div>
         </div>
-        {templates.data?.templates.length ? (
-          <div className="col" style={{ gap: 12 }}>
-            <div className="section-head">
-              <h2>Start from a template</h2>
-            </div>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: 12,
-              }}
-            >
-              {templates.data.templates.map((template) => (
-                <button
-                  key={template.id}
-                  type="button"
-                  className="card-12 hoverable row"
-                  style={{ gap: 12, padding: '12px 14px', textAlign: 'left' }}
-                  onClick={() => fromTemplate(template)}
-                >
-                  <AgentFace look={lookOf(template.agent)} size={36} state="inactive" />
-                  <span className="col grow" style={{ gap: 1 }}>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-                      {template.title}
-                    </span>
-                    <span className="clamp1" style={{ fontSize: 12, color: 'var(--muted)' }}>
-                      {template.agent.standing_instruction}
-                    </span>
-                  </span>
-                  <span style={{ color: 'var(--muted)', display: 'flex' }}>
-                    <Icon name="plus" size={16} />
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
         {templates.error ? <Badge tone="danger">{templates.error}</Badge> : null}
       </div>
       <Dialog

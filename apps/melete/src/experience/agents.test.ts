@@ -16,7 +16,7 @@ test('agent identity accepts multibyte text within the contract character limits
     ...AGENT_TEMPLATES.templates[0]?.agent,
     name: '星'.repeat(40),
     tone: '静'.repeat(80),
-    standing_instruction: '学'.repeat(200),
+    standing_instruction: '学'.repeat(500),
   });
   const text = agentIdentity(input);
   expect(Buffer.byteLength(text, 'utf8')).toBeGreaterThan(1000);
@@ -69,7 +69,7 @@ test('an agent that keeps no memory is told so, within the identity cap', () => 
     ...AGENT_TEMPLATES.templates[0]?.agent,
     name: 'n'.repeat(40),
     tone: 't'.repeat(80),
-    standing_instruction: 's'.repeat(200),
+    standing_instruction: 's'.repeat(500),
     writes_memory: false,
   });
   const text = agentIdentity(longest);
