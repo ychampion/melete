@@ -17,7 +17,7 @@ import { appendEvent, checkAttempt, lockJob } from './records.ts';
 export const RUNTIME_WAIT_TOOL: ToolSpec = {
   name: 'job.wait',
   description:
-    "Persist a wait for a registered event or a future timer, then end this turn. Name one of this job's triggers by id or event name. This does not send anything or approve an action.",
+    "Persist a wait for a registered event or a future timer, then end this turn. Name one of this job's triggers by id or event name. This does not send anything or approve an action. A timer wakes this job once: for anything that repeats (every weekday, every week) or should keep watching, use run.start with repeat when it is offered.",
   effect_class: 'write_reversible',
   connection_id: null,
   input_schema: {
