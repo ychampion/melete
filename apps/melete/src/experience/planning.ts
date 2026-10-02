@@ -455,22 +455,45 @@ export class ExperiencePlanning {
       cron: `${minute} ${hour} * * ${days}`,
       timezone: profile?.timeZone ?? 'UTC',
     });
+    return this.register(spaceId, {
+      title: input.title,
+      objective: input.instruction,
+      agentId: runner.id,
+      spec,
+    });
+  }
+  /**
+   * Saves a routine: its own thread, resting until its schedule fires. A
+   * routine started again from an ended one takes the old one's place, so the
+   * ended registration goes in the same transaction.
+   */
+  private async register(
+    spaceId: string,
+    routine: {
+      title: string;
+      objective: string;
+      agentId: string;
+      spec: ReturnType<typeof triggerSpec.parse>;
+    },
+    replaces?: string,
+  ) {
     const jobs = this.service.jobs;
+    if (!this.triggers || !jobs) return unavailable('Scheduled routines are not connected yet.');
     const registration = await jobs.transaction(async (tx) => {
       const row = await jobs.createInTransaction(
         tx,
         {
           space_id: spaceId,
-          title: input.title,
-          objective: input.instruction,
+          title: routine.title,
+          objective: routine.objective,
           scheduling_class: 'background',
           importance: 'routine',
         },
-        { kind: 'routine', agentId: runner.id, dormant: true },
+        { kind: 'routine', agentId: routine.agentId, dormant: true },
       );
       const [registration] = await tx
         .insert(trigger)
-        .values({ id: newId('trg'), jobId: row.id, kind: 'schedule', spec })
+        .values({ id: newId('trg'), jobId: row.id, kind: 'schedule', spec: routine.spec })
         .returning();
       if (!registration) throw new Error('Routine was not saved.');
       await tx
@@ -481,11 +504,19 @@ export class ExperiencePlanning {
           nextWakeAt: null,
         })
         .where(eq(job.id, row.id));
+      if (replaces) {
+        // A second start of the same ended routine finds it gone and saves nothing.
+        const gone = await tx
+          .delete(trigger)
+          .where(eq(trigger.id, replaces))
+          .returning({ id: trigger.id });
+        if (!gone.length) throw experienceMissing();
+      }
       return registration;
     });
     await this.triggers.syncSchedules();
     return {
-      automation: await this.automation(registration, input.title, 'waiting_for_event_or_time'),
+      automation: await this.automation(registration, routine.title, 'waiting_for_event_or_time'),
     };
   }
   private async requireAutomation(spaceId: string, id: string) {
@@ -540,6 +571,31 @@ export class ExperiencePlanning {
     return {
       automation: await this.automation({ ...row.trigger, enabled }, row.job.title, row.job.state),
     };
+  }
+  /**
+   * Starts an ended routine again: a new routine with the same title,
+   * instruction, assistant and schedule takes the ended one's place on the
+   * list. The ended one's thread and runs stay as they were.
+   */
+  async restartAutomation(spaceId: string, id: string) {
+    const row = await this.requireAutomation(spaceId, id);
+    if (!isTerminal(jobState.parse(row.job.state)))
+      throw new ServiceError(
+        'routine_not_ended',
+        'This routine has not ended. Resume it instead of starting it again.',
+        409,
+      );
+    const runner = await this.service.agentOrDefault(spaceId, row.job.agentId ?? undefined);
+    return this.register(
+      spaceId,
+      {
+        title: row.job.title,
+        objective: row.job.objective,
+        agentId: runner.id,
+        spec: triggerSpec.parse(row.trigger.spec),
+      },
+      row.trigger.id,
+    );
   }
   /** Stops the routine, a run under way included, and takes it off the list. */
   async deleteAutomation(spaceId: string, id: string) {

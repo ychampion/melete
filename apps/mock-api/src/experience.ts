@@ -1945,6 +1945,26 @@ export class ExperienceMock {
         routine.enabled = key.endsWith('/resume');
         return { automation: routine };
       }
+      case 'POST /automations/{id}/restart': {
+        const ended = required(this.automations, id);
+        if (!ended.ended)
+          throw new MockExperienceError(
+            409,
+            'This routine has not ended. Resume it instead of starting it again.',
+            'routine_not_ended',
+          );
+        const routine = C.experienceAutomation.parse({
+          ...ended,
+          id: newId('routine'),
+          enabled: true,
+          ended: false,
+          conversation_id: newId('job'),
+          runs: [],
+        });
+        this.automations.delete(id);
+        this.automations.set(routine.id, routine);
+        return { automation: routine };
+      }
       case 'DELETE /automations/{id}':
         required(this.automations, id);
         this.automations.delete(id);

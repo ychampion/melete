@@ -290,6 +290,25 @@ describe('persisted completion evidence', () => {
     });
   });
 
+  test.each(['unknown', 'unresolved'])(
+    'an open %s step on a computer that reaches nothing neither holds the turn nor reconciles; any other does',
+    (status) => {
+      const open = { ...records(), actions: [{ ...storedAction, status }] };
+      const own = evaluateCompletion(subject(), completed, {
+        ...records(),
+        actions: [{ ...storedAction, status, closedStep: true }],
+      });
+      expect(own.has_unknown_action).toBe(false);
+      expect(own.all_actions_terminal).toBe(true);
+      const outside = evaluateCompletion(subject(), completed, {
+        ...records(),
+        actions: [{ ...storedAction, status, closedStep: false }],
+      });
+      expect(outside.has_unknown_action).toBe(true);
+      expect(evaluateCompletion(subject(), completed, open).has_unknown_action).toBe(true);
+    },
+  );
+
   test.each(['proposed', 'admitted', 'dispatched'])(
     'an action in %s prevents all-actions-terminal',
     (status) => {

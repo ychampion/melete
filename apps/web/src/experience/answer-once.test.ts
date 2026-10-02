@@ -135,3 +135,24 @@ test('replaying a long finished turn never reads as working', () => {
   const running = fromTurns([{ ...turnOf('', 'working'), id: 'turn_2' }], 'pause', 'working');
   expect(applyEvents(running, [status('needs_you')]).status).toBe('needs_you');
 });
+
+test('a turn run again replaces the lost attempt’s partial answer instead of adding to it', () => {
+  seq = 400;
+  const live = fromTurns([{ ...turnOf(''), id: 'turn_2', status: 'working' }], 'pause', 'working');
+  const partial = delta('Dutch traders brought it in the early sev');
+  const restart: ExperienceEvent = {
+    seq: ++seq,
+    conversation_id: 'job_1',
+    turn_id: 'turn_2',
+    created_at: AT,
+    item: { type: 'text_delta', text: '', restart: true },
+  };
+  const events = [
+    partial,
+    restart,
+    delta('Dutch traders brought tea to Europe '),
+    delta('in the early 1600s.'),
+  ];
+  const turn = applyEvents(live, events).turns[0] as TranscriptTurn;
+  expect(answerOf(turn)).toBe('Dutch traders brought tea to Europe in the early 1600s.');
+});

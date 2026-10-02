@@ -8,7 +8,12 @@ import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { SandboxConnectionConfig } from '@melete/contracts';
-import { type Action, canonicalizePayload, connectorManifest } from '@melete/contracts';
+import {
+  type Action,
+  canonicalizePayload,
+  connectorManifest,
+  EXEC_LIMITS,
+} from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
 import { sandboxSpecFor } from '../sandbox/connection.ts';
@@ -89,11 +94,11 @@ test('a dispatch may take the command timeout, the wait for the computer and the
     sandboxDispatchBudgetMs({ canonical_payload: { command: 'true', timeout_ms: 90_000 } }),
   ).toBe(90_000 + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS);
   expect(sandboxDispatchBudgetMs({ canonical_payload: { command: 'true' } })).toBe(
-    120_000 + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS,
+    EXEC_LIMITS.default_timeout_ms + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS,
   );
   // A payload the connector refuses still gets a bounded budget.
   expect(sandboxDispatchBudgetMs({ canonical_payload: { command: 'true', timeout_ms: -1 } })).toBe(
-    120_000 + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS,
+    EXEC_LIMITS.default_timeout_ms + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS,
   );
 });
 

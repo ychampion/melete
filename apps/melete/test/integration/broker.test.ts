@@ -8,6 +8,7 @@ import {
   THUMBS_UP,
 } from '@melete/contracts';
 import { PgBoss } from 'pg-boss';
+import type { Sql } from 'postgres';
 import type { EffectAuthority } from '../../src/broker/authority.ts';
 import { loadAction, recordId } from '../../src/broker/records.ts';
 import type { BrokerOptions } from '../../src/broker/service.ts';
@@ -16,6 +17,23 @@ import type { Connector } from '../../src/connectors/types.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
+
+/** Record that an action runs on an agent's computer that reaches nothing outside. */
+async function onClosedComputer(
+  sql: Sql,
+  claims: { job_id: string; attempt_id: string; space_id: string },
+  connectionId: string,
+  actionId: string,
+) {
+  const sessionId = `session_${actionId}`;
+  await sql`insert into sandbox_session (id, connection_id, space_id, job_id, attempt_id,
+      adapter, provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at)
+    values (${sessionId}, ${connectionId}, ${claims.space_id}, ${claims.job_id}, ${claims.attempt_id},
+      'fake', ${sessionId}, 'image', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'ready',
+      now() + interval '10 minutes')`;
+  await sql`insert into sandbox_command (action_id, session_id, marker)
+    values (${actionId}, ${sessionId}, ${actionId})`;
+}
 
 const fixture = await createPostgresFixture();
 const databaseTest = fixture ? test : test.skip;
@@ -508,6 +526,7 @@ describe('durable action lifecycle', () => {
       s.connector.ownComputer = true;
       const request = { kind: 'test.send', connection_id: s.connectionId, payload: {} };
       const proposal = await s.broker.propose(s.claims, request);
+      await onClosedComputer(s.sql, s.claims, s.connectionId, proposal.action_id);
       await s.broker.decide(proposal.action_id, {
         decision: 'approved',
         payload_hash: proposal.payload_hash,
@@ -557,6 +576,7 @@ describe('durable action lifecycle', () => {
         connection_id: s.connectionId,
         payload: {},
       });
+      await onClosedComputer(s.sql, s.claims, s.connectionId, proposal.action_id);
       await s.broker.decide(proposal.action_id, {
         decision: 'approved',
         payload_hash: proposal.payload_hash,

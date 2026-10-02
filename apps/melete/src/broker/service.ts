@@ -53,6 +53,7 @@ import { plainText, tooLongToAsk } from '../experience/projectors.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
+import { closedComputerStep } from '../sandbox/closed-step.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
 import {
   bindEffect,
@@ -260,7 +261,7 @@ const NO_GUESTS: GuestCounts = new Map();
 const guestKey = (connectionId: string, payload: unknown) =>
   `${connectionId}:${JSON.stringify((payload as { uid?: unknown } | null)?.uid ?? null)}`;
 /** The longest a connector may ask one dispatch to take. */
-const MAX_DISPATCH_BUDGET_MS = 10 * 60_000;
+const MAX_DISPATCH_BUDGET_MS = 15 * 60_000;
 /** The limits a caller set, so an unset one keeps its default. */
 const definedOnly = (options: AutoReviewOptions) => ({
   ...(options.hourlyLimit === undefined ? {} : { hourlyLimit: options.hourlyLimit }),
@@ -557,7 +558,7 @@ export class BrokerService implements BrokerOperations {
    * why, and tells the agent to wait rather than find another way round.
    */
   private async reviewedMessage(action: Action, repeated: boolean): Promise<string> {
-    const message = dispositionMessage(action, repeated, this.ownComputer(action));
+    const message = dispositionMessage(action, repeated, await this.ownComputer(this.sql, action));
     if (action.status !== 'needs_approval' || !this.options.autoReview) return message;
     const review = await actionReviewView(this.sql, action.id);
     if (review?.outcome !== 'escalated') return message;
@@ -584,7 +585,7 @@ export class BrokerService implements BrokerOperations {
       repeated,
       message: await this.reviewedMessage(action, repeated),
       origin_warnings: originWarnings.parse(approval?.origin_warnings ?? []),
-      own_computer: this.ownComputer(action),
+      own_computer: await this.ownComputer(this.sql, action),
     };
   }
 
@@ -2079,7 +2080,8 @@ export class BrokerService implements BrokerOperations {
     const settled = await this.recordResult(id, run.result as DispatchResult);
     // A step on the agent's own computer that never answered is for the agent
     // to check, not a question for the person.
-    const ownStep = run.disposition === 'needs_reconciliation' && this.ownComputer(action);
+    const ownStep =
+      run.disposition === 'needs_reconciliation' && (await this.ownComputer(this.sql, action));
     if (run.question && !ownStep) await this.escalate(settled, run);
     return settled;
   }
@@ -2089,8 +2091,25 @@ export class BrokerService implements BrokerOperations {
    * is the agent's to check (a screenshot, the page, what a command left
    * behind) and never a question put to the person.
    */
-  private ownComputer(action: Pick<Action, 'connection_id'>): boolean {
-    return this.options.connectors.get(action.connection_id)?.ownComputer === true;
+  private async ownComputer(
+    q: Query,
+    action: Pick<Action, 'id' | 'connection_id'>,
+  ): Promise<boolean> {
+    if (this.options.connectors.get(action.connection_id)?.ownComputer !== true) return false;
+    // A computer with network access may have reached outside it; only one that
+    // could reach nothing keeps an open step the agent's alone.
+    return closedComputerStep(q, action.id);
+  }
+
+  /** What the person is asked about an effect nobody could confirm. */
+  private reconcileQuestion(action: Action): string {
+    if (this.options.connectors.get(action.connection_id)?.ownComputer !== true) return question;
+    const command = (action.canonical_payload as { command?: unknown }).command;
+    const what =
+      typeof command === 'string'
+        ? `The command \`${command.length > 200 ? `${command.slice(0, 200)}…` : command}\``
+        : `A ${action.kind} step`;
+    return `${what} ran on the agent's computer and its result did not come back. That computer had network access, so the command may have reached outside it, for example by sending or uploading something. Check what it may have changed, then mark it.`;
   }
 
   /**
@@ -2355,10 +2374,13 @@ export class BrokerService implements BrokerOperations {
       if (
         result.outcome === 'unknown' &&
         !late &&
-        !this.ownComputer(action) &&
+        !(await this.ownComputer(tx, action)) &&
         !['cancelled', 'failed', 'completed'].includes(job.state)
       ) {
-        await this.moveJob(tx, job, 'needs_reconciliation', { kind: 'user_input', question });
+        await this.moveJob(tx, job, 'needs_reconciliation', {
+          kind: 'user_input',
+          question: this.reconcileQuestion(action),
+        });
       }
       if (
         wasUncertain &&
@@ -2448,12 +2470,12 @@ export class BrokerService implements BrokerOperations {
           await this.wake(tx, currentJob, 'recovery');
       } else if (
         !late &&
-        !this.ownComputer(current) &&
+        !(await this.ownComputer(tx, current)) &&
         !['cancelled', 'failed', 'completed'].includes(currentJob.state)
       ) {
         await this.moveJob(tx, currentJob, 'needs_reconciliation', {
           kind: 'user_input',
-          question,
+          question: this.reconcileQuestion(current),
         });
       }
       return loadAction(tx, id);
@@ -2614,6 +2636,32 @@ export class BrokerService implements BrokerOperations {
       recovered += 1;
     }
     return recovered;
+  }
+
+  /**
+   * Settle what an attempt left dispatched once its runtime has stopped
+   * waiting. An action this process is still sending is left to finish and
+   * settle itself. Any other one has no sender: a command the cell claimed and
+   * never reported, or a call whose waiter gave up. It is recorded as unknown
+   * with the reason, so the attempt can end on it instead of waiting for a
+   * recovery sweep. A result that
+   * arrives later still lands on the record.
+   */
+  async settleAbandoned(attemptId: string): Promise<number> {
+    const rows = await this.sql`select id from action
+      where attempt_id = ${attemptId} and status = 'dispatched'`;
+    let settled = 0;
+    for (const row of rows) {
+      if (this.inFlight.has(row.id as string)) continue;
+      // Unknown whatever its effect class: only a verify that shows it never
+      // started may call it failed.
+      await this.recordResult(row.id as string, {
+        outcome: 'unknown',
+        reason: 'The tool call ended before this action reported back',
+      });
+      settled += 1;
+    }
+    return settled;
   }
 
   /** The broker's own timeout, or longer where the connector says this action needs it. */

@@ -461,7 +461,15 @@ export const experienceEvent = z.strictObject({
   created_at: date,
   item: z.union([
     trailStep,
-    z.strictObject({ type: z.literal('text_delta'), text: z.string() }),
+    z.strictObject({
+      type: z.literal('text_delta'),
+      text: z.string(),
+      /**
+       * The turn's answer so far is replaced by this text rather than added
+       * to: the attempt that wrote it was lost and the turn is running again.
+       */
+      restart: z.literal(true).optional(),
+    }),
     /** The model's reasoning as it writes it, for the trail; never part of the answer. */
     z.strictObject({ type: z.literal('reasoning'), text: z.string() }),
     z.strictObject({ type: z.literal('card'), card: resultCard }),
@@ -849,7 +857,7 @@ export const experienceAutomation = z.strictObject({
   title: text,
   schedule: text,
   enabled: z.boolean(),
-  /** Stopped for good: it cannot be resumed, only deleted. */
+  /** Stopped for good: it cannot be resumed, only started again or deleted. */
   ended: z.boolean(),
   /** The thread every run of this routine writes into. */
   conversation_id: id,
@@ -1072,6 +1080,11 @@ export const experienceOperations = {
   /** Stops the schedule; nothing runs until it is resumed. */
   'POST /automations/{id}/pause': { response: automationResponse },
   'POST /automations/{id}/resume': { response: automationResponse },
+  /**
+   * Starts an ended routine again with the same settings. The new routine takes
+   * the ended one's place on the list; one that has not ended is refused.
+   */
+  'POST /automations/{id}/restart': { response: automationResponse },
   /** Stops the routine for good and takes it off the list. */
   'DELETE /automations/{id}': { response: experienceOk },
   'POST /automations/morning-brief': {

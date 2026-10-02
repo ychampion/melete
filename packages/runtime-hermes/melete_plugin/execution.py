@@ -52,8 +52,8 @@ DEFAULT_WORK_DIR = "/work"
 
 #: Mirrors packages/contracts/src/execution.ts. Both sides are checked against
 #: these numbers, and the broker refuses a record that exceeds them.
-DEFAULT_TIMEOUT_MS = 30_000
-MAX_TIMEOUT_MS = 120_000
+DEFAULT_TIMEOUT_MS = 300_000
+MAX_TIMEOUT_MS = 600_000
 MAX_OUTPUT_BYTES = 16_384
 MAX_CAPTURE_BYTES = 4_194_304
 OUTPUT_DIR = ".melete/exec"

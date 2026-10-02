@@ -163,6 +163,62 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
     expect(ended?.payload).toMatchObject({ kind: 'lost', turn_status: 'failed' });
   });
 
+  test('a turn run again after a lost attempt shows one answer, not two glued together', async () => {
+    const chat = await createConversation();
+    expect((await send(chat.id, 'How did tea reach Europe?')).status).toBe(200);
+    const say = async (claims: CapabilityClaims, seq: number, text: string) =>
+      required(runner).emit(claims, {
+        type: 'text_delta',
+        attempt_id: claims.attempt_id,
+        local_seq: seq,
+        dedup_key: dedupKey(claims.attempt_id, seq),
+        at: new Date().toISOString(),
+        text,
+      });
+    const claimNext = async () => {
+      const row = await required(jobs).get(chat.id);
+      return required(
+        await required(runner).claim({
+          job_id: row.id,
+          expected_epoch: row.leaseEpoch,
+          expected_version: row.stateVersion,
+          reason: 'input',
+        }),
+      ).claims;
+    };
+    const first = await claimNext();
+    await say(first, 0, 'Dutch traders brought it in the early sev');
+    // The attempt is lost part way; the turn runs again.
+    expect(await required(runner).loseAttempt(first.attempt_id, 'runtime_crashed')).toBe(true);
+    expect((await required(jobs).get(chat.id)).state).toBe('queued');
+    const second = await claimNext();
+    await say(second, 0, 'Dutch traders brought tea to Europe ');
+    await say(second, 1, 'in the early 1600s.');
+    const whole = 'Dutch traders brought tea to Europe in the early 1600s.';
+    const turns = turnList.parse(
+      await (await request(`/conversations/${chat.id}/messages`)).json(),
+    );
+    // While it streams, the saved answer is the second attempt's alone (its
+    // last word is held back until the attempt ends).
+    expect(turns.turns.at(-1)?.answer).toBe('Dutch traders brought tea to Europe in the early ');
+    // Ended, so the stream has let go of the last word it held back.
+    await required(runner).commitOutcome(second, {
+      kind: 'completed',
+      summary: whole,
+      evidence: [],
+    });
+    // The stream says the same: the second attempt's text replaces the first's.
+    const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
+    let streamed = '';
+    for (const event of page.events)
+      if (event.item.type === 'text_delta')
+        streamed = event.item.restart ? event.item.text : streamed + event.item.text;
+    expect(
+      page.events.some((event) => event.item.type === 'text_delta' && event.item.restart),
+    ).toBe(true);
+    expect(streamed).toBe(whole);
+  });
+
   test('after a failed turn the next message starts a new turn', async () => {
     const chat = await createConversation();
     await turnEndingIn(chat.id, {
