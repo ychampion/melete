@@ -1,6 +1,6 @@
 {
-  "id": "f23ab683-453b-41eb-aa0a-8707d6b5eec6",
-  "prevId": "5d195727-13bf-4f5d-8310-aabb4b9594f1",
+  "id": "f97da85b-de69-453d-8112-016f565c4ad7",
+  "prevId": "f23ab683-453b-41eb-aa0a-8707d6b5eec6",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -13632,6 +13632,113 @@
         "room_message_request_state": {
           "name": "room_message_request_state",
           "value": "\"room_message\".\"request_state\" in ('none', 'pending', 'started')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.room_policy": {
+      "name": "room_policy",
+      "schema": "",
+      "columns": {
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "approvers": {
+          "name": "approvers",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'requester'"
+        },
+        "agent_turns": {
+          "name": "agent_turns",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'asked'"
+        },
+        "guests_may_ask": {
+          "name": "guests_may_ask",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "requests_per_hour": {
+          "name": "requests_per_hour",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 30
+        },
+        "requests_per_person_hour": {
+          "name": "requests_per_person_hour",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 10
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "room_policy_space_id_space_id_fk": {
+          "name": "room_policy_space_id_space_id_fk",
+          "tableFrom": "room_policy",
+          "tableTo": "space",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_policy_updated_by_principal_id_fk": {
+          "name": "room_policy_updated_by_principal_id_fk",
+          "tableFrom": "room_policy",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "updated_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "room_policy_approvers": {
+          "name": "room_policy_approvers",
+          "value": "\"room_policy\".\"approvers\" in ('requester', 'any_member', 'owners')"
+        },
+        "room_policy_agent_turns": {
+          "name": "room_policy_agent_turns",
+          "value": "\"room_policy\".\"agent_turns\" in ('asked', 'every_message')"
+        },
+        "room_policy_limits": {
+          "name": "room_policy_limits",
+          "value": "\"room_policy\".\"requests_per_hour\" between 1 and 1000 and \"room_policy\".\"requests_per_person_hour\" between 1 and \"room_policy\".\"requests_per_hour\""
         }
       },
       "isRLSEnabled": false

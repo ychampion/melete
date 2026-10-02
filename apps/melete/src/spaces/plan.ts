@@ -152,6 +152,11 @@ const SPACE_KEYED_OPERATIONAL = [
   // configuration left go here, since an emptied space keeps its row and the
   // cascade from it never fires.
   'browser_site_profile',
+  // A room's threads, the messages said in them and who was looking. An
+  // emptied room keeps its space row, so the cascade from it never fires.
+  'room_presence',
+  'room_message',
+  'room_thread',
 ] as const;
 
 /**
@@ -188,6 +193,10 @@ export async function sweepMemory(raw: Sql, spaceId: string, hold?: LeaseHold): 
       (select id from memory_claims where space_id = ${spaceId})`;
     await tx`delete from memory_source_content where source_id in
       (select id from memory_sources where space_id = ${spaceId})`;
+    // A share names two spaces: the room it was shared into and the personal
+    // space the detail lives in. Either one going takes the share with it.
+    await tx`delete from memory_room_grant
+      where room_space_id = ${spaceId} or source_space_id = ${spaceId}`;
     for (const table of MEMORY_TABLES)
       await tx`delete from ${tx(table)} where space_id = ${spaceId}`;
     // The one pointer from another space's rows into this one, with no
@@ -223,6 +232,7 @@ const MEMORY_TABLES = [
   'memory_questions',
   'memory_rejections',
   'memory_capture',
+  'memory_room_capture',
   'memory_model_calls',
   'memory_action_basis',
   'memory_blocks',

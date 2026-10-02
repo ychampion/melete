@@ -297,6 +297,7 @@ const MEMORY: readonly string[] = [
   'memory_rejections',
   'memory_repair_briefs',
   'memory_rewinds',
+  'memory_room_capture',
   'memory_sources',
   'memory_spaces',
   'memory_streams',
@@ -352,6 +353,9 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   privacy_vault: 'operational',
   skill: 'operational',
   task: 'operational',
+  room_presence: 'operational',
+  room_message: 'operational',
+  room_thread: 'operational',
   // After the jobs and actions that `restrict` them.
   agent: 'principals',
   connection: 'principals',

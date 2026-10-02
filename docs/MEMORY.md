@@ -38,6 +38,8 @@ or the owner's. A message counts as the owner's only when the service recorded
 the owner as its speaker, in the owner's own conversation (`only the space
 owner's own messages are kept; a member's are kept nowhere` in
 [memory-shared-space.test.ts](../apps/melete/test/integration/memory-shared-space.test.ts)).
+What people say in a room's threads is the room's own memory, as
+[Rooms](#rooms) describes.
 
 A person can say these in plain words:
 
@@ -78,6 +80,64 @@ memory`, `the memory gateway holds each person to a daily number of calls` and
 `a message waits out a provider outage unread, costs no reads, and is kept once
 it recovers`
 in [memory-chat.test.ts](../apps/melete/test/integration/memory-chat.test.ts).
+
+## Rooms
+
+In a room (see [ROOMS](ROOMS.md)) everything anyone says in a thread is room
+material, so it becomes the room's memory, whoever said it. A capture loop
+reads each person's message in a room once (`memory_room_capture` records what
+it did with it) and keeps it as evidence on the `room` stream of the room's own
+memory, with:
+
+- `author = member` and `author_principal_id`, the person who said it;
+- `audience = space`, so everyone in the room, and the room's agent, may read
+  what is learned from it;
+- `external_content` origin trust: another person's words never raise what an
+  approval card trusts, the requester's own included.
+
+"Don't remember this" and "Off the record" keep a message out, and a person who
+turned memory off is not kept in rooms either. "Forget that" takes back what
+the speaker's previous kept message in that thread taught the room, and
+"Forget <detail>" removes one named detail the speaker may forget there.
+
+A room's requests recall as the room: the room's `space` and `public` details,
+never a `private` one, and never anything from anyone's own space. Beside them,
+they are handed the details people shared into the room. A person shares one of
+their own details from their personal memory (`POST /rooms/{id}/shares`); the
+share is a reference, not a copy. The room reads the detail's current value
+from the person's own memory, through one narrow path, and only while the share
+stands, the person is still in the room, and the detail is still remembered
+where it lives. Forgetting it there takes it out of every room at once and
+invalidates any attempt that was handed it. A shared detail carries
+`external_content` trust and names who shared it. A detail learned in a private
+conversation stays its owner's: it cannot be shared, and a shared detail whose
+current value came from a private conversation is shown to nobody in the room
+and handed to none of its work, whichever model runs it. A share is members-only by
+default: while a guest is in the room, the room's work is not handed it.
+Withdrawing a share (`DELETE /rooms/{id}/shares/{share}`) is open to the person
+who shared it and to the room's owners.
+
+`GET /rooms/{id}/memory` lists the room's details, each with the people whose
+words it rests on, and the room's shares. A room's owner forgets any detail in
+it, and anyone else a detail that rests on their own words alone
+(`POST /rooms/{id}/memory/{claim}/forget`). A person deletes their own message
+(`DELETE /rooms/{id}/messages/{message}`): its words leave the thread, the
+request it asked (its messages, its turn and its title), and the room's memory,
+in one transaction, and work under way in the thread starts again without them.
+
+Every one of these removals is written to the restriction journal: forgetting a
+detail and deleting what was kept of a message as usual, and the message
+deletion and a withdrawn share as records that name the message or share and
+hold none of its words. Restoring an older database replays them, so what was
+removed stays removed. Evidence:
+`every member's words in a room become room memory with their author`,
+`a room request recalls room memory and shared items, and never a member's or
+the owner's private memory`, `forgetting a shared personal claim removes it from
+the room, and a restored old database keeps it out`, `an author deletes their
+message and nothing of it is recalled, replayed or shown`, `a members-only share
+stays out while a guest is in the room` and `an owner forgets any room claim, and
+a member forgets only claims from their own words` in
+[rooms-memory.test.ts](../apps/melete/test/integration/rooms-memory.test.ts).
 
 ## Evidence, claims and correction
 

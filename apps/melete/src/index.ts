@@ -367,6 +367,7 @@ export function createApp(deps: AppDeps) {
       permissions: experience ? experience.permissions : undefined,
       changes: deps.events,
       computers: deps.sandboxComputers,
+      memory: deps.memory,
     });
   if (deps.db)
     mountCompanies(app, {
@@ -717,6 +718,7 @@ export async function bootstrap(
         onJobRecompute: wakeRecomputedJob,
         gateway: memoryGateway?.gateway,
         privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
+        roomPrivacyOrigin: (spaceId, text) => privacy.captureOriginInSpace(spaceId, text),
       });
     }
     if (jobs) {
@@ -773,6 +775,7 @@ export async function bootstrap(
                 gateway: memoryGateway?.gateway,
                 captureChat: true,
                 privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
+                roomPrivacyOrigin: (spaceId, text) => privacy.captureOriginInSpace(spaceId, text),
               }
             : { gateway: memoryGateway?.gateway },
         );

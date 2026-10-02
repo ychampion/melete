@@ -47,8 +47,13 @@ export class ExperienceMemory {
    * here, on first use, rather than waiting for a job to run in it.
    */
   async scope(spaceId: string, ownerId: string): Promise<MemoryScope | null> {
-    const find = () => this.sql`select space_id from memory_spaces where space_id = ${spaceId}
-      and owner_id = ${ownerId} and restore_ready and not revoked`;
+    // The space's own person is who may read and change it. Every space's
+    // memory is stored under the installation owner, so the stored owner is
+    // not who it belongs to.
+    const find = () => this
+      .sql`select m.owner_id from memory_spaces m join space s on s.id = m.space_id
+      where m.space_id = ${spaceId} and m.restore_ready and not m.revoked
+        and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${ownerId}`;
     let [row] = await find();
     if (!row && this.provision) {
       await this.provision(spaceId, ownerId).catch((error: unknown) => {
@@ -59,7 +64,13 @@ export class ExperienceMemory {
       [row] = await find();
     }
     return row
-      ? { spaceId, ownerId, publisher: 'experience', audience: 'private', role: 'owner' }
+      ? {
+          spaceId,
+          ownerId: String(row.owner_id),
+          publisher: 'experience',
+          audience: 'private',
+          role: 'owner',
+        }
       : null;
   }
   /**
