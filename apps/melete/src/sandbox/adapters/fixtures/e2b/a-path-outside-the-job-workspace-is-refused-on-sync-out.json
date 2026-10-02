@@ -139,7 +139,7 @@
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "f477f2852bbb82b3b1cc09c8039948a914e3c7cee86ec65d6bfdc4a98c6b926e",
+        "bodySha256": "05d31f9e5975fdde63d0a9de383c2141274f18fb9124e26ab699469937f8ddea",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -155,7 +155,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "d=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p -m 0700 /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'printf safe > /work/kept.txt; printf x > '\\''/work/..\\..\\escape'\\''' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0CONFORMANCE00000000\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ ( 'sh' '-c' 'printf safe > /work/kept.txt; printf x > '\\''/work/..\\..\\escape'\\''' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | { head -c 4194305 > \"$d/out\"; cat > /dev/null; }\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work"
             },
@@ -174,11 +174,11 @@
             "base64": "AAAAACB7ImV2ZW50Ijp7InN0YXJ0Ijp7InBpZCI6MTAwMn19fQ=="
           },
           {
-            "atMs": 0,
+            "atMs": 1,
             "base64": "AAAAADp7ImV2ZW50Ijp7ImVuZCI6eyJleGl0ZWQiOnRydWUsInN0YXR1cyI6ImV4aXQgc3RhdHVzIDAifX19"
           },
           {
-            "atMs": 0,
+            "atMs": 1,
             "base64": "AgAAAAJ7fQ=="
           }
         ],
@@ -208,7 +208,7 @@
     },
     {
       "request": {
-        "atMs": 3,
+        "atMs": 4,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -236,7 +236,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 3,
+        "atMs": 4,
         "body": {
           "entries": [
             {
@@ -262,7 +262,7 @@
     },
     {
       "request": {
-        "atMs": 4,
+        "atMs": 5,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -290,7 +290,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4,
+        "atMs": 5,
         "body": {
           "entries": [
             {
@@ -329,7 +329,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 6
+        "atMs": 7
       }
     }
   ]

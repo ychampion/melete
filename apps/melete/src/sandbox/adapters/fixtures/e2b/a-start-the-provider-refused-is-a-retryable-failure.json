@@ -66,7 +66,7 @@
     },
     {
       "request": {
-        "atMs": 3,
+        "atMs": 2,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
@@ -110,7 +110,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 3,
+        "atMs": 2,
         "body": [
           {
             "event": {
@@ -135,11 +135,11 @@
     },
     {
       "request": {
-        "atMs": 4,
+        "atMs": 3,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "c7841d0f464c5149686fc4182a215c16bd6e8bd96c51088b14ff98b156aa3c77",
+        "bodySha256": "1651a9f708e2959b7564f03e7de43779f4a0dca1eb699174175f7bae3a37ec3f",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -155,7 +155,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "d=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p -m 0700 /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'printf once >> /work/counter' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0CONFORMANCE00000000\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ ( 'sh' '-c' 'printf once >> /work/counter' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | { head -c 4194305 > \"$d/out\"; cat > /dev/null; }\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work/not-a-directory"
             },
@@ -175,7 +175,7 @@
           }
         ],
         "end": "cancelled",
-        "atMs": 4,
+        "atMs": 3,
         "body": [
           {
             "end": {
@@ -190,7 +190,7 @@
     },
     {
       "request": {
-        "atMs": 4,
+        "atMs": 3,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fwork%2Fcounter&username=user",
@@ -212,7 +212,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4,
+        "atMs": 3,
         "body": {
           "code": 404,
           "message": "path '/work/counter' does not exist"
@@ -221,11 +221,11 @@
     },
     {
       "request": {
-        "atMs": 5,
+        "atMs": 3,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "c89fdbf025115387f74186fed70459548faa5b21750157a832110305d0eeda59",
+        "bodySha256": "262075e6dabc0f33c4bf882f35e94c11ec20e0718f8a8453e200993eed8ab5a6",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -241,7 +241,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "d=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p -m 0700 /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'printf once >> /work/counter' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0CONFORMANCE00000000\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ ( 'sh' '-c' 'printf once >> /work/counter' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | { head -c 4194305 > \"$d/out\"; cat > /dev/null; }\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work"
             },
@@ -260,16 +260,16 @@
             "base64": "AAAAACB7ImV2ZW50Ijp7InN0YXJ0Ijp7InBpZCI6MTAwMn19fQ=="
           },
           {
-            "atMs": 0,
+            "atMs": 1,
             "base64": "AAAAADp7ImV2ZW50Ijp7ImVuZCI6eyJleGl0ZWQiOnRydWUsInN0YXR1cyI6ImV4aXQgc3RhdHVzIDAifX19"
           },
           {
-            "atMs": 0,
+            "atMs": 1,
             "base64": "AgAAAAJ7fQ=="
           }
         ],
         "end": "complete",
-        "atMs": 5,
+        "atMs": 4,
         "body": [
           {
             "event": {
@@ -294,7 +294,7 @@
     },
     {
       "request": {
-        "atMs": 6,
+        "atMs": 4,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -322,7 +322,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 6,
+        "atMs": 5,
         "body": {
           "entries": [
             {
@@ -348,7 +348,7 @@
     },
     {
       "request": {
-        "atMs": 6,
+        "atMs": 5,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fwork%2Fcounter&username=user",
@@ -370,7 +370,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 7,
+        "atMs": 5,
         "body": {
           "bytes": 4
         }
@@ -378,7 +378,7 @@
     },
     {
       "request": {
-        "atMs": 7,
+        "atMs": 5,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -390,7 +390,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 7
+        "atMs": 5
       }
     }
   ]
