@@ -36,13 +36,20 @@ Viewers need an account on this installation. There are no public links.
 ## Data that stays current
 
 An app can show the newest version of a file in the workspace, such as `data/deals.json`. The
-agent names the file when it publishes, and you see it on the question. A routine that rewrites
-the file keeps the app current without a new version.
+agent names the file when it publishes, and you see it on the question.
+
+To keep it current, the file comes from one of your routines. Each run of a routine works in the
+routine's own workspace, so the agent binds the data to the routine itself: it finds the routine's
+id with `apps.routines` and names it as the data's source. Every run that saves the file again
+updates the app, with no new version of the app. The app can be published before the routine's
+first run; it shows no data until then. Data can also come from the conversation that publishes,
+or another of your conversations in the space, and shows the newest version that one saved.
 
 - The file is one the agent saved as a checked file (`files.write` with `expect`), so every
   version of it is recorded with the hash of its bytes. Viewers get exactly a recorded version.
 - JSON is given to the app parsed, and other text (txt, csv, tsv, md) as a string, up to 2 MiB.
-- An app reads only files from conversations in the space it was published from.
+- An app reads only files from your conversations and routines in the space it was published
+  from.
 - An open app is told when data it read has a newer version, and reads it again if it wants.
 
 ### Reviewing updates first
@@ -67,10 +74,13 @@ published. A response is stored with the account of the person who sent it and t
 sent it from.
 
 - A response is a JSON object of at most the size its collection declares, and 16 KiB at most.
-- One person can send one app 30 responses a minute, and an app keeps 10,000 at most. Past
-  either, new ones are refused until a minute passes or a manager deletes some.
-- Managers read responses under Responses on the app's page, and can delete one. Deleting removes
-  what it said.
+- One person can send one app 30 responses a minute. An app keeps 500 from any one person and
+  10,000 in all. Past any of these, new ones are refused until a minute passes or a manager
+  deletes some.
+- Managers read responses under Responses on the app's page. They can delete one, or every
+  response from one person at once.
+- Deleting a response removes it from the app. If the agent already read it, a copy stays in that
+  conversation and in the record of that read.
 - An app's code can send a response in the name of the person viewing it without them pressing
   anything, within those limits. Responses say what the app sent, not what the person meant.
 
@@ -80,6 +90,11 @@ The agent can list the apps in its space that the person manages (`apps.list`) a
 responses (`apps.read_submissions`), only in the space the app was published from. A response
 is what a viewer, or the app's code, wrote: the agent treats it as data to summarise, never as
 instructions, and anything it does about one asks as it always would.
+
+Once a conversation has read responses, changing a file an app shows from that conversation asks
+you first, even though saving files in the workspace usually does not. So does running a command
+there, since a command can change any file. Without that, text a viewer wrote could steer what
+every other viewer sees.
 
 ## Versions
 
@@ -211,7 +226,8 @@ const melete = (() => {
 | `POST /apps/{id}/submissions` | Send a response from the app |
 | `GET /apps/{id}/submissions` | The app's responses, newest first (managers) |
 | `DELETE /apps/{id}/submissions/{submission_id}` | Delete one response (managers) |
+| `DELETE /apps/{id}/submissions?from={account}` | Delete every response from one person (managers) |
 
 The agent's tools are on the built-in Apps connection, which every space has. `apps.publish` and
-`apps.rollback` are `write_external` and always ask. `apps.list` and `apps.read_submissions`
-only read.
+`apps.rollback` are `write_external` and always ask. `apps.list`, `apps.routines` and
+`apps.read_submissions` only read.

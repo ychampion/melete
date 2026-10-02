@@ -486,12 +486,19 @@ through only while it is the newest one and its bytes are the ones recorded.
 Responses are the app's way back in. An app's code can send them in the
 viewer's name without the viewer doing anything, so they are bounded: only for
 collections the version declares, at most the declared size (16 KiB at most),
-30 a minute per person per app, and 10,000 kept per app. The agent reads them
+30 a minute per person per app, 500 kept per person per app, and 10,000 kept per
+app. The agent reads them
 only for apps in its own space that its person manages, and the receipt marks
 them as content Melete read (`external_content`), not as the person's word.
 Reading them asks nothing and grants nothing: any action the agent takes about
 a response goes through the same admission and approvals as any other, and a
-recipient or destination lifted from one is not a trusted origin.
+recipient or destination lifted from one is not a trusted origin. Workspace
+writes usually do not ask, so one more rule closes the path from a viewer's text
+to what every viewer sees: in a conversation that has read responses, a write or
+move to a file an app's current version shows, and any command in a
+conversation whose files an app shows, waits for the person. A deleted
+response is removed from the app; copies the agent already read stay in that
+conversation and in the record of the read.
 
 What the app may ask for, it asks the Melete page around it with
 `postMessage`: the data the publish approval listed, read with the viewer's own
