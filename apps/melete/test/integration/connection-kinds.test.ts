@@ -311,6 +311,7 @@ withDb('installing each kind of connection through the API', () => {
     ).kinds;
     expect([...new Set(kinds.map((kind) => kind.kind))].sort()).toEqual([
       'caldav',
+      'command_line',
       'ics',
       'mail',
       'mcp',
@@ -375,6 +376,87 @@ withDb('installing each kind of connection through the API', () => {
     const forms = catalog.filter((entry) => entry.connect.method === 'form');
     expect(forms.map((entry) => entry.id)).toEqual(served.kinds.map((kind) => kind.id));
     expect(forms.every((entry) => entry.available)).toBe(true);
+  });
+
+  test('GitHub for the agent’s computer: GitHub is asked whose the token is before it is kept, and the account is shown', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const token = `github_pat_kinds_${newId('rule').toLowerCase()}`;
+    const original = globalThis.fetch;
+    const asked: string[] = [];
+    let accepted = false;
+    // Only GitHub's own answer about the token is stood in for.
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url !== 'https://api.github.com/user') return original(input, init);
+      asked.push(new Headers(init?.headers).get('authorization') ?? '');
+      return accepted
+        ? Response.json({ login: 'alice' })
+        : Response.json({ message: 'Bad credentials' }, { status: 401 });
+    }) as typeof fetch;
+    try {
+      const body = {
+        provider: 'command_line',
+        label: 'GitHub',
+        credentials: { token },
+        command_line: { adapter: 'github' },
+      };
+      for (const invalid of [
+        { ...body, credentials: undefined },
+        { ...body, credentials: { token: 'has a space' } },
+        { ...body, scopes: ['email.send'] },
+        { ...body, command_line: { adapter: 'gitlab' } },
+        { ...body, provider: 'sandbox' },
+      ]) {
+        const refused = await h.install(invalid);
+        expect(refused.status).toBe(400);
+        expect(refused.text).not.toContain(token);
+      }
+      expect(asked).toEqual([]);
+      // GitHub turns the token away: nothing is kept.
+      const refused = await h.install(body);
+      expect(refused.status).toBe(400);
+      expect(JSON.parse(refused.text).error.message).toBe(
+        'GitHub did not accept this token. Check that it has not expired, then paste it again.',
+      );
+      expect(refused.text).not.toContain(token);
+      expect(await h.sql`select id from connection where provider = 'command_line'`).toHaveLength(
+        0,
+      );
+      accepted = true;
+      const created = await h.install(body);
+      expect(created.status).toBe(201);
+      expect(created.text).not.toContain(token);
+      const installed = connectionResponse.parse(created.json);
+      expect(installed.connection).toMatchObject({
+        provider: 'command_line',
+        account: 'alice',
+        status: 'active',
+        scopes: ['egress.github_read', 'egress.github_write'],
+      });
+      expect(installed.check).toMatchObject({ status: 'ok', code: 'ok' });
+      // Asked once before sealing and once by the connection's own check, with the token itself.
+      expect(asked.slice(1)).toEqual([`Bearer ${token}`, `Bearer ${token}`]);
+      const [row] = await h.sql`select configuration, secret_ref from connection
+        where id = ${installed.connection.id}`;
+      expect(row?.configuration).toEqual({
+        kind: 'command_line',
+        adapter: 'github',
+        config: {},
+        account: 'alice',
+      });
+      expect(row?.secret_ref).toBeString();
+      expect(JSON.stringify(row)).not.toContain(token);
+      // A token GitHub stops accepting shows as refused on the next check.
+      accepted = false;
+      const checked = connectionCheckResponse.parse(
+        await (
+          await h.app.request(`/connections/${installed.connection.id}/health`, h.as(h.cookie, {}))
+        ).json(),
+      );
+      expect(checked.check).toMatchObject({ status: 'failing', code: 'credential_refused' });
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 
   test('mail: validated, sealed, tested, offered to a new attempt, and gone after revocation', async () => {
