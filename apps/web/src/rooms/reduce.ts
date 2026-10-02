@@ -297,3 +297,14 @@ export type HeldSend = { text: string; ask: boolean; key: string };
 export function sendKey(held: HeldSend | null, text: string, ask: boolean, mint: () => string) {
   return held && held.text === text && held.ask === ask ? held.key : mint();
 }
+
+export type RoomDecisionView = NonNullable<RoomRequest['decisions']>[number];
+
+/** How an answered permission reads in the thread, with who answered it. */
+export function decisionWords(decision: RoomDecisionView): string {
+  if (decision.decided_by)
+    return `${decision.decision === 'approved' ? 'Allowed' : 'Denied'} by ${decision.decided_by.display_name}`;
+  return decision.decision === 'approved'
+    ? 'Allowed by the room’s settings'
+    : 'Withdrawn by Melete';
+}

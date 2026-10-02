@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Markdown } from '../chat/Markdown.tsx';
 import { ReceiptRow, ResultCard } from '../chat/parts.tsx';
+import { Icon } from '../design/icons.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import { Button, Status, type StatusTone } from '../design/primitives.tsx';
 import { useNow } from '../experience/hooks.ts';
@@ -26,6 +27,7 @@ import { RoomComposer } from './RoomComposer.tsx';
 import {
   applyFrame,
   canStop,
+  decisionWords,
   mentionFor,
   namesAgent,
   needsRead,
@@ -346,6 +348,7 @@ function Answer({
             <Markdown text={turn.answer} streaming={streaming && last} />
           </div>
         ) : null}
+        {last ? <Waiting request={request} /> : null}
         {last && (request.cards.length > 0 || request.receipts.length > 0) ? (
           <div className="col room-answer-work">
             {request.cards.map((card) => (
@@ -365,6 +368,53 @@ function Answer({
         ) : null}
       </div>
     </article>
+  );
+}
+
+/**
+ * What a request waits on, and what was answered, read-only: each waiting
+ * permission names who may answer it under the room's rule, and each answer
+ * names who gave it.
+ */
+function Waiting({ request }: { request: RoomRequest }) {
+  const permissions = request.permissions ?? [];
+  const decisions = request.decisions ?? [];
+  if (permissions.length === 0 && decisions.length === 0) return null;
+  return (
+    <div className="col room-waiting">
+      {permissions.map((permission) => (
+        <section key={permission.id} className="room-permission" aria-label={permission.what}>
+          <span className="room-permission-tile" aria-hidden="true">
+            <Icon name="lock" size={16} />
+          </span>
+          <div className="col room-permission-main">
+            <span className="room-permission-what">{permission.what}</span>
+            {permission.why.map((line) => (
+              <span key={line} className="room-permission-why">
+                {line}
+              </span>
+            ))}
+            {permission.eligible_approvers && permission.eligible_approvers.length > 0 ? (
+              <span className="room-permission-who">
+                Who can answer:{' '}
+                {permission.eligible_approvers.map((person, index) => (
+                  <span key={person.principal_id}>
+                    {index > 0 ? ', ' : null}
+                    <Who label={person.display_name} />
+                  </span>
+                ))}
+              </span>
+            ) : null}
+          </div>
+        </section>
+      ))}
+      {decisions.map((decision) => (
+        <span key={decision.approval_id} className="room-decision">
+          <Icon name={decision.decision === 'approved' ? 'circleCheck' : 'circleX'} size={14} />
+          {decisionWords(decision)}
+        </span>
+      ))}
+    </div>
   );
 }
 

@@ -497,3 +497,61 @@
     padding-right: 24px;
   }
 }
+
+/* ---------- what a request waits on (read-only here) ---------- */
+
+.room-waiting {
+  gap: 8px;
+  margin-top: 4px;
+}
+.room-permission {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-lift);
+  background: var(--surface);
+}
+.room-permission-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: var(--sand);
+  color: var(--sand-ink);
+}
+.room-permission-main {
+  gap: 3px;
+  min-width: 0;
+}
+.room-permission-what {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+.room-permission-why,
+.room-permission-who {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.room-permission-who {
+  color: var(--secondary);
+  margin-top: 4px;
+}
+.room-decision {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--secondary);
+  overflow-wrap: anywhere;
+}

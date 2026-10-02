@@ -27,6 +27,9 @@ type Request = {
   turns: Turn[];
   cards: z.infer<typeof C.resultCard>[];
   receipts: z.infer<typeof C.experienceReceipt>[];
+  /** Permissions waiting now, each naming who may answer it. */
+  permissions: z.infer<typeof C.permissionCard>[];
+  decisions: z.infer<typeof C.roomDecision>[];
   timer?: ReturnType<typeof setTimeout>;
 };
 type Thread = {
@@ -53,6 +56,8 @@ type FrameInput =
   | { kind: 'request'; request_job_id: string; event: unknown };
 
 const UNDER_WAY = new Set<Status>(['queued', 'working', 'streaming']);
+/** Asks to send something, which the scripted agent takes to a permission. */
+const SENDS = /\b(send|email|mail|post)\b/i;
 
 /** Others with an account on this installation. */
 const OTHERS: { email: string; display_name: string }[] = [
@@ -226,7 +231,13 @@ export function mountRoomsMock(
         ...(role === 'guest' ? {} : { email: person(id).email }),
         present: here.has(id),
       })),
-      policy: { approvers: 'requester', agent_turns: 'asked', guests_may_ask: true },
+      policy: {
+        approvers: 'requester',
+        agent_turns: 'asked',
+        guests_may_ask: true,
+        requests_per_hour: 30,
+        requests_per_person_hour: 10,
+      },
     });
   };
   const threadView = (room: Room, thread: Thread) =>
@@ -247,6 +258,8 @@ export function mountRoomsMock(
       turns: request.turns,
       cards: request.cards,
       receipts: request.receipts,
+      permissions: request.permissions,
+      decisions: request.decisions,
     });
 
   const makeRoom = (name: string, purpose: string | null, owner: string, at = now()) => {
@@ -292,6 +305,36 @@ export function mountRoomsMock(
     pushMessage(thread, message);
   };
 
+  /**
+   * A permission a room's request waits on. Under the room's `requester` rule
+   * the person who asked answers it; a guest's request is answered by the
+   * room's owners.
+   */
+  const permissionFor = (room: Room, request: Request, what: string, at = now()) => {
+    const asker = person(request.requested_by);
+    const guest = room.members.get(asker.id) === 'guest';
+    const eligible = guest
+      ? [...room.members.entries()].filter(([, role]) => role === 'owner').map(([id]) => id)
+      : [asker.id];
+    return C.permissionCard.parse({
+      id: newId('perm'),
+      conversation_id: request.job_id,
+      what,
+      why: [
+        guest
+          ? "Waiting for one of the room's owners to answer it."
+          : `Waiting for ${labelOf(asker)}, who asked for it. Only they can answer it.`,
+        'To: agency@studio.example',
+      ],
+      options: ['allow_once', 'deny'],
+      version: newId('ver'),
+      preview: null,
+      created_at: at,
+      requested_by: author(asker.id),
+      eligible_approvers: eligible.map((id) => author(id)),
+    });
+  };
+
   const held = (thread: Thread) =>
     [...thread.requests.values()].some((request) => UNDER_WAY.has(request.status));
 
@@ -304,6 +347,8 @@ export function mountRoomsMock(
       turns: [],
       cards: [],
       receipts: [],
+      permissions: [],
+      decisions: [],
     };
     const turn: Turn = {
       id: newId('turn'),
@@ -339,6 +384,13 @@ export function mountRoomsMock(
         pushEvent(thread, request, { type: 'text_delta', text: piece });
       }),
       () => {
+        // An ask to send something waits on the person the room's rule names.
+        if (SENDS.test(message.text ?? '')) {
+          const permission = permissionFor(room, request, `Send the notes on ${thread.title}`);
+          request.permissions.push(permission);
+          pushEvent(thread, request, { type: 'permission', permission });
+          return;
+        }
         const card = C.resultCard.parse({
           id: newId('card'),
           title: `Notes on ${thread.title}`,
@@ -363,7 +415,7 @@ export function mountRoomsMock(
         pushEvent(thread, request, { type: 'receipt', receipt });
       },
       () => {
-        setStatus('done');
+        setStatus(request.permissions.length > 0 ? 'needs_you' : 'done');
         release(room, thread);
       },
     ];
@@ -487,6 +539,15 @@ export function mountRoomsMock(
           when: day(1, 10),
         }),
       ],
+      permissions: [],
+      decisions: [
+        C.roomDecision.parse({
+          approval_id: newId('apr'),
+          decision: 'approved',
+          decided_by: author(self.id),
+          decided_at: day(1, 10),
+        }),
+      ],
     };
     const firstTurn = request.turns[0];
     if (firstTurn) firstTurn.conversation_id = request.job_id;
@@ -494,6 +555,41 @@ export function mountRoomsMock(
     const index = thread.messages.indexOf(ask);
     thread.messages[index] = { ...ask, request_job_id: request.job_id };
     addMessage(thread, priya.id, 'Thanks. I’ll take the other two to the team.', day(0, -40));
+
+    // Sam's ask to send something waits on Sam, as the room's rule says.
+    const sends = addMessage(
+      thread,
+      sam.id,
+      '@Melete email the plan names to the agency',
+      day(0, -20),
+      { request_state: 'started' },
+    );
+    const waiting: Request = {
+      job_id: newId('job'),
+      requested_by: sam.id,
+      status: 'needs_you',
+      turns: [],
+      cards: [],
+      receipts: [],
+      permissions: [],
+      decisions: [],
+    };
+    waiting.turns.push({
+      id: newId('turn'),
+      conversation_id: waiting.job_id,
+      agent_id: newId('agt'),
+      text: sends.text ?? '',
+      answer: 'I drafted the email with the plan names. It goes out once Sam says so.',
+      status: 'needs_you',
+      delivery: null,
+      created_at: day(0, -20),
+    });
+    waiting.permissions.push(
+      permissionFor(launch, waiting, 'Send the plan names to agency@studio.example', day(0, -19)),
+    );
+    thread.requests.set(waiting.job_id, waiting);
+    const sent = thread.messages.indexOf(sends);
+    thread.messages[sent] = { ...sends, request_job_id: waiting.job_id };
 
     const studio = makeRoom('Book club', 'What we read next, and when we meet', priya.id, day(12));
     studio.members.set(self.id, 'member');

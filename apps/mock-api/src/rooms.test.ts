@@ -166,3 +166,27 @@ test('a name another person goes by is refused', async () => {
   expect(C.meResponse.parse(renamed.json).owner.display_name).toBe('Jamie');
   expect((await call(mock, 'PATCH', '/me', { display_name: 'a <b@c.d>' })).status).toBe(400);
 });
+
+test('an ask to send something waits on a permission only the asker may answer', async () => {
+  const mock = createMock({ speed: 0 });
+  const { id } = await room(mock);
+  const detail = C.roomDetail.parse((await call(mock, 'GET', `/rooms/${id}`)).json);
+  expect(detail.policy.requests_per_hour).toBe(30);
+  const started = C.roomMessageResponse.parse(
+    (
+      await call(mock, 'POST', `/rooms/${id}/threads`, {
+        text: 'Email the notes to the agency',
+        ask_agent: true,
+        submission_id: 'send-1',
+      })
+    ).json,
+  );
+  const view = C.roomThreadView.parse(
+    (await call(mock, 'GET', `/rooms/${id}/threads/${started.thread.id}`)).json,
+  );
+  const [request] = view.requests;
+  expect(request?.status).toBe('needs_you');
+  const me = C.ownerResponse.parse((await call(mock, 'GET', '/me')).json).owner.id;
+  expect(request?.permissions?.[0]?.eligible_approvers?.map((p) => p.principal_id)).toEqual([me]);
+  expect(request?.decisions).toEqual([]);
+});

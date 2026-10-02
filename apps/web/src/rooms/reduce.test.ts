@@ -7,6 +7,7 @@ import type { RoomMessage, RoomRequest, ThreadView } from './api.ts';
 import {
   applyFrame,
   canStop,
+  decisionWords,
   initialsOf,
   mentionFor,
   namesAgent,
@@ -56,6 +57,8 @@ const request = (over: Partial<RoomRequest> = {}): RoomRequest => ({
   turns: [],
   cards: [],
   receipts: [],
+  permissions: [],
+  decisions: [],
   ...over,
 });
 
@@ -265,4 +268,17 @@ test('a read that is ahead of the stream never shows a word twice', () => {
     streams,
   );
   expect(rested.requests[0]?.turns[0]?.answer).toBe('Final words.');
+});
+
+test('an answered permission says who answered it, or that nobody in the room did', () => {
+  const base = { approval_id: 'apr_1', decided_at: at(4) };
+  expect(decisionWords({ ...base, decision: 'approved', decided_by: BOB })).toBe(
+    'Allowed by Bob <bob@example.test>',
+  );
+  expect(decisionWords({ ...base, decision: 'denied', decided_by: ALICE })).toBe(
+    'Denied by Alice <alice@example.test>',
+  );
+  expect(decisionWords({ ...base, decision: 'denied', decided_by: null })).toBe(
+    'Withdrawn by Melete',
+  );
 });
