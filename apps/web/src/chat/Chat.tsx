@@ -32,6 +32,7 @@ import {
   useMedia,
   useNow,
 } from '../experience/hooks.ts';
+import { Outbox } from '../experience/outbox.ts';
 import {
   answerOf,
   latestTurn,
@@ -286,6 +287,7 @@ function TurnView({
   reactions = [],
   onReact,
   busy,
+  onRetry,
 }: {
   turn: TranscriptTurn;
   now: number;
@@ -306,6 +308,8 @@ function TurnView({
   onReact?: (emoji: string) => void;
   /** Whether a decision's request is in flight. */
   busy: (id: string) => boolean;
+  /** Resend this turn's message when it failed to send. */
+  onRetry?: (localId: string) => void;
 }) {
   const { agents } = useApp();
   const { transcript } = useTranscript();
@@ -387,7 +391,11 @@ function TurnView({
   const hasBlocks = rendered.length > 0 || unconfirmed.length > 0;
   return (
     <>
-      <UserBubble turn={turn} reactions={reactions.filter((r) => r.by === 'assistant')} />
+      <UserBubble
+        turn={turn}
+        reactions={reactions.filter((r) => r.by === 'assistant')}
+        onRetry={onRetry ? () => onRetry(turn.id) : undefined}
+      />
       <div className="turn">
         <div className="turn-text">
           <TurnAvatar agent={agent} status={turn.status} />
@@ -514,6 +522,9 @@ export function ChatScreen({ id }: { id: string | null }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const touch = useMedia('(max-width: 767px)');
   const flight = useInFlight();
+  // A message that failed to send keeps its request, so Retry resends that message once.
+  const outbox = useRef<Outbox | null>(null);
+  if (outbox.current === null) outbox.current = new Outbox();
   // A quick edit is sent once: its chips stay disabled until the conversation moves on.
   const quick = useTapOnce<string>();
   const wide = useMedia('(min-width: 1180px)');
@@ -670,8 +681,12 @@ export function ChatScreen({ id }: { id: string | null }) {
       // "@Scout …" is answered by Scout; the drawn message says so before the service does.
       const speaker = mentionedAgent(clean, agents)?.id ?? agent ?? '';
       const localId = state.local(clean, speaker, navigator.onLine ? 'sending' : 'queued_offline');
+      // Every try of this message carries this key, so the service keeps one copy.
       const key = messageKey();
-      const attempt = async (): Promise<boolean> => {
+      const box = outbox.current;
+      if (!box) return false;
+      const post = async (): Promise<boolean> => {
+        state.settle(localId, 'sending');
         const accepted = await adapter.send(conversationId, clean, key);
         if (accepted.data === null) {
           state.settle(localId, 'failed_retry');
@@ -680,7 +695,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             title: 'Couldn’t send',
             sub: accepted.error ?? accepted.unavailable ?? '',
             action: 'Retry',
-            onAction: () => void attempt(),
+            onAction: () => void box.retry(localId),
           });
           return false;
         }
@@ -691,16 +706,17 @@ export function ChatScreen({ id }: { id: string | null }) {
       if (!navigator.onLine) {
         const onOnline = () => {
           window.removeEventListener('online', onOnline);
-          state.settle(localId, 'sending');
-          void attempt();
+          void box.send(localId, post);
         };
         window.addEventListener('online', onOnline);
         return true;
       }
-      return attempt();
+      return box.send(localId, post);
     },
     [conversationId, agentId, fallback, agents, state, refreshConversations],
   );
+
+  const retry = (localId: string) => void outbox.current?.retry(localId);
 
   // One request per decision: a second press while the first is in flight is refused.
   const decide = (id: string, option: PermissionOption, version: string, bounds?: RuleBounds) =>
@@ -1023,6 +1039,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   unknown={turn.id === lastId ? unknown : undefined}
                   onResolve={resolve}
                   busy={(id) => flight.has(id)}
+                  onRetry={retry}
                   reactions={reactions.filter((r) => turnIndexForReaction(transcript, r) === index)}
                   onReact={
                     reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)

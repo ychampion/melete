@@ -2,7 +2,7 @@ import { type CapabilityClaims, type Receipt, receipt as receiptContract } from 
 import { and, eq, isNull } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { databaseNow } from '../db/clock.ts';
-import { action, attempt, connection, job } from '../db/schema.ts';
+import { action, attempt, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { requirePrincipalCapability } from '../principals/authority.ts';
@@ -59,40 +59,6 @@ export async function requireCurrentAttempt(
     connection_generations: active.connectionGenerations,
   });
   return { job: row, attempt: active };
-}
-
-/** A connector must have been present in this attempt's account snapshot. */
-export async function requireConnectionGeneration(
-  tx: Transaction,
-  claims: CapabilityClaims,
-  connectionId: string,
-) {
-  const current = await requireCurrentAttempt(tx, claims);
-  const [source] = await tx.select().from(connection).where(eq(connection.id, connectionId));
-  if (
-    !source ||
-    source.spaceId !== claims.space_id ||
-    source.status !== 'active' ||
-    current.attempt.connectionGenerations[connectionId] !== source.generation
-  )
-    throw new ServiceError(
-      'context_invalidated',
-      'The connection is unavailable in this attempt generation.',
-    );
-  return source;
-}
-
-export function withConnectionCapability<T>(
-  jobs: JobService,
-  token: string,
-  key: string,
-  connectionId: string,
-  operation: (tx: Transaction, claims: CapabilityClaims) => Promise<T>,
-): Promise<T> {
-  return withCapability(jobs, token, key, async (tx, claims) => {
-    await requireConnectionGeneration(tx, claims, connectionId);
-    return operation(tx, claims);
-  });
 }
 
 /** Adapters for broker tools use this wrapper, never a check followed by another transaction. */

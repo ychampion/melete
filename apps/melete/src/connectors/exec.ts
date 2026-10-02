@@ -59,7 +59,6 @@ const STORED_OUTPUT: ArtifactExpectation = {
   checks: [],
   render: false,
   critique: null,
-  human: false,
   template: null,
 };
 

@@ -14,11 +14,7 @@ import path from 'node:path';
 import type { JsonValue } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { artifactGate } from '../../src/artifact/gate.ts';
-import {
-  acceptArtifact,
-  createArtifactRecorder,
-  recordArtifactFromReceipt,
-} from '../../src/artifact/record.ts';
+import { createArtifactRecorder, recordArtifactFromReceipt } from '../../src/artifact/record.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createArtifactsConnector } from '../../src/connectors/artifacts.ts';
@@ -570,37 +566,6 @@ async function facts(jobId: string, roots: { workRoot: string; spacesRoot: strin
     );
   });
 }
-
-databaseTest(
-  'a declared human acceptance blocks until the owner gives it',
-  async () => {
-    const context = await setup();
-    await context.broker.propose(context.claims, {
-      kind: 'files.write',
-      connection_id: context.connectionId,
-      payload: {
-        path: 'summary.md',
-        content: '# Findings\n\nAll clear.\n',
-        expect: { kind: 'markdown', human: true },
-      },
-      client_ref: 'write-human',
-    });
-    const waiting = await artifactGate(fixture?.db as never, context.claims.job_id, context);
-    expect(waiting.passed).toBe(false);
-    expect(waiting.failures.join(' ')).toContain('human is still waiting');
-
-    const [row] =
-      await context.sql`select id from artifact where job_id = ${context.claims.job_id}`;
-    const accepted = await acceptArtifact(context.sql, {
-      artifact_id: String(row?.id),
-      decision: 'accepted',
-    });
-    expect(accepted.status).toBe('passed');
-    const done = await artifactGate(fixture?.db as never, context.claims.job_id, context);
-    expect(done.passed).toBe(true);
-  },
-  SLOW,
-);
 
 databaseTest(
   'a critique with no configured critic is recorded as unavailable',
