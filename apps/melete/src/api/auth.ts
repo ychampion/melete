@@ -27,6 +27,7 @@ import {
   type SessionSpace,
   selectedSpace,
 } from '../principals/session-space.ts';
+import { viewPath } from '../viewer/headers.ts';
 import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
 import type { RequestSource } from './listener.ts';
@@ -281,6 +282,10 @@ export function mountAuth(
     // checks the computer's own token and sets its own body limit; see
     // devices/routes.ts.
     if (c.req.path.startsWith('/device/')) return next();
+    // A framed app's files are fetched from an opaque origin, which holds no
+    // session. The token in the path is their whole authorisation; see
+    // apps/serve.ts. Reading is all these routes do.
+    if (viewPath(c.req.method, c.req.path)) return next();
 
     const token = getCookie(c, SESSION_COOKIE);
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {

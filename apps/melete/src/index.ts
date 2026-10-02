@@ -45,6 +45,7 @@ import {
 } from './api/voice.ts';
 import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-companion.ts';
 import { mountApps } from './apps/routes.ts';
+import { mountAppViews } from './apps/serve.ts';
 import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
@@ -150,8 +151,10 @@ import {
 } from './sandbox/wiring.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
-import { configuredBlobStore } from './storage/blob.ts';
+import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
 import { BlobCollector } from './storage/gc.ts';
+import { isolated, VIEW_PREFIX } from './viewer/headers.ts';
+import { ViewTokens } from './viewer/tokens.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
 import { type BrowserSessionService, mountBrowserSessions } from './workers/browser/routes.ts';
 import { mountBrowserSites } from './workers/browser/sites.ts';
@@ -217,6 +220,10 @@ export type AppDeps = {
   modelSettings?: ModelSettingsService;
   /** How many problem reports one person may send in a short time; a test supplies its clock. */
   feedbackLimiter?: FeedbackLimiter;
+  /** Where published apps' files are kept. Left out, an app's files are not served. */
+  blobs?: BlobStore;
+  /** Signs app views. Left out, keyed from the master key. */
+  viewTokens?: ViewTokens;
 };
 
 export function createApp(deps: AppDeps) {
@@ -238,6 +245,9 @@ export function createApp(deps: AppDeps) {
       500,
     );
   });
+  // First, so it runs last: nothing under the app view path leaves without the
+  // isolation headers, whatever answered it.
+  app.use(`${VIEW_PREFIX}*`, isolated);
   const connections =
     deps.db && deps.sql && deps.registry
       ? { db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }
@@ -262,6 +272,13 @@ export function createApp(deps: AppDeps) {
     );
   // Apps a person can open, and the changes they make to their own.
   if (deps.sql) mountApps(app, { sql: deps.sql });
+  // Opening one: a view for the person, and the files it loads with its token.
+  if (deps.sql)
+    mountAppViews(app, {
+      sql: deps.sql,
+      ...(deps.blobs ? { blobs: deps.blobs } : {}),
+      tokens: deps.viewTokens ?? new ViewTokens(deps.env.MELETE_MASTER_KEY),
+    });
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   // After mountPrincipals, so the owner-only guard it installs on every
   // non-GET under /spaces/:id runs before the handler that removes one.
@@ -1043,6 +1060,7 @@ export async function bootstrap(
   const app = createApp({
     env,
     privacy,
+    ...(blobs ? { blobs: blobs.store } : {}),
     db: handle?.db ?? null,
     jobs,
     triggers,

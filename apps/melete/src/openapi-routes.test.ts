@@ -50,7 +50,8 @@ function servedRoutes(): string[] {
   };
   const routes = createApp(deps)
     .routes.filter((route) => route.method !== 'ALL')
-    .map((route) => `${route.method} ${route.path.replace(/:[A-Za-z_]+/g, '{}')}`);
+    // A parameter may carry a pattern, as `:path{.+}` does for a file path.
+    .map((route) => `${route.method} ${route.path.replace(/:[A-Za-z_]+(\{[^}]*\})?/g, '{}')}`);
   return [...new Set(routes)].sort();
 }
 

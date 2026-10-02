@@ -19,6 +19,7 @@ import {
   type TrustedPeer,
   trustedPeer,
 } from '../../apps/melete/src/api/trusted-peer.ts';
+import { isIsolated, VIEW_PREFIX } from '../../apps/melete/src/viewer/headers.ts';
 
 export type StaticServerOptions = {
   /** The directory to serve. Nothing outside it is ever readable. */
@@ -93,6 +94,22 @@ export function discoveryPath(pathname: string): boolean {
   );
 }
 
+/**
+ * Headers on every page and file of the client itself. Only Melete may frame
+ * Melete, which keeps another site from laying its own controls over it; and
+ * a frame Melete draws loads only from Melete, wherever the page inside it
+ * tries to go next.
+ */
+export const CLIENT_FRAME_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  'content-security-policy': "frame-ancestors 'self'; frame-src 'self'",
+  'x-frame-options': 'SAMEORIGIN',
+});
+
+/** The proxied path of a published app's file, which its sandboxed page loads. */
+export function appViewPath(method: string, pathname: string): boolean {
+  return (method === 'GET' || method === 'HEAD') && pathname.startsWith(`/api${VIEW_PREFIX}`);
+}
+
 /** `setting` names where the value came from, so a refusal says what to change. */
 function parseOrigin(value: string, setting: string): string {
   const refused = new Error(
@@ -142,9 +159,14 @@ async function proxyApi(
   upstream: TrustedPeer,
 ) {
   const origin = request.headers.get('origin');
+  // An app's page has an opaque origin, so its own file requests arrive marked
+  // cross-site, some with `Origin: null`. They only read, carry a token rather
+  // than a session, and leave without the session cookie (below).
+  const view = appViewPath(request.method, url.pathname);
   if (
-    request.headers.get('sec-fetch-site') === 'cross-site' ||
-    (origin !== null && origin !== (publicOrigin ?? url.origin))
+    !view &&
+    (request.headers.get('sec-fetch-site') === 'cross-site' ||
+      (origin !== null && origin !== (publicOrigin ?? url.origin)))
   ) {
     return Response.json(
       { error: { code: 'origin_rejected', message: 'Use the same origin.' } },
@@ -181,6 +203,12 @@ async function proxyApi(
   // The browser origin has been checked here. The API checks the internal
   // origin on the new connection and retains its own direct-request defense.
   if (origin !== null) headers.set('origin', apiOrigin);
+  // An app's file is the token's to authorise. The session never travels with it.
+  if (view) {
+    headers.delete('cookie');
+    headers.delete('authorization');
+    headers.delete('origin');
+  }
   // Socket metadata, or the one address the trusted upstream stated. Either
   // way a browser cannot choose the address it is limited by.
   headers.delete(CLIENT_ADDRESS_HEADER);
@@ -195,10 +223,27 @@ async function proxyApi(
       redirect: 'manual',
       decompress: false,
     });
+    const answered = endToEndHeaders(response.headers);
+    if (view) {
+      answered.delete('set-cookie');
+      // The page runs only with the isolation the API sets on it. Should that
+      // ever be missing, nothing of the answer is passed on.
+      if (!isIsolated(answered)) {
+        await response.body?.cancel();
+        return new Response('Not served\n', {
+          status: 502,
+          headers: {
+            'content-type': 'text/plain; charset=utf-8',
+            'content-security-policy': "sandbox; default-src 'none'",
+            'cache-control': 'no-store',
+          },
+        });
+      }
+    }
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
-      headers: endToEndHeaders(response.headers),
+      headers: answered,
     });
   } catch {
     return Response.json(
@@ -263,7 +308,7 @@ export function createStaticServer(options: StaticServerOptions) {
 
   const index = () =>
     new Response(Bun.file(indexPath), {
-      headers: { 'content-type': 'text/html; charset=utf-8' },
+      headers: { 'content-type': 'text/html; charset=utf-8', ...CLIENT_FRAME_HEADERS },
     });
 
   return Bun.serve({
@@ -296,7 +341,7 @@ export function createStaticServer(options: StaticServerOptions) {
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         return new Response('Method not allowed\n', {
           status: 405,
-          headers: { allow: 'GET, HEAD' },
+          headers: { allow: 'GET, HEAD', ...CLIENT_FRAME_HEADERS },
         });
       }
 
@@ -304,10 +349,11 @@ export function createStaticServer(options: StaticServerOptions) {
       const target = resolveInside(root, pathname);
 
       // Malformed, or pointing outside the bundle. Not a deep link.
-      if (target === null) return new Response('Not found\n', { status: 404 });
+      if (target === null)
+        return new Response('Not found\n', { status: 404, headers: CLIENT_FRAME_HEADERS });
 
       if (target !== root && (await isFile(target))) {
-        return new Response(Bun.file(target));
+        return new Response(Bun.file(target), { headers: CLIENT_FRAME_HEADERS });
       }
 
       // Structurally fine with no file behind it: the client's own routing.
