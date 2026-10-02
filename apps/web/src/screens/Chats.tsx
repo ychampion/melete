@@ -234,7 +234,8 @@ export function ChatsScreen() {
         onClose={() => setDialog(null)}
         onDeleted={(ids) => {
           setChats((previous) => previous.filter((chat) => !ids.includes(chat.id)));
-          setPicked(new Set());
+          // Any that couldn't be deleted stay picked, ready to try again.
+          setPicked((previous) => new Set([...previous].filter((id) => !ids.includes(id))));
           refreshConversations();
         }}
       />

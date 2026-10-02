@@ -7,6 +7,7 @@ triggers:
   - from now on
   - keep in mind
 tools: []
+keeps_memory: true
 max_tokens: 400
 ---
 

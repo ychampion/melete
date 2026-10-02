@@ -11,6 +11,7 @@ import {
   selectCore,
   toolTokens,
 } from './catalog.ts';
+import { relevance, terms } from './lexical.ts';
 
 function item(name: string, options: Partial<CatalogItem> = {}): CatalogItem {
   const tool: ToolSpec = {
@@ -157,6 +158,24 @@ test('the lifecycle wait and the reaction are pinned when the turn needs them', 
     selectCore([...files, wait, react], budget, { waitable: true, conversational: true }, 0),
   );
   expect(pinned).toEqual(['search_tools', 'load_tool', 'job.wait', 'react']);
+});
+
+test("the agent's own terminal keeps its place beside a paired computer's tools", () => {
+  // A paired computer that can't run commands still offers files and status,
+  // and the person's "my computer" points at those. The agent's own terminal
+  // must not lose its place to them, or the engine is built with no terminal.
+  const status = effect('device.status', 'read', "Check the person's connected laptop");
+  const list = effect('device.list_files', 'read', "List a folder on the person's laptop");
+  const terminal = effect('terminal.run', 'write_reversible', 'Execute a shell line');
+  const budget = toolTokens([...META_TOOLS, terminal.tool, status.tool]);
+  // Ranked by these words alone, the laptop's tools would take the budget.
+  const text = 'Check the folder on my laptop';
+  expect(relevance(terms(text), status.entry)).toBeGreaterThan(
+    relevance(terms(text), terminal.entry),
+  );
+  const chosen = names(selectCore([status, list, terminal], budget, { text }, 0));
+  expect(chosen).toContain('terminal.run');
+  expect(chosen.indexOf('terminal.run')).toBe(META_TOOLS.length);
 });
 
 test('an MCP tool enters the core by relevance and never by default', () => {

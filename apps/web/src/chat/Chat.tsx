@@ -27,6 +27,7 @@ import {
   agentById,
   defaultAgentOf,
   messageKey,
+  turnAgent,
   useApp,
   useConversation,
   useMedia,
@@ -307,9 +308,9 @@ function TurnView({
   /** Whether a decision's request is in flight. */
   busy: (id: string) => boolean;
 }) {
-  const { agents } = useApp();
+  const { agents, removedAgents } = useApp();
   const { transcript } = useTranscript();
-  const agent = agentById(agents, turn.turn.agent_id);
+  const agent = turnAgent(agents, removedAgents, turn.turn.agent_id);
   const finished = FINISHED.includes(turn.status);
   const text = answerOf(turn);
   const open = openQuestion(transcript);

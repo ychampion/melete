@@ -91,6 +91,8 @@ export type AppContextValue = {
   /** Marks setup done here at once, and on the service when it is not yet recorded. */
   setOnboarded: (next: boolean) => void;
   agents: Agent[];
+  /** Agents deleted from the space, only to name the turns they answered. */
+  removedAgents?: Agent[];
   conversations: Conversation[];
   /** Why the chat list could not be read, while it could not; the list keeps what was last read. */
   conversationsError: string | null;
@@ -114,6 +116,18 @@ export function useApp(): AppContextValue {
 
 export const agentById = (agents: Agent[], id: string | null | undefined): Agent | null =>
   (id ? agents.find((agent) => agent.id === id) : null) ?? null;
+
+/** The agent that answered a turn, a deleted one named as removed. */
+export function turnAgent(
+  agents: Agent[],
+  removed: Agent[] | undefined,
+  id: string | null | undefined,
+): Agent | null {
+  const live = agentById(agents, id);
+  if (live) return live;
+  const gone = agentById(removed ?? [], id);
+  return gone ? { ...gone, name: `${gone.name} (removed)` } : null;
+}
 
 /** Melete, the agent every space has: a new chat, Home and routines go to it unless told otherwise. */
 export const defaultAgentOf = (agents: Agent[]): Agent | null =>

@@ -102,9 +102,12 @@ export function RenameChatDialog({
   );
 }
 
+type Failure = { chat: Conversation; reason: string };
+
 /**
- * Delete one chat or several. Each is deleted by the service in turn; the
- * dialog reports what went and what did not.
+ * Delete one chat or several. Each is deleted by the service in turn, and one
+ * that can't be deleted doesn't stop the rest. Any that stay are named with
+ * the reason, and can be tried again from here.
  */
 export function DeleteChatsDialog({
   chats,
@@ -120,48 +123,101 @@ export function DeleteChatsDialog({
 }) {
   const [forget, setForget] = useState(false);
   const [working, setWorking] = useState(false);
+  // Set after a delete where some chats stayed; the dialog then lists them.
+  const [failed, setFailed] = useState<Failure[] | null>(null);
+  const [tried, setTried] = useState(0);
   const one = chats.length === 1;
   const busy = chats.some((chat) => BUSY.has(chat.status));
   const name = one ? `“${chats[0]?.title ?? 'this chat'}”` : `${chats.length} chats`;
-  const remove = async () => {
+  const close = () => {
+    setFailed(null);
+    setForget(false);
+    onClose();
+  };
+  const remove = async (list: Conversation[]) => {
     setWorking(true);
     const gone: string[] = [];
+    const left: Failure[] = [];
     let forgotten = 0;
-    let failure: string | null = null;
-    for (const chat of chats) {
+    for (const chat of list) {
       const result = await adapter.deleteConversation(chat.id, forget);
       if (result.data === null) {
-        failure = result.error ?? result.unavailable;
-        break;
+        left.push({ chat, reason: result.error ?? result.unavailable });
+        continue;
       }
       gone.push(chat.id);
       forgotten += result.data.forgotten;
     }
     setWorking(false);
-    setForget(false);
     if (gone.length) onDeleted(gone);
-    onClose();
-    if (failure)
-      toast({
-        kind: 'err',
-        title: gone.length ? `Deleted ${gone.length} of ${chats.length}` : 'Couldn’t delete',
-        sub: failure,
-      });
-    else
-      toast({
-        kind: 'ok',
-        title: gone.length === 1 ? 'Chat deleted' : `${gone.length} chats deleted`,
-        sub: forget
-          ? forgotten
-            ? `Melete also forgot ${forgotten === 1 ? 'one thing' : `${forgotten} things`} it learned there.`
-            : 'Melete had nothing saved from there to forget.'
-          : 'What Melete learned there is still in Memory.',
-      });
+    if (left.length) {
+      setTried(list.length);
+      setFailed(left);
+      return;
+    }
+    close();
+    toast({
+      kind: 'ok',
+      title: gone.length === 1 ? 'Chat deleted' : `${gone.length} chats deleted`,
+      sub: forget
+        ? forgotten
+          ? `Melete also forgot ${forgotten === 1 ? 'one thing' : `${forgotten} things`} it learned there.`
+          : 'Melete had nothing saved from there to forget.'
+        : 'What Melete learned there is still in Memory.',
+    });
   };
+  if (failed)
+    return (
+      <Dialog
+        open={open}
+        onClose={working ? () => {} : close}
+        icon="trash"
+        tone="danger"
+        title={
+          failed.length === tried
+            ? failed.length === 1
+              ? 'Couldn’t delete this chat'
+              : `Couldn’t delete ${failed.length} chats`
+            : `Deleted ${tried - failed.length} of ${tried}`
+        }
+        sub={
+          failed.length === tried
+            ? 'Nothing was deleted. Here is why:'
+            : failed.length === 1
+              ? 'This one is still here:'
+              : `These ${failed.length} are still here:`
+        }
+        footer={
+          <>
+            <Button variant="outline" disabled={working} onClick={close}>
+              Close
+            </Button>
+            <Button
+              loading={working}
+              disabled={working}
+              onClick={() => void remove(failed.map((entry) => entry.chat))}
+            >
+              Try again
+            </Button>
+          </>
+        }
+      >
+        <ul className="col" style={{ gap: 8, margin: 0, padding: 0 }}>
+          {failed.map(({ chat, reason }) => (
+            <li key={chat.id} className="col" style={{ gap: 2, listStyle: 'none' }}>
+              <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
+                {chat.title || 'Untitled chat'}
+              </span>
+              <span style={{ fontSize: 13, color: 'var(--muted)' }}>{reason}</span>
+            </li>
+          ))}
+        </ul>
+      </Dialog>
+    );
   return (
     <Dialog
       open={open}
-      onClose={working ? () => {} : onClose}
+      onClose={working ? () => {} : close}
       icon="trash"
       tone="danger"
       title={one ? 'Delete this chat?' : `Delete ${chats.length} chats?`}
@@ -176,14 +232,14 @@ export function DeleteChatsDialog({
       }
       footer={
         <>
-          <Button variant="outline" disabled={working} onClick={onClose}>
+          <Button variant="outline" disabled={working} onClick={close}>
             Cancel
           </Button>
           <Button
             variant="destructive"
             loading={working}
             disabled={working}
-            onClick={() => void remove()}
+            onClick={() => void remove(chats)}
           >
             {one ? 'Delete chat' : `Delete ${chats.length} chats`}
           </Button>

@@ -27,9 +27,9 @@ import {
 import { session } from '../../src/db/auth-schema.ts';
 import { owner, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
-import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
+import { freshAgent } from '../helpers/agents.ts';
 import { defaultBudget, rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -123,7 +123,7 @@ if (handle) {
 
 /** An agent made the way a person makes one; every conversation has one. */
 async function makeAgent(): Promise<string> {
-  const made = await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent);
+  const made = await request('/agents', 'POST', freshAgent());
   expect(made.status).toBe(200);
   return agentResponse.parse(await made.json()).agent.id;
 }

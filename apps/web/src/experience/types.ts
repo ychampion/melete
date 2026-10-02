@@ -37,6 +37,7 @@ export type TurnStatus = Conversation['status'];
 export type ComposerState = Conversation['composer'];
 export type ConversationCreate = Body<paths['/conversations'], 'post'>;
 export type ConversationDeleted = Success<Ok<paths['/conversations/{id}'], 'delete'>>;
+export type AgentDeleted = Success<Ok<paths['/agents/{id}'], 'delete'>>;
 export type ActivityList = Success<Ok<paths['/activity'], 'get'>>;
 export type SpaceMembers = Success<Ok<paths['/space/members'], 'get'>>;
 export type SpaceMember = SpaceMembers['members'][number];

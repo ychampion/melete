@@ -28,7 +28,6 @@ import {
 } from '../../src/db/schema.ts';
 import { EVENT_ORDER_LOCK } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
-import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
 import { BACKEND_VOCABULARY } from '../../src/experience/projectors.ts';
 import { appendMemoryTool, appendToolTrace } from '../../src/experience/tools.ts';
@@ -43,6 +42,7 @@ import { lockSpace, type MemoryScope, provisionMemorySpace } from '../../src/mem
 import { ingest } from '../../src/memory/evidence.ts';
 import { buildViews } from '../../src/memory/views.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -101,7 +101,7 @@ async function conversationWithAttempt(text: string) {
     await (
       await request('/agents', {
         method: 'POST',
-        body: JSON.stringify(AGENT_TEMPLATES.templates[0]?.agent),
+        body: JSON.stringify(freshAgent()),
       })
     ).json(),
   ).agent;
