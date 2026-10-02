@@ -328,6 +328,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   company_message: 'operational',
   company_scan: 'operational',
   awaited_reply: 'operational',
+  run_state: 'operational',
   episode: 'operational',
   experience_profile: 'operational',
   experience_rule: 'operational',

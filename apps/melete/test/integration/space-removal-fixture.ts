@@ -287,6 +287,10 @@ export async function seedSpace(
     values (${newId('awr')}, ${spaceId}, ${principalId}, '<m1@example.test>', 'billing@example.test',
       'Invoice', now(), ${json({ message_id: '<m1@example.test>', quote: 'Your invoice', start: 0, end: 12 })}::text::jsonb,
       ${jobId}, ${scanId})`;
+  // Long work: its state and one entry of its record, both under the job.
+  await sql`insert into run_state (job_id, space_id, goal) values (${jobId}, ${spaceId}, 'Keep at it')`;
+  await sql`insert into run_entry (id, run_job_id, kind, title)
+    values (${newId('rune')}, ${jobId}, 'note', 'Started')`;
 
   await seedMemory(sql, { spaceId, ownerId, jobId, attemptId });
   const claim = await sql<
