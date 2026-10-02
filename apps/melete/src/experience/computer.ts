@@ -12,13 +12,27 @@
 import {
   type AgentComputer,
   agentComputer,
+  COMPUTER_PROCESS_LIMIT,
   COMPUTER_TERMINAL_LIMIT,
   type ComputerBrowser,
   type ComputerCommand,
+  type ComputerProcess,
+  type ProcessState,
 } from '@melete/contracts';
 import type { ActionRow } from './projectors.ts';
 import { object } from './projectors.ts';
 import { actionToolStatus, CREDENTIAL, displayUrl, toolText } from './tools.ts';
+
+/** One background process of the conversation's agent, as its row records it. */
+export type ComputerProcessRow = {
+  id: string;
+  name: string;
+  state: ProcessState;
+  started_at: Date | null;
+  created_at: Date;
+  port: number | null;
+  last_line: string | null;
+};
 
 export type ComputerBinding = {
   id: string;
@@ -130,13 +144,38 @@ function browser(binding: ComputerBinding, rows: ActionRow[]): ComputerBrowser {
   };
 }
 
+const LIVE = new Set<ProcessState>(['starting', 'running']);
+
+/** The live processes first, newest first, then the latest ended ones. */
+function processes(rows: readonly ComputerProcessRow[]): ComputerProcess[] {
+  return [...rows]
+    .sort(
+      (a, b) =>
+        Number(LIVE.has(b.state)) - Number(LIVE.has(a.state)) ||
+        b.created_at.getTime() - a.created_at.getTime(),
+    )
+    .slice(0, COMPUTER_PROCESS_LIMIT)
+    .map((row) => ({
+      id: row.id,
+      name: terminalText(row.name, 120, 'first').split('\n')[0] || 'process',
+      state: row.state,
+      started_at: (row.started_at ?? row.created_at).toISOString(),
+      port: row.port,
+      last_line: row.last_line ? terminalText(row.last_line, 240, 'last') || null : null,
+      // A preview of a served port is not offered from here yet.
+      can_preview: false,
+    }));
+}
+
 /**
- * The computer view from a conversation's actions (oldest first) and its
- * browser session bindings. The binding touched last is the browser shown.
+ * The computer view from a conversation's actions (oldest first), its
+ * browser session bindings and its agent's background processes. The binding
+ * touched last is the browser shown.
  */
 export function projectComputer(input: {
   rows: ActionRow[];
   bindings: ComputerBinding[];
+  processes?: readonly ComputerProcessRow[];
   available: AgentComputer['available'];
 }): AgentComputer {
   const binding = input.bindings.reduce<ComputerBinding | undefined>(
@@ -151,6 +190,7 @@ export function projectComputer(input: {
   return agentComputer.parse({
     browser: binding ? browser(binding, input.rows) : null,
     terminal,
+    processes: processes(input.processes ?? []),
     available: input.available,
   });
 }

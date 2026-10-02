@@ -1,4 +1,5 @@
 import {
+  COMPUTER_PROCESS_LIMIT,
   type ExperienceDraft,
   experienceOperations,
   experienceResult,
@@ -29,7 +30,7 @@ import { ownJobClause } from '../principals/authority.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
 import { AGENT_TEMPLATES } from './agents.ts';
 import { ExperienceBeliefs } from './beliefs.ts';
-import { type ComputerBinding, projectComputer } from './computer.ts';
+import { type ComputerBinding, type ComputerProcessRow, projectComputer } from './computer.ts';
 import { ExperienceEffects } from './effects.ts';
 import { type EventChanges, ExperienceEvents } from './events.ts';
 import { ExperienceHome } from './home.ts';
@@ -356,9 +357,26 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
           ),
         )
         .limit(1);
+      // The conversation's agent's computer keeps processes across its jobs.
+      const processes = deps.sql
+        ? await deps.sql<ComputerProcessRow[]>`(select id, name, state, started_at, created_at,
+              port, last_line
+            from sandbox_process
+            where space_id = ${spaceId} and state in ('starting', 'running')
+              and agent_id in (select agent_id from job
+                where space_id = ${spaceId} and id in ${deps.sql(jobIds)} and agent_id is not null))
+          union all
+          (select id, name, state, started_at, created_at, port, last_line
+            from sandbox_process
+            where space_id = ${spaceId} and state not in ('starting', 'running')
+              and agent_id in (select agent_id from job
+                where space_id = ${spaceId} and id in ${deps.sql(jobIds)} and agent_id is not null)
+            order by created_at desc limit ${COMPUTER_PROCESS_LIMIT})`
+        : [];
       return projectComputer({
         rows: rows.map((row) => row.action),
         bindings,
+        processes,
         available: { browser: deps.browser ?? false, terminal: Boolean(sandbox) },
       });
     },

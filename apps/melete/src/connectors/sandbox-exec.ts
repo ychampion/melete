@@ -44,6 +44,7 @@ import {
 } from '../sandbox/connection.ts';
 import { SandboxRefusal } from '../sandbox/manifest.ts';
 import { type CommandResult, type ExecutionRecord, runCommand } from '../sandbox/marker.ts';
+import type { SandboxProcesses } from '../sandbox/processes.ts';
 import {
   NOT_STARTED,
   type SandboxSessions,
@@ -59,6 +60,12 @@ import {
   HumanControlRefusal,
   runComputerAction,
 } from './sandbox-computer.ts';
+import {
+  createProcessTools,
+  PROCESS_TOOL_NAMES,
+  PROCESS_TOOLS,
+  processDispatchBudgetMs,
+} from './sandbox-process.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 export type SandboxExecOptions = {
@@ -88,6 +95,8 @@ export type SandboxExecOptions = {
   maxPerConnection?: number;
   /** How long a command waits for the agent's computer while another conversation uses it. */
   workspaceWaitMs?: number;
+  /** Background processes in the agent's computer; without it the process tools refuse. */
+  processes?: SandboxProcesses;
 };
 
 /**
@@ -163,7 +172,7 @@ export const sandboxTerminalManifest: ConnectorManifest = {
     {
       name: 'terminal.run',
       description:
-        'Run a shell command in the job workspace inside a remote sandbox. Output above the cap is stored as an artifact.',
+        'Run a shell command in the job workspace inside a remote sandbox. Output above the cap is stored as an artifact. A command ends within two minutes: for longer work or a server, use process.start, and never background a command with & or nohup.',
       input_schema: runSchema,
       effect_class: 'write_reversible',
       required_scopes: ['terminal.run'],
@@ -172,6 +181,7 @@ export const sandboxTerminalManifest: ConnectorManifest = {
       // Brokered: the service runs it and reads the result back itself.
       record_schema: null,
     },
+    ...PROCESS_TOOLS,
   ],
 };
 
@@ -225,6 +235,11 @@ export function sandboxDispatchBudgetMs(
 ): number {
   if (action.kind && COMPUTER_TOOL_NAMES.has(action.kind))
     return COMPUTER_BUDGET_MS + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS;
+  if (action.kind && PROCESS_TOOL_NAMES.has(action.kind))
+    return processDispatchBudgetMs(
+      { kind: action.kind, canonical_payload: action.canonical_payload },
+      WORKSPACE_WAIT_MS,
+    );
   let timeout: number = EXEC_LIMITS.max_timeout_ms;
   try {
     timeout = payloadOf(action).timeout_ms ?? timeout;
@@ -602,8 +617,36 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     }
   };
 
+  /** The process tools, on this attempt's session in the agent's computer. */
+  const processTools = options.processes
+    ? createProcessTools({
+        processes: options.processes,
+        provider,
+        sql,
+        config: options.config,
+        connectionId: options.connectionId,
+        workRoot: options.workRoot,
+        openSession: async (action, ctx, signal) => {
+          const opened = await sessionFor(action, ctx, signal);
+          const renewed = await sessions.renew(opened.row.id);
+          if (!renewed) throw new Error('the sandbox session ended before the action was sent');
+          return renewed;
+        },
+        renew: (id) => sessions.renew(id),
+      })
+    : null;
+  const NO_PROCESSES = {
+    outcome: 'failed' as const,
+    reason: 'background processes are not available in this installation',
+    retryable: false,
+  };
+
   const verify = async (action: Action, ctx: ConnectorContext): Promise<VerifyResult> => {
     checkIdentity(action, ctx);
+    if (PROCESS_TOOL_NAMES.has(action.kind))
+      return processTools
+        ? processTools.verify(action)
+        : { decision: 'undecided', reason: NO_PROCESSES.reason };
     // Nothing records a click the way a marker records a command: whether it
     // landed is not something the sandbox can say afterwards.
     if (COMPUTER_TOOL_NAMES.has(action.kind))
@@ -667,6 +710,8 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       ctx.signal?.throwIfAborted();
       const signal = ctx.signal ?? AbortSignal.timeout(sandboxDispatchBudgetMs(action));
       if (COMPUTER_TOOL_NAMES.has(action.kind)) return computer(action, ctx, signal);
+      if (PROCESS_TOOL_NAMES.has(action.kind))
+        return processTools ? processTools.execute(action, ctx, signal) : NO_PROCESSES;
       let payload: Payload;
       let session: SessionRow;
       let timeZone: string | null = null;
@@ -748,6 +793,8 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       // A click has no record to read back, and it can reach a page outside.
       if (COMPUTER_TOOL_NAMES.has(action.kind))
         return { outcome: 'unknown', reason: 'the service stopped before the desktop answered' };
+      if (PROCESS_TOOL_NAMES.has(action.kind))
+        return processTools ? processTools.abandoned(action) : NO_PROCESSES;
       let verdict: VerifyResult;
       try {
         verdict = await verify(action, { ...ctx, signal: AbortSignal.timeout(30_000) });

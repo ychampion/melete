@@ -15,8 +15,11 @@
  * a `paused` row, `lease_expires_at` is when it was suspended: its lease ended
  * then, and retention counts from it.
  */
+
+import type { ProcessState } from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
   check,
   doublePrecision,
@@ -98,3 +101,61 @@ export const sandboxCommand = pgTable('sandbox_command', {
   exitCode: integer('exit_code'),
   reattached: boolean('reattached').notNull().default(false),
 });
+
+/**
+ * A background process in an agent's computer. It belongs to the computer,
+ * which is the space and agent, and is attributed to the job and action that
+ * started it; any job that may use that computer may list, read, write to and
+ * stop it. The action is unique, so one admitted start is one process however
+ * often it is dispatched. The output itself stays in the computer, in a ring;
+ * the row keeps the cursor, the last line and the end.
+ */
+export const sandboxProcess = pgTable(
+  'sandbox_process',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agent.id, { onDelete: 'cascade' }),
+    connectionId: text('connection_id')
+      .notNull()
+      .references(() => connection.id, { onDelete: 'cascade' }),
+    sessionId: text('session_id').references(() => sandboxSession.id, { onDelete: 'set null' }),
+    jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
+    actionId: text('action_id').references(() => action.id, { onDelete: 'set null' }),
+    commandRedacted: text('command_redacted').notNull(),
+    commandDigest: text('command_digest').notNull(),
+    cwd: text('cwd').notNull(),
+    name: text('name').notNull(),
+    port: integer('port'),
+    state: text('state').$type<ProcessState>().notNull(),
+    exitCode: integer('exit_code'),
+    signal: text('signal'),
+    bootId: text('boot_id'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    outputCursor: bigint('output_cursor', { mode: 'number' }).notNull().default(0),
+    outputBytes: bigint('output_bytes', { mode: 'number' }).notNull().default(0),
+    lastLine: text('last_line'),
+    lastOutputAt: timestamp('last_output_at', { withTimezone: true }),
+    notify: jsonb('notify'),
+    triggerId: text('trigger_id'),
+    endReason: text('end_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('sandbox_process_action_idx').on(t.actionId),
+    index('sandbox_process_computer_idx').on(t.spaceId, t.agentId, t.state),
+    index('sandbox_process_live_idx')
+      .on(t.state, t.expiresAt)
+      .where(sql`${t.state} in ('starting', 'running')`),
+    check(
+      'sandbox_process_state_check',
+      sql`${t.state} in ('starting', 'running', 'exited', 'stopped', 'expired', 'lost')`,
+    ),
+  ],
+);

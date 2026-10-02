@@ -141,6 +141,7 @@ import {
 } from './runtime/supervisor.ts';
 import { mountSandboxComputers, SandboxComputerService } from './sandbox/computer.ts';
 import { sandboxKeyCheck } from './sandbox/connection.ts';
+import { startProcesses } from './sandbox/processes.ts';
 import {
   type SandboxWiring,
   sandboxKeyChange,
@@ -529,12 +530,14 @@ export async function bootstrap(
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   let sandboxComputers: SandboxComputerService | undefined;
+  let processSweep: { stop(): void } | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
     supervisedRuntime?.beginShutdown();
     clearInterval(episodeRetention);
     sandboxes?.stop();
+    processSweep?.stop();
     let failure: unknown;
     for (const stop of [
       () =>
@@ -645,6 +648,7 @@ export async function bootstrap(
           () => connectors.sandboxProviders,
         );
       }
+      processSweep = startProcesses(connectors);
       // Boot reconciliation, before any attempt can open a session of its own.
       if (sandboxes) {
         await sandboxes.reconcile(AbortSignal.timeout(120_000));
