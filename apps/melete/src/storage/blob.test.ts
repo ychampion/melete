@@ -18,6 +18,7 @@ import {
   BlobTooLarge,
   blobKey,
   readBlob,
+  storedHere,
 } from './blob.ts';
 import { LocalBlobStore } from './local.ts';
 import { S3BlobStore } from './s3.ts';
@@ -149,6 +150,37 @@ for (const subject of subjects)
       await subject.tamper(store, stored.key, bytes('the original, edited'));
 
       expect(await failure(() => readBlob(store, stored.key))).toBeInstanceOf(BlobMismatch);
+    });
+
+    test('storing the right bytes again repairs a blob whose bytes changed, even at the same size', async () => {
+      const store = subject.make();
+      const content = bytes('the original');
+      const stored = await store.put(content);
+      await subject.tamper(store, stored.key, bytes('THE ORIGINAL'));
+      expect(await failure(() => readBlob(store, stored.key))).toBeInstanceOf(BlobMismatch);
+
+      await store.put(content);
+      expect(await readBlob(store, stored.key)).toEqual(content);
+    });
+
+    test('storing bytes again marks the blob as freshly written', async () => {
+      const store = subject.make();
+      const content = bytes('stored long ago, stored again today');
+      const stored = await store.put(content);
+      const before = await store.head(stored.key);
+      // Some stores keep the time to the second.
+      await Bun.sleep(1_100);
+      await store.put(content);
+      const after = await store.head(stored.key);
+      expect(after?.modifiedAt.getTime() ?? 0).toBeGreaterThan(before?.modifiedAt.getTime() ?? 0);
+    });
+
+    test('only what a put returned can be used to refer to a blob', async () => {
+      const store = subject.make();
+      const stored = await store.put(bytes('mine to refer to'));
+      expect(storedHere(stored)).toBe(true);
+      expect(storedHere({ ...stored })).toBe(false);
+      expect(Object.isFrozen(stored)).toBe(true);
     });
 
     test('bytes over the size limit are refused and nothing is kept', async () => {

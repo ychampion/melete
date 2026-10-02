@@ -61,7 +61,8 @@ jobs:
           --health-retries 30
       # The blob store suites run against this S3-compatible service as well as
       # a local directory. Pinned by digest; its keys guard nothing but this
-      # job's own loopback port.
+      # job's own loopback port. The image is a frozen archive that gets no
+      # updates; move to a maintained MinIO image when one is published.
       minio:
         image: bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
         env:

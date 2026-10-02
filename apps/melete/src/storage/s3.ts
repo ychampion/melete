@@ -4,8 +4,10 @@
  * The object key is the blob key under an optional prefix. Bytes given in
  * memory are hashed before anything is sent; a stream is spooled to a private
  * temporary file while it is hashed, because the object's name is its hash and
- * is not known until the last byte. An object already there under that name
- * is these bytes, so it is not sent again.
+ * is not known until the last byte. The object is written on every put, even
+ * when one is already there under that name: that marks it as freshly written,
+ * which the collector's grace period counts from, and replaces one whose
+ * bytes had changed.
  */
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
@@ -24,6 +26,7 @@ import {
   blobKey,
   expectedSha256,
   isBlobKey,
+  issueStored,
   type PutOptions,
   type StoredBlob,
   verifiedStream,
@@ -108,11 +111,8 @@ export class S3BlobStore implements BlobStore {
   }
 
   private async send(key: BlobKey, size: number, bytes: Uint8Array | Blob): Promise<StoredBlob> {
-    const sha256 = key.slice('sha256/'.length);
-    const existing = await this.head(key);
-    if (existing?.size !== size)
-      await this.client.write(this.object(key), bytes, { type: 'application/octet-stream' });
-    return { key, size, sha256 };
+    await this.client.write(this.object(key), bytes, { type: 'application/octet-stream' });
+    return issueStored({ key, size, sha256: key.slice('sha256/'.length) });
   }
 
   async get(key: BlobKey, range?: ByteRange): Promise<ReadableStream<Uint8Array>> {

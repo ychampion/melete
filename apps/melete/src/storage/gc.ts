@@ -9,7 +9,9 @@
  * so bytes stored again since the listing are kept too.
  *
  * Several service instances may run it at once: the key lock makes every
- * delete safe however many are deciding.
+ * delete safe however many are deciding. The first pass waits a random part
+ * of an hour after start, so restarts and several instances do not each list
+ * the whole store at once.
  */
 import type { Sql } from 'postgres';
 import type { BlobHead, BlobKey, BlobStore } from './blob.ts';
@@ -25,6 +27,8 @@ export type CollectorOptions = {
   graceMs?: number;
   intervalMs?: number;
   now?: () => Date;
+  /** Left out, a random time within the first hour. */
+  firstPassDelayMs?: number;
 };
 
 export type Collection = { examined: number; deleted: number; abandonedUploads: number };
@@ -34,6 +38,7 @@ export class BlobCollector {
   private readonly intervalMs: number;
   private readonly now: () => Date;
   private timer?: ReturnType<typeof setInterval>;
+  private first?: ReturnType<typeof setTimeout>;
   private running?: Promise<unknown>;
 
   constructor(private readonly options: CollectorOptions) {
@@ -72,7 +77,7 @@ export class BlobCollector {
     for (const key of keys) {
       if (referenced.has(key)) continue;
       await sql.begin(async (tx) => {
-        await lockBlobKey(tx, key);
+        await lockBlobKey(tx, key, 'exclusive');
         const [row] = await tx<{ present: boolean }[]>`select exists (
             select 1 from blob_ref where key = ${key}
           ) as present`;
@@ -86,9 +91,9 @@ export class BlobCollector {
     return deleted;
   }
 
-  /** Collect now and once a day after, without holding up whoever started it. */
+  /** Collect soon and once a day after, without holding up whoever started it. */
   start(): void {
-    if (this.timer) return;
+    if (this.timer || this.first) return;
     const pass = () => {
       if (this.running) return;
       this.running = this.collect()
@@ -101,13 +106,20 @@ export class BlobCollector {
           this.running = undefined;
         });
     };
-    pass();
-    this.timer = setInterval(pass, this.intervalMs);
-    this.timer.unref?.();
+    const delay = this.options.firstPassDelayMs ?? Math.floor(Math.random() * 60 * 60 * 1000);
+    this.first = setTimeout(() => {
+      this.first = undefined;
+      pass();
+      this.timer = setInterval(pass, this.intervalMs);
+      this.timer.unref?.();
+    }, delay);
+    this.first.unref?.();
   }
 
   /** Stop the timer and wait for a pass already running. */
   async stop(): Promise<void> {
+    clearTimeout(this.first);
+    this.first = undefined;
     clearInterval(this.timer);
     this.timer = undefined;
     await this.running;

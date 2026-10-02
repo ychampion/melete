@@ -8,7 +8,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { mkdir, open, readdir, rename, stat, unlink } from 'node:fs/promises';
+import { mkdir, open, readdir, rename, stat, unlink, utimes } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   type BlobHead,
@@ -20,6 +20,7 @@ import {
   type ByteRange,
   blobKey,
   expectedSha256,
+  issueStored,
   type PutOptions,
   type StoredBlob,
   verifiedStream,
@@ -46,7 +47,13 @@ export class LocalBlobStore implements BlobStore {
   ): Promise<StoredBlob> {
     const expected = expectedSha256(options);
     const uploads = join(this.root, 'tmp');
-    await mkdir(uploads, { recursive: true, mode: 0o700 });
+    try {
+      await mkdir(uploads, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      throw new Error(
+        `the blob store cannot write under MELETE_ARTIFACTS_DIR (${this.root}): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     const partial = join(uploads, `${randomUUID()}.part`);
     const hasher = new Bun.CryptoHasher('sha256');
     let size = 0;
@@ -80,16 +87,20 @@ export class LocalBlobStore implements BlobStore {
       const target = this.path(key);
       await mkdir(join(target, '..'), { recursive: true, mode: 0o700 });
       try {
-        // Same bytes either way, so replacing a file already there changes
-        // nothing a reader can see; it does mark the blob as freshly written.
+        // Replacing a file already there marks the blob as freshly written,
+        // which the collector's grace period counts from, and repairs one
+        // whose bytes had changed.
         await rename(partial, target);
         kept = true;
+        await syncDirectory(join(target, '..'));
       } catch (error) {
         // Windows will not replace a file another reader holds open. What is
-        // there already is these bytes, so it is kept.
+        // there is kept, and marked as freshly written.
         if (!(await exists(target))) throw error;
+        const now = new Date();
+        await utimes(target, now, now);
       }
-      return { key, size, sha256 };
+      return issueStored({ key, size, sha256 });
     } finally {
       if (!kept) await unlink(partial).catch(() => {});
     }
@@ -162,6 +173,17 @@ async function entries(directory: string): Promise<string[]> {
   } catch (error) {
     if (isMissing(error)) return [];
     throw error;
+  }
+}
+
+/** So a rename survives a crash; directories cannot be opened for this on Windows. */
+async function syncDirectory(directory: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const handle = await open(directory, constants.O_RDONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
 }
 
