@@ -155,12 +155,17 @@ export async function stepsOf(tx: Transaction, run: string) {
     .orderBy(asc(runState.createdAt));
   if (!rows.length) return [];
   const results = await tx
-    .select({ step: runEntry.stepJobId, body: runEntry.body, seq: runEntry.seq })
+    .select({
+      step: runEntry.stepJobId,
+      kind: runEntry.kind,
+      body: runEntry.body,
+      seq: runEntry.seq,
+    })
     .from(runEntry)
     .where(
       and(
         eq(runEntry.runJobId, run),
-        eq(runEntry.kind, 'finished'),
+        inArray(runEntry.kind, ['finished', 'step_finished']),
         inArray(
           runEntry.stepJobId,
           rows.map((entry) => entry.id),
@@ -168,11 +173,17 @@ export async function stepsOf(tx: Transaction, run: string) {
       ),
     )
     .orderBy(desc(runEntry.seq));
+  // Its own result, or, for a helper that ended without one, why it ended.
+  const resultOf = (id: string) =>
+    (
+      results.find((result) => result.step === id && result.kind === 'finished') ??
+      results.find((result) => result.step === id && result.body)
+    )?.body ?? null;
   return rows.map((entry) => ({
     id: entry.id,
     title: entry.title,
     status: runStatusOf(entry.state, entry.paused),
-    result: results.find((result) => result.step === entry.id)?.body ?? null,
+    result: resultOf(entry.id),
   }));
 }
 

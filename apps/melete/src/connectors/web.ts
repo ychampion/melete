@@ -298,7 +298,8 @@ export const publicReadsEnabled = (configuration: unknown): boolean =>
 /**
  * The service's rule, read from the database on every request so a change in
  * Settings applies to the next page: conversations read public pages unless
- * the space turned that off or the space or agent is private.
+ * the space turned that off or the space or agent is private. Long work a
+ * person started reads them the same way.
  */
 export function databasePublicReads(options: {
   sql: Query;
@@ -312,7 +313,9 @@ export function databasePublicReads(options: {
       left join job p on p.id = j.experience_parent_id
       join connection c on c.id = ${options.connectionId} and c.space_id = j.space_id
       where j.id = ${scope.jobId} and j.space_id = ${scope.spaceId}`;
-    if (row?.kind !== 'chat') return PUBLIC_READS_CHATS_ONLY;
+    // A conversation, and the long work a person started, read public pages.
+    if (!row || !['chat', 'run', 'run_step'].includes(String(row.kind)))
+      return PUBLIC_READS_CHATS_ONLY;
     if (!publicReadsEnabled(row.configuration)) return PUBLIC_READS_OFF;
     if (options.privateContext) {
       const agentId = row.agent_id ? String(row.agent_id) : null;

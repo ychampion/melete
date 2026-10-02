@@ -9,6 +9,10 @@ import {
   runResponse,
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
+import { signCapability } from '../../src/broker/capability.ts';
+import { createBrokerApp } from '../../src/broker/http.ts';
+import { BrokerService } from '../../src/broker/service.ts';
+import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import {
   action,
@@ -28,16 +32,14 @@ import { JobService } from '../../src/jobs/service.ts';
 import { bestExperiment, valueShown } from '../../src/runs/record.ts';
 import { attachRuns, RunService } from '../../src/runs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
 const queue = handle ? await startQueue(handle.url) : null;
 const jobs = handle && queue ? new JobService(handle.db, queue.boss) : null;
-const runner = jobs
-  ? new AttemptRunner(jobs, new StubRuntimeAdapter(), {
-      key: 'runs-fixture-signing-key-32-bytes-long',
-    })
-  : null;
+const KEY = 'runs-fixture-signing-key-32-bytes-long';
+const runner = jobs ? new AttemptRunner(jobs, new StubRuntimeAdapter(), { key: KEY }) : null;
 const runs = jobs ? new RunService(jobs) : null;
 if (runner && runs) attachRuns(runner, runs);
 const app = handle
@@ -233,6 +235,10 @@ withDb('long work in shifts', () => {
       task: 'Price vendor B',
       title: 'Vendor B',
     })) as { helper_id: string };
+    // Finishing now would leave the helpers' findings behind.
+    expect(
+      String(await rejectionOf(tool(lead.claims, 'run.finish', { summary: 'Too soon.' }))),
+    ).toContain('2 helpers are still working');
     await tool(lead.claims, 'run.checkpoint', {
       summary: 'Asked two helpers.',
       next: 'Compare their prices.',
@@ -252,7 +258,9 @@ withDb('long work in shifts', () => {
     expect(helperA.claims.scopes).toContain('run.finish');
     expect(helperA.claims.scopes).not.toContain('run.delegate');
     expect(helperA.bundle.job.objective).toContain('The whole work: Compare three vendors');
-    await expect(tool(helperA.claims, 'run.delegate', { task: 'More help' })).rejects.toThrow();
+    expect(
+      await rejectionOf(tool(helperA.claims, 'run.delegate', { task: 'More help' })),
+    ).toBeDefined();
     await tool(helperA.claims, 'run.finish', { summary: 'Vendor A costs $40.' });
     await required(runner).commitOutcome(helperA.claims, done());
     expect((await row(one.helper_id)).state).toBe('completed');
@@ -277,7 +285,8 @@ withDb('long work in shifts', () => {
       await (await request(`/runs/${run.id}/export`)).json(),
     ).markdown;
     expect(markdown).toContain('# Compare three vendors');
-    expect(markdown).toContain('step_started');
+    expect(markdown).toContain('Helper started');
+    expect(markdown).not.toMatch(/step_started|checkpoint|experiment/);
     expect(markdown).toContain('(helper: Vendor A)');
     expect(markdown).toContain('B is cheaper.');
   });
@@ -321,7 +330,7 @@ withDb('long work in shifts', () => {
       await required(runner).commitOutcome(shift.claims, done());
       expect((await row(run.id)).state).toBe(expected);
     }
-    expect((await view(run.id)).question).toContain('limit you set (2 shifts)');
+    expect((await view(run.id)).question).toContain('limit you set (2 rounds of work)');
     const cleared = await request(`/runs/${run.id}/limit`, 'PUT', { limit: null });
     expect(runResponse.parse(await cleared.json()).run.limit).toBeNull();
   });
@@ -375,6 +384,157 @@ withDb('long work in shifts', () => {
     expect((await row(helper.helper_id)).state).toBe('cancelled');
   });
 
+  test('a helper never waits on the person: where it would ask, it ends and its run hears why', async () => {
+    const run = await start({ goal: 'Compare three suppliers' });
+    const lead = await claim(run.id);
+    const helper = async (title: string) =>
+      (
+        (await tool(lead.claims, 'run.delegate', { task: `Price ${title}`, title })) as {
+          helper_id: string;
+        }
+      ).helper_id;
+    const asks = await helper('Supplier A');
+    const fails = await helper('Supplier B');
+    const lost = await helper('Supplier C');
+    await tool(lead.claims, 'run.checkpoint', {
+      summary: 'Asked three helpers.',
+      next: 'Compare.',
+      next_shift: 'when_helpers_finish',
+    });
+    await required(runner).commitOutcome(lead.claims, done());
+
+    // A question of its own.
+    const a = await claim(asks);
+    await required(runner).commitOutcome(a.claims, {
+      kind: 'waiting_for_input',
+      question: 'Which currency should I quote in?',
+    });
+    expect((await row(asks)).state).toBe('failed');
+    expect((await row(run.id)).state).toBe('waiting_for_event_or_time');
+
+    // Failing shifts in a row.
+    for (const attemptNumber of [1, 2, 3]) {
+      const b = await claim(fails);
+      await required(runner).commitOutcome(b.claims, {
+        kind: 'failed',
+        reason: `The price page timed out (${attemptNumber}).`,
+        retryable: true,
+      });
+    }
+    expect((await row(fails)).state).toBe('failed');
+    expect((await row(run.id)).state).toBe('waiting_for_event_or_time');
+
+    // Shifts lost in a row; the last helper's end wakes the run.
+    for (let lose = 0; lose < 3; lose++) {
+      const c = await claim(lost);
+      expect(await required(runner).loseAttempt(c.claims.attempt_id, 'lease expired')).toBe(true);
+    }
+    expect((await row(lost)).state).toBe('failed');
+    expect((await row(run.id)).state).toBe('queued');
+
+    const next = await claim(run.id);
+    expect(next.bundle.job.objective).toContain(
+      'Supplier A: failed — It stopped to ask: Which currency should I quote in?',
+    );
+    expect(next.bundle.job.objective).toContain(
+      'Supplier B: failed — It kept running into a problem: The price page timed out (3).',
+    );
+    expect(next.bundle.job.objective).toContain('Supplier C: failed');
+    // With no helper left out, the run can finish.
+    await tool(next.claims, 'run.finish', { summary: 'No supplier could be priced.' });
+    await required(runner).commitOutcome(next.claims, done());
+    expect((await view(run.id)).status).toBe('done');
+  });
+
+  test('handing off to go on now and nothing else is idle; resting on helpers is not', async () => {
+    const spinning = await start({ goal: 'Hand off and nothing else' });
+    for (let shift = 0; shift < RUN_IDLE_SHIFT_LIMIT; shift++) {
+      const next = await claim(spinning.id);
+      await tool(next.claims, 'run.checkpoint', { summary: 'Still on it.', next: 'Keep going.' });
+      await required(runner).commitOutcome(next.claims, done());
+    }
+    expect((await view(spinning.id)).status).toBe('needs_you');
+
+    const resting = await start({ goal: 'Wait on a slow helper' });
+    const lead = await claim(resting.id);
+    await tool(lead.claims, 'run.delegate', { task: 'Something slow' });
+    const wait = {
+      summary: 'Waiting for the helper.',
+      next: 'Read its result.',
+      next_shift: 'when_helpers_finish',
+    };
+    await tool(lead.claims, 'run.checkpoint', wait);
+    await required(runner).commitOutcome(lead.claims, done());
+    for (let wake = 0; wake < RUN_IDLE_SHIFT_LIMIT + 1; wake++) {
+      const next = await claim(resting.id);
+      await tool(next.claims, 'run.checkpoint', wait);
+      await required(runner).commitOutcome(next.claims, done());
+      expect((await row(resting.id)).state).toBe('waiting_for_event_or_time');
+    }
+  });
+
+  test('work that finished while paused is taken up again by a message', async () => {
+    const run = await start({ goal: 'Finish under a pause' });
+    const shift = await claim(run.id);
+    expect((await request(`/runs/${run.id}/pause`, 'POST')).status).toBe(200);
+    await tool(shift.claims, 'run.finish', { summary: 'All done.' });
+    await required(runner).commitOutcome(shift.claims, done());
+    expect((await row(run.id)).state).toBe('completed');
+    const again = await request(`/runs/${run.id}/message`, 'POST', { text: 'One more thing.' });
+    expect(again.status).toBe(200);
+    const reopened = await row(run.id);
+    expect(reopened.state).toBe('queued');
+    expect(reopened.paused).toBe(false);
+  });
+
+  test('stop also ends a helper started while it was stopping', async () => {
+    const run = await start({ goal: 'Stopped mid-delegation' });
+    const lead = await claim(run.id);
+    const service = required(jobs);
+    const cancel = service.cancel.bind(service);
+    let late = null as string | null;
+    // The shift starts a helper just as the person presses Stop.
+    service.cancel = async (id, reason) => {
+      if (id === run.id && late === null)
+        late = (
+          (await tool(lead.claims, 'run.delegate', { task: 'Late helper' })) as {
+            helper_id: string;
+          }
+        ).helper_id;
+      return cancel(id, reason);
+    };
+    try {
+      expect((await request(`/runs/${run.id}/stop`, 'POST')).status).toBe(200);
+    } finally {
+      service.cancel = cancel;
+    }
+    expect((await row(required(late))).state).toBe('cancelled');
+  });
+
+  test('pausing does not deadlock with a helper writing to the record', async () => {
+    const run = await start({ goal: 'Pause while a helper writes' });
+    const lead = await claim(run.id);
+    const helper = (
+      (await tool(lead.claims, 'run.delegate', { task: 'Write things down' })) as {
+        helper_id: string;
+      }
+    ).helper_id;
+    await tool(lead.claims, 'run.log', { kind: 'note', title: 'Started' });
+    await required(runner).commitOutcome(lead.claims, done());
+    let pausing = null as Promise<Response> | null;
+    // As a helper's own transaction does: its row first, then an entry under the run.
+    await required(handle).sql.begin(async (tx) => {
+      await tx`select id from job where id = ${helper} for update`;
+      pausing = request(`/runs/${run.id}/pause`, 'POST');
+      await Bun.sleep(500);
+      await tx`insert into run_entry (id, run_job_id, step_job_id, kind, title)
+        values (${newId('rune')}, ${run.id}, ${helper}, 'note', 'From the helper')`;
+    });
+    expect((await required(pausing)).status).toBe(200);
+    expect((await row(helper)).paused).toBe(true);
+    expect((await row(run.id)).paused).toBe(true);
+  });
+
   test('an experiment is checked against the output of the action it cites', async () => {
     const run = await start({
       goal: 'Tune the model',
@@ -425,6 +585,87 @@ withDb('long work in shifts', () => {
     const tuned = await view(run.id);
     expect(tuned.experiments.best).toMatchObject({ title: 'Lower learning rate', checked: true });
     expect(tuned.status_line).toContain('best accuracy 0.873');
+  });
+
+  test('through the broker: a chat may start work, a run gets its tools, a helper fewer', async () => {
+    const broker = new BrokerService({
+      sql: required(handle).sql,
+      connectors: new ConnectorRegistry(),
+      runs: required(runs),
+    });
+    const brokerApp = createBrokerApp({
+      broker,
+      capabilityKey: KEY,
+      approvalKey: 'runs-fixture-approval-key-32-bytes!',
+    });
+    const as = (claims: Parameters<RunService['call']>[0]) => ({
+      authorization: `Bearer ${signCapability(claims, KEY)}`,
+      'content-type': 'application/json',
+    });
+    const tools = async (claims: Parameters<RunService['call']>[0]) =>
+      (
+        (await (await brokerApp.request('/tools', { headers: as(claims) })).json()) as {
+          tools: { name: string }[];
+        }
+      ).tools.map((entry) => entry.name);
+    const call = (claims: Parameters<RunService['call']>[0], name: string, args: unknown) =>
+      brokerApp.request('/tools/call', {
+        method: 'POST',
+        headers: as(claims),
+        body: JSON.stringify({ name, arguments: args }),
+      });
+
+    // A conversation, with the person asking for something big.
+    const chat = await required(jobs).transaction((tx) =>
+      required(jobs).createInTransaction(
+        tx,
+        { space_id: spaceId, title: 'Research', objective: 'Research' },
+        { kind: 'chat' },
+      ),
+    );
+    await required(jobs).input(
+      chat.id,
+      'Keep testing caching ideas until one halves the load time.',
+    );
+    const turn = await claim(chat.id);
+    expect(turn.claims.scopes).toContain('run.start');
+    expect(await tools(turn.claims)).toContain('run.start');
+    expect(await tools(turn.claims)).not.toContain('run.log');
+    const started = await call(turn.claims, 'run.start', {
+      goal: 'Halve the load time with caching',
+      metric: { name: 'load ms', direction: 'lower' },
+    });
+    expect(started.status).toBe(200);
+    const { run_id } = (await started.json()) as { run_id: string };
+    const listed = runListResponse.parse(
+      await (await request(`/runs?conversation_id=${chat.id}`)).json(),
+    ).runs;
+    expect(listed.map((entry) => entry.id)).toEqual([run_id]);
+    expect(listed[0]?.metric).toEqual({ name: 'load ms', direction: 'lower' });
+
+    // The run's own shift is offered its tools, pinned in the core catalog.
+    const shift = await claim(run_id);
+    const offered = await tools(shift.claims);
+    expect(offered).toEqual(
+      expect.arrayContaining(['run.log', 'run.delegate', 'run.checkpoint', 'run.finish']),
+    );
+    expect(offered).not.toContain('run.start');
+    const logged = await call(shift.claims, 'run.log', {
+      kind: 'finding',
+      title: 'Images dominate',
+    });
+    expect(logged.status).toBe(200);
+    // A wrong argument comes back as something the model can read and fix.
+    const wrong = await call(shift.claims, 'run.log', { kind: 'diary', title: 'x' });
+    expect(wrong.status).toBe(409);
+    expect(JSON.stringify(await wrong.json())).toContain('kind');
+    const helper = (await (
+      await call(shift.claims, 'run.delegate', { task: 'Measure the images' })
+    ).json()) as { helper_id: string };
+    const helperShift = await claim(helper.helper_id);
+    expect(await tools(helperShift.claims)).not.toContain('run.delegate');
+    const refused = await call(helperShift.claims, 'run.delegate', { task: 'More' });
+    expect(refused.status).toBe(409);
   });
 
   test('the list shows runs, newest first, and a conversation sees the ones it started', async () => {
