@@ -3,6 +3,7 @@
  * best with, the search over the shelves, and which of the person's
  * connections a template would suggest (suggest, never tick).
  */
+import { kindsOfApp } from '@melete/contracts/agent-library';
 import type { IconName } from '../design/icons.tsx';
 import type { AgentTemplate } from '../experience/types.ts';
 
@@ -53,18 +54,7 @@ export function searchLibrary(
   });
 }
 
-/** What a connection is, in the library's words, from the app name the service gives it. */
-export function kindsOfApp(app: string): WorksWith[] {
-  const name = app.toLowerCase();
-  if (/mail|outlook|imap|smtp/.test(name)) return ['mail'];
-  if (/calendar|caldav|\bics\b/.test(name)) return ['calendar'];
-  if (/^files$|drive/.test(name)) return ['files'];
-  if (name === 'web') return ['web'];
-  if (/browser/.test(name)) return ['browser'];
-  if (name === 'computer') return ['computer', 'devices'];
-  if (/^(speech|transcription|test connection)$/.test(name)) return [];
-  return ['mcp'];
-}
+export { kindsOfApp, suggestedConnections } from '@melete/contracts/agent-library';
 
 /** Whether a connection is one of the kinds this template works best with. */
 export const suggests = (kinds: readonly WorksWith[], app: string) =>

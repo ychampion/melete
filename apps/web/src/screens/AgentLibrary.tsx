@@ -206,7 +206,7 @@ export function TemplateSheet({
           <h3>Works best with</h3>
           <WorksWithChips kinds={template.works_best_with} />
           <span className="library-meta">
-            Nothing is switched on for it. You choose what it can use before you create it.
+            The ones you have connected start ticked in the next step, and you can untick any.
           </span>
         </div>
         {routine ? (

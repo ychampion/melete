@@ -2,7 +2,12 @@ import { afterAll, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { connectionListResponse } from '@melete/contracts';
+import {
+  agentTemplateList,
+  connectionListResponse,
+  experienceConnectionList,
+  suggestedConnections,
+} from '@melete/contracts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { emailManifest } from '../../src/connectors/email.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -484,7 +489,7 @@ const skilled = late ? await database() : null;
 );
 
 (journey ? test : test.skip)(
-  'a new agent reaches the files the space set up, and a mailbox connected later',
+  'a new agent reaches the files the space set up, and a later mailbox once ticked',
   async () => {
     const fixture = journey;
     if (!fixture) throw new Error('Postgres unavailable');
@@ -506,14 +511,20 @@ const skilled = late ? await database() : null;
           headers: { cookie, ...(body ? { 'content-type': 'application/json' } : {}) },
           ...(body ? { body: JSON.stringify(body) } : {}),
         });
-      // A template grants nothing; the person ticks every connection in the draft.
-      const { templates } = (await (await call('/agents/templates')).json()) as {
-        templates: Array<{ agent: Record<string, unknown> }>;
-      };
-      expect(templates[0]?.agent.allowed_connection_ids).toEqual([]);
+      // A template grants nothing itself; its draft starts with the connections it
+      // works best with ticked, and the person creates it as it is.
+      const { templates } = agentTemplateList.parse(await (await call('/agents/templates')).json());
+      const review = templates.find((template) => template.id === 'weekly-review');
+      if (!review) throw new Error('Missing weekly review template');
+      expect(review.agent.allowed_connection_ids).toEqual([]);
+      const listed = experienceConnectionList.parse(
+        await (await call('/experience/connections')).json(),
+      );
+      const ticked = suggestedConnections(review.works_best_with, listed.connections);
+      expect(ticked.length).toBeGreaterThan(0);
       const made = await call('/agents', 'POST', {
-        ...templates[0]?.agent,
-        allowed_connection_ids: null,
+        ...review.agent,
+        allowed_connection_ids: ticked,
       });
       expect(made.status).toBeLessThan(300);
       const { agent } = (await made.json()) as { agent: { id: string } };
@@ -538,7 +549,6 @@ const skilled = late ? await database() : null;
       };
       expect(await ask('List my files')).toContain('files.list');
 
-      // A mailbox connected after the agent was made reaches it too.
       const [space] = await fixture.sql`select id from space where kind = 'personal'`;
       const mailbox = newId('conn');
       running.registry.register(mailbox, {
@@ -556,6 +566,16 @@ const skilled = late ? await database() : null;
       await fixture.sql`insert into connection (id, space_id, provider, label, scopes, status)
         values (${mailbox}, ${space?.id}, ${emailManifest.provider}, 'Mail',
           ${JSON.stringify(emailManifest.tools.map((tool) => tool.name))}::jsonb, 'active')`;
+      // A mailbox connected later is not reached until the person ticks it.
+      expect(await ask('Draft a note to Alex')).not.toContain('email.draft');
+      expect(
+        (
+          await call(`/agents/${agent.id}`, 'PATCH', {
+            ...review.agent,
+            allowed_connection_ids: [...ticked, mailbox],
+          })
+        ).status,
+      ).toBeLessThan(300);
       expect(await ask('Draft a note to Alex')).toContain('email.draft');
     } finally {
       await running.close();

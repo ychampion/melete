@@ -183,9 +183,11 @@ computer, apps you connect), a brief of up to 500 characters, and its
 switches. Adding one opens a draft to name and review; saving it makes that
 one agent.
 
-- **Nothing is granted.** Every template starts with no connections; "works
-  best with" is only shown, and the Access tab marks matching connections as
-  suggested without ticking them. An agent without the computer is never
+- **Nothing is granted by the template.** Every template carries no
+  connections. The draft starts with the person's connected connections that
+  match "works best with" ticked and marked as suggested, so they see exactly
+  what it will reach and can untick any before creating it; setup does the
+  same for the agents picked there and lists what each will reach. An agent without the computer is never
   offered as working with a browser, its own computer or your computer.
 - **The starter routine is offered, not made.** After the agent is saved its
   routine is shown with its schedule; `POST /automations` runs only when the

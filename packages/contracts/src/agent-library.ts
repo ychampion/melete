@@ -53,3 +53,33 @@ export function libraryScheduleWords(routine: Pick<Routine, 'weekdays' | 'at'>):
   const clock = `${hour % 12 || 12}:${String(minute).padStart(2, '0')} ${hour < 12 ? 'AM' : 'PM'}`;
   return `${when} at ${clock}`;
 }
+
+type Kind = 'mail' | 'calendar' | 'files' | 'web' | 'browser' | 'computer' | 'devices' | 'mcp';
+
+/** What a connection is, in the library's words, from the app name the service gives it. */
+export function kindsOfApp(app: string): Kind[] {
+  const name = app.toLowerCase();
+  if (/mail|outlook|imap|smtp/.test(name)) return ['mail'];
+  if (/calendar|caldav|\bics\b/.test(name)) return ['calendar'];
+  if (/^files$|drive/.test(name)) return ['files'];
+  if (name === 'web') return ['web'];
+  if (/browser/.test(name)) return ['browser'];
+  if (name === 'computer') return ['computer', 'devices'];
+  if (/^(speech|transcription|test connection)$/.test(name)) return [];
+  return ['mcp'];
+}
+
+/**
+ * The person's connected connections that match what a template works best
+ * with. A draft starts with these ticked, so the person sees exactly what the
+ * agent will reach and can untick any before creating it.
+ */
+export function suggestedConnections(
+  kinds: readonly string[],
+  connections: readonly { id: string; app: string; status: string }[],
+): string[] {
+  return connections
+    .filter((connection) => connection.status === 'connected')
+    .filter((connection) => kindsOfApp(connection.app).some((kind) => kinds.includes(kind)))
+    .map((connection) => connection.id);
+}

@@ -39,7 +39,7 @@ import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { LibraryShelf, TemplateSheet, WelcomeSheet } from './AgentLibrary.tsx';
 import { draftKey, followSaved } from './agent-draft.ts';
-import { suggests, WORKS_WITH, type WorksWith } from './agent-library.ts';
+import { suggestedConnections, suggests, WORKS_WITH, type WorksWith } from './agent-library.ts';
 
 const ROLES = [
   'Concierge',
@@ -561,8 +561,8 @@ function AgentEditor({
             {worksWith?.length ? (
               <p style={{ fontSize: 13, color: 'var(--secondary)' }}>
                 Works best with{' '}
-                {worksWith.map((kind) => WORKS_WITH[kind].label.toLowerCase()).join(', ')}. Nothing
-                is ticked for you.
+                {worksWith.map((kind) => WORKS_WITH[kind].label.toLowerCase()).join(', ')}. The
+                matching connections are ticked; untick any you would rather it left alone.
               </p>
             ) : null}
             <div className="col" style={{ gap: 6 }}>
@@ -862,9 +862,18 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
     // The suggested name is one no agent here has, so "@name" stays clear.
     const taken = agents.map((agent) => agent.name);
     setPicked(null);
+    // The connections it works best with start ticked, so the draft shows
+    // exactly what it will reach; the person can untick any before creating it.
     setSeed({
       ...template,
-      agent: { ...template.agent, name: freeAgentName(template.agent.name, taken) },
+      agent: {
+        ...template.agent,
+        name: freeAgentName(template.agent.name, taken),
+        allowed_connection_ids: suggestedConnections(
+          template.works_best_with,
+          connections.data?.connections ?? [],
+        ),
+      },
     });
     navigate('/agents/new');
   };
