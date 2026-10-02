@@ -53,7 +53,7 @@ export const USAGE =
   'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--backup-dir /absolute/parent] [--wait-timeout seconds] [--repository /absolute/installation]';
 
 const GIB = 1024 ** 3;
-/** The README's floor for the filesystem that holds Docker's data. */
+/** docs/UPGRADING.md's floor for the filesystem that holds Docker's data. */
 const MIN_DOCKER_FREE_BYTES = 8 * GIB;
 const MIN_BACKUP_FREE_BYTES = 1 * GIB;
 const TAG = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$/;

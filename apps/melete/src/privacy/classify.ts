@@ -161,16 +161,10 @@ export function classifyParts(
   return verdict(person.filter((text) => text.trim()).map(read), enabled);
 }
 
-/** What the person and the tools contributed to a request: never system or developer text. */
-export function authoredText(
-  body: Record<string, unknown>,
-  protocol: Protocol,
-): { person: string; tools: string } {
-  const parts = authoredParts(body, protocol);
-  return { person: parts.person.join('\n'), tools: parts.tools.join('\n') };
-}
-
-/** The same, one string per message part. */
+/**
+ * What the person and the tools contributed to a request, one string per message
+ * part: never system or developer text.
+ */
 export function authoredParts(
   body: Record<string, unknown>,
   protocol: Protocol,

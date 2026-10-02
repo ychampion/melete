@@ -99,11 +99,6 @@
   margin-top: 4px;
   flex-wrap: wrap;
 }
-.home-error {
-  margin-top: 12px;
-  font-size: 13px;
-  color: var(--danger);
-}
 
 /* ---------- composer and suggestions ---------- */
 

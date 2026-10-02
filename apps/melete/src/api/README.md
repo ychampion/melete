@@ -4,7 +4,7 @@ The Hono adapters in this directory mount through `createApp` in
 `../index.ts`. Jobs, replies, operations, policy, attention, questions,
 triggers, approvals and events require injected service dependencies.
 Authentication tests include `all other routes require a valid cookie while
-health stays public`; event tests include `Last-Event-ID overrides the URL
+health and setup status stay public`; event tests include `Last-Event-ID overrides the URL
 cursor and unknown jobs fail before streaming`.
 
 The internal action-read adapter uses a separate service credential and

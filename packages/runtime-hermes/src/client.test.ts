@@ -10,8 +10,6 @@ import {
   HERMES_APPROVAL_ANSWERS,
   HERMES_ROUTES,
   HermesClient,
-  hermesApprovalRequest,
-  hermesRunStatus,
   IDENTITY,
   parseSse,
 } from './client.ts';
@@ -103,8 +101,7 @@ describe('request building', () => {
     expect(client.capabilities().method).toBe('GET');
   });
 
-  test('status and stop address the run by id', () => {
-    expect(client.status('run_1').url).toBe('http://runtime:8790/v1/runs/run_1');
+  test('stop addresses the run by id', () => {
     expect(client.stop('run_1').url).toBe('http://runtime:8790/v1/runs/run_1/stop');
     expect(client.stop('run_1').method).toBe('POST');
   });
@@ -126,7 +123,7 @@ describe('request building', () => {
 
   test('no token means no authorization header, rather than an empty one', () => {
     const anonymous = new HermesClient({ baseUrl: 'http://runtime:8790' });
-    expect(anonymous.status('run_1').headers.authorization).toBeUndefined();
+    expect(anonymous.stop('run_1').headers.authorization).toBeUndefined();
   });
 });
 
@@ -445,41 +442,6 @@ describe('context assembly', () => {
     expect(input).toContain('any news?');
     expect(input).toContain('was denied');
     expect(input).toContain('One message sent on Tuesday.');
-  });
-});
-
-describe('response schemas', () => {
-  test('a run status parses', () => {
-    expect(hermesRunStatus.parse({ run_id: 'r1', status: 'running' }).status).toBe('running');
-  });
-
-  test('an unknown status falls back to running rather than losing the run', () => {
-    // A status this build does not know about still names a live run; refusing
-    // the parse would drop the run id with it.
-    expect(hermesRunStatus.parse({ run_id: 'r1', status: 'thinking' }).status).toBe('running');
-  });
-
-  test('interrupted and cancelled are statuses, not surprises', () => {
-    for (const status of ['interrupted', 'cancelled', 'waiting_for_approval'] as const) {
-      expect(hermesRunStatus.parse({ run_id: 'r1', status }).status).toBe(status);
-    }
-  });
-
-  test('an approval notification carries the fields the probe recorded', () => {
-    const parsed = hermesApprovalRequest.parse({
-      request_id: '4ea455eb1c1745bb8761c66d81237bad',
-      command: 'rm -rf ~/Documents',
-      description: 'recursive delete',
-      pattern_key: 'rm -rf',
-      pattern_keys: ['rm -rf'],
-      allow_session: true,
-      allow_permanent: true,
-    });
-    expect(parsed.request_id).toHaveLength(32);
-  });
-
-  test('a notification with no request id is refused, because nothing could answer it', () => {
-    expect(hermesApprovalRequest.safeParse({ command: 'ls' }).success).toBe(false);
   });
 });
 

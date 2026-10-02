@@ -41,7 +41,6 @@ export const DATABASE_CONTAINER = `${PROJECT}-database-1`;
 export const DATABASE_NAME = `melete_evals_${createHash('sha256').update(ROOT).digest('hex').slice(0, 12)}`;
 export const API_PORT = 19187;
 export const BROKER_PORT = 19188;
-export const RUNTIME_PORT = 19190;
 export type Secrets = {
   database: string;
   capability: string;

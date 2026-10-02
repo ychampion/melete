@@ -27,10 +27,6 @@ export interface DurableObjectNamespace {
   get(id: DurableObjectId): DurableObjectStub;
 }
 
-export interface Fetcher {
-  fetch(request: Request): Promise<Response>;
-}
-
 export interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException(): void;

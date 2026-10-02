@@ -8,7 +8,6 @@
  * state it likes better.
  */
 import {
-  EVENT_TYPES,
   effectClass,
   toolDetail,
   toolExcerpt,
@@ -202,7 +201,6 @@ export const scenarioStep = z.discriminatedUnion('step', [
     retryable: z.boolean().default(false),
   }),
 ]);
-export type ScenarioStep = z.infer<typeof scenarioStep>;
 
 export const scenario = z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]*$/),
@@ -220,8 +218,6 @@ export const scenario = z.object({
   steps: z.array(scenarioStep.and(z.object({ label: label.optional() }))).min(1),
 });
 export type Scenario = z.infer<typeof scenario>;
-
-export const EVENT_TYPE_SET: ReadonlySet<string> = new Set(EVENT_TYPES);
 
 /** Index of label to step position, checked once so a jump cannot dangle. */
 export function labelIndex(script: Scenario): Map<string, number> {

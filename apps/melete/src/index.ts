@@ -5,8 +5,7 @@
  * Modules register their API surfaces against injected durable dependencies.
  * The public API serves /health, the job and account surfaces, and the
  * knowledge surface; the effect listener serves broker, API action reads, and
- * model traffic on its own internal port. The remaining modules are
- * directories with a README describing the contract they will implement.
+ * model traffic on its own internal port.
  */
 
 import type { AttemptBundle, RuntimeAdapter } from '@melete/contracts';

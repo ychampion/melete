@@ -59,7 +59,7 @@ own words.
 | `react` without a message target | implemented-and-tested | `a reaction with no target lands on the owner's latest message, and only this job's` in `broker.test.ts`, which covers the targeting rule with a fixture reaction. |
 | Audience-qualified skills | implemented-and-tested | `preserves a qualified audience and refuses a different container` in `packages/contracts/src/principals.test.ts`; the integration test excludes private and incorrectly qualified files. |
 | Existing account upgrade | implemented-and-tested | `additive migration preserves the setup guard, login and an issued personal-space capability` now upgrades through production `migrateDatabase`. `production migration upgrades the integration schema with MCP setup and procedure promotion` starts with a real ledger through 0032, verifies all three new columns, and checks a second startup is idempotent. Migrations 0033/0034 have increasing timestamps after 0032. |
-| Adapter sequencing and prompt assembly | implemented-and-tested | `every event carries the one dedup key format` and `the instructions are identity, then skills, then knowledge` in the runtime adapter and client suites, with recorded HTTP responses. |
+| Adapter sequencing and prompt assembly | implemented-and-tested | `every event carries the one dedup key format` and `the identity is the engine home's SOUL.md, whole, and the instructions do not repeat it` in the runtime adapter and client suites, with recorded HTTP responses. |
 | Whole end-to-end capability proof against the real engine | implemented-and-tested | `real Hermes capability chain: discovery, hooks, learning, teammate context and revocation` passes all five stages. It runs pinned Hermes with a scripted HTTP provider and verifies actual provider requests, broker receipts, learning, member context and revocation, so it establishes the chain rather than a model's answers. |
 
 ## Authority and observer behaviour
@@ -236,7 +236,7 @@ bun run compose:check
 ```
 
 The combined real-engine proof runs with the pinned local engine prepared as
-the root README describes:
+CONTRIBUTING.md describes under "Run the agent runtime locally":
 
 ```sh
 MELETE_CAPABILITY_PROOF=1 bun test apps/melete/test/integration/capability-proof.test.ts --max-concurrency=1

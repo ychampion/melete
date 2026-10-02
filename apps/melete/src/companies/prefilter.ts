@@ -51,9 +51,6 @@ export const CANDIDATE_PATTERNS: readonly RegExp[] = [
   /\bdata (?:we hold|retention|deletion)\b/i,
 ];
 
-/** Why a message was selected, for the counts a scan reports. */
-export type CandidateReason = (typeof CANDIDATE_PATTERNS)[number]['source'];
-
 export type PrefilterOptions = {
   /** Messages older than this are not read. The scan's window, in days. */
   windowDays: number;

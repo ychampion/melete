@@ -22,7 +22,6 @@
   },
   "dependencies": {
     "@melete/contracts": "workspace:*",
-    "gray-matter": "4.0.3",
-    "zod": "4.6.2"
+    "gray-matter": "4.0.3"
   }
 }

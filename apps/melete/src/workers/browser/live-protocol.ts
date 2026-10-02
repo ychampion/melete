@@ -1,5 +1,5 @@
 import { isIP } from 'node:net';
-import type { LiveEndCode, LiveNoticeCode } from '@melete/contracts';
+import type { LiveNoticeCode } from '@melete/contracts';
 import { getDomain, parse } from 'tldts';
 import { z } from 'zod';
 import { isPublicAddress } from '../../connectors/web.ts';
@@ -109,7 +109,6 @@ export const liveScopeRequest = z.strictObject({
 export const liveCloseRequest = z.strictObject({ live_id: liveId });
 
 export type LiveNotify = (code: LiveNoticeCode, host?: string) => void;
-export type LiveEnd = (code: LiveEndCode) => void;
 
 function normalHost(host: string): string {
   return host
