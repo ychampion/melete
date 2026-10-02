@@ -174,6 +174,8 @@ passwords. `POST /connections` takes exactly one configuration block:
 | MCP over HTTP | `mcp` | `mcp`: see [Installed MCP servers](#installed-mcp-servers) | optional token fields | declared in the block |
 | MCP from a package or image | `mcp` | `mcp_stdio`: see [the advanced path](#the-advanced-path) | `mcp_stdio.secret_env` | declared in the block |
 | GitHub for the agent's computer | `command_line` | `command_line`: `{ "adapter": "github" }` | `credentials.token`, a fine-grained token; GitHub is asked whose it is before it is kept | `egress.github_read`, `egress.github_write` (asks each time); see [COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github) |
+| GitLab for the agent's computer | `command_line` | `command_line`: `{ "adapter": "gitlab" }` | `credentials.token`, a GitLab.com personal or project access token; GitLab is asked whose it is before it is kept | `egress.gitlab_read`, `egress.gitlab_write` (asks each time); see [COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#gitlab) |
+| npm for the agent's computer | `command_line` | `command_line`: `{ "adapter": "npm" }` | `credentials.token`, a granular access token; the registry is asked whose it is before it is kept | `egress.npm_read`, `egress.npm_write` (asks each time); see [COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#npm) |
 
 `scopes` may narrow the grants of the first three kinds; left empty it means all
 of them, and a scope outside the kind is refused. `space_id` may be left out, in

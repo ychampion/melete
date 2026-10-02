@@ -54,9 +54,11 @@ Removing a space, or the connection, removes its containers and their volumes.
 
 ## What is in the container
 
-- Bash, coreutils, curl, git, jq, procps, unzip and xz; Python 3.12 with pip; GitHub's `gh`
-  2.83.2, pinned by checksum ([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github)).
-  `pip install` falls back to the user's own directory, which persists.
+- Bash, coreutils, curl, git, jq, procps, unzip and xz; Python 3.12 with pip; Node.js 24
+  with npm; GitHub's `gh` 2.83.2 and GitLab's `glab` 1.120.0. Node.js, `gh` and `glab` are
+  pinned by checksum ([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github)).
+  `pip install` falls back to the user's own directory, and `npm install -g` installs
+  there too; both persist.
 - A 1024x768 virtual display with a light window manager and Chromium, the same
   size as the live view.
 - `/work`, the job's workspace. Files the agent writes with its file tools are

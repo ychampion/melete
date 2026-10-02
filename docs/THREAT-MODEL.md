@@ -534,6 +534,19 @@ holds only placeholders, the egress CA's certificate and per-command tokens.
   GraphQL answer of errors with no data, are recorded as possibly landed, never
   as nothing changed. Signed download links GitHub returns reach the computer
   as sent; each opens one object for minutes.
+- **GitLab and npm.** A GitLab push is bound like a GitHub one, push options
+  included; GitLab reads those to open or merge a merge request or to skip a
+  pipeline, so a push that carries any is never covered by a standing rule, on
+  either service, and no GitLab or npm change is covered by one at all. A
+  request that asks to act as another GitLab user (`Sudo`) and glab's usage
+  reports are refused. An npm publish is bound to its exact bytes, tarball
+  included, and its card shows the scripts that run on install; unpublishing,
+  deprecating, owner, tag, access, team and organisation changes ask, and the
+  audit lookups npm sends as POSTs are the only POSTs that read.
+  `every change in the glab and git corpus is classified as a write` and
+  `every change in the npm corpus is classified as a write, and installs and
+  audits read` run the classifiers over requests recorded from glab 1.120, git
+  and npm 11, and over shapes written from the protocols.
 
 ## Credentials, host and storage
 
