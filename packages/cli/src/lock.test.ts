@@ -38,7 +38,7 @@ describe('the deployment lock', () => {
       'init',
       access(200, 'box', (pid) => pid !== 100),
     );
-    expect(JSON.parse(readFileSync(join(lockDir(dir), 'owner'), 'utf8'))).toMatchObject({
+    expect(JSON.parse(readFileSync(join(lockDir(dir), 'holder'), 'utf8'))).toMatchObject({
       pid: 200,
       command: 'init',
     });
@@ -57,17 +57,17 @@ describe('the deployment lock', () => {
     ).toThrow(LockRefusal);
   });
 
-  test('a lock without an owner is refused and named', () => {
+  test('a lock without a holder is refused and named', () => {
     const dir = deployDir();
     mkdirSync(lockDir(dir), { recursive: true });
-    expect(() => acquireLock(dir, 'set', access(1))).toThrow(/exists without an owner/);
+    expect(() => acquireLock(dir, 'set', access(1))).toThrow(/exists without a holder/);
   });
 
   test('releasing does not remove a lock someone else took over', () => {
     const dir = deployDir();
     const release = acquireLock(dir, 'set', access(100));
     writeFileSync(
-      join(lockDir(dir), 'owner'),
+      join(lockDir(dir), 'holder'),
       JSON.stringify({ pid: 300, host: 'box', command: 'init', since: '' }),
     );
     release();

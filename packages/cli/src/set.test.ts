@@ -83,7 +83,7 @@ describe('melete set', () => {
     const before = writeEnv(deployDir);
     mkdirSync(join(deployDir, '.melete', 'lock'), { recursive: true });
     writeFileSync(
-      join(deployDir, '.melete', 'lock', 'owner'),
+      join(deployDir, '.melete', 'lock', 'holder'),
       JSON.stringify({
         pid: process.pid,
         host: hostname(),

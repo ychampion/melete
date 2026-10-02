@@ -1,10 +1,10 @@
 /**
  * One melete command that changes the installation at a time. The lock is a
  * directory, deploy/.melete/lock, because creating a directory either succeeds
- * or fails in one step on every filesystem; inside it, `owner` names the
+ * or fails in one step on every filesystem; inside it, `holder` names the
  * process that holds it. A lock left by a process that has ended on this
  * machine is taken over; one held by a live process, or written on another
- * machine, is refused with its owner named.
+ * machine, is refused with its holder named.
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -15,7 +15,7 @@ export const LOCK_DIR = 'lock';
 
 export class LockRefusal extends Error {}
 
-export type LockOwner = { pid: number; host: string; command: string; since: string };
+export type LockHolder = { pid: number; host: string; command: string; since: string };
 
 export type LockAccess = {
   pid: number;
@@ -42,9 +42,9 @@ export const thisProcess = (): LockAccess => ({
   alive: processAlive,
 });
 
-const readOwner = (path: string): LockOwner | null => {
+const readHolder = (path: string): LockHolder | null => {
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<LockOwner>;
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<LockHolder>;
     return typeof parsed.pid === 'number' && typeof parsed.host === 'string'
       ? {
           pid: parsed.pid,
@@ -66,38 +66,38 @@ export function acquireLock(
 ): () => void {
   const state = join(deployDir, STATE_DIR);
   const lock = join(state, LOCK_DIR);
-  const ownerFile = join(lock, 'owner');
+  const holderFile = join(lock, 'holder');
   mkdirSync(state, { recursive: true, mode: 0o700 });
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       mkdirSync(lock, { mode: 0o700 });
     } catch (error) {
       if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
-      const owner = readOwner(ownerFile);
-      const stale = owner !== null && owner.host === access.host && !access.alive(owner.pid);
+      const holder = readHolder(holderFile);
+      const stale = holder !== null && holder.host === access.host && !access.alive(holder.pid);
       if (stale && attempt === 0) {
         rmSync(lock, { recursive: true, force: true });
         continue;
       }
       throw new LockRefusal(
-        owner
-          ? `Another melete command holds ${lock}: ${owner.command || 'a command'} (process ${owner.pid} on ${owner.host}, since ${owner.since}). Wait for it to finish.`
-          : `${lock} exists without an owner. If no melete command is running, remove that directory and run this again.`,
+        holder
+          ? `Another melete command holds ${lock}: ${holder.command || 'a command'} (process ${holder.pid} on ${holder.host}, since ${holder.since}). Wait for it to finish.`
+          : `${lock} exists without a holder. If no melete command is running, remove that directory and run this again.`,
       );
     }
-    const owner: LockOwner = {
+    const holder: LockHolder = {
       pid: access.pid,
       host: access.host,
       command,
       since: access.now().toISOString(),
     };
-    writeFileSync(ownerFile, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
+    writeFileSync(holderFile, `${JSON.stringify(holder)}\n`, { mode: 0o600 });
     let released = false;
     return () => {
       if (released) return;
       released = true;
       // Only our own lock is removed: a lock someone took over is theirs.
-      const current = readOwner(ownerFile);
+      const current = readHolder(holderFile);
       if (current?.pid === access.pid && current.host === access.host)
         rmSync(lock, { recursive: true, force: true });
     };
