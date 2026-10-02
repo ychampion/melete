@@ -14,6 +14,7 @@ verify step, not to a forwarder.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import urllib.error
@@ -160,6 +161,20 @@ class BrokerClient:
         result = self._call("GET", f"/actions/{action_id}")
         action = result.get("action") if isinstance(result, dict) else None
         return action if isinstance(action, dict) else {}
+
+    def screenshot(self, action_id: str) -> Optional[bytes]:
+        """A succeeded screenshot's picture, read by the service; None when it has none."""
+        try:
+            result = self._call("GET", f"/actions/{urllib.parse.quote(action_id, safe='')}/screenshot")
+        except BrokerError:
+            return None
+        data = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(data, str):
+            return None
+        try:
+            return base64.b64decode(data, validate=True)
+        except ValueError:
+            return None
 
     def start_execution(self, action_id: str) -> Dict[str, Any]:
         """Claim one admitted intent once; a lost response is never replayed."""

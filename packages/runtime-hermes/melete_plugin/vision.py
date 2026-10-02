@@ -18,9 +18,11 @@ The engine decides the rest, and none of it is changed here:
   lowering the quality and then the size until it fits the gateway's per-picture
   limit. The numbers match ``packages/contracts/src/model-vision.ts``.
 
-The picture is read only from the job's own workspace, through the same path
-checks commands use, and only for a receipt the broker returned for a screenshot
-tool that succeeded.
+The picture comes from the broker (``GET /actions/<id>/screenshot``), which
+reads it from the job's workspace as the service sees it and only for a
+succeeded screenshot of this attempt's job. It is not read from the runtime's
+own view of the files: the service saves a paired computer's screenshot for
+itself, and the runtime runs as another user that may not be able to read it.
 
 Each picture names the brokered action it came from in a JPEG comment
 (``melete-screenshot:<action_id>``). The privacy router looks that action up,
@@ -38,10 +40,7 @@ import json
 import logging
 import os
 import re
-from pathlib import Path
-from typing import Any, Dict, Optional
-
-from .execution import DEFAULT_WORK_DIR, WORK_DIR_ENV, ExecRefused, resolve_in_workspace
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger("melete.plugin")
 
@@ -73,11 +72,6 @@ SMALLER_EDGES = (1024, 800, 640)
 def enabled() -> bool:
     """True when this attempt's model is shown pictures."""
     return os.environ.get(VISION_ENV) == "1"
-
-
-def _workspace() -> Path:
-    """The job's workspace: ``/work`` in a container, the job's directory otherwise."""
-    return Path(os.environ.get(WORK_DIR_ENV) or os.environ.get("TERMINAL_CWD") or DEFAULT_WORK_DIR)
 
 
 def screenshot_path(result: Dict[str, Any]) -> Optional[str]:
@@ -143,23 +137,24 @@ def text_summary(name: str, result: Dict[str, Any], path: str) -> str:
     return f"Screenshot from {name} saved at {path}{size}. " + json.dumps(result, ensure_ascii=False)
 
 
-def attach(name: str, result: Dict[str, Any]) -> Any:
-    """The result with its picture, for a model that reads images; else unchanged."""
-    if name not in SCREENSHOT_TOOLS or not enabled():
+def attach(
+    name: str,
+    result: Dict[str, Any],
+    fetch: Optional[Callable[[str], Optional[bytes]]] = None,
+) -> Any:
+    """The result with its picture, for a model that reads images; else unchanged.
+
+    ``fetch`` asks the broker for a screenshot's bytes by its action id.
+    """
+    if name not in SCREENSHOT_TOOLS or not enabled() or fetch is None:
         return result
     path = screenshot_path(result)
-    if path is None:
-        return result
-    try:
-        file = resolve_in_workspace(_workspace(), path)
-        if file.stat().st_size > MAX_SOURCE_BYTES:
-            return result
-        data = file.read_bytes()
-    except (ExecRefused, OSError) as error:
-        logger.warning("melete: the screenshot at %s could not be read: %s", path, error)
-        return result
     action_id = result.get("action_id")
-    if not isinstance(action_id, str) or not _ACTION_ID.match(action_id):
+    if path is None or not isinstance(action_id, str) or not _ACTION_ID.match(action_id):
+        return result
+    data = fetch(action_id)
+    if not data or len(data) > MAX_SOURCE_BYTES:
+        logger.warning("melete: the picture for %s could not be fetched; the receipt alone is sent", action_id)
         return result
     picture = encode(data, action_id)
     if picture is None:

@@ -180,7 +180,19 @@ async function harness() {
   };
 
   const broker = new BrokerService({ sql: fixture.sql, connectors: registry });
-  return { app, as, cookie, address, code, computer, job, broker, jobs, sql: fixture.sql };
+  return {
+    app,
+    as,
+    cookie,
+    address,
+    code,
+    computer,
+    job,
+    broker,
+    jobs,
+    sql: fixture.sql,
+    workRoot,
+  };
 }
 
 const h = fixture ? await harness() : null;
@@ -524,6 +536,68 @@ withDb('the agent uses the computer through the broker', () => {
     const failed = await screenshot(claims, 'device.browser_screenshot', 'failed');
     expect(await store.screenshotSource(claims.job_id, failed)).toBeNull();
     expect(await store.screenshotSource(claims.job_id, recordId('act'))).toBeNull();
+  }, 60_000);
+
+  test("a screenshot's picture is handed to its own job's runtime by the broker, from the service's copy", async () => {
+    const s = need();
+    const { config } = await s.computer({ grant: { screenshot: true } });
+    const connectionId = await connectionOf(config.device_id);
+    const shots = [...tools, 'device.screenshot'];
+    const claims = await s.job(shots);
+    const broker = new BrokerService({ sql: s.sql, connectors: registry, workRoot: s.workRoot });
+    // Saved the way the device connector saves it: readable by the service's
+    // own user only, which the runtime (another user) cannot open itself.
+    const picture = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from('a picture'),
+    ]);
+    const saved = async (
+      job: typeof claims,
+      kind: string,
+      status: string,
+      path: string,
+    ): Promise<string> => {
+      const id = recordId('act');
+      await mkdir(join(s.workRoot, job.job_id, 'device'), { recursive: true });
+      await writeFile(join(s.workRoot, job.job_id, 'device', `screenshot-${id}.png`), picture, {
+        mode: 0o600,
+      });
+      const receipt = {
+        action_id: id,
+        connection_id: connectionId,
+        external_ref: null,
+        detail: { path: path.replace('{id}', id) },
+        received_at: new Date().toISOString(),
+        late: false,
+      };
+      await s.sql`insert into action (id, job_id, attempt_id, connection_id, kind,
+        effect_class, canonical_payload, payload_hash, idempotency_key, status, receipt)
+        values (${id}, ${job.job_id}, ${job.attempt_id}, ${connectionId}, ${kind}, 'read',
+          '{}'::jsonb, ${'d'.repeat(64)}, ${id}, ${status}, ${JSON.stringify(receipt)}::jsonb)`;
+      return id;
+    };
+    const shot = await saved(
+      claims,
+      'device.screenshot',
+      'succeeded',
+      'device/screenshot-{id}.png',
+    );
+    expect(await broker.screenshot(claims, shot)).toEqual({
+      media_type: 'image/png',
+      data: picture.toString('base64'),
+    });
+    // Another job, a tool that is not a screenshot, one that did not succeed,
+    // or a receipt naming a path outside the job's workspace gets nothing.
+    const otherJob = await s.job(shots);
+    for (const [job, id] of [
+      [otherJob, shot],
+      [claims, await saved(claims, 'device.read_file', 'succeeded', 'device/screenshot-{id}.png')],
+      [claims, await saved(claims, 'device.screenshot', 'failed', 'device/screenshot-{id}.png')],
+      [claims, await saved(claims, 'device.screenshot', 'succeeded', '../escape.png')],
+    ] as const)
+      expect(await rejectionOf(broker.screenshot(job, id))).toMatchObject({
+        code: 'action_not_found',
+      });
   }, 60_000);
 
   test('work for an offline computer waits, and goes when it connects again', async () => {

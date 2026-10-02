@@ -7,6 +7,7 @@ exercised rather than assumed. It contacts nothing else and needs no container.
 
 from __future__ import annotations
 
+import base64
 import json
 import sys
 import threading
@@ -76,6 +77,8 @@ class FakeBroker:
         self.status_code = 200
         self.error_body: Dict[str, Any] | None = None
         self.requests: List[Dict[str, Any]] = []
+        #: Screenshot pictures the broker reads for the runtime, by action id.
+        self.screenshots: Dict[str, bytes] = {}
 
     # -- the HTTP surface, matching apps/melete/src/broker/http.ts -------------
     def handle(self, method: str, path: str, body: Dict[str, Any] | None, auth: str | None):
@@ -98,6 +101,11 @@ class FakeBroker:
             return 200, {"body": "Use the broker for every action."}
         if method == "POST" and path == "/tools/learning/propose":
             return 200, {"status": "candidate_pending", "episode_id": "ep_recorded"}
+        if method == "GET" and path.startswith("/actions/") and path.endswith("/screenshot"):
+            picture = self.screenshots.get(path.split("/")[2])
+            if picture is None:
+                return 404, {"error": {"code": "action_not_found", "message": "no such screenshot"}}
+            return 200, {"media_type": "image/png", "data": base64.b64encode(picture).decode("ascii")}
         if method == "GET" and path.startswith("/actions/"):
             return 200, {"action": self.action_record}
         return 404, {"error": {"code": "not_found", "message": "no such route"}}

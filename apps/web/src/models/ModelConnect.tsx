@@ -8,7 +8,7 @@
  */
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
-import { Badge, Button, Field, Input, Select } from '../design/primitives.tsx';
+import { Badge, Button, Field, Input, Select, Toggle } from '../design/primitives.tsx';
 import { type Loaded, useLoad } from '../experience/hooks.ts';
 import { modelDisplayName } from '../experience/model-name.ts';
 import { toast } from '../shell/Shell.tsx';
@@ -64,6 +64,84 @@ export function statusLine(
   return { text: 'Not connected', tone: 'muted' };
 }
 
+/** What the active model does with the screenshots agents take, in plain words. */
+export function visionLine(active: ModelSettings['active']): { text: string; hint: string } {
+  const text = active.vision
+    ? 'Sees screenshots as pictures'
+    : 'Gets screenshots as text: where each was saved and its size';
+  const hint =
+    active.vision_source === 'app'
+      ? 'You set this for this model.'
+      : active.vision_source === 'operator'
+        ? 'Set in the server’s configuration.'
+        : active.vision
+          ? 'This model reads images, by Melete’s list.'
+          : 'Melete doesn’t know this model to read images. If it does, turn this on.';
+  return { text, hint };
+}
+
+/** Whether the owner can change the active model's answer here: it has to be one they could choose. */
+export function canSetVision(settings: ModelSettings): boolean {
+  return (
+    settings.can_edit &&
+    settings.active.connected &&
+    settings.providers.some((entry) => entry.provider === settings.active.provider)
+  );
+}
+
+function VisionSetting({
+  settings,
+  onChanged,
+}: {
+  settings: ModelSettings;
+  onChanged: (next: ModelSettings) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const { active } = settings;
+  const line = visionLine(active);
+  const save = (next: boolean | null, done: string) => {
+    setBusy(true);
+    void models.choose(active.provider as ModelProvider, active.model, next).then((result) => {
+      setBusy(false);
+      if (result.data === null) {
+        toast({ kind: 'err', title: result.error ?? 'Couldn’t change that' });
+        return;
+      }
+      onChanged(result.data);
+      toast({ kind: 'ok', title: done });
+    });
+  };
+  return (
+    <div className="models-vision row" style={{ gap: 12, alignItems: 'flex-start' }}>
+      <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
+        <span style={{ fontSize: 13, color: 'var(--heading)' }}>{line.text}</span>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{line.hint}</span>
+        {active.vision_source === 'app' && canSetVision(settings) ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            style={{ alignSelf: 'flex-start' }}
+            onClick={() => save(null, 'Back to Melete’s list for this model')}
+          >
+            Use Melete’s list
+          </Button>
+        ) : null}
+      </div>
+      {canSetVision(settings) ? (
+        <Toggle
+          label={`${modelDisplayName(active.model)} reads images`}
+          on={active.vision}
+          disabled={busy}
+          onChange={(next) =>
+            save(next, next ? 'Screenshots go to it as pictures' : 'Screenshots go to it as text')
+          }
+        />
+      ) : null}
+    </div>
+  );
+}
+
 /** Which model agents answer with now, and whether it came from here or from the server. */
 export function ActiveModel({
   settings,
@@ -85,6 +163,7 @@ export function ActiveModel({
           {providerLabel(settings, active.provider)} ·{' '}
           {active.source === 'app' ? 'chosen here' : 'the server’s default'}
         </span>
+        <VisionSetting settings={settings} onChanged={onChanged} />
         {active.connected ? null : (
           <span className="models-warning" role="note">
             <Icon name="alert" size={14} />

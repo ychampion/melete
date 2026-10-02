@@ -54,6 +54,7 @@ import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
 import { closedComputerStep } from '../sandbox/closed-step.ts';
+import { readWorkspaceFile } from '../sandbox/workspace.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
 import { ASK_PERSON_TOOL, requestPersonQuestion } from './ask-person.ts';
 import {
@@ -108,9 +109,25 @@ import {
 } from './trust.ts';
 
 type ConnectorResolver = { get(connectionId: string): Connector | undefined };
+/** The tools whose succeeded receipts name a screenshot saved in the job's workspace. */
+export const SCREENSHOT_TOOLS: readonly string[] = [
+  'computer.screenshot',
+  'device.screenshot',
+  'device.browser_screenshot',
+];
+
+/** The largest saved screenshot handed back to a runtime: a device's own cap is 8 MB. */
+const MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024;
+
 export type BrokerOptions = {
   sql: Sql;
   connectors: ConnectorResolver;
+  /**
+   * Where job workspaces live, as the service sees them. A screenshot the
+   * runtime asks for is read from here by the service, so it does not depend
+   * on the runtime's own view of the files.
+   */
+  workRoot?: string;
   /** The started queue shares this Postgres; its send joins the state transaction. */
   boss?: PgBoss;
   dispatchTimeoutMs?: number;
@@ -492,6 +509,39 @@ export class BrokerService implements BrokerOperations {
 
   async catalog(claims: CapabilityClaims): Promise<ToolSpec[]> {
     return this.discovery.catalog(claims);
+  }
+
+  /**
+   * The picture a succeeded screenshot of this attempt's job saved, as base64.
+   * Only for a screenshot tool, only for its own job, and only from the path
+   * its receipt names inside that job's workspace.
+   */
+  async screenshot(
+    claims: CapabilityClaims,
+    id: string,
+  ): Promise<{ media_type: 'image/png'; data: string }> {
+    const action = await this.get(claims, id);
+    const detail = action.receipt?.detail as { path?: unknown } | undefined;
+    if (
+      !this.options.workRoot ||
+      !SCREENSHOT_TOOLS.includes(action.kind) ||
+      action.status !== 'succeeded' ||
+      typeof detail?.path !== 'string' ||
+      !detail.path.toLowerCase().endsWith('.png')
+    )
+      throw new BrokerFault('action_not_found');
+    let bytes: Buffer;
+    try {
+      bytes = await readWorkspaceFile(
+        this.options.workRoot,
+        action.job_id,
+        detail.path,
+        MAX_SCREENSHOT_BYTES,
+      );
+    } catch {
+      throw new BrokerFault('action_not_found');
+    }
+    return { media_type: 'image/png', data: bytes.toString('base64') };
   }
 
   async get(claims: CapabilityClaims, id: string): Promise<Action> {
