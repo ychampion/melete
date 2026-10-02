@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 2,
+        "atMs": 1,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes",
         "path": "/sandboxes",
@@ -66,7 +66,7 @@
     },
     {
       "request": {
-        "atMs": 3,
+        "atMs": 2,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
@@ -110,7 +110,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 3,
+        "atMs": 2,
         "body": [
           {
             "event": {
@@ -135,7 +135,7 @@
     },
     {
       "request": {
-        "atMs": 4,
+        "atMs": 3,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -163,7 +163,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4,
+        "atMs": 3,
         "body": {
           "code": "not_found",
           "message": "path not found: /var/tmp/.melete-exec/act_01J0CONFORMANCE00000000"
@@ -172,7 +172,7 @@
     },
     {
       "request": {
-        "atMs": 5,
+        "atMs": 3,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -200,7 +200,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 5,
+        "atMs": 3,
         "body": {
           "code": "not_found",
           "message": "path not found: /var/tmp/.melete-exec/act_01J0CONFORMANCE00000000"
@@ -209,7 +209,7 @@
     },
     {
       "request": {
-        "atMs": 5,
+        "atMs": 4,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fwork%2Fcounter&username=user",
@@ -231,7 +231,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 5,
+        "atMs": 4,
         "body": {
           "code": 404,
           "message": "path '/work/counter' does not exist"
@@ -240,7 +240,7 @@
     },
     {
       "request": {
-        "atMs": 5,
+        "atMs": 4,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -252,7 +252,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 5
+        "atMs": 4
       }
     }
   ]

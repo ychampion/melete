@@ -110,7 +110,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 3,
+        "atMs": 2,
         "body": [
           {
             "event": {
@@ -135,11 +135,11 @@
     },
     {
       "request": {
-        "atMs": 3,
+        "atMs": 2,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "be00ae947cc9bc845d71b8fff795e8283e1c7d43341741aa1db7dc3f7ef373a2",
+        "bodySha256": "f46a05b1df021990c5611bdae5ddde2d6f1b2bf1ffd3053f6fe07d2fbacef897",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -155,7 +155,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0CONFORMANCE00000000\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ ( 'sh' '-c' 'getent hosts example.com > /dev/null 2>/dev/null; printf '\\''dns=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''v4_code=%{http_code}'\\'' http://1.1.1.1/ 2>/dev/null; printf '\\'' v4_exit=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''name_code=%{http_code}'\\'' https://example.com/ 2>/dev/null; printf '\\'' name_exit=%s\\n'\\'' \"$?\"; curl -s -g -m 5 -o /dev/null -w '\\''v6_code=%{http_code}'\\'' '\\''http://[2606:4700:4700::1111]/'\\'' 2>/dev/null; printf '\\'' v6_exit=%s\\n'\\'' \"$?\"; curl -s -k -m 5 -o /dev/null -w '\\''google_dns_code=%{http_code}'\\'' https://8.8.8.8/ 2>/dev/null; printf '\\'' google_dns_exit=%s\\n'\\'' \"$?\"' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | { head -c 4194305 > \"$d/out\"; cat > /dev/null; }\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0CONFORMANCE00000000\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ ( 'sh' '-c' 'getent hosts example.com > /dev/null 2>/dev/null; printf '\\''dns=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''v4_code=%{http_code}'\\'' http://1.1.1.1/ 2>/dev/null; printf '\\'' v4_exit=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''name_code=%{http_code}'\\'' https://example.com/ 2>/dev/null; printf '\\'' name_exit=%s\\n'\\'' \"$?\"; curl -s -g -m 5 -o /dev/null -w '\\''v6_code=%{http_code}'\\'' '\\''http://[2606:4700:4700::1111]/'\\'' 2>/dev/null; printf '\\'' v6_exit=%s\\n'\\'' \"$?\"; curl -s -k -m 5 -o /dev/null -w '\\''google_dns_code=%{http_code}'\\'' https://8.8.8.8/ 2>/dev/null; printf '\\'' google_dns_exit=%s\\n'\\'' \"$?\"' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | setsid -w sh -c 'head -c \"$1\" > \"$2\"; exec cat > /dev/null' melete-keep 4194305 \"$d/out\"\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work"
             },
@@ -208,7 +208,7 @@
     },
     {
       "request": {
-        "atMs": 4,
+        "atMs": 3,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -263,7 +263,7 @@
     },
     {
       "request": {
-        "atMs": 5,
+        "atMs": 4,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0CONFORMANCE00000000%2Fout&username=user",
@@ -285,7 +285,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 5,
+        "atMs": 4,
         "body": {
           "bytes": 117
         }
@@ -293,7 +293,7 @@
     },
     {
       "request": {
-        "atMs": 6,
+        "atMs": 5,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes",
         "path": "/sandboxes",
@@ -335,7 +335,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 6,
+        "atMs": 5,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0002",
@@ -349,7 +349,7 @@
     },
     {
       "request": {
-        "atMs": 6,
+        "atMs": 5,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
@@ -393,7 +393,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 6,
+        "atMs": 5,
         "body": [
           {
             "event": {
@@ -418,11 +418,11 @@
     },
     {
       "request": {
-        "atMs": 7,
+        "atMs": 6,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "31cd980d7f309ea5edad4781894f17d7dd53a459b9bc13880ace9428b103d206",
+        "bodySha256": "ce838e538c989c59014322b30913dbb40bc51d8d9aa660715152818b7fa13856",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -438,7 +438,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0CONFORMANCECONTROL0\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ ( 'sh' '-c' 'getent hosts example.com > /dev/null 2>/dev/null; printf '\\''dns=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''v4_code=%{http_code}'\\'' http://1.1.1.1/ 2>/dev/null; printf '\\'' v4_exit=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''name_code=%{http_code}'\\'' https://example.com/ 2>/dev/null; printf '\\'' name_exit=%s\\n'\\'' \"$?\"; curl -s -g -m 5 -o /dev/null -w '\\''v6_code=%{http_code}'\\'' '\\''http://[2606:4700:4700::1111]/'\\'' 2>/dev/null; printf '\\'' v6_exit=%s\\n'\\'' \"$?\"; curl -s -k -m 5 -o /dev/null -w '\\''google_dns_code=%{http_code}'\\'' https://8.8.8.8/ 2>/dev/null; printf '\\'' google_dns_exit=%s\\n'\\'' \"$?\"' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | { head -c 4194305 > \"$d/out\"; cat > /dev/null; }\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0CONFORMANCECONTROL0\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ ( 'sh' '-c' 'getent hosts example.com > /dev/null 2>/dev/null; printf '\\''dns=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''v4_code=%{http_code}'\\'' http://1.1.1.1/ 2>/dev/null; printf '\\'' v4_exit=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''name_code=%{http_code}'\\'' https://example.com/ 2>/dev/null; printf '\\'' name_exit=%s\\n'\\'' \"$?\"; curl -s -g -m 5 -o /dev/null -w '\\''v6_code=%{http_code}'\\'' '\\''http://[2606:4700:4700::1111]/'\\'' 2>/dev/null; printf '\\'' v6_exit=%s\\n'\\'' \"$?\"; curl -s -k -m 5 -o /dev/null -w '\\''google_dns_code=%{http_code}'\\'' https://8.8.8.8/ 2>/dev/null; printf '\\'' google_dns_exit=%s\\n'\\'' \"$?\"' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | setsid -w sh -c 'head -c \"$1\" > \"$2\"; exec cat > /dev/null' melete-keep 4194305 \"$d/out\"\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work"
             },
@@ -466,7 +466,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 7,
+        "atMs": 6,
         "body": [
           {
             "event": {
@@ -491,7 +491,7 @@
     },
     {
       "request": {
-        "atMs": 8,
+        "atMs": 7,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -519,7 +519,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 8,
+        "atMs": 7,
         "body": {
           "entries": [
             {
@@ -546,7 +546,7 @@
     },
     {
       "request": {
-        "atMs": 8,
+        "atMs": 7,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0CONFORMANCECONTROL0%2Fout&username=user",
@@ -568,7 +568,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 8,
+        "atMs": 7,
         "body": {
           "bytes": 114
         }
@@ -576,7 +576,7 @@
     },
     {
       "request": {
-        "atMs": 14,
+        "atMs": 13,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -588,12 +588,12 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 14
+        "atMs": 13
       }
     },
     {
       "request": {
-        "atMs": 14,
+        "atMs": 13,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0002",
         "path": "/sandboxes/fake-sbx-0002",
@@ -605,7 +605,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 14
+        "atMs": 13
       }
     }
   ]
