@@ -524,6 +524,10 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
         https_proxy: proxy,
         HTTP_PROXY: proxy,
         http_proxy: proxy,
+        // git's libcurl otherwise waits for a proxy challenge before sending
+        // the command's token, which the relay never sends: its tunnels would
+        // all go unattributed, and a connected account would never be used.
+        GIT_HTTP_PROXY_AUTHMETHOD: 'basic',
         ...(trust ? { ...allowedEnv(trust.placeholders), ...TRUST_ENV } : {}),
       },
       settle: () => this.guard.tokens.settle(token),

@@ -258,6 +258,7 @@ describe('creating a sandbox', () => {
       https_proxy: first.env.HTTPS_PROXY,
       HTTP_PROXY: first.env.HTTPS_PROXY,
       http_proxy: first.env.HTTPS_PROXY,
+      GIT_HTTP_PROXY_AUTHMETHOD: 'basic',
     });
     expect(guard.tokens.find(one)).toMatchObject({ sandbox: NAME, attribution });
     expect(first.settle()).toEqual([]);
