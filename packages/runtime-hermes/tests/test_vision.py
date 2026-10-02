@@ -152,23 +152,19 @@ def test_the_plugin_numbers_match_the_contracts():
     assert f"MAX_IMAGE_ENCODED_BYTES = {MAX_ENCODED_BYTES // 1024} * 1024;" in source
 
 
-def test_each_picture_names_its_source_for_the_privacy_router(client, broker, workspace, monkeypatch):  # noqa: F811
-    """The gateway lets a paired computer's screen reach a cloud model only when
-    that computer allows it; the mark in the picture is how it knows whose it is."""
+def test_each_picture_names_the_action_it_came_from(client, broker, workspace, monkeypatch):  # noqa: F811
+    """The privacy router looks this action up to learn whose screen it is; the
+    picture itself claims nothing more, and the gateway takes the mark out."""
     monkeypatch.setenv(VISION_ENV, "1")
     own = decoded(run(client, broker))
-    assert own.info["comment"] == b"melete-screenshot:computer"
+    assert own.info["comment"] == f"melete-screenshot:{ACTION}".encode()
     (workspace / "device").mkdir()
     (workspace / "device" / f"screenshot-{ACTION}.png").write_bytes(png(800, 600))
-    broker.catalog = [screenshot_tool("device.screenshot")]
-    record = receipt(f"device/screenshot-{ACTION}.png")
-    record["receipt"]["detail"]["device_id"] = "dev_01ABC"
-    broker.action_record = record
-    ctx = RecordingContext()
-    register(ctx, client)
-    device = decoded(ctx.tools[0]["handler"]({"step": 1}))
-    assert device.info["comment"] == b"melete-screenshot:device:dev_01ABC"
-    # An id that is not one is not written into the mark.
-    record["receipt"]["detail"]["device_id"] = "../../x"
-    device = decoded(ctx.tools[0]["handler"]({"step": 2}))
-    assert device.info["comment"] == b"melete-screenshot:device"
+    device = decoded(run(client, broker, "device.screenshot", f"device/screenshot-{ACTION}.png"))
+    assert device.info["comment"] == f"melete-screenshot:{ACTION}".encode()
+
+
+def test_a_result_without_a_real_action_id_is_sent_as_its_receipt(client, broker, workspace, monkeypatch):  # noqa: F811
+    monkeypatch.setenv(VISION_ENV, "1")
+    broker.propose_response = {**broker.propose_response, "action_id": "act_../../x"}
+    assert isinstance(run(client, broker), str)

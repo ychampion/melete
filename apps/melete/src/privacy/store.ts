@@ -118,6 +118,22 @@ export type Scope = {
   turnId: string | null;
 };
 
+/**
+ * Whose screen a screenshot shows, read from the brokered action it came
+ * from: the agent's own computer, or a paired computer with its own answer on
+ * cloud models (null when it has none).
+ */
+export type ScreenshotSource =
+  | { kind: 'computer' }
+  | { kind: 'device'; deviceId: string; cloudScreenshots: boolean | null };
+
+/** The tools whose succeeded actions are screenshots. */
+export const SCREENSHOT_TOOLS = [
+  'computer.screenshot',
+  'device.screenshot',
+  'device.browser_screenshot',
+] as const;
+
 export type ConversationState = {
   sensitive: SensitiveTopic | null;
   /**
@@ -191,10 +207,11 @@ export interface PrivacyStore {
    */
   privateMemory(spaceId: string): Promise<string[]>;
   /**
-   * A paired computer's own answer to whether cloud models may see its screen,
-   * or null when it has none. Null too for a computer outside this space.
+   * The source of the screenshot `actionId` names, when it is a screenshot
+   * action of this job that succeeded; null for anything else, so a picture
+   * that names another job's action, or no real one, is treated as unlabelled.
    */
-  deviceCloudScreenshots(spaceId: string, deviceId: string): Promise<boolean | null>;
+  screenshotSource(jobId: string, actionId: string): Promise<ScreenshotSource | null>;
   /** The answer given to the question an attempt asked, or null while it is open. */
   answer(attemptId: string): Promise<string | null>;
   log(entry: RequestLog): Promise<void>;
@@ -421,11 +438,21 @@ export class PostgresPrivacyStore implements PrivacyStore {
     return rows.map((row) => String(row.content));
   }
 
-  async deviceCloudScreenshots(spaceId: string, deviceId: string): Promise<boolean | null> {
-    const [row] = await this.sql`select cloud_screenshots from paired_device
-      where id = ${deviceId} and space_id = ${spaceId}`;
-    const value = row?.cloud_screenshots;
-    return typeof value === 'boolean' ? value : null;
+  async screenshotSource(jobId: string, actionId: string): Promise<ScreenshotSource | null> {
+    const [row] = await this.sql`select a.kind, d.id as device_id, d.cloud_screenshots
+      from action a
+      join job j on j.id = a.job_id
+      left join paired_device d on d.connection_id = a.connection_id and d.space_id = j.space_id
+      where a.id = ${actionId} and a.job_id = ${jobId} and a.status = 'succeeded'
+        and a.kind in ${this.sql([...SCREENSHOT_TOOLS])}`;
+    if (!row) return null;
+    if (row.kind === 'computer.screenshot') return { kind: 'computer' };
+    if (typeof row.device_id !== 'string') return null;
+    return {
+      kind: 'device',
+      deviceId: row.device_id,
+      cloudScreenshots: typeof row.cloud_screenshots === 'boolean' ? row.cloud_screenshots : null,
+    };
   }
 
   async answer(attemptId: string): Promise<string | null> {
@@ -564,11 +591,11 @@ export class MemoryPrivacyStore implements PrivacyStore {
     return this.memory.get(spaceId) ?? [];
   }
 
-  /** Paired computers' own screenshot answers, keyed `space:device`. */
-  readonly deviceScreens = new Map<string, boolean>();
+  /** Succeeded screenshot actions, keyed `job:action`. */
+  readonly screenshots = new Map<string, ScreenshotSource>();
 
-  async deviceCloudScreenshots(spaceId: string, deviceId: string) {
-    return this.deviceScreens.get(`${spaceId}:${deviceId}`) ?? null;
+  async screenshotSource(jobId: string, actionId: string) {
+    return this.screenshots.get(`${jobId}:${actionId}`) ?? null;
   }
 
   async answer(attemptId: string) {

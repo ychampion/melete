@@ -254,7 +254,10 @@ When the model reads images, the agent is shown the screenshots it takes: of
 its own computer and browser, and of your paired computers. They are carried
 inside the request and are not redacted: the detected details, your **Always
 protect** list and what memory learned privately are swapped out of text only.
-Each screenshot names where it came from, and the router decides from that:
+Each screenshot names the action that took it. The router looks that action up
+and counts it only when it is a screenshot this conversation's job took and
+that succeeded; whose screen it shows comes from that action, never from the
+picture. The name is removed before the picture is sent. The router decides:
 
 - **Ordinary conversations.** Under **Settings → Privacy → Screenshots sent to
   cloud models**, the agent's own computer and browser are on and your paired

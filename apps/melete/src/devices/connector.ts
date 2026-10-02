@@ -662,9 +662,6 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
         return {
           detail: {
             ...(tool === 'browser_screenshot' ? { tab_id: Number(sent.tab_id) } : {}),
-            // Which computer's screen this is, so the privacy router can apply
-            // that computer's own setting to the picture.
-            device_id: options.deviceId,
             path: `device/${file}`,
             bytes: bytes.byteLength,
             width: bytes.readUInt32BE(16),

@@ -99,13 +99,18 @@ export function withoutImages(
   body: Record<string, unknown>,
   text: string | ((image: Node) => string | null),
 ): Record<string, unknown> {
+  return mapImages(body, (image) => {
+    const replacement = typeof text === 'string' ? text : text(image);
+    return replacement === null ? image : textInPlaceOf(image, replacement);
+  });
+}
+
+/** A copy of the body with each inline picture replaced by what `change` makes of it. */
+function mapImages(body: Record<string, unknown>, change: (image: Node) => Node) {
   const walk = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(walk);
     if (!isNode(value)) return value;
-    if (isInlineImage(value)) {
-      const replacement = typeof text === 'string' ? text : text(value);
-      return replacement === null ? value : textInPlaceOf(value, replacement);
-    }
+    if (isInlineImage(value)) return change(value);
     return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, walk(child)]));
   };
   return walk(body) as Record<string, unknown>;
@@ -125,47 +130,74 @@ export function inlineImages(body: unknown): Node[] {
   return found;
 }
 
-/**
- * Where a screenshot came from, as the runtime marked it: the agent's own
- * computer, or a paired computer by id. Anything without the mark (a picture
- * re-encoded on the way, or from somewhere else) is unknown, and is treated as
- * the most private kind there is.
- */
-export type ImageSource =
-  | { kind: 'computer' }
-  | { kind: 'device'; deviceId: string | null }
-  | { kind: 'unknown' };
-
 /** The JPEG comment the runtime writes into each screenshot it sends (melete_plugin/vision.py). */
 export const SOURCE_MARK = 'melete-screenshot:';
 
-/** The source a screenshot's own bytes name: a JPEG comment segment before the image data. */
-export function imageSource(image: Node): ImageSource {
-  const data = inlineData(image);
-  if (!data) return { kind: 'unknown' };
-  // The comment sits in the header, well inside the first few kilobytes.
-  const head = Buffer.from(data.slice(0, 8192 - (Math.min(data.length, 8192) % 4)), 'base64');
-  if (head[0] !== 0xff || head[1] !== 0xd8) return { kind: 'unknown' };
+const ACTION_ID = /^act_[A-Za-z0-9]{1,64}$/;
+
+/** Where the runtime's comment segment sits in a picture's bytes, and what it says. */
+function findMark(bytes: Buffer): { start: number; end: number; text: string } | null {
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
   let at = 2;
-  while (at + 4 <= head.length && head[at] === 0xff) {
-    const marker = head[at + 1] ?? 0;
+  while (at + 4 <= bytes.length && bytes[at] === 0xff) {
+    const marker = bytes[at + 1] ?? 0;
     // Start of scan: the header is over.
-    if (marker === 0xda) break;
-    const length = head.readUInt16BE(at + 2);
-    if (length < 2) break;
+    if (marker === 0xda) return null;
+    const length = bytes.readUInt16BE(at + 2);
+    if (length < 2) return null;
     if (marker === 0xfe) {
-      const comment = head.subarray(at + 4, at + 2 + length).toString('latin1');
-      if (!comment.startsWith(SOURCE_MARK)) break;
-      const source = comment.slice(SOURCE_MARK.length);
-      if (source === 'computer') return { kind: 'computer' };
-      if (source === 'device') return { kind: 'device', deviceId: null };
-      const device = /^device:([A-Za-z0-9_-]{1,100})$/.exec(source);
-      if (device?.[1]) return { kind: 'device', deviceId: device[1] };
-      break;
+      const text = bytes.subarray(at + 4, at + 2 + length).toString('latin1');
+      if (text.startsWith(SOURCE_MARK)) return { start: at, end: at + 2 + length, text };
     }
     at += 2 + length;
   }
-  return { kind: 'unknown' };
+  return null;
+}
+
+/**
+ * The action a screenshot names: the id of the brokered screenshot it came
+ * from. It is only a claim. Whether it is this job's screenshot, and whose
+ * screen it shows, is read from the action itself, never from the picture.
+ */
+export function imageMark(image: Node): string | null {
+  const mark = findMark(header(image));
+  const id = mark?.text.slice(SOURCE_MARK.length) ?? '';
+  return ACTION_ID.test(id) ? id : null;
+}
+
+/** The picture with the runtime's comment taken out, in its own protocol's shape. */
+function unmarked(image: Node): Node {
+  const data = inlineData(image);
+  if (!data) return image;
+  const bytes = Buffer.from(data, 'base64');
+  const mark = findMark(bytes);
+  if (!mark) return image;
+  const clean = Buffer.concat([bytes.subarray(0, mark.start), bytes.subarray(mark.end)]).toString(
+    'base64',
+  );
+  if (image.type === 'image' && isNode(image.source))
+    return { ...image, source: { ...image.source, data: clean } };
+  const url = isNode(image.image_url) ? image.image_url.url : image.image_url;
+  const prefix = typeof url === 'string' ? url.slice(0, url.length - data.length) : '';
+  if (isNode(image.image_url))
+    return { ...image, image_url: { ...image.image_url, url: `${prefix}${clean}` } };
+  return { ...image, image_url: `${prefix}${clean}` };
+}
+
+/**
+ * A copy of the body with no picture carrying the runtime's comment: the mark
+ * is for the router, and never reaches a provider.
+ */
+export function withoutMarks(body: Record<string, unknown>): Record<string, unknown> {
+  return inlineImages(body).some((image) => findMark(header(image)) !== null)
+    ? mapImages(body, unmarked)
+    : body;
+}
+
+/** The first few kilobytes of a picture, where its header and any comment sit. */
+function header(image: Node): Buffer {
+  const data = inlineData(image) ?? '';
+  return Buffer.from(data.slice(0, 8192 - (Math.min(data.length, 8192) % 4)), 'base64');
 }
 
 /**

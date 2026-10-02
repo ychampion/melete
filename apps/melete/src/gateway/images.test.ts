@@ -8,9 +8,16 @@ import {
   REQUEST_FRAMING_TOKENS,
 } from '@melete/contracts';
 import { compactionThresholdTokens } from '@melete/runtime-hermes';
-import { defaultPrivacyRouter } from '../privacy/index.ts';
-import { markedScreenshot } from './fixtures/screenshot.ts';
-import { countImages, imageSource, imageTokens, isInlineImage, withoutImages } from './images.ts';
+import { markedScreenshot, unmarkedBytes } from './fixtures/screenshot.ts';
+import {
+  countImages,
+  imageMark,
+  imageTokens,
+  inlineImages,
+  isInlineImage,
+  withoutImages,
+  withoutMarks,
+} from './images.ts';
 import {
   createModelGateway,
   GatewayError,
@@ -23,7 +30,7 @@ import { estimateInputTokens } from './metering.ts';
 const MODEL = 'accounts/fireworks/models/deepseek-v4p1-flash';
 
 /** Base64 text of the given length, as a shrunk screenshot arrives. */
-const picture = (length: number) => markedScreenshot('computer', length);
+const picture = (length: number) => markedScreenshot('act_01OWNSCREEN', length);
 const chatImage = (data: string) => ({
   type: 'image_url',
   image_url: { url: `data:image/jpeg;base64,${data}` },
@@ -113,24 +120,61 @@ describe('pictures a request carries', () => {
     expect(body).toEqual(copy);
   });
 
-  test('name their source in their own bytes, and anything unmarked is unknown', () => {
-    expect(imageSource(chatImage(markedScreenshot('computer')))).toEqual({ kind: 'computer' });
-    expect(imageSource(messagesImage(markedScreenshot('device:dev_01ABC')))).toEqual({
-      kind: 'device',
-      deviceId: 'dev_01ABC',
-    });
-    expect(imageSource(responsesImage(markedScreenshot('device')))).toEqual({
-      kind: 'device',
-      deviceId: null,
-    });
+  test('name the action they came from, and lose that mark before they are sent', () => {
+    const action = 'act_01OWNSCREEN';
+    expect(imageMark(chatImage(markedScreenshot(action)))).toBe(action);
+    expect(imageMark(messagesImage(markedScreenshot(action)))).toBe(action);
+    expect(imageMark(responsesImage(markedScreenshot(action)))).toBe(action);
     for (const unmarked of [
       markedScreenshot(null),
-      markedScreenshot('somewhere-else'),
-      markedScreenshot('device:../../x'),
+      markedScreenshot('computer'),
+      markedScreenshot('act_../../x'),
       'AAAA',
       'iVBORw0KGgo=',
     ])
-      expect(imageSource(chatImage(unmarked))).toEqual({ kind: 'unknown' });
+      expect(imageMark(chatImage(unmarked))).toBeNull();
+    const body = {
+      messages: [
+        {
+          content: [
+            chatImage(markedScreenshot(action)),
+            messagesImage(markedScreenshot(action)),
+            responsesImage(markedScreenshot(action)),
+            {
+              ...chatImage(markedScreenshot(action)),
+              image_url: {
+                url: `data:image/jpeg;base64,${markedScreenshot(action)}`,
+                detail: 'high',
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const clean = withoutMarks(body);
+    const expected = unmarkedBytes(action).toString('base64');
+    expect(clean).toEqual({
+      messages: [
+        {
+          content: [
+            chatImage(expected),
+            messagesImage(expected),
+            responsesImage(expected),
+            {
+              type: 'image_url',
+              image_url: { url: `data:image/jpeg;base64,${expected}`, detail: 'high' },
+            },
+          ],
+        },
+      ],
+    });
+    expect(JSON.stringify(clean)).not.toContain(
+      Buffer.from('melete-screenshot').toString('base64').slice(0, 12),
+    );
+    for (const image of inlineImages(clean)) expect(imageMark(image)).toBeNull();
+    // A body with nothing to take out is the same object.
+    const plain = { messages: [{ content: [chatImage(markedScreenshot(null))] }] };
+    expect(withoutMarks(plain)).toBe(plain);
   });
 
   test('are charged the flat count the engine compacts by, not their bytes', () => {
@@ -167,7 +211,8 @@ describe('the gateway forwards screenshots within its limits', () => {
     const reservations: GatewayReservationRequest[] = [];
     const sent: string[] = [];
     const server = createModelGateway({
-      privacy: defaultPrivacyRouter(),
+      // The transport alone: what the router lets through is router.test.ts's.
+      privacy: false,
       authenticate: async () => principal,
       budget: {
         reserve: async (request) => {
@@ -211,7 +256,10 @@ describe('the gateway forwards screenshots within its limits', () => {
     const response = await post({ messages });
     expect(response.status).toBe(200);
     const forwarded = JSON.parse(sent[0] ?? '{}');
-    expect(forwarded.messages[2].content[1]).toEqual(chatImage(data));
+    // The runtime's mark is taken out; the picture is otherwise as it was.
+    expect(forwarded.messages[2].content[1]).toEqual(
+      chatImage(unmarkedBytes('act_01OWNSCREEN', 64 * 1024).toString('base64')),
+    );
     const textOnly = estimateInputTokens(
       JSON.stringify(withoutImages({ model: MODEL, messages, max_tokens: 100 }, '')),
     );

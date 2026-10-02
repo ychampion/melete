@@ -12,7 +12,7 @@ import {
 } from '@melete/contracts';
 import { localEndpoint, PrivacyRouter } from '../privacy/index.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
-import { countImages, imageTokens, isInlineImage } from './images.ts';
+import { countImages, imageTokens, isInlineImage, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import {
@@ -298,7 +298,8 @@ export function createModelGateway(options: GatewayOptions): Server {
       const prepared = router
         ? await router.prepare({ principal, provider, protocol, body })
         : null;
-      const outbound = prepared?.body ?? body;
+      // The runtime's mark on a screenshot is for the router; it never leaves.
+      const outbound = withoutMarks(prepared?.body ?? body);
       const local = prepared?.local ?? null;
       const encoded = JSON.stringify(outbound);
       // A picture is charged as the flat count the engine compacts by, not as

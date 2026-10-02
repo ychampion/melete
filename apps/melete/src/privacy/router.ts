@@ -32,13 +32,7 @@ import {
   type QuestionSpecInput,
   type SensitiveTopic,
 } from '@melete/contracts';
-import {
-  countImages,
-  type ImageSource,
-  imageSource,
-  inlineImages,
-  withoutImages,
-} from '../gateway/images.ts';
+import { countImages, imageMark, inlineImages, withoutImages } from '../gateway/images.ts';
 import { GatewayError, type GatewayPrincipal, type GatewayProvider } from '../gateway/types.ts';
 import {
   authoredParts,
@@ -55,6 +49,7 @@ import {
   type ResolvedSettings,
   resolveSettings,
   type Scope,
+  type ScreenshotSource,
   sameAddress,
 } from './store.ts';
 import { Rehydrator } from './stream.ts';
@@ -268,29 +263,28 @@ export class PrivacyRouter {
    * answer the privacy setting, allows it; a picture of unknown source never.
    */
   private async screenshotsForCloud(
-    spaceId: string | null,
+    jobId: string | null,
     settings: ResolvedSettings,
     body: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     const images = inlineImages(body);
     if (!images.length) return body;
-    const sources = new Map<unknown, ImageSource>(
-      images.map((image) => [image, imageSource(image)]),
-    );
-    const devices = new Map<string, boolean | null>();
-    for (const source of sources.values())
-      if (source.kind === 'device' && source.deviceId && !devices.has(source.deviceId))
-        devices.set(
-          source.deviceId,
-          spaceId ? await this.store.deviceCloudScreenshots(spaceId, source.deviceId) : null,
-        );
+    // A picture names the action it came from; the action says whose screen it
+    // is. Only a job's own requests carry its screenshots.
+    const sources = new Map<string, ScreenshotSource | null>();
+    for (const image of images) {
+      const action = imageMark(image);
+      if (action && jobId && !sources.has(action))
+        sources.set(action, await this.store.screenshotSource(jobId, action));
+    }
     return withoutImages(body, (image) => {
-      const source = sources.get(image) ?? imageSource(image);
-      if (source.kind === 'computer') return settings.screenshotsOwn ? null : IMAGE_WITHHELD_OWN;
-      if (source.kind === 'device') {
-        const own = source.deviceId ? (devices.get(source.deviceId) ?? null) : null;
-        return (own ?? settings.screenshotsDevices) ? null : IMAGE_WITHHELD_DEVICE;
-      }
+      const action = imageMark(image);
+      const source = action ? (sources.get(action) ?? null) : null;
+      if (source?.kind === 'computer') return settings.screenshotsOwn ? null : IMAGE_WITHHELD_OWN;
+      if (source?.kind === 'device')
+        return (source.cloudScreenshots ?? settings.screenshotsDevices)
+          ? null
+          : IMAGE_WITHHELD_DEVICE;
       return IMAGE_WITHHELD_UNKNOWN;
     });
   }
@@ -349,7 +343,11 @@ export class PrivacyRouter {
     // one each goes only as far as its source's switch allows.
     const outbound = decision.private
       ? withoutImages(body, IMAGE_WITHHELD_PRIVATE)
-      : await this.screenshotsForCloud(scope.spaceId, settings, body);
+      : await this.screenshotsForCloud(
+          principal.privacy.kind === 'job' ? principal.jobId : null,
+          settings,
+          body,
+        );
     // What memory learned in private conversations is swapped out of the text
     // of every cloud request, wherever it appears: recall already leaves it
     // out, and this catches any other way it could arrive as text. Pictures are
