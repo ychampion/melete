@@ -84,6 +84,13 @@ export interface Connector {
    * never remove one.
    */
   asksFirst?(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean;
+  /**
+   * True when this particular action stays in the person's own space, where
+   * they can open and delete it, although its tool can also reach outside: an
+   * artifact saved to the space rather than emailed. It is then treated as
+   * work in the agent's own workspace, under the person's own settings.
+   */
+  staysInSpace?(action: Pick<Action, 'kind' | 'canonical_payload'>, spaceId: string): boolean;
   health(): Promise<ConnectorHealth>;
   /**
    * The shape the destination wants now. Answered after a `schema_drift` fault

@@ -789,8 +789,23 @@ export class BrokerService implements BrokerOperations {
     // The connector itself says the person decides this one, whatever the settings.
     const connectorAsks =
       this.options.connectors.get(action.connection_id)?.asksFirst?.(action) === true;
+    // Kept in the person's own space, where they can delete it: the tool's
+    // own question about reaching outside does not apply to this one.
+    const inSpace =
+      !connectorAsks &&
+      this.options.connectors.get(action.connection_id)?.staysInSpace?.(action, job.space_id) ===
+        true;
+    const toolAsks = needsApproval(tool) && !inSpace;
+    const tierOf = (doubts: OriginWarning[], existingGuests?: number | null): TierDecision =>
+      inSpace && doubts.length === 0
+        ? {
+            tier: 'sandbox',
+            actionClass: 'sandbox',
+            reason: 'It stays in your own space, where you can delete it.',
+          }
+        : reviewTier({ tool, provider, payload: action.canonical_payload, doubts, existingGuests });
     const requiresApproval =
-      needsApproval(tool) ||
+      toolAsks ||
       connectorAsks ||
       (agentAsks && changes) ||
       // "Ask me for everything": every change waits for the person.
@@ -799,8 +814,7 @@ export class BrokerService implements BrokerOperations {
       (settings?.mode === 'auto_review' &&
         !settings.classes.sandbox &&
         changes &&
-        reviewTier({ tool, provider, payload: action.canonical_payload, doubts: [] }).tier ===
-          'sandbox');
+        tierOf([]).tier === 'sandbox');
     const gated = isTrustGatedEffect(tool.effect_class);
     const fields = gated ? collectOriginFields(action.canonical_payload, action.kind) : [];
     const warnings = await resolveOriginWarnings(
@@ -858,19 +872,13 @@ export class BrokerService implements BrokerOperations {
         CHANGES_EXISTING_EVENT.has(tool.name) && settings.classes.calendar && !agentAsks
           ? (guests.get(guestKey(action.connection_id, action.canonical_payload)) ?? null)
           : null;
-      const tier = reviewTier({
-        tool,
-        provider,
-        payload: action.canonical_payload,
-        doubts: [...doubts, ...warnings],
-        existingGuests,
-      });
+      const tier = tierOf([...doubts, ...warnings], existingGuests);
       const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
       auto = {
         tier,
         outcome: connectorAsks
           ? 'person'
-          : tier.tier === 'sandbox' && allowed && !needsApproval(tool)
+          : tier.tier === 'sandbox' && allowed && !toolAsks
             ? 'sandbox_approved'
             : // An agent set to ask before acting promises that sends, bookings and payments
               // wait for the person, so its calendar changes do. A reversible app change is
