@@ -140,7 +140,7 @@ removes subsequent procedure delivery.
 ## Auto-review
 
 Auto-review decides some actions that would otherwise wait for the person.
-Before the person is asked, the broker puts each such action in one of three
+Before the person is asked, the broker puts each such action in one of four
 tiers, from the tool, the exact payload and where its values came from. It
 works this out again at admission and does not trust what the proposal decided.
 
@@ -148,6 +148,19 @@ works this out again at admission and does not trust what the proposal decided.
   commands, files, filling or clicking in its own browser, and mail drafts. A
   fixed rule approves these when the person's `sandbox` switch is on (the
   default). With the switch off, those changes ask. No model is called.
+- **Apps.** Publishing an app, a new version of one, or going back to an
+  earlier version, through the built-in Apps connection. The connector binds
+  the reasons it should ask before anyone is asked: new people could open the
+  app, its code uses WebRTC, or it shows its viewers data they do not see now.
+  With none, a fixed rule approves it when the person's `apps` switch is on (the
+  default), with a receipt. With any, it asks, and the card leads with the
+  reason. The connector works the reasons out again at admission and dispatch,
+  and refuses a publish that gained one since it was decided. A conversation
+  set to ask before acting, or one that read an app's responses, asks. A tool
+  of the same name on any other connection is not in this tier. No model is
+  called.
+  [app-auto-publish.test.ts](../apps/melete/test/integration/app-auto-publish.test.ts)
+  covers each case.
 - **Reviewable.** A reversible change in a connected app, or an event with no
   guests on the person's own calendar. An independent reviewer judges it. It
   goes ahead only when the person switched that class on (`app_changes` or
@@ -158,7 +171,8 @@ works this out again at admission and does not trust what the proposal decided.
   has guests, or the calendar cannot say, the change asks. This is checked again
   before the change runs. An agent set to ask before acting keeps asking for
   calendar changes.
-- **Person.** Anything that spends, sends, submits or publishes, deletes or
+- **Person.** Anything that spends, sends, submits or publishes (other than an
+  app in the tier above), deletes or
   removes, or carries a password, key, code or card detail. Also any recipient,
   destination or amount whose origin is not the person or a verified connection.
   These always ask. The reviewer is never called, and admission withdraws a

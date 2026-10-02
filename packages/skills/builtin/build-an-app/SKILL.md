@@ -26,5 +26,5 @@ To read it, `parent.postMessage({type:'melete.data',id,name:'deals'},'*')`; the
 answer is a `message` from `parent`: `{type:'melete.reply',id,ok,value}`.
 
 Publish with `apps.publish`: the folder, a short name, and who may open it
-(`only_me` unless the person named people or everyone here). The person is
-asked first, and every new version asks again.
+(`only_me` unless the person named people or everyone here). It asks the
+person only when it reaches new people, uses WebRTC or shows new data.
