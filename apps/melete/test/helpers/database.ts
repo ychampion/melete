@@ -39,13 +39,6 @@ export function repointTestServer(url: string): void {
   server = Promise.resolve({ url, mode: 'external', stop: async () => {} });
 }
 
-/** Borrow only when the preload owns shutdown; scripts retain their own server lifetime. */
-export async function sharedTestServerUrl(): Promise<string | null | undefined> {
-  if (!globalCleanup) return undefined;
-  server ??= startTestServer();
-  return (await server)?.url ?? null;
-}
-
 /** Reuse the server, never a fixture's database, across the broker and memory suites. */
 export async function acquireTestServer() {
   server ??= startTestServer();

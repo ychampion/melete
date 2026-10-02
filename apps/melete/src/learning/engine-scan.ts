@@ -22,8 +22,6 @@ import { definitionHash } from './procedure.ts';
 export const ENGINE_ORIGIN = 'engine_staged';
 export const ENGINE_BASIS = 'engine_live';
 
-/** Lowercase words joined by single hyphens: what a skill directory may be called. */
-export const ENGINE_SKILL_NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+){0,7}$/;
 export const MAX_ENGINE_BODY_BYTES = 64 * 1024;
 /**
  * A delivered skill is read on every attempt in its space, so its length is a
@@ -34,8 +32,6 @@ export const MAX_ENGINE_BODY_BYTES = 64 * 1024;
  */
 export const ENGINE_SKILL_TOKENS = CONTEXT_LIMITS.skill_tokens;
 export const MAX_ENGINE_SKILL_TOKENS = ENGINE_SKILL_TOKENS * 10;
-export const MAX_ENGINE_NAME_CHARS = 64;
-export const MAX_ENGINE_DESCRIPTION_CHARS = 400;
 /** Five per attempt, and the database holds the count; this is the same number. */
 export const MAX_ENGINE_SKILLS_PER_ATTEMPT = 5;
 

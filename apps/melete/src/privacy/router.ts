@@ -23,14 +23,13 @@
  * conversation.
  */
 import { createHash } from 'node:crypto';
-import {
-  type AttemptBundle,
-  PRIVACY_CATEGORY_NAMES,
-  type PrivacyCategory,
-  type PrivacyPreview,
-  type PrivacyReceipt,
-  type QuestionSpecInput,
-  type SensitiveTopic,
+import type {
+  AttemptBundle,
+  PrivacyCategory,
+  PrivacyPreview,
+  PrivacyReceipt,
+  QuestionSpecInput,
+  SensitiveTopic,
 } from '@melete/contracts';
 import { GatewayError, type GatewayPrincipal, type GatewayProvider } from '../gateway/types.ts';
 import {
@@ -700,6 +699,3 @@ function receiptFor(
 function declinedText(): string {
   return 'Nothing was sent. To work on this privately, add a local model in Settings → Privacy and ask again.';
 }
-
-/** For the settings screen: a readable name per category. */
-export const categoryName = (category: PrivacyCategory) => PRIVACY_CATEGORY_NAMES[category];

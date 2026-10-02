@@ -101,7 +101,7 @@ export async function artifactGate(
           ? 'could not run'
           : 'failed';
     failures.push(
-      `${paths.get(result.artifactId) ?? result.artifactId}: ${result.name} ${what}${
+      `${paths.get(result.artifactId)}: ${result.name} ${what}${
         result.detail ? ` (${result.detail})` : ''
       }`,
     );

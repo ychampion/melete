@@ -14,7 +14,7 @@
 import type { LedgerItem } from '@melete/contracts';
 import type { CompanyExtractor, ScanExtractor } from './extract.ts';
 import { MAILBOX_UNREADABLE, MailboxUnreadable, type ScanMailbox } from './mailbox.ts';
-import { messageText, type ScanMessage } from './messages.ts';
+import { messageText } from './messages.ts';
 import { prefilter } from './prefilter.ts';
 import type { CompanyStore, Owner, ScanRecord, StoredMessage } from './repository.ts';
 import { type AdmissionContext, admitAll, noDrops } from './validate.ts';
@@ -304,13 +304,4 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
   } finally {
     await session?.close().catch(() => undefined);
   }
-}
-
-/** Messages a scan would read, without running one. Used by the demo seed. */
-export function scanPlan(
-  messages: readonly ScanMessage[],
-  now: Date,
-  windowDays = DEFAULT_WINDOW_DAYS,
-) {
-  return prefilter(messages, { now, windowDays });
 }
