@@ -4,7 +4,7 @@
  * assertion that nothing is left is only worth making against a space that
  * had something everywhere to begin with.
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Sql } from 'postgres';
@@ -169,6 +169,10 @@ export async function seedSpace(
   await sql`insert into artifact_publication
     (artifact_id, action_id, destination, content_hash)
     values (${artifactId}, ${actionId}, 'space_artifacts', 'ahash')`;
+  // A reference to a blob, by a key that is the space's own; the bytes, when a
+  // test wants them, are stored by that test.
+  await sql`insert into blob_ref (key, owner_kind, owner_id, space_id)
+    values (${`sha256/${createHash('sha256').update(spaceId).digest('hex')}`}, 'fixture', ${artifactId}, ${spaceId})`;
 
   await sql`insert into knowledge_record (id, space_id, path, frontmatter, content_hash)
     values (${newId('k')}, ${spaceId}, 'notes/one.md', '{}'::jsonb, 'khash')`;

@@ -149,6 +149,8 @@ import {
 } from './sandbox/wiring.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
+import { configuredBlobStore } from './storage/blob.ts';
+import { BlobCollector } from './storage/gc.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
 import { type BrowserSessionService, mountBrowserSessions } from './workers/browser/routes.ts';
 import { mountBrowserSites } from './workers/browser/sites.ts';
@@ -515,6 +517,7 @@ export async function bootstrap(
   let evaluator: ProcedureEvaluator | undefined;
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
   let removals: SpaceRemovalService | undefined;
+  let blobs: ReturnType<typeof startBlobs> | undefined;
   let memoryGateway: Awaited<ReturnType<typeof configuredMemoryGateway>> | undefined;
   let voiceCompanion: Awaited<ReturnType<typeof configuredVoiceCompanion>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
@@ -554,6 +557,7 @@ export async function bootstrap(
         removals?.stop();
         return removals?.drain();
       },
+      () => blobs?.collector.stop(),
       () => memory?.stop(),
       () => memoryGateway?.close(),
       () => voiceCompanion?.close(),
@@ -956,6 +960,7 @@ export async function bootstrap(
       // A removal outlives the request that asked for it and the process that
       // was running it, so it is resumed at startup and every minute after.
       const journal = (deploymentMemory?.routes ?? memory)?.journal;
+      if (handle) blobs = startBlobs(handle.sql, env, options.workers !== false);
       if (handle && journal) {
         removals = new SpaceRemovalService({
           db: handle.db,
@@ -970,6 +975,8 @@ export async function bootstrap(
           // its connection rows, and the removal finishes only on what those
           // providers say they still hold.
           ...(removeSandboxes ? { sandboxes: removeSandboxes } : {}),
+          // Blobs only this space referred to go with it.
+          ...(blobs ? { blobs: blobs.store } : {}),
           // The worker stops, the profile goes, and the site rows with it.
           ...(browser ? { browser: browser.sessions } : {}),
           ...(env.MELETE_BROWSER_SPACE ? { browserSpace: env.MELETE_BROWSER_SPACE } : {}),
@@ -1092,6 +1099,7 @@ export async function bootstrap(
     effectBoundary,
     browserSessions: browser?.sessions,
     removals,
+    blobs: blobs?.store,
     connections,
     learning,
     memory,
@@ -1101,6 +1109,17 @@ export async function bootstrap(
     registry,
     close,
   };
+}
+
+/**
+ * The blob store this installation is configured for, and its collector, which
+ * runs once a day where this process runs workers.
+ */
+function startBlobs(sql: Sql, env: Env, workers: boolean) {
+  const store = configuredBlobStore(env);
+  const collector = new BlobCollector({ sql, store });
+  if (workers) collector.start();
+  return { store, collector };
 }
 
 if (import.meta.main) {

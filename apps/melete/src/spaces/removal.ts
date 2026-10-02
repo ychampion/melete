@@ -39,6 +39,8 @@ import { PolicyService } from '../jobs/policy.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { spaceAuthority } from '../principals/authority.ts';
+import type { BlobStore } from '../storage/blob.ts';
+import { releaseSpaceBlobs } from '../storage/refs.ts';
 import {
   type BrowserSiteService,
   forgetBrowserProfilesForSpace,
@@ -142,6 +144,11 @@ export type RemovalDeps = {
   sandboxes?: SandboxTeardown;
   browser?: BrowserTeardown;
   runtimeHomes?: RuntimeHomeTeardown;
+  /**
+   * Where the installation keeps blobs. Left out, a space with no blob
+   * references has nothing there to clear, and one with any cannot finish.
+   */
+  blobs?: BlobStore;
   /** Left out, nothing is serving connectors in this process and none is released. */
   connectors?: ConnectorReleases;
   /**
@@ -535,7 +542,7 @@ export class SpaceRemovalService {
               await forgetBrowserProfilesForSpace(this.deps.browser, row.spaceId);
           },
         );
-        return counts;
+        return this.releaseBlobs(row, counts, hold);
       case 'operational':
         await sweepOperational(raw, row.spaceId, row.jobIds, hold);
         return counts;
@@ -656,6 +663,31 @@ export class SpaceRemovalService {
     const left = await homes.listHomesForJobs(row.jobIds);
     const went = cleared(counts, { runtime_homes_removed: removed.removed.length });
     return { ...went, providers: { ...went.providers, runtime_homes: left.length } };
+  }
+
+  /**
+   * Every blob only this space referred to is deleted, and then the space's
+   * references. What the store still holds is asked again before a reference
+   * goes, and anything left stops the removal here with the references intact,
+   * since they are the only record of which blobs were the space's.
+   */
+  private async releaseBlobs(
+    row: SpaceRemovalRow,
+    counts: RemovalCounts,
+    hold: LeaseHold,
+  ): Promise<RemovalCounts> {
+    const store = this.deps.blobs;
+    if (!store) {
+      const held = await countRows(this.deps.sql, 'blob_ref', row.spaceId);
+      return held > 0 ? omit(counts, 'files', 'capability_absent') : counts;
+    }
+    const released = await releaseSpaceBlobs(this.deps.sql, store, row.spaceId, hold);
+    if (released.left > 0)
+      throw new Error(
+        `the blob store still holds ${released.left} blobs only this space referred to`,
+      );
+    const went = cleared(counts, { blobs_deleted: released.deleted });
+    return { ...went, providers: { ...went.providers, blobs: released.left } };
   }
 
   /** Whatever the registry is still holding for these connections, closed. */
