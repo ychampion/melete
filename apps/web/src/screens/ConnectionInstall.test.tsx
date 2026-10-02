@@ -5,6 +5,7 @@ import {
   AccountSignIn,
   ConnectionActions,
   KindForm,
+  Linked,
   type SignInEntry,
 } from './ConnectionInstall.tsx';
 
@@ -173,31 +174,33 @@ test('before signing in, the person sees where and everything that is asked for'
   expect(html).toContain('Continue to Google');
 });
 
-test('an entry this Melete does not offer says why in plain words, with no way to continue', () => {
-  const plain = renderToStaticMarkup(
-    <AccountSignIn
-      entry={googleEntry({
-        available: false,
-        unavailable_reason: 'Signing in with Google is not set up on this Melete yet.',
-      })}
-      onDone={() => {}}
-      onInstalled={() => {}}
-    />,
+test('an entry this server is not set up for says so, links the setup guide, and never names settings', () => {
+  for (const setup_hint of [
+    undefined,
+    'Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.',
+  ]) {
+    const html = renderToStaticMarkup(
+      <AccountSignIn
+        entry={googleEntry({
+          available: false,
+          unavailable_reason: 'Signing in with Google is not set up on this Melete yet.',
+          ...(setup_hint ? { setup_hint } : {}),
+        })}
+        onDone={() => {}}
+        onInstalled={() => {}}
+      />,
+    );
+    expect(html).toContain('Available when your server is set up for it.');
+    expect(html).toContain('docs/mail-calendar.md#signing-in-with-google');
+    expect(html).not.toContain('GOOGLE_OAUTH');
+    expect(html).not.toContain('Continue to Google');
+  }
+});
+
+test('an address in help text is a link', () => {
+  const html = renderToStaticMarkup(
+    <Linked text="Open myaccount.google.com/apppasswords, create one named Melete." />,
   );
-  expect(plain).toContain('not set up on this Melete yet');
-  expect(plain).not.toContain('GOOGLE_OAUTH');
-  expect(plain).not.toContain('Continue to Google');
-  // The operator, and only the operator, is told what to set.
-  const operator = renderToStaticMarkup(
-    <AccountSignIn
-      entry={googleEntry({
-        available: false,
-        unavailable_reason: 'Signing in with Google is not set up on this Melete yet.',
-        setup_hint: 'Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.',
-      })}
-      onDone={() => {}}
-      onInstalled={() => {}}
-    />,
-  );
-  expect(operator).toContain('GOOGLE_OAUTH_CLIENT_ID');
+  expect(html).toContain('href="https://myaccount.google.com/apppasswords"');
+  expect(html).toContain('create one named Melete.');
 });

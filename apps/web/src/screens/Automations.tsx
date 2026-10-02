@@ -19,6 +19,7 @@ import {
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
+import { plainRunReason, plainSchedule } from '../experience/plain.ts';
 import type { Automation, AutomationRun } from '../experience/types.ts';
 import { href } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
@@ -64,7 +65,7 @@ export function RunRow({ run }: { run: AutomationRun }) {
           : 'var(--primary)';
   return (
     <div className="col" style={{ gap: 2, padding: '6px 0' }}>
-      <div className="row" style={{ gap: 10, minHeight: 24, flexWrap: 'wrap' }}>
+      <div className="row" style={{ gap: 10, minHeight: 24 }}>
         <span className="row" style={{ justifyContent: 'center', width: 18, height: 18, color }}>
           {ok ? (
             <Icon name="circleCheck" size={16} />
@@ -76,12 +77,15 @@ export function RunRow({ run }: { run: AutomationRun }) {
             <Icon name="loader" size={14} stroke={2} className="spin" />
           )}
         </span>
-        <span style={{ fontSize: 13, color: 'var(--text)' }}>{runLabel(run)}</span>
-        <span style={{ fontSize: 13, color: 'var(--muted)' }}>· {when(run.started_at)}</span>
+        {/* The status gives way before the link does, so "Open result" never sits alone. */}
+        <span className="clamp1 grow" style={{ fontSize: 13, minWidth: 0 }}>
+          <span style={{ color: 'var(--text)' }}>{runLabel(run)}</span>
+          <span style={{ color: 'var(--muted)' }}> · {when(run.started_at)}</span>
+        </span>
         {run.conversation_id ? (
           <a
             href={href(`/chat/${run.conversation_id}`)}
-            style={{ fontSize: 13, marginLeft: 'auto' }}
+            style={{ fontSize: 13, whiteSpace: 'nowrap', flexShrink: 0 }}
             className="section-link"
           >
             Open result
@@ -111,7 +115,7 @@ export function RunRow({ run }: { run: AutomationRun }) {
             overflowWrap: 'anywhere',
           }}
         >
-          {run.reason}
+          {plainRunReason(run.reason)}
         </p>
       ) : null}
     </div>
@@ -179,7 +183,9 @@ function RoutineCard({
           <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
             {automation.title}
           </span>
-          <span style={{ fontSize: 13, color: 'var(--secondary)' }}>{automation.schedule}</span>
+          <span style={{ fontSize: 13, color: 'var(--secondary)' }}>
+            {plainSchedule(automation.schedule)}
+          </span>
         </div>
         <Badge tone={automation.enabled ? 'success' : 'neutral'} dot={automation.enabled}>
           {automation.ended ? 'Stopped' : automation.enabled ? 'On' : 'Paused'}

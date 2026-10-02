@@ -287,3 +287,13 @@
   padding: 10px 12px;
   flex-wrap: wrap;
 }
+
+/* A surface that is not in use stays out of the layout, rather than an empty box. */
+.computer-surface[hidden] {
+  display: none;
+}
+.computer-wait-late {
+  flex-direction: column;
+  text-align: center;
+  color: var(--text);
+}

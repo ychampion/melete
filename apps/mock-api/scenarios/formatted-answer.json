@@ -1,0 +1,22 @@
+{
+  "id": "formatted-answer",
+  "title": "An answer with headings, lists, a table and code",
+  "summary": "Nova answers with the Markdown a model usually writes, so the chat's formatting can be seen.",
+  "match": ["packing plan", "formatting sample"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "text",
+      "delay_ms": 600,
+      "text": "Here is the packing plan for Saturday.\n\n## What to bring\n\n- Water, two litres each\n- A light jacket; it gets **cold** after dark\n  - Gloves if you run cold\n- The trail map from [the park site](https://www.nps.gov/yose/)\n\n### Order of the day\n\n1. Leave at 7:30\n2. Trailhead by 9\n3. Back before sunset\n\n| Stop | Time | Distance |\n|:-----|-----:|---------:|\n| Trailhead | 9:00 | 0 km |\n| Falls | 11:15 | 5.2 km |\n\n> The ranger station closes at 4, so check in on the way up.\n\nI checked the forecast on its computer:\n\n```console\n$ curl -s wttr.in/Yosemite?format=3\nYosemite: ⛅️  +14°C\n```\n\nAnd the little script that worked out the timings:\n\n```python\ndef arrive(leave, minutes):\n    return leave + minutes / 60\n```\n\nInline code like `arrive(7.5, 90)` stays in the mono face."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 200,
+      "answer": "The packing plan is ready."
+    }
+  ]
+}

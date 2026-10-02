@@ -99,6 +99,9 @@ const LIVE_ROUTES = {
  * so a view is let go before the next opens, and before the browser is handed back.
  */
 const liveTurns = new Map<string, Promise<unknown>>();
+/** How long the live view may show nothing before it says so. */
+const LIVE_WAIT_MS = 10_000;
+
 const turnKey = (surface: LiveSurface, sessionId: string) => `${surface}:${sessionId}`;
 
 type Notice = { code: string; host?: string } | null;
@@ -143,6 +146,8 @@ function LiveScreen({
   const [notice, setNotice] = useState<Notice>(null);
   const [ended, setEnded] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  // No picture after a while is said plainly, with a way to try again.
+  const [late, setLate] = useState(false);
   const liveRef = useRef<string | null>(null);
   const painted = useRef(0);
   const queue = useRef<LiveInput[]>([]);
@@ -248,6 +253,14 @@ function LiveScreen({
     };
   }, [sessionId, attempt, kind]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new attempt waits afresh
+  useEffect(() => {
+    setLate(false);
+    if (frame || ended) return;
+    const timer = setTimeout(() => setLate(true), LIVE_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [frame === null, ended, attempt]);
+
   // The wheel is taken from the page around it, which a passive React listener cannot do.
   useEffect(() => {
     const node = surface.current;
@@ -344,17 +357,32 @@ function LiveScreen({
         }
       }}
     />
-  ) : (
-    <span className="computer-wait">
-      <Icon name="loader" size={16} />
+  ) : late && !ended ? (
+    <span className="computer-wait computer-wait-late" role="status">
+      <span>{title ? `${title} didn’t load.` : 'The live view didn’t load.'}</span>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={(event) => {
+          event.stopPropagation();
+          setAttempt((n) => n + 1);
+        }}
+      >
+        Try again
+      </Button>
+    </span>
+  ) : ended ? null : (
+    <span className="computer-wait" role="status">
+      <Icon name="loader" size={16} className="spin" />
       Opening the live view…
     </span>
   );
-  const badge = (
+  // Live is said only once a picture is coming through.
+  const badge = frame ? (
     <span className="computer-live-badge" aria-hidden="true">
       Live
     </span>
-  );
+  ) : null;
 
   return (
     <div className="computer-live">
@@ -481,10 +509,13 @@ function BrowserView({
 function DesktopView({
   desktop,
   agentName,
+  working,
   onChanged,
 }: {
   desktop: SandboxComputer;
   agentName: string;
+  /** Whether the agent is at work in this chat right now; unknown reads as at work. */
+  working: boolean;
   onChanged: () => void;
 }) {
   const yours = desktop.control === 'human';
@@ -563,7 +594,11 @@ function DesktopView({
           <span className="computer-dot" aria-hidden="true" />
           <span className="col" style={{ gap: 0, minWidth: 0 }}>
             <span className="computer-holder-name">
-              {yours ? 'You have control' : `${agentName} has control`}
+              {yours
+                ? 'You have control'
+                : working
+                  ? `${agentName} has control`
+                  : `${agentName} isn’t using it now`}
             </span>
             <span className="computer-holder-sub">
               {yours
@@ -658,6 +693,7 @@ export function ComputerPanel({
   computer,
   desktop = null,
   error,
+  working = true,
   onClose,
   onChanged,
 }: {
@@ -666,6 +702,8 @@ export function ComputerPanel({
   /** The desktop in the job's sandbox, when it has one. */
   desktop?: SandboxComputer | null;
   error: string | null;
+  /** Whether the agent is at work in this chat right now. While it is idle, nothing says it has control. */
+  working?: boolean;
   onClose: () => void;
   /** Control changed; the computer is read again. */
   onChanged: () => void;
@@ -760,7 +798,12 @@ export function ComputerPanel({
           />
         ) : null}
         {desktop ? (
-          <DesktopView desktop={desktop} agentName={agentName} onChanged={onChanged} />
+          <DesktopView
+            desktop={desktop}
+            agentName={agentName}
+            working={working}
+            onChanged={onChanged}
+          />
         ) : null}
         {computer && computer.terminal.length > 0 ? (
           <Terminal commands={computer.terminal} />
@@ -772,7 +815,11 @@ export function ComputerPanel({
             <span className="computer-dot" aria-hidden="true" />
             <span className="col" style={{ gap: 0, minWidth: 0 }}>
               <span className="computer-holder-name">
-                {browser.control === 'you' ? 'You have control' : `${agentName} has control`}
+                {browser.control === 'you'
+                  ? 'You have control'
+                  : working
+                    ? `${agentName} has control`
+                    : `${agentName} isn’t using it now`}
               </span>
               <span className="computer-holder-sub">
                 {browser.control === 'you'

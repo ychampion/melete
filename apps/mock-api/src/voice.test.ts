@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   conversationResponse,
   errorResponse,
+  voiceAside,
   voiceSession,
   voiceStatus,
   voiceTranscription,
@@ -104,5 +105,48 @@ describe('voice in the mock', () => {
     expect(sent[0]?.message_type).toBe('session_started');
     expect(sent.some((message) => message.message_type === 'partial_transcript')).toBe(true);
     expect(sent.at(-1)).toEqual({ message_type: 'committed_transcript', text: UTTERANCES[0] });
+  });
+});
+
+describe('talking while the work runs, in the mock', () => {
+  const activity = { now: 'Reading the third page', steps: ['Read page one', 'Read page two'] };
+
+  test('asides answer with contract bodies: talk, steer, stop and progress', async () => {
+    const { app } = createMock({ speed: 0 });
+    const id = await conversation(app);
+    const ask = async (body: unknown) => {
+      const response = await app.request(`/conversations/${id}/voice/aside`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      return voiceAside.parse(await response.json());
+    };
+    expect((await ask({ kind: 'heard', text: 'How is it going?', activity })).intent).toBe('talk');
+    expect(
+      (await ask({ kind: 'heard', text: 'Also check the second site.', activity })).intent,
+    ).toBe('steer');
+    expect((await ask({ kind: 'heard', text: 'Cancel it all.', activity })).intent).toBe('stop');
+    expect(await ask({ kind: 'progress', activity })).toEqual({
+      intent: 'talk',
+      say: 'I have done 2 steps. Now: reading the third page.',
+    });
+    expect(await ask({ kind: 'progress', activity: { now: null, steps: [] } })).toEqual({
+      intent: 'quiet',
+      say: null,
+    });
+  });
+
+  test('a private place refuses an aside as it refuses every voice route', async () => {
+    const { app } = createMock({ speed: 0, voice: 'private' });
+    const id = await conversation(app);
+    const refused = await app.request(`/conversations/${id}/voice/aside`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'progress', activity }),
+    });
+    expect(refused.status).toBe(403);
+    expect(errorResponse.parse(await refused.json()).error.code).toBe('voice_private');
   });
 });

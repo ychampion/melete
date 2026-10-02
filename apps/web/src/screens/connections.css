@@ -1,0 +1,32 @@
+/* Adding a connection: groups, the easier route first, and what waits on the server. */
+.connect-group {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.connect-easier {
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--blue-soft);
+  color: var(--blue-ink);
+  font-size: 13px;
+  line-height: 19px;
+}
+.connect-easier a {
+  color: inherit;
+  text-decoration: underline;
+}
+.connect-later {
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--line-strong);
+  font-size: 13px;
+  color: var(--muted);
+}
+.connect-later-name {
+  font-weight: 500;
+  color: var(--secondary);
+}

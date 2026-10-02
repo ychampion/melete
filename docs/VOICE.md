@@ -7,7 +7,7 @@ Melete can listen and speak. One ElevenLabs API key turns on four things:
 | Speech (`audio.synthesize`) | Reads a script aloud and saves the audio as a WAV file in the space's finished work. |
 | Transcription (`audio.transcribe`) | Turns an audio or video file from the space's files into a transcript, with each speaker labelled and timed, saved as Markdown in the space's finished work. |
 | Push-to-talk | A microphone button in the chat's message box. Tap to record, tap again to stop. The words appear in the box for you to read, change and send. |
-| Voice mode | A hands-free conversation in a chat. You talk, Melete answers out loud, and you can talk over it to stop it. |
+| Voice mode | A hands-free call in a chat. You talk, Melete answers out loud and keeps talking with you while it works, and you can talk over it to stop it. |
 
 Without a key none of these appear, and nothing else changes.
 
@@ -88,24 +88,60 @@ no transcription, push-to-talk or voice mode.
 
 ### Voice mode
 
-Open it with the voice button in a chat's header. In a new chat, the button
-starts the chat first.
+Voice mode is a call with the chat's agent. Open it with the voice button in a
+chat's header. In a new chat, the button starts the chat first.
+
+The call shows the agent's name and face, how long the call has run, and two
+captions: what you said last and what the agent said last.
 
 - **Listening**: say what you need. When you pause, what you said is sent as an
   ordinary message in the chat, exactly as if you had typed it. Memory, rules,
   approvals and the tool trail work the same way.
-- **Thinking**: Melete is working on it. The trail shows what it is doing.
+- **Working**: the agent is on it, and the trail shows what it is doing. The
+  call keeps talking while it works:
+  - Ask how it is going, or anything quick, and you get a short answer out loud.
+  - Every so often, when a step finishes, it tells you where it has got to, for
+    example "I've read two of the three pages." It waits at least 25 seconds
+    between these, never talks over you, and says nothing in the first few
+    seconds of a quick answer.
+  - Say **stop**, **pause** or **carry on** and the work stops, pauses or
+    carries on, the same as the buttons.
+  - Anything else meant for the work, like "also check the second site" or
+    "make it shorter", is kept as your next message. The call says so, shows it
+    under the captions as **Next message**, and sends it the moment the current
+    work finishes. If you stopped the work, or the call ends first, it waits in
+    the message box instead.
 - **Speaking**: the reply is read aloud a sentence or two at a time, as it
   arrives. Start talking and it stops.
-- **Mute** stops sending your microphone without ending voice mode. **End**, or
+- **Mute** stops sending your microphone without ending the call. **Minimise**
+  shrinks the call to a bar above the message box, so you can read, scroll and
+  type in the chat while it goes on; **Open** brings it back. **End**, or
   Escape, closes it and releases the microphone.
+
+The talking while it works is a separate, light model call alongside the
+work. It sees the conversation, what the work has done and is doing, and the
+agent's name. It has no tools: it cannot do anything, approve anything or
+change the work itself. A stop, pause or next message goes through the same
+controls and message box you use, and the work is stopped only when your own
+words ask for it. What it says never claims that something was sent,
+approved, booked, paid or deleted; it points you to the screen instead.
+One person may have 600 of these a day, counted like the other voice
+allowances.
 
 Decisions are never made by voice. When a reply needs your decision, voice
 mode says "This needs your decision. It is on the screen." and stops reading.
 The card is in the chat above; **Show the decision** brings it into view.
+Anything you ask for while a decision waits is kept as your next message until
+the decision is made.
 
 Neither your voice nor the spoken reply is stored. Your words are kept as the
 chat message they became, and the reply as the chat message it already is.
+What you say to the agent while it works, and what it says back, is not
+kept as text; only a next message it passed on becomes a chat message. Like
+every model call, each one leaves a privacy log entry (where it went and how
+many details were swapped out, never the details), and any details swapped
+out are kept in the conversation's own vault, the same one its chat uses. The
+daily allowance counts each one, with no words.
 
 ## Privacy
 
@@ -120,8 +156,15 @@ ElevenLabs receives:
 | Push-to-talk | The recording, under a generic file name such as `clip.webm`, and the model name. | The chat, the message box, your name, the space. |
 | Voice mode, listening | Your microphone as 16 kHz audio while voice mode is open and not muted, over a single-use token the service asked for. | The key; the chat's other messages. |
 | Voice mode, speaking | Each piece of the reply that is read aloud, as text, up to 2,000 characters a request. | The rest of the chat, memory, tool results that are not in the reply. |
+| Voice mode, while it works | What the agent says back, as text, to be read aloud. | The rest of the chat, memory, tool results. |
 | Speech (`audio.synthesize`) | The script you approved, and the voice and model settings. | Anything else from the space. |
 | Transcription (`audio.transcribe`) | The file you approved, and the model settings. | Anything else from the space. |
+
+The talking while Melete works is different: it is a model call, not a
+speech call, so it goes through the model gateway and the privacy router like
+every chat turn. The conversation and the activity it is shown are redacted,
+or kept on your local model, exactly as the work's own requests are, and the
+call is refused wherever voice is off.
 
 Every request from the service carries its ElevenLabs key; the browser uses
 only the single-use token. Melete keeps no push-to-talk or voice mode audio;

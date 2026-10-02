@@ -74,8 +74,13 @@ export function excerpt(answer: string, limit = 280): string | null {
 function runReason(status: string, outcome: string | null, detail: unknown): string | null {
   if (status === 'done' || status === 'working' || status === 'queued') return null;
   const value = object(detail);
-  if (outcome === 'failed')
-    return `It failed: ${plainText(value.reason, 'the run stopped with an error.', 300)}`;
+  if (outcome === 'failed') {
+    const reason = plainText(value.reason, 'the run stopped with an error.', 300);
+    // The model gateway's allowance is the usual cause, and it is reported by code.
+    if (/token_cap_exceeded|\b429\b/.test(reason))
+      return 'Today’s model allowance ran out, so it stopped. It runs again at its next time, or you can choose another model in Settings › Models.';
+    return `It failed: ${reason}`;
+  }
   if (outcome === 'budget_exhausted') return 'It ran out of time or allowance before it finished.';
   if (outcome === 'fenced') return 'It was stopped before it finished.';
   if (outcome === 'completed')

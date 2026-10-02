@@ -168,13 +168,20 @@ test('In motion reads waiting on you while a job has an open decision, not Done'
 });
 
 test('a conversation waiting on the person stays in the list, whatever its age', () => {
-  const now = Date.parse('2026-09-30T19:05:00.000Z');
   const stale: Conversation = { ...conversation(), id: 'job_old', status: 'done' };
   const asking: Conversation = { ...conversation(), id: 'job_ask', status: 'needs_you' };
-  expect(motionRows([stale], new Set(), now)).toEqual([]);
-  expect(motionRows([stale], new Set(['job_old']), now).map((row) => row.id)).toEqual(['job_old']);
-  expect(motionRows([asking], new Set(), now).map((row) => row.id)).toEqual(['job_ask']);
+  expect(motionRows([stale], new Set())).toEqual([]);
+  expect(motionRows([stale], new Set(['job_old'])).map((row) => row.id)).toEqual(['job_old']);
+  expect(motionRows([asking], new Set()).map((row) => row.id)).toEqual(['job_ask']);
   expect(motionLine(asking, new Set(), 'Nova')).toBe('Waiting on you');
+});
+
+test('In motion leaves out work that already finished, however recent', () => {
+  const now = Date.parse('2026-09-24T19:30:00.000Z');
+  const finished: Conversation = { ...conversation(), id: 'job_done', status: 'done' };
+  const moving: Conversation = { ...conversation(), id: 'job_moving' };
+  expect(now - Date.parse(finished.updated_at)).toBeLessThan(86_400_000);
+  expect(motionRows([finished, moving], new Set()).map((row) => row.id)).toEqual(['job_moving']);
 });
 
 test('Chats says a chat held up by a decision is waiting, not done', () => {

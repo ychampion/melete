@@ -79,3 +79,54 @@ export const voiceSpeechRequest = z.strictObject({
   text: z.string().trim().min(1).max(VOICE_LIMITS.speech_characters),
 });
 export type VoiceSpeechRequest = z.infer<typeof voiceSpeechRequest>;
+
+/**
+ * Talking with Melete while it works. The work goes on in the conversation's
+ * running turn; this is a separate, light conversation alongside it. It can
+ * answer a quick question, say how the work is going, or recognise that what
+ * was said is an instruction for the work. It never acts: it has no tools and
+ * decides nothing.
+ */
+export const VOICE_ASIDE_LIMITS = {
+  /** The longest thing the person said that one aside reads. */
+  heard_characters: 1_000,
+  /** How many of the running turn's steps an aside is shown, the latest kept. */
+  steps: 12,
+  step_characters: 200,
+  /** The longest thing an aside says back. */
+  say_characters: 400,
+} as const;
+
+/** What the running turn is doing, as the screen shows it. */
+export const voiceActivity = z.strictObject({
+  /** The step under way now, when there is one. */
+  now: z.string().trim().max(VOICE_ASIDE_LIMITS.step_characters).nullable(),
+  /** The steps finished so far in this turn, oldest first. */
+  steps: z
+    .array(z.string().trim().min(1).max(VOICE_ASIDE_LIMITS.step_characters))
+    .max(VOICE_ASIDE_LIMITS.steps),
+});
+export type VoiceActivity = z.infer<typeof voiceActivity>;
+
+export const voiceAsideRequest = z.discriminatedUnion('kind', [
+  /** The person said something while the work runs. */
+  z.strictObject({
+    kind: z.literal('heard'),
+    text: z.string().trim().min(1).max(VOICE_ASIDE_LIMITS.heard_characters),
+    activity: voiceActivity,
+  }),
+  /** A natural moment to say how the work is going, if there is anything new to say. */
+  z.strictObject({ kind: z.literal('progress'), activity: voiceActivity }),
+]);
+export type VoiceAsideRequest = z.infer<typeof voiceAsideRequest>;
+
+/**
+ * What the aside makes of it. `talk`: say `say`. `steer`: what was said is an
+ * instruction for the work, to be passed on; `say` acknowledges it. `stop`: the
+ * person wants the work stopped. `quiet`: nothing worth saying.
+ */
+export const voiceAside = z.strictObject({
+  intent: z.enum(['talk', 'steer', 'stop', 'quiet']),
+  say: z.string().max(VOICE_ASIDE_LIMITS.say_characters).nullable(),
+});
+export type VoiceAside = z.infer<typeof voiceAside>;

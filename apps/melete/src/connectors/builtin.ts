@@ -76,27 +76,27 @@ export const BUILTIN_CONNECTIONS: readonly Builtin[] = [
   {
     key: 'artifacts',
     provider: 'artifacts',
-    label: 'Finished work',
+    label: 'Saved results',
     scopes: grants(artifactsManifest),
   },
   {
     key: 'generation',
     provider: 'generation',
-    label: 'Speech',
+    label: 'Voice',
     scopes: ['audio.synthesize'],
     when: (environment) => environment.speechConfigured,
   },
   {
     key: 'transcription',
     provider: 'generation',
-    label: 'Transcription',
+    label: 'Voice to text',
     scopes: ['audio.transcribe'],
     when: (environment) => environment.transcriptionConfigured,
   },
   {
     key: 'exec',
     provider: 'exec',
-    label: 'Code in the workspace',
+    label: 'Code runner',
     scopes: grants(execManifest),
     when: (environment) => environment.cellIsolated,
   },
@@ -110,6 +110,16 @@ export const BUILTIN_CONNECTIONS: readonly Builtin[] = [
     configuration: (environment) => ({ kind: 'sandbox', sandbox: environment.sandbox }),
   },
 ];
+
+/**
+ * The name a default connection is shown by. A row keeps the label it was made
+ * with, so one made before a default was renamed reads by its current name.
+ */
+export function builtinLabel(configuration: { builtin?: unknown } | null | undefined) {
+  const key = configuration?.builtin;
+  if (typeof key !== 'string') return null;
+  return BUILTIN_CONNECTIONS.find((builtin) => builtin.key === key)?.label ?? null;
+}
 
 export function builtinEnvironment(
   env: {

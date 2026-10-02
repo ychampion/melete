@@ -1,12 +1,14 @@
 /**
- * Settings › Account: the time zone routines run on, and the password.
- * Changing the password signs out every other device.
+ * Settings › Account: the name Melete uses, the time zone routines run on, and
+ * the password. Changing the password signs out every other device. Signing
+ * out is in the account menu, at the foot of the sidebar.
  */
 import { useState } from 'react';
 import { Button, Field, Input, Select } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useApp } from '../experience/hooks.ts';
-import { browserTimeZone, timeZoneChoices, zoneLabel } from '../experience/timezone.ts';
+import { givenName, UNNAMED } from '../experience/profile.ts';
+import { browserTimeZone, timeZoneChoices, zoneName } from '../experience/timezone.ts';
 import { toast } from '../shell/Shell.tsx';
 
 function TimeZoneField() {
@@ -34,7 +36,7 @@ function TimeZoneField() {
     refreshProfile();
     toast({
       kind: 'ok',
-      title: `Time zone set to ${zoneLabel(zone)}`,
+      title: `Time zone set to ${zoneName(zone)}`,
       sub: 'Routines keep their time of day on this clock.',
     });
   };
@@ -49,12 +51,12 @@ function TimeZoneField() {
             width="min(100%, 320px)"
             options={timeZoneChoices(profile.time_zone).map((zone) => ({
               value: zone,
-              label: zoneLabel(zone),
+              label: zoneName(zone),
             }))}
           />
           {here && here !== profile.time_zone ? (
             <Button variant="outline" size="sm" loading={busy} onClick={() => void save(here)}>
-              Use this device’s ({zoneLabel(here)})
+              Use this device’s: {zoneName(here)}
             </Button>
           ) : null}
         </div>
@@ -63,6 +65,64 @@ function TimeZoneField() {
         Routines such as the morning brief run on this clock, through daylight-saving changes.
       </span>
     </div>
+  );
+}
+
+function NameField() {
+  const { profile, refreshProfile } = useApp();
+  const [draft, setDraft] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  if (!profile) return null;
+  const value = draft ?? givenName(profile);
+  const changed = value.trim() !== givenName(profile);
+  return (
+    <form
+      className="col"
+      style={{ gap: 8, maxWidth: 360 }}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!changed || busy) return;
+        setBusy(true);
+        void adapter
+          .saveProfile({
+            name: value.trim() || UNNAMED,
+            time_zone: profile.time_zone,
+            day_hours: profile.day_hours,
+          })
+          .then((saved) => {
+            setBusy(false);
+            if (!saved.data) {
+              toast({
+                kind: 'err',
+                title: 'Couldn’t save your name',
+                sub: saved.error ?? saved.unavailable ?? '',
+              });
+              return;
+            }
+            setDraft(null);
+            refreshProfile();
+            toast({ kind: 'ok', title: 'Name saved' });
+          });
+      }}
+    >
+      <Field label="Your name" hint="Melete greets you by it.">
+        <Input
+          value={value}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder="Your name"
+          maxLength={80}
+          autoComplete="name"
+          width="100%"
+        />
+      </Field>
+      {changed ? (
+        <div className="row">
+          <Button type="submit" variant="outline" size="sm" loading={busy}>
+            Save name
+          </Button>
+        </div>
+      ) : null}
+    </form>
   );
 }
 
@@ -149,6 +209,7 @@ function PasswordForm() {
 export function AccountSettings() {
   return (
     <div className="col" style={{ gap: 20 }}>
+      <NameField />
       <TimeZoneField />
       <div className="col" style={{ gap: 8 }}>
         <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>Password</span>

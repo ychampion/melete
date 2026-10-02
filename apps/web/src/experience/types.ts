@@ -236,3 +236,6 @@ export type FeedbackCreate = Body<paths['/feedback'], 'post'>;
 export type VoiceStatus = Ok<paths['/voice'], 'get'>;
 export type VoiceTranscription = Ok<paths['/voice/transcriptions'], 'post'>;
 export type VoiceSession = Ok<paths['/conversations/{id}/voice/session'], 'post'>;
+export type VoiceAside = Ok<paths['/conversations/{id}/voice/aside'], 'post'>;
+export type VoiceAsideRequest = Body<paths['/conversations/{id}/voice/aside'], 'post'>;
+export type VoiceActivity = VoiceAsideRequest['activity'];

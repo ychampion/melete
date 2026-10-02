@@ -15,6 +15,10 @@
 import { randomUUID } from 'node:crypto';
 import {
   VOICE_LIMITS,
+  type VoiceAside,
+  type VoiceAsideRequest,
+  voiceAside,
+  voiceAsideRequest,
   voiceSession,
   voiceSpeechRequest,
   voiceStatus,
@@ -35,9 +39,35 @@ const HEARD = [
 /** What voice mode "hears", one per utterance, in turn. */
 export const UTTERANCES = [
   'What is on my calendar tomorrow?',
-  'Move the dentist to Friday afternoon.',
+  'How is it going?',
+  'Also check the second site.',
   'Thanks, that is all for now.',
 ];
+
+/**
+ * What the companion makes of an aside, without a model: a stop, an
+ * instruction for the work, a question about it, or a progress word built from
+ * the activity. The service asks a model; the shapes are the same.
+ */
+export function mockAside(request: VoiceAsideRequest): VoiceAside {
+  const { now, steps } = request.activity;
+  if (request.kind === 'progress') {
+    if (!steps.length && !now) return { intent: 'quiet', say: null };
+    const done = steps.length === 1 ? 'one step' : `${steps.length} steps`;
+    return {
+      intent: 'talk',
+      say: now ? `I have done ${done}. Now: ${now.toLowerCase()}.` : `I have done ${done}.`,
+    };
+  }
+  const heard = request.text.toLowerCase();
+  if (/\b(stop|cancel|never mind)\b/.test(heard)) return { intent: 'stop', say: 'Stopping now.' };
+  if (/\b(also|instead|make it|change|add|check|don't|do not|shorter|longer)\b/.test(heard))
+    return { intent: 'steer', say: 'Got it. I will pass that on.' };
+  return {
+    intent: 'talk',
+    say: now ? `Still working. Right now: ${now.toLowerCase()}.` : 'Still working on it.',
+  };
+}
 
 const SAMPLE_RATE = 16_000;
 export const REALTIME_PATH = '/voice/realtime';
@@ -156,6 +186,15 @@ export function mountVoiceMock(
       }),
       201,
     );
+  });
+
+  app.post('/conversations/:id/voice/aside', async (c) => {
+    if (!conversation(c)) return fail(c, 404, 'not_found', 'That item is not here.');
+    if (!deps.enabled) return unset(c);
+    if (deps.private) return kept(c);
+    const parsed = voiceAsideRequest.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return fail(c, 400, 'invalid_request', 'Check the request and try again.');
+    return c.json(voiceAside.parse(mockAside(parsed.data)));
   });
 
   app.post('/conversations/:id/voice/speech', async (c) => {

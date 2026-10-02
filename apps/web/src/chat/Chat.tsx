@@ -30,7 +30,6 @@ import {
   useMedia,
   useNow,
 } from '../experience/hooks.ts';
-import { inlineSpans } from '../experience/inline.ts';
 import {
   answerOf,
   latestTurn,
@@ -54,9 +53,11 @@ import type {
 } from '../experience/types.ts';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { shownBlocks } from './blocks.ts';
 import { CasePanel, useCase } from './CasePanel.tsx';
 import { Composer } from './Composer.tsx';
 import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
+import { Markdown } from './Markdown.tsx';
 import { PrivateTopic } from './PrivateTopic.tsx';
 import { Protected } from './Protected.tsx';
 import {
@@ -244,7 +245,7 @@ function TurnView({
   const open = openQuestion(transcript);
   const showText = text.length > 0 || turn.streaming;
 
-  const rendered = turn.blocks.map((block) => {
+  const rendered = shownBlocks(turn.blocks).map((block) => {
     switch (block.type) {
       case 'card': {
         const handle =
@@ -355,58 +356,9 @@ function TurnView({
   );
 }
 
-/** A line with its bold, italic and code spans drawn; everything else stays plain text. */
-function Line({ line }: { line: string }) {
-  return (
-    <>
-      {inlineSpans(line).map((span, index) => {
-        // The spans are a cut of one line, in order, so their place is their key.
-        const key = `${index}:${span.kind}`;
-        if (span.kind === 'strong') return <strong key={key}>{span.text}</strong>;
-        if (span.kind === 'em') return <em key={key}>{span.text}</em>;
-        if (span.kind === 'code')
-          return (
-            <code key={key} className="answer-code">
-              {span.text}
-            </code>
-          );
-        return <span key={key}>{span.text}</span>;
-      })}
-    </>
-  );
-}
-
-/** The answer as paragraphs: a blank line is a gap, a single break stays a break. */
+/** The answer, drawn from its Markdown. */
 function Answer({ text, streaming }: { text: string; streaming: boolean }) {
-  const paragraphs = text.split(/\n\s*\n/).filter((part) => part.trim().length > 0);
-  if (paragraphs.length === 0) paragraphs.push('');
-  return (
-    <div className="answer">
-      {paragraphs.map((paragraph, index) =>
-        /^\s*(?:-{3,}|\*{3,})\s*$/.test(paragraph) ? (
-          // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are a cut of one string, in order
-          <hr key={index} className="answer-rule" />
-        ) : (
-          // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are a cut of one string, in order
-          <p key={index}>
-            {paragraph
-              .trim()
-              .split('\n')
-              .map((line, at) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: lines of one paragraph, in order
-                <span key={at}>
-                  {at > 0 ? <br /> : null}
-                  <Line line={line} />
-                </span>
-              ))}
-            {streaming && index === paragraphs.length - 1 ? (
-              <span className="caret pulse" aria-hidden="true" />
-            ) : null}
-          </p>
-        ),
-      )}
-    </div>
-  );
+  return <Markdown text={text} streaming={streaming} />;
 }
 
 /** The transcript reaches the turn views through a tiny context, to keep props short. */
@@ -485,6 +437,8 @@ export function ChatScreen({ id }: { id: string | null }) {
     if (arriving) voiceOnArrival = null;
     return arriving;
   });
+  /** The call shrunk to a bar, so the chat can be used while it goes on. */
+  const [voiceMin, setVoiceMin] = useState(false);
   /** The agent's computer is opened by the person and stays as they left it. */
   const [computerOpen, setComputerOpen] = useState(false);
 
@@ -803,7 +757,11 @@ export function ChatScreen({ id }: { id: string | null }) {
         iconSize={size > 32 ? 20 : 16}
         on={voiceOpen}
         aria-pressed={voiceOpen}
-        onClick={() => (voiceOpen ? setVoiceOpen(false) : void startVoice())}
+        onClick={() => {
+          setVoiceMin(false);
+          if (voiceOpen) setVoiceOpen(false);
+          else void startVoice();
+        }}
       />
     ) : null;
   // A new tool entry on the stream is when the computer most likely changed.
@@ -856,6 +814,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             computer={computer.computer}
             desktop={computer.desktop}
             error={computer.error}
+            working={working}
             onClose={() => setComputerOpen(false)}
             onChanged={() => void computer.refresh()}
           />
@@ -972,14 +931,33 @@ export function ChatScreen({ id }: { id: string | null }) {
             </div>
           </div>
           {voiceOpen && conversationId ? (
-            <div className="chat-foot">
+            <div className="chat-foot" data-call={voiceMin ? 'minimised' : 'open'}>
               <div className="chat-foot-inner">
                 <VoicePanel
                   conversationId={conversationId}
                   transcript={transcript}
+                  agentName={agent?.name?.trim() || 'Melete'}
+                  avatar={
+                    agent ? (
+                      <AgentFace look={lookOf(agent)} size={28} />
+                    ) : (
+                      <MeleteAvatar size={28} />
+                    )
+                  }
+                  minimised={voiceMin}
+                  onMinimise={setVoiceMin}
                   onSend={send}
+                  onDraft={(words) =>
+                    setText((current) =>
+                      current.trim()
+                        ? `${current.trimEnd()}
+${words}`
+                        : words,
+                    )
+                  }
                   onEnd={() => {
                     setVoiceOpen(false);
+                    setVoiceMin(false);
                     // Back to the control that opened it, for a keyboard user.
                     requestAnimationFrame(() =>
                       document.querySelector<HTMLElement>('[aria-label="Voice mode"]')?.focus(),
@@ -1021,7 +999,7 @@ export function ChatScreen({ id }: { id: string | null }) {
               ) : null}
             </div>
           ) : null}
-          <div className="chat-foot" hidden={Boolean(pending) || voiceOpen}>
+          <div className="chat-foot" hidden={Boolean(pending) || (voiceOpen && !voiceMin)}>
             <div className="chat-foot-inner">
               {!stuck ? (
                 <button

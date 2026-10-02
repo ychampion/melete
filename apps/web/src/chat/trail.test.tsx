@@ -8,7 +8,7 @@ import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { applyEvent, fromTurns } from '../experience/reduce.ts';
 import type { ExperienceEvent, Turn } from '../experience/types.ts';
-import { Trail } from './parts.tsx';
+import { stoppedLine, Trail } from './parts.tsx';
 
 const AT = '2026-09-24T09:00:00.000Z';
 const TURN: Turn = {
@@ -159,4 +159,40 @@ test('a running turn shows its live header before any step arrives', () => {
   if (!turn) throw new Error('no turn');
   const html = renderToStaticMarkup(<Trail turn={turn} now={Date.parse(AT) + 4000} />);
   expect(html).toContain('Working · 4s');
+});
+
+test('a stopped turn counts its steps once, the same way in the header and the line under it', () => {
+  let transcript = fromTurns([TURN], 'pause', 'working');
+  const step = (id: string, status: 'running' | 'done', title: string) =>
+    event({
+      type: 'tool',
+      tool: {
+        id,
+        kind: 'web',
+        title,
+        status,
+        started_at: AT,
+        ended_at: status === 'done' ? '2026-09-24T09:00:04.000Z' : null,
+        input_summary: null,
+        output_summary: null,
+        detail: null,
+        parent: null,
+      },
+    } as ExperienceEvent['item']);
+  for (const item of [
+    step('call:a', 'done', 'Searched the web'),
+    step('call:b', 'done', 'Read a listing'),
+    step('call:c', 'running', 'Reading another listing'),
+    event({ type: 'status', status: 'stopped', composer: 'send' }),
+  ])
+    transcript = applyEvent(transcript, item);
+  const turn = transcript.turns[0];
+  if (!turn) throw new Error('no turn');
+  const html = renderToStaticMarkup(<Trail turn={turn} now={Date.parse(AT) + 600_000} />);
+  expect(html).toContain('Stopped after 4s');
+  expect(html).toContain('3 steps');
+  expect(html).toContain('after 3 steps');
+  expect(html).not.toContain('after 2 steps');
+  expect(stoppedLine([])).toContain('before it got to work');
+  expect(stoppedLine([{ title: 'Read a page' }])).toContain('after 1 step. Last: Read a page.');
 });

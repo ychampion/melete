@@ -65,7 +65,7 @@ function app(
     db: {} as Database,
     allowance,
     providers: { transcription: null, live: null, ...providers },
-    limits: { seconds: options.seconds ?? 1800, characters: 20_000, sessions: 30 },
+    limits: { seconds: options.seconds ?? 1800, characters: 20_000, sessions: 30, asides: 600 },
     privacy: options.privacy ?? (async () => null),
   });
   return { built, allowance };

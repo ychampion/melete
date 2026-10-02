@@ -79,6 +79,10 @@
 .space-switch:hover {
   background: var(--hover);
 }
+/* One space: a label, not a control. */
+.space-switch[data-static="true"]:hover {
+  background: none;
+}
 .sidebar-nav {
   display: flex;
   flex-direction: column;
@@ -113,6 +117,14 @@
   color: var(--heading);
   background: var(--surface);
   box-shadow: var(--shadow-pill);
+}
+/* The current item keeps its pill and still shows the focus ring over it. */
+.nav-item[aria-current="page"]:focus-visible,
+.chat-row[aria-current="page"]:focus-visible {
+  box-shadow:
+    var(--shadow-pill),
+    0 0 0 2px var(--surface),
+    0 0 0 5px var(--ring);
 }
 .nav-item[aria-current="page"] > svg {
   color: var(--primary);
@@ -180,6 +192,41 @@
   text-decoration: none;
   color: var(--secondary);
 }
+.chat-all {
+  color: var(--muted);
+}
+.chat-all-count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 1000;
+  padding: 8px 14px;
+  border-radius: var(--radius-button);
+  background: var(--surface);
+  color: var(--heading);
+  font-size: 14px;
+  font-weight: 600;
+  border: 0;
+  cursor: pointer;
+  box-shadow: var(--shadow-lift);
+  transform: translateY(-200%);
+}
+.skip-link:focus-visible,
+.skip-link:focus {
+  transform: none;
+}
+.shell-content:focus {
+  outline: none;
+}
+.shell-content:focus-visible {
+  box-shadow:
+    var(--shadow-sheet),
+    0 0 0 2px var(--ring);
+}
 .chat-face {
   display: inline-flex;
   align-items: center;
@@ -227,7 +274,48 @@
   color: var(--muted);
 }
 
+/* The account menu's head: who, the address they send from, and their clock. */
+.account-menu-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.account-menu-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--heading);
+}
+
 /* ---------- rail ---------- */
+
+.rail-empty {
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.rail-empty .task-add {
+  margin-top: 4px;
+}
+.rail-foot {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.rail-foot-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--control);
+}
+.rail-foot-dot[data-on="true"] {
+  background: var(--success);
+}
 
 .rail {
   display: flex;
@@ -301,6 +389,17 @@
   font-weight: 600;
   letter-spacing: -0.015em;
   line-height: 30px;
+}
+/* On the phone the head above already names the page; the heading stays for screen readers. */
+@media (max-width: 767px) {
+  .page-head h1 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 .section-head {
   display: flex;
