@@ -117,6 +117,30 @@ export class ComputerMock {
     entry.exit_code = typeof step.result.exit_code === 'number' ? step.result.exit_code : 0;
   }
 
+  /** A picture of the computer's screen as it is now, kept as an artifact; null when it has none. */
+  shot(chatId: string): string | null {
+    if (!this.enabled) return null;
+    const id = `art_shot_${chatId}_${this.computer(chatId).terminal.length}`;
+    if (!this.store.artifacts.has(id)) {
+      const bytes = PICTURES.booking.png;
+      this.store.artifacts.set(id, {
+        artifact: {
+          id,
+          space_id: this.spaceId,
+          job_id: null,
+          path: `artifacts/screens/${id}.png`,
+          content_hash: new Bun.CryptoHasher('sha256').update(bytes).digest('hex'),
+          mime: 'image/png',
+          size: bytes.length,
+          audience: 'owner',
+          created_at: this.now(),
+        },
+        bytes,
+      });
+    }
+    return id;
+  }
+
   view(chatId: string): C.AgentComputer {
     const computer = this.computers.get(chatId);
     const session = computer?.sessionId ? this.sessions.get(computer.sessionId) : undefined;
