@@ -17,6 +17,7 @@
     "@melete/knowledge": "workspace:*",
     "@melete/runtime-hermes": "workspace:*",
     "@melete/skills": "workspace:*",
+    "@smithy/signature-v4": "5.7.4",
     "ajv": "8.20.0",
     "chrono-node": "2.10.1",
     "drizzle-orm": "0.45.2",

@@ -31,12 +31,14 @@ import type { JsonObject } from '@melete/contracts';
 import type { EgressWriteOutcome } from '../broker/egress-admission.ts';
 import type { ResolvedAddress } from '../connectors/web.ts';
 import { requestWrite } from './adapters/generic.ts';
-import type {
-  Classification,
-  ClassifiedWrite,
-  InterceptedRequest,
-  OutboundRequest,
-  UpstreamResponse,
+import {
+  AccountUnusable,
+  type AuthorizeContext,
+  type Classification,
+  type ClassifiedWrite,
+  type InterceptedRequest,
+  type OutboundRequest,
+  type UpstreamResponse,
 } from './adapters/types.ts';
 import type { ForwardResult } from './connector.ts';
 import type { CredentialUse, EgressCredentialPort } from './credentials.ts';
@@ -233,10 +235,15 @@ export const VOLATILE_HEADERS: ReadonlySet<string> = new Set([
  * body does by content, the part of the body it names as `bound`), and every
  * header that will be forwarded, by lower-case name and value in name order.
  */
-export function requestBinding(headers: Record<string, string>, body: Buffer, bound?: JsonObject) {
+export function requestBinding(
+  headers: Record<string, string>,
+  body: Buffer,
+  bound?: JsonObject,
+  volatile: ReadonlySet<string> = VOLATILE_HEADERS,
+) {
   return {
     headers: Object.entries(headers)
-      .filter(([name]) => !VOLATILE_HEADERS.has(name))
+      .filter(([name]) => !volatile.has(name))
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([name, value]) => [name, value]),
     ...(bound
@@ -401,61 +408,81 @@ async function read(
   base: OutboundRequest,
   response: ServerResponse,
   max: number,
+  signing: AuthorizeContext,
 ) {
-  await use.withSecret(
-    (secret) =>
-      new Promise<void>((resolve) => {
-        const outbound = use.adapter.authorize(base, secret, use.config);
-        const redactor = new ByteRedactor(use.adapter.redactions(secret));
-        send(
-          context,
-          outbound,
-          (upstream) => {
-            context.onRead();
-            if (encodingOf(upstream.headers).length) {
-              // Compressed despite being asked not to: decoded whole, so the redactor sees it.
-              void collect(upstream, redactor, max).then(
-                (whole) => {
-                  response.writeHead(whole.status, whole.headers);
-                  response.end(whole.body);
-                  resolve();
-                },
-                () => {
-                  plain(
-                    response,
-                    502,
-                    'unreadable_answer',
-                    'The answer could not be checked for the account secret, so it was not passed on.',
-                  );
-                  resolve();
-                },
-              );
-              return;
-            }
-            response.writeHead(
-              upstream.statusCode ?? 502,
-              downstreamHeaders(upstream.headers, redactor),
+  await use.withSecret(async (secret) => {
+    let outbound: OutboundRequest;
+    try {
+      outbound = await use.adapter.authorize(base, secret, use.config, signing);
+    } catch (error) {
+      plain(
+        response,
+        502,
+        'account_unusable',
+        `The account could not be used for this request: ${unusable(error)}.`,
+      );
+      return;
+    }
+    const redactor = new ByteRedactor([
+      ...use.adapter.redactions(secret),
+      ...(outbound.redactions ?? []),
+    ]);
+    await new Promise<void>((resolve) => {
+      send(
+        context,
+        outbound,
+        (upstream) => {
+          context.onRead();
+          if (encodingOf(upstream.headers).length) {
+            // Compressed despite being asked not to: decoded whole, so the redactor sees it.
+            void collect(upstream, redactor, max).then(
+              (whole) => {
+                response.writeHead(whole.status, whole.headers);
+                response.end(whole.body);
+                resolve();
+              },
+              () => {
+                plain(
+                  response,
+                  502,
+                  'unreadable_answer',
+                  'The answer could not be checked for the account secret, so it was not passed on.',
+                );
+                resolve();
+              },
             );
-            upstream.on('data', (chunk: Buffer) => {
-              const safe = redactor.feed(chunk);
-              if (safe.length) response.write(safe);
-            });
-            upstream.once('end', () => {
-              response.end(redactor.end());
-              resolve();
-            });
-            upstream.once('error', () => {
-              response.destroy();
-              resolve();
-            });
-          },
-          () => {
-            plain(response, 502, 'upstream_unreachable', `${context.host} could not be reached.`);
+            return;
+          }
+          response.writeHead(
+            upstream.statusCode ?? 502,
+            downstreamHeaders(upstream.headers, redactor),
+          );
+          upstream.on('data', (chunk: Buffer) => {
+            const safe = redactor.feed(chunk);
+            if (safe.length) response.write(safe);
+          });
+          upstream.once('end', () => {
+            response.end(redactor.end());
             resolve();
-          },
-        );
-      }),
-  );
+          });
+          upstream.once('error', () => {
+            response.destroy();
+            resolve();
+          });
+        },
+        () => {
+          plain(response, 502, 'upstream_unreachable', `${context.host} could not be reached.`);
+          resolve();
+        },
+      );
+    });
+  });
+}
+
+/** Why an account could not be used, in words that never carry a secret. */
+function unusable(error: unknown): string {
+  // Adapters word their own refusals for the computer to read; anything else is not repeated.
+  return error instanceof AccountUnusable ? error.message : 'it could not be opened or signed';
 }
 
 /** Forwards a write once its admission allows it; the whole answer is kept for the receipt. */
@@ -465,47 +492,50 @@ function forwarder(
   base: OutboundRequest,
   write: ClassifiedWrite,
   max: number,
+  signing: AuthorizeContext,
 ): () => Promise<ForwardResult> {
   let started = false;
   const attempt = () =>
-    use.withSecret(
-      (secret) =>
-        new Promise<ForwardResult>((resolve) => {
-          const outbound = use.adapter.authorize(base, secret, use.config);
-          const redactor = new ByteRedactor(use.adapter.redactions(secret));
-          started = true;
-          send(
-            context,
-            outbound,
-            (upstream) => {
-              void collect(upstream, redactor, max).then(
-                (response) =>
-                  resolve({
-                    outcome: 'answered',
-                    response,
-                    rejected: use.adapter.rejected?.(write, response) ?? null,
-                    uncertain: use.adapter.uncertain?.(write, response) ?? null,
-                    detail: {
-                      host: context.host,
-                      method: base.method,
-                      target: redactor.text(base.target).slice(0, 2000),
-                      status: response.status,
-                      operation: write.operation,
-                      ...use.adapter.receipt(write, response),
-                    },
-                  }),
-                (error: Error) => resolve({ outcome: 'lost', reason: error.message }),
-              );
-            },
-            (error, connected) =>
-              resolve(
-                connected
-                  ? { outcome: 'lost', reason: `the answer was lost: ${error.message}` }
-                  : { outcome: 'not_sent', reason: `${context.host} could not be reached` },
-              ),
-          );
-        }),
-    );
+    use.withSecret(async (secret) => {
+      const outbound = await use.adapter.authorize(base, secret, use.config, signing);
+      const redactor = new ByteRedactor([
+        ...use.adapter.redactions(secret),
+        ...(outbound.redactions ?? []),
+      ]);
+      return new Promise<ForwardResult>((resolve) => {
+        started = true;
+        send(
+          context,
+          outbound,
+          (upstream) => {
+            void collect(upstream, redactor, max).then(
+              (response) =>
+                resolve({
+                  outcome: 'answered',
+                  response,
+                  rejected: use.adapter.rejected?.(write, response) ?? null,
+                  uncertain: use.adapter.uncertain?.(write, response) ?? null,
+                  detail: {
+                    host: context.host,
+                    method: base.method,
+                    target: redactor.text(base.target).slice(0, 2000),
+                    status: response.status,
+                    operation: write.operation,
+                    ...use.adapter.receipt(write, response),
+                  },
+                }),
+              (error: Error) => resolve({ outcome: 'lost', reason: error.message }),
+            );
+          },
+          (error, connected) =>
+            resolve(
+              connected
+                ? { outcome: 'lost', reason: `the answer was lost: ${error.message}` }
+                : { outcome: 'not_sent', reason: `${context.host} could not be reached` },
+            ),
+        );
+      });
+    });
   // A failure before anything was sent (the secret could not be opened, the
   // request could not be signed) is not a send whose answer was lost.
   return () =>
@@ -513,7 +543,10 @@ function forwarder(
       (error: unknown): ForwardResult =>
         started
           ? { outcome: 'lost', reason: String((error as Error)?.message ?? error) }
-          : { outcome: 'not_sent', reason: 'the account could not be used for this request' },
+          : {
+              outcome: 'not_sent',
+              reason: `the account could not be used for this request: ${unusable(error)}`,
+            },
     );
 }
 
@@ -673,6 +706,7 @@ async function handleBody(
     );
   const placeholders =
     use.adapter.standIns?.(use.config) ?? Object.values(use.adapter.placeholders(use.config));
+  const authorization = flat(request.headers).authorization;
   const intercepted: InterceptedRequest = {
     host,
     method,
@@ -680,7 +714,15 @@ async function handleBody(
     query: target.query,
     headers: upstreamHeaders(request.headers, placeholders),
     body,
+    ...(authorization !== undefined ? { authorization } : {}),
   };
+  const signing: AuthorizeContext = {
+    command: context.token.attribution.actionId,
+    ...(authorization !== undefined ? { authorization } : {}),
+  };
+  const volatile: ReadonlySet<string> = use.adapter.volatileHeaders?.length
+    ? new Set([...VOLATILE_HEADERS, ...use.adapter.volatileHeaders])
+    : VOLATILE_HEADERS;
   const base: OutboundRequest = {
     host,
     method,
@@ -690,10 +732,10 @@ async function handleBody(
   };
   const verdict = classifySafely(use, intercepted);
   if (verdict.kind === 'refuse') return plain(response, 403, 'refused', verdict.reason);
-  if (verdict.kind === 'read') return read(context, use, base, response, max);
+  if (verdict.kind === 'read') return read(context, use, base, response, max, signing);
   // The approval binds the exact bytes and every header that will be sent;
   // the write forwards exactly those, plus headers that say nothing about it.
-  const binding = requestBinding(intercepted.headers, body, verdict.boundBody);
+  const binding = requestBinding(intercepted.headers, body, verdict.boundBody, volatile);
   const write: ClassifiedWrite = {
     ...verdict,
     payload: { ...verdict.payload, request: binding },
@@ -716,7 +758,7 @@ async function handleBody(
     ...base,
     headers: Object.fromEntries([
       ...binding.headers.map(([name, value]) => [name as string, value as string]),
-      ...Object.entries(intercepted.headers).filter(([name]) => VOLATILE_HEADERS.has(name)),
+      ...Object.entries(intercepted.headers).filter(([name]) => volatile.has(name)),
     ]),
   };
   const now = context.options.now?.() ?? Date.now();
@@ -739,7 +781,7 @@ async function handleBody(
       adapter: use.adapter.id,
       write,
       holdMs,
-      forward: forwarder(context, use, bound, write, max),
+      forward: forwarder(context, use, bound, write, max, signing),
       signal: aborted.signal,
       live: () => context.tokens.isLive(context.token),
     });
