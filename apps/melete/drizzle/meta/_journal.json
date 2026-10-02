@@ -554,6 +554,13 @@
       "when": 1789232400058,
       "tag": "0078_egress_records",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1789232400059,
+      "tag": "0079_sandbox_processes",
+      "breakpoints": true
     }
   ]
 }

@@ -316,6 +316,13 @@ jobs:
         run: |
           mkdir -p sandbox-shots
           bun test apps/melete/src/sandbox/adapters/docker.live.test.ts --timeout=300000 --max-concurrency=1
+      # Background processes through the service's whole path: a three-minute process
+      # started in one attempt, read in a second and seen to finish in a third.
+      - name: Keep background processes across attempts
+        env:
+          MELETE_SANDBOX_LIVE: docker
+          DATABASE_URL: postgres://melete_test:melete_test@127.0.0.1:5432/postgres
+        run: bun test apps/melete/src/sandbox/adapters/docker-processes.live.test.ts --timeout=900000 --max-concurrency=1
       # Open egress needs the caller in a container on the same engine, as the service is in
       # the Compose deployment, so it can join each sandbox's network as its only way out.
       - name: Reach the internet only through the service

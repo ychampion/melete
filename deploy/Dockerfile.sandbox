@@ -30,8 +30,10 @@ RUN apt-get update \
     && ln -s /tmp /var/lib/xkb \
     && python3 -c "from PIL import features; import sys; sys.exit(0 if features.check('xcb') else 1)"
 
-COPY deploy/sandbox/melete-desktop deploy/sandbox/melete-sandbox-init /usr/local/bin/
-RUN chmod 0755 /usr/local/bin/melete-desktop /usr/local/bin/melete-sandbox-init
+# melete-proc keeps the agent's background processes: their output ring, input
+# and exit status, on the home volume.
+COPY deploy/sandbox/melete-desktop deploy/sandbox/melete-sandbox-init deploy/sandbox/melete-proc /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/melete-desktop /usr/local/bin/melete-sandbox-init /usr/local/bin/melete-proc
 
 # The root filesystem is read-only at run time. pip falls back to installing
 # for the user, into the home volume, which keeps them across restarts.

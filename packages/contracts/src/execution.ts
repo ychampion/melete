@@ -42,6 +42,50 @@ export const EXEC_LIMITS = {
 } as const;
 
 /**
+ * Background processes in the agent's computer: work that outlives one
+ * command and one attempt, such as a test suite or a dev server. The caps and
+ * time limits are defaults an operator may change; the rest are fixed shapes.
+ */
+export const PROCESS_LIMITS = {
+  /** How long a process runs when the caller names no time limit. */
+  default_ttl_minutes: 120,
+  /** The longest time limit a process may be given, at start or later. */
+  max_ttl_minutes: 720,
+  /** How many processes one computer may run at once. */
+  max_per_computer: 4,
+  /** How many processes one space may run at once, over all its computers. */
+  max_per_space: 8,
+  /** The output ring inside the computer: two files of half this each. */
+  output_max_bytes: 8 * 1024 * 1024,
+  /** How long a space's processes may keep its computers running in one day. */
+  awake_seconds_per_day: 6 * 3600,
+  /** How long a start waits for the first output, and how much of it is returned. */
+  first_output_wait_ms: 5_000,
+  first_output_max_bytes: 4_096,
+  /** One read returns at most this much, and waits at most this long for new output. */
+  read_max_bytes: 65_536,
+  read_default_bytes: 16_384,
+  read_max_wait_seconds: 30,
+  /** The most text one write sends to a process's input. */
+  write_max_bytes: 16_384,
+  /** How long a stop waits after TERM before it sends KILL. */
+  stop_grace_ms: 10_000,
+  /** Where read output is kept, under the job workspace. */
+  output_dir: '.melete/proc',
+} as const;
+
+/** Where a process is in its life. Every state after `running` is final. */
+export const PROCESS_STATES = [
+  'starting',
+  'running',
+  'exited',
+  'stopped',
+  'expired',
+  'lost',
+] as const;
+export type ProcessState = (typeof PROCESS_STATES)[number];
+
+/**
  * The environment names the service may set on one command, on top of the
  * sandbox's own environment. Each is a proxy route, a trust bundle path, a
  * per-command attribution value or a setting that keeps a client from

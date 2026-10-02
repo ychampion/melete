@@ -1,0 +1,746 @@
+/**
+ * The process tools on the sandbox connection, against the in-memory fake
+ * provider, a real session and process table, and an in-memory stand-in for
+ * the helper inside the computer. The helper itself is tested in
+ * `sandbox/process-helper.test.ts`; here the question is what the service
+ * records, refuses and ends.
+ */
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { type Action, canonicalizePayload, type SandboxConnectionConfig } from '@melete/contracts';
+import { testDatabase } from '../../test/helpers/database.ts';
+import { type FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
+import {
+  type ProcessComputer,
+  type ProcessFacts,
+  ProcessHelperLost,
+  type StartRequest,
+} from '../sandbox/process-helper.ts';
+import { coveredSeconds, type ProcessLimits, SandboxProcesses } from '../sandbox/processes.ts';
+import { seedSessionScope } from '../sandbox/session-fixtures.ts';
+import { SandboxSessions } from '../sandbox/sessions.ts';
+import type { SandboxHandle, SandboxProvider } from '../sandbox/types.ts';
+import { createSandboxExecConnector, sandboxDispatchBudgetMs } from './sandbox-exec.ts';
+import type { ConnectorContext } from './types.ts';
+
+const handle = await testDatabase();
+const withDb = handle ? describe : describe.skip;
+const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
+const encode = (value: string) => new TextEncoder().encode(value);
+
+type FakeProcess = {
+  id: string;
+  boot: string;
+  command: string;
+  cwd: string;
+  state: 'running' | 'exited';
+  exitCode: number | null;
+  out: Uint8Array;
+  input: string;
+  started: number;
+};
+
+/** The computers' side, held in memory: processes by sandbox, and each sandbox's boot. */
+class FakeComputers {
+  readonly boots = new Map<string, string>();
+  readonly processes = new Map<string, Map<string, FakeProcess>>();
+  readonly calls: string[] = [];
+
+  private of(sandbox: string) {
+    if (!this.boots.has(sandbox)) this.boots.set(sandbox, `boot-${sandbox}-1`);
+    let found = this.processes.get(sandbox);
+    if (!found) {
+      found = new Map();
+      this.processes.set(sandbox, found);
+    }
+    return found;
+  }
+
+  get(sandbox: string, id: string) {
+    return this.of(sandbox).get(id);
+  }
+
+  all(): FakeProcess[] {
+    return [...this.processes.values()].flatMap((each) => [...each.values()]);
+  }
+
+  /** The computer restarted: every process in it is gone, under the old boot. */
+  restart(sandbox: string) {
+    const boot = this.boots.get(sandbox) ?? `boot-${sandbox}-1`;
+    this.boots.set(sandbox, `${boot}+`);
+  }
+
+  print(sandbox: string, id: string, value: string) {
+    const process = this.of(sandbox).get(id);
+    if (!process) throw new Error(`no process ${id}`);
+    process.out = new Uint8Array([...process.out, ...encode(value)]);
+  }
+
+  private facts(sandbox: string, process: FakeProcess): ProcessFacts {
+    const lost = process.boot !== this.boots.get(sandbox);
+    return {
+      id: process.id,
+      state: lost ? 'lost' : process.state,
+      exit_code: process.exitCode,
+      cursor: process.out.byteLength,
+      oldest: 0,
+      last_line: new TextDecoder().decode(process.out).trimEnd().split('\n').pop()?.trim() || null,
+      ports: [],
+      members: process.state === 'running' && !lost ? 1 : 0,
+      started: process.started,
+    };
+  }
+
+  computerFor = (_provider: SandboxProvider, target: SandboxHandle): ProcessComputer => {
+    const sandbox = target.providerSandboxId;
+    const mine = () => this.of(sandbox);
+    const boot = () => this.boots.get(sandbox) ?? '';
+    const must = (id: string) => {
+      const found = mine().get(id);
+      if (!found) throw new Error(`no process ${id}`);
+      return found;
+    };
+    const end = (process: FakeProcess, code: number) => {
+      if (process.state === 'running' && process.boot === boot()) {
+        process.state = 'exited';
+        process.exitCode = code;
+      }
+    };
+    return {
+      start: async (request: StartRequest) => {
+        this.calls.push(`start ${request.id}`);
+        if (mine().has(request.id)) return { outcome: 'reentered' };
+        const out = encode(`started ${request.command}\n`);
+        const process: FakeProcess = {
+          id: request.id,
+          boot: boot(),
+          command: request.command,
+          cwd: request.cwd,
+          state: 'running',
+          exitCode: null,
+          out,
+          input: '',
+          started: Date.now(),
+        };
+        mine().set(request.id, process);
+        return {
+          outcome: 'started',
+          boot: boot(),
+          process: this.facts(sandbox, process),
+          read: { from: 0, next: out.byteLength, dropped: 0, total: out.byteLength },
+          data: out,
+        };
+      },
+      status: async (ids) => {
+        this.calls.push('status');
+        const wanted = ids === 'all' ? [...mine().keys()] : ids.filter((id) => mine().has(id));
+        return {
+          boot: boot(),
+          processes: wanted.map((id) => this.facts(sandbox, must(id))),
+          missing: ids === 'all' ? [] : ids.filter((id) => !mine().has(id)),
+        };
+      },
+      read: async (id, cursor, maxBytes) => {
+        this.calls.push(`read ${id}`);
+        const process = must(id);
+        const from = cursor < 0 ? Math.max(0, process.out.byteLength - maxBytes) : cursor;
+        const data = process.out.slice(from, from + maxBytes);
+        return {
+          boot: boot(),
+          process: this.facts(sandbox, process),
+          read: { from, next: from + data.byteLength, dropped: 0, total: process.out.byteLength },
+          data,
+        };
+      },
+      write: async (id, bytes) => {
+        this.calls.push(`write ${id}`);
+        must(id).input += new TextDecoder().decode(bytes);
+        return { written: bytes.byteLength };
+      },
+      signal: async (id, name) => {
+        this.calls.push(`signal ${id} ${name}`);
+        const process = must(id);
+        end(process, name === 'KILL' ? 137 : 128 + { TERM: 15, INT: 2, HUP: 1 }[name]);
+        return { boot: boot(), process: this.facts(sandbox, process) };
+      },
+      stop: async (id) => {
+        this.calls.push(`stop ${id}`);
+        const process = must(id);
+        end(process, 143);
+        return { boot: boot(), process: this.facts(sandbox, process) };
+      },
+    };
+  };
+}
+
+const LIMITS: ProcessLimits = {
+  maxPerComputer: 4,
+  maxPerSpace: 8,
+  defaultTtlMinutes: 120,
+  maxTtlMinutes: 720,
+  outputMaxBytes: 8 * 1024 * 1024,
+  awakeSecondsPerDay: 6 * 3600,
+};
+
+const config: SandboxConnectionConfig = {
+  adapter: 'e2b',
+  image: 'base',
+  egress: 'deny_all',
+  persistence: 'pause',
+  lifetime_seconds: 600,
+};
+
+let workRoot = '';
+beforeEach(async () => {
+  if (handle) await handle.sql`truncate space cascade`;
+  workRoot = await mkdtemp(path.join(tmpdir(), 'melete-sandbox-process-'));
+});
+afterAll(async () => {
+  await handle?.close();
+}, 30_000);
+
+test('the time a space was kept awake counts overlapping processes once', () => {
+  expect(coveredSeconds([])).toBe(0);
+  expect(
+    coveredSeconds([
+      [0, 10_000],
+      [5_000, 20_000],
+      [30_000, 40_000],
+    ]),
+  ).toBe(30);
+  expect(coveredSeconds([[10_000, 5_000]])).toBe(0);
+});
+
+test('a process action may take its wait, the wait for the computer and the session margin', () => {
+  const read = sandboxDispatchBudgetMs({
+    kind: 'process.read',
+    canonical_payload: { step: 1, process_id: 'prc_X', wait_seconds: 30 },
+  } as never);
+  const list = sandboxDispatchBudgetMs({
+    kind: 'process.list',
+    canonical_payload: { step: 1 },
+  } as never);
+  expect(read - list).toBe(0);
+  expect(read).toBeGreaterThan(30_000 + 60_000);
+});
+
+withDb('background processes in the agent computer', () => {
+  const db = () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    return handle.sql;
+  };
+  const setup = async (
+    over: {
+      limits?: Partial<ProcessLimits>;
+      persistence?: SandboxConnectionConfig['persistence'];
+      engine?: FakeSandboxEngine;
+      computers?: FakeComputers;
+    } = {},
+  ) => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const scope = await seedSessionScope(handle.sql);
+    await handle.sql`update connection set provider = 'sandbox',
+        scopes = '["terminal.run","process.start"]'::jsonb
+      where id = ${scope.connectionId}`;
+    await handle.sql`update job set agent_id = ${scope.agentId} where id = ${scope.jobId}`;
+    const provider = new FakeSandboxProvider(over.engine ? { engine: over.engine } : {});
+    const sessions = new SandboxSessions(handle.sql, {
+      leaseSeconds: 300,
+      workspaceRetentionSeconds: 3_600,
+    });
+    const computers = over.computers ?? new FakeComputers();
+    const processes = new SandboxProcesses(handle.sql, {
+      limits: { ...LIMITS, ...over.limits },
+      computerFor: (provider, target) => computers.computerFor(provider, target),
+      log: () => {},
+    });
+    const connector = createSandboxExecConnector({
+      sessions,
+      provider,
+      config: { ...config, ...(over.persistence ? { persistence: over.persistence } : {}) },
+      connectionId: scope.connectionId,
+      spaceId: scope.spaceId,
+      project: 'sandbox-process-test',
+      workRoot,
+      sql: handle.sql,
+      processes,
+      workspaceWaitMs: 0,
+    });
+    /** Another job of the same agent, as a later conversation would be. */
+    const job = async (agentId: string | null = scope.agentId, title = 'Later job') => {
+      const id = `job_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
+      await handle.sql`insert into job (id, space_id, title, objective, agent_id)
+        values (${id}, ${scope.spaceId}, ${title}, 'Run', ${agentId})`;
+      await mkdir(path.join(workRoot, id), { recursive: true });
+      return id;
+    };
+    const attempt = async (jobId: string) => {
+      const id = `att_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
+      await handle.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${id}, ${jobId},
+          (select coalesce(max(epoch), 0) + 1 from attempt where job_id = ${jobId}),
+          'fake', 'fake', 'scripted')`;
+      return id;
+    };
+    await mkdir(path.join(workRoot, scope.jobId), { recursive: true });
+    const firstAttempt = await scope.attempt();
+    let step = 0;
+    const run = async (
+      kind: string,
+      payload: Record<string, unknown>,
+      on: { jobId: string; attemptId: string } = { jobId: scope.jobId, attemptId: firstAttempt },
+    ) => {
+      step += 1;
+      const id = `act_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
+      const canonical = canonicalizePayload({ step, ...payload });
+      await handle.sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+          canonical_payload, payload_hash, idempotency_key)
+        values (${id}, ${on.jobId}, ${on.attemptId}, ${scope.connectionId}, ${kind},
+          'write_reversible', ${canonical.json}::jsonb, ${canonical.hash}, ${id})`;
+      const action: Action = {
+        id,
+        job_id: on.jobId,
+        attempt_id: on.attemptId,
+        connection_id: scope.connectionId,
+        kind,
+        effect_class: 'write_reversible',
+        canonical_payload: canonical.canonical,
+        payload_hash: canonical.hash,
+        intent_key: null,
+        status: 'dispatched',
+        authorization_ref: null,
+        budget_reservation: null,
+        idempotency_key: id,
+        dispatched_at: new Date().toISOString(),
+        receipt: null,
+        resolved_at: null,
+        reconciliation: null,
+        repair_trace: [],
+        repair_counters: {},
+        repair_disposition: null,
+        retry_after_at: null,
+        created_at: new Date().toISOString(),
+      };
+      const ctx: ConnectorContext = {
+        job_id: on.jobId,
+        space_id: scope.spaceId,
+        idempotency_key: id,
+        constraints: {
+          deliverable: { kind: 'none' },
+          allowed_domains: [],
+          public_compartment: false,
+        },
+      };
+      return { action, result: await connector.execute(action, ctx) };
+    };
+    type Ran = Awaited<ReturnType<typeof run>>;
+    const detail = (ran: Ran | Ran['result']) => {
+      const result = 'result' in ran ? ran.result : ran;
+      if (result.outcome !== 'succeeded') throw new Error(JSON.stringify(result));
+      return result.receipt.detail as Record<string, unknown>;
+    };
+    /** The first attempt ends: its workspace is suspended, so a later job may take the computer. */
+    const endFirst = async (attemptId: string = firstAttempt) => {
+      const [row] = await db()`select id from sandbox_session
+        where attempt_id = ${attemptId} and status = 'ready'`;
+      if (row)
+        await sessions.suspendWorkspace(String(row.id), provider, AbortSignal.timeout(10_000));
+    };
+    const providers = () =>
+      new Map([[scope.connectionId, { adapter: 'fake', provider: provider as SandboxProvider }]]);
+    return {
+      scope,
+      provider,
+      sessions,
+      processes,
+      computers,
+      connector,
+      firstAttempt,
+      job,
+      attempt,
+      run,
+      detail,
+      endFirst,
+      providers,
+    };
+  };
+
+  test('a process started in one attempt is read and stopped from a later job of the same agent', async () => {
+    const { run, detail, job, attempt, sessions, provider, computers, firstAttempt } =
+      await setup();
+    const started = detail(await run('process.start', { command: 'npm test', name: 'tests' }));
+    const id = String(started.process_id);
+    expect(started).toMatchObject({
+      state: 'running',
+      name: 'tests',
+      first_output: 'started npm test\n',
+    });
+    // The attempt ends; its workspace is suspended, and the process runs on.
+    const [row] = await db()`select session_id from sandbox_process where id = ${id}`;
+    await sessions.suspendWorkspace(String(row?.session_id), provider, AbortSignal.timeout(10_000));
+    expect(firstAttempt).toBeTruthy();
+
+    const later = await job();
+    const on = { jobId: later, attemptId: await attempt(later) };
+    const sandbox = [...computers.processes.keys()][0] as string;
+    computers.print(sandbox, id, 'all 12 suites passed\n');
+    const listed = detail(await run('process.list', {}, on));
+    expect(listed.processes).toEqual([
+      expect.objectContaining({
+        process_id: id,
+        state: 'running',
+        last_line: 'all 12 suites passed',
+      }),
+    ]);
+    const read = detail(await run('process.read', { process_id: id, cursor: 0 }, on));
+    expect(read.output).toBe('started npm test\nall 12 suites passed\n');
+    const stopped = detail(await run('process.stop', { process_id: id }, on));
+    expect(stopped).toMatchObject({
+      state: 'stopped',
+      exit_code: 143,
+      ended_because: 'it was stopped',
+    });
+    expect(computers.get(sandbox, id)?.state).toBe('exited');
+  }, 60_000);
+
+  test('starting the same command twice starts two processes', async () => {
+    const { run, detail, computers } = await setup();
+    const first = detail(await run('process.start', { command: 'npm run dev', port: 5173 }));
+    const second = detail(await run('process.start', { command: 'npm run dev', port: 5173 }));
+    expect(first.process_id).not.toBe(second.process_id);
+    expect(computers.all().map((each) => each.command)).toEqual(['npm run dev', 'npm run dev']);
+    const rows = await db()`select state, port from sandbox_process order by created_at`;
+    expect(rows.map((row) => [row.state, row.port])).toEqual([
+      ['running', 5173],
+      ['running', 5173],
+    ]);
+  }, 60_000);
+
+  test('a start dispatched again is the same process, and nothing new runs', async () => {
+    const { run, detail, connector, computers, scope } = await setup();
+    const { action, result } = await run('process.start', { command: 'sleep 600' });
+    const first = detail(result);
+    const ctx: ConnectorContext = {
+      job_id: action.job_id,
+      space_id: scope.spaceId,
+      idempotency_key: action.id,
+      constraints: {
+        deliverable: { kind: 'none' },
+        allowed_domains: [],
+        public_compartment: false,
+      },
+    };
+    const again = await connector.execute(action, ctx);
+    expect(detail(again).process_id).toBe(first.process_id);
+    expect(computers.all()).toHaveLength(1);
+    // A verify after a lost answer reads the row, never starts anything.
+    const verdict = await connector.verify(action, ctx);
+    expect(verdict.decision).toBe('succeeded');
+  }, 60_000);
+
+  test('each read of process output is kept in the job workspace with its digest', async () => {
+    const { run, detail, computers, scope } = await setup();
+    const id = String(detail(await run('process.start', { command: 'make' })).process_id);
+    const sandbox = [...computers.processes.keys()][0] as string;
+    computers.print(sandbox, id, 'compiling\n');
+    const read = detail(await run('process.read', { process_id: id, cursor: 0 }));
+    const bytes = encode('started make\ncompiling\n');
+    expect(read).toMatchObject({
+      cursor: 0,
+      next_cursor: bytes.byteLength,
+      output_bytes: bytes.byteLength,
+      output_digest: digest(bytes),
+      output_path: `.melete/proc/${id}/0-${bytes.byteLength}.out`,
+      digest_verified: true,
+    });
+    const kept = await readFile(path.join(workRoot, scope.jobId, String(read.output_path)));
+    expect(digest(kept)).toBe(digest(bytes));
+    // A read past the end, with nothing new, keeps nothing.
+    const empty = detail(await run('process.read', { process_id: id, cursor: bytes.byteLength }));
+    expect(empty).toMatchObject({ output_bytes: 0, output_path: null });
+  }, 60_000);
+
+  test('a fifth process on one computer is refused, and an expired one is stopped and recorded', async () => {
+    const { run, detail, processes, providers, computers } = await setup();
+    const ids: string[] = [];
+    for (let index = 0; index < 4; index++)
+      ids.push(
+        String(detail(await run('process.start', { command: `worker ${index}` })).process_id),
+      );
+    const fifth = await run('process.start', { command: 'worker 4' });
+    expect(fifth.result).toMatchObject({ outcome: 'failed', retryable: false });
+    expect(fifth.result.outcome === 'failed' && fifth.result.reason).toContain(
+      'already running 4 processes',
+    );
+    expect(computers.all()).toHaveLength(4);
+
+    await db()`update sandbox_process set expires_at = now() - interval '1 second'
+      where id = ${ids[0] as string}`;
+    const swept = await processes.sweep(providers, AbortSignal.timeout(10_000));
+    expect(swept.ended).toEqual([ids[0] as string]);
+    const [expired] = await db()`select state, end_reason, exit_code, ended_at
+      from sandbox_process where id = ${ids[0] as string}`;
+    expect(expired).toMatchObject({
+      state: 'expired',
+      end_reason: 'its time limit passed',
+      exit_code: 143,
+    });
+    expect(expired?.ended_at).not.toBeNull();
+    expect(computers.all().find((each) => each.id === ids[0])?.state).toBe('exited');
+    // Its place is free again.
+    expect((await run('process.start', { command: 'worker 4' })).result.outcome).toBe('succeeded');
+  }, 60_000);
+
+  test('a space runs at most its own cap of processes across its computers', async () => {
+    const { run, detail, job, attempt, scope } = await setup({ limits: { maxPerSpace: 2 } });
+    detail(await run('process.start', { command: 'one' }));
+    // Another agent in the same space, with its own computer.
+    const other = `agent_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
+    await db()`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone, standing_instruction)
+      values (${other}, ${scope.spaceId}, 'Other', 'helper', 'blue', 'plain', 'black', 'calm', 'help')`;
+    const theirs = await job(other);
+    const on = { jobId: theirs, attemptId: await attempt(theirs) };
+    detail(await run('process.start', { command: 'two' }, on));
+    const third = await run('process.start', { command: 'three' }, on);
+    expect(third.result.outcome === 'failed' && third.result.reason).toContain(
+      'This space is already running 2 processes',
+    );
+  }, 60_000);
+
+  test('a computer restart marks its running processes lost', async () => {
+    const { run, detail, computers } = await setup();
+    const id = String(detail(await run('process.start', { command: 'serve' })).process_id);
+    computers.restart([...computers.processes.keys()][0] as string);
+    const listed = detail(await run('process.list', {}));
+    expect(listed.processes).toEqual([
+      expect.objectContaining({
+        process_id: id,
+        state: 'lost',
+        ended_because: 'the computer restarted, which ends every process in it',
+      }),
+    ]);
+    expect(listed.running).toBe(0);
+  }, 60_000);
+
+  test("a member's personal job cannot list or stop a room computer's processes", async () => {
+    // Until rooms exist, the boundary is the computer: another agent's job,
+    // in the same space, neither sees nor reaches this agent's processes.
+    const { run, detail, job, attempt, scope, computers } = await setup();
+    const id = String(detail(await run('process.start', { command: 'serve' })).process_id);
+    const other = `agent_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
+    await db()`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone, standing_instruction)
+      values (${other}, ${scope.spaceId}, 'Other', 'helper', 'blue', 'plain', 'black', 'calm', 'help')`;
+    const theirs = await job(other);
+    const on = { jobId: theirs, attemptId: await attempt(theirs) };
+    expect(detail(await run('process.list', {}, on)).processes).toEqual([]);
+    const stop = await run('process.stop', { process_id: id }, on);
+    expect(stop.result).toMatchObject({
+      outcome: 'failed',
+      reason: 'There is no process with that id in this computer',
+    });
+    expect(computers.all()[0]?.state).toBe('running');
+  }, 60_000);
+
+  test("another person's job that started a process is not named in the list", async () => {
+    const { run, detail, job, attempt, scope, endFirst } = await setup();
+    const mine = String(detail(await run('process.start', { command: 'mine' })).process_id);
+    await endFirst();
+    const principal = `prn_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
+    await db()`insert into principal (id, email) values (${principal}, ${`${principal}@example.test`})`;
+    const theirs = await job(scope.agentId, 'Their private plan');
+    await db()`update job set principal_id = ${principal} where id = ${theirs}`;
+    const on = { jobId: theirs, attemptId: await attempt(theirs) };
+    const listed = detail(await run('process.list', {}, on)).processes as Record<string, unknown>[];
+    expect(listed.find((each) => each.process_id === mine)?.started_by ?? null).toBeNull();
+    await endFirst(on.attemptId);
+    const back = { jobId: scope.jobId, attemptId: await attempt(scope.jobId) };
+    const own = detail(await run('process.list', {}, back)).processes as Record<string, unknown>[];
+    expect(own.find((each) => each.process_id === mine)?.started_by).toBe('Job');
+  }, 60_000);
+
+  test('a job with no agent, or a computer made fresh each time, cannot start a process', async () => {
+    const plain = await setup();
+    await db()`update job set agent_id = null where id = ${plain.scope.jobId}`;
+    const agentless = await plain.run('process.start', { command: 'serve' });
+    expect(agentless.result.outcome === 'failed' && agentless.result.reason).toContain(
+      'this job has no agent',
+    );
+    const fresh = await setup({ persistence: 'ephemeral' });
+    const ephemeral = await fresh.run('process.start', { command: 'serve' });
+    expect(ephemeral.result.outcome === 'failed' && ephemeral.result.reason).toContain(
+      'made fresh for each attempt',
+    );
+    expect(plain.computers.all()).toEqual([]);
+    expect(fresh.computers.all()).toEqual([]);
+  }, 60_000);
+
+  test("when the day's awake time is used, new starts are refused and the sweep stops what runs", async () => {
+    const { run, detail, processes, providers, computers, scope } = await setup({
+      limits: { awakeSecondsPerDay: 2 },
+    });
+    const id = String(detail(await run('process.start', { command: 'serve' })).process_id);
+    // It has been running for longer than the allowance.
+    await db()`update sandbox_process
+      set started_at = now() - interval '5 seconds', created_at = now() - interval '5 seconds'
+      where id = ${id}`;
+    expect(await processes.awakeSecondsToday(scope.spaceId)).toBeGreaterThanOrEqual(2);
+    const refused = await run('process.start', { command: 'another' });
+    expect(refused.result.outcome === 'failed' && refused.result.reason).toContain(
+      'awake time for today is used up',
+    );
+    await processes.sweep(providers, AbortSignal.timeout(10_000));
+    const [row] = await db()`select state, end_reason from sandbox_process where id = ${id}`;
+    expect(row).toMatchObject({
+      state: 'stopped',
+      end_reason: "the space's awake time for today was used up",
+    });
+    expect(computers.all()[0]?.state).toBe('exited');
+  }, 60_000);
+
+  test('the sweep stops a process whose job was cancelled, and not one whose job completed', async () => {
+    const { run, detail, processes, providers, job, attempt, endFirst } = await setup();
+    const cancelled = String(detail(await run('process.start', { command: 'a' })).process_id);
+    await endFirst();
+    const later = await job();
+    const on = { jobId: later, attemptId: await attempt(later) };
+    const completed = String(detail(await run('process.start', { command: 'b' }, on)).process_id);
+    await db()`update job set state = 'cancelled' where id = (select job_id from sandbox_process where id = ${cancelled})`;
+    await db()`update job set state = 'completed' where id = ${later}`;
+    await processes.sweep(providers, AbortSignal.timeout(10_000));
+    const rows = await db()`select id, state, end_reason from sandbox_process`;
+    const state = new Map(rows.map((row) => [row.id, [row.state, row.end_reason]]));
+    expect(state.get(cancelled)).toEqual([
+      'stopped',
+      'the job that started it was cancelled or deleted',
+    ]);
+    expect(state.get(completed)).toEqual(['running', null]);
+  }, 60_000);
+
+  test("revoking the computer's connection closes its processes' rows", async () => {
+    const { run, detail, processes, providers, scope } = await setup();
+    const id = String(detail(await run('process.start', { command: 'serve' })).process_id);
+    await db()`update connection set status = 'revoked' where id = ${scope.connectionId}`;
+    await processes.sweep(providers, AbortSignal.timeout(10_000));
+    const [row] = await db()`select state, end_reason from sandbox_process where id = ${id}`;
+    expect(row).toMatchObject({
+      state: 'stopped',
+      end_reason: "the computer's connection was revoked or removed",
+    });
+  }, 60_000);
+
+  test('text written to a process reaches it, and a later time limit is held to the longest', async () => {
+    const { run, detail, computers } = await setup();
+    const id = String(
+      detail(await run('process.start', { command: 'cat', ttl_minutes: 5 })).process_id,
+    );
+    // Admitted text is trimmed, so the line end is added after it.
+    const written = detail(await run('process.write', { process_id: id, text: 'hello' }));
+    expect(written).toMatchObject({ written_bytes: 6, complete: true });
+    detail(await run('process.write', { process_id: id, text: 'no end', newline: false }));
+    expect(computers.all()[0]?.input).toBe('hello\nno end');
+    const extended = detail(await run('process.extend', { process_id: id, ttl_minutes: 720 }));
+    const [row] = await db()`select expires_at, coalesce(started_at, created_at) as began
+      from sandbox_process where id = ${id}`;
+    const span = new Date(row?.expires_at).getTime() - new Date(row?.began).getTime();
+    expect(span).toBeLessThanOrEqual(720 * 60_000 + 1000);
+    expect(span).toBeGreaterThan(700 * 60_000);
+    expect(extended.expires_at).toBe(new Date(row?.expires_at).toISOString());
+  }, 60_000);
+
+  test('a malformed start opens no computer', async () => {
+    const { run, provider, computers } = await setup();
+    const bad = await run('process.start', { command: 'x', cwd: '../../etc' });
+    expect(bad.result).toMatchObject({ outcome: 'failed', retryable: false });
+    expect(provider.calls.create).toBe(0);
+    expect(computers.calls).toEqual([]);
+  }, 60_000);
+
+  test('a copy of a process read before it was stopped never reopens it', async () => {
+    const { run, detail, processes, computers } = await setup();
+    const id = String(detail(await run('process.start', { command: 'serve' })).process_id);
+    // The sweep reads the row while it runs, and asks the computer.
+    const stale = await processes.get(id);
+    const sandbox = [...computers.processes.keys()][0] as string;
+    const facts = await computers
+      .computerFor(null as never, { providerSandboxId: sandbox, imageDigest: null, region: null })
+      .status([id], AbortSignal.timeout(5_000));
+    // Meanwhile a stop closes it.
+    detail(await run('process.stop', { process_id: id }));
+    if (!stale || !facts.processes[0]) throw new Error('expected a row and facts');
+    const after = await processes.apply(
+      stale,
+      { ...facts.processes[0], state: 'running' },
+      facts.boot,
+    );
+    expect(after).toMatchObject({ state: 'stopped', endReason: 'it was stopped' });
+    expect(after.endedAt).not.toBeNull();
+    const [row] =
+      await db()`select state, end_reason, ended_at from sandbox_process where id = ${id}`;
+    expect(row).toMatchObject({ state: 'stopped', end_reason: 'it was stopped' });
+    expect(row?.ended_at).not.toBeNull();
+  }, 60_000);
+
+  test('a start whose action is still being sent is not taken for lost, however long it takes', async () => {
+    const { run, detail, processes, scope, computers, firstAttempt } = await setup();
+    detail(await run('process.start', { command: 'first' }));
+    // A second start, admitted long ago, whose directory the computer has not made yet.
+    const action = `act_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
+    await db()`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+        canonical_payload, payload_hash, idempotency_key, status)
+      values (${action}, ${scope.jobId}, ${firstAttempt}, ${scope.connectionId}, 'process.start',
+        'write_reversible', '{}'::jsonb, 'hash', ${action}, 'dispatched')`;
+    const id = 'prc_SLOWSTART0001';
+    await db()`insert into sandbox_process (id, space_id, agent_id, connection_id, action_id,
+        command_redacted, command_digest, cwd, name, state, expires_at, created_at)
+      values (${id}, ${scope.spaceId}, ${scope.agentId}, ${scope.connectionId}, ${action},
+        'slow', 'd', '.', 'slow', 'starting', now() + interval '1 hour', now() - interval '10 minutes')`;
+    const sandbox = [...computers.processes.keys()][0] as string;
+    const computer = computers.computerFor(null as never, {
+      providerSandboxId: sandbox,
+      imageDigest: null,
+      region: null,
+    });
+    await processes.reconcile(scope.spaceId, scope.agentId, computer, AbortSignal.timeout(5_000));
+    expect((await processes.get(id))?.state).toBe('starting');
+    // Once its dispatch has settled, a start that never reached the computer is lost.
+    await db()`update action set status = 'failed' where id = ${action}`;
+    await processes.reconcile(scope.spaceId, scope.agentId, computer, AbortSignal.timeout(5_000));
+    expect((await processes.get(id))?.state).toBe('lost');
+  }, 60_000);
+
+  test('a signal to a process that has ended is refused, and nothing is sent', async () => {
+    const { run, detail, computers } = await setup();
+    const id = String(detail(await run('process.start', { command: 'serve' })).process_id);
+    detail(await run('process.stop', { process_id: id }));
+    const before = computers.calls.length;
+    const signalled = await run('process.signal', { process_id: id, signal: 'TERM' });
+    expect(signalled.result).toMatchObject({ outcome: 'failed', retryable: false });
+    expect(computers.calls.slice(before).filter((call) => call.startsWith('signal'))).toEqual([]);
+  }, 60_000);
+
+  test('a computer that does not answer still has its expired processes closed, without waiting on it', async () => {
+    const { run, detail, processes, providers, computers } = await setup();
+    const id = String(detail(await run('process.start', { command: 'serve' })).process_id);
+    await db()`update sandbox_process set expires_at = now() - interval '1 second' where id = ${id}`;
+    const answering = computers.computerFor;
+    computers.computerFor = (provider, handle) => ({
+      ...answering(provider, handle),
+      status: async () => {
+        throw new ProcessHelperLost('the computer took too long to answer');
+      },
+      // A computer that did not answer would keep a stop waiting for its whole budget.
+      stop: (_id, _grace, signal) =>
+        new Promise((_resolve, reject) =>
+          signal.addEventListener('abort', () => reject(new Error('no answer'))),
+        ),
+    });
+    const began = Date.now();
+    const swept = await processes.sweep(providers, AbortSignal.timeout(10_000));
+    expect(Date.now() - began).toBeLessThan(10_000);
+    expect(swept.ended).toEqual([id]);
+    expect((await processes.get(id))?.state).toBe('expired');
+  }, 60_000);
+});

@@ -61,6 +61,13 @@ export const CONVERSATION_BUDGET: JobBudget = {
   max_actions: 100,
 };
 
+/**
+ * The wall time of a job whose agent has a computer with background
+ * processes: one two-minute command with its workspace margins, then reading
+ * or stopping a process, does not fit in the default.
+ */
+export const PROCESS_JOB_WALL_MS = 10 * 60_000;
+
 const BUDGET_FIELDS = Object.keys(DEFAULT_BUDGET) as (keyof JobBudget)[];
 
 /** A conversation that still carries the job default, from before it had its own. */
@@ -213,8 +220,22 @@ export class JobService {
       .where(eq(space.id, value.space_id));
     if (!parent) throw new ServiceError('not_found', 'Space not found.', 404);
     const access = await spaceAuthority(tx, value.space_id, requestPrincipal(), true);
+    const base = experience?.kind === 'chat' ? CONVERSATION_BUDGET : DEFAULT_BUDGET;
+    // A job offered background processes gets the wall time to use them,
+    // unless its creator named one.
+    const processes =
+      experience?.agentId &&
+      value.budget?.max_wall_ms === undefined &&
+      base.max_wall_ms < PROCESS_JOB_WALL_MS &&
+      (
+        await tx.execute(
+          sql`select 1 from connection where space_id = ${value.space_id}
+            and provider = 'sandbox' and status = 'active' and scopes ? 'process.start' limit 1`,
+        )
+      ).length > 0;
     const budget = jobBudget.parse({
-      ...(experience?.kind === 'chat' ? CONVERSATION_BUDGET : DEFAULT_BUDGET),
+      ...base,
+      ...(processes ? { max_wall_ms: PROCESS_JOB_WALL_MS } : {}),
       ...value.budget,
     });
     const impossible = impossibleBudget(budget);

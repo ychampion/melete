@@ -16,6 +16,7 @@ import {
   rewindPreview,
   rewindTarget,
 } from './beliefs.ts';
+import { PROCESS_STATES } from './execution.ts';
 import { memoryKey } from './memory.ts';
 import { privacyOperations } from './privacy.ts';
 import { messageId } from './reactions.ts';
@@ -1080,10 +1081,27 @@ export const computerBrowser = z.strictObject({
   seen_at: date.nullable(),
 });
 export type ComputerBrowser = z.infer<typeof computerBrowser>;
-/** What a conversation's agent is doing on its computer: its browser and its terminal. */
+/** How many processes a conversation's computer view carries: the live ones, then the latest ended. */
+export const COMPUTER_PROCESS_LIMIT = 8;
+/** One background process in the agent's computer, as the person may see it. */
+export const computerProcess = z.strictObject({
+  id,
+  name: z.string().max(120),
+  state: z.enum(PROCESS_STATES),
+  started_at: date,
+  /** The port the process said it serves, when it is a server. */
+  port: z.number().int().min(1).max(65_535).nullable(),
+  /** The last line it printed, scrubbed and clipped. */
+  last_line: z.string().max(240).nullable(),
+  /** Whether a preview of its port can be opened from here. */
+  can_preview: z.boolean(),
+});
+export type ComputerProcess = z.infer<typeof computerProcess>;
+/** What a conversation's agent is doing on its computer: its browser, its terminal and its processes. */
 export const agentComputer = z.strictObject({
   browser: computerBrowser.nullable(),
   terminal: z.array(computerCommand).max(COMPUTER_TERMINAL_LIMIT),
+  processes: z.array(computerProcess).max(COMPUTER_PROCESS_LIMIT).default([]),
   /** Which parts this service can run at all, so an empty view can say what to connect. */
   available: z.strictObject({ browser: z.boolean(), terminal: z.boolean() }),
 });

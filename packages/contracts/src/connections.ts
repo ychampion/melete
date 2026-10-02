@@ -239,6 +239,13 @@ export const CONNECTION_KIND_SCOPES = {
     'computer.type',
     'computer.key',
     'computer.scroll',
+    'process.start',
+    'process.list',
+    'process.read',
+    'process.write',
+    'process.signal',
+    'process.stop',
+    'process.extend',
   ],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
@@ -1174,6 +1181,23 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         scope,
         label,
         effect_class: 'write_reversible' as const,
+        asks_first: false,
+        default: true,
+      })),
+      ...(
+        [
+          ['process.start', 'Start long-running work in the sandbox', 'write_reversible'],
+          ['process.list', 'See the work running in the sandbox', 'read'],
+          ['process.read', 'Read what that work printed', 'read'],
+          ['process.write', 'Type into that work', 'write_reversible'],
+          ['process.signal', 'Send a signal to that work', 'write_reversible'],
+          ['process.stop', 'Stop that work', 'write_reversible'],
+          ['process.extend', 'Give that work more time', 'write_reversible'],
+        ] as const
+      ).map(([scope, label, effect_class]) => ({
+        scope,
+        label,
+        effect_class,
         asks_first: false,
         default: true,
       })),

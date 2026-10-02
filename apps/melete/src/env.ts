@@ -5,7 +5,7 @@
  */
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EXEC_LIMITS } from '@melete/contracts';
+import { EXEC_LIMITS, PROCESS_LIMITS } from '@melete/contracts';
 import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete/runtime-hermes';
 import { z } from 'zod';
 
@@ -451,6 +451,38 @@ const variables = z.object({
   MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION: unsetWhenBlank(
     z.coerce.number().int().positive().optional(),
   ),
+  /** How many background processes one agent's computer may run at once. */
+  MELETE_PROCESS_MAX_PER_COMPUTER: unsetWhenBlank(
+    z.coerce.number().int().positive().default(PROCESS_LIMITS.max_per_computer),
+  ),
+  /** How many background processes one space may run at once, over all its computers. */
+  MELETE_PROCESS_MAX_PER_SPACE: unsetWhenBlank(
+    z.coerce.number().int().positive().default(PROCESS_LIMITS.max_per_space),
+  ),
+  /** How long a background process runs when it is given no time limit. */
+  MELETE_PROCESS_DEFAULT_TTL_MINUTES: unsetWhenBlank(
+    z.coerce.number().int().positive().default(PROCESS_LIMITS.default_ttl_minutes),
+  ),
+  /** The longest time limit a background process may have. */
+  MELETE_PROCESS_MAX_TTL_MINUTES: unsetWhenBlank(
+    z.coerce.number().int().positive().default(PROCESS_LIMITS.max_ttl_minutes),
+  ),
+  /** The output a process keeps inside the computer, as a ring of two halves. */
+  MELETE_PROCESS_OUTPUT_MAX_BYTES: unsetWhenBlank(
+    z.coerce
+      .number()
+      .int()
+      .min(64 * 1024)
+      .default(PROCESS_LIMITS.output_max_bytes),
+  ),
+  /**
+   * How long a space's background processes may keep its computers running
+   * in one day (UTC). Past it they are stopped and new ones refused until
+   * the next day.
+   */
+  MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY: unsetWhenBlank(
+    z.coerce.number().int().positive().default(PROCESS_LIMITS.awake_seconds_per_day),
+  ),
   /** How long a suspended workspace is kept while nobody resumes it. */
   MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS: unsetWhenBlank(
     z.coerce
@@ -581,6 +613,12 @@ export const envSchema = variables.transform((value, context) => {
       code: 'custom',
       path: ['MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS'],
       message: `a workspace snapshot must outlast the retention period: ${value.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS}s is shorter than MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS=${value.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS}s`,
+    });
+  if (value.MELETE_PROCESS_DEFAULT_TTL_MINUTES > value.MELETE_PROCESS_MAX_TTL_MINUTES)
+    context.addIssue({
+      code: 'custom',
+      path: ['MELETE_PROCESS_DEFAULT_TTL_MINUTES'],
+      message: `a process's default time limit cannot exceed the longest one: ${value.MELETE_PROCESS_DEFAULT_TTL_MINUTES} is more than MELETE_PROCESS_MAX_TTL_MINUTES=${value.MELETE_PROCESS_MAX_TTL_MINUTES}`,
     });
   if (Boolean(value.MICROSOFT_OAUTH_CLIENT_ID) !== Boolean(value.MICROSOFT_OAUTH_CLIENT_SECRET))
     context.addIssue({

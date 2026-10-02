@@ -8,7 +8,11 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { connectionKindListResponse, connectionResponse } from '@melete/contracts';
+import {
+  CONNECTION_KIND_SCOPES,
+  connectionKindListResponse,
+  connectionResponse,
+} from '@melete/contracts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import {
@@ -369,7 +373,10 @@ withDb('the sandbox connection kind', () => {
     const created = await h.install(body());
     expect(created.status).toBe(201);
     const installed = connectionResponse.parse(created.json).connection;
-    expect(installed.scopes).toEqual(['terminal.run']);
+    // The terminal and background processes; an adapter without a desktop has no computer tools.
+    expect(installed.scopes).toEqual(
+      CONNECTION_KIND_SCOPES.sandbox.filter((scope) => !scope.startsWith('computer.')),
+    );
 
     const offered = await h.offered();
     expect(offered.bundle).toContain('terminal.run');

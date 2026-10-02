@@ -155,7 +155,8 @@ you hand the computer back; sign in only where you would let it act.
 A container nobody has used for `MELETE_SANDBOX_DOCKER_IDLE_SECONDS` (15 minutes
 by default) is stopped. The next command, file operation, desktop action or
 live view starts it again. Files on its volumes persist; running processes and
-the open browser do not. Watching the desktop counts as use.
+the open browser do not. Watching the desktop counts as use, and so does a
+background process that is still running (see "Long-running work" below).
 
 Each command's record (its output and exit status) is kept under
 `/home/agent/.melete/exec`, on the home volume, so a command whose answer was
@@ -169,6 +170,9 @@ A suspended workspace nobody resumes is removed after
 - **Shell.** The engine's terminal runs every command in the container, one
   brokered action each, with a timeout of up to 120 seconds, the first 16 KiB of
   output in the conversation and up to 1 MiB stored with the job.
+- **Background processes.** `process.start`, `process.list`, `process.read`,
+  `process.write`, `process.signal`, `process.stop` and `process.extend`, for
+  work longer than a command (see "Long-running work" below).
 - **Files.** The file tools write the job's workspace, which the container
   sees as `/work`.
 - **Computer.** `computer.screenshot` captures the desktop and stores the PNG
@@ -190,6 +194,49 @@ download into a shell, and the like). Nothing runs and there is no approval to
 give. The conversation shows a short note that a command was blocked, and the
 agent is told plainly that it was refused by a safety rule, so it does not ask
 you to approve it.
+
+## Long-running work
+
+A shell command ends within two minutes. A test suite, a build or a dev server
+runs as a background process instead: the agent starts it with
+`process.start`, the turn ends, and the process keeps running in the
+container. A later conversation with the same agent finds it with
+`process.list`, reads its output with `process.read`, types into it with
+`process.write`, and ends it with `process.signal` or `process.stop` (TERM,
+then KILL ten seconds later). `process.extend` gives it more time. Each of
+these is one brokered action with a receipt, like a command, and a start runs
+once: starting the same command again starts a second process.
+
+A process belongs to the agent's computer, not to the conversation that
+started it, so every conversation with that agent can see and stop it. Another
+agent's conversations cannot. A process keeps running when the job that
+started it finishes, and is stopped when that job is cancelled or deleted.
+
+`melete-proc`, in the sandbox image, keeps each process under
+`/home/agent/.melete/proc`: its output in a ring of two files that together
+hold `MELETE_PROCESS_OUTPUT_MAX_BYTES` (8 MiB by default), so a chatty process
+never fills the disk, a pipe for its input and its exit status. Each read the
+agent makes is also kept in the job's workspace under `.melete/proc/` with its
+digest on the receipt. A computer whose image has no `melete-proc` is sent it
+on first use; it needs `python3`.
+
+Limits, each set in the service's environment:
+
+| Setting | Default | What it bounds |
+|---|---|---|
+| `MELETE_PROCESS_MAX_PER_COMPUTER` | 4 | processes one agent's computer runs at once |
+| `MELETE_PROCESS_MAX_PER_SPACE` | 8 | processes one space runs at once, over its computers |
+| `MELETE_PROCESS_DEFAULT_TTL_MINUTES` | 120 | a process's time limit when none is given |
+| `MELETE_PROCESS_MAX_TTL_MINUTES` | 720 | the longest time limit, at start or extended |
+| `MELETE_PROCESS_OUTPUT_MAX_BYTES` | 8388608 | the output ring of one process |
+| `MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY` | 21600 | how long a space's processes may keep its computers running each day (UTC) |
+
+Every minute the service checks each computer with running processes. It
+stops a process past its time limit, stops a space's processes once the day's
+allowance is used, and records a process as lost when its container restarted,
+since a restart ends every process in it. A start over a limit is refused with
+the reason, which the agent passes on: "This computer is already running 4
+processes. Stop one first."
 
 ## Watching and taking over
 
