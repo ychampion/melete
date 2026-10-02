@@ -67,6 +67,7 @@ import { PrivateTopic } from './PrivateTopic.tsx';
 import { Protected } from './Protected.tsx';
 import {
   ActionBar,
+  isRead,
   ownComputerStep,
   PermissionCard,
   Questionnaire,
@@ -583,7 +584,7 @@ export function ChatScreen({ id }: { id: string | null }) {
       // Resting at unknown, or settled by a person: the ledger keeps that decision.
       const shown = result.data.actions
         // A step on the agent's own computer is the agent's to check, never the person's.
-        .filter((action) => !ownComputerStep(action))
+        .filter((action) => !ownComputerStep(action) && !isRead(action))
         .filter(
           (action) =>
             action.status === 'unknown' ||

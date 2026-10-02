@@ -402,6 +402,33 @@ withDb('renaming and deleting chats and plans, and removing people', () => {
     );
   });
 
+  test('a read never holds a deletion up, whatever state it was left in', async () => {
+    const db = required(handle).db;
+    const { chat, claims } = await runningChat('Screenshot description');
+    const connectionId = newId('conn');
+    await db
+      .insert(connection)
+      .values({ id: connectionId, spaceId, label: 'Files', provider: 'files' });
+    for (const status of ['unknown', 'unresolved', 'dispatched'] as const) {
+      const actionId = newId('act');
+      await db.insert(action).values({
+        id: actionId,
+        jobId: chat.id,
+        attemptId: claims.attempt_id,
+        connectionId,
+        kind: 'files.read',
+        effectClass: 'read',
+        canonicalPayload: { path: `device/screenshot-${status}.png` },
+        payloadHash: 'e'.repeat(64),
+        idempotencyKey: actionId,
+        status,
+        dispatchedAt: new Date(),
+      });
+    }
+    expect((await call(`/conversations/${chat.id}`, 'DELETE')).status).toBe(200);
+    expect(await listed()).not.toContain(chat.id);
+  });
+
   test('deleting a chat takes every memory record that names it, a cited output included', async () => {
     const sql = required(handle).sql;
     const chat = await makeChat('Cited by memory');

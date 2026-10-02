@@ -2299,6 +2299,27 @@ export class BrokerService implements BrokerOperations {
   async recordResult(id: string, result: DispatchResult): Promise<Action> {
     result = dispatchResult.parse(result);
     const original = await loadAction(this.sql, id);
+    // A read changed nothing outside, so its outcome is never in doubt: one that
+    // did not answer failed and can be tried again. It never asks the person.
+    if (original.effect_class === 'read' && result.outcome === 'unknown')
+      result = { outcome: 'failed', reason: result.reason, retryable: true };
+    if (original.effect_class !== 'read' || result.outcome !== 'succeeded')
+      return this.landResult(id, original, result);
+    try {
+      return await this.landResult(id, original, result);
+    } catch (error) {
+      // An answer the record cannot keep leaves the read failed rather than
+      // dispatched, where it would wait to be called unknown.
+      if (error instanceof BrokerFault) throw error;
+      return this.landResult(id, original, {
+        outcome: 'failed',
+        reason: 'the result could not be recorded',
+        retryable: false,
+      });
+    }
+  }
+
+  private async landResult(id: string, original: Action, result: DispatchResult): Promise<Action> {
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, original.job_id);
       const action = await loadAction(tx, id, true);
@@ -2637,6 +2658,18 @@ export class BrokerService implements BrokerOperations {
       await this.recordResult(row.id, result);
       recovered += 1;
     }
+    // A read left uncertain before reads always settled is settled now: it
+    // changed nothing, so it failed, and the person is no longer asked.
+    const reads = await this.sql`select id from action
+      where effect_class = 'read' and status in ('unknown', 'unresolved')`;
+    for (const row of reads) {
+      await this.recordResult(row.id as string, {
+        outcome: 'failed',
+        reason: 'This read never answered; it changed nothing and can be tried again',
+        retryable: true,
+      });
+      recovered += 1;
+    }
     return recovered;
   }
 
@@ -2655,8 +2688,8 @@ export class BrokerService implements BrokerOperations {
     let settled = 0;
     for (const row of rows) {
       if (this.inFlight.has(row.id as string)) continue;
-      // Unknown whatever its effect class: only a verify that shows it never
-      // started may call it failed.
+      // Unknown, since only a verify that shows it never started may call it
+      // failed; a read, which changed nothing, is recorded as failed instead.
       await this.recordResult(row.id as string, {
         outcome: 'unknown',
         reason: 'The tool call ended before this action reported back',

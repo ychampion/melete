@@ -5,7 +5,7 @@ import {
   libraryScheduleWords,
 } from '@melete/contracts/agent-library';
 import type { AgentTemplate } from '../experience/types.ts';
-import { kindsOfApp, searchLibrary, shelvesOf, suggests } from './agent-library.ts';
+import { kindsOfApp, missingNeeds, searchLibrary, shelvesOf, suggests } from './agent-library.ts';
 
 const agent = {
   colour: '#7A86D8',
@@ -32,6 +32,7 @@ const entry = (
   does: [`Does ${id}`],
   wont: ['Never sends without your yes'],
   works_best_with: ['mail'],
+  relies_on: [],
   starter_routine: null,
   questions: [],
   skills: [],
@@ -107,4 +108,21 @@ test('answers become statements on the purpose keys; a routine is for the new ag
   expect(libraryScheduleWords(inbox.starter_routine)).toBe('Weekdays at 9:00 AM');
   expect(libraryScheduleWords({ weekdays: [0], at: '17:00' })).toBe('Sundays at 5:00 PM');
   expect(libraryScheduleWords({ weekdays: [6, 0], at: '00:05' })).toBe('Weekends at 12:05 AM');
+});
+
+test('a connection the job rests on is missing when none it may reach provides it', () => {
+  const needs: AgentTemplate['relies_on'] = [
+    { kind: 'files', without: 'It keeps your reading list in Files.' },
+  ];
+  const connections = [
+    { id: 'conn_web', app: 'Web' },
+    { id: 'conn_files', app: 'Files' },
+  ];
+  expect(missingNeeds(needs, connections, ['conn_web'])).toEqual(needs);
+  expect(missingNeeds(needs, connections, ['conn_web', 'conn_files'])).toEqual([]);
+  // Everything ticked reaches every connection, Files included.
+  expect(missingNeeds(needs, connections, null)).toEqual([]);
+  // Nothing that provides it is connected at all.
+  expect(missingNeeds(needs, [{ id: 'conn_web', app: 'Web' }], null)).toEqual(needs);
+  expect(missingNeeds([], connections, [])).toEqual([]);
 });

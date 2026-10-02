@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import type { ExtractionProposal } from '@melete/contracts';
 import { MemoryError } from './db.ts';
-import { findQuote, readExtractionReply } from './extract.ts';
+import { findQuote, isCollectionKey, keepListItems, readExtractionReply } from './extract.ts';
 
 const span = {
   source_id: 'src_01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -176,5 +177,52 @@ describe('finding a quote', () => {
     const text = 'Back from İstanbul. My sister Maya lives in Lisbon now.';
     const found = findQuote(text, 'my sister maya lives in lisbon');
     expect(found && text.slice(found.start, found.end)).toBe('My sister Maya lives in Lisbon');
+  });
+});
+
+describe('a list the person adds to', () => {
+  const item = (url: string, op: 'add' | 'supersede' = 'add') =>
+    ({
+      ...add,
+      ...(op === 'supersede'
+        ? { op, claim_id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FAV', expected_revision: 1 }
+        : {}),
+      domain_key: 'reading_list',
+      key: 'reading_list',
+      content: `Reading list: ${url}`,
+    }) as ExtractionProposal;
+
+  test('names a whole list by its key, not a single detail', () => {
+    for (const key of ['reading_list', 'user.reading-list', 'gift_ideas', 'travel.wishlist'])
+      expect(isCollectionKey(key)).toBe(true);
+    for (const key of ['pref.coffee.order', 'person.maya.city', 'reading_list.item.cities_x1'])
+      expect(isCollectionKey(key)).toBe(false);
+  });
+
+  test('each item gets its own key, and a second item is added beside the first', () => {
+    const [first] = keepListItems([item('https://en.wikipedia.org/wiki/Container_ship')]);
+    const [second] = keepListItems([item('https://en.wikipedia.org/wiki/Suez_Canal', 'supersede')]);
+    expect(first?.op).toBe('add');
+    expect(second?.op).toBe('add');
+    expect(second && 'claim_id' in second).toBe(false);
+    expect(second && 'key' in second).toBe(false);
+    const keys = [first, second].map((proposal) =>
+      proposal && 'domain_key' in proposal ? proposal.domain_key : '',
+    );
+    expect(keys[0]).toStartWith('reading_list.en_wikipedia_org_wiki_container_ship_');
+    expect(keys[1]).toStartWith('reading_list.en_wikipedia_org_wiki_suez_canal_');
+    // The same item said twice lands on the same key, so it is not kept twice.
+    const [again] = keepListItems([item('https://en.wikipedia.org/wiki/Container_ship')]);
+    expect(again && 'domain_key' in again ? again.domain_key : '').toBe(keys[0] ?? '');
+  });
+
+  test('a correction of one item, and anything that is not a list, is left as it is', () => {
+    const correction = {
+      ...item('https://example.com/b', 'supersede'),
+      domain_key: 'reading_list.example_com_a_1a2b3c',
+    } as ExtractionProposal;
+    expect(keepListItems([correction])).toEqual([correction]);
+    const plain = add as ExtractionProposal;
+    expect(keepListItems([plain])).toEqual([plain]);
   });
 });

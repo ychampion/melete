@@ -307,7 +307,7 @@ export function useConversation(id: string | null): ConversationState {
                 setConversation((current) =>
                   current ? { ...current, status, composer } : current,
                 );
-                if (FINISHED_STATUSES.includes(status)) readAnswers();
+                if (FINISHED_STATUSES.includes(status) || status === 'needs_you') readAnswers();
               });
             }
             return next;

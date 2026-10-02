@@ -6,7 +6,13 @@ import {
   type ToolCall,
 } from '@melete/contracts';
 import type { Query } from '../broker/records.ts';
-import { type ActionRow, BACKEND_VOCABULARY, projectActionGroup } from './projectors.ts';
+import {
+  type ActionRow,
+  actionLabel,
+  BACKEND_VOCABULARY,
+  projectActionGroup,
+  projectReceipt,
+} from './projectors.ts';
 import {
   actionCall,
   appendMemoryTool,
@@ -100,6 +106,39 @@ describe('broker actions', () => {
       detail: { type: 'receipt', id: send.id },
     });
     for (const call of [running, waiting, sent]) expectSafe(call);
+  });
+
+  test('an open on its computer says Opened only when the window moved to the address', () => {
+    const computer = { id: 'conn_1', label: 'Its computer', provider: 'sandbox' };
+    const open = (navigated?: boolean) =>
+      row('computer.open', {
+        effectClass: 'write_reversible',
+        status: 'succeeded',
+        resolvedAt: later,
+        canonicalPayload: { step: 1, url: 'https://picsum.photos/seed/a/900/600' },
+        receipt: {
+          detail: {
+            computer: 'open',
+            window: 'Example Domain - Chromium',
+            ...(navigated === undefined ? {} : { navigated }),
+          },
+        },
+      });
+    const titleOf = (action: ActionRow) =>
+      actionCall({ action, connection: computer, raw: 'succeeded', at: later }).title;
+    expect(titleOf(open(true))).toBe('Opened picsum.photos/seed/a/900/600 in its computer');
+    // A receipt from before the check keeps its old words.
+    expect(titleOf(open())).toBe('Opened picsum.photos/seed/a/900/600 in its computer');
+    expect(titleOf(open(false))).toBe(
+      'Tried to open picsum.photos/seed/a/900/600 in its computer; the window did not change',
+    );
+    expect(actionLabel(open(false))).toBe(
+      'Tried to open a page in its computer; the window did not change',
+    );
+    expect(projectReceipt(open(false), { ...computer, spaceId: 'sp_1' } as never)?.what).toBe(
+      'Tried to open a page in its computer; the window did not change',
+    );
+    expect(actionLabel(open(true))).toBe('Opened a page in its computer');
   });
 
   test('unknown, unresolved, failed and denied each say plainly what happened', () => {

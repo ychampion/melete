@@ -55,6 +55,18 @@ A person can say these in plain words:
 A request to forget is never itself kept. The first objective of a job the
 person typed themselves is read the same way as a message.
 
+A list the person adds to over time, such as a reading list or gift ideas, is
+kept one item per detail. One key holds one value at a time, so a whole list on
+one key would keep only its newest item. Each item gets its own key inside the
+list's (`reading_list.item.<name>`). A proposal that puts an item on the list's
+own key is moved to an item key as an add, so adding an item never replaces
+another; only a correction of that item does (`keepListItems` in
+[extract.ts](../apps/melete/src/memory/extract.ts)). An agent that keeps a list
+for the person keeps it in a file when it can reach Files, reading the file and
+writing it back with the new item added. Memory remembering what the person
+said is not the agent saving it, and an agent says it saved something only when
+a tool call did it.
+
 Each change is shown in the conversation as a tool entry ("Remembered",
 "Updated", "Forgot"). It is written as a
 `notice` with payload kind `memory_tool` and operation `write`, `correct` or

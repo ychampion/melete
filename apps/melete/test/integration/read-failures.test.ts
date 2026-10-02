@@ -6,7 +6,7 @@
  * the same untyped way still rests unknown; `repair.test.ts` holds that.)
  */
 import { afterAll, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { ConnectorManifest } from '@melete/contracts';
@@ -14,6 +14,7 @@ import { BrokerService } from '../../src/broker/service.ts';
 import { createFilesConnector } from '../../src/connectors/files.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
+import { newId } from '../../src/ids.ts';
 import { seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -21,6 +22,8 @@ const fixture = await testDatabase();
 const databaseTest = fixture ? test : test.skip;
 const SLOW = 30_000;
 const roots: string[] = [];
+/** Files a test puts in its job's workspace once the job exists. */
+const pictures: ((jobId: string) => Promise<void>)[] = [];
 
 afterAll(async () => {
   for (const root of roots) await rm(root, { recursive: true, force: true });
@@ -146,6 +149,64 @@ databaseTest(
     expect(result.status).toBe('failed');
     expect(result.message).toContain('upstream answered HTTP 503 for <path>');
     expect(result.message).not.toContain('/var/lib');
+    expect(await standing(ctx.sql, ctx.claims.job_id)).toEqual({ state: 'running', questions: 0 });
+  },
+  SLOW,
+);
+
+databaseTest(
+  'reading a picture fails plainly with its reason, and the read is settled at once',
+  async () => {
+    const ctx = await setup(['files.read'], 'files', (roots) => {
+      // A PNG as a paired computer's screenshot leaves it: NUL bytes and all.
+      const png = Buffer.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0xff,
+      ]);
+      pictures.push(async (jobId: string) => {
+        await mkdir(path.join(roots.workRoot, jobId, 'device'), { recursive: true });
+        await writeFile(path.join(roots.workRoot, jobId, 'device', 'screenshot-1.png'), png);
+      });
+      return createFilesConnector(roots);
+    });
+    for (const write of pictures.splice(0)) await write(ctx.claims.job_id);
+    const read = await ctx.broker.propose(ctx.claims, {
+      kind: 'files.read',
+      connection_id: ctx.connectionId,
+      payload: { path: 'device/screenshot-1.png' },
+    });
+    expect(read.status).toBe('failed');
+    expect(read.message).toContain('is a picture; files.read reads UTF-8 text only');
+    expect(await standing(ctx.sql, ctx.claims.job_id)).toEqual({ state: 'running', questions: 0 });
+    const actions = await ctx.sql`select status from action where job_id = ${ctx.claims.job_id}`;
+    expect(actions.map((row) => row.status)).toEqual(['failed']);
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a read left without an answer is failed, never unknown, and nobody is asked about it',
+  async () => {
+    const ctx = await setup(['test.lookup'], 'test', () => failingLookup('unused'));
+    const insert = async (status: 'dispatched' | 'unknown') => {
+      const id = newId('act');
+      await ctx.sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+          canonical_payload, payload_hash, idempotency_key, status, dispatched_at)
+        values (${id}, ${ctx.claims.job_id}, ${ctx.claims.attempt_id}, ${ctx.connectionId},
+          'test.lookup', 'read', '{}'::jsonb, ${'d'.repeat(64)}, ${id}, ${status}, now())`;
+      return id;
+    };
+    // The tool call ended before the read reported back.
+    const abandoned = await insert('dispatched');
+    expect(await ctx.broker.settleAbandoned(ctx.claims.attempt_id)).toBe(1);
+    // A read that an earlier version left unknown is settled by recovery.
+    const stuck = await insert('unknown');
+    await ctx.broker.recoverDispatched();
+    const rows = await ctx.sql`select id, status, reconciliation from action
+      where id = any(${[abandoned, stuck]}) order by id`;
+    for (const row of rows) {
+      expect(row.status).toBe('failed');
+      expect((row.reconciliation as { retryable: boolean }).retryable).toBe(true);
+    }
     expect(await standing(ctx.sql, ctx.claims.job_id)).toEqual({ state: 'running', questions: 0 });
   },
   SLOW,

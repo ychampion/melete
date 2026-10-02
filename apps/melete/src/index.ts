@@ -70,6 +70,7 @@ import { mountDevices } from './devices/routes.ts';
 import { DeviceService } from './devices/service.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
+import { removeDeletedRoutineThreads } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
 import type { FeedbackLimiter } from './feedback/rate-limit.ts';
 import { mountFeedback } from './feedback/routes.ts';
@@ -998,6 +999,14 @@ export async function bootstrap(
         await operations.start();
         await triggers.start();
         await runner.start();
+        // Threads that deleted routines left behind before deleting a routine
+        // took its thread go now, in the background.
+        if (handle && jobs) {
+          const removing = { jobs, sql: handle.sql, runner };
+          void removeDeletedRoutineThreads(removing).catch(() => {
+            process.stderr.write('removing the threads of deleted routines failed\n');
+          });
+        }
         // A chase spends most of its life waiting on a reply, and the wait it
         // holds is an event wait on a `mail.new` trigger. Without something
         // putting that event there, only the deadline ever wakes the job, and a

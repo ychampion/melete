@@ -156,3 +156,26 @@ test('a turn run again replaces the lost attempt’s partial answer instead of a
   const turn = applyEvents(live, events).turns[0] as TranscriptTurn;
   expect(answerOf(turn)).toBe('Dutch traders brought tea to Europe in the early 1600s.');
 });
+
+test('a turn that stops to wait on the person shows its saved answer, not a stream cut mid-sentence', () => {
+  seq = 600;
+  // The page started listening part way through: the stream it saw begins
+  // with the last word of a sentence written before a tool call.
+  const live = fromTurns([{ ...turnOf(''), id: 'turn_2', status: 'working' }], 'pause', 'working');
+  const ran = applyEvents(live, [
+    delta('now.'),
+    delta('\n\nI took the screenshot of your laptop.'),
+    status('needs_you'),
+  ]);
+  expect(answerOf(ran.turns[0] as TranscriptTurn)).toStartWith('now.');
+  // Read once it waits, the saved copy is the whole of what it said.
+  const saved = 'I took the screenshot of your laptop.';
+  const read = fillAnswers(ran, [{ ...turnOf(saved, 'needs_you'), id: 'turn_2' }]);
+  expect(answerOf(read.turns[0] as TranscriptTurn)).toBe(saved);
+  // What it says once it carries on is added after it.
+  const resumed = applyEvents(read, [status('working'), delta('\n\nIt shows a circle.')]);
+  expect(answerOf(resumed.turns[0] as TranscriptTurn)).toBe(`${saved}\n\nIt shows a circle.`);
+  // A saved copy read after it moved on does not replace what streamed since.
+  const late = fillAnswers(resumed, [{ ...turnOf(saved, 'needs_you'), id: 'turn_2' }]);
+  expect(answerOf(late.turns[0] as TranscriptTurn)).toBe(`${saved}\n\nIt shows a circle.`);
+});

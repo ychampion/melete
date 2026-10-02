@@ -14,6 +14,7 @@ import { eq } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
 import { owner, space, trigger } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
+import { removeDeletedRoutineThreads } from '../../src/experience/removal.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { buildAttemptSkeleton } from '../../src/jobs/bundle.ts';
@@ -357,15 +358,77 @@ withDb('routines, time zone and setup as the person sees them', () => {
       'routine_ended',
     );
 
-    // Deleting stops it for good and takes it off the list.
+    // Deleting stops it for good, takes it off the list and takes its thread.
     const deleted = await request(`/automations/${routine.id}`, 'DELETE');
     expect(deleted.status).toBe(200);
     expect(await deleted.json()).toEqual({ status: 'ok' });
     expect(await listed(routine.id)).toBeUndefined();
     expect(await scheduled(routine.id)).toBe(false);
-    expect((await required(jobs).get(routine.conversation_id)).state).toBe('cancelled');
+    expect((await request(`/conversations/${routine.conversation_id}`)).status).toBe(404);
+    const [left] = await required(handle)
+      .sql`select count(*)::int as count from job where id = ${routine.conversation_id}`;
+    expect(left?.count).toBe(0);
     expect((await request(`/automations/${stopped.id}`, 'DELETE')).status).toBe(200);
     expect(await listed(stopped.id)).toBeUndefined();
+    expect((await request(`/conversations/${stopped.conversation_id}`)).status).toBe(404);
+  });
+
+  test('a routine’s thread goes with the routine, and one left behind can be deleted', async () => {
+    const sql = required(handle).sql;
+    const persona = agentResponse.parse(
+      await (await request('/agents', 'POST', freshAgent())).json(),
+    ).agent;
+    const create = async (title: string) =>
+      automationResponse.parse(
+        await (
+          await request('/automations', 'POST', {
+            title,
+            instruction: 'Pick this week’s reading',
+            weekdays: [6],
+            at: '09:00',
+            agent_id: persona.id,
+          })
+        ).json(),
+      ).automation;
+    const routine = await create('This week’s reading');
+    await run(routine.id, { kind: 'completed', summary: 'Three picks.', evidence: [] });
+    // While the routine is set up, its thread is deleted with the routine, not on its own.
+    const refused = await request(`/conversations/${routine.conversation_id}`, 'DELETE');
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe(
+      'routine_thread',
+    );
+    expect((await request(`/conversations/${routine.conversation_id}`)).status).toBe(200);
+
+    // Threads a deleted routine left behind, as deleting a routine once did:
+    // the job cancelled as deleted and its schedule gone.
+    const orphan = async (title: string) => {
+      const made = await create(title);
+      await required(jobs).cancel(made.conversation_id, 'routine_deleted');
+      await sql`delete from trigger where job_id = ${made.conversation_id}`;
+      return made.conversation_id;
+    };
+    const opened = await orphan('Left behind, deleted by the person');
+    expect((await request(`/conversations/${opened}`)).status).toBe(200);
+    expect((await request(`/conversations/${opened}`, 'DELETE')).status).toBe(200);
+    expect((await request(`/conversations/${opened}`)).status).toBe(404);
+
+    // The rest are removed when the service starts; an ended routine's thread
+    // kept after it was started again is not one of them.
+    const swept = await orphan('Left behind, removed at start');
+    await required(jobs).cancel(routine.conversation_id);
+    const restarted = await request(`/automations/${routine.id}/restart`, 'POST');
+    expect(restarted.status).toBe(200);
+    const removed = await removeDeletedRoutineThreads({
+      jobs: required(jobs),
+      sql,
+      runner: required(runner),
+    });
+    expect(removed).toBe(1);
+    expect((await request(`/conversations/${swept}`)).status).toBe(404);
+    expect((await request(`/conversations/${routine.conversation_id}`)).status).toBe(200);
+    const fresh = automationResponse.parse(await restarted.json()).automation;
+    expect((await request(`/automations/${fresh.id}`, 'DELETE')).status).toBe(200);
   });
 
   test('a stopped routine starts again with the same settings in the old one’s place', async () => {

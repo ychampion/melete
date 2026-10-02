@@ -119,14 +119,51 @@ def info():
     }))
 
 
+def browser_windows():
+    found = subprocess.run(["xdotool", "search", "--onlyvisible", "--class", "[Cc]hromium"],
+                           capture_output=True, text=True)
+    return found.stdout.split() if found.returncode == 0 else []
+
+
+# Titles a window shows before any page is in it.
+BLANK_TITLES = {"", "chromium", "new tab - chromium", "about:blank - chromium", "untitled - chromium"}
+
+
+def settled_title(before, seconds):
+    """The title of the window in front once it moved off `before`, or the last one seen."""
+    deadline = time.monotonic() + seconds
+    title = active_window()
+    while time.monotonic() < deadline:
+        title = active_window()
+        if title != before and title.lower() not in BLANK_TITLES:
+            return title
+        time.sleep(0.25)
+    return title
+
+
 def open_url(url):
     if not re.match(r"^https?://", url):
         fail("an address to open must start with http:// or https://")
-    if browser_running():
-        # A second invocation hands the address to the running browser as a new tab.
-        subprocess.Popen([BROWSER, f"--user-data-dir={PROFILE}", url],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    if browser_running() and browser_windows():
+        # The address goes into the window in front, the way a person types it:
+        # the address bar, the address, then Return. Handing it to a second
+        # browser process opened nothing when the running one did not take it.
+        before = active_window()
+        xdotool("windowactivate", "--sync", browser_windows()[-1], check=False)
+        xdotool("key", "--clearmodifiers", "ctrl+l")
+        time.sleep(0.2)
+        xdotool("type", "--delay", "4", "--", url)
+        # Delete drops any completion the address bar added after the address.
+        xdotool("key", "--clearmodifiers", "Delete", "Return")
     else:
+        before = ""
+        # A profile from a browser that is no longer running can still hold its
+        # lock, which keeps a new one from opening the address.
+        for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            try:
+                os.unlink(os.path.join(PROFILE, name))
+            except FileNotFoundError:
+                pass
         flags = [
             f"--user-data-dir={PROFILE}",
             # The container is the boundary: it already runs whatever the agent
@@ -149,18 +186,22 @@ def open_url(url):
         os.makedirs(PROFILE, exist_ok=True)
         with open("/tmp/browser.log", "ab") as log:
             subprocess.Popen([BROWSER, *flags, url], stdout=log, stderr=log, start_new_session=True)
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        found = subprocess.run(["xdotool", "search", "--onlyvisible", "--class", "[Cc]hromium"],
-                               capture_output=True, text=True)
-        if found.returncode == 0 and found.stdout.strip():
-            break
-        time.sleep(0.25)
-    else:
-        fail("the browser did not open a window")
-    # Let the page start painting before anyone looks.
-    time.sleep(2.0)
-    print(json.dumps({"opened": url, "window": active_window(), "browser": True}))
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if browser_windows():
+                break
+            time.sleep(0.25)
+        else:
+            fail("the browser did not open a window")
+    # Whether the window moved to the address is checked, not assumed: the
+    # title changes when a page, a picture or an error page takes its place.
+    title = settled_title(before, 15)
+    navigated = title != before and title.lower() not in BLANK_TITLES
+    if navigated:
+        # Let the page start painting before anyone looks.
+        time.sleep(1.5)
+        title = active_window()
+    print(json.dumps({"opened": url, "navigated": navigated, "window": title, "browser": True}))
 
 
 def number(value, low, high, what):

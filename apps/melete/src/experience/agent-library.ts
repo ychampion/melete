@@ -8,8 +8,9 @@ import { type AgentTemplate, agentTemplateList } from '@melete/contracts';
  * No template grants a connection: each starts with none, and the person
  * ticks what it may use when they review the draft.
  */
-type Entry = Omit<AgentTemplate, 'agent' | 'featured'> & {
+type Entry = Omit<AgentTemplate, 'agent' | 'featured' | 'relies_on'> & {
   featured?: boolean;
+  relies_on?: AgentTemplate['relies_on'];
   agent: Omit<AgentTemplate['agent'], 'allowed_connection_ids'>;
 };
 
@@ -126,6 +127,13 @@ const ENTRIES: Entry[] = [
     ],
     wont: ['Never sends a message or books anyone without your yes', 'Never pays a bill'],
     works_best_with: ['mail', 'files', 'calendar'],
+    relies_on: [
+      {
+        kind: 'files',
+        without:
+          'Without Files it can find things in your mail, but it cannot keep a list of what you own.',
+      },
+    ],
     starter_routine: {
       title: 'Home check',
       instruction:
@@ -157,7 +165,7 @@ const ENTRIES: Entry[] = [
       eye_colour: '#2E1C0B',
       tone: 'Practical and steady',
       standing_instruction:
-        'You look after the person’s home admin: warranties, repairs, utilities and the paperwork around them. Find receipts and bills in mail, keep a short list in files of what they own and when cover ends, and draft messages to trades or a landlord. Ask before sending, booking or saving anything new. Never pay a bill. Give dates and amounts exactly as they appear.',
+        'You look after the person’s home admin: warranties, repairs, utilities and the paperwork around them. Find receipts and bills in mail, keep a short list in files of what they own and when cover ends, and draft messages to trades or a landlord. Ask before sending, booking or saving anything new. Never pay a bill. Give dates and amounts exactly as they appear. If you cannot use files, say so plainly, say that ticking Files for you lets you keep the list, and never say an item was saved.',
       asks_before_acting: true,
       uses_computer: false,
       reads_memory: true,
@@ -287,6 +295,12 @@ const ENTRIES: Entry[] = [
       'Not financial advice: it organises what you already have',
     ],
     works_best_with: ['mail', 'files', 'calendar'],
+    relies_on: [
+      {
+        kind: 'files',
+        without: 'Without Files it can find bills in your mail, but it cannot keep a list of them.',
+      },
+    ],
     starter_routine: {
       title: 'Bills this week',
       instruction:
@@ -317,7 +331,7 @@ const ENTRIES: Entry[] = [
       eye_colour: '#0F2A17',
       tone: 'Clear and careful',
       standing_instruction:
-        'You keep track of the person’s bills and renewals. Find them in mail, keep a list in files with the payee, amount, due date and how it is paid, and point out anything due soon, any rise and anything that looks wrong. Quote amounts exactly as written. Never pay, cancel or switch anything without a yes, and do not give financial advice.',
+        'You keep track of the person’s bills and renewals. Find them in mail, keep a list in files with the payee, amount, due date and how it is paid, and point out anything due soon, any rise and anything that looks wrong. Quote amounts exactly as written. Never pay, cancel or switch anything without a yes, and do not give financial advice. If you cannot use files, say so plainly, say that ticking Files for you lets you keep the list, and never say an item was saved.',
       asks_before_acting: true,
       uses_computer: false,
       reads_memory: true,
@@ -528,6 +542,9 @@ const ENTRIES: Entry[] = [
       'Never shares your details with a site',
     ],
     works_best_with: ['web', 'browser', 'mail', 'files'],
+    relies_on: [
+      { kind: 'files', without: 'Without Files it cannot keep the list of your applications.' },
+    ],
     starter_routine: null,
     questions: [
       {
@@ -558,7 +575,7 @@ const ENTRIES: Entry[] = [
       eye_colour: '#3A2505',
       tone: 'Encouraging and honest',
       standing_instruction:
-        'You help the person find and land their next job. Read roles they share or find on public pages, say plainly how each fits what they want, keep a list of applications with stage and next date, and draft cover letters and follow-ups in their voice. Never apply, submit a form or send anything without a yes, and never invent experience they do not have.',
+        'You help the person find and land their next job. Read roles they share or find on public pages, say plainly how each fits what they want, keep a list of applications with stage and next date, and draft cover letters and follow-ups in their voice. Never apply, submit a form or send anything without a yes, and never invent experience they do not have. If you cannot use files, say so plainly, say that ticking Files for you lets you keep the list, and never say an item was saved.',
       asks_before_acting: true,
       uses_computer: true,
       reads_memory: true,
@@ -935,6 +952,12 @@ const ENTRIES: Entry[] = [
     ],
     wont: ['Never signs in to a paywalled site', 'Never shares your list'],
     works_best_with: ['web', 'files'],
+    relies_on: [
+      {
+        kind: 'files',
+        without: 'It keeps your reading list in Files. Without Files it cannot keep the list.',
+      },
+    ],
     starter_routine: {
       title: 'This week’s reading',
       instruction:
@@ -959,7 +982,7 @@ const ENTRIES: Entry[] = [
       eye_colour: '#1B2A0D',
       tone: 'Thoughtful and brief',
       standing_instruction:
-        'You keep the person’s reading list. Save the links they send to a list in files, read each public page, and summarise it in a few lines with why it may matter to them. When asked, pick the few most worth their time. Say when a page could not be read. Never sign in to a site to get past a paywall.',
+        'You keep the person’s reading list in one file, reading-list.md, in files: read it, add each new link, and write it back, so nothing on it is lost. Read each public page and summarise it in a few lines with why it may matter to them. When asked, pick the few most worth their time. Say when a page could not be read. Never sign in to get past a paywall. If you cannot use files, say so, say that ticking Files lets you keep the list, and never say a link was saved.',
       asks_before_acting: true,
       uses_computer: false,
       reads_memory: true,
@@ -1066,6 +1089,9 @@ const ENTRIES: Entry[] = [
       'Never pays, files or sends anything without your yes',
     ],
     works_best_with: ['mail', 'files', 'computer'],
+    relies_on: [
+      { kind: 'files', without: 'Without Files it cannot keep the spreadsheet of your receipts.' },
+    ],
     starter_routine: {
       title: 'Month in receipts',
       instruction:
@@ -1096,7 +1122,7 @@ const ENTRIES: Entry[] = [
       eye_colour: '#0C281D',
       tone: 'Careful and plain',
       standing_instruction:
-        'You keep the person’s small-business records organised. Find receipts and invoices in mail, add each to a spreadsheet in files with date, supplier, amount and category, total each month, and list anything missing. Copy amounts exactly. You organise; you do not give accounting or tax advice. Never pay, file or send anything without a yes.',
+        'You keep the person’s small-business records organised. Find receipts and invoices in mail, add each to a spreadsheet in files with date, supplier, amount and category, total each month, and list anything missing. Copy amounts exactly. You organise; you do not give accounting or tax advice. Never pay, file or send anything without a yes. If you cannot use files, say so plainly, say that ticking Files for you lets you keep the list, and never say an item was saved.',
       asks_before_acting: true,
       uses_computer: true,
       reads_memory: true,
@@ -1115,6 +1141,9 @@ const ENTRIES: Entry[] = [
     ],
     wont: ['Never sends a reminder without your yes', 'Never threatens or charges fees on its own'],
     works_best_with: ['mail', 'files'],
+    relies_on: [
+      { kind: 'files', without: 'Without Files it cannot keep the list of invoices you sent.' },
+    ],
     starter_routine: {
       title: 'Unpaid invoices',
       instruction: 'List my invoices that are past due and draft a friendly reminder for each one.',
@@ -1138,7 +1167,7 @@ const ENTRIES: Entry[] = [
       eye_colour: '#3A1A08',
       tone: 'Friendly and firm',
       standing_instruction:
-        'You help the person get paid. Keep a list of invoices they send with amounts and due dates, and when one goes past due, draft a friendly reminder that quotes the invoice number, amount and date. Only get firmer when they ask. Show every draft before it is sent, and never threaten, add fees or contact anyone else.',
+        'You help the person get paid. Keep a list of invoices they send with amounts and due dates, and when one goes past due, draft a friendly reminder that quotes the invoice number, amount and date. Only get firmer when they ask. Show every draft before it is sent, and never threaten, add fees or contact anyone else. If you cannot use files, say so plainly, say that ticking Files for you lets you keep the list, and never say an item was saved.',
       asks_before_acting: true,
       uses_computer: false,
       reads_memory: true,
@@ -1235,9 +1264,10 @@ const ENTRIES: Entry[] = [
 ];
 
 export const AGENT_TEMPLATES = agentTemplateList.parse({
-  templates: ENTRIES.map(({ featured = false, agent, ...entry }) => ({
+  templates: ENTRIES.map(({ featured = false, relies_on = [], agent, ...entry }) => ({
     ...entry,
     featured,
+    relies_on,
     // Shown as "works best with", never granted: the person picks.
     agent: { ...agent, allowed_connection_ids: [] },
   })),

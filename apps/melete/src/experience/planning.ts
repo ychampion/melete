@@ -597,22 +597,18 @@ export class ExperiencePlanning {
       row.trigger.id,
     );
   }
-  /** Stops the routine, a run under way included, and takes it off the list. */
-  async deleteAutomation(spaceId: string, id: string) {
+  /**
+   * Stops the routine, a run under way included, and deletes it with its
+   * thread, the way a deleted chat goes: nothing of it is left to open.
+   */
+  async deleteAutomation(spaceId: string, id: string, raw: Sql | undefined) {
     const row = await this.requireAutomation(spaceId, id);
     const jobs = this.service.jobs;
-    if (!this.triggers || !jobs) return unavailable('Scheduled routines are not connected yet.');
-    // The schedule goes first, so no occurrence can start a run behind the cancel.
-    await this.db.update(trigger).set({ enabled: false }).where(eq(trigger.jobId, row.job.id));
-    if (!isTerminal(jobState.parse(row.job.state))) {
-      try {
-        await jobs.cancel(row.job.id, 'routine_deleted');
-      } catch (error) {
-        // It ended in the meantime, which leaves nothing to stop.
-        if (!(error instanceof ServiceError) || error.code !== 'already_terminal') throw error;
-      }
-    }
-    await this.db.delete(trigger).where(eq(trigger.jobId, row.job.id));
+    if (!this.triggers || !jobs || !raw)
+      return unavailable('Scheduled routines are not connected yet.');
+    // One transaction disables the schedule, cancels the run and fences it, so
+    // no occurrence can start a run behind it; then the rows go.
+    await removeJobs({ jobs, sql: raw, runner: this.service.runner }, [row.job.id]);
     await this.triggers.syncSchedules();
     return { status: 'ok' as const };
   }
