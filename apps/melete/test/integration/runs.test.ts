@@ -384,6 +384,157 @@ withDb('long work in shifts', () => {
     expect((await row(helper.helper_id)).state).toBe('cancelled');
   });
 
+  test('a helper never waits on the person: where it would ask, it ends and its run hears why', async () => {
+    const run = await start({ goal: 'Compare three suppliers' });
+    const lead = await claim(run.id);
+    const helper = async (title: string) =>
+      (
+        (await tool(lead.claims, 'run.delegate', { task: `Price ${title}`, title })) as {
+          helper_id: string;
+        }
+      ).helper_id;
+    const asks = await helper('Supplier A');
+    const fails = await helper('Supplier B');
+    const lost = await helper('Supplier C');
+    await tool(lead.claims, 'run.checkpoint', {
+      summary: 'Asked three helpers.',
+      next: 'Compare.',
+      next_shift: 'when_helpers_finish',
+    });
+    await required(runner).commitOutcome(lead.claims, done());
+
+    // A question of its own.
+    const a = await claim(asks);
+    await required(runner).commitOutcome(a.claims, {
+      kind: 'waiting_for_input',
+      question: 'Which currency should I quote in?',
+    });
+    expect((await row(asks)).state).toBe('failed');
+    expect((await row(run.id)).state).toBe('waiting_for_event_or_time');
+
+    // Failing shifts in a row.
+    for (const attemptNumber of [1, 2, 3]) {
+      const b = await claim(fails);
+      await required(runner).commitOutcome(b.claims, {
+        kind: 'failed',
+        reason: `The price page timed out (${attemptNumber}).`,
+        retryable: true,
+      });
+    }
+    expect((await row(fails)).state).toBe('failed');
+    expect((await row(run.id)).state).toBe('waiting_for_event_or_time');
+
+    // Shifts lost in a row; the last helper's end wakes the run.
+    for (let lose = 0; lose < 3; lose++) {
+      const c = await claim(lost);
+      expect(await required(runner).loseAttempt(c.claims.attempt_id, 'lease expired')).toBe(true);
+    }
+    expect((await row(lost)).state).toBe('failed');
+    expect((await row(run.id)).state).toBe('queued');
+
+    const next = await claim(run.id);
+    expect(next.bundle.job.objective).toContain(
+      'Supplier A: failed — It stopped to ask: Which currency should I quote in?',
+    );
+    expect(next.bundle.job.objective).toContain(
+      'Supplier B: failed — It kept running into a problem: The price page timed out (3).',
+    );
+    expect(next.bundle.job.objective).toContain('Supplier C: failed');
+    // With no helper left out, the run can finish.
+    await tool(next.claims, 'run.finish', { summary: 'No supplier could be priced.' });
+    await required(runner).commitOutcome(next.claims, done());
+    expect((await view(run.id)).status).toBe('done');
+  });
+
+  test('handing off to go on now and nothing else is idle; resting on helpers is not', async () => {
+    const spinning = await start({ goal: 'Hand off and nothing else' });
+    for (let shift = 0; shift < RUN_IDLE_SHIFT_LIMIT; shift++) {
+      const next = await claim(spinning.id);
+      await tool(next.claims, 'run.checkpoint', { summary: 'Still on it.', next: 'Keep going.' });
+      await required(runner).commitOutcome(next.claims, done());
+    }
+    expect((await view(spinning.id)).status).toBe('needs_you');
+
+    const resting = await start({ goal: 'Wait on a slow helper' });
+    const lead = await claim(resting.id);
+    await tool(lead.claims, 'run.delegate', { task: 'Something slow' });
+    const wait = {
+      summary: 'Waiting for the helper.',
+      next: 'Read its result.',
+      next_shift: 'when_helpers_finish',
+    };
+    await tool(lead.claims, 'run.checkpoint', wait);
+    await required(runner).commitOutcome(lead.claims, done());
+    for (let wake = 0; wake < RUN_IDLE_SHIFT_LIMIT + 1; wake++) {
+      const next = await claim(resting.id);
+      await tool(next.claims, 'run.checkpoint', wait);
+      await required(runner).commitOutcome(next.claims, done());
+      expect((await row(resting.id)).state).toBe('waiting_for_event_or_time');
+    }
+  });
+
+  test('work that finished while paused is taken up again by a message', async () => {
+    const run = await start({ goal: 'Finish under a pause' });
+    const shift = await claim(run.id);
+    expect((await request(`/runs/${run.id}/pause`, 'POST')).status).toBe(200);
+    await tool(shift.claims, 'run.finish', { summary: 'All done.' });
+    await required(runner).commitOutcome(shift.claims, done());
+    expect((await row(run.id)).state).toBe('completed');
+    const again = await request(`/runs/${run.id}/message`, 'POST', { text: 'One more thing.' });
+    expect(again.status).toBe(200);
+    const reopened = await row(run.id);
+    expect(reopened.state).toBe('queued');
+    expect(reopened.paused).toBe(false);
+  });
+
+  test('stop also ends a helper started while it was stopping', async () => {
+    const run = await start({ goal: 'Stopped mid-delegation' });
+    const lead = await claim(run.id);
+    const service = required(jobs);
+    const cancel = service.cancel.bind(service);
+    let late = null as string | null;
+    // The shift starts a helper just as the person presses Stop.
+    service.cancel = async (id, reason) => {
+      if (id === run.id && late === null)
+        late = (
+          (await tool(lead.claims, 'run.delegate', { task: 'Late helper' })) as {
+            helper_id: string;
+          }
+        ).helper_id;
+      return cancel(id, reason);
+    };
+    try {
+      expect((await request(`/runs/${run.id}/stop`, 'POST')).status).toBe(200);
+    } finally {
+      service.cancel = cancel;
+    }
+    expect((await row(required(late))).state).toBe('cancelled');
+  });
+
+  test('pausing does not deadlock with a helper writing to the record', async () => {
+    const run = await start({ goal: 'Pause while a helper writes' });
+    const lead = await claim(run.id);
+    const helper = (
+      (await tool(lead.claims, 'run.delegate', { task: 'Write things down' })) as {
+        helper_id: string;
+      }
+    ).helper_id;
+    await tool(lead.claims, 'run.log', { kind: 'note', title: 'Started' });
+    await required(runner).commitOutcome(lead.claims, done());
+    let pausing = null as Promise<Response> | null;
+    // As a helper's own transaction does: its row first, then an entry under the run.
+    await required(handle).sql.begin(async (tx) => {
+      await tx`select id from job where id = ${helper} for update`;
+      pausing = request(`/runs/${run.id}/pause`, 'POST');
+      await Bun.sleep(500);
+      await tx`insert into run_entry (id, run_job_id, step_job_id, kind, title)
+        values (${newId('rune')}, ${run.id}, ${helper}, 'note', 'From the helper')`;
+    });
+    expect((await required(pausing)).status).toBe(200);
+    expect((await row(helper)).paused).toBe(true);
+    expect((await row(run.id)).paused).toBe(true);
+  });
+
   test('an experiment is checked against the output of the action it cites', async () => {
     const run = await start({
       goal: 'Tune the model',

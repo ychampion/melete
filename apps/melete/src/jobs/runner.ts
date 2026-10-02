@@ -1010,7 +1010,8 @@ export class AttemptRunner {
     const moved =
       row.state !== 'running'
         ? row
-        : run && remaining === 0
+        : // A helper has nobody to ask; it fails below and its run hears why.
+          run && remaining === 0 && row.kind === 'run'
           ? await this.jobs.move(
               tx,
               row,
@@ -1038,6 +1039,12 @@ export class AttemptRunner {
                 { kind: 'attempt_failed', retryable: true, attempts_remaining: remaining },
                 { attemptId, reason: 'recovery' },
               );
+    if (run && moved.kind === 'run_step' && moved.state === 'failed')
+      await run.stepEnded(tx, moved, {
+        kind: 'failed',
+        retryable: false,
+        reason: 'Its work kept getting interrupted.',
+      });
     // A conversation whose last attempt was lost has ended: its turn says so,
     // in the saved copy and on the stream, instead of looking busy for ever.
     // So has a routine's run that went back to its schedule.

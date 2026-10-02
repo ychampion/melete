@@ -35,7 +35,19 @@ import {
   runStartInput,
   runView,
 } from '@melete/contracts';
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  notInArray,
+  sql,
+} from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
@@ -494,15 +506,44 @@ export class RunService {
       .select({ n: sql<number>`count(*)::int` })
       .from(action)
       .where(eq(action.attemptId, attemptId));
-    const progressed = mine.length > 0 || Number(acted?.n ?? 0) > 0;
-    const idle = progressed ? 0 : state.idleShifts + 1;
+    // Anything recorded besides the handoff, a helper started, or an action.
+    const [wrote] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(runEntry)
+      .where(
+        and(
+          eq(runEntry.runJobId, run),
+          eq(runEntry.attemptId, attemptId),
+          ne(runEntry.kind, 'checkpoint'),
+        ),
+      );
+    const progressed = Number(wrote?.n ?? 0) > 0 || Number(acted?.n ?? 0) > 0;
+    // A shift that only handed off to a later time, or to helpers still out,
+    // is resting rather than idle; one that only handed off to go on now is idle.
+    const asked = [...mine].reverse().find((entry) => entry.kind === 'checkpoint');
+    const askedNext = asked ? String(object(asked.data).next_shift ?? 'now') : 'now';
+    const resting =
+      askedNext === 'when_helpers_finish'
+        ? !step && (await this.activeSteps(tx, row.id)) > 0
+        : askedNext !== 'now' && Date.parse(askedNext) > (await databaseNow(tx)).getTime();
+    const idle = progressed ? 0 : resting ? state.idleShifts : state.idleShifts + 1;
     await tx
       .update(runState)
       .set({ shifts, idleShifts: idle, waitingOnSteps: false })
       .where(eq(runState.jobId, row.id));
 
+    // A helper has nobody to ask: the person does not see it, and its run
+    // cannot finish while it waits. What would stop it to ask ends it instead,
+    // and its run reads why with the helper's result.
+    const ask = (question: string, why: string): AttemptOutcome =>
+      step
+        ? { kind: 'failed', retryable: false, reason: why }
+        : { kind: 'waiting_for_input', question };
+
     const finished = mine.find((entry) => entry.kind === 'finished');
     if (finished) return { kind: 'completed', summary: finished.body, evidence: [] };
+    if (step && outcome.kind === 'waiting_for_input')
+      return ask(outcome.question, `It stopped to ask: ${clip(outcome.question, 1000)}`);
     // The person or an approval is needed: that wait stands as it is.
     if (
       outcome.kind === 'waiting_for_input' ||
@@ -516,10 +557,10 @@ export class RunService {
       const remaining = await this.failuresRemaining(tx, row, RUN_SHIFT_BUDGET);
       // This shift is not ended yet, so it is not in the count above.
       if (outcome.retryable && remaining > 1) return outcome;
-      return {
-        kind: 'waiting_for_input',
-        question: `I keep running into a problem with this: ${clip(outcome.reason, 300)} Say "continue" to try again, or tell me what to change.`,
-      };
+      return ask(
+        `I keep running into a problem with this: ${clip(outcome.reason, 300)} Say "continue" to try again, or tell me what to change.`,
+        `It kept running into a problem: ${clip(outcome.reason, 1000)}`,
+      );
     }
 
     // A helper that answered without asking to go on is done.
@@ -540,10 +581,10 @@ export class RunService {
     }
 
     if (idle >= RUN_IDLE_SHIFT_LIMIT)
-      return {
-        kind: 'waiting_for_input',
-        question: `I haven't made progress in my last ${RUN_IDLE_SHIFT_LIMIT} tries at this. What should I change, or should I stop?`,
-      };
+      return ask(
+        `I haven't made progress in my last ${RUN_IDLE_SHIFT_LIMIT} tries at this. What should I change, or should I stop?`,
+        `It made no progress in ${RUN_IDLE_SHIFT_LIMIT} tries.`,
+      );
 
     const over = await this.overLimit(tx, run, state, shifts);
     if (over)
@@ -919,6 +960,16 @@ export class RunService {
   // What a person does.
 
   async stop(row: JobRow) {
+    const cancel = async (id: string) => {
+      try {
+        await this.jobs.cancel(id, 'run_stopped');
+      } catch (error) {
+        if (!(error instanceof ServiceError) || error.code !== 'already_terminal') throw error;
+      }
+    };
+    // The run first: once it is fenced it cannot start another helper, so the
+    // helpers read after it are all there are.
+    await cancel(row.id);
     const steps = await this.db
       .select({ id: job.id })
       .from(runState)
@@ -929,13 +980,7 @@ export class RunService {
           notInArray(job.state, ['completed', 'failed', 'cancelled']),
         ),
       );
-    for (const step of [row.id, ...steps.map((entry) => entry.id)]) {
-      try {
-        await this.jobs.cancel(step, 'run_stopped');
-      } catch (error) {
-        if (!(error instanceof ServiceError) || error.code !== 'already_terminal') throw error;
-      }
-    }
+    for (const step of steps) await cancel(step.id);
   }
 
   /**
@@ -943,7 +988,10 @@ export class RunService {
    * its helpers rest until resumed. Resuming starts the next shift now.
    */
   async setPaused(row: JobRow, paused: boolean) {
-    const ids = [row.id, ...(await this.jobs.transaction((tx) => this.stepIds(tx, row.id)))];
+    // Helpers are locked before their run. A helper ending, or writing to the
+    // record, holds its own row and then needs the run's row (the record's
+    // foreign key), so taking the run first could deadlock with it.
+    const ids = [...(await this.jobs.transaction((tx) => this.stepIds(tx, row.id))), row.id];
     await this.jobs.transaction(async (tx) => {
       for (const id of ids) {
         const locked = await this.jobs.lock(tx, id);
@@ -980,13 +1028,15 @@ export class RunService {
    * shift reads them at the next; a finished run takes them up again.
    */
   async message(row: JobRow, text: string) {
-    if (row.state === 'waiting_for_input') {
-      await this.jobs.input(row.id, text);
-      return;
-    }
     await this.jobs.transaction(async (tx) => {
       const locked = await this.jobs.lock(tx, row.id);
       if (!locked) throw missing();
+      // Decided under the lock: a shift that just ended with a question gets
+      // this as its answer, not as a note it never reads.
+      if (locked.state === 'waiting_for_input') {
+        await this.jobs.inputInTransaction(tx, row.id, text);
+        return;
+      }
       if (locked.state === 'cancelled')
         throw new ServiceError(
           'run_stopped',
@@ -1003,16 +1053,25 @@ export class RunService {
         },
         dedupKey: `${row.id}:input:${newId('op')}`,
       });
-      if (locked.paused) return;
-      if (locked.state === 'waiting_for_event_or_time') {
-        await tx.update(runState).set({ waitingOnSteps: false }).where(eq(runState.jobId, row.id));
-        await this.jobs.move(tx, locked, { kind: 'timer_fired' }, { reason: 'input' });
-      } else if (locked.state === 'completed' || locked.state === 'failed') {
+      if (locked.state === 'completed' || locked.state === 'failed') {
+        // Taking finished work up again also ends a pause it finished under:
+        // resume skips finished work, so nothing else would ever lift it.
         await tx
           .update(runState)
           .set({ finishedAt: null, idleShifts: 0 })
           .where(eq(runState.jobId, row.id));
-        await this.jobs.move(tx, locked, { kind: 'conversation_continued' }, { reason: 'input' });
+        if (locked.paused) await tx.update(job).set({ paused: false }).where(eq(job.id, row.id));
+        await this.jobs.move(
+          tx,
+          { ...locked, paused: false },
+          { kind: 'conversation_continued' },
+          { reason: 'input' },
+        );
+      } else if (locked.paused) {
+        return;
+      } else if (locked.state === 'waiting_for_event_or_time') {
+        await tx.update(runState).set({ waitingOnSteps: false }).where(eq(runState.jobId, row.id));
+        await this.jobs.move(tx, locked, { kind: 'timer_fired' }, { reason: 'input' });
       }
     });
   }

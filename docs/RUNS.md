@@ -22,7 +22,7 @@ no model call (`RunService.shiftEnded`):
 | asking the person, or parked on an approval | that wait stands, as for any job |
 | with `run.checkpoint` | the next shift starts now, at the time it named, or when its helpers are done |
 | without a handoff, or at its ceiling | a handoff is written for it from what it said, and the next shift starts |
-| having recorded and done nothing, three times in a row | it stops and asks what to change |
+| having done nothing but hand off to go on now, three times in a row | it stops and asks what to change |
 | failing three times in a row | it stops and asks, naming the failure, instead of ending |
 | at a limit the person set | it stops and asks before going on |
 
@@ -60,7 +60,10 @@ that was measured.
 assistant (matched by name or role), working in parallel in its own shifts,
 filing its entries under the run. A run may have six helpers working at once,
 and a helper cannot start helpers of its own. A helper that answers without
-asking to continue is done with that answer. When the last helper is done, a
+asking to continue is done with that answer. A helper never stops to ask the
+person, who does not see it: where a run would ask (a question of its own,
+repeated failures, no progress), the helper ends instead and its run reads why
+with its result. When the last helper is done, a
 run waiting on them is woken; a run that is mid-shift reads their results at
 its next shift, and a waiting run also wakes on its own after 30 minutes.
 
