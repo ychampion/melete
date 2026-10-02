@@ -217,6 +217,10 @@ export const appsManifest: ConnectorManifest = {
 };
 
 const refused = (message: string) => new BrokerFault('payload_invalid', message);
+const changedSinceApproval = () =>
+  refused(
+    'The files changed after the person approved them, so nothing was published. Publish again to ask with the files as they are now.',
+  );
 
 type BindingInput = {
   artifact?: unknown;
@@ -437,6 +441,13 @@ export function createAppsConnector(options: AppsOptions): Connector {
       const publisher = await publisherOf(tx, ctx);
       if (action.kind === 'apps.rollback' || payload.create !== true)
         await managedApp(tx, ctx, String(payload.app_id), publisher);
+      // Checked here, before anything is sent, so a folder changed since the
+      // approval refuses the publish outright rather than leaving it in doubt.
+      if (
+        action.kind === 'apps.publish' &&
+        (await bundle(ctx, payload)).hash !== payload.manifest_hash
+      )
+        throw changedSinceApproval();
     },
     async execute(action, ctx) {
       checkIdentity(action, ctx);
@@ -465,10 +476,7 @@ export function createAppsConnector(options: AppsOptions): Connector {
       }
       if (action.kind !== 'apps.publish') throw new Error('unknown apps tool');
       const { files, manifest, hash } = await bundle(ctx, payload);
-      if (hash !== payload.manifest_hash)
-        throw refused(
-          'The files changed after the person approved them, so nothing was published. Publish again to ask with the files as they are now.',
-        );
+      if (hash !== payload.manifest_hash) throw changedSinceApproval();
       const appId = String(payload.app_id);
       let published: Awaited<ReturnType<typeof publishVersion>>;
       try {

@@ -540,3 +540,62 @@ test('a saved file card opens text in the app and offers anything else as a down
     handle: 'art_01ABC',
   });
 });
+
+test('a permission to publish an app names it, its size, who can open it and the data it shows', () => {
+  const publish: ActionRow = {
+    ...base,
+    kind: 'apps.publish',
+    effectClass: 'write_external',
+    connectionId: 'apps-connection',
+    canonicalPayload: {
+      dir: 'app',
+      name: 'Deals',
+      create: true,
+      file_count: 14,
+      total_bytes: 225_280,
+      audience: { kind: 'people', emails: ['bo@example.test'], principal_ids: ['own_bo'] },
+      data: { deals: { kind: 'artifact', path: 'data/deals.json', source_job_id: 'chat' } },
+      data_shown: ['deals: data/deals.json from this conversation, newest version each time'],
+      manifest_hash: 'a'.repeat(64),
+    },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const apps = { id: 'apps-connection', label: 'Apps', provider: 'apps' };
+  const ask = (payload: Record<string, unknown>) =>
+    projectPermission({
+      id: 'apr_app',
+      version: 'v1',
+      action: {
+        ...publish,
+        canonicalPayload: { ...(publish.canonicalPayload as object), ...payload },
+      },
+      connection: apps,
+      reasons: ['This change needs your permission before it happens.'],
+      canAlways: false,
+      requestedAt: new Date('2026-09-24T08:00:00.000Z'),
+    });
+  const shown = ask({});
+  expect(shown.what).toBe('Publish Deals');
+  expect(shown.preview?.facts).toEqual([
+    { label: 'App', value: 'Deals' },
+    { label: 'Files', value: '14 files, 220 KB' },
+    { label: 'Viewers', value: 'You and bo@example.test' },
+    {
+      label: 'Data it shows',
+      value:
+        'deals: data/deals.json from this conversation, newest version each time. Viewers see each new version automatically.',
+    },
+  ]);
+  // A new version says so, and one that keeps its viewers says who they are now.
+  const again = ask({ create: false, audience: { kind: 'unchanged', now: 'only you' } });
+  expect(again.what).toBe('Publish Deals (a new version)');
+  expect(again.preview?.facts.find((fact) => fact.label === 'Viewers')?.value).toBe(
+    'Unchanged: only you',
+  );
+  expect(
+    ask({ audience: { kind: 'everyone' } }).preview?.facts.find((fact) => fact.label === 'Viewers')
+      ?.value,
+  ).toBe('Everyone with an account here');
+  expect(JSON.stringify(shown)).not.toMatch(BACKEND_VOCABULARY);
+});

@@ -6,6 +6,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { ConnectorManifest } from '@melete/contracts';
 import { loadBuiltInSkills } from '@melete/skills';
+import { appsManifest } from '../connectors/apps.ts';
 import { artifactsManifest } from '../connectors/artifacts.ts';
 import { calendarManifest } from '../connectors/calendar.ts';
 import { grantedToolCatalog } from '../connectors/catalog.ts';
@@ -26,6 +27,7 @@ const MANIFESTS: ConnectorManifest[] = [
   filesManifest,
   webManifest,
   artifactsManifest,
+  appsManifest,
   emailManifest,
   calendarManifest,
   speech.manifest,

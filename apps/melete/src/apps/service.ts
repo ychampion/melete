@@ -341,7 +341,7 @@ export async function publishVersion(
         await tx`insert into app_version (id, app_id, manifest_hash, manifest, file_count,
             total_bytes, job_id, action_id, created_by)
           values (${versionId}, ${input.appId}, ${input.manifestHash},
-            ${tx.json(input.manifest as never)}, ${input.files.length},
+            ${JSON.stringify(input.manifest)}::jsonb, ${input.files.length},
             ${manifestBytes(input.manifest)}, ${input.jobId}, ${input.actionId}, ${input.publisherId})
           on conflict (id) do nothing`;
         await referenceBlobs(tx, store, stored, { kind: APP_VERSION_OWNER, id: versionId });
