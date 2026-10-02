@@ -5,6 +5,7 @@
  * version it shows ends the views opened before it on their next request.
  */
 import { afterAll, expect, test } from 'bun:test';
+import { createHash, randomBytes } from 'node:crypto';
 import { chmod, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -22,6 +23,7 @@ import { isIsolated, isolated, VIEW_POLICY } from '../../src/viewer/headers.ts';
 import { ViewTokens } from '../../src/viewer/tokens.ts';
 import { seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
+import { installationOwner } from './space-removal-fixture.ts';
 
 const fixture = await testDatabase();
 const databaseTest = fixture ? test : test.skip;
@@ -63,6 +65,12 @@ async function published(now: () => number = Date.now) {
   });
   const write = (name: string, content: string) =>
     Bun.write(path.join(workRoot, seed.claims.job_id, 'app', name), content);
+  const propose = (payload: JsonObject) =>
+    broker.propose(seed.claims, {
+      kind: 'apps.publish',
+      connection_id: seed.connectionId,
+      payload,
+    });
   const publish = async (payload: JsonObject) => {
     const proposal = await broker.propose(seed.claims, {
       kind: 'apps.publish',
@@ -96,23 +104,40 @@ async function published(now: () => number = Date.now) {
       ? c.json({ error: { code: error.code, message: error.message } }, error.status)
       : c.json({ error: { code: 'internal_error', message: 'failed' } }, 500),
   );
+  // Each person signs in with a browser session of their own, as the service records one.
+  const owner = await installationOwner(sql);
+  const digests = new Map<string, string>();
+  for (const who of [alice, bo, cy]) {
+    const digest = createHash('sha256').update(randomBytes(32).toString('base64url')).digest('hex');
+    await sql`insert into session (token_hash, principal_id, owner_id, expires_at)
+      values (${digest}, ${who}, ${owner}, now() + interval '30 days')`;
+    digests.set(who, digest);
+  }
+  const signOut = (who: string) =>
+    sql`delete from session where token_hash = ${digests.get(who) ?? ''}`;
   service.use('*', async (c, next) => {
     const as = c.req.header('x-test-as');
     if (as) c.set('owner' as never, { id: as } as never);
+    // An assistant's bearer token names the person but carries no browser session.
+    const digest = as && !c.req.header('x-test-bearer') ? digests.get(as) : undefined;
+    if (digest) c.set('sessionDigest' as never, digest as never);
     await next();
   });
   mountApps(service, { sql });
   mountAppViews(service, { sql, blobs, tokens: new ViewTokens('k'.repeat(64), now) });
 
-  const as = (who: string) => (route: string, init?: { method?: string; body?: unknown }) =>
-    service.request(route, {
-      method: init?.method ?? 'GET',
-      headers: {
-        'x-test-as': who,
-        ...(init?.body ? { 'content-type': 'application/json' } : {}),
-      },
-      ...(init?.body ? { body: JSON.stringify(init.body) } : {}),
-    });
+  const as =
+    (who: string, bearer = false) =>
+    (route: string, init?: { method?: string; body?: unknown }) =>
+      service.request(route, {
+        method: init?.method ?? 'GET',
+        headers: {
+          'x-test-as': who,
+          ...(bearer ? { 'x-test-bearer': '1' } : {}),
+          ...(init?.body ? { 'content-type': 'application/json' } : {}),
+        },
+        ...(init?.body ? { body: JSON.stringify(init.body) } : {}),
+      });
   /** A view for `who`, as the Apps screen asks for one. */
   const open = async (who: string) => {
     const response = await as(who)(`/apps/${row.id}/views`, { method: 'POST' });
@@ -124,7 +149,23 @@ async function published(now: () => number = Date.now) {
     service.request(viewPath.replace(/index\.html$/, file), {
       headers: destination ? { 'sec-fetch-dest': destination } : {},
     });
-  return { ...seed, sql, tag, alice, bo, cy, app: row, as, open, load, write, publish, blobRoot };
+  return {
+    ...seed,
+    sql,
+    tag,
+    alice,
+    bo,
+    cy,
+    app: row,
+    as,
+    open,
+    load,
+    write,
+    publish,
+    blobRoot,
+    signOut,
+    propose,
+  };
 }
 
 databaseTest(
@@ -246,6 +287,7 @@ databaseTest(
       appId: ctx.app.id,
       versionId: view.version_id,
       grantGeneration: 1,
+      sessionTag: 'f'.repeat(32),
     }).token;
     expect((await ctx.load(view.view_path.replace(token, other))).status).toBe(404);
     expect((await ctx.load(view.view_path.replace(token, `${token}x`))).status).toBe(404);
@@ -260,9 +302,54 @@ databaseTest(
     expect(isIsolated(changed.headers)).toBe(true);
     expect(await changed.text()).not.toContain('elsewhere');
 
-    // Fifteen minutes on, the view has ended.
-    clock += 15 * 60 * 1000;
+    // Twelve hours on, the view has ended.
+    clock += 12 * 60 * 60 * 1000;
     expect((await ctx.load(view.view_path)).status).toBe(404);
+  },
+  SLOW,
+);
+
+databaseTest(
+  'an open view keeps loading its files for as long as its session lasts',
+  async () => {
+    let clock = Date.now();
+    const ctx = await published(() => clock);
+    const view = await ctx.open(ctx.bo);
+    // Well past the quarter hour a view once lasted: a reload, a second page or a late image still loads.
+    clock += 3 * 60 * 60 * 1000;
+    expect((await ctx.load(view.view_path)).status).toBe(200);
+    expect((await ctx.load(view.view_path, 'app.js', 'script')).status).toBe(200);
+
+    // Signing out ends it on the next request; another person's view goes on.
+    await ctx.signOut(ctx.bo);
+    expect((await ctx.load(view.view_path)).status).toBe(404);
+    expect((await ctx.load((await ctx.open(ctx.alice)).view_path)).status).toBe(200);
+  },
+  SLOW,
+);
+
+databaseTest(
+  'only a browser session can open a view',
+  async () => {
+    const ctx = await published();
+    const response = await ctx.as(ctx.bo, true)(`/apps/${ctx.app.id}/views`, { method: 'POST' });
+    expect(response.status).toBe(403);
+  },
+  SLOW,
+);
+
+databaseTest(
+  'publishing code that opens WebRTC connections asks with a warning, and is not refused',
+  async () => {
+    const ctx = await published();
+    await ctx.write('call.js', 'new RTCPeerConnection({ iceServers: [{ urls: "stun:x" }] });');
+    const asked = await ctx.propose({ dir: 'app', name: 'Deals', app_id: ctx.app.id });
+    expect(asked.status).toBe('needs_approval');
+    expect(asked.canonical_payload.opens_connections).toEqual(['call.js']);
+    // Without it, the field is not there at all.
+    await ctx.write('call.js', 'document.title = "calls";');
+    const plain = await ctx.propose({ dir: 'app', name: 'Deals', app_id: ctx.app.id });
+    expect(plain.canonical_payload).not.toHaveProperty('opens_connections');
   },
   SLOW,
 );

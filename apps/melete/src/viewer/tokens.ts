@@ -3,20 +3,25 @@
  *
  * A page framed in Melete has an opaque origin, so it holds no session. Each
  * of its requests carries a token in the address instead. The token names one
- * person, one app, one version and the app's grant generation, and lasts 15
- * minutes. The server checks all of them again on every request, so a change
- * to who may open the app, or to the version it shows, ends every view opened
- * before it on the next request. The token is signed, not stored.
+ * person, one app, one version, the app's grant generation and the browser
+ * session it was issued to, and lasts at most twelve hours. The server checks
+ * all of them again on every request: a change to who may open the app, or
+ * to the version it shows, or the end of that session, ends the view on its
+ * next request. Expiry is only the outer bound; it is what keeps an open app
+ * working through a long day without reloading it. The token is signed, not
+ * stored.
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
-export const VIEW_TTL_SECONDS = 15 * 60;
+export const VIEW_TTL_SECONDS = 12 * 60 * 60;
 
 export type ViewClaims = {
   principalId: string;
   appId: string;
   versionId: string;
   grantGeneration: number;
+  /** Names the browser session without being it: see `sessionTag`. */
+  sessionTag: string;
   /** Seconds since the epoch. */
   expiresAt: number;
 };
@@ -24,6 +29,16 @@ export type ViewClaims = {
 const PART = /^[A-Za-z0-9_-]+$/;
 const ID = /^[A-Za-z0-9_]{1,80}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
+const TAG = /^[0-9a-f]{32}$/;
+
+/**
+ * What a token says about the session it was issued to: a digest of the
+ * session's own digest, which the page can read in its address without
+ * learning anything that signs anyone in. The service computes the same
+ * value in SQL to find the session again.
+ */
+export const sessionTag = (sessionDigest: string): string =>
+  new Bun.CryptoHasher('sha256').update(`melete view\n${sessionDigest}`).digest('hex').slice(0, 32);
 
 export class ViewTokens {
   private readonly key: Buffer;
@@ -54,6 +69,7 @@ export class ViewTokens {
       claims.appId,
       claims.versionId,
       String(claims.grantGeneration),
+      claims.sessionTag,
       String(expiresAt),
       randomBytes(9).toString('base64url'),
     ];
@@ -62,9 +78,12 @@ export class ViewTokens {
       !ID.test(claims.appId) ||
       !HEX64.test(claims.versionId) ||
       !Number.isSafeInteger(claims.grantGeneration) ||
-      claims.grantGeneration < 0
+      claims.grantGeneration < 0 ||
+      !TAG.test(claims.sessionTag)
     )
-      throw new Error('a view token names a principal, an app, a version and a generation');
+      throw new Error(
+        'a view token names a principal, an app, a version, a generation and a session',
+      );
     const body = Buffer.from(fields.join('.')).toString('base64url');
     return { token: `${body}.${this.mac(body).toString('base64url')}`, expiresAt };
   }
@@ -79,14 +98,16 @@ export class ViewTokens {
     const given = Buffer.from(signature, 'base64url');
     if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
     const fields = Buffer.from(body, 'base64url').toString('utf8').split('.');
-    const [version, principalId, appId, versionId, generation, expires, nonce] = fields;
+    const [version, principalId, appId, versionId, generation, tag, expires, nonce] = fields;
     if (
-      fields.length !== 7 ||
+      fields.length !== 8 ||
       version !== 'v1' ||
       !principalId ||
       !appId ||
       !versionId ||
       !nonce ||
+      !tag ||
+      !TAG.test(tag) ||
       !ID.test(principalId) ||
       !ID.test(appId) ||
       !HEX64.test(versionId) ||
@@ -96,6 +117,13 @@ export class ViewTokens {
       return null;
     const expiresAt = Number(expires);
     if (expiresAt * 1000 <= this.now()) return null;
-    return { principalId, appId, versionId, grantGeneration: Number(generation), expiresAt };
+    return {
+      principalId,
+      appId,
+      versionId,
+      grantGeneration: Number(generation),
+      sessionTag: tag,
+      expiresAt,
+    };
   }
 }

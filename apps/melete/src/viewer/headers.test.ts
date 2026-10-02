@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
-import { isIsolated, isolated, sealView, VIEW_POLICY, viewHeaders } from './headers.ts';
+import {
+  framedRequest,
+  isIsolated,
+  isolated,
+  sealView,
+  VIEW_POLICY,
+  viewHeaders,
+} from './headers.ts';
 
 describe('the isolation headers', () => {
   test('give every framed page an opaque origin and keep it inside its own files', () => {
@@ -57,6 +64,27 @@ describe('the isolation headers', () => {
     expect(isIsolated(refused.headers)).toBe(true);
     expect(refused.headers.has('set-cookie')).toBe(false);
     expect(await refused.json()).toEqual({ error: { code: 'not_found' } });
+  });
+});
+
+describe('which requests framed content is served to', () => {
+  test('the frame and the files it loads, and nothing a browser opens as a page of its own', () => {
+    for (const destination of ['iframe', 'frame', 'script', 'style', 'image', 'font', 'empty'])
+      expect(framedRequest(destination), destination).toBe(true);
+    for (const destination of [
+      'document',
+      'DOCUMENT',
+      'Iframe',
+      'iframe, document',
+      'embed',
+      'object',
+      'fencedframe',
+      'serviceworker',
+      '',
+      null,
+      undefined,
+    ])
+      expect(framedRequest(destination), String(destination)).toBe(false);
   });
 });
 

@@ -2,9 +2,11 @@
  * One app, open: a header Melete draws (its name, who published it, its
  * version and when it changed) over the app itself, framed and sandboxed.
  *
- * The frame loads a view the service issued for this person. The view is
- * renewed before it ends; when the app moves to another version the frame
- * loads it, and when this person can no longer open the app the frame goes.
+ * The frame loads a view the service issued for this person. The screen asks
+ * for a new one every minute, and whenever a request the app makes through
+ * the bridge fails: when the app moves to another version the frame loads it,
+ * when the frame's own view is about to end the frame takes the new one, and
+ * when this person can no longer open the app the frame goes (frame.ts).
  *
  * Managers also get the app's versions, with "Use this version", and who can
  * open it. The publisher and the space's owner can delete it.
@@ -26,16 +28,8 @@ import {
   type GrantRequest,
   viewSource,
 } from './api.ts';
+import { CHECK_EVERY_MS, type Frame, nextFrame } from './frame.ts';
 import './apps.css';
-
-/** How long before a view ends it is renewed, and the longest wait between renewals. */
-const RENEW_BEFORE_MS = 60_000;
-const RENEW_AT_MOST_MS = 5 * 60_000;
-
-type Frame =
-  | { kind: 'loading' }
-  | { kind: 'open'; src: string; versionId: string; expiresAt: string }
-  | { kind: 'ended'; reason: string };
 
 /** "version 3", counted from the first; null when the versions are not listed for this person. */
 export function versionLabel(detail: AppDetail): string | null {
@@ -265,16 +259,14 @@ export function AppViewer({ id }: { id: string }) {
         return;
       }
       const view = result.data;
-      setFrame((current) => {
-        if (current.kind === 'open' && current.versionId === view.version_id && !fresh)
-          return { ...current, expiresAt: view.expires_at };
-        return {
-          kind: 'open',
-          src: viewSource(view),
-          versionId: view.version_id,
-          expiresAt: view.expires_at,
-        };
-      });
+      setFrame((current) =>
+        nextFrame(
+          current,
+          { src: viewSource(view), versionId: view.version_id, expiresAt: view.expires_at },
+          Date.now(),
+          fresh,
+        ),
+      );
       if (shown.current !== null && shown.current !== view.version_id) reloadDetail();
       shown.current = view.version_id;
     },
@@ -287,16 +279,26 @@ export function AppViewer({ id }: { id: string }) {
     void open(true);
   }, [open]);
 
-  // Renewed before it ends, and checked every few minutes for a new version or a lost grant.
-  const expiresAt = frame.kind === 'open' ? frame.expiresAt : null;
+  // Asked again every minute while open, for a new version or a lost grant.
+  const isOpen = frame.kind === 'open';
   useEffect(() => {
-    if (!expiresAt) return;
-    const until = new Date(expiresAt).getTime() - Date.now() - RENEW_BEFORE_MS;
-    const timer = setTimeout(() => void open(), Math.max(5_000, Math.min(until, RENEW_AT_MOST_MS)));
-    return () => clearTimeout(timer);
-  }, [expiresAt, open]);
+    if (!isOpen) return;
+    const timer = setInterval(() => void open(), CHECK_EVERY_MS);
+    return () => clearInterval(timer);
+  }, [isOpen, open]);
 
-  const calls = useMemo(() => appBridgeCalls(id), [id]);
+  // A request the app makes that fails may mean the person lost the app: ask at once.
+  const calls = useMemo(() => {
+    const base = appBridgeCalls(id);
+    const checked =
+      <A extends unknown[]>(call: (...args: A) => ReturnType<typeof base.data>) =>
+      async (...args: A) => {
+        const result = await call(...args);
+        if (!result.ok) void open();
+        return result;
+      };
+    return { data: checked(base.data), submit: checked(base.submit) };
+  }, [id, open]);
   const app = detail.data?.app;
   const manager = app?.role === 'manage';
   const version = detail.data ? versionLabel(detail.data) : null;
@@ -393,7 +395,7 @@ export function AppViewer({ id }: { id: string }) {
         open={deleting}
         onClose={() => setDeleting(false)}
         title={`Delete ${name}?`}
-        sub="Everyone loses it straight away, with every version. This can’t be undone."
+        sub="Everyone loses it, with every version. This can’t be undone."
         tone="danger"
         footer={
           <>

@@ -23,19 +23,34 @@ export const viewPath = (method: string, path: string): boolean =>
   (method === 'GET' || method === 'HEAD') && path.startsWith(VIEW_PREFIX);
 
 /**
- * What a browser says it is loading (`Sec-Fetch-Dest`) when it opens a file
- * as a page of its own, or embeds one as a plugin. A page opened on its own
- * has no frame around it to keep it from navigating itself elsewhere.
+ * What a browser may say it is loading (`Sec-Fetch-Dest`) for framed content
+ * to be served: the frame's own page, and the files that page loads. A page
+ * of its own (`document`), a plugin, and anything not on this list are
+ * refused. A page opened on its own has no frame around it to keep it from
+ * navigating itself elsewhere.
  */
-const PAGE_OF_ITS_OWN = new Set(['document', 'embed', 'object']);
+const FRAMED_DESTINATIONS = new Set([
+  'iframe',
+  'frame',
+  'script',
+  'style',
+  'image',
+  'font',
+  'audio',
+  'video',
+  'track',
+  'manifest',
+  'worker',
+  'empty',
+]);
 
 /**
- * Whether a request for framed content may be answered: the browser says
- * what it is loading, and it is not a page of its own. A request that does
- * not say is refused too: every browser that can run an app says.
+ * Whether a request for framed content may be answered. A request that does
+ * not say what it is loading is refused too: every browser that can run an
+ * app says, as one lowercase word.
  */
 export function framedRequest(destination: string | null | undefined): boolean {
-  return typeof destination === 'string' && destination !== '' && !PAGE_OF_ITS_OWN.has(destination);
+  return typeof destination === 'string' && FRAMED_DESTINATIONS.has(destination);
 }
 
 /** What the page may still do inside its frame. No same-origin, popups or top navigation. */

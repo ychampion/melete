@@ -72,6 +72,12 @@ declare module 'hono' {
      * other.
      */
     createdSpaceId: string;
+    /**
+     * The digest of the browser session this request came with, so what is
+     * issued for the session (an app view) can end with it. Unset for an
+     * assistant's bearer token.
+     */
+    sessionDigest: string;
   }
 }
 
@@ -302,6 +308,7 @@ export function mountAuth(
       return c.json({ error: { code: 'unauthorized', message: 'The session has expired.' } }, 401);
     }
     c.set('owner', publicOwner(active.owner));
+    c.set('sessionDigest', tokenHash(token));
     // The space follows the authenticated principal; no request or other account can supply it.
     const resolved = await resolveSessionSpace(
       db,

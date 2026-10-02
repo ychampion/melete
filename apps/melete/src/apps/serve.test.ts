@@ -25,7 +25,11 @@ test('every response under the app view path carries the isolation policy', asyn
   const routes = app.routes.filter(
     (route) => route.method !== 'ALL' && route.path.startsWith(VIEW_PREFIX),
   );
-  expect(routes.length).toBeGreaterThan(0);
+  // The session is skipped for every read under this path, so the one route
+  // there must be the one that checks its own token.
+  expect(routes.map((route) => `${route.method} ${route.path}`)).toEqual([
+    `GET ${VIEW_PREFIX}:token/:path{.+}`,
+  ]);
   const paths = ['x/index.html', 'x.y/app.js', 'a/b/c.css', 'x/%2e%2e/y', 'only'];
   for (const route of routes)
     for (const path of paths)

@@ -13,7 +13,10 @@
  *
  * A message counts only when it comes from the frame's own window with the
  * origin `null`, which is what a sandboxed page has. Replies go back to that
- * window with `{type:'melete.reply', id, ok, value | error}`.
+ * window with `{type:'melete.reply', id, ok, value | error}`. The window is
+ * the frame's, whatever page it holds, so this rests on the frame holding
+ * only the app's own pages: Melete's pages are served with `frame-src 'self'`,
+ * and every page under the view path needs a token issued for this viewer.
  */
 
 export const BINDING_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/;
@@ -127,7 +130,11 @@ export function connectBridge(
     const request = parseRequest(event.data);
     if (!request) return;
     const reply = (message: BridgeReply) => {
-      // The frame may have moved on to another page since; answer only the one that asked.
+      // This catches a frame that was replaced (a new version mounts a new one),
+      // not one that navigated: a frame's window stays the same object across
+      // its own navigations. What keeps any page but the app's own out of the
+      // frame is Melete's `frame-src 'self'` and the token in every view
+      // address; the bridge relies on both.
       if (frame()?.contentWindow === source) source.postMessage(message, '*');
     };
     const answer = (

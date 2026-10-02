@@ -186,8 +186,9 @@ export const appDeleted = z.strictObject({ id: appId, deleted: z.literal(true) }
  * A view of an app's current version for the person asking. `view_path` is
  * relative to the API's own address. The page loads there, framed, with an
  * opaque origin, and each of its files is served under the same path. The
- * view ends when it expires, when who may open the app changes, or when the
- * app moves to another version; the viewer then asks for a new one.
+ * view ends when it expires, when the browser session that asked signs out,
+ * when who may open the app changes, or when the app moves to another
+ * version; the viewer then asks for a new one.
  */
 export const appView = z.strictObject({
   view_path: z.string().regex(/^\/apps\/view\/[A-Za-z0-9._-]+\/index\.html$/),

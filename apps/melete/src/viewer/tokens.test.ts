@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { VIEW_TTL_SECONDS, ViewTokens } from './tokens.ts';
+import { sessionTag, VIEW_TTL_SECONDS, ViewTokens } from './tokens.ts';
 
 const VERSION = 'a'.repeat(64);
 const claims = {
@@ -7,6 +7,7 @@ const claims = {
   appId: 'app_0123abcd',
   versionId: VERSION,
   grantGeneration: 3,
+  sessionTag: sessionTag('d'.repeat(64)),
 };
 
 describe('view tokens', () => {
@@ -17,7 +18,7 @@ describe('view tokens', () => {
     expect(tokens.verify(token)).toEqual({ ...claims, expiresAt });
   });
 
-  test('end fifteen minutes after they are issued', () => {
+  test('end twelve hours after they are issued', () => {
     let now = 1_800_000_000_000;
     const tokens = new ViewTokens('k'.repeat(64), () => now);
     const { token } = tokens.issue(claims);
@@ -39,6 +40,13 @@ describe('view tokens', () => {
     expect(new ViewTokens().verify(token)).toBeNull();
     for (const bad of ['', '.', `${body}.`, `${token}.x`, `${body}.${'A'.repeat(43)}`, 'a b.c'])
       expect(tokens.verify(bad)).toBeNull();
+  });
+
+  test("name the session by a tag that is not the session's own digest", () => {
+    const digest = 'd'.repeat(64);
+    expect(sessionTag(digest)).toMatch(/^[0-9a-f]{32}$/);
+    expect(digest.startsWith(sessionTag(digest))).toBe(false);
+    expect(sessionTag('e'.repeat(64))).not.toBe(sessionTag(digest));
   });
 
   test('without a master key, last as long as the process that signed them', () => {

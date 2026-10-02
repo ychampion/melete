@@ -82,13 +82,16 @@ export const appsPaths = () => ({
       tags: ['apps'],
       summary: 'Open a view of an app for the person asking',
       description:
-        "Returns where the app's current version loads for this person, for the next 15 " +
-        'minutes. The page is meant to be framed by Melete with ' +
+        "Returns where the app's current version loads for this person. The view belongs to " +
+        'the browser session that asked, and lasts until it signs out, or twelve hours at most. ' +
+        'The page is meant to be framed by Melete with ' +
         '`sandbox="allow-scripts allow-forms allow-downloads"`. A change to who may open the ' +
-        'app, or to its version, ends the view at once.',
+        'app, or to its version, ends the view on its next file request. Only a browser ' +
+        'session can open one.',
       requestParams: appParam,
       responses: {
         '200': jsonResponse('A view', appView),
+        '403': problem('Asked with an assistant token rather than a browser session'),
         '404': problem('No such app, or this person cannot open it'),
       },
     },

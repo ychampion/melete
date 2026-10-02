@@ -9,8 +9,9 @@
  * `GET /apps/view/:token/:path` reads no session: the page asking has an
  * opaque origin and holds none. On every request it checks the token's
  * signature and expiry, that the app still shows the token's version, that
- * the grant generation has not moved, and that the person may still open the
- * app. Then it serves the one file the version's manifest names at that path,
+ * the grant generation has not moved, that the person may still open the
+ * app, and that the browser session the view was opened from is still signed
+ * in. Then it serves the one file the version's manifest names at that path,
  * after reading it whole and checking its hash, with the isolation headers
  * (viewer/headers.ts). A browser asking for a file as a page of its own,
  * rather than in a frame, is refused, so a page can never run outside the
@@ -22,7 +23,7 @@ import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { type BlobStore, blobKey } from '../storage/blob.ts';
 import { framedRequest, VIEW_PREFIX, viewHeaders } from '../viewer/headers.ts';
-import type { ViewTokens } from '../viewer/tokens.ts';
+import { sessionTag, type ViewTokens } from '../viewer/tokens.ts';
 import { appRoleSql } from './service.ts';
 
 export type AppViewDeps = { sql: Sql; blobs?: BlobStore; tokens: ViewTokens };
@@ -48,6 +49,19 @@ async function viewable(sql: Sql, appId: string, principalId: string): Promise<V
   return row?.role ? row : null;
 }
 
+/**
+ * Whether the browser session a view was issued to is still signed in. The
+ * tag is `sessionTag` of the session's digest, computed here the same way.
+ */
+async function sessionLive(sql: Sql, principalId: string, tag: string): Promise<boolean> {
+  const [row] = await sql`select 1 from session
+    where coalesce(principal_id, owner_id) = ${principalId} and expires_at > now()
+      and left(encode(sha256(convert_to('melete view' || chr(10) || token_hash, 'UTF8')),
+        'hex'), 32) = ${tag}
+    limit 1`;
+  return row !== undefined;
+}
+
 export function mountAppViews(app: Hono, deps: AppViewDeps): void {
   const { sql, blobs, tokens } = deps;
 
@@ -55,6 +69,11 @@ export function mountAppViews(app: Hono, deps: AppViewDeps): void {
     const principalId = c.get('owner')?.id as string | undefined;
     const parsed = appIdSchema.safeParse(c.req.param('id'));
     if (!principalId || !parsed.success) throw new ServiceError('not_found', 'No such app.', 404);
+    // A view lives as long as the browser session that opened it, so only a
+    // browser session can open one.
+    const digest = c.get('sessionDigest') as string | undefined;
+    if (!digest)
+      throw new ServiceError('forbidden', 'Apps open in Melete, signed in in a browser.', 403);
     const found = await viewable(sql, parsed.data, principalId);
     if (!found) throw new ServiceError('not_found', 'No such app.', 404);
     const { token, expiresAt } = tokens.issue({
@@ -62,6 +81,7 @@ export function mountAppViews(app: Hono, deps: AppViewDeps): void {
       appId: parsed.data,
       versionId: found.version_id,
       grantGeneration: Number(found.grant_generation),
+      sessionTag: sessionTag(digest),
     });
     return c.json(
       appView.parse({
@@ -81,7 +101,8 @@ export function mountAppViews(app: Hono, deps: AppViewDeps): void {
     if (
       !found ||
       found.version_id !== claims.versionId ||
-      Number(found.grant_generation) !== claims.grantGeneration
+      Number(found.grant_generation) !== claims.grantGeneration ||
+      !(await sessionLive(sql, claims.principalId, claims.sessionTag))
     )
       throw ended();
     const path = c.req.param('path');
