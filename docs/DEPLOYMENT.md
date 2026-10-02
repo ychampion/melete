@@ -157,7 +157,7 @@ bun run melete history
 | `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. |
 | `init --adopt` | Reads the project's containers from the engine (the image the service runs, the overlay files Compose was given, the sandbox profile) and writes `deploy/melete.deploy.json` from them. Only that file is written. |
 | `check` | Validates `deploy/melete.deploy.json`, `deploy/.env` against the service's own settings schema with the values Compose would pass it, every variable a Compose file requires, the published ports, the image tag and registry, and the Compose boundary checks. |
-| `doctor [--offline]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. `--offline` skips the registry. |
+| `doctor [--offline]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. With an external database it also asks that server for its version and whether the connection is encrypted. `--offline` skips the registry and the database. |
 | `status` | The report `deploy/scripts/status.ts` prints, run with the deploy file's overlay files and profiles, with `disk.min_free_mb` as its disk floor. |
 | `set NAME=value ...` | Changes settings in `deploy/.env` in place. A key is taken only from the environment, with `--from-env NAME`, and is never printed. Setting `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY` or `COMPOSE_PROJECT_NAME` updates `deploy/melete.deploy.json` to match. A new `COMPOSE_PROJECT_NAME` is refused while the current project has containers, since every command would then act on a new, empty installation; `--force` sets it anyway. |
 | `logs [service ...]` | `docker compose logs` with the deploy file's overlay files; takes `--since`, `--tail`, `--follow` and `--timestamps`. |
@@ -167,6 +167,7 @@ bun run melete history
 | `restore <backup> [--plan]` | Checks a backup against its `SHA256SUMS` and prints the steps that restore it. |
 | `upgrade <version>` | For an installation that builds its images: runs `deploy/scripts/upgrade.ts` ([Upgrading between releases](UPGRADING.md)) with the deploy file's overlay files. |
 | `history [--json]` | The deploys, rollbacks and upgrades recorded in `deploy/.melete/history.jsonl`. |
+| `remote <ssh-target> <command>` | Runs any command above on another machine over SSH, in its checkout, as [On a cloud VM](#on-a-cloud-vm) describes. `remote <ssh-target> push` copies this deployment directory's settings there. |
 
 `--deploy-dir <checkout>/deploy` runs a command against another checkout's
 deployment directory. The exit code says what happened: 0 done or every check
@@ -214,16 +215,129 @@ complete file, and `init` writes each one out:
   images it pulls.
 - `backup.dir` is where backups are written, and `backup.keep` how many are
   kept there.
-- `blobs.store` is `local`, or `s3` with a non-secret `endpoint`, `bucket` and
-  optional `region`; the storage keys stay in `deploy/.env`.
-- `public_ports: false` keeps every published port on `127.0.0.1`; `check`
-  fails on any other address unless it is `true`.
-- `database.external` and `cells.hosts` describe a database and container
-  hosts on other machines; `check` fails while the checkout has no
-  `deploy/docker-compose.external-db.yml` or `deploy/docker-compose.cells.yml`
-  to run them with.
+- `blobs.store` is `local`, or `s3` with a non-secret `bucket`, an `endpoint`
+  (left out for AWS S3) and an optional `region`; the storage keys stay in
+  `deploy/.env`. With `s3`, every Compose command adds
+  `deploy/docker-compose.blobs-s3.yml`, and `check` fails when `deploy/.env`
+  names another bucket or endpoint, or lacks the keys.
+- `database.external: true` adds `deploy/docker-compose.external-db.yml` to
+  every Compose command: the service uses the server `DATABASE_URL` names, and
+  the bundled postgres stays off. `check` requires the URL to ask for TLS.
+- `cells.hosts` describes container hosts on other machines; `check` fails
+  while the checkout has no `deploy/docker-compose.cells.yml` to run them with.
+- `remote.path` is the checkout on the machine `bun run melete remote` reaches,
+  absolute or under `~/`, and `remote.cli` the command that runs the melete
+  command there, `["bun", "run", "melete"]` by default.
 - A contract number the command does not know, or a key it does not know, is
   refused rather than guessed at.
+
+## On a cloud VM
+
+Any Linux virtual machine you reach over SSH can run Melete, and the melete
+command drives it from your own computer. The machine needs Docker Engine 28
+or newer with the Compose plugin, Bun, a clone of this repository, and an SSH
+key or agent that signs in without a prompt (`ssh -o BatchMode=yes <host> true`
+works). Put the host name, user, port and key in `~/.ssh/config` and use the
+alias.
+
+Name the checkout there in your `deploy/melete.deploy.json`, or pass
+`--path` each time:
+
+```json
+{ "contract": 1, "remote": { "path": "~/melete" } }
+```
+
+```bash
+bun run melete remote vm1 init --connect-in-app   # configure there; the model key is pasted in Settings later
+bun run melete remote vm1 check
+bun run melete remote vm1 doctor
+bun run melete remote vm1 status --json
+bun run melete remote vm1 deploy --tag main
+bun run melete remote vm1 backup --to ssh://backup-host:~/melete-backups
+bun run melete remote vm1 logs melete --since 1h
+```
+
+Before each command, one SSH call checks that the machine has Bun and a Docker
+engine the account can reach, and that the checkout and its `deploy/` are
+writable only by their owner; if any check fails, the command is refused and
+nothing on the machine changes. The command then runs in that checkout,
+against its `deploy/`, and its output and exit code come back. Quote a path
+that starts with `~` (`--path '~/melete'`), so your own shell leaves it for the
+remote one.
+
+`bun run melete remote vm1 push` copies the settings that git does not carry:
+`deploy/.env`, `deploy/melete.deploy.json` and the files under `deploy/config/`.
+`deploy/.env` is streamed into place with mode 0600, and its contents are never
+printed or put on a command line. A file that already differs on the machine is
+kept, and the push is refused, because a `deploy` or `set` run there changes
+`deploy/.env`; `--replace` overwrites it, and `--dry-run` lists what would be
+copied. A key belongs in your local `deploy/.env` (`bun run melete set
+--from-env NAME`), followed by a push.
+
+### A managed Postgres database
+
+1. Create a Postgres 17 database at your provider, allow the VM through its
+   firewall, and copy the connection URL. End it with `?sslmode=require`, or
+   `?sslmode=verify-full` with the provider's certificate.
+2. Set it, keeping it out of your shell history, and turn the database on in
+   the deploy file:
+
+   ```bash
+   read -rs DATABASE_URL && export DATABASE_URL
+   bun run melete set --from-env DATABASE_URL
+   unset DATABASE_URL
+   ```
+
+   ```json
+   { "contract": 1, "database": { "external": true } }
+   ```
+
+3. `bun run melete check` confirms the URL asks for TLS, and `bun run melete
+   doctor` that the server answers, runs Postgres 17 and encrypts the
+   connection. Then push and start as usual.
+
+The stack then leaves the bundled postgres off. A one-off `database-client`
+container, the stack's own Postgres 17 image, checks that the server accepts
+connections before the service starts, and runs `pg_dump` and `psql` for
+`backup`, `deploy` and `doctor`. The restriction journal stays on the VM's
+volume, and `melete backup` keeps it beside every dump.
+
+### An S3-compatible bucket
+
+Create a bucket and a key limited to it (AWS S3, Cloudflare R2, MinIO and the
+like), then:
+
+```bash
+bun run melete set MELETE_BLOB_S3_BUCKET=melete-blobs MELETE_BLOB_S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+read -rs MELETE_BLOB_S3_ACCESS_KEY_ID && export MELETE_BLOB_S3_ACCESS_KEY_ID
+read -rs MELETE_BLOB_S3_SECRET_ACCESS_KEY && export MELETE_BLOB_S3_SECRET_ACCESS_KEY
+bun run melete set --from-env MELETE_BLOB_S3_ACCESS_KEY_ID MELETE_BLOB_S3_SECRET_ACCESS_KEY
+unset MELETE_BLOB_S3_ACCESS_KEY_ID MELETE_BLOB_S3_SECRET_ACCESS_KEY
+```
+
+```json
+{ "contract": 1, "blobs": { "store": "s3", "bucket": "melete-blobs", "endpoint": "https://<account>.r2.cloudflarestorage.com" } }
+```
+
+### Replacing the VM
+
+With the database and the bucket at a provider, the VM holds only the
+settings, the restriction journal and the spaces' files, so a new one takes
+over from a backup:
+
+1. On the old VM, or from your computer through `remote`: `bun run melete
+   backup` (or `--to ssh://host:/path` when the VM is short of disk). Note the
+   image tag `bun run melete history` shows.
+2. On the new VM, clone the checkout at the same commit, and copy the backup's
+   `deploy.env` to `deploy/.env` (mode 0600) and its `melete.deploy.json`, or
+   push your local copies.
+3. `bun run melete restore <backup> --plan` checks the backup and prints the
+   steps. On a new machine they put the newest restriction journal back before
+   the service starts. With an external database that already holds the data,
+   skip the `pg_restore` line; to restore into a new database, point
+   `DATABASE_URL` at it first.
+4. `bun run melete deploy --tag <the same tag>` pulls the images and starts the
+   stack, and `bun run melete status` reports it.
 
 ## Using prebuilt images
 
