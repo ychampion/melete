@@ -20,6 +20,7 @@ import {
 } from '../db/schema.ts';
 import type { JobService } from '../jobs/service.ts';
 import { mcpPublicPath } from '../mcp-server/actor.ts';
+import { previewPath } from '../sandbox/preview-path.ts';
 import { viewPath } from '../viewer/headers.ts';
 import { requireJobAccess, spaceAuthority } from './authority.ts';
 import { PrincipalService } from './service.ts';
@@ -44,6 +45,8 @@ export function mountPrincipals(
     if (c.req.path.startsWith('/device/')) return next();
     // A framed app's file read carries a token, not a session; apps/serve.ts checks it.
     if (viewPath(c.req.method, c.req.path) && !c.get('owner')) return next();
+    // So does a preview's; sandbox/preview.ts checks its token.
+    if (previewPath(c.req.method, c.req.path) && !c.get('owner')) return next();
     const actor = c.get('owner').id;
     const path = c.req.path;
     const parts = path.split('/').filter(Boolean);

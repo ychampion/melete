@@ -38,6 +38,7 @@ COPY --from=build /app/apps/web/dist ./dist
 COPY deploy/scripts/serve-static.ts ./deploy/scripts/serve-static.ts
 COPY apps/melete/src/api/trusted-peer.ts ./apps/melete/src/api/trusted-peer.ts
 COPY apps/melete/src/viewer/headers.ts ./apps/melete/src/viewer/headers.ts
+COPY apps/melete/src/sandbox/preview-path.ts ./apps/melete/src/sandbox/preview-path.ts
 
 RUN useradd --uid 10003 --create-home --home-dir /home/web web
 USER web

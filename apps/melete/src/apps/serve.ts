@@ -53,7 +53,7 @@ async function viewable(sql: Sql, appId: string, principalId: string): Promise<V
  * Whether the browser session a view was issued to is still signed in. The
  * tag is `sessionTag` of the session's digest, computed here the same way.
  */
-async function sessionLive(sql: Sql, principalId: string, tag: string): Promise<boolean> {
+export async function sessionLive(sql: Sql, principalId: string, tag: string): Promise<boolean> {
   const [row] = await sql`select 1 from session
     where coalesce(principal_id, owner_id) = ${principalId} and expires_at > now()
       and left(encode(sha256(convert_to('melete view' || chr(10) || token_hash, 'UTF8')),

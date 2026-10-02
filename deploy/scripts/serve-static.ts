@@ -19,6 +19,7 @@ import {
   type TrustedPeer,
   trustedPeer,
 } from '../../apps/melete/src/api/trusted-peer.ts';
+import { PREVIEW_PREFIX } from '../../apps/melete/src/sandbox/preview-path.ts';
 import { isIsolated, VIEW_PREFIX } from '../../apps/melete/src/viewer/headers.ts';
 
 export type StaticServerOptions = {
@@ -105,9 +106,16 @@ export const CLIENT_FRAME_HEADERS: Readonly<Record<string, string>> = Object.fre
   'x-frame-options': 'SAMEORIGIN',
 });
 
-/** The proxied path of a published app's file, which its sandboxed page loads. */
+/**
+ * The proxied path of a published app's file, or of a preview of a server in
+ * an agent's computer: each is loaded by a sandboxed page with a token, and
+ * leaves only with the isolation headers.
+ */
 export function appViewPath(method: string, pathname: string): boolean {
-  return (method === 'GET' || method === 'HEAD') && pathname.startsWith(`/api${VIEW_PREFIX}`);
+  return (
+    (method === 'GET' || method === 'HEAD') &&
+    (pathname.startsWith(`/api${VIEW_PREFIX}`) || pathname.startsWith(`/api${PREVIEW_PREFIX}`))
+  );
 }
 
 /** `setting` names where the value came from, so a refusal says what to change. */

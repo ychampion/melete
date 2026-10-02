@@ -34,6 +34,8 @@ export type ComputerProcessRow = {
   last_line: string | null;
   /** False for a process started by another person or in a sensitive conversation. */
   attributable?: boolean;
+  /** True only when the person reading the conversation started the process through a job of theirs. */
+  previewable?: boolean;
 };
 
 export type ComputerBinding = {
@@ -171,8 +173,8 @@ function processes(rows: readonly ComputerProcessRow[]): ComputerProcess[] {
         row.attributable !== false && row.last_line
           ? terminalText(row.last_line, 240, 'last') || null
           : null,
-      // A preview of a served port is not offered from here yet.
-      can_preview: false,
+      // Offered to the person whose job started a running server; opening it checks again.
+      can_preview: row.previewable === true && row.state === 'running' && row.port !== null,
     }));
 }
 

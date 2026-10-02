@@ -27,6 +27,7 @@ import {
   type SessionSpace,
   selectedSpace,
 } from '../principals/session-space.ts';
+import { previewPath } from '../sandbox/preview-path.ts';
 import { viewPath } from '../viewer/headers.ts';
 import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
@@ -292,6 +293,9 @@ export function mountAuth(
     // session. The token in the path is their whole authorisation; see
     // apps/serve.ts. Reading is all these routes do.
     if (viewPath(c.req.method, c.req.path)) return next();
+    // A preview of a server in an agent's computer is fetched the same way; see
+    // sandbox/preview.ts.
+    if (previewPath(c.req.method, c.req.path)) return next();
 
     const token = getCookie(c, SESSION_COOKIE);
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
