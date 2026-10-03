@@ -111,6 +111,7 @@ const journey = late ? await database() : null;
         'apps',
         'artifacts',
         'files',
+        'room',
         'web',
       ]);
       expect(listed.every((row) => row.builtin === true && row.status === 'active')).toBe(true);
@@ -121,6 +122,7 @@ const journey = late ? await database() : null;
       expect(shown.connections.map((row) => [row.label, row.builtin])).toEqual([
         ['Apps', true],
         ['Files', true],
+        ['Rooms', true],
         ['Saved results', true],
         ['Web', true],
       ]);
@@ -263,7 +265,7 @@ const journey = late ? await database() : null;
     let webId = '';
     try {
       // Speech and transcription are two rows of the generation provider.
-      const expected = ['apps', 'artifacts', 'files', 'generation', 'generation', 'web'];
+      const expected = ['apps', 'artifacts', 'files', 'generation', 'generation', 'room', 'web'];
       expect(await providers(personal)).toEqual(expected);
       // A grant the owner already made is kept as it is, never doubled.
       expect(await providers(seeded)).toEqual(expected);
@@ -360,6 +362,7 @@ const journey = late ? await database() : null;
       expect(shown.connections.map((row) => [row.label, row.builtin])).toEqual([
         ['Apps', true],
         ['Files', true],
+        ['Rooms', true],
         ['Saved results', true],
         ['Web', true],
       ]);
@@ -420,7 +423,7 @@ const journey = late ? await database() : null;
       });
       expect(shared.status).toBe(201);
       const made = ((await shared.json()) as { space: { id: string } }).space.id;
-      expect(await providers(made)).toEqual(['apps', 'artifacts', 'files', 'web']);
+      expect(await providers(made)).toEqual(['apps', 'artifacts', 'files', 'room', 'web']);
       expect(await providers(bare)).toEqual([]);
 
       // A provisioned account is furnished in its own personal space, and only there.
@@ -434,7 +437,7 @@ const journey = late ? await database() : null;
       const [theirs] =
         await fixture.sql`select id from space where owner_principal_id = ${account3}`;
       if (!theirs) throw new Error('A provisioned account has no space');
-      expect(await providers(theirs.id)).toEqual(['apps', 'artifacts', 'files', 'web']);
+      expect(await providers(theirs.id)).toEqual(['apps', 'artifacts', 'files', 'room', 'web']);
       expect(await providers(bare)).toEqual([]);
 
       // What it was given is its own, and its first attempt is handed the tools.

@@ -645,6 +645,13 @@
       "when": 1789232400071,
       "tag": "0091_room_guests",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1789232400072,
+      "tag": "0092_room_handoffs",
+      "breakpoints": true
     }
   ]
 }

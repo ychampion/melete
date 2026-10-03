@@ -1,4 +1,5 @@
 /** Outcome vocabulary for personal interfaces. Never pass an internal record through here. */
+
 import { z } from 'zod';
 import {
   becauseLink,
@@ -17,6 +18,7 @@ import {
   rewindTarget,
 } from './beliefs.ts';
 import { PROCESS_STATES } from './execution.ts';
+import { roomHandoff } from './handoffs.ts';
 import { memoryKey } from './memory.ts';
 import { privacyOperations } from './privacy.ts';
 import { messageId } from './reactions.ts';
@@ -1032,6 +1034,8 @@ export const homeResponse = z.strictObject({
   open_task_count: count,
   /** Routines that ran in the last day, newest first. */
   routine_results: z.array(routineResult),
+  /** Work rooms asked the person to run with their own setup, and results waiting to be shared or kept. */
+  handoffs: z.array(roomHandoff).optional(),
 });
 export const experienceAutomation = z.strictObject({
   id,
@@ -1208,7 +1212,13 @@ export const experienceOperations = {
       receipt: experienceReceipt.nullable(),
     }),
   },
-  'GET /permissions': { response: z.strictObject({ permissions: z.array(permissionCard) }) },
+  'GET /permissions': {
+    response: z.strictObject({
+      permissions: z.array(permissionCard),
+      /** Handoffs from rooms that wait for the person: to run, or to share or keep the result. */
+      handoffs: z.array(roomHandoff).optional(),
+    }),
+  },
   'POST /permissions/{id}': { request: permissionDecision, response: permissionOutcome },
   'GET /approval-settings': { response: approvalSettingsResponse },
   'PUT /approval-settings': { request: approvalSettings, response: approvalSettingsResponse },

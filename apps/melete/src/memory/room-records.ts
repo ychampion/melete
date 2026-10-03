@@ -177,3 +177,14 @@ export async function invalidateSharedInRooms(
   for (const room of rooms)
     await invalidateRoomContexts(tx, String(room.room_space_id), room.claims as string[]);
 }
+
+/**
+ * A person forgot something in their own space. The result of any work a room
+ * handed them there that waits to be shared or kept may rest on it, so it is
+ * cleared: it can no longer be shared, and the room is told it is gone.
+ */
+export async function withholdHandoffResults(tx: MemoryTx, sourceSpaceId: string) {
+  await tx`update room_handoff set result_text = null, result_hash = null
+    where state = 'settled' and result_hash is not null
+      and personal_job_id in (select id from job where space_id = ${sourceSpaceId})`;
+}

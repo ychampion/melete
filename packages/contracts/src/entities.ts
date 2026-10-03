@@ -81,6 +81,8 @@ export const CONNECTION_PROVIDERS = [
   'command_line',
   /** Publishes a folder of web files as an app people can open. */
   'apps',
+  /** Handoffs from a room's agent, and posts and files a person sends to a room they are in. */
+  'room',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;

@@ -16,7 +16,7 @@ import {
   text,
   timestamp,
 } from 'drizzle-orm/pg-core';
-import { job, principal, space } from '../db/schema.ts';
+import { connection, job, principal, space, trigger } from '../db/schema.ts';
 
 const created = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 
@@ -163,5 +163,57 @@ export const roomInvite = pgTable(
   (t) => [
     check('room_invite_role', sql`${t.role} in ('guest')`),
     index('room_invite_space_idx').on(t.spaceId, t.createdAt),
+  ],
+);
+
+/**
+ * Work a room's agent asked one person to run with their own setup. The task
+ * is stored whole and runs verbatim once they accept it; the result reaches
+ * the room only after they approve that exact text.
+ */
+export const roomHandoff = pgTable(
+  'room_handoff',
+  {
+    id: text('id').primaryKey(),
+    /** The room's space. */
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    /** The room's request that asked for it. */
+    roomJobId: text('room_job_id').references(() => job.id, { onDelete: 'set null' }),
+    /** The turn of that request that asked: stopping it withdraws the handoff. */
+    roomTurnId: text('room_turn_id'),
+    threadId: text('thread_id')
+      .notNull()
+      .references(() => roomThread.id, { onDelete: 'cascade' }),
+    /** The action that asked; one handoff per action, however often it is sent. */
+    actionId: text('action_id').notNull().unique(),
+    /** The room's own connection the outcome is delivered through. */
+    connectionId: text('connection_id').references(() => connection.id, { onDelete: 'set null' }),
+    /** What the room's request waits on to hear the outcome. */
+    triggerId: text('trigger_id').references(() => trigger.id, { onDelete: 'set null' }),
+    targetPrincipalId: text('target_principal_id')
+      .notNull()
+      .references(() => principal.id),
+    taskText: text('task_text').notNull(),
+    taskHash: text('task_hash').notNull(),
+    state: text('state').notNull().default('pending'),
+    /** The work it started in the person's own space. */
+    personalJobId: text('personal_job_id').references(() => job.id, { onDelete: 'set null' }),
+    resultText: text('result_text'),
+    resultHash: text('result_hash'),
+    createdAt: created(),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index('room_handoff_target_idx').on(t.targetPrincipalId, t.createdAt),
+    index('room_handoff_personal_job_idx').on(t.personalJobId),
+    index('room_handoff_room_idx').on(t.spaceId),
+    index('room_handoff_due_idx').on(t.state, t.expiresAt),
+    check(
+      'room_handoff_state',
+      sql`${t.state} in ('pending', 'accepted', 'declined', 'running', 'settled', 'shared', 'kept', 'expired')`,
+    ),
   ],
 );

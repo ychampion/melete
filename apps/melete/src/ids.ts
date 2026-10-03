@@ -29,7 +29,8 @@ export function newId(
     | 'rth'
     | 'rmg'
     | 'rsh'
-    | 'rin',
+    | 'rin'
+    | 'rho',
 ): string {
   let value = (BigInt(Date.now()) << 80n) | BigInt(`0x${randomBytes(10).toString('hex')}`);
   let encoded = '';

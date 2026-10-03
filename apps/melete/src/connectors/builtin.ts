@@ -30,6 +30,7 @@
 import {
   CONNECTION_KIND_SCOPES,
   type ConnectorManifest,
+  ROOM_TOOL_SCOPES,
   type SandboxConnectionConfig,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
@@ -65,6 +66,8 @@ type Builtin = {
   when?: (environment: BuiltinEnvironment) => boolean;
   /** What the row stores beside the builtin marker, for a default that carries its own settings. */
   configuration?: (environment: BuiltinEnvironment) => Record<string, unknown>;
+  /** The kinds of space it belongs in; left out, every kind. */
+  spaceKind?: 'personal' | 'shared';
 };
 
 const grants = (manifest: ConnectorManifest): string[] => [
@@ -112,6 +115,23 @@ export const BUILTIN_CONNECTIONS: readonly Builtin[] = [
     when: (environment) => Boolean(environment.sandbox),
     // Read back by the connector factory as any other sandbox connection.
     configuration: (environment) => ({ kind: 'sandbox', sandbox: environment.sandbox }),
+  },
+  // A person's own work reaches a room they are in only by posting or adding
+  // a file, each with their approval; a room's request reaches a person only
+  // by handing them a task they read whole and choose to run.
+  {
+    key: 'rooms',
+    provider: 'room',
+    label: 'Rooms',
+    scopes: [...ROOM_TOOL_SCOPES.personal],
+    spaceKind: 'personal',
+  },
+  {
+    key: 'room_handoff',
+    provider: 'room',
+    label: 'Hand to a person',
+    scopes: [...ROOM_TOOL_SCOPES.room],
+    spaceKind: 'shared',
   },
 ];
 
@@ -184,6 +204,7 @@ export async function ensureBuiltinConnections(
           -- lands mid-sweep or by the pass over every space at startup. Without
           -- this, either one puts back the connections the sweep just deleted.
           and s.removed_at is null
+          and (${builtin.spaceKind ?? null}::text is null or s.kind = ${builtin.spaceKind ?? null})
           and not exists (
             select 1 from connection c, jsonb_array_elements_text(c.scopes) granted
             where c.space_id = s.id and c.provider = ${builtin.provider}

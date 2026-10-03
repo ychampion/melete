@@ -59,9 +59,9 @@ import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
+import { mayDecide, roomAuthorityOf } from '../rooms/approvals.ts';
 import type { SandboxRun, TrySandbox } from '../runs/try.ts';
 import { closedComputerStep } from '../sandbox/closed-step.ts';
-import { mayDecide, roomAuthorityOf } from '../rooms/approvals.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
 import { ASK_PERSON_TOOL, requestPersonQuestion } from './ask-person.ts';
 import {
@@ -809,6 +809,11 @@ export class BrokerService implements BrokerOperations {
       tool.effect_class !== 'read' && tool.name !== 'email.draft' && tool.name !== 'email.discard';
     const agentAsks = Boolean(access.agentId && access.asksBeforeActing);
     const provider = this.options.connectors.get(action.connection_id)?.manifest.provider ?? '';
+    // A hand-off from a room puts a task in front of a person, who reads it
+    // whole and runs or declines it: their answer is the approval, so the
+    // agent's own "ask before acting" does not ask again. "Ask me for
+    // everything" still does.
+    const handsOff = tool.name === 'room.handoff' && provider === 'room';
     // The connector itself says the person decides this one, whatever the settings.
     const connectorAsks =
       this.options.connectors.get(action.connection_id)?.asksFirst?.(action) === true;
@@ -833,7 +838,7 @@ export class BrokerService implements BrokerOperations {
       toolAsks ||
       connectorAsks ||
       afterResponses ||
-      (agentAsks && changes) ||
+      (agentAsks && changes && !handsOff) ||
       // The person's own Files are not the agent's workspace. A new file there
       // stays in their space and goes through like other work; saving over one
       // of theirs or taking one out is asked, or reviewed when the person lets

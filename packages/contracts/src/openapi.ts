@@ -91,6 +91,12 @@ import {
   feedbackResponse,
   updateFeedbackRequest,
 } from './feedback.ts';
+import {
+  handoffDecision,
+  handoffList,
+  handoffResponse,
+  handoffResultDecision,
+} from './handoffs.ts';
 import { hookObservation } from './hooks.ts';
 import {
   engineSkillApprovalRequest,
@@ -1063,6 +1069,49 @@ function roomsPaths() {
           '200': jsonResponse('The connection', roomConnectionResponse),
           '403': problem('Only an owner of the room changes this'),
           '404': notIn,
+        },
+      },
+    },
+    '/handoffs': {
+      get: {
+        tags: ['rooms'],
+        summary: 'Work rooms asked the signed-in person to run with their own setup',
+        description:
+          "Each handoff carries the whole task, exactly as it would run, and, once it has run, the exact result. Nothing from the person's own space reaches the room until they share that result.",
+        responses: { '200': jsonResponse('Handoffs, newest first', handoffList) },
+      },
+    },
+    '/handoffs/{id}': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Run a handoff with my setup, or decline it',
+        description:
+          "Accepting names the task's hash, so only the task the person read runs. It runs in the person's own space with their own connections, and anything it sends asks them as usual. Declining tells the room.",
+        requestParams: idParam('id', 'Handoff id'),
+        requestBody: json(handoffDecision),
+        responses: {
+          '200': jsonResponse('The handoff', handoffResponse),
+          '404': problem('No such handoff for this person'),
+          '409': problem(
+            'Already answered or expired, the task changed, or the person is no longer in the room',
+          ),
+        },
+      },
+    },
+    '/handoffs/{id}/result': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Share the result with the room, or keep it',
+        description:
+          "Sharing names the result's hash and posts that exact text to the thread as the person, through their agent. Keeping tells the room only that the person kept it.",
+        requestParams: idParam('id', 'Handoff id'),
+        requestBody: json(handoffResultDecision),
+        responses: {
+          '200': jsonResponse('The handoff', handoffResponse),
+          '404': problem('No such handoff for this person'),
+          '409': problem(
+            'No result yet, already shared or kept, the result changed, or the person is no longer in the room',
+          ),
         },
       },
     },

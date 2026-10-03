@@ -13,7 +13,12 @@ import {
 } from './db.ts';
 import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './invalidate.ts';
 import type { RestrictionJournal, RestrictionRecord } from './restore.ts';
-import { applyRoomRecord, invalidateSharedInRooms, isRoomRecord } from './room-records.ts';
+import {
+  applyRoomRecord,
+  invalidateSharedInRooms,
+  isRoomRecord,
+  withholdHandoffResults,
+} from './room-records.ts';
 
 export type Removal = {
   operation: RestrictionRecord['operation'];
@@ -179,6 +184,9 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
   // A detail shared into a room is read there from here, so the rooms it was
   // shared into lose it in the same transaction.
   await invalidateSharedInRooms(tx, record.space_id, [...affected], record.all);
+  // A result of work a room handed the person may rest on what they just
+  // forgot: one not yet shared or kept is cleared, and can no longer be shared.
+  if (record.all || affected.size > 0) await withholdHandoffResults(tx, record.space_id);
   // Invalidation waits for active job transactions; include episodes they committed while removal waited.
   await restrictEpisodes(tx, record, [...affected]);
   await enqueue(tx, record.space_id, 'cleanup', record.id);
