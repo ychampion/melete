@@ -9,6 +9,7 @@ import {
   readConnectionConfig,
 } from '../connectors/configured.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
+import { webSearchFromEnv } from '../connectors/web-search.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import { bindEgressAdmission } from '../egress/credentials.ts';
 import { type Env, parseBrokerBind } from '../env.ts';
@@ -32,6 +33,7 @@ import type { ComposeExecutor } from './compose.ts';
 import { egressAdmission } from './egress-admission.ts';
 import { createInternalServer } from './internal-server.ts';
 import { configuredReviewGateway } from './review-gateway.ts';
+import { configuredSearchGateway } from './search-gateway.ts';
 import type { BrokerOptions, BrokerService } from './service.ts';
 import type { TrustResolver } from './trust.ts';
 
@@ -79,6 +81,13 @@ export async function startEffectBoundary(
   const browser = dependencies.browserSessions
     ? undefined
     : await configuredBrowserSessions({ sql: handle.sql, env, connections });
+  // The model's own web search, metered on the job, for a registry built here.
+  const search = dependencies.registry
+    ? undefined
+    : await configuredSearchGateway(handle.sql, env, dependencies.privacy, {
+        signIn,
+        settings: modelSettings,
+      });
   const registry =
     dependencies.registry ??
     (await connectorsFromEnv(handle.sql, env, {
@@ -86,6 +95,8 @@ export async function startEffectBoundary(
       browserSessions: dependencies.browserSessions ?? browser?.sessions,
       privateContext: ({ spaceId, agentId }, query) =>
         dependencies.privacy.marksPrivate(spaceId, agentId, query),
+      webSearch: webSearchFromEnv(env, { native: search?.backend }),
+      searchPrivacy: ({ jobId, query }) => dependencies.privacy.outsideSearchRefusal(jobId, query),
     }));
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
   let review: Awaited<ReturnType<typeof configuredReviewGateway>> | undefined;
@@ -189,7 +200,11 @@ export async function startEffectBoundary(
             try {
               await browser?.pool.close();
             } finally {
-              await review?.close();
+              try {
+                await review?.close();
+              } finally {
+                await search?.close();
+              }
             }
           }
         }
@@ -205,7 +220,11 @@ export async function startEffectBoundary(
         try {
           await browser?.pool.close();
         } finally {
-          await review?.close();
+          try {
+            await review?.close();
+          } finally {
+            await search?.close();
+          }
         }
       }
     }

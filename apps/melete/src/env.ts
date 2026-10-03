@@ -372,6 +372,21 @@ const variables = z.object({
       .transform((v) => (v === undefined ? undefined : v === 'true')),
   ),
   /**
+   * Whether the server's default model searches the web through its provider's
+   * own search tool: `true` or `false`. Left blank, Melete's model catalog
+   * decides. `false` sends its searches to Melete's own search instead.
+   */
+  MELETE_DEFAULT_MODEL_NATIVE_SEARCH: unsetWhenBlank(
+    z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) => (v === undefined ? undefined : v === 'true')),
+  ),
+  /** A Brave Search API key. When set, `web.search` uses it before anything else. */
+  BRAVE_SEARCH_API_KEY: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  /** A Tavily API key, used when set and no Brave key is. */
+  TAVILY_API_KEY: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  /**
    * The output limit the gateway gives a model request that names none. The
    * engine names none by default, so this is the usual ceiling on one reply.
    */

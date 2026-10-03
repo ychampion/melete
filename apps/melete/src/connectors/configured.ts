@@ -69,7 +69,13 @@ import { createTestConnector, initializeTestLedger } from './test.ts';
 import { createTranscriptionConnector } from './transcribe.ts';
 import { createCapabilityConnector } from './tts.ts';
 import type { Connector } from './types.ts';
-import { createWebConnector, databasePublicReads, type PrivateContext } from './web.ts';
+import {
+  createWebConnector,
+  databasePublicReads,
+  type PrivateContext,
+  type SearchPrivacy,
+} from './web.ts';
+import { type WebSearch, webSearchFromEnv } from './web-search.ts';
 
 const endpoint = z
   .object({
@@ -206,6 +212,10 @@ export type ConnectorOptions = {
    * pages beyond what a job was explicitly given. Without it, none is.
    */
   privateContext?: PrivateContext;
+  /** Where `web.search` searches; without one, the keyless search only. */
+  webSearch?: WebSearch;
+  /** Whether a query may go to an outside search; without one, none does. */
+  searchPrivacy?: SearchPrivacy;
   /** Plaintext mail and CalDAV to a loopback protocol fixture. Never set from a request. */
   insecureLocalFixtures?: boolean;
   /** Starts stdio MCP servers in isolation; without one, a stdio installation offers nothing. */
@@ -392,6 +402,8 @@ export class ConnectorFactory {
           connectionId: row.id,
           privateContext: options.privateContext,
         }),
+        ...(options.webSearch ? { search: options.webSearch } : {}),
+        ...(options.searchPrivacy ? { searchPrivacy: options.searchPrivacy } : {}),
       });
     if (row.provider === 'sandbox' && stored?.kind === 'sandbox') {
       const sandbox = options.sandbox;
@@ -798,6 +810,8 @@ type ConnectorExtras = {
   stdioLauncher?: StdioLauncher;
   stdioLifecycle?: StdioLifecycleOptions;
   privateContext?: PrivateContext;
+  webSearch?: WebSearch;
+  searchPrivacy?: SearchPrivacy;
 };
 
 /** The docker settings, with egress records and, where offered, command-line accounts. */
@@ -857,6 +871,9 @@ export function connectorOptionsFromEnv(
     stdioLauncher: extra.stdioLauncher,
     stdioLifecycle: { idleMs: env.MELETE_MCP_IDLE_MS },
     privateContext: extra.privateContext,
+    // Configured search keys apply even where no model gateway searches.
+    webSearch: extra.webSearch ?? webSearchFromEnv(env),
+    ...(extra.searchPrivacy ? { searchPrivacy: extra.searchPrivacy } : {}),
     cellIsolated: builtinEnvironment(env).cellIsolated,
     ...(env.MICROSOFT_OAUTH_CLIENT_ID && env.MICROSOFT_OAUTH_CLIENT_SECRET
       ? {

@@ -41,7 +41,7 @@ import {
   classifyStrong,
   type TopicHits,
 } from './classify.ts';
-import type { Detection } from './detect.ts';
+import { type Detection, detect } from './detect.ts';
 import { isLocalUrl, type LocalModel, localDetect, pinLocalModel } from './local.ts';
 import { type Protocol, Redactor } from './redact.ts';
 import {
@@ -114,6 +114,14 @@ type ConversationState = {
   saving: Promise<void>;
 };
 
+/** Why a web search stayed in, in words the model passes on. */
+export const SEARCH_KEPT_PRIVATE =
+  'This conversation is private, so nothing is searched on the web. Answer from what you already have.';
+export const SEARCH_KEPT_TOPIC =
+  'This search is about a topic kept private here, so it was not sent to an outside search.';
+export const SEARCH_KEPT_DETAILS =
+  'This search carries personal details the privacy settings keep from outside services, so it was not sent. Search without them.';
+
 /** Labels of the quick answers; the recorded answer is the label. */
 export const SEND_REDACTED = 'Send a redacted version';
 export const KEEP_PRIVATE = 'Keep it private';
@@ -176,6 +184,38 @@ export class PrivacyRouter {
   ): Promise<boolean> {
     const settings = await this.settingsFor(spaceId, query);
     return settings.privateSpace || (agentId !== null && settings.privateAgents.has(agentId));
+  }
+
+  /**
+   * Why a web search for this job may not go to an outside search service, or
+   * null when it may. A search query leaves Melete as written, with no
+   * placeholders, so it is held to more than a model request is: nothing from
+   * a private space or agent or a sensitive conversation, nothing about a
+   * sensitive topic, and nothing carrying a detail the privacy settings detect.
+   */
+  async outsideSearchRefusal(jobId: string, query: string): Promise<string | null> {
+    const scope = await this.store.scope(jobId, '');
+    if (!scope.spaceId) return SEARCH_KEPT_PRIVATE;
+    const settings = await this.settingsFor(scope.spaceId);
+    if (
+      settings.privateSpace ||
+      (scope.agentId !== null && settings.privateAgents.has(scope.agentId))
+    )
+      return SEARCH_KEPT_PRIVATE;
+    const conversation = scope.conversationId
+      ? await this.store.conversation(scope.conversationId)
+      : null;
+    if (conversation?.sensitive) return SEARCH_KEPT_PRIVATE;
+    // The person said this conversation is not sensitive; the query is not read for a topic.
+    if (!conversation?.cleared && classifyParts([query], settings.topics, this.topics))
+      return SEARCH_KEPT_TOPIC;
+    const lowered = query.toLowerCase();
+    if (
+      detect(query, settings.enabled).length > 0 ||
+      settings.known.some((known) => known.value && lowered.includes(known.value.toLowerCase()))
+    )
+      return SEARCH_KEPT_DETAILS;
+    return null;
   }
 
   /** A settings change applies to the next request, not after the cache expires. */

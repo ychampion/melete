@@ -868,6 +868,20 @@ saved, its size and its digest. Left empty, Melete's model catalog decides,
 and an unknown model reads text only. A model chosen in the app carries the
 owner's own answer (`supports_vision` on `PUT /model-settings/default`).
 
+`MELETE_DEFAULT_MODEL_NATIVE_SEARCH` says whether the default model searches
+the web with its provider's own search tool (`true` or `false`). Left empty,
+Melete's model catalog decides: Claude models through the Messages API and
+recent OpenAI models through the Responses API do. `false` sends the agent's
+searches to Melete's own search instead. Native searches are metered on the job
+like any other model call.
+
+`BRAVE_SEARCH_API_KEY` and `TAVILY_API_KEY` are optional. Without either, every
+agent still searches the web: with its model's own search where it has one, and
+otherwise with a search that needs no key (DuckDuckGo's results page, then
+Wikipedia). When a key is set, searches use that API first. The order, the
+privacy rules and what each search records are in
+[CONNECTORS](CONNECTORS.md#web-search).
+
 `MELETE_DEFAULT_MAX_OUTPUT_TOKENS` (default `4096`) is the output limit the
 gateway gives a model request that names none. The runtime names none unless its
 own configuration sets one, so this is the usual ceiling on one reply; a few

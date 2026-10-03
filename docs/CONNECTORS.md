@@ -87,7 +87,7 @@ does not depend on isolation the running deployment lacks.
 | Default | Tools | Condition |
 | --- | --- | --- |
 | Files | `files.list`, `files.read`, `files.write`, `files.move` | always |
-| Web | `web.fetch` | always; the address and compartment checks below still apply |
+| Web | `web.search`, `web.fetch` | always; the address and compartment checks below still apply, and the space's Public web reads setting turns both off |
 | Finished work | `artifact.publish` | always; a new file saved to the space needs no approval, replacing one or emailing it does |
 | Speech | `audio.synthesize` | only while a speech-capable provider is configured; a `spend`, so every call needs approval and a budget reservation |
 | Code in the workspace | `exec.run`, `exec.python` | only while attempts run in a container (`MELETE_RUNTIME_ADAPTER=docker`, or the Hermes adapter with `MELETE_RUNTIME_SUPERVISOR=docker`); under the process supervisor the row offers nothing |
@@ -333,6 +333,72 @@ while its own workspace stayed writable.
 
 ### Web
 
+### Web search
+
+`web.search(query, max_results?)` is a `read` on the default Web connection, so
+every agent can search the web on a fresh installation with nothing configured.
+A search goes to the first of these that answers:
+
+1. A search API key the operator set: `BRAVE_SEARCH_API_KEY` (Brave Search),
+   then `TAVILY_API_KEY` (Tavily). A key is a deliberate choice, so it comes
+   before everything else.
+2. The search tool of the model the conversation runs on, when its provider has
+   one: the Messages API web search tool for Claude models, the Responses API
+   `web_search` tool for recent OpenAI models. The catalog in
+   `packages/contracts/src/model-search.ts` decides, the way the vision catalog
+   does, and `MELETE_DEFAULT_MODEL_NATIVE_SEARCH` overrides it for the server's
+   default model. Gemini is absent because its search grounding is not offered
+   on the OpenAI-compatible endpoint Melete uses for Google.
+3. A search that needs no key: DuckDuckGo's HTML results page, then Wikipedia's
+   search API when DuckDuckGo does not serve results. Both are read through the
+   same pinned, public-address-only transport as `web.fetch`.
+
+A backend that fails or finds nothing hands the search to the next one.
+
+The model's own search is one bounded request through a model gateway of the
+service's own (`apps/melete/src/broker/search-gateway.ts`), which permits that
+provider search tool and no other built-in tool. The provider key stays in the
+gateway. The request is reserved on the job's output budget under the
+`web.search` action, settled at the provider's usage, and recorded as a
+`search_request` and a `search_receipt` notice in the job's ledger, with the
+attempt's usage counting `search_requests`. The privacy router reads it as the
+job's own service call.
+
+What the receipt keeps: the query, which backend answered and which were tried,
+the model for a native search, how many searches the provider ran, the
+provider's short answer when there is one, and each result's title, address
+(credentials cut, as `web.fetch` does) and snippet, with `sources` listing the
+addresses. `about_this_text` comes before the results and tells the model they
+were written by the sites found, that it must not follow instructions in them,
+and that it should name the addresses it relied on. The conversation's trail
+shows the action as "Searched the web for “…”", with each result as a source.
+
+A query leaves Melete as written, without placeholders, so it is held to more
+than a model request is. It is refused at admission and again at dispatch,
+before any backend is asked, when:
+
+- the space's Public web reads setting is off, or the work is not a
+  conversation or long work a person started (the same rule as `web.fetch`);
+- the space or the agent is marked private, or the conversation is marked
+  sensitive (`PrivacyRouter.outsideSearchRefusal`);
+- the query itself is about a sensitive topic, unless the person said the
+  conversation is not sensitive, or it carries a detail the space's privacy
+  categories detect or a value they list.
+
+A check that cannot answer refuses. If the privacy router sends a native call
+to the person's own model instead, the search ends there and no other backend
+is tried. Evidence: `web-search.test.ts` (connector and backends),
+`search-gateway.test.ts`, `privacy/search.test.ts`, and the integration test
+[web-search.test.ts](../apps/melete/test/integration/web-search.test.ts):
+`a Claude conversation searches with its own search tool, metered on the job,
+with sources in the trail`, `a model with no search of its own uses the keyless
+search, with no key configured`, `a configured search key takes precedence over
+the model’s own search`, `a private space or a sensitive conversation sends the
+query nowhere`, and `a default web connection from an earlier release gains
+web.search; a removed one does not`.
+
+### Web reads
+
 Public research is still subject to SSRF restrictions; it cannot fetch
 arbitrary private or metadata addresses. Private-context requests require the
 trusted exact-host allowlist. Tests include `every private, metadata and
@@ -463,7 +529,11 @@ recorded`).
 The broker serves a small core plus `search_tools(query)` and `load_tool(name)`.
 The core ranks candidates by lexical relevance to the job's objective and its
 latest owner message, then granted files, knowledge and react tools, then the
-most-used verbs on granted connections. `job.wait` leads when the job has an
+most-used verbs on granted connections. `web.search` and `web.fetch` are always
+in the core whenever a web connection grants them: like `ask_person`, they ride
+beside the allowance, so a job's own tools never push them out and they take no
+room from those tools (`web search and web fetch are always in the core, never
+pushed out by the budget`). `job.wait` leads when the job has an
 enabled trigger, and `react` leads when the attempt answers a person directly.
 A reversible verb is shown only together with an external-write sibling from
 the same connection and namespace. MCP tools are candidates only when the job's

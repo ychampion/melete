@@ -45,6 +45,7 @@ import {
 import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-companion.ts';
 import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
+import { configuredSearchGateway } from './broker/search-gateway.ts';
 import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
 import { CompanyReplyPoller, connectorReplyMailbox } from './companies/replies.ts';
@@ -63,6 +64,7 @@ import {
 } from './connectors/configured.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
+import { webSearchFromEnv } from './connectors/web-search.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { mountDevices } from './devices/routes.ts';
@@ -533,6 +535,7 @@ export async function bootstrap(
   let voiceCompanion: Awaited<ReturnType<typeof configuredVoiceCompanion>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
+  let searchGateway: Awaited<ReturnType<typeof configuredSearchGateway>> | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
   let pushDispatcher: PushDispatcher | undefined;
@@ -577,6 +580,7 @@ export async function bootstrap(
       () => blobs?.collector.stop(),
       () => memory?.stop(),
       () => memoryGateway?.close(),
+      () => searchGateway?.close(),
       () => voiceCompanion?.close(),
       () => deploymentMemory?.close(),
       () => effectBoundary?.close(),
@@ -635,6 +639,11 @@ export async function bootstrap(
       }
       // One connector registry serves the API catalog, the effect boundary and
       // the experience routes; the boundary builds the one configured broker.
+      // The model's own web search goes through a gateway of its own, metered on the job.
+      searchGateway = await configuredSearchGateway(handle.sql, env, privacy, {
+        signIn,
+        settings: modelSettings,
+      });
       registry = await connectorsFromEnv(handle.sql, env, {
         connections,
         browserSessions: browser?.sessions,
@@ -642,6 +651,9 @@ export async function bootstrap(
         // A space or agent the person marked private reads no public web pages.
         privateContext: ({ spaceId, agentId }, query) =>
           privacy.marksPrivate(spaceId, agentId, query),
+        webSearch: webSearchFromEnv(env, { native: searchGateway.backend }),
+        // A private or sensitive conversation's words never go to an outside search.
+        searchPrivacy: ({ jobId, query }) => privacy.outsideSearchRefusal(jobId, query),
       });
       catalog = new RuntimeCatalog(handle.db, registry);
       // Sandboxes are the service's own: their providers come from the same

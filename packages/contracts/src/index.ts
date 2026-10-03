@@ -36,6 +36,7 @@ export * from './mcp-server.ts';
 export * from './memory.ts';
 export * from './mention.ts';
 export * from './model-budget.ts';
+export * from './model-search.ts';
 export * from './model-settings.ts';
 export * from './model-vision.ts';
 export { buildOpenApiDocument, OPENAPI_VERSION, openApiJson } from './openapi.ts';
