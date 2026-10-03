@@ -14,6 +14,7 @@
  * every form of that value the relay must keep out of what the computer reads.
  */
 import type { ExecEnvName, JsonObject } from '@melete/contracts';
+import type { MintedCredential } from '../credential-guard.ts';
 
 /** The adapters this installation knows. `test` is offered only with the test connector. */
 export const CREDENTIAL_ADAPTER_IDS = ['github', 'gitlab', 'npm', 'aws', 'test'] as const;
@@ -140,6 +141,12 @@ export interface CredentialAdapter<Config = unknown> {
     message: string,
     status: number,
   ): UpstreamResponse | null;
+  /**
+   * Credentials the service can hand out in an answer (a new personal,
+   * deploy or runner token, a login's token). An answer holding one is never
+   * passed to the computer.
+   */
+  mintedCredentials?: readonly MintedCredential[];
 }
 
 /**
