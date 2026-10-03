@@ -6,6 +6,7 @@ import {
   agentTemplateList,
   connectionListResponse,
   experienceConnectionList,
+  type JsonObject,
   suggestedConnections,
 } from '@melete/contracts';
 import { BrokerService } from '../../src/broker/service.ts';
@@ -182,19 +183,28 @@ const journey = late ? await database() : null;
         payload: { path: 'note.txt', content: 'kept in the job workspace' },
       });
       expect(written.status).toBe('succeeded');
-      // The person's own Files are not the job's workspace: saving into them,
-      // or moving a file there, waits for the person.
+      // A new file in the person's own Files goes through, with its receipt;
+      // saving over one of theirs or taking one out of their Files asks.
+      const propose = (kind: string, payload: JsonObject) =>
+        broker.propose(claimed.claims, { connection_id: files.id, kind, payload });
+      const saved = await propose('files.write', {
+        path: 'imgtest.png',
+        area: 'artifacts',
+        content: 'new',
+      });
+      expect(saved.status).toBe('succeeded');
+      const movedIn = await propose('files.move', {
+        from: 'note.txt',
+        to: 'note.txt',
+        to_area: 'artifacts',
+      });
+      expect(movedIn.status).toBe('succeeded');
       for (const [kind, payload] of [
-        ['files.write', { path: 'imgtest.png', area: 'artifacts', content: 'unrequested' }],
-        ['files.move', { from: 'note.txt', to: 'note.txt', to_area: 'artifacts' }],
-      ] as const) {
-        const asked = await broker.propose(claimed.claims, {
-          connection_id: files.id,
-          kind,
-          payload,
-        });
-        expect(asked.status).toBe('needs_approval');
-      }
+        ['files.write', { path: 'imgtest.png', area: 'artifacts', content: 'replaced' }],
+        ['files.move', { from: 'note.txt', to: 'back.txt', area: 'artifacts', to_area: 'work' }],
+        ['files.move', { from: 'note.txt', to: 'renamed.txt', area: 'artifacts' }],
+      ] as const)
+        expect((await propose(kind, payload)).status).toBe('needs_approval');
     } finally {
       await running.close();
     }
