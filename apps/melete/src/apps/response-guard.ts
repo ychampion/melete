@@ -47,9 +47,10 @@ export async function asksAfterResponses(
   const payload = action.canonical_payload;
   let path: string | null = null;
   if (action.kind === 'files.write' || action.kind === 'files.move') {
-    const area = action.kind === 'files.move' ? payload.to_area : payload.area;
+    // A move writes where it lands: `to`, in `to_area` or else the move's own area.
+    const area = action.kind === 'files.move' ? (payload.to_area ?? payload.area) : payload.area;
     if (area !== undefined && area !== 'work') return false;
-    const target = action.kind === 'files.move' ? payload.to_path : payload.path;
+    const target = action.kind === 'files.move' ? payload.to : payload.path;
     if (typeof target !== 'string') return false;
     path = target
       .split(/[\\/]+/)

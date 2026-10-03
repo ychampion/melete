@@ -620,6 +620,19 @@ databaseTest(
     expect((await write('data/deals.json', '["call me"]')).status).toBe('needs_approval');
     expect((await write('./data//deals.json', '["call me"]')).status).toBe('needs_approval');
     expect((await write('notes/summary.json', '["fine"]')).status).not.toBe('needs_approval');
+    // Moving another file onto it is a write to it too.
+    expect(
+      await asksAfterResponses(ctx.sql, ctx.claims.job_id, {
+        kind: 'files.move',
+        canonical_payload: { from: 'notes/summary.json', to: 'data/deals.json' },
+      }),
+    ).toBe(true);
+    expect(
+      await asksAfterResponses(ctx.sql, ctx.claims.job_id, {
+        kind: 'files.move',
+        canonical_payload: { from: 'notes/summary.json', to: 'notes/other.json' },
+      }),
+    ).toBe(false);
     // Every command that runs where the files are asks too, since a command can change any file.
     for (const [kind, payload] of [
       ['exec.run', { command: 'echo "[]" > data/deals.json' }],
