@@ -82,12 +82,20 @@ export const activeModel = z
         'Whether the model is shown the screenshots the agent takes, as pictures. Otherwise ' +
         'it reads their text receipt: where each was saved, its size and digest.',
     }),
-    vision_source: z.enum(['catalog', 'provider', 'app', 'operator']).meta({
+    vision_source: z.enum(['catalog', 'app', 'operator']).meta({
       description:
-        '`catalog`: Melete’s list of models that read images. `provider`: the provider’s own ' +
-        'model list says whether it reads images. `app`: the owner said so when choosing the ' +
-        'model. `operator`: MELETE_DEFAULT_MODEL_VISION.',
+        '`catalog`: Melete’s list of models that read images. `app`: the owner said so when ' +
+        'choosing the model. `operator`: MELETE_DEFAULT_MODEL_VISION.',
     }),
+    provider_vision: z
+      .boolean()
+      .nullable()
+      .meta({
+        description:
+          'What the provider’s own model list says about this model reading images, from the ' +
+          'last time the list was fetched; null when it has said nothing. Shown beside the ' +
+          'switch only: it never changes `vision`.',
+      }),
     updated_at: timestamp.nullable(),
   })
   .strict();

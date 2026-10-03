@@ -24,17 +24,18 @@
  * for, the operator's or the owner's, and is only ever sent there.
  *
  * Whether the active model reads images: the owner's word, else the
- * operator's, else what the provider's model list said (kept per provider and
- * model whenever the list is fetched), else Melete's catalog. A missing or old
- * answer is fetched in the background; no attempt waits for it.
+ * operator's, else Melete's catalog. What the provider's model list says about
+ * it is kept per provider and model whenever the list is fetched, and shown
+ * beside the switch in Settings; it never turns pictures on by itself. A
+ * missing or old answer is fetched in the background when Settings is read.
  */
 import {
+  effectiveVision,
   listedVisionByModel,
   MODEL_PROVIDERS,
   type ModelConnectionTest,
   type ModelProvider,
   type ModelSettings,
-  resolveVision,
 } from '@melete/contracts';
 import { and, eq } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
@@ -234,26 +235,30 @@ export class ModelSettingsService {
   async activeChoice(
     db: Runner = this.options.db,
   ): Promise<{ provider: string; model: string; vision: boolean }> {
-    const { provider, model, vision } = await this.active(await this.chosen(db), db);
+    const { provider, model, vision } = this.active(await this.chosen(db));
     return { provider, model, vision };
   }
 
   /**
    * The model in use and whether it is shown pictures: the owner's word for a
-   * model chosen in the app, the operator's for the server default, then the
-   * provider's model list, and the catalog's when none of them said.
+   * model chosen in the app, the operator's for the server default, and the
+   * catalog's when neither said. The provider's list does not decide it.
    */
-  private async active(chosen: Awaited<ReturnType<ModelSettingsService['chosen']>>, db?: Runner) {
+  private active(chosen: Awaited<ReturnType<ModelSettingsService['chosen']>>) {
     const provider = chosen?.provider ?? this.env.MELETE_DEFAULT_PROVIDER;
     const model = chosen?.model ?? this.env.MELETE_DEFAULT_MODEL;
     const stated = chosen ? chosen.supportsVision : this.env.MELETE_DEFAULT_MODEL_VISION;
-    const report = typeof stated === 'boolean' ? undefined : await this.report(provider, model, db);
-    const { vision, source } = resolveVision(provider, model, {
-      stated,
-      statedBy: chosen ? 'app' : 'operator',
-      reported: report?.supportsVision,
-    });
-    return { provider, model, vision, vision_source: source };
+    return {
+      provider,
+      model,
+      vision: effectiveVision(provider, model, stated),
+      vision_source:
+        typeof stated === 'boolean'
+          ? chosen
+            ? ('app' as const)
+            : ('operator' as const)
+          : ('catalog' as const),
+    };
   }
 
   /**
@@ -344,7 +349,8 @@ export class ModelSettingsService {
 
   async view(canEdit: boolean): Promise<ModelSettings> {
     const [rows, chosen] = await Promise.all([this.keyRows(), this.chosen()]);
-    const active = await this.active(chosen);
+    const active = this.active(chosen);
+    const reported = await this.report(active.provider, active.model);
     const providers = await Promise.all(
       MODEL_PROVIDERS.map(async (provider) => {
         const row = this.usableRow(provider, rows);
@@ -385,6 +391,7 @@ export class ModelSettingsService {
     return {
       active: {
         ...active,
+        provider_vision: reported?.supportsVision ?? null,
         source: chosen ? 'app' : 'operator',
         connected: await this.connected(active.provider, rows),
         updated_at: chosen?.updatedAt.toISOString() ?? null,

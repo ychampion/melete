@@ -74,12 +74,10 @@ export function visionLine(active: ModelSettings['active']): { text: string; hin
       ? 'You set this for this model.'
       : active.vision_source === 'operator'
         ? 'Set in the server’s configuration.'
-        : active.vision_source === 'provider'
-          ? active.vision
-            ? 'Your provider says this model reads images.'
-            : 'Your provider says this model doesn’t read images.'
-          : active.vision
-            ? 'This model reads images, by Melete’s list.'
+        : active.vision
+          ? 'This model reads images, by Melete’s list.'
+          : active.provider_vision
+            ? 'Your provider says this model can read images. Turn this on to send it screenshots as pictures.'
             : 'Melete doesn’t know this model to read images. If it does, turn this on.';
   return { text, hint };
 }

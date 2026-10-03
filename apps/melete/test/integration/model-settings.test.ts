@@ -615,10 +615,10 @@ describeWithDb('the model, connected in the app', () => {
     expect(unbound?.signedIn).toBeUndefined();
   });
 
-  test('whether the model reads images is the provider’s answer when its list gives one', async () => {
+  test('the provider’s answer on images is shown beside the switch, and never turns pictures on', async () => {
     const SEES = 'accounts/fireworks/models/fixture-sees';
     const BLIND = 'accounts/fireworks/models/qwen2p5-vl-32b-instruct';
-    const UNLISTED = 'accounts/fireworks/models/llama4-maverick-instruct-basic';
+    const UNLISTED = 'accounts/fireworks/models/fixture-unlisted';
     let answer: () => Response = () =>
       Response.json({
         data: [
@@ -641,28 +641,42 @@ describeWithDb('the model, connected in the app', () => {
       return chosen.body.active as Json;
     };
 
-    // The provider says yes to a model Melete's list does not know.
-    expect(await choose(SEES)).toMatchObject({ vision: true, vision_source: 'provider' });
-    expect(await api.settings.activeChoice()).toMatchObject({ model: SEES, vision: true });
-    // The provider says no to a model Melete's list thinks reads images.
-    expect(await choose(BLIND)).toMatchObject({ vision: false, vision_source: 'provider' });
-    expect(await api.settings.activeChoice()).toMatchObject({ vision: false });
-    // A model the list says nothing about is left to Melete's list.
-    expect(await choose(UNLISTED)).toMatchObject({ vision: true, vision_source: 'catalog' });
-    // The owner's word wins over the provider's.
-    expect(await choose(SEES, false)).toMatchObject({ vision: false, vision_source: 'app' });
-    expect(await api.settings.activeChoice()).toMatchObject({ vision: false });
-    expect(await choose(BLIND, true)).toMatchObject({ vision: true, vision_source: 'app' });
+    // The provider says yes: it is shown, and pictures stay off until the owner turns them on.
+    expect(await choose(SEES)).toMatchObject({
+      vision: false,
+      vision_source: 'catalog',
+      provider_vision: true,
+    });
+    expect(await api.settings.activeChoice()).toMatchObject({ model: SEES, vision: false });
+    // The provider says no: shown, and Melete's list still decides.
+    expect(await choose(BLIND)).toMatchObject({
+      vision: true,
+      vision_source: 'catalog',
+      provider_vision: false,
+    });
+    // A model the list says nothing about.
+    expect(await choose(UNLISTED)).toMatchObject({
+      vision: false,
+      vision_source: 'catalog',
+      provider_vision: null,
+    });
+    // The owner's word decides.
+    expect(await choose(SEES, true)).toMatchObject({
+      vision: true,
+      vision_source: 'app',
+      provider_vision: true,
+    });
+    expect(await api.settings.activeChoice()).toMatchObject({ vision: true });
     await api.settings.refreshVision('fireworks');
 
     // A provider that cannot be reached leaves the answers already given.
     answer = () => new Response('unavailable', { status: 503 });
     const later = app({}, async () => answer());
     await later.settings.refreshVision('fireworks');
-    expect(await choose(SEES)).toMatchObject({ vision: true, vision_source: 'provider' });
+    expect(await choose(SEES)).toMatchObject({ vision: false, provider_vision: true });
 
-    // With no answer stored and the list unavailable, Melete's list decides at
-    // once, and nothing waits on the provider.
+    // With no answer stored and the list unavailable, Settings answers at once
+    // without one, and nothing waits on the provider.
     await database().sql`delete from model_vision_report`;
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => {
@@ -675,24 +689,22 @@ describeWithDb('the model, connected in the app', () => {
       throw new TypeError('fetch failed');
     });
     const view = await slow.call('/model-settings', cookie);
-    expect(view.body.active).toMatchObject({
-      model: SEES,
-      vision: false,
-      vision_source: 'catalog',
-    });
+    expect(view.body.active).toMatchObject({ model: SEES, vision: false, provider_vision: null });
     release();
     await slow.settings.refreshVision('fireworks');
     expect(asked).toBe(1);
-    expect((await slow.call('/model-settings', cookie)).body.active).toMatchObject({
-      vision_source: 'catalog',
-    });
+    expect((await slow.call('/model-settings', cookie)).body.active.provider_vision).toBeNull();
 
-    // The provider's answer arrives in the background, for the next attempt.
+    // The provider's answer arrives in the background, for the next read of Settings.
     answer = () => Response.json({ data: [{ id: SEES, supports_image_input: true }] });
     const fresh = app({}, async () => answer());
-    expect(await fresh.settings.activeChoice()).toMatchObject({ vision: false });
+    expect((await fresh.call('/model-settings', cookie)).body.active.provider_vision).toBeNull();
     await fresh.settings.refreshVision('fireworks');
-    expect(await fresh.settings.activeChoice()).toMatchObject({ vision: true });
+    expect((await fresh.call('/model-settings', cookie)).body.active).toMatchObject({
+      vision: false,
+      provider_vision: true,
+    });
+    expect(await fresh.settings.activeChoice()).toMatchObject({ vision: false });
     expect(answered.join('\n')).not.toContain(FIREWORKS_KEY);
   });
 });

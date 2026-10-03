@@ -294,20 +294,15 @@ describe('Docker attempt supervision', () => {
   test('every attempt container is told the window and trigger its model implies', async () => {
     const f = await setup();
     const cases = [
-      // A million-token window read as text, so the owner's cap on the trigger decides.
-      ['fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash', false, '1000000', '200000'],
-      // The same window with pictures: the body limit, less their room, decides.
-      ['fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash', true, '1000000', '131072'],
+      // A million-token window, so the owner's cap on the trigger decides.
+      ['fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash', '1000000', '200000'],
       // A model the catalog does not name: the documented fallback and the
       // engine's own trigger for it.
-      ['openai-compatible', 'llama3.1', undefined, '128000', '96000'],
+      ['openai-compatible', 'llama3.1', '128000', '96000'],
     ] as const;
-    for (const [index, [provider, model, vision, window, threshold]] of cases.entries()) {
+    for (const [index, [provider, model, window, threshold]] of cases.entries()) {
       await f.runtime.start(
-        {
-          ...bundle(index),
-          model: { provider, model, fallback: null, ...(vision === undefined ? {} : { vision }) },
-        },
+        { ...bundle(index), model: { provider, model, fallback: null } },
         f.sink,
         new AbortController().signal,
       );

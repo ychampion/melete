@@ -4,11 +4,13 @@
  * The agent's screenshots of its own computer, and of a paired device, reach
  * the model as images only when the model reads images. Every other model gets
  * the text receipt it always got: where the picture was saved, its size and
- * its digest. The engine has no route to a provider, so the service decides:
- * the owner's word first, then the operator's, then what the provider's own
- * model list says about the model, and only then this table.
+ * its digest. Nothing is probed at run time (the engine has no route to a
+ * provider), so the answer comes from this table, or from the owner, who can
+ * say otherwise in the model settings. What a provider's own model list says
+ * (`listedVision`) is shown to the owner beside the switch; it never turns
+ * pictures on by itself.
  *
- * A model nobody has an answer for is treated as text-only. Telling a
+ * A model the table does not recognise is treated as text-only. Telling a
  * text-only model it can see makes its provider refuse the request; telling a
  * vision model it cannot only costs it the picture.
  */
@@ -40,23 +42,6 @@ const VISION_FAMILIES: Record<string, RegExp[]> = {
   'openai-compatible': [...OPEN_WEIGHT_VISION, /^gpt-4o/i, /^gpt-[5-9]/i, /^claude-/i, /gemini-/i],
 };
 
-/**
- * Fireworks models known to read images whose names carry no vision marker.
- * Matched on the id after `accounts/fireworks/models/`.
- */
-const FIREWORKS_VISION_MODELS = new Set([
-  'deepseek-v4p1-flash',
-  'deepseek-v4-flash-vision-exp',
-  'ember-1',
-  'glm-5p3-flash',
-  'inkling',
-  'kimi-k2p6',
-  'kimi-k2p7-code',
-  'kimi-k3',
-  'qwen3p7-plus',
-  'qwen3p8-max',
-]);
-
 /** Families that carry a vision marker in their name but read only text. */
 const TEXT_ONLY = [/deepseek/i, /embed/i, /whisper/i, /tts/i, /^gpt-3\.5/i, /-audio-/i];
 
@@ -66,36 +51,8 @@ const TEXT_ONLY = [/deepseek/i, /embed/i, /whisper/i, /tts/i, /^gpt-3\.5/i, /-au
  */
 export function modelSupportsVision(provider: string, model: string): boolean {
   if (!Object.hasOwn(VISION_FAMILIES, provider)) return false;
-  if (
-    provider === 'fireworks' &&
-    FIREWORKS_VISION_MODELS.has(model.toLowerCase().replace(/^accounts\/fireworks\/models\//, ''))
-  )
-    return true;
   if (TEXT_ONLY.some((pattern) => pattern.test(model))) return false;
   return (VISION_FAMILIES[provider] ?? []).some((pattern) => pattern.test(model));
-}
-
-/** Where the answer on a model's vision came from. */
-export type VisionSource = 'app' | 'operator' | 'provider' | 'catalog';
-
-/**
- * The model's vision as it will be used, and whose answer it is: the owner's
- * word when they gave one (or the operator's, for the server default), then
- * what the provider's model list reported, then the catalog.
- */
-export function resolveVision(
-  provider: string,
-  model: string,
-  input: {
-    stated?: boolean | null;
-    statedBy?: 'app' | 'operator';
-    reported?: boolean | null;
-  } = {},
-): { vision: boolean; source: VisionSource } {
-  if (typeof input.stated === 'boolean')
-    return { vision: input.stated, source: input.statedBy ?? 'app' };
-  if (typeof input.reported === 'boolean') return { vision: input.reported, source: 'provider' };
-  return { vision: modelSupportsVision(provider, model), source: 'catalog' };
 }
 
 /**
@@ -107,7 +64,7 @@ export function effectiveVision(
   model: string,
   override: boolean | null | undefined,
 ): boolean {
-  return resolveVision(provider, model, { stated: override }).vision;
+  return typeof override === 'boolean' ? override : modelSupportsVision(provider, model);
 }
 
 /**

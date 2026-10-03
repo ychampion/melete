@@ -8,7 +8,6 @@ import {
   MAX_IMAGE_ENCODED_BYTES,
   MAX_REQUEST_IMAGES,
   modelSupportsVision,
-  resolveVision,
   VISION_IMAGE_RESERVE_BYTES,
 } from './model-vision.ts';
 
@@ -24,16 +23,6 @@ test('the catalog knows the models that read images', () => {
     ['google', 'gemini-2.5-pro'],
     ['fireworks', 'accounts/fireworks/models/qwen2p5-vl-32b-instruct'],
     ['fireworks', 'accounts/fireworks/models/llama4-maverick-instruct-basic'],
-    ['fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash'],
-    ['fireworks', 'accounts/fireworks/models/deepseek-v4-flash-vision-exp'],
-    ['fireworks', 'accounts/fireworks/models/kimi-k2p6'],
-    ['fireworks', 'accounts/fireworks/models/kimi-k2p7-code'],
-    ['fireworks', 'accounts/fireworks/models/kimi-k3'],
-    ['fireworks', 'accounts/fireworks/models/qwen3p7-plus'],
-    ['fireworks', 'accounts/fireworks/models/qwen3p8-max'],
-    ['fireworks', 'accounts/fireworks/models/glm-5p3-flash'],
-    ['fireworks', 'accounts/fireworks/models/ember-1'],
-    ['fireworks', 'accounts/fireworks/models/inkling'],
     ['openai-compatible', 'llava:13b'],
     ['openai-compatible', 'qwen2.5vl:7b'],
     ['openai-compatible', 'gemma3:27b'],
@@ -48,7 +37,8 @@ test('the catalog knows the models that read images', () => {
 
 test('anything else reads text only', () => {
   for (const [provider, model] of [
-    ['fireworks', 'accounts/fireworks/models/deepseek-v3p2'],
+    ['fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash'],
+    ['fireworks', 'deepseek-ai/DeepSeek-V4.1-Flash'],
     ['openai', 'gpt-3.5-turbo'],
     ['openai', 'text-embedding-3-large'],
     ['openai-compatible', 'llama3.1:8b'],
@@ -71,29 +61,6 @@ test("the owner's answer beats the catalog", () => {
   expect(effectiveVision('anthropic', 'claude-opus-4-1', false)).toBe(false);
   expect(effectiveVision('anthropic', 'claude-opus-4-1', null)).toBe(true);
   expect(effectiveVision('anthropic', 'claude-opus-4-1', undefined)).toBe(true);
-});
-
-test('the owner, then the operator, then the provider, then the catalog', () => {
-  const blind = 'accounts/fireworks/models/qwen2p5-vl-32b-instruct';
-  expect(resolveVision('fireworks', blind, { reported: false })).toEqual({
-    vision: false,
-    source: 'provider',
-  });
-  expect(resolveVision('fireworks', 'accounts/fireworks/models/x', { reported: true })).toEqual({
-    vision: true,
-    source: 'provider',
-  });
-  expect(resolveVision('fireworks', blind, { reported: null })).toEqual({
-    vision: true,
-    source: 'catalog',
-  });
-  expect(resolveVision('fireworks', blind, { stated: true, reported: false })).toEqual({
-    vision: true,
-    source: 'app',
-  });
-  expect(
-    resolveVision('fireworks', blind, { stated: false, statedBy: 'operator', reported: true }),
-  ).toEqual({ vision: false, source: 'operator' });
 });
 
 test('what a provider’s model list says about images', () => {

@@ -85,8 +85,7 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
     enabled: true,
     in_place: true,
     abort_on_summary_failure: false,
-    // The default model reads images, so its pictures' bytes come off the body limit.
-    threshold_tokens: 131_072,
+    threshold_tokens: 200_000,
   });
   expect(config.auxiliary).toEqual({
     title_generation: { enabled: false },
@@ -97,7 +96,7 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
     provider: 'melete-gateway',
     default: base.model,
     context_length: 1_000_000,
-    supports_vision: true,
+    supports_vision: false,
   });
 });
 
@@ -153,10 +152,6 @@ test('the numbers handed to a container are the numbers the renderer computed', 
   expect(engineConfigEnvironment(base)).toEqual({
     MELETE_ENGINE_MAX_TURNS: '150',
     MELETE_ENGINE_CONTEXT_LENGTH: '1000000',
-    MELETE_ENGINE_COMPACTION_THRESHOLD: '131072',
-    MELETE_ENGINE_SUPPORTS_VISION: '1',
-  });
-  expect(engineConfigEnvironment({ ...base, vision: false })).toMatchObject({
     MELETE_ENGINE_COMPACTION_THRESHOLD: '200000',
     MELETE_ENGINE_SUPPORTS_VISION: '0',
   });
