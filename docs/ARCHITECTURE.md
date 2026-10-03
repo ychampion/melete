@@ -299,12 +299,16 @@ hash and approval are the same on every attempt. Connectors may also offer
 See `.agents/notes/0015-typed-repair.md`.
 
 An installed MCP server whose installation declares a ledger feed can add
-tracked items to its space's ledger. Each item passes the evidence gate a
-scanned item passes, and an action survives only through a tool the
-installation declared ([CONNECTORS](CONNECTORS.md#adding-tracked-items-to-the-ledger)).
-Evidence: `a declared feed is read, and only what holds is written to the
-owner’s ledger` and `revoking the connection withholds its items from every
-read` in `connection-ledger.test.ts`.
+tracked items to its space's ledger. Each item's quotes must hold in the texts
+the feed sent, and an action survives only through a tool the installation
+declared. Taking an action is one call to that tool with the item's stored
+input, proposed to the broker as an owner command and bound to the digest of
+the action the person was shown; no model is in the loop
+([CONNECTORS](CONNECTORS.md#adding-tracked-items-to-the-ledger)). Evidence: `a
+declared feed is read, and only what holds is written to the owner’s ledger`,
+`a hostile feed cannot reach an undeclared tool or run a different input` and
+`revoking the connection withholds its items and companies from every read and
+route` in `connection-ledger.test.ts`.
 
 ## 8. Memory and skills
 

@@ -676,12 +676,15 @@ The installation decides whether a server may do this. Its `mcp` block names a
 A server whose installation declares no feed adds nothing, whatever its tools
 return, and nothing a job or a model writes can declare one. A feed that names
 a tool that can write, or an action the installation does not have, is refused
-at installation.
+at installation. `join_companies`, false unless set, decides whether an item
+may join a company the person already has from a mailbox scan at the same
+domain; left false, such an item is dropped and counted as `company_elsewhere`.
 
-The service reads every declared feed every five minutes, and
-`POST /connections/{id}/ledger/sync` reads one now for the owner of its space.
-The feed tool is called with no arguments and answers, as structured content or
-as one text block of JSON:
+The service reads every declared feed every five minutes, one pass at a time,
+and `POST /connections/{id}/ledger/sync` reads one now for the owner of its
+space, at most once a minute per connection (`429 too_soon` otherwise). The
+feed tool is called with no arguments and answers, as structured content or as
+one text block of JSON:
 
 | Field | What it holds |
 | --- | --- |
@@ -689,53 +692,98 @@ as one text block of JSON:
 | `items[].ref` | The server's own id; publishing the same `ref` again updates the item |
 | `items[].kind` | `matter` (open, with a state and a next step) or `commitment` (owed one way or the other) |
 | `items[].direction` | `owed_to_you`, `you_owe`, or `info` for a matter that is about neither |
-| `items[].counterparty` | `name` and `domain`; the item joins the company the person already has at that domain |
+| `items[].counterparty` | `name` and `domain`; the item joins the company the feed added at that domain, or one a scan found when `join_companies` allows it |
 | `items[].state`, `next_step`, `parties[]` | Where it stands, in the server's words |
 | `items[].due_at`, `amount_minor`, `currency` | As on any ledger item |
 | `items[].evidence[]` | `source`, `quote`, `start`, `end`: a quote and its span in one of `sources` |
 | `items[].actions[]` | `id`, `label`, `tool` (an alias) and `input` |
 | `items[].closed` | True when the matter is over; the item is settled |
 
-Each item is checked on its own. Every quote must be exactly the text at its
-span in a source the same feed sent, the rule `evidenceHolds` applies to a
-scanned item, or the whole item is dropped and counted. An action whose tool is
-not one of the declared `actions` is dropped and the item kept. The sources an
-admitted item quotes are stored under an id that names the connection, the
-source and a digest of its text, so a person opens a published item back to its
-sentence the same way as a scanned one, and a source whose text later changes is
-stored again rather than rewritten. The answer counts what was written and what
-was dropped, by reason. Reading an unchanged feed writes nothing. An item left
-out of a later read is not taken to be closed. A person's own choices stay
-theirs: an item they dropped stays dropped, and one being handled keeps its job.
+Each source and each item is checked on its own, so one bad entry drops only
+itself. An entry nested too deeply, too large, or holding a NUL character is
+dropped before it is parsed. Every quote must be exactly the text at its span in
+a source the same feed sent, the rule `evidenceHolds` applies to a scanned item,
+or the whole item is dropped and counted. That proves the quote is in the text
+the feed sent, not that the text is true, so a published item's confidence is
+`reported`, and the app shows its source as the connection's account rather than
+as mail. An action whose tool is not one of the declared `actions` is dropped and
+the item kept. The sources an admitted item quotes are stored under an id that
+names the connection, the source and a digest of its text, so a person opens a
+published item back to its sentence the same way as a scanned one, and a source
+whose text later changes is stored again rather than rewritten. The answer
+counts what was written and what was dropped, by reason. Reading an unchanged
+feed writes nothing, and a read that started before the last one written is not
+applied. An item left out of a later read is not taken to be closed. A person's
+own choices stay theirs: an item they dropped stays dropped, and one with a step
+waiting keeps its job. `closed` settles an open item, one with a step waiting
+included.
+
+A connection holds at most 1,000 items, 200 companies its feed added and 2,000
+source texts; past those, a new item is dropped and counted (`item_limit`,
+`company_limit`, `source_limit`). An item the feed has stopped listing, and
+that has not changed for 30 days, is let go unless the person dropped it or a
+step is waiting on it. A source text none of its items quotes, and a company of
+its own that no item is about, go with it. The company map returns at most
+5,000 items and 2,000 companies.
 
 Items are written for the owner of the connection's space, which is the only
 kind of space an MCP server is installed in, so they are fenced like the rest of
 the ledger: another account, or another member of a shared space, reads none of
-them. Revoking the connection withholds its items from every read and from every
-route that acts on one; removing its row removes them.
+them. Revoking the connection, or switching it off, hides its items and the
+companies its feed added from every read and from every route that acts on an
+item. Removing its row removes its items, those companies and the source texts
+its items quote. A scan that later finds a feed's company at the same domain
+makes it the person's own, and it stays.
 
-`POST /ledger/{id}/handle` on a published item takes `{ "action": "<id>" }`, or
-the item's first action when the body is empty. It checks the installation as it
-stands then: the connection is active and still declares and grants that tool.
-It starts a job that calls that one tool once with the item's exact input,
-quoting only the sentences that still hold. The call waits for the person
-whenever the installation's effect class for the tool says it must, as any call
-does. An item that offers no action answers `400 no_action`.
+Each action is served with a `digest` of exactly its id, label, tool and input,
+and the app shows the tool and input beside the action's button.
+`POST /ledger/{id}/handle` on a published item takes
+`{ "action": "<id>", "digest": "<digest>" }`; it answers `400 choose_action`
+without both, and `409 action_changed` when the action is no longer the one
+shown. It checks the installation as it stands then: the connection is active
+and still declares and grants that tool (`409 action_unavailable` otherwise).
+It then proposes one call to that tool with the action's stored input, exactly,
+to the broker, as an owner command of the person's own: no model writes or
+chooses the call, and nothing the feed wrote reaches a model or the job's
+description. The broker applies the tool's effect class, the person's approval
+settings, the origin checks and the receipt as for any call. An MCP tool that is
+not a `read` always waits for the person to approve these exact bytes; a `read`
+runs on the press. The answer carries `action_status`. Once the call has an
+outcome, the job ends and the item is free for its next step, with the job kept
+as its last. An assistant connected through Melete's own MCP endpoint cannot
+take a step on a published item: its `handle` tool refuses one.
 
 Evidence: `a declared feed is read, and only what holds is written to the
 owner’s ledger`, `a published item opens back to the exact sentence in its
 source`, `reading the same feed again writes nothing; a closed item is settled`,
 `another account reads none of it, and cannot read the feed`, `a server whose
-installation declares no feed adds nothing, whatever it returns`, `an action
-runs as a job that calls the connection’s declared tool, and only that one` and
-`revoking the connection withholds its items from every read` in
+installation declares no feed adds nothing, whatever it returns`, `a step is
+taken only as it was shown: its id and the digest it was served with`, `a step is
+one brokered call to the declared tool with the stored input, and no model`,
+`a hostile feed cannot reach an undeclared tool or run a different input`, `a
+write the person must approve waits for them, and the item keeps its job`,
+`closed by the connection while a step waits, the item is settled and stays so`,
+`an item the person dropped stays dropped, whatever the connection says next`,
+`a step the installation no longer declares or grants is refused`, `a later read
+is never overwritten by an earlier one that answered late`, `one item or source
+with a NUL drops only itself; the read goes on`, `the service reads every
+declared feed on its own schedule, one pass at a time`, `a person may ask for a
+read of one connection once a minute`, `a connection holds a bounded share, and
+lets go of what it stopped listing`, `an item joins a company found some other
+way only when the installation allows it`, `switching a connection off hides its
+items and companies; removing it removes them` and `revoking the connection
+withholds its items and companies from every read and route` in
 [connection-ledger.test.ts](../apps/melete/test/integration/connection-ledger.test.ts);
-`a fabricated quote, a shifted span and a missing source each drop the item` and
+`a fabricated quote, a shifted span and a missing source each drop the item`,
 `an action through a tool the installation did not declare is dropped, and the
-item kept` in [published.test.ts](../apps/melete/src/companies/published.test.ts);
-`a feed that can write, or an action the installation does not have, is
-refused` in [ledger-feed.test.ts](../packages/contracts/src/ledger-feed.test.ts).
-A feed is read in one call of at most 200 items; a declaration kept only in
+item kept`, `the digest covers the id, label, tool and input, and nothing else
+moves it` and `an input nested past any stack drops its item instead of
+throwing` in [published.test.ts](../apps/melete/src/companies/published.test.ts);
+`handle refuses an item a connected app added, and starts nothing` in
+[tools.test.ts](../apps/melete/src/mcp-server/tools.test.ts); `a feed that can
+write, or an action the installation does not have, is refused` in
+[ledger-feed.test.ts](../packages/contracts/src/ledger-feed.test.ts). A feed is
+read in one call of at most 200 items; a declaration kept only in
 `MELETE_CONNECTIONS_FILE` is not read.
 
 ## Plugins and stdio MCP servers

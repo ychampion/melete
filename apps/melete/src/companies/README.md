@@ -46,7 +46,8 @@ extractor returned, whatever the extractor is.
 | Another account reads none of it | `test/integration/companies-surface.test.ts` |
 | A connection's item is held to the same evidence rule | `published.test.ts` — `a fabricated quote, a shifted span and a missing source each drop the item` |
 | A connection's item can act only through a declared tool | `published.test.ts` — `an action through a tool the installation did not declare is dropped, and the item kept` |
-| A revoked connection's items are withheld | `test/integration/connection-ledger.test.ts` — `revoking the connection withholds its items from every read` |
+| A connection's step runs only as it was shown, as one brokered call | `test/integration/connection-ledger.test.ts` — `a hostile feed cannot reach an undeclared tool or run a different input` |
+| A revoked connection's items are withheld | `test/integration/connection-ledger.test.ts` — `revoking the connection withholds its items and companies from every read and route` |
 
 ## Running it
 
@@ -139,9 +140,12 @@ first message goes.
 An installed MCP server whose installation declares a ledger feed adds items
 of its own: `published.ts` admits them under the evidence rule above, and
 `feeds.ts` reads the feed through the connector and writes them for the owner
-of the connection's space. A published item carries `source`: the connection,
-its own `ref`, where the matter stands and the actions it offers. The rest of
-it is read like any other item. See
+of the connection's space, within the connection's limits. A published item
+carries `source`: the connection, its own `ref`, where the matter stands and the
+actions it offers, each with the digest of what is shown. The rest of it is read
+like any other item. Taking one of its actions is one brokered call to the
+declared tool with the stored input, as an owner command
+(`ExperienceEffects.runLedgerStep`); no model writes or chooses it. See
 [CONNECTORS](../../../../docs/CONNECTORS.md#adding-tracked-items-to-the-ledger).
 
 ## Scoping
