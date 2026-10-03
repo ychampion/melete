@@ -21,6 +21,8 @@ import {
   AWS_VOLATILE_HEADERS,
   awsAdapter,
   createAwsAdapter,
+  MAX_UPLOAD_PARTS,
+  Uploads,
 } from './aws.ts';
 import type { ClassifiedWrite, CredentialAdapter, InterceptedRequest } from './types.ts';
 
@@ -94,6 +96,39 @@ async function placeholderSigned(input: {
   return rest;
 }
 
+type Probe = {
+  method: string;
+  host: string;
+  service: string;
+  path: string;
+  query?: string;
+  headers?: Record<string, string>;
+  body?: string;
+};
+
+/** A request signed with the placeholder, as the relay hands it to the adapter. */
+async function probe(input: Probe): Promise<InterceptedRequest> {
+  const signed = await placeholderSigned({
+    method: input.method,
+    host: input.host,
+    path: input.path,
+    query: input.query ?? '',
+    service: input.service,
+    headers: input.headers ?? {},
+    body: input.body ?? '',
+  });
+  const { authorization, ...headers } = signed;
+  return {
+    host: input.host,
+    method: input.method,
+    path: input.path,
+    query: input.query ?? '',
+    headers,
+    body: Buffer.from(input.body ?? ''),
+    ...(authorization ? { authorization } : {}),
+  };
+}
+
 describe('what each request the AWS SDK builds does', () => {
   test('list and describe calls are reads, and delete and run calls ask', () => {
     const seen: string[] = [];
@@ -156,100 +191,383 @@ describe('what each request the AWS SDK builds does', () => {
     });
   });
 
-  test('an operation that hands out credentials is refused wherever it is named', async () => {
-    const shaped = async (input: {
-      host: string;
-      service: string;
-      path?: string;
-      target?: string;
-    }): Promise<InterceptedRequest> => {
-      const path = input.path ?? '/';
-      const headers: Record<string, string> = {
-        'content-type': 'application/x-amz-json-1.1',
-        ...(input.target ? { 'x-amz-target': input.target } : {}),
-      };
-      const { authorization, ...rest } = await placeholderSigned({
+  test('an operation name a service does not read is never believed', async () => {
+    const verdict = async (input: Probe) => awsAdapter.classify(await probe(input), config);
+    // REST services route by method and path; an Action or a target they ignore is refused.
+    for (const named of [
+      {
+        method: 'DELETE',
+        host: 'lambda.eu-west-1.amazonaws.com',
+        service: 'lambda',
+        path: '/2015-03-31/functions/prod',
+        query: 'Action=GetFunction',
+      },
+      {
         method: 'POST',
-        host: input.host,
-        path,
-        service: input.service,
-        headers,
+        host: 'lambda.eu-west-1.amazonaws.com',
+        service: 'lambda',
+        path: '/2015-03-31/functions/prod/invocations',
+        headers: { 'x-amz-target': 'X.GetFunction' },
+      },
+      {
+        method: 'POST',
+        host: 'route53.amazonaws.com',
+        service: 'route53',
+        path: '/2013-04-01/hostedzone/Z1/rrset/',
+        query: 'Action=ListHostedZones',
+      },
+      {
+        method: 'DELETE',
+        host: 'eks.eu-west-1.amazonaws.com',
+        service: 'eks',
+        path: '/clusters/prod',
+        query: 'Action=DescribeCluster',
+      },
+      // Two targets joined into one header, or a target of another service.
+      {
+        method: 'POST',
+        host: 'dynamodb.eu-west-1.amazonaws.com',
+        service: 'dynamodb',
+        path: '/',
+        headers: {
+          'x-amz-target': 'DynamoDB_20120810.DeleteTable, DynamoDB_20120810.GetItem',
+          'content-type': 'application/x-amz-json-1.0',
+        },
         body: '{}',
-      });
-      return {
-        host: input.host,
+      },
+      {
         method: 'POST',
-        path,
-        query: '',
-        headers: rest,
-        body: Buffer.from('{}'),
-        ...(authorization ? { authorization } : {}),
-      };
-    };
-    const cases = [
-      await shaped({
-        host: 'elasticmapreduce.eu-west-1.amazonaws.com',
-        service: 'elasticmapreduce',
-        target: 'ElasticMapReduce.GetClusterSessionCredentials',
+        host: 'dynamodb.eu-west-1.amazonaws.com',
+        service: 'dynamodb',
+        path: '/',
+        headers: { 'x-amz-target': 'Logs_20140328.DescribeLogGroups' },
+        body: '{}',
+      },
+      // A query service reads its body as a form whatever it is labelled.
+      {
+        method: 'POST',
+        host: 'iam.amazonaws.com',
+        service: 'iam',
+        path: '/',
+        query: 'Action=ListUsers&Version=2010-05-08',
+        headers: { 'content-type': 'text/plain' },
+        body: 'Action=DeleteUser&UserName=alice',
+      },
+    ] as Probe[])
+      expect([named.method, named.path, (await verdict(named)).kind]).toEqual([
+        named.method,
+        named.path,
+        'refuse',
+      ]);
+    // REST writes are changes by their method, whatever their path says.
+    expect(
+      await verdict({
+        method: 'POST',
+        host: 'lambda.eu-west-1.amazonaws.com',
+        service: 'lambda',
+        path: '/2015-03-31/functions/prod/invocations',
+        body: '{}',
       }),
-      await shaped({
-        host: 'api.sagemaker.eu-west-1.amazonaws.com',
-        service: 'sagemaker',
-        target: 'SageMaker.CreatePresignedDomainUrl',
+    ).toMatchObject({ kind: 'write', operation: 'POST /2015-03-31/functions/prod/invocations' });
+    // A service the SDK's definitions do not know asks for everything, even a GET.
+    expect(
+      await verdict({
+        method: 'GET',
+        host: 'madeup.eu-west-1.amazonaws.com',
+        service: 'madeup',
+        path: '/',
       }),
-      await shaped({
+    ).toMatchObject({ kind: 'write' });
+    // Where one host serves two APIs, the request is read by the one its shape names.
+    expect(
+      await verdict({
+        method: 'POST',
+        host: 'email.eu-west-1.amazonaws.com',
+        service: 'ses',
+        path: '/',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'Action=GetSendQuota&Version=2010-12-01',
+      }),
+    ).toEqual({ kind: 'read' });
+  });
+
+  test('an operation that hands out credentials is refused, and one that may hand one back asks', async () => {
+    const verdict = async (input: Probe) => awsAdapter.classify(await probe(input), config);
+    const json = (host: string, service: string, target: string): Probe => ({
+      method: 'POST',
+      host,
+      service,
+      path: '/',
+      headers: { 'x-amz-target': target, 'content-type': 'application/x-amz-json-1.1' },
+      body: '{}',
+    });
+    for (const minted of [
+      json(
+        'elasticmapreduce.eu-west-1.amazonaws.com',
+        'elasticmapreduce',
+        'ElasticMapReduce.GetClusterSessionCredentials',
+      ),
+      json(
+        'api.sagemaker.eu-west-1.amazonaws.com',
+        'sagemaker',
+        'SageMaker.CreatePresignedDomainUrl',
+      ),
+      json('gamelift.eu-west-1.amazonaws.com', 'gamelift', 'GameLift.GetComputeAccess'),
+      json('gamelift.eu-west-1.amazonaws.com', 'gamelift', 'GameLift.GetInstanceAccess'),
+      {
+        method: 'POST',
         host: 'lakeformation.eu-west-1.amazonaws.com',
         service: 'lakeformation',
         path: '/GetTemporaryGlueTableCredentials',
-      }),
-      await shaped({
+        body: '{}',
+      },
+      {
+        method: 'POST',
         host: 'oidc.eu-west-1.amazonaws.com',
         service: 'sso-oauth',
-        target: 'AWSSSOOIDCService.CreateToken',
-      }),
-    ];
-    for (const request of cases)
-      expect(awsAdapter.classify(request, config)).toMatchObject({
-        kind: 'refuse',
-        reason: expect.stringContaining('hands out credentials'),
-      });
-    // A name that only mentions a credential report is an ordinary read.
-    const report = await shaped({
+        path: '/token',
+        body: '{}',
+      },
+      {
+        method: 'GET',
+        host: 'deadline.eu-west-1.amazonaws.com',
+        service: 'deadline',
+        path: '/2023-10-12/farms/f1/queues/q1/user-roles',
+      },
+      {
+        method: 'GET',
+        host: 'portal.sso.eu-west-1.amazonaws.com',
+        service: 'awsssoportal',
+        path: '/federation/credentials',
+        query: 'account_id=1&role_name=r',
+      },
+    ] as Probe[])
+      expect([minted.path, minted.headers?.['x-amz-target'], await verdict(minted)]).toEqual([
+        minted.path,
+        minted.headers?.['x-amz-target'],
+        { kind: 'refuse', reason: expect.stringContaining('hands out credentials') },
+      ]);
+    // Ones whose answer may carry a credential ask, with a warning, and their answer is checked.
+    for (const asks of [
+      json('gamelift.eu-west-1.amazonaws.com', 'gamelift', 'GameLift.RequestUploadCredentials'),
+      {
+        method: 'POST',
+        host: 'oidc.eu-west-1.amazonaws.com',
+        service: 'sso-oauth',
+        path: '/token',
+        query: 'aws_iam=t',
+        body: '{}',
+      },
+      {
+        method: 'POST',
+        host: 'ec2.eu-west-1.amazonaws.com',
+        service: 'ec2',
+        path: '/',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'Action=CreateKeyPair&KeyName=k&Version=2016-11-15',
+      },
+      {
+        method: 'POST',
+        host: 'iam.amazonaws.com',
+        service: 'iam',
+        path: '/',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'Action=GetAccountPasswordPolicy&Version=2010-05-08',
+      },
+    ] as Probe[]) {
+      const got = await verdict(asks);
+      expect(got.kind).toBe('write');
+      expect(got.kind === 'write' && got.summary.facts.map((fact) => fact.label)).toContain(
+        'Credentials',
+      );
+    }
+    // Even a read by name that only mentions credentials asks; an ordinary read does not.
+    const report = {
+      method: 'POST',
       host: 'iam.amazonaws.com',
       service: 'iam',
-      target: 'IAM.GetCredentialReport',
+      path: '/',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'Action=GetCredentialReport&Version=2010-05-08',
+    };
+    expect(await verdict(report)).toMatchObject({ kind: 'write', destructive: false });
+    expect(await verdict({ ...report, body: 'Action=ListUsers&Version=2010-05-08' })).toEqual({
+      kind: 'read',
     });
-    expect(awsAdapter.classify(report, config)).toEqual({ kind: 'read' });
   });
 
-  test('a request that names its operation twice, or none a listed service reads by, asks', () => {
-    const base = corpus.requests.find((each) => each.name === 'ec2 describe instances');
-    if (!base) throw new Error('missing');
-    const twice = intercepted({ ...base, body: `${base.body}&Action=TerminateInstances` });
-    expect(awsAdapter.classify(twice, config)).toMatchObject({ kind: 'write', destructive: true });
-    const both = intercepted({ ...base, query: 'Action=DescribeInstances' });
-    expect(awsAdapter.classify(both, config).kind).toBe('write');
-    const target = corpus.requests.find((each) => each.name === 'dynamodb scan');
-    if (!target) throw new Error('missing');
-    const crafted = intercepted({
-      ...target,
-      headers: { ...target.headers, 'x-amz-target': 'DynamoDB_20120810.Scan; DeleteTable' },
+  test('an answer holding a credential is kept from the computer, whatever asked for it', async () => {
+    const request = await probe({
+      method: 'POST',
+      host: 'gamelift.eu-west-1.amazonaws.com',
+      service: 'gamelift',
+      path: '/',
+      headers: { 'x-amz-target': 'GameLift.DescribeFleetAttributes' },
+      body: '{}',
     });
-    expect(awsAdapter.classify(crafted, config).kind).toBe('write');
-    // A REST service not on the list asks even for a GET: its GETs are not known to only read.
-    const api = intercepted({
-      ...target,
+    const check = awsAdapter.answerCheck?.(request, config);
+    if (!check) throw new Error('no check');
+    const answer = (body: string) => check({ status: 200, headers: {}, body: Buffer.from(body) });
+    expect(
+      answer('{"Credentials":{"AccessKeyId":"ASIA1","SecretAccessKey":"x","SessionToken":"y"}}'),
+    ).toBe('an AWS secret access key');
+    expect(answer('<Credentials><SessionToken>y</SessionToken></Credentials>')).toBe(
+      'a session token',
+    );
+    expect(answer('{"KeyMaterial":"-----BEGIN RSA PRIVATE KEY-----\\nMIIE"}')).toBe(
+      'a private key',
+    );
+    expect(answer('{"Credentials":{"UserName":"gl-user","Secret":"s3cr3t"}}')).toBe('a secret');
+    expect(answer('{"FleetAttributes":[]}')).toBeNull();
+    // The person's own S3 objects, and an unsigned request that carried no account, are not checked.
+    const object = await probe({
       method: 'GET',
-      host: 'abc123.execute-api.eu-west-1.amazonaws.com',
-      path: '/prod/deploy',
-      headers: {
-        ...target.headers,
-        authorization: target.headers.authorization?.replace('/dynamodb/', '/execute-api/') ?? '',
-        'x-amz-target': '',
-      },
+      host: 'reports.s3.eu-west-1.amazonaws.com',
+      service: 's3',
+      path: '/aws-credentials.txt',
+      headers: { 'x-amz-content-sha256': 'UNSIGNED-PAYLOAD' },
     });
-    delete (api.headers as Record<string, string | undefined>)['x-amz-target'];
-    expect(awsAdapter.classify(api, config).kind).toBe('write');
+    expect(awsAdapter.answerCheck?.(object, config)).toBeNull();
+  });
+
+  test('reads that return stored secrets ask', async () => {
+    const verdict = async (input: Probe) => awsAdapter.classify(await probe(input), config);
+    const json = (host: string, service: string, target: string, body = '{}'): Probe => ({
+      method: 'POST',
+      host,
+      service,
+      path: '/',
+      headers: { 'x-amz-target': target, 'content-type': 'application/x-amz-json-1.1' },
+      body,
+    });
+    expect(
+      await verdict(
+        json(
+          'ssm.eu-west-1.amazonaws.com',
+          'ssm',
+          'AmazonSSM.GetParameterHistory',
+          '{"Name":"/db","WithDecryption":true}',
+        ),
+      ),
+    ).toMatchObject({ kind: 'write' });
+    expect(
+      await verdict(
+        json(
+          'ssm.eu-west-1.amazonaws.com',
+          'ssm',
+          'AmazonSSM.GetParameterHistory',
+          '{"Name":"/db"}',
+        ),
+      ),
+    ).toEqual({ kind: 'read' });
+    expect(
+      await verdict(
+        json(
+          'cognito-idp.eu-west-1.amazonaws.com',
+          'cognito-idp',
+          'AWSCognitoIdentityProviderService.DescribeUserPoolClient',
+        ),
+      ),
+    ).toMatchObject({ kind: 'write' });
+    const keys = {
+      method: 'GET',
+      host: 'apigateway.eu-west-1.amazonaws.com',
+      service: 'apigateway',
+      path: '/apikeys',
+    };
+    expect(await verdict(keys)).toEqual({ kind: 'read' });
+    expect(await verdict({ ...keys, query: 'includeValues=true' })).toMatchObject({
+      kind: 'write',
+    });
+  });
+
+  test('S3 names the bucket from the host the way S3 does, and a select with anything else asks', async () => {
+    const verdict = async (input: Probe) => awsAdapter.classify(await probe(input), config);
+    const s3 = (host: string, method: string, path: string, query = ''): Probe => ({
+      method,
+      host,
+      service: 's3',
+      path,
+      query,
+      headers: { 'x-amz-content-sha256': 'UNSIGNED-PAYLOAD' },
+    });
+    expect(await verdict(s3('s3-x.s3.amazonaws.com', 'DELETE', '/important'))).toMatchObject({
+      operation: 'DeleteObject',
+      destructive: true,
+      summary: { title: 's3:DeleteObject on s3-x/important' },
+    });
+    expect(await verdict(s3('s3-x.s3.amazonaws.com', 'PUT', '/foo'))).toMatchObject({
+      operation: 'PutObject',
+      destructive: true,
+    });
+    expect(
+      await verdict(s3('my.s3.bucket.s3.eu-west-1.amazonaws.com', 'DELETE', '/k')),
+    ).toMatchObject({
+      summary: { title: 's3:DeleteObject on my.s3.bucket/k' },
+    });
+    expect(
+      await verdict(s3('reports.s3.eu-west-1.amazonaws.com', 'POST', '/k', 'select&select-type=2')),
+    ).toEqual({
+      kind: 'read',
+    });
+    expect(
+      await verdict(
+        s3('reports.s3.eu-west-1.amazonaws.com', 'POST', '/k', 'select&select-type=2&restore'),
+      ),
+    ).toMatchObject({ kind: 'write' });
+  });
+
+  test('the parts of an upload pass only into one this job started with an approval, within its limits', async () => {
+    const uploads = new Uploads();
+    const adapter = createAwsAdapter({ uploads });
+    const part = async (uploadId: string, job: string, key = 'big.bin') => ({
+      ...(await probe({
+        method: 'PUT',
+        host: 'reports.s3.eu-west-1.amazonaws.com',
+        service: 's3',
+        path: `/${key}`,
+        query: `partNumber=1&uploadId=${uploadId}`,
+        headers: { 'x-amz-content-sha256': 'UNSIGNED-PAYLOAD' },
+        body: 'part bytes',
+      })),
+      job,
+    });
+    // Before any approved start, and for anyone else's upload, a part asks.
+    expect(adapter.classify(await part('SOMEONE_ELSES', 'job_one'), config)).toMatchObject({
+      kind: 'write',
+      operation: 'UploadPart',
+    });
+    // The approved start's answer names the upload; its parts then pass for that job only.
+    const create = adapter.classify(
+      {
+        ...(await probe({
+          method: 'POST',
+          host: 'reports.s3.eu-west-1.amazonaws.com',
+          service: 's3',
+          path: '/big.bin',
+          query: 'uploads',
+          headers: { 'x-amz-content-sha256': 'UNSIGNED-PAYLOAD' },
+        })),
+        job: 'job_one',
+      },
+      config,
+    ) as ClassifiedWrite;
+    expect(create.operation).toBe('CreateMultipartUpload');
+    const detail = adapter.receipt(create, {
+      status: 200,
+      headers: {},
+      body: Buffer.from(
+        '<InitiateMultipartUploadResult><UploadId>UP1</UploadId></InitiateMultipartUploadResult>',
+      ),
+    });
+    expect(detail.upload_id).toBe('UP1');
+    expect(adapter.classify(await part('UP1', 'job_one'), config)).toEqual({ kind: 'read' });
+    expect(adapter.classify(await part('UP1', 'job_two'), config).kind).toBe('write');
+    expect(adapter.classify(await part('UP1', 'job_one', 'other.bin'), config).kind).toBe('write');
+    // Past the part limit, a part asks.
+    for (let index = 1; index < MAX_UPLOAD_PARTS; index += 1)
+      uploads.takePart('job_one', 'reports/big.bin', 'UP1', 1);
+    expect(adapter.classify(await part('UP1', 'job_one'), config).kind).toBe('write');
   });
 });
 
@@ -553,6 +871,154 @@ describe('the relay with a connected AWS account', () => {
     expect(
       awsAdapter.uncertain?.(verdict, { ...failed, body: Buffer.from('<CopyObjectResult/>') }),
     ).toBeNull();
+  });
+});
+
+describe('answers and hosts the account is kept from', () => {
+  test('a signed request to a server running on AWS is refused, and an unsigned one goes as it is', async () => {
+    for (const host of [
+      'ec2-203-0-113-5.eu-west-1.compute.amazonaws.com',
+      'ec2-203-0-113-5.compute-1.amazonaws.com',
+      'shop-123.eu-west-1.elb.amazonaws.com',
+    ]) {
+      const signed = await probe({ method: 'GET', host, service: 'ec2', path: '/' });
+      expect(awsAdapter.classify(signed, config)).toMatchObject({
+        kind: 'refuse',
+        reason: expect.stringContaining('not one of AWS'),
+      });
+      const { authorization: _signature, ...unsigned } = signed;
+      expect(awsAdapter.classify(unsigned, config)).toEqual({ kind: 'read' });
+    }
+  });
+
+  test('the relay keeps an answer holding a credential from the computer, and records it', async () => {
+    const READ_HOST = 'gamelift.eu-west-1.amazonaws.com';
+    const WRITE_HOST = 'ec2.eu-west-1.amazonaws.com';
+    const SESSION_SECRET = 'leakedSessionSecret0123456789';
+    const PRIVATE = '-----BEGIN RSA PRIVATE KEY-----\nMIIEleaked\n-----END RSA PRIVATE KEY-----';
+    const gamelift = await fixtureUpstream(READ_HOST, () => ({
+      body: JSON.stringify({
+        Credentials: { AccessKeyId: 'ASIA1', SecretAccessKey: SESSION_SECRET },
+      }),
+    }));
+    const ec2 = await fixtureUpstream(WRITE_HOST, () => ({
+      body: `<CreateKeyPairResponse><keyName>k</keyName><keyMaterial>${PRIVATE}</keyMaterial></CreateKeyPairResponse>`,
+      headers: { 'content-type': 'text/xml' },
+    }));
+    const results: unknown[] = [];
+    const port = memoryCredentialPort({
+      secret: SECRET,
+      account: { adapter: awsAdapter as CredentialAdapter, config },
+      admitWrite: async (input) => {
+        const result = await input.forward();
+        results.push(result);
+        return { kind: 'sent', actionId: 'act_key', result };
+      },
+    });
+    const withheld: string[] = [];
+    const ports: Record<string, number> = { [READ_HOST]: gamelift.port, [WRITE_HOST]: ec2.port };
+    const guard = new SandboxEgressGuard({
+      resolve: async () => [{ address: '52.94.0.10', family: 4 }],
+      credentials: port,
+      records: {
+        opened: (record) => {
+          if (record.reason) withheld.push(`${record.host} ${record.reason}`);
+        },
+        closed: () => {},
+        counted: () => {},
+      },
+      intercept: {
+        upstream: (host) => ({
+          address: { address: '127.0.0.1', family: 4 },
+          port: ports[host] ?? 0,
+        }),
+        upstreamCa: [gamelift.ca, ec2.ca],
+      },
+    });
+    try {
+      const relayPort = await guard.listen(0, '127.0.0.1');
+      guard.allow('127.0.0.1', 'melete-sbx-held', {
+        mode: 'open',
+        session: 'sbx_held',
+        space: 'sp_held',
+      });
+      const token = guard.mint('melete-sbx-held', {
+        kind: 'command',
+        sessionId: 'sbx_held',
+        jobId: 'job_held',
+        attemptId: 'att_held',
+        actionId: 'act_held',
+        deadlineAt: Date.now() + 120_000,
+      });
+      const ca = (await port.ca.certificate()).pem;
+      const signedRequest = async (
+        host: string,
+        service: string,
+        headers: Record<string, string>,
+        body: string,
+      ) =>
+        rawRequest('POST', host, '/', {
+          headers: await placeholderSigned({
+            method: 'POST',
+            host,
+            path: '/',
+            service,
+            headers,
+            body,
+          }),
+          body,
+        });
+      const [read] = await throughRelay({
+        relayPort,
+        host: READ_HOST,
+        ca,
+        token,
+        requests: [
+          await signedRequest(
+            READ_HOST,
+            'gamelift',
+            {
+              'x-amz-target': 'GameLift.DescribeFleetAttributes',
+              'content-type': 'application/x-amz-json-1.1',
+            },
+            '{}',
+          ),
+        ],
+      });
+      expect(read?.status).toBe(502);
+      expect(read?.headers['x-melete-egress']).toBe('answer_withheld');
+      expect(read?.body).toContain('an AWS secret access key');
+      expect(read?.body).not.toContain(SESSION_SECRET);
+      const [made] = await throughRelay({
+        relayPort,
+        host: WRITE_HOST,
+        ca,
+        token,
+        requests: [
+          await signedRequest(
+            WRITE_HOST,
+            'ec2',
+            { 'content-type': 'application/x-www-form-urlencoded; charset=utf-8' },
+            'Action=CreateKeyPair&KeyName=k&Version=2016-11-15',
+          ),
+        ],
+      });
+      expect(made?.status).toBe(502);
+      expect(made?.body).toContain('This change was made');
+      expect(made?.body).not.toContain('MIIEleaked');
+      // The change is recorded as made, with why its answer was kept back.
+      expect(results).toEqual([
+        expect.objectContaining({ outcome: 'answered', withheld: 'a private key' }),
+      ]);
+      expect((results[0] as { detail: Record<string, unknown> }).detail.answer_withheld).toBe(
+        'a private key',
+      );
+      expect(withheld).toEqual([`${READ_HOST} answer_withheld`, `${WRITE_HOST} answer_withheld`]);
+    } finally {
+      await guard.close();
+      await gamelift.close();
+      await ec2.close();
+    }
   });
 });
 

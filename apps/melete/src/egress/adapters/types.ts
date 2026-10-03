@@ -41,6 +41,8 @@ export type InterceptedRequest = {
    * one: the placeholder, or something else.
    */
   authorization?: string;
+  /** The job the command that sent it belongs to, when there is one. */
+  job?: string | null;
 };
 
 /** What a person reads on the approval card for one write. */
@@ -71,6 +73,11 @@ export type Classification =
        * runs of the same push). Left out, the body's exact bytes are bound.
        */
       boundBody?: JsonObject;
+      /**
+       * The adapter's own notes about the write, handed back to `receipt`
+       * and never part of what is approved.
+       */
+      memo?: JsonObject;
     }
   | { kind: 'refuse'; reason: string };
 
@@ -153,6 +160,15 @@ export interface CredentialAdapter<Config = unknown> {
   ): OutboundRequest | Promise<OutboundRequest>;
   /** Every form of the secret that must never reach the computer. */
   redactions(secret: string): string[];
+  /**
+   * A check of the whole answer before the computer sees any of it: why it
+   * must be kept from the computer (it holds a credential), or null. Left
+   * out, or null for a request, answers pass as they come.
+   */
+  answerCheck?(
+    request: InterceptedRequest,
+    config: Config,
+  ): ((answer: UpstreamResponse) => string | null) | null;
   /** What the action's receipt keeps about a write, from the upstream answer. */
   receipt(write: ClassifiedWrite, upstream: UpstreamResponse): JsonObject;
   /**

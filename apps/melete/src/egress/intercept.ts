@@ -84,6 +84,8 @@ export type InterceptContext = {
   /** Request bodies in memory: this computer's, then the installation's. */
   budgets: readonly BodyBudget[];
   onRead: () => void;
+  /** An answer kept from the computer because it held a credential, and why. */
+  onWithheld?: (reason: string) => void;
   onWrite: (actionId: string | null) => void;
   options: InterceptOptions;
 };
@@ -409,6 +411,7 @@ async function read(
   response: ServerResponse,
   max: number,
   signing: AuthorizeContext,
+  check: AnswerCheck | null,
 ) {
   await use.withSecret(async (secret) => {
     let outbound: OutboundRequest;
@@ -433,12 +436,24 @@ async function read(
         outbound,
         (upstream) => {
           context.onRead();
-          if (encodingOf(upstream.headers).length) {
-            // Compressed despite being asked not to: decoded whole, so the redactor sees it.
+          // Compressed despite being asked not to, or to be checked whole: held, so the
+          // redactor and the check see all of it before the computer sees any.
+          if (check || encodingOf(upstream.headers).length) {
             void collect(upstream, redactor, max).then(
               (whole) => {
-                response.writeHead(whole.status, whole.headers);
-                response.end(whole.body);
+                const withheld = check?.(whole) ?? null;
+                if (withheld) {
+                  context.onWithheld?.(withheld);
+                  plain(
+                    response,
+                    502,
+                    'answer_withheld',
+                    `The answer held ${withheld}, which would put a credential in the agent’s computer, so it was not passed on.`,
+                  );
+                } else {
+                  response.writeHead(whole.status, whole.headers);
+                  response.end(whole.body);
+                }
                 resolve();
               },
               () => {
@@ -479,6 +494,9 @@ async function read(
   });
 }
 
+/** Why a whole answer must be kept from the computer, or null. */
+type AnswerCheck = (answer: UpstreamResponse) => string | null;
+
 /** Why an account could not be used, in words that never carry a secret. */
 function unusable(error: unknown): string {
   // Adapters word their own refusals for the computer to read; anything else is not repeated.
@@ -493,6 +511,7 @@ function forwarder(
   write: ClassifiedWrite,
   max: number,
   signing: AuthorizeContext,
+  check: AnswerCheck | null,
 ): () => Promise<ForwardResult> {
   let started = false;
   const attempt = () =>
@@ -509,12 +528,15 @@ function forwarder(
           outbound,
           (upstream) => {
             void collect(upstream, redactor, max).then(
-              (response) =>
+              (response) => {
+                const withheld = check?.(response) ?? null;
+                if (withheld) context.onWithheld?.(withheld);
                 resolve({
                   outcome: 'answered',
                   response,
                   rejected: use.adapter.rejected?.(write, response) ?? null,
                   uncertain: use.adapter.uncertain?.(write, response) ?? null,
+                  withheld,
                   detail: {
                     host: context.host,
                     method: base.method,
@@ -522,8 +544,10 @@ function forwarder(
                     status: response.status,
                     operation: write.operation,
                     ...use.adapter.receipt(write, response),
+                    ...(withheld ? { answer_withheld: withheld } : {}),
                   },
-                }),
+                });
+              },
               (error: Error) => resolve({ outcome: 'lost', reason: error.message }),
             );
           },
@@ -557,6 +581,14 @@ function answer(
 ) {
   if (outcome.kind === 'sent') {
     const result = outcome.result;
+    if (result.outcome === 'answered' && result.withheld)
+      return plain(
+        response,
+        502,
+        'answer_withheld',
+        `This change was made, and its answer held ${result.withheld}, which would put a credential in the agent’s computer, so the answer was not passed on.`,
+        { 'x-melete-approval': outcome.actionId },
+      );
     if (result.outcome === 'answered') {
       response.writeHead(result.response.status, {
         ...result.response.headers,
@@ -715,7 +747,25 @@ async function handleBody(
     headers: upstreamHeaders(request.headers, placeholders),
     body,
     ...(authorization !== undefined ? { authorization } : {}),
+    job: context.token.attribution.jobId,
   };
+  let adapterCheck: AnswerCheck | null = null;
+  try {
+    adapterCheck = use.adapter.answerCheck?.(intercepted, use.config) ?? null;
+  } catch {
+    adapterCheck = () => 'something that could not be checked';
+  }
+  // A check that fails keeps the answer from the computer.
+  const checkWith = adapterCheck;
+  const check: AnswerCheck | null = checkWith
+    ? (answer) => {
+        try {
+          return checkWith(answer);
+        } catch {
+          return 'something that could not be checked';
+        }
+      }
+    : null;
   const signing: AuthorizeContext = {
     command: context.token.attribution.actionId,
     ...(authorization !== undefined ? { authorization } : {}),
@@ -732,7 +782,7 @@ async function handleBody(
   };
   const verdict = classifySafely(use, intercepted);
   if (verdict.kind === 'refuse') return plain(response, 403, 'refused', verdict.reason);
-  if (verdict.kind === 'read') return read(context, use, base, response, max, signing);
+  if (verdict.kind === 'read') return read(context, use, base, response, max, signing, check);
   // The approval binds the exact bytes and every header that will be sent;
   // the write forwards exactly those, plus headers that say nothing about it.
   const binding = requestBinding(intercepted.headers, body, verdict.boundBody, volatile);
@@ -781,7 +831,7 @@ async function handleBody(
       adapter: use.adapter.id,
       write,
       holdMs,
-      forward: forwarder(context, use, bound, write, max, signing),
+      forward: forwarder(context, use, bound, write, max, signing, check),
       signal: aborted.signal,
       live: () => context.tokens.isLive(context.token),
     });

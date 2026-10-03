@@ -52,6 +52,7 @@ import {
   type SigV4Authorization,
   signRequest,
 } from '../sigv4.ts';
+import { type AwsProtocol, type AwsService, restOperation, servicesFor } from './aws-services.ts';
 import { canonicalBody, shownBody, shownText } from './generic.ts';
 import {
   AccountUnusable,
@@ -105,8 +106,9 @@ const SPEND_OPERATION =
 
 /**
  * Operations whose answer is a credential: a role or federation session, a
- * new access key, a registry or database token, an S3 Express session. Sent
- * with the account, they would put a secret in the computer.
+ * new access key, a registry or database token, an instance's access secret,
+ * an S3 Express session. Sent with the account, they would put a secret in
+ * the computer. Keyed by the service's id or its signing name.
  */
 const MINTS: Record<string, readonly string[]> = {
   sts: [
@@ -133,16 +135,23 @@ const MINTS: Record<string, readonly string[]> = {
   lightsail: ['GetInstanceAccessDetails', 'GetRelationalDatabaseMasterUserPassword'],
   s3express: ['CreateSession'],
   elasticmapreduce: ['GetClusterSessionCredentials'],
+  gamelift: ['GetComputeAccess', 'GetInstanceAccess', 'GetComputeAuthToken'],
 };
 /**
- * Names that hand out a credential in any service: getting, creating,
- * generating or assuming credentials, a token or a presigned sign-in link.
- * A REST call whose path ends in such a name counts too.
+ * Names that hand out a credential in any service: assuming a role, or
+ * getting, creating or generating credentials, a token or a presigned
+ * sign-in link. Refused.
  */
 const CREDENTIAL_NAME =
-  /^(?:Get|Create|Generate|Assume)[A-Za-z0-9]*(?:Credentials?|Token|Presigned[A-Za-z]*Url)$/;
-const mints = (service: string, operation: string) =>
-  MINTS[service]?.includes(operation) === true || CREDENTIAL_NAME.test(operation);
+  /^(?:Assume[A-Z]|(?:Get|Create|Generate)[A-Za-z0-9]*(?:Credentials?|Token|Presigned[A-Za-z]*Url)$)/;
+/**
+ * Names that may hand one back (`RequestUploadCredentials`,
+ * `CreateTokenWithIAM`, `CreateKeyPair`): they ask, even when named like a
+ * read, and their answer is checked like every answer.
+ */
+const MAY_HOLD_CREDENTIAL = /Credential|Token|KeyPair|Password|PrivateKey/;
+const mints = (ids: readonly string[], operation: string) =>
+  ids.some((id) => MINTS[id]?.includes(operation)) || CREDENTIAL_NAME.test(operation);
 const MINTS_REASON = (service: string, operation: string) =>
   `${service}:${operation} hands out credentials, which would put a secret in the agent’s computer, so it was not sent.`;
 
@@ -150,21 +159,24 @@ const MINTS_REASON = (service: string, operation: string) =>
 const SECRET_READS: Record<string, readonly string[]> = {
   secretsmanager: ['GetSecretValue', 'BatchGetSecretValue'],
   ec2: ['GetPasswordData'],
+  'cognito-idp': ['DescribeUserPoolClient'],
 };
 /** Parameter reads ask when they decrypt. */
-const PARAMETER_READS = new Set(['GetParameter', 'GetParameters', 'GetParametersByPath']);
-
-/** REST services whose GET and HEAD only read. Any other REST service asks for everything. */
-const REST_READ_SERVICES = new Set([
-  'lambda',
-  'eks',
-  'route53',
-  'cloudfront',
-  'apigateway',
-  'elasticfilesystem',
-  'appsync',
-  'glacier',
+const PARAMETER_READS = new Set([
+  'GetParameter',
+  'GetParameters',
+  'GetParametersByPath',
+  'GetParameterHistory',
 ]);
+
+/**
+ * Hosts under amazonaws.com that are not AWS's own APIs but someone's server:
+ * EC2 instances' public names and load balancers. The account is never
+ * signed for them.
+ */
+const NOT_AN_API = /(?:^|\.)(?:compute(?:-\d+)?|elb)\.amazonaws\.com$/;
+/** API Gateway endpoints run someone's own API: every request there asks. */
+const OWN_API = /(?:^|\.)execute-api\.[a-z0-9-]+\.amazonaws\.com$/;
 
 const xml = new XMLParser({ ignoreAttributes: true, parseTagValue: false, isArray: () => false });
 
@@ -185,9 +197,11 @@ type S3Host = { kind: 'data' | 'control' | 'access_point'; bucket: string | null
 function s3Host(host: string): S3Host | null {
   if (!withinConstraint(host, AWS_SUFFIX)) return null;
   const labels = host.slice(0, -AWS_SUFFIX.length - 1).split('.');
-  const at = labels.findIndex(
-    (label) => label === 's3' || (label.startsWith('s3-') && !label.startsWith('s3express')),
-  );
+  // The endpoint's own label is the one nearest the suffix; a bucket's labels come before it.
+  let at = -1;
+  labels.forEach((label, index) => {
+    if (label === 's3' || (label.startsWith('s3-') && !label.startsWith('s3express'))) at = index;
+  });
   if (at < 0) return null;
   const label = labels[at] ?? '';
   const before = labels.slice(0, at).join('.') || null;
@@ -254,8 +268,10 @@ const SUBRESOURCE_NAMES: Record<string, string> = {
 
 type S3Operation = {
   name: string;
-  /** A read, or a part of a multipart upload: nothing anyone sees changes. */
+  /** A read: nothing anyone sees changes. */
   passes: boolean;
+  /** A part of a multipart upload. */
+  part?: true;
   destructive: boolean;
 };
 
@@ -274,7 +290,7 @@ function s3Operation(
   const sub = subresources.length === 1 ? subresources[0] : undefined;
   const named = sub ? SUBRESOURCE_NAMES[sub] : undefined;
   if (method === 'POST') {
-    if (has('select') && key)
+    if (key && subresources.length === 1 && subresources[0] === 'select')
       return { name: 'SelectObjectContent', passes: true, destructive: false };
     if (has('delete') && !key) return { name: 'DeleteObjects', passes: false, destructive: true };
     if (has('uploads') && key)
@@ -285,11 +301,13 @@ function s3Operation(
     return { name: `Post${level}`, passes: false, destructive: false };
   }
   if (method === 'PUT') {
-    // A part changes nothing anyone sees until the upload is completed, which asks.
+    // A part changes nothing anyone sees until the upload is completed, which asks; it
+    // passes only into an upload this job started with an approval (checked by the caller).
     if (has('partNumber') && has('uploadId') && key && !subresources.length)
       return {
         name: headers['x-amz-copy-source'] ? 'UploadPartCopy' : 'UploadPart',
-        passes: true,
+        passes: false,
+        part: true,
         destructive: false,
       };
     if (!subresources.length) {
@@ -408,6 +426,7 @@ function write(
   resource: string | null,
   destructive: boolean,
   facts: CardSummary['facts'] = [],
+  memo?: JsonObject,
 ): Classification {
   const spend = SPEND_OPERATION.test(operation);
   const generated = signed.service === 's3' ? undefined : withoutGeneratedToken(request);
@@ -437,6 +456,7 @@ function write(
     ),
     destructive,
     ...(generated ? { boundBody: generated } : {}),
+    ...(memo ? { memo } : {}),
   };
 }
 
@@ -444,6 +464,7 @@ function classifyS3(
   request: InterceptedRequest,
   signed: SigV4Authorization,
   endpoint: S3Host,
+  uploads: Uploads,
 ): Classification {
   if (endpoint.kind === 'control') {
     // The S3 control API (access points, batch jobs, account settings): REST.
@@ -469,6 +490,14 @@ function classifyS3(
   if (operation.passes) return { kind: 'read' };
   const version = typeof parameters.versionId === 'string' ? parameters.versionId : null;
   const resource = bucket ? `${bucket}${key ? `/${key}` : ''}` : null;
+  const uploadId = typeof parameters.uploadId === 'string' ? parameters.uploadId : null;
+  if (
+    operation.part &&
+    uploadId &&
+    resource &&
+    uploads.takePart(request.job ?? null, resource, uploadId, request.body.length)
+  )
+    return { kind: 'read' };
   const facts: CardSummary['facts'] = [];
   if (version) facts.push({ label: 'Version', value: version });
   const source = request.headers['x-amz-copy-source'];
@@ -482,30 +511,122 @@ function classifyS3(
         : 'The list of objects could not be read; it is under Details.',
     });
   }
-  return write(request, signed, operation.name, resource, operation.destructive, facts);
+  if (operation.part)
+    facts.push({
+      label: 'Upload',
+      value:
+        'A part of an upload this job did not start with an approval, or past its limits, asks on its own.',
+    });
+  // The upload id it returns is kept, so its parts can pass and its completion asks.
+  const memo =
+    operation.name === 'CreateMultipartUpload' ||
+    operation.name === 'CompleteMultipartUpload' ||
+    operation.name === 'AbortMultipartUpload'
+      ? { job: request.job ?? null, resource, upload_id: uploadId }
+      : undefined;
+  return write(request, signed, operation.name, resource, operation.destructive, facts, memo);
 }
 
-/** The operation a query, JSON or CBOR request names, or null when it names none or two. */
-function operationOf(request: InterceptedRequest): string | null | 'ambiguous' {
-  const found: string[] = [];
-  const target = request.headers['x-amz-target'];
-  if (target !== undefined) {
-    const name = target.slice(target.lastIndexOf('.') + 1);
-    found.push(name);
+/**
+ * Multipart uploads this service saw started with an approval, by upload id:
+ * the job that started it, the bucket and key, and the parts and bytes that
+ * have passed. Held in memory; an upload unknown here (another process, a
+ * restart, someone else's upload) has each part ask.
+ */
+export const MAX_UPLOAD_PARTS = 10_000;
+export const MAX_UPLOAD_BYTES = 64 * 1024 ** 3;
+const UPLOAD_DAYS = 7;
+const MAX_UPLOADS = 1024;
+
+export class Uploads {
+  private readonly held = new Map<
+    string,
+    { job: string | null; resource: string; parts: number; bytes: number; at: number }
+  >();
+  constructor(private readonly now: () => number = Date.now) {}
+
+  started(job: string | null, resource: string, uploadId: string) {
+    if (!job) return;
+    this.held.set(uploadId, { job, resource, parts: 0, bytes: 0, at: this.now() });
+    while (this.held.size > MAX_UPLOADS) {
+      const oldest = this.held.keys().next().value;
+      if (oldest === undefined) break;
+      this.held.delete(oldest);
+    }
   }
-  const cbor = /^\/service\/[^/]+\/operation\/([^/]+)$/.exec(request.path);
-  if (cbor?.[1]) found.push(decode(cbor[1]) ?? '');
-  const fromQuery = queryParameters(request.query).Action;
-  if (fromQuery !== undefined) found.push(...(Array.isArray(fromQuery) ? fromQuery : [fromQuery]));
-  if (/^application\/x-www-form-urlencoded\b/i.test(request.headers['content-type'] ?? '')) {
-    const form = new URLSearchParams(request.body.toString('utf8')).getAll('Action');
-    found.push(...form);
+
+  ended(uploadId: string) {
+    this.held.delete(uploadId);
   }
-  if (found.length > 1) return 'ambiguous';
-  const [name] = found;
-  if (name === undefined) return null;
-  return /^[A-Za-z][A-Za-z0-9]{0,127}$/.test(name) ? name : 'ambiguous';
+
+  /** Whether one more part of `bytes` may pass into this upload, counting it if so. */
+  takePart(job: string | null, resource: string, uploadId: string, bytes: number): boolean {
+    const upload = this.held.get(uploadId);
+    if (!upload || !job || upload.job !== job || upload.resource !== resource) return false;
+    if (this.now() - upload.at > UPLOAD_DAYS * 86_400_000) {
+      this.held.delete(uploadId);
+      return false;
+    }
+    if (upload.parts + 1 > MAX_UPLOAD_PARTS || upload.bytes + bytes > MAX_UPLOAD_BYTES)
+      return false;
+    upload.parts += 1;
+    upload.bytes += bytes;
+    return true;
+  }
 }
+
+/** How a request names its operation, read from its shape. */
+type Shape =
+  | { kind: 'json'; prefix: string; operation: string }
+  | { kind: 'query'; operation: string }
+  | { kind: 'cbor'; operation: string }
+  | { kind: 'rest' }
+  | { kind: 'bad'; reason: string };
+
+const OPERATION = /^[A-Za-z][A-Za-z0-9]{0,127}$/;
+
+function shapeOf(request: InterceptedRequest): Shape {
+  const target = request.headers['x-amz-target'];
+  const cbor = /^\/service\/[^/]+\/operation\/([^/]+)$/.exec(request.path);
+  const smithy = request.headers['smithy-protocol'];
+  const actions = [request.query, request.body.toString('utf8')].flatMap((text) => {
+    const found = new URLSearchParams(text).getAll('Action');
+    return found;
+  });
+  const ways = [target !== undefined, cbor !== null || smithy !== undefined, actions.length > 0];
+  if (ways.filter(Boolean).length > 1)
+    return { kind: 'bad', reason: 'This request names its operation in two ways' };
+  if (target !== undefined) {
+    const named = /^([A-Za-z0-9_.]+)\.([A-Za-z0-9]{1,128})$/.exec(target);
+    if (!named?.[1] || !named[2] || request.method !== 'POST')
+      return { kind: 'bad', reason: 'This request names its operation in a way AWS does not read' };
+    return { kind: 'json', prefix: named[1], operation: named[2] };
+  }
+  if (cbor !== null || smithy !== undefined) {
+    const operation = cbor?.[1] ? decode(cbor[1]) : null;
+    if (!operation || !OPERATION.test(operation) || request.method !== 'POST')
+      return { kind: 'bad', reason: 'This request names its operation in a way AWS does not read' };
+    return { kind: 'cbor', operation };
+  }
+  if (actions.length) {
+    const [operation] = actions;
+    if (actions.length > 1 || !operation || !OPERATION.test(operation))
+      return { kind: 'bad', reason: 'This request names its operation twice' };
+    if (request.method !== 'GET' && request.method !== 'POST')
+      return { kind: 'bad', reason: 'This request names its operation in a way AWS does not read' };
+    return { kind: 'query', operation };
+  }
+  return { kind: 'rest' };
+}
+
+const accepts = (service: AwsService, shape: Shape) => {
+  const has = (protocol: AwsProtocol) => service.protocols.includes(protocol);
+  if (shape.kind === 'json') return has('json') && service.target === shape.prefix;
+  if (shape.kind === 'cbor') return has('smithy-rpc-v2-cbor');
+  if (shape.kind === 'query') return has('query') || has('ec2');
+  if (shape.kind === 'rest') return has('rest-json') || has('rest-xml');
+  return false;
+};
 
 /** Whether a parameter read asks for decrypted values (or cannot be read to say). */
 function decrypts(request: InterceptedRequest): boolean {
@@ -517,41 +638,93 @@ function decrypts(request: InterceptedRequest): boolean {
   }
 }
 
-function classifyService(request: InterceptedRequest, signed: SigV4Authorization): Classification {
-  const { service } = signed;
-  const operation = operationOf(request);
-  if (operation === 'ambiguous')
-    return write(request, signed, `${request.method} ${request.path}`, null, true);
-  if (operation === null) {
-    const last = decode(request.path.slice(request.path.lastIndexOf('/') + 1)) ?? '';
-    if (mints(service, last)) return { kind: 'refuse', reason: MINTS_REASON(service, last) };
-    if (REST_READ_SERVICES.has(service) && (request.method === 'GET' || request.method === 'HEAD'))
-      return { kind: 'read' };
-    return write(
-      request,
-      signed,
-      `${request.method} ${request.path}`,
-      null,
-      request.method === 'DELETE' || request.method === 'PUT',
-    );
+type Verdict =
+  | { kind: 'read' }
+  | { kind: 'refuse'; operation: string }
+  | { kind: 'write'; operation: string; secret: boolean; mayHold: boolean };
+
+/** What one operation, by its name, does. */
+function byName(ids: readonly string[], operation: string, secret: boolean): Verdict {
+  if (mints(ids, operation)) return { kind: 'refuse', operation };
+  const mayHold = MAY_HOLD_CREDENTIAL.test(operation);
+  if (!secret && !mayHold && READ_OPERATION.test(operation)) return { kind: 'read' };
+  return { kind: 'write', operation, secret, mayHold };
+}
+
+/** What a request does to one of the services it may be for, spoken to in `shape`. */
+function verdictFor(service: AwsService, shape: Shape, request: InterceptedRequest): Verdict {
+  const ids = [service.id, service.signing];
+  const parameters = queryParameters(request.query);
+  if (shape.kind === 'rest') {
+    const operation = restOperation(service, request.method, request.path, parameters);
+    const reads = request.method === 'GET' || request.method === 'HEAD';
+    // API Gateway hands back the keys themselves when asked to include their values.
+    const keyValues =
+      service.id === 'apigateway' &&
+      /^(?:true|1)$/i.test(String(parameters.includeValues ?? parameters.includeValue ?? ''));
+    if (operation) return byName(ids, operation, keyValues);
+    if (reads && !keyValues) return { kind: 'read' };
+    return {
+      kind: 'write',
+      operation: `${request.method} ${request.path}`,
+      secret: keyValues,
+      mayHold: false,
+    };
   }
-  if (mints(service, operation))
-    return { kind: 'refuse', reason: MINTS_REASON(service, operation) };
-  const secretRead =
-    SECRET_READS[service]?.includes(operation) ||
-    (service === 'ssm' && PARAMETER_READS.has(operation) && decrypts(request));
-  if (!secretRead && READ_OPERATION.test(operation)) return { kind: 'read' };
+  if (shape.kind === 'bad') return { kind: 'refuse', operation: '' };
+  const { operation } = shape;
+  const secret =
+    ids.some((id) => SECRET_READS[id]?.includes(operation)) ||
+    (service.id === 'ssm' && PARAMETER_READS.has(operation) && decrypts(request));
+  return byName(ids, operation, secret);
+}
+
+function classifyService(request: InterceptedRequest, signed: SigV4Authorization): Classification {
+  const generic = (destructive: boolean) =>
+    write(request, signed, `${request.method} ${request.path}`, null, destructive);
+  // Someone's own API on API Gateway: AWS cannot say what it does, so everything asks.
+  if (OWN_API.test(request.host)) return generic(request.method !== 'POST');
+  const candidates = servicesFor(signed.service, request.host);
+  // A service the SDK's definitions do not know: everything asks.
+  if (!candidates.length) return generic(request.method === 'DELETE' || request.method === 'PUT');
+  const shape = shapeOf(request);
+  if (shape.kind === 'bad')
+    return { kind: 'refuse', reason: `${shape.reason}, so it was not sent.` };
+  const fitting = candidates.filter((service) => accepts(service, shape));
+  if (!fitting.length)
+    return {
+      kind: 'refuse',
+      reason: `This request is not shaped the way ${signed.service} reads requests, so it was not sent.`,
+    };
+  // Where one host serves several APIs, a request reads only if it reads for every one.
+  const verdicts = fitting.map((service) => verdictFor(service, shape, request));
+  const refused = verdicts.find((verdict) => verdict.kind === 'refuse');
+  if (refused?.kind === 'refuse')
+    return { kind: 'refuse', reason: MINTS_REASON(signed.service, refused.operation) };
+  const written = verdicts.find((verdict) => verdict.kind === 'write');
+  if (written?.kind !== 'write') return { kind: 'read' };
+  const facts: CardSummary['facts'] = [];
+  if (written.secret)
+    facts.push({ label: 'Reads a secret', value: 'The answer holds a stored secret.' });
+  if (written.mayHold)
+    facts.push({
+      label: 'Credentials',
+      value:
+        'This may hand back a credential. An answer holding one is kept from the agent’s computer.',
+    });
   return write(
     request,
     signed,
-    operation,
+    written.operation,
     null,
-    !secretRead && DESTRUCTIVE_OPERATION.test(operation),
-    secretRead ? [{ label: 'Reads a secret', value: 'The answer holds a stored secret.' }] : [],
+    !written.secret &&
+      !written.mayHold &&
+      (DESTRUCTIVE_OPERATION.test(written.operation) || /^(?:DELETE|PUT) /.test(written.operation)),
+    facts,
   );
 }
 
-function classify(request: InterceptedRequest): Classification {
+function classify(request: InterceptedRequest, uploads: Uploads): Classification {
   if (hasQuerySignature(request.query)) return { kind: 'refuse', reason: PRESIGNED };
   // No signature at all: it carries nothing of the account, and goes out as it is.
   if (request.authorization === undefined) return { kind: 'read' };
@@ -566,6 +739,11 @@ function classify(request: InterceptedRequest): Classification {
   if (/^STREAMING-(?!UNSIGNED-PAYLOAD-TRAILER$)/.test(payload))
     return { kind: 'refuse', reason: CHUNK_SIGNED };
   if (signed.service === 's3express') return { kind: 'refuse', reason: S3_EXPRESS };
+  if (NOT_AN_API.test(request.host))
+    return {
+      kind: 'refuse',
+      reason: `${request.host} is a server running on AWS, not one of AWS's APIs, so the account is not used there and nothing was sent.`,
+    };
   const endpoint = s3Host(request.host);
   // S3 is classified by its own rules; a request signed for one and sent to the other is refused.
   if ((signed.service === 's3') !== (endpoint !== null))
@@ -573,7 +751,9 @@ function classify(request: InterceptedRequest): Classification {
       kind: 'refuse',
       reason: `This request is signed for ${signed.service} but sent to ${request.host}, so it was not sent.`,
     };
-  return endpoint ? classifyS3(request, signed, endpoint) : classifyService(request, signed);
+  return endpoint
+    ? classifyS3(request, signed, endpoint, uploads)
+    : classifyService(request, signed);
 }
 
 // ---------------------------------------------------------------- answers
@@ -594,7 +774,7 @@ const s3Error = (body: Buffer): { code: string | null; message: string | null } 
   }
 };
 
-function receipt(write: ClassifiedWrite, upstream: UpstreamResponse): JsonObject {
+function receipt(write: ClassifiedWrite, upstream: UpstreamResponse, uploads: Uploads): JsonObject {
   const header = (name: string) => upstream.headers[name]?.slice(0, 200) ?? null;
   const detail: JsonObject = {
     service: String(write.payload.service ?? ''),
@@ -612,6 +792,24 @@ function receipt(write: ClassifiedWrite, upstream: UpstreamResponse): JsonObject
       detail.deleted = (text.match(/<Deleted>/g) ?? []).length;
       detail.errors = (text.match(/<Error>/g) ?? []).length;
     }
+    const memo = write.memo ?? {};
+    const resource = typeof memo.resource === 'string' ? memo.resource : null;
+    if (write.operation === 'CreateMultipartUpload' && upstream.status < 300 && resource) {
+      const started = /<UploadId>([^<]{1,1024})<\/UploadId>/.exec(
+        upstream.body.toString('utf8'),
+      )?.[1];
+      if (started) {
+        detail.upload_id = started;
+        uploads.started(typeof memo.job === 'string' ? memo.job : null, resource, started);
+      }
+    }
+    if (
+      (write.operation === 'CompleteMultipartUpload' ||
+        write.operation === 'AbortMultipartUpload') &&
+      upstream.status < 300 &&
+      typeof memo.upload_id === 'string'
+    )
+      uploads.ended(memo.upload_id);
   }
   return detail;
 }
@@ -636,6 +834,34 @@ function uncertain(write: ClassifiedWrite, upstream: UpstreamResponse): string |
   const error = s3Error(upstream.body);
   if (!error) return null;
   return `AWS answered with an error (${error.code ?? 'no code'}) after starting this change, so it may still have taken effect. Check before asking for it again.`;
+}
+
+/**
+ * What in an answer is a credential: an AWS secret access key or session
+ * token (as an XML, JSON or CBOR key), a private key, or a field named
+ * `Secret`. An answer holding one is kept from the computer, whatever
+ * operation asked for it.
+ */
+const IN_ANSWER: Array<[RegExp, string]> = [
+  [/secret_?access_?key/i, 'an AWS secret access key'],
+  [/session_?token/i, 'a session token'],
+  [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/, 'a private key'],
+  [/"secret"\s*:/i, 'a secret'],
+];
+
+function answerCheck(
+  request: InterceptedRequest,
+): ((answer: UpstreamResponse) => string | null) | null {
+  // An unsigned request carried no account; S3 objects are the person's own files.
+  if (request.authorization === undefined || s3Host(request.host)) return null;
+  return (answer) => {
+    const text = [
+      answer.body.toString('latin1'),
+      ...Object.entries(answer.headers).map(([name, value]) => `${name}: ${value}`),
+    ].join('\n');
+    for (const [pattern, what] of IN_ANSWER) if (pattern.test(text)) return what;
+    return null;
+  };
 }
 
 const escapeXml = (text: string) =>
@@ -700,9 +926,10 @@ function keyOf(secret: string): AwsAccessKey {
 
 /** The AWS adapter, assuming roles through `sts` (a test points it at a stand-in). */
 export function createAwsAdapter(
-  options: { sts?: StsOptions } = {},
+  options: { sts?: StsOptions; uploads?: Uploads } = {},
 ): CredentialAdapter<AwsAdapterConfig> {
   const sessions = new AwsSessions(options.sts ?? {});
+  const uploads = options.uploads ?? new Uploads();
   return {
     id: 'aws',
     constraints: [AWS_SUFFIX],
@@ -716,7 +943,8 @@ export function createAwsAdapter(
     // The region is a plain value that appears in ordinary headers; only the key stands in.
     standIns: () => [AWS_KEY_PLACEHOLDER, AWS_SECRET_PLACEHOLDER],
     volatileHeaders: AWS_VOLATILE_HEADERS,
-    classify,
+    classify: (request) => classify(request, uploads),
+    answerCheck,
     async authorize(request: OutboundRequest, secret, config, context) {
       const signed = parseSigV4Authorization(context.authorization);
       // Unsigned: it goes out as it is, without the account.
@@ -767,7 +995,7 @@ export function createAwsAdapter(
         return [secret];
       }
     },
-    receipt,
+    receipt: (write, upstream) => receipt(write, upstream, uploads),
     rejected,
     uncertain,
     heldAnswer,

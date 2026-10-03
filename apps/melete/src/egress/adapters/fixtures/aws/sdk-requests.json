@@ -114,7 +114,7 @@
     },
     {
       "name": "s3 upload part",
-      "expect": "read",
+      "expect": "write UploadPart",
       "method": "PUT",
       "host": "reports.s3.eu-west-1.amazonaws.com",
       "path": "/big.bin",
