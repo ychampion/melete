@@ -42,6 +42,7 @@ import {
   voiceProvidersFromEnv,
 } from './api/voice.ts';
 import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-companion.ts';
+import { mountApps } from './apps/routes.ts';
 import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
@@ -264,6 +265,8 @@ export function createApp(deps: AppDeps) {
       { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
       personalSpace,
     );
+  // Apps a person can open, and the changes they make to their own.
+  if (deps.sql) mountApps(app, { sql: deps.sql });
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   // After mountPrincipals, so the owner-only guard it installs on every
   // non-GET under /spaces/:id runs before the handler that removes one.

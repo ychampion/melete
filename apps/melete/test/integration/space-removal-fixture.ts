@@ -174,6 +174,18 @@ export async function seedSpace(
   await sql`insert into blob_ref (key, owner_kind, owner_id, space_id)
     values (${`sha256/${createHash('sha256').update(spaceId).digest('hex')}`}, 'fixture', ${artifactId}, ${spaceId})`;
 
+  // A published app, with a version and a grant that go with it.
+  const appId = newId('app');
+  const versionId = createHash('sha256').update(appId).digest('hex');
+  await sql`insert into app (id, space_id, slug, name, publisher_principal_id)
+    values (${appId}, ${spaceId}, 'deals', 'Deals', ${principalId})`;
+  await sql`insert into app_version (id, app_id, manifest_hash, manifest, file_count, total_bytes)
+    values (${versionId}, ${appId}, ${versionId},
+      ${json({ entry: 'index.html', files: {}, data: {}, collections: {} })}::text::jsonb, 0, 0)`;
+  await sql`update app set current_version_id = ${versionId} where id = ${appId}`;
+  await sql`insert into app_grant (id, app_id, grantee_kind, grantee_id)
+    values (${newId('apg')}, ${appId}, 'installation', 'installation')`;
+
   await sql`insert into knowledge_record (id, space_id, path, frontmatter, content_hash)
     values (${newId('k')}, ${spaceId}, 'notes/one.md', '{}'::jsonb, 'khash')`;
   await sql`insert into skill (id, space_id, name, path, frontmatter)

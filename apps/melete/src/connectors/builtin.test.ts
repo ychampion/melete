@@ -11,6 +11,7 @@ import {
   defaultSandboxConfig,
   dockerSandboxSettings,
 } from '../sandbox/docker-default.ts';
+import { appsManifest } from './apps.ts';
 import { artifactsManifest } from './artifacts.ts';
 import { BUILTIN_CONNECTIONS, builtinEnvironment } from './builtin.ts';
 import { calendarManifest } from './calendar.ts';
@@ -28,10 +29,12 @@ describe('default connections', () => {
       files: filesManifest,
       web: webManifest,
       artifacts: artifactsManifest,
+      apps: appsManifest,
       exec: execManifest,
       sandbox: sandboxExecManifest,
     };
     expect(BUILTIN_CONNECTIONS.map((builtin) => builtin.provider).sort()).toEqual([
+      'apps',
       'artifacts',
       'exec',
       'files',
@@ -125,7 +128,13 @@ describe('default connections', () => {
   });
 
   test('every default effect that leaves the space waits for approval', () => {
-    for (const manifest of [filesManifest, webManifest, artifactsManifest, execManifest])
+    for (const manifest of [
+      filesManifest,
+      webManifest,
+      artifactsManifest,
+      appsManifest,
+      execManifest,
+    ])
       for (const tool of manifest.tools)
         if (tool.effect_class === 'write_external' || tool.effect_class === 'spend')
           expect(tool.requires_approval).toBe(true);
@@ -163,10 +172,10 @@ describe('default connections', () => {
       BUILTIN_CONNECTIONS.filter((builtin) => builtin.when?.(environment) ?? true).map(
         (builtin) => builtin.key,
       );
-    expect(wanted(builtinEnvironment(base))).toEqual(['files', 'web', 'artifacts']);
+    expect(wanted(builtinEnvironment(base))).toEqual(['files', 'web', 'artifacts', 'apps']);
     expect(
       wanted({ cellIsolated: true, speechConfigured: true, transcriptionConfigured: true }),
-    ).toEqual(['files', 'web', 'artifacts', 'generation', 'transcription', 'exec']);
+    ).toEqual(['files', 'web', 'artifacts', 'apps', 'generation', 'transcription', 'exec']);
   });
 });
 

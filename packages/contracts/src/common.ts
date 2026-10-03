@@ -46,6 +46,8 @@ export const ID_PREFIXES = {
   company_message: 'msg',
   /** A message the person sent that is still waiting on a reply. */
   awaited_reply: 'awr',
+  /** A published app. */
+  app: 'app',
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];
