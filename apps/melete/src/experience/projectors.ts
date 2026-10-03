@@ -435,14 +435,18 @@ function appFacts(kind: string, payload: Record<string, unknown>) {
   if (kind !== 'apps.publish') return [];
   const audience = object(payload.audience);
   const emails = Array.isArray(audience.emails) ? audience.emails.map(String) : [];
+  // Who keeps access whatever the audience says: the space's owner, the publisher, managers.
+  const also = typeof audience.also === 'string' && audience.also ? [audience.also] : [];
   const viewers =
     audience.kind === 'everyone'
       ? 'Everyone with an account here'
       : audience.kind === 'people' && emails.length
-        ? `You and ${emails.join(', ')}`
+        ? `You and ${[...emails, ...also].join(', ')}`
         : audience.kind === 'unchanged' && typeof audience.now === 'string'
           ? `Unchanged: ${audience.now}`
-          : 'Only you';
+          : also.length
+            ? `You and ${also.join(', ')}`
+            : 'Only you';
   const files = typeof payload.file_count === 'number' ? payload.file_count : 0;
   const bytes = typeof payload.total_bytes === 'number' ? payload.total_bytes : 0;
   const name = typeof payload.name === 'string' ? plainText(payload.name, 'App', 200) : null;

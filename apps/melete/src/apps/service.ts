@@ -348,6 +348,12 @@ export type PublishInput = {
   actionId: string;
   /** Null leaves an existing app's grants as they are. */
   grants: readonly DesiredGrant[] | null;
+  /**
+   * Run under the app's row lock, after the person's role is checked and
+   * before anything is written: throwing stops the publish with nothing stored
+   * in the database.
+   */
+  recheck?: (tx: TransactionSql) => Promise<void>;
 };
 
 export type Published = { appId: string; versionId: string; created: boolean; slug: string };
@@ -392,6 +398,8 @@ export async function publishVersion(
           throw new AppUnavailable('the app is no longer there to publish to');
         if (!created && (await appRoleFor(tx, input.appId, input.publisherId)) !== 'manage')
           throw new AppUnavailable('the person this publishes as no longer manages the app');
+        // Checked again under this app's lock, which a change to its grants also takes.
+        await input.recheck?.(tx);
         await tx`insert into app_version (id, app_id, manifest_hash, manifest, file_count,
             total_bytes, job_id, action_id, created_by)
           values (${versionId}, ${input.appId}, ${input.manifestHash},

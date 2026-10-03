@@ -108,8 +108,9 @@ async function setup() {
       return { status: 'ok', detail: 'fixture', checked_at: new Date().toISOString() };
     },
   };
+  const appsConnector = createAppsConnector({ sql, workRoot, blobs });
   const registry = new ConnectorRegistry()
-    .register(seed.connectionId, createAppsConnector({ sql, workRoot, blobs }))
+    .register(seed.connectionId, appsConnector)
     .register(otherId, other);
   // As the service runs it (broker/start.ts): auto-review on with no reviewer
   // configured, and origins answered by memory, which knows nothing of a path
@@ -173,6 +174,8 @@ async function setup() {
     approvals,
     app,
     settings,
+    appsConnector,
+    broker,
   };
 }
 
@@ -497,7 +500,7 @@ databaseTest(
     // Bo belongs to Alice's space and publishes app X there from this conversation.
     await ctx.sql`insert into space_membership (principal_id, space_id, role)
       values (${ctx.bo}, ${ctx.claims.space_id}, 'member')`;
-    const as = (who: string) =>
+    const as = (who: string | null) =>
       ctx.sql`update job set principal_id = ${who} where id = ${ctx.claims.job_id}`;
     await ctx.record('data/salaries.json', '[1]');
     await ctx.record('data/bonus.json', '[2]');
@@ -505,6 +508,11 @@ databaseTest(
     await ctx.write('index.html', 'x v1');
     const x = await ctx.propose('apps.publish', { dir: 'app', name: 'X' });
     expect(x.status).toBe('succeeded');
+    // "Only me" is never shown when the space's owner can open it too.
+    expect(x.canonical_payload.audience).toEqual({
+      kind: 'only_me',
+      also: `alice-${ctx.tag}@example.test`,
+    });
     const v1 = await ctx.app();
 
     // Alice, the space's owner, binds salaries: Bo still manages the app he published.
@@ -517,6 +525,7 @@ databaseTest(
       data: { salaries: { artifact: 'data/salaries.json' } },
     });
     expect(v2.status).toBe('needs_approval');
+    expect(v2.canonical_payload.audience).toEqual({ kind: 'unchanged', now: `you and ${bo}` });
     expect(v2.canonical_payload.risks).toEqual([
       `It would show data they do not see now to ${bo}: salaries (data/salaries.json).`,
     ]);
@@ -536,9 +545,40 @@ databaseTest(
       },
     });
     expect(v3.status).toBe('needs_approval');
+    expect(v3.canonical_payload.audience).toEqual({ kind: 'only_me', also: bo });
     expect(v3.canonical_payload.risks).toEqual([
       `It would show data they do not see now to ${bo}: bonus (data/bonus.json).`,
     ]);
+
+    // Collecting responses Bo could send asks too.
+    const collect = await ctx.propose('apps.publish', {
+      dir: 'app',
+      name: 'X',
+      app_id: v1.id,
+      data: { salaries: { artifact: 'data/salaries.json' } },
+      collections: { feedback: {} },
+    });
+    expect(collect.status).toBe('needs_approval');
+    expect(collect.canonical_payload.risks).toEqual([
+      `It would collect responses it does not collect now from ${bo}: feedback.`,
+    ]);
+
+    // A conversation with no person attached publishes as the space's owner, and asks the same way.
+    await as(null);
+    const unattended = await ctx.propose('apps.publish', {
+      dir: 'app',
+      name: 'X',
+      app_id: v1.id,
+      data: {
+        salaries: { artifact: 'data/salaries.json' },
+        bonus: { artifact: 'data/bonus.json' },
+      },
+    });
+    expect(unattended.status).toBe('needs_approval');
+    expect(unattended.canonical_payload.risks).toEqual([
+      `It would show data they do not see now to ${bo}: bonus (data/bonus.json).`,
+    ]);
+    await as(ctx.alice);
 
     // Going back to the version with salaries, after one without, asks the same way.
     await ctx.write('index.html', 'x v4');
@@ -587,7 +627,7 @@ databaseTest(
     await ctx.sql`insert into app_submission (id, app_id, version_id, collection, principal_id,
         data, size)
       values (${recordId('asub')}, ${v1.id}, ${v1.current_version_id}, 'feedback', ${ctx.bo},
-        ${ctx.sql.json(note)}, ${JSON.stringify(note).length})`;
+        ${JSON.stringify(note)}::jsonb, ${JSON.stringify(note).length})`;
     const read = await ctx.propose('apps.read_submissions', { app_id: v1.id });
     expect(read.status).toBe('succeeded');
     const line = 'This conversation read responses viewers sent, which may have steered it.';
@@ -605,6 +645,58 @@ databaseTest(
     });
     expect(back.status).toBe('needs_approval');
     expect(back.canonical_payload.risks).toEqual([line]);
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a share that lands after the last check stops the publish under the app lock',
+  async () => {
+    const ctx = await setup();
+    await ctx.write('index.html', 'mine');
+    expect((await ctx.propose('apps.publish', { dir: 'app', name: 'Mine' })).status).toBe(
+      'succeeded',
+    );
+    const { id } = await ctx.app();
+    await ctx.record('data/deals.json', '[1]');
+    await ctx.settings({ apps: false });
+    const next = await ctx.propose('apps.publish', {
+      dir: 'app',
+      name: 'Mine',
+      app_id: id,
+      data: { deals: { artifact: 'data/deals.json' } },
+    });
+    // Only Alice can open it, so the data is no risk when it is decided.
+    expect(next.canonical_payload.risks).toEqual([]);
+    await ctx.broker.decide(next.action_id, {
+      decision: 'approved',
+      payload_hash: next.payload_hash,
+    });
+    await ctx.broker.admit(ctx.claims, next.action_id, next.payload_hash);
+    // Bo is shared in between the dispatch's checks and the write.
+    await ctx.sql`insert into app_grant (id, app_id, grantee_kind, grantee_id, role)
+      values (${recordId('apg')}, ${id}, 'principal', ${ctx.bo}, 'view')`;
+    const [row] = await ctx.sql`select * from action where id = ${next.action_id}`;
+    const action = {
+      id: row?.id,
+      job_id: row?.job_id,
+      connection_id: row?.connection_id,
+      kind: row?.kind,
+      idempotency_key: row?.idempotency_key,
+      canonical_payload: row?.canonical_payload,
+    } as unknown as Parameters<typeof ctx.appsConnector.execute>[0];
+    const before = (await ctx.app()).current_version_id;
+    const result = await ctx.appsConnector.execute(action, {
+      job_id: ctx.claims.job_id,
+      space_id: ctx.claims.space_id,
+      idempotency_key: action.id,
+      constraints: {} as never,
+    });
+    expect(result).toMatchObject({ outcome: 'failed' });
+    expect(JSON.stringify(result)).toContain(
+      `It would show data they do not see now to bo-${ctx.tag}@example.test: deals (data/deals.json).`,
+    );
+    expect((await ctx.app()).current_version_id).toBe(before);
   },
   SLOW,
 );

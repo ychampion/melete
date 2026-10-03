@@ -629,6 +629,21 @@ test('a permission to publish an app names it, its size, who can open it and the
     ask({ audience: { kind: 'everyone' } }).preview?.facts.find((fact) => fact.label === 'Viewers')
       ?.value,
   ).toBe('Everyone with an account here');
+  // Who keeps access whatever the audience says is named, never hidden behind "Only you".
+  const viewersOf = (audience: Record<string, unknown>) =>
+    ask({ audience }).preview?.facts.find((fact) => fact.label === 'Viewers')?.value;
+  expect(viewersOf({ kind: 'only_me' })).toBe('Only you');
+  expect(viewersOf({ kind: 'only_me', also: 'alice@example.test' })).toBe(
+    'You and alice@example.test',
+  );
+  expect(
+    viewersOf({
+      kind: 'people',
+      emails: ['bo@example.test'],
+      principal_ids: ['own_bo'],
+      also: 'alice@example.test',
+    }),
+  ).toBe('You and bo@example.test, alice@example.test');
   expect(JSON.stringify(shown)).not.toMatch(BACKEND_VOCABULARY);
 });
 
