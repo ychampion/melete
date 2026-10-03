@@ -4,10 +4,13 @@ import {
   type AttemptOutcome,
   attemptBundle,
   attemptOutcome,
+  BASELINE_CONTEXT_BUDGET,
   type CanonicalMessage,
-  CONTEXT_LIMITS,
+  CONTEXT_CHARS_PER_TOKEN,
+  type ContextBudget,
   type ContextGenerations,
   canonicalTimeZone,
+  contextBudget,
   type Deliverable,
   describeTrigger,
   inputTokenCeiling,
@@ -63,8 +66,28 @@ import { readGenerations, requireGenerations } from './generations.ts';
 import { PRIVACY_DECISION, pickedForAgent, questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
 
-export const TRANSCRIPT_MAX_MESSAGES = 100;
-export const TRANSCRIPT_MAX_CHARACTERS = 32_000;
+/**
+ * The transcript bound at the baseline window. A model with a larger window
+ * carries proportionally more (`transcriptLimits`), and the engine compacts in
+ * place past that; these are the numbers a 128,000-token model, or one the
+ * catalog does not name, gets.
+ */
+export const TRANSCRIPT_MAX_MESSAGES = BASELINE_CONTEXT_BUDGET.transcript_messages;
+export const TRANSCRIPT_MAX_CHARACTERS =
+  BASELINE_CONTEXT_BUDGET.transcript_tokens * CONTEXT_CHARS_PER_TOKEN;
+
+export type TranscriptLimits = { maxMessages: number; maxCharacters: number };
+
+/** The transcript bound a context budget sets, in messages and serialized characters. */
+export const transcriptLimits = (budget: ContextBudget): TranscriptLimits => ({
+  maxMessages: budget.transcript_messages,
+  maxCharacters: budget.transcript_tokens * CONTEXT_CHARS_PER_TOKEN,
+});
+
+const BASELINE_TRANSCRIPT: TranscriptLimits = {
+  maxMessages: TRANSCRIPT_MAX_MESSAGES,
+  maxCharacters: TRANSCRIPT_MAX_CHARACTERS,
+};
 const omitted = '[Content omitted from bounded context; the durable record remains stored.]';
 const toolResult = z.object({ call_id: z.string().min(1), ok: z.boolean(), result: jsonObject });
 
@@ -78,23 +101,23 @@ export class BundleContextLimitError extends Error {
  * abbreviated, but their call IDs remain exact. If identities alone do not fit,
  * refuse the attempt instead of silently discarding its replay protection.
  */
-export function boundTranscript(messages: readonly CanonicalMessage[]): CanonicalMessage[] {
+export function boundTranscript(
+  messages: readonly CanonicalMessage[],
+  limits: TranscriptLimits = BASELINE_TRANSCRIPT,
+): CanonicalMessage[] {
+  const { maxMessages, maxCharacters } = limits;
   const tools = new Map<string, number>();
   for (const [index, message] of messages.entries()) {
     if (message.role === 'tool' && message.tool_call_id) tools.set(message.tool_call_id, index);
   }
-  if (tools.size > TRANSCRIPT_MAX_MESSAGES) {
+  if (tools.size > maxMessages) {
     throw new BundleContextLimitError(
       'completed tool identities exceed the transcript message limit',
     );
   }
   const required = new Set(tools.values());
   const selected = new Set(required);
-  for (
-    let index = messages.length - 1;
-    index >= 0 && selected.size < TRANSCRIPT_MAX_MESSAGES;
-    index--
-  ) {
+  for (let index = messages.length - 1; index >= 0 && selected.size < maxMessages; index--) {
     const message = messages[index];
     if (!message || (message.role === 'tool' && message.tool_call_id)) continue;
     selected.add(index);
@@ -105,7 +128,7 @@ export function boundTranscript(messages: readonly CanonicalMessage[]): Canonica
     if (!message) throw new Error('transcript index disappeared');
     return { ...message, content: omitted };
   });
-  while (JSON.stringify(bounded).length > TRANSCRIPT_MAX_CHARACTERS) {
+  while (JSON.stringify(bounded).length > maxCharacters) {
     const removable = indices.findIndex((index) => !required.has(index));
     if (removable < 0) {
       throw new BundleContextLimitError(
@@ -123,7 +146,7 @@ export function boundTranscript(messages: readonly CanonicalMessage[]): Canonica
     const original = sourceIndex === undefined ? undefined : messages[sourceIndex];
     if (!message || !original) throw new Error('transcript index disappeared');
     const previousLength = JSON.stringify(message.content).length;
-    const available = TRANSCRIPT_MAX_CHARACTERS - JSON.stringify(bounded).length + previousLength;
+    const available = maxCharacters - JSON.stringify(bounded).length + previousLength;
     if (JSON.stringify(original.content).length <= available) {
       message.content = original.content;
       continue;
@@ -272,6 +295,7 @@ export function assembleHistory(
   events: readonly HistoryEvent[],
   attempts: readonly HistoryAttempt[],
   afterSeq: number,
+  limits: TranscriptLimits = BASELINE_TRANSCRIPT,
 ): Pick<AttemptBundle, 'inputs' | 'transcript'> & { progressSummary: string } {
   const inputs: AttemptBundle['inputs'] = {
     new_user_messages: [],
@@ -344,7 +368,7 @@ export function assembleHistory(
     }
   }
   transcript.sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
-  return { inputs, transcript: boundTranscript(transcript), progressSummary };
+  return { inputs, transcript: boundTranscript(transcript, limits), progressSummary };
 }
 
 /**
@@ -598,7 +622,12 @@ export async function buildAttemptSkeleton(
     }
     return [entry];
   });
-  const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq);
+  const history = assembleHistory(
+    usableEvents,
+    attempts.filter(contextMatches),
+    afterSeq,
+    transcriptLimits(contextBudget(model.model)),
+  );
   // A decision names an action id; the attempt needs to know what that action
   // is. The row is this job's own, and the payload is the one the owner read.
   const decided = history.inputs.approval_results.map((entry) => entry.action_id);
@@ -667,6 +696,7 @@ export async function buildAttemptSkeleton(
     await procedureReach(tx, procedures),
     // An agent that keeps no memory is not offered a skill that promises to.
     persona?.writesMemory !== false,
+    contextBudget(model.model).max_skills,
   );
   const wait = waitSpec.parse(row.wait);
   // A transition into queued clears the wait. A queued job that still holds an
@@ -747,7 +777,7 @@ export async function buildAttemptSkeleton(
     since_last: delta,
     transcript: history.transcript,
     tools: [],
-    skills: mergeSkills(procedures, context.skills),
+    skills: mergeSkills(procedures, context.skills, contextBudget(model.model).max_skills),
     knowledge: context.knowledge,
     workspace: { mount: '/work', files: [] },
     // The budget is one question per wake, stated rather than implied.
@@ -782,6 +812,7 @@ export async function buildBundle(
 ): Promise<{ bundle: AttemptBundle; recall: RecallResult }> {
   const { sql, scope } = options;
   const jobId = skeleton.attempt.job_id;
+  const budget = contextBudget(skeleton.model.model);
   const result = await recall(
     sql,
     scope,
@@ -789,7 +820,12 @@ export async function buildBundle(
       job_id: jobId,
       query: attemptRecallQuery(skeleton),
       mode: 'current',
-      max_tokens: CONTEXT_LIMITS.knowledge_tokens,
+      max_tokens: budget.knowledge_tokens,
+      // Ten records per baseline budget, as many more as the budget is larger.
+      limit: Math.min(
+        50,
+        Math.ceil((10 * budget.knowledge_tokens) / BASELINE_CONTEXT_BUDGET.knowledge_tokens),
+      ),
     },
     {
       includeProfile: true,
@@ -797,7 +833,7 @@ export async function buildBundle(
       withheld: options.withheld === true,
     },
   );
-  const tools = (await options.catalog(skeleton)).slice(0, CONTEXT_LIMITS.max_tools);
+  const tools = (await options.catalog(skeleton)).slice(0, budget.max_tools);
   const repairBriefs = await pendingRepairBriefs(sql, scope, jobId);
   // The delta was built once, in the lease transaction, from the job's own
   // rows. Memory sources are the one kind of evidence only readable here, under
@@ -1039,6 +1075,7 @@ export async function completionFacts(
 function mergeSkills(
   procedures: AttemptBundle['skills'],
   selected: AttemptBundle['skills'],
+  maxSkills: number,
 ): AttemptBundle['skills'] {
   // A catalog skill keeps its name: a learned skill that takes it is left out
   // rather than replacing Melete's own or the owner's added skill.
@@ -1052,5 +1089,5 @@ function mergeSkills(
   for (const skill of selected) {
     merged.push(skill);
   }
-  return merged.slice(0, CONTEXT_LIMITS.max_skills);
+  return merged.slice(0, maxSkills);
 }

@@ -1,7 +1,7 @@
 import {
   type AttemptBundle,
-  CONTEXT_LIMITS,
   type ContextAwareRuntimeAdapter,
+  contextBudget,
   isRetrievable,
   type KnowledgeExcerpt,
   knowledgeExcerpt,
@@ -77,7 +77,7 @@ async function legacyKnowledge(
       });
       if (
         knowledgeTokens([...bundle.knowledge, ...selected, excerpt]) >
-        CONTEXT_LIMITS.knowledge_tokens
+        contextBudget(bundle.model.model).knowledge_tokens
       )
         continue;
       selected.push(excerpt);

@@ -11,10 +11,17 @@ import {
   REQUEST_FRAMING_TOKENS,
 } from '@melete/contracts';
 import { localEndpoint, PrivacyRouter } from '../privacy/index.ts';
+import { applyPromptCaching } from './caching.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { countImages, imageTokens, isInlineImage, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
-import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
+import {
+  estimateInputTokens,
+  object,
+  SecretRedactor,
+  UsageCollector,
+  withChargedInput,
+} from './metering.ts';
 import {
   checkConnectTarget,
   PROVIDER_HOSTS,
@@ -31,6 +38,7 @@ import {
   type GatewaySettlement,
 } from './types.ts';
 
+export * from './caching.ts';
 export * from './fake.ts';
 export * from './providers.ts';
 export * from './types.ts';
@@ -301,6 +309,16 @@ export function createModelGateway(options: GatewayOptions): Server {
       // The runtime's mark on a screenshot is for the router; it never leaves.
       const outbound = withoutMarks(prepared?.body ?? body);
       const local = prepared?.local ?? null;
+      // The provider's prompt-caching controls, for a request that leaves for
+      // one. A model on the person's own machine is sent the body as written.
+      const caching =
+        local || provider.fake
+          ? null
+          : applyPromptCaching(outbound, {
+              provider: provider.name,
+              protocol,
+              jobId: principal.jobId,
+            });
       const encoded = JSON.stringify(outbound);
       // A picture is charged as the flat count the engine compacts by, not as
       // the base64 text it travels in.
@@ -346,6 +364,7 @@ export function createModelGateway(options: GatewayOptions): Server {
         accept: 'application/json, text/event-stream',
       });
       for (const [name, value] of Object.entries(signedIn?.headers ?? {})) headers.set(name, value);
+      for (const [name, value] of Object.entries(caching?.headers ?? {})) headers.set(name, value);
       if (local) {
         if (credential) headers.set('authorization', `Bearer ${credential}`);
         // The router pinned the local model to the address it checked for this request.
@@ -421,7 +440,12 @@ export function createModelGateway(options: GatewayOptions): Server {
       const rest = redactor.feed(new Uint8Array(), true);
       const tail = streaming && rehydrator ? rehydrator.push(rest) + rehydrator.end() : rest;
       settlement.modelActual = collector.modelActual;
-      settlement.usage = collector.completed ? collector.usage : null;
+      // Cached input is charged at the provider's cached price. A model on the
+      // person's own machine is priced as no discount: it has no price list.
+      settlement.usage =
+        collector.completed && collector.usage
+          ? withChargedInput(collector.usage, local ? 'local' : provider.name)
+          : null;
       settlement.status = collector.completed ? 'succeeded' : 'unknown';
       settlement.latencyMs = Math.round(performance.now() - started);
       // End-of-stream or the JSON result is released only after its evidence is durable.

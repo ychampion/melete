@@ -11014,7 +11014,7 @@
                   },
                   "max_tokens": {
                     "default": 2000,
-                    "maximum": 2000,
+                    "maximum": 8000,
                     "$ref": "#/components/schemas/__schema42"
                   },
                   "limit": {
@@ -32711,6 +32711,11 @@
           },
           "cached_input_tokens": {
             "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "charged_input_tokens": {
             "type": "integer",
             "minimum": 0,
             "maximum": 9007199254740991

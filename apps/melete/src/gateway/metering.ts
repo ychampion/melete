@@ -1,5 +1,49 @@
 import { GatewayError, type GatewayUsage } from './types.ts';
 
+/**
+ * What a provider charges for input it read from, or wrote to, its prompt
+ * cache, as a share of its ordinary input price. Read from each provider's
+ * published pricing: Anthropic bills a cache read at a tenth and a five-minute
+ * cache write at a quarter more; OpenAI's current models, and the ChatGPT plan
+ * served the same way, bill cached input at a tenth; Fireworks at half; Gemini's
+ * implicit cache at a quarter. A provider not listed here, an operator's own
+ * endpoint included, is assumed to give no discount, so a person is never
+ * charged less than the call may have cost.
+ */
+export const CACHED_INPUT_PRICE: Readonly<Record<string, { read: number; write: number }>> = {
+  anthropic: { read: 0.1, write: 1.25 },
+  openai: { read: 0.1, write: 1 },
+  chatgpt: { read: 0.1, write: 1 },
+  fireworks: { read: 0.5, write: 1 },
+  google: { read: 0.25, write: 1 },
+};
+
+const NO_DISCOUNT = { read: 1, write: 1 } as const;
+
+/**
+ * The input a request is charged for, in full-price-equivalent tokens: what was
+ * neither read from nor written to the cache at full price, cached input at the
+ * provider's cached price, and a cache write at its write price. Rounded up, so
+ * a call with any input is never charged nothing.
+ */
+export function chargedInputTokens(
+  usage: Pick<GatewayUsage, 'inputTokens' | 'cachedInputTokens' | 'cacheWriteInputTokens'>,
+  provider: string,
+): number {
+  const price = Object.hasOwn(CACHED_INPUT_PRICE, provider)
+    ? (CACHED_INPUT_PRICE[provider] ?? NO_DISCOUNT)
+    : NO_DISCOUNT;
+  const cached = Math.min(usage.cachedInputTokens, usage.inputTokens);
+  const written = Math.min(usage.cacheWriteInputTokens ?? 0, usage.inputTokens - cached);
+  const fresh = usage.inputTokens - cached - written;
+  return Math.ceil(fresh + cached * price.read + written * price.write);
+}
+
+/** Usage with its charged input filled in for the provider that served it. */
+export function withChargedInput(usage: GatewayUsage, provider: string): GatewayUsage {
+  return { ...usage, chargedInputTokens: chargedInputTokens(usage, provider) };
+}
+
 export function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -107,6 +151,7 @@ export class UsageCollector {
           usage.cache_read_input_tokens,
           usage.cache_creation_input_tokens,
           object(usage.prompt_tokens_details)?.cached_tokens,
+          object(usage.input_tokens_details)?.cached_tokens,
         ].some((value) => value !== undefined && !validCount(value))
       ) {
         this.usage = null;
@@ -125,10 +170,15 @@ export class UsageCollector {
         usage.output_tokens !== undefined || usage.completion_tokens !== undefined
           ? count(usage.output_tokens ?? usage.completion_tokens)
           : (previous?.outputTokens ?? 0);
+      // Anthropic names a cache read itself; Chat Completions reports it under
+      // prompt_tokens_details and Responses under input_tokens_details.
       const cached = count(
-        usage.cache_read_input_tokens ?? object(usage.prompt_tokens_details)?.cached_tokens,
+        usage.cache_read_input_tokens ??
+          object(usage.prompt_tokens_details)?.cached_tokens ??
+          object(usage.input_tokens_details)?.cached_tokens,
       );
-      // Anthropic reports uncached input separately; caching still consumes the token allowance.
+      // Anthropic reports uncached input separately. The raw total counts every
+      // input token; the price of the cached part is applied by chargedInputTokens.
       const cacheCreation = count(usage.cache_creation_input_tokens);
       const inputTotal = input + ('cache_read_input_tokens' in usage ? cached : 0) + cacheCreation;
       if (!Number.isSafeInteger(inputTotal + output)) {
@@ -141,6 +191,10 @@ export class UsageCollector {
         inputTokens: inputTotal,
         outputTokens: output,
         cachedInputTokens: cached || previous?.cachedInputTokens || 0,
+        // Only Anthropic reports a cache write; elsewhere the field is left out.
+        ...(cacheCreation || previous?.cacheWriteInputTokens
+          ? { cacheWriteInputTokens: cacheCreation || previous?.cacheWriteInputTokens }
+          : {}),
         totalTokens: Math.max(count(usage.total_tokens), inputTotal + output),
       };
     }

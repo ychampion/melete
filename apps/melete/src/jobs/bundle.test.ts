@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import type { AttemptOutcome, CanonicalMessage, Deliverable } from '@melete/contracts';
+import {
+  type AttemptOutcome,
+  type CanonicalMessage,
+  contextBudget,
+  type Deliverable,
+} from '@melete/contracts';
 import {
   assembleHistory,
   BundleContextLimitError,
@@ -9,6 +14,7 @@ import {
   renderEarlierWork,
   TRANSCRIPT_MAX_CHARACTERS,
   TRANSCRIPT_MAX_MESSAGES,
+  transcriptLimits,
 } from './bundle.ts';
 
 const at = '2026-09-11T08:00:00.000Z';
@@ -305,6 +311,46 @@ describe('durable attempt context', () => {
     expect(() =>
       boundTranscript([{ role: 'tool', tool_call_id: 'x'.repeat(32_001), content: '{}', at }]),
     ).toThrow(BundleContextLimitError);
+  });
+
+  test("a long-context model's budget carries much more of the conversation", () => {
+    const messages = Array.from(
+      { length: 400 },
+      (_, index): CanonicalMessage => ({
+        role: 'user',
+        content: `Message ${index}: ${'details '.repeat(40)}`,
+        at,
+      }),
+    );
+    const small = boundTranscript(messages, transcriptLimits(contextBudget('unlisted-model')));
+    const large = boundTranscript(
+      messages,
+      transcriptLimits(contextBudget('accounts/fireworks/models/deepseek-v4p1-flash')),
+    );
+    // The baseline is the bound every model had before.
+    expect(JSON.stringify(small).length).toBeLessThanOrEqual(TRANSCRIPT_MAX_CHARACTERS);
+    expect(small.some((message) => message.content.startsWith('Message 300:'))).toBe(false);
+    // 62,500 tokens of transcript at four characters each holds all four hundred.
+    expect(JSON.stringify(large).length).toBeLessThanOrEqual(62_500 * 4);
+    expect(large).toHaveLength(400);
+    expect(large[0]?.content).toStartWith('Message 0:');
+    // A completed tool identity a small bound refuses fits a large one.
+    const identities = Array.from(
+      { length: 150 },
+      (_, index): CanonicalMessage => ({
+        role: 'tool',
+        tool_call_id: `call-${index}`,
+        content: '{}',
+        at,
+      }),
+    );
+    expect(() => boundTranscript(identities)).toThrow(BundleContextLimitError);
+    expect(
+      boundTranscript(
+        identities,
+        transcriptLimits(contextBudget('accounts/fireworks/models/deepseek-v4p1-flash')),
+      ),
+    ).toHaveLength(150);
   });
 });
 

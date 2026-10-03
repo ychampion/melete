@@ -226,6 +226,12 @@ export const attemptUsage = z.object({
   input_tokens: z.number().int().nonnegative().default(0),
   output_tokens: z.number().int().nonnegative().default(0),
   cached_input_tokens: z.number().int().nonnegative().default(0),
+  /**
+   * Input at full-price-equivalent tokens: cached input at the provider's cached
+   * price. What an allowance charges for input. Absent on attempts recorded
+   * before it was kept, where the raw input count stands in for it.
+   */
+  charged_input_tokens: z.number().int().nonnegative().optional(),
   requests: z.number().int().nonnegative().default(0),
   usd_est: z.number().nonnegative().default(0),
 });

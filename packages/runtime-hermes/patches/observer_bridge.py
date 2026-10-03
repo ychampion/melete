@@ -1,14 +1,17 @@
 """Apply only the reviewed seams to Hermes v2026.9.7.
 
-Three observer seams, one prompt seam, one reasoning seam and one picture
-seam. The prompt seam: `agent.host_prompt: false` leaves out the engine's own
+Three observer seams, one prompt seam, one reasoning seam, one picture
+seam and one live-tools seam. The prompt seam: `agent.host_prompt: false` leaves out the engine's own
 product pointer, its profile line and its host runtime block, which describe
 the engine's install rather than the attempt. It is inert unless that key is
 set. The reasoning seam puts the model's reasoning on a run's event stream as
 `reasoning.delta`, beside the `message.delta` text the stream already carries.
 The picture seam keeps the agent's own screenshot in the session store, and
 puts a paired computer's back from the broker, so the next run of the same
-session still shows it to the model.
+session still shows it to the model. The live-tools seam hands the run's agent
+to the support module, so a tool the broker loads part way through a run can be
+added to that run's tool list by the engine's own live refresh instead of
+ending the run and starting another.
 
 All six original source hashes are checked before any write. A subsequent
 run accepts only the same patch, or a named earlier version of it, never an
@@ -125,6 +128,12 @@ def _join_tier(parts: List[Optional[str]]) -> str:
 """),
             ("        self._active_run_agents[run_id] = agent\n",
              "        agent.reasoning_callback = _reasoning_cb  # Melete reasoning seam\n        self._active_run_agents[run_id] = agent\n"),
+            # The live-tools seam: the support module may refresh this run's
+            # tool list when the broker loads a tool part way through it.
+            ("        agent.reasoning_callback = _reasoning_cb  # Melete reasoning seam\n",
+             "        agent.reasoning_callback = _reasoning_cb  # Melete reasoning seam\n"
+             "        from melete_runtime_hooks import bind_agent  # Melete live-tools seam\n"
+             "        bind_agent(agent)  # Melete live-tools seam\n"),
         ],
     ),
     # The picture seam. Each tool message is written to the session store as it
@@ -179,8 +188,8 @@ def _durable_content(content: Any) -> Any:
 # A checkout patched by an earlier reviewed version of a file's patch is
 # restored through that version, named by how many of the current changes it made.
 EARLIER_VERSIONS = {
-    # Before the reasoning seam.
-    "gateway/platforms/api_server_runs.py": (7,),
+    # Before the reasoning seam (7), and before the live-tools seam (9).
+    "gateway/platforms/api_server_runs.py": (7, 9),
 }
 
 

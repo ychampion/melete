@@ -265,6 +265,49 @@ def test_tool_call_dispatches_a_tool_registered_after_the_snapshot(probe_registr
     assert "probe_late" not in snapshot_names
 
 
+def test_a_tool_registered_mid_run_joins_the_running_agent_at_the_end(probe_registry, hermes_home):
+    """The live-tools seam: the engine's own live refresh, asked for by the
+    support module, adds a tool registered after the run's snapshot to the
+    running agent's list, at the end, without moving the tools already there.
+    tools/mcp_tool_agent.py `refresh_agent_mcp_tools(preserve_prefix=True)`."""
+    import types
+
+    import model_tools
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime_support"))
+    import melete_runtime_hooks
+
+    # The shipped tool-search setting: off, so plugin tools are offered directly.
+    shipped = yaml.safe_load((Path(__file__).resolve().parents[1] / "config" / "config.yaml")
+                             .read_text(encoding="utf-8"))
+    write_config(hermes_home, {"tools": shipped["tools"]})
+    probe_registry("probe_b", lambda args, **kw: json.dumps({"tool": "probe_b"}))
+    probe_registry("probe_c", lambda args, **kw: json.dumps({"tool": "probe_c"}))
+    snapshot = model_tools.get_tool_definitions(enabled_toolsets=[PROBE_TOOLSET], quiet_mode=True)
+    agent = types.SimpleNamespace(
+        tools=list(snapshot),
+        valid_tool_names={d["function"]["name"] for d in snapshot},
+        enabled_toolsets=[PROBE_TOOLSET],
+        disabled_toolsets=None,
+        session_id="",
+    )
+    before = [d["function"]["name"] for d in agent.tools]
+    assert before == ["probe_b", "probe_c"]
+    melete_runtime_hooks.bind_agent(agent)
+    try:
+        assert melete_runtime_hooks.refresh_live_tools("probe_a") is False
+        # Sorted by name it would come first; registered mid-run it goes last.
+        probe_registry("probe_a", lambda args, **kw: json.dumps({"tool": "probe_a"}))
+        assert melete_runtime_hooks.refresh_live_tools("probe_a") is True
+    finally:
+        melete_runtime_hooks.bind_agent(object())
+    assert [d["function"]["name"] for d in agent.tools] == ["probe_b", "probe_c", "probe_a"]
+    assert "probe_a" in agent.valid_tool_names
+    result = model_tools.handle_function_call(
+        "probe_a", {"value": "same run"}, enabled_toolsets=[PROBE_TOOLSET])
+    assert json.loads(result)["tool"] == "probe_a"
+
+
 # --- Probe 3: plugin strip_env_keys on the child environments ----------------
 # Finding 12. agent/terminal_env_registry.py:69 `plugin_strip_env_keys` unions
 # every registered provider's keys, and

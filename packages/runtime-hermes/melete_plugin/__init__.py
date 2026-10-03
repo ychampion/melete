@@ -172,15 +172,7 @@ def build_handler(
                         "unknown_tool",
                         f"{schema['name']} is not loaded here: use the terminal tool, which runs in the sandbox.",
                     )
-                # AIAgent snapshots its tools at creation. The adapter observes
-                # the broker's new catalog, stops this run, and starts a fresh
-                # run in the same attempt. Model text never controls that gate.
-                return {
-                    "status": "tools_loaded",
-                    "name": schema["name"],
-                    "schema_fingerprint": loaded.get("schema_fingerprint"),
-                    "instruction": "The tool is loaded. This run will continue with its schema.",
-                }
+                return _loaded_result(schema, loaded.get("schema_fingerprint"))
             # ask_person records a question for the person; the broker decides
             # whether it may be asked and the service makes the job wait on it.
             if connection_id is None and (
@@ -279,6 +271,48 @@ def build_handler(
     handler.__name__ = "melete_" + name.replace(".", "_").replace("-", "_")
     handler.__doc__ = f"Forward {name} to the Melete broker."
     return handler
+
+
+#: Says a loaded tool could not join the running agent's list, so the run has
+#: to end and continue in a fresh one. Kept under ``error`` on purpose: the
+#: engine marks a result carrying one as failed on the run's event stream, and
+#: that mark is how the adapter tells this case from a tool the model can call
+#: at once. The broker's catalog, not this text, decides whether a tool loaded.
+CONTINUES_IN_A_NEW_RUN = "continues_in_a_new_run"
+
+
+def _loaded_result(schema: Dict[str, Any], fingerprint: Any) -> Dict[str, Any]:
+    """What the model reads after a load, and what the adapter acts on.
+
+    The engine builds a run's tool list when the run starts. The support module
+    asks the engine to add the newly registered tool to the running agent's list
+    (its own live refresh, the one it uses for a tool server that connects
+    late), so the model calls it on its next request and the run goes on. When
+    that is not possible the adapter observes the broker's new catalog, stops
+    this run, and starts a fresh one in the same attempt with the tool in it.
+    Model text never controls either path.
+    """
+    name = schema["name"]
+    try:
+        from melete_runtime_hooks import refresh_live_tools
+
+        live = refresh_live_tools(name)
+    except Exception:  # noqa: BLE001 - no live refresh means a fresh run
+        live = False
+    if live:
+        return {
+            "status": "loaded",
+            "name": name,
+            "schema_fingerprint": fingerprint,
+            "instruction": f"{name} is in your tools now. Call it directly.",
+        }
+    return {
+        "status": "tools_loaded",
+        "name": name,
+        "schema_fingerprint": fingerprint,
+        "error": CONTINUES_IN_A_NEW_RUN,
+        "instruction": "The tool is loaded. This run will continue with its schema.",
+    }
 
 
 def _execution_view(outcome: Dict[str, Any]) -> Dict[str, Any]:
