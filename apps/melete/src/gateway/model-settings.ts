@@ -53,7 +53,7 @@ import {
   providersFromEnv,
   providerUrl,
 } from './providers.ts';
-import { agentRoutes, type ModelRouting, sameModel } from './routing.ts';
+import { addressIsLocal, agentRoutes, type ModelRouting, sameModel } from './routing.ts';
 import type { GatewayProvider, GatewayRoutes, SignedInCredential } from './types.ts';
 
 export const MODEL_PROVIDER_LABELS: Record<ModelProvider, string> = {
@@ -222,6 +222,20 @@ export class ModelSettingsService {
     if (!row.baseUrl) return undefined;
     const operatorBase = this.operatorBaseUrl();
     return !operatorBase || operatorBase === row.baseUrl ? row : undefined;
+  }
+
+  /**
+   * Whether this provider is a model server on the owner's machine or network:
+   * the OpenAI-compatible endpoint at a local address, as the operator or the
+   * owner connected it.
+   */
+  async servesLocally(provider: string): Promise<boolean> {
+    if (provider !== OPENAI_COMPATIBLE) return false;
+    const base =
+      this.operatorBaseUrl() ??
+      this.usableRow(provider, await this.keyRows())?.baseUrl ??
+      undefined;
+    return addressIsLocal(base);
   }
 
   /** Whether a model call to this provider would carry a credential now. */
@@ -848,6 +862,8 @@ export type ServiceModelSource = {
   providers(configured: GatewayProvider[]): Promise<GatewayProvider[]>;
   /** Whether a call to this provider would carry a credential now. */
   connected(provider: string): Promise<boolean>;
+  /** Whether this provider is a model server on the owner's machine or network. */
+  local(provider: string): Promise<boolean>;
 };
 
 /**
@@ -858,7 +874,9 @@ export type ServiceModelSource = {
  * server's default with the configured providers.
  */
 export function serviceModelSource(options: {
-  env: Pick<Env, 'MELETE_DEFAULT_PROVIDER' | 'MELETE_DEFAULT_MODEL'>;
+  env: Pick<Env, 'MELETE_DEFAULT_PROVIDER' | 'MELETE_DEFAULT_MODEL'> & {
+    OPENAI_COMPAT_BASE_URL?: string;
+  };
   settings?: ModelSettingsService;
   pinned?: { provider?: string; model?: string };
   /**
@@ -869,6 +887,10 @@ export function serviceModelSource(options: {
 }): ServiceModelSource {
   const { env, settings } = options;
   const pinned = options.pinned?.provider || options.pinned?.model ? options.pinned : undefined;
+  const local = async (provider: string) =>
+    settings
+      ? settings.servesLocally(provider)
+      : provider === OPENAI_COMPATIBLE && addressIsLocal(env.OPENAI_COMPAT_BASE_URL);
   return {
     async current() {
       if (pinned)
@@ -876,13 +898,18 @@ export function serviceModelSource(options: {
           provider: pinned.provider || env.MELETE_DEFAULT_PROVIDER,
           model: pinned.model || env.MELETE_DEFAULT_MODEL,
         };
-      if (options.fast) return { provider: options.fast.provider, model: options.fast.model };
-      return settings
-        ? settings.activeChoice()
+      const chosen = settings
+        ? await settings.activeChoice()
         : { provider: env.MELETE_DEFAULT_PROVIDER, model: env.MELETE_DEFAULT_MODEL };
+      // A model on the owner's own machine or network keeps the side calls on
+      // it; the fast model is for a cloud model's.
+      if (options.fast && !(await local(chosen.provider)))
+        return { provider: options.fast.provider, model: options.fast.model };
+      return { provider: chosen.provider, model: chosen.model };
     },
     providers: async (configured) => (settings ? settings.providers(configured) : configured),
     connected: async (provider) => (settings ? settings.isConnected(provider) : true),
+    local,
   };
 }
 

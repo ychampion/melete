@@ -12,7 +12,7 @@ import {
 } from '@melete/contracts';
 import { localEndpoint, PrivacyRouter } from '../privacy/index.ts';
 import type { PreparedRequest } from '../privacy/router.ts';
-import { type ReasoningEffort, withEffort } from './effort.ts';
+import { effortRefused, type ReasoningEffort, refuseEffort, withEffort } from './effort.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { countImages, imageTokens, isInlineImage, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
@@ -25,6 +25,7 @@ import {
   requiresResponsesProtocol,
   resolveRoute,
 } from './providers.ts';
+import { providerIsLocal } from './routing.ts';
 import {
   type GatewayBudget,
   GatewayError,
@@ -319,12 +320,12 @@ export function createModelGateway(options: GatewayOptions): Server {
       // The models this call may be served by, in order: the one it names (or
       // the vision model, for a picture its own model cannot read), then the
       // operator's fallbacks. Each speaks this request's protocol.
-      const candidates: { provider: string; model: string; plain?: boolean }[] = routeCandidates(
-        principal,
-        provider.name,
-        model,
-        carriesPictures,
-      );
+      // A model on the person's own machine or network keeps its calls: nothing
+      // is rerouted or sent to a cloud fallback from it.
+      const primaryLocal = providerIsLocal(provider);
+      const candidates: { provider: string; model: string; plain?: boolean }[] = primaryLocal
+        ? [{ provider: provider.name, model }]
+        : routeCandidates(principal, provider.name, model, carriesPictures);
       const router = options.privacy === false ? null : options.privacy;
       let firstFailure: unknown;
       for (const [index, candidate] of candidates.entries()) {
@@ -349,15 +350,16 @@ export function createModelGateway(options: GatewayOptions): Server {
               ? 'max_output_tokens'
               : 'max_tokens'
         ] = requested;
-        const before = Object.keys(callBody).length;
-        if (!candidate.plain)
+        const reasoningOf = () => JSON.stringify([callBody.reasoning, callBody.reasoning_effort]);
+        const before = reasoningOf();
+        if (!candidate.plain && !effortRefused(callProvider.name, callModel))
           withEffort(callBody, {
             protocol,
             provider: callProvider.name,
             model: callModel,
             effort: options.reasoningEffort,
           });
-        const effortAdded = Object.keys(callBody).length > before;
+        const effortAdded = reasoningOf() !== before;
         const rerouted = callModel !== model || callProvider.name !== provider.name;
         const route: GatewaySettlement['route'] = !rerouted
           ? undefined
@@ -408,9 +410,19 @@ export function createModelGateway(options: GatewayOptions): Server {
           continue;
         }
         const credential = local ? local.apiKey : (signedIn?.token ?? callProvider.apiKey);
+        // Served on the person's own model: their local model, an endpoint the
+        // owner confirmed is on their device, or a model server on their network.
+        const servedLocally =
+          Boolean(local) || prepared?.route === 'on_device' || providerIsLocal(callProvider);
         // Past a spending limit no new call is made; a call already running
         // finishes and is counted.
-        await options.spending?.admit(principal);
+        await options.spending?.admit(principal, {
+          provider: local ? 'local' : callProvider.name,
+          model: local ? local.model : callModel,
+          inputTokens,
+          maxOutputTokens: requested,
+          local: servedLocally,
+        });
         reservation = await options.budget.reserve({
           principal,
           requestId: randomUUID(),
@@ -430,6 +442,12 @@ export function createModelGateway(options: GatewayOptions): Server {
           ...(prepared ? { privacy: prepared.receipt } : {}),
           ...(stopped ? { stopped } : {}),
           ...(route ? { route, routedFrom: { provider: provider.name, model } } : {}),
+          ...(servedLocally
+            ? {
+                servedLocally: true,
+                ...(local ? { servedBy: { provider: 'local', model: local.model } } : {}),
+              }
+            : {}),
         };
         charged = { input: inputTokens, output: requested };
         if (abort.signal.aborted) throw new GatewayError(504, 'request_aborted');
@@ -447,8 +465,8 @@ export function createModelGateway(options: GatewayOptions): Server {
           headers.set('x-api-key', credential ?? 'fake');
           headers.set('anthropic-version', '2023-06-01');
         } else headers.set('authorization', `Bearer ${credential ?? 'fake'}`);
-        // A private request stays on the local model; it has no alternative.
-        const alternatives = !last && !local;
+        // A request kept on the person's own model has no alternative.
+        const alternatives = !last && !servedLocally;
         let answer: Response;
         try {
           answer =
@@ -492,6 +510,8 @@ export function createModelGateway(options: GatewayOptions): Server {
           // A model that refuses the reasoning control the gateway added is
           // asked once more without it, before anything else is tried.
           if (effortAdded && answer.status === 400 && !local) {
+            // Remembered for this process, so the next call to it goes plain at once.
+            refuseEffort(callProvider.name, callModel);
             settlement.latencyMs = Math.round(performance.now() - started);
             await settle(principal, reservation, settlement);
             firstFailure ??= failure;
@@ -562,6 +582,12 @@ export function createModelGateway(options: GatewayOptions): Server {
       settlement.modelActual = collector.modelActual;
       settlement.usage = collector.completed ? collector.usage : null;
       settlement.status = collector.completed ? 'succeeded' : 'unknown';
+      // A reply cut off before its usage arrived is still billed by the
+      // provider. The job keeps its whole reservation charged; the spending
+      // caps count what it streamed, estimated.
+      if (!settlement.usage && charged)
+        settlement.spendEstimate =
+          collector.usage ?? collector.estimate(charged.input, charged.output);
       settlement.latencyMs = Math.round(performance.now() - started);
       // End-of-stream or the JSON result is released only after its evidence is durable.
       await settle(principal, reservation, settlement);
@@ -588,6 +614,11 @@ export function createModelGateway(options: GatewayOptions): Server {
           settlement.usage = collector.estimate(charged.input, charged.output);
           settlement.usageEstimated = true;
         }
+        // A call that failed part way through its reply is billed too: the
+        // spending caps count what it streamed.
+        if (!settlement.usage && collector && charged)
+          settlement.spendEstimate =
+            collector.usage ?? collector.estimate(charged.input, charged.output);
         try {
           await options.budget.settle(reservation, settlement);
         } catch (ledgerError) {
@@ -751,6 +782,8 @@ function routeCandidates(
     );
   const vision = principal.routes?.vision;
   if (carriesPictures && vision && allowed(vision)) return [vision];
+  // A picture never goes to a fallback, which may not read it.
+  if (carriesPictures) return [{ provider, model }];
   return [
     { provider, model },
     ...(principal.routes?.fallback ?? []).filter(

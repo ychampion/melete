@@ -12,11 +12,25 @@ import type { Hono } from 'hono';
 import type { SpendingGuard } from '../gateway/spending.ts';
 import type { HealthDetail } from '../health/monitor.ts';
 
-export function mountUsage(app: Hono, deps: { spending: SpendingGuard }): void {
+export function mountUsage(
+  app: Hono,
+  deps: {
+    spending: SpendingGuard;
+    /** Whether this account runs the installation, and so sees its totals. */
+    isOwner: (actor: string | undefined) => Promise<boolean>;
+  },
+): void {
   app.get('/usage', async (c) => {
-    const summary = await deps.spending.summary(c.get('owner')?.id ?? null);
+    const actor = c.get('owner')?.id as string | undefined;
+    const owner = await deps.isOwner(actor);
+    const summary = await deps.spending.summary(actor ?? null, owner);
     const { noticePercent: _notice, ...limits } = summary.limits;
-    return c.json(usageResponse.parse({ ...summary, limits }));
+    return c.json(
+      usageResponse.parse({
+        ...summary,
+        limits: { person: limits.person, installation: owner ? limits.installation : null },
+      }),
+    );
   });
 }
 

@@ -166,6 +166,7 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
         try {
           items = await extractor.extract({
             spaceId: options.owner.spaceId,
+            principalId: options.owner.principalId,
             messageId: message.messageId,
             companyName: group.name,
             domain: group.domain,

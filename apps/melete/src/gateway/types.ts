@@ -56,6 +56,13 @@ export interface GatewayPrincipal {
   allowedModels: { provider: string; model: string }[];
   /** Models the gateway may serve a call with instead of the one it names. */
   routes?: GatewayRoutes;
+  /**
+   * The person who caused this call, when the caller knows it: the one whose
+   * message is being read, who asked aloud, or who started the scan. Spending
+   * caps charge them. Left out, an agent call charges the person who spoke last
+   * in its conversation.
+   */
+  actor?: string;
 }
 
 /**
@@ -69,14 +76,28 @@ export interface GatewayRoutes {
   fallback?: { provider: string; model: string }[];
 }
 
+/** A call about to be made, as the spending caps see it. */
+export interface GatewaySpendingCall {
+  provider: string;
+  model: string;
+  inputTokens: number;
+  maxOutputTokens: number;
+  /** On the person's own model. */
+  local: boolean;
+}
+
 /**
  * Spending caps across every model call this service makes. `admit` is asked
  * before a call is reserved and refuses it once a limit is reached; `record`
  * is told what each settled call used.
  */
 export interface GatewaySpending {
-  /** Throws a GatewayError (402 `spending_limit_reached`) when a limit is reached. */
-  admit(principal: GatewayPrincipal): Promise<void>;
+  /**
+   * Throws a GatewayError (402 `spending_limit_reached`) when a limit is
+   * reached. `call` is what is about to be sent, held against the limit while
+   * it runs.
+   */
+  admit(principal: GatewayPrincipal, call?: GatewaySpendingCall): Promise<void>;
   /** Records one settled call's usage and cost. Never throws. */
   record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void>;
 }
@@ -119,6 +140,15 @@ export interface GatewaySettlement {
   route?: 'vision' | 'fallback';
   /** The model the request named, when `route` sent it elsewhere. */
   routedFrom?: { provider: string; model: string };
+  /**
+   * What a call that ended without its usage is estimated to have used, for
+   * the spending caps alone; the job's ledger keeps its reservation instead.
+   */
+  spendEstimate?: GatewayUsage;
+  /** Served on the person's own model, which costs nothing unless the operator prices it. */
+  servedLocally?: boolean;
+  /** The model that actually answered, when the privacy router sent the call to the local model. */
+  servedBy?: { provider: string; model: string };
 }
 
 export interface GatewayBudget {

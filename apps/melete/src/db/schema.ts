@@ -1305,6 +1305,7 @@ export const modelUsage = pgTable(
   (t) => [
     index('model_usage_created_idx').on(t.createdAt),
     index('model_usage_principal_idx').on(t.principalId, t.createdAt),
+    index('model_usage_space_idx').on(t.spaceId, t.createdAt),
   ],
 );
 

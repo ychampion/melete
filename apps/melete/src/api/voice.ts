@@ -431,13 +431,18 @@ export function mountVoice(
       .answer({
         spaceId: scope.spaceId,
         conversationId: scope.conversationId,
+        principalId,
         request: parsed.data,
         context: known,
         signal: c.req.raw.signal,
       })
       .catch(() => ({ failed: 'unanswered' as const }));
     if ('failed' in result) {
-      if (result.failed === 'refused') await allowance.giveBack(reservation).catch(() => undefined);
+      if (result.failed === 'refused' || result.failed === 'limit')
+        await allowance.giveBack(reservation).catch(() => undefined);
+      // The person hears when the limit resets, not a general failure.
+      if (result.failed === 'limit')
+        throw new ServiceError('spending_limit_reached', result.message, 402);
       throw new ServiceError('voice_aside_failed', 'Melete could not answer that just now.', 502);
     }
     return c.json(voiceAside.parse(pointToQuestion(parsed.data, known, result.answer)));

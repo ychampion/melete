@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
 import { mountHealthDetail } from '../api/usage.ts';
 import { loadEnv } from '../env.ts';
+import { failureCode } from '../memory/gateway.ts';
 import {
   type Alert,
   alertSendersFromEnv,
@@ -74,6 +75,25 @@ describe('operator alerts', () => {
     expect(monitor.sent[0]?.subject).toBe('Melete is unhealthy: database');
     expect(monitor.sent[0]?.text).toContain('- database: unreachable');
     expect(monitor.sent[2]?.subject).toBe('Melete is healthy again');
+  });
+
+  test('an instance that does not hold the alert lease sends nothing', async () => {
+    const sent: Alert[] = [];
+    const monitor = new HealthMonitor({
+      check: async () => unhealthy,
+      senders: [async (alert) => void sent.push(alert)],
+      intervalMs: 60_000,
+      repeatMs: 3_600_000,
+      leads: async () => false,
+    });
+    expect(await monitor.tick()).toBeNull();
+    expect(sent).toEqual([]);
+  });
+
+  test('a spending limit reached in the memory gateway waits for the reset', () => {
+    expect(
+      failureCode(402, '{"error":{"code":"spending_limit_reached","message":"x"}}', null),
+    ).toBe('spending_limit_reached');
   });
 
   test('a health check that throws is itself an alert', async () => {

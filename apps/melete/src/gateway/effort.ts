@@ -7,6 +7,9 @@
  * MELETE_REASONING_EFFORT_SIDE change them; `off` sends nothing, leaving the
  * provider's own default.
  *
+ * The parameter is only ever added: every other field of the request, such
+ * as a structured-output `output_config` or `text.format`, is left as it is.
+ *
  * The gateway adds the provider's parameter only where the request names no
  * reasoning control of its own (the engine's, or a side call's, always wins),
  * and only for model families that accept it, since a model that does not
@@ -39,12 +42,37 @@ export function acceptsEffort(provider: string, model: string): boolean {
 
 /** Whether the request already says how much to reason, in any protocol's words. */
 function namesOwnEffort(body: Record<string, unknown>): boolean {
+  const reasoning = body.reasoning;
   return (
     body.reasoning_effort !== undefined ||
-    body.reasoning !== undefined ||
+    (reasoning !== undefined &&
+      (typeof reasoning !== 'object' ||
+        reasoning === null ||
+        (reasoning as Record<string, unknown>).effort !== undefined)) ||
     body.thinking !== undefined ||
     body.reasoning_budget !== undefined
   );
+}
+
+/**
+ * How a model takes "think as little as you can": `none` for the newer OpenAI
+ * models (GPT-5.1 on, GPT-6), `minimal` for GPT-5, and nothing at all for the
+ * o-series and Gemini Pro, which take neither.
+ */
+function leastEffort(provider: string, model: string): string | null {
+  if (/(^|\/)o\d/i.test(model) || /gemini-[\d.]+-pro/i.test(model)) return null;
+  if (/(^|\/)gpt-5(?![.\d])/i.test(model) && ['openai', 'chatgpt'].includes(provider))
+    return 'minimal';
+  return 'none';
+}
+
+/** Models that refused the parameter in this process, so they are not asked twice. */
+const refused = new Set<string>();
+export const effortRefused = (provider: string, model: string) =>
+  refused.has(`${provider}/${model}`);
+export function refuseEffort(provider: string, model: string): void {
+  if (refused.size > 1000) refused.clear();
+  refused.add(`${provider}/${model}`);
 }
 
 /**
@@ -63,9 +91,13 @@ export function withEffort(
   const { protocol, provider, model, effort } = input;
   if (!effort || effort === 'off' || namesOwnEffort(body) || !acceptsEffort(provider, model))
     return body;
+  const value = effort === 'none' ? leastEffort(provider, model) : effort;
+  if (!value) return body;
   if (protocol === 'responses') {
-    // The responses protocol has no `none`; the least it takes is `minimal`.
-    body.reasoning = { effort: effort === 'none' ? 'minimal' : effort };
-  } else if (protocol === 'chat/completions') body.reasoning_effort = effort;
+    // Added to whatever else the request already says about reasoning (a
+    // summary setting, say); no other field of the request is touched.
+    const existing = (body.reasoning ?? {}) as Record<string, unknown>;
+    body.reasoning = { ...existing, effort: value };
+  } else if (protocol === 'chat/completions') body.reasoning_effort = value;
   return body;
 }

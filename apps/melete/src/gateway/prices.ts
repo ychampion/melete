@@ -97,6 +97,13 @@ export class PriceTable {
     this.defaults = ordered(DEFAULT_MODEL_PRICES);
   }
 
+  /** The operator's own price for a model, if MELETE_MODEL_PRICES names one. */
+  operatorPrice(provider: string, model: string): ModelPrice | null {
+    const key = `${provider}/${model}`;
+    for (const [pattern, price] of this.operator) if (matches(pattern, key)) return price;
+    return null;
+  }
+
   /** The price that applies to one model, and the entry it came from. */
   priceFor(provider: string, model: string): ModelPrice & { entry: string } {
     const key = `${provider}/${model}`;

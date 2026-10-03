@@ -38,7 +38,9 @@ export function UsageThisMonth() {
   const data = loaded.data;
   if (!data) return null;
   const mine = data.person ?? data.installation;
-  const limit = data.person ? data.limits.person.month : data.limits.installation.month;
+  const limits = data.person ? data.limits.person : data.limits.installation;
+  if (!mine || !limits) return null;
+  const limit = limits.month;
   return (
     <section className="card-12 models-usage" aria-labelledby="usage-head">
       <span id="usage-head" className="models-overline">
@@ -46,12 +48,15 @@ export function UsageThisMonth() {
       </span>
       <span className="models-active-name">{usageLine(mine.month, limit)}</span>
       <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-        Today{' '}
-        {usageLine(mine.day, data.person ? data.limits.person.day : data.limits.installation.day)} ·
-        resets on {dayOf(data.month_resets_at)}
+        Today {usageLine(mine.day, limits.day)} · resets on {dayOf(data.month_resets_at)}
       </span>
       {data.notice ? (
-        <span className="models-warning" role="note">
+        <span
+          className="models-warning"
+          role="note"
+          // Close to a limit is a quiet note; a reached limit keeps the warning colour.
+          style={data.notice.level === 'warning' ? { color: 'var(--sand-ink)' } : undefined}
+        >
           <Icon name="alert" size={14} />
           {data.notice.message}
         </span>

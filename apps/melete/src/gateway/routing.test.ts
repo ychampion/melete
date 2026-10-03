@@ -5,7 +5,13 @@ import { acceptsEffort, withEffort } from './effort.ts';
 import { createModelGateway, type GatewayOptions, providersFromEnv } from './index.ts';
 import { ModelSettingsService, serviceModelSource } from './model-settings.ts';
 import { PriceTable, parseModelPrices } from './prices.ts';
-import { agentRoutes, allowedWithRoutes, parseModelChoice, routingFromEnv } from './routing.ts';
+import {
+  agentRoutes,
+  allowedWithRoutes,
+  parseModelChoice,
+  routingFromEnv,
+  routingWarnings,
+} from './routing.ts';
 import type {
   GatewayPrincipal,
   GatewayReservationRequest,
@@ -271,6 +277,28 @@ describe('reasoning effort per role', () => {
     ).toEqual({});
     expect(withEffort({}, { ...input, protocol: 'chat/completions', effort: 'off' })).toEqual({});
     expect(acceptsEffort('google', 'gemini-2.5-flash')).toBe(true);
+    // Additive: other reasoning settings and structured-output fields stay.
+    expect(
+      withEffort(
+        { reasoning: { summary: 'auto' }, text: { format: { type: 'json_schema' } } },
+        { provider: 'openai', model: 'gpt-6-astra', protocol: 'responses', effort: 'low' },
+      ),
+    ).toEqual({
+      reasoning: { summary: 'auto', effort: 'low' },
+      text: { format: { type: 'json_schema' } },
+    });
+    expect(
+      withEffort(
+        { output_config: { format: { type: 'json_schema' } } },
+        { provider: 'anthropic', model: 'claude-opus-4', protocol: 'messages', effort: 'high' },
+      ),
+    ).toEqual({ output_config: { format: { type: 'json_schema' } } });
+    expect(
+      withEffort(
+        { response_format: { type: 'json_schema' } },
+        { ...input, protocol: 'chat/completions', effort: 'low' },
+      ),
+    ).toEqual({ response_format: { type: 'json_schema' }, reasoning_effort: 'low' });
   });
 
   test("the gateway adds the role's effort to the request it sends", async () => {
@@ -330,5 +358,111 @@ describe('the price table', () => {
       }),
     ).toBeCloseTo(3.05, 6);
     expect(() => parseModelPrices('{"x": {"input": "cheap"}}')).toThrow('MELETE_MODEL_PRICES');
+  });
+});
+
+describe("a model on the owner's own machine keeps its calls", () => {
+  const LOCAL = { provider: 'openai-compatible', model: 'llama3.1:8b' };
+  const FAST = { provider: 'fireworks', model: 'accounts/fireworks/models/llama-8b' };
+
+  test('side calls stay on a local default model instead of the cloud fast model', async () => {
+    const env = {
+      MELETE_DEFAULT_PROVIDER: LOCAL.provider,
+      MELETE_DEFAULT_MODEL: LOCAL.model,
+      OPENAI_COMPAT_BASE_URL: 'http://127.0.0.1:11434/v1',
+    };
+    expect(await serviceModelSource({ env, fast: FAST }).current()).toEqual(LOCAL);
+    // The same default at a cloud address takes the fast model.
+    expect(
+      await serviceModelSource({
+        env: { ...env, OPENAI_COMPAT_BASE_URL: 'https://models.example.net/v1' },
+        fast: FAST,
+      }).current(),
+    ).toEqual(FAST);
+  });
+
+  test('a local model that fails is not followed by a cloud fallback, and its call is marked local', async () => {
+    const sent: string[] = [];
+    const settlements: GatewaySettlement[] = [];
+    const server = createModelGateway({
+      privacy: false,
+      authenticate: async () => ({
+        jobId: 'memory:sp_local',
+        attemptId: 'memory:1',
+        privacy: { kind: 'service', purpose: 'memory', spaceId: 'sp_local', sourceJobId: null },
+        epoch: 0,
+        revision: 0,
+        maxRequests: 1,
+        maxTokens: 10_000,
+        allowedModels: [LOCAL, FAST],
+        routes: { fallback: [FAST] },
+      }),
+      budget: {
+        reserve: async (request) => ({ id: request.requestId }),
+        settle: async (_reservation, settlement) => void settlements.push(settlement),
+      },
+      providers: providersFromEnv({
+        FIREWORKS_API_KEY: 'fireworks-key',
+        OPENAI_COMPAT_BASE_URL: 'http://127.0.0.1:11434/v1',
+        OPENAI_COMPAT_API_KEY: 'local',
+      }),
+      defaultProvider: 'openai-compatible',
+      fetch: async (request) => {
+        sent.push(request.url);
+        return new Response('busy', { status: 503 });
+      },
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('expected a TCP listener');
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/providers/openai-compatible/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer melete-surrogate-test',
+          'x-melete-capability': 'fixture',
+        },
+        body: JSON.stringify({
+          model: LOCAL.model,
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'private words' }],
+        }),
+      },
+    );
+    expect(response.status).toBe(502);
+    expect(sent).toEqual(['http://127.0.0.1:11434/v1/chat/completions']);
+    expect(settlements[0]?.servedLocally).toBe(true);
+  });
+
+  test('a picture is never sent to a fallback', async () => {
+    const gateway = await start({ fallback: [BACKUP] }, (model) =>
+      model === STRONG.model ? new Response('slow down', { status: 429 }) : ok(model),
+    );
+    expect((await gateway.post(withPicture)).status).toBe(429);
+    expect(gateway.sent).toHaveLength(1);
+  });
+
+  test("'none' is sent the way each model takes it, or not at all", () => {
+    const none = (provider: string, model: string, protocol: 'responses' | 'chat/completions') =>
+      withEffort({}, { provider, model, protocol, effort: 'none' });
+    expect(none('openai', 'gpt-6-astra', 'responses')).toEqual({ reasoning: { effort: 'none' } });
+    expect(none('openai', 'gpt-5', 'responses')).toEqual({ reasoning: { effort: 'minimal' } });
+    expect(none('openai', 'o4-mini', 'responses')).toEqual({});
+    expect(none('google', 'gemini-2.5-pro', 'chat/completions')).toEqual({});
+  });
+
+  test('the routing models are checked at start-up', () => {
+    expect(
+      routingWarnings(
+        { FIREWORKS_API_KEY: 'k' },
+        { fast: { provider: 'fireworkz', model: 'x' }, vision: null, fallback: [BACKUP] },
+      ),
+    ).toEqual([
+      expect.stringContaining('MELETE_MODEL_FAST names the provider "fireworkz"'),
+      expect.stringContaining('MELETE_MODEL_FALLBACK names openai-compatible'),
+    ]);
   });
 });

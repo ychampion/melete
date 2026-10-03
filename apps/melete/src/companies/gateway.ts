@@ -79,8 +79,9 @@ export type ExtractionGatewayOptions = {
 export async function openExtractionGateway(options: ExtractionGatewayOptions) {
   let spent = 0;
   const unanswered = new Set<string>();
-  /** Each call's token, and the space whose mail it carries. */
+  /** Each call's token, the space whose mail it carries and who started the scan. */
   const tokens = new Map<string, string>();
+  const actors = new Map<string, string>();
   const budget: GatewayBudget = {
     async reserve(request) {
       if (request.provider !== options.provider || request.model !== options.model)
@@ -112,7 +113,9 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
     async authenticate(token) {
       const spaceId = tokens.get(token);
       if (!spaceId) throw new GatewayError(401, 'extraction_principal_denied');
+      const actor = actors.get(token);
       return {
+        ...(actor ? { actor } : {}),
         jobId: 'companies-scan',
         privacy: { kind: 'service', purpose: 'companies', spaceId, sourceJobId: null },
         attemptId: `scan:${token.slice(0, 8)}`,
@@ -135,6 +138,7 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
     async extract(request: ExtractionRequest): Promise<ExtractedItem[]> {
       const token = randomUUID();
       tokens.set(token, request.spaceId);
+      if (request.principalId) actors.set(token, request.principalId);
       const input = extractionInput(request);
       // No tools, and the schema is the only shape the reply may take.
       const body =

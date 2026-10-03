@@ -1462,9 +1462,13 @@ again before every new call.
 | `MELETE_SPEND_NOTICE_PERCENT` | When the person is told a limit is close (default `80`) |
 
 Each limit left empty is no limit, which is the default, so an installation
-that sets none behaves as before. A call counts against the person whose job
-it belongs to (the job's author, else the space's owner); a service call
-counts against the owner of the space it reads for.
+that sets none behaves as before. A call counts against the person who caused
+it: in a conversation, whoever wrote the message being answered, so someone at
+their limit cannot keep going in another person's conversation and charge it to
+them; for a routine or background job nobody has written in, whoever created
+it. A memory read counts against the person whose words are read, a voice aside
+against the person talking, and a companies scan against the person who started
+it.
 
 - At the notice level of any limit, the person sees a quiet line at the top of
   every page, and Settings › Models shows it beside this month's usage. The
@@ -1476,6 +1480,15 @@ counts against the owner of the space it reads for.
   once with that sentence as its result, a conversation shows it as the turn's
   answer, a routine rests until its next run, and no new attempt starts until
   the limit resets.
+- While a call runs, the most it can cost (its input and its whole output
+  allowance) is held against the limits, so calls running side by side cannot
+  all start under one. A call that ends without its usage, cut off part way,
+  is counted at what it streamed, estimated.
+- Memory reads that meet a reached limit wait and are tried again every 30
+  minutes until it resets; a voice aside says the limit's sentence.
+- Totals are reused for up to two seconds, and holds are kept by each service
+  instance, so several instances started at the same moment can overshoot a
+  limit by the calls each of them is running.
 - To raise a limit, change the setting in `deploy/.env` and recreate the
   service; the new limit applies from the next call.
 
@@ -1492,8 +1505,14 @@ MELETE_MODEL_PRICES='{"fireworks/accounts/fireworks/models/deepseek-v4p1-flash":
 ```
 
 `cached_input` is the price of input read from the provider's cache; left out,
-it is a tenth of `input`. `GET /usage` returns the signed-in person's and the
-installation's totals, the limits, the notice and this month's calls by model.
+it is a tenth of `input`. A call answered on the person's own model (the local
+model a private conversation uses, an endpoint the owner confirmed is on their
+device, or an OpenAI-compatible endpoint at a local address) costs nothing and
+is recorded as served by `local` where the privacy router sent it there; its
+tokens still count. Give such a model a price (for example `"local/*"` or
+`"openai-compatible/*"`) to have it counted in dollars. `GET /usage` returns the signed-in person's totals, their limits, the notice and
+this month's calls by model; the installation's totals and limits are included
+for its owner alone.
 
 Removing a space keeps its calls' amounts, so a limit is not reset by deleting
 a space; which space and job they came from is removed with it.
@@ -1523,6 +1542,10 @@ The rules, in order:
 
 - A model the owner chose in the app always wins for agent turns: those turns
   are never sent to the vision model or a fallback.
+- A model on the owner's own machine or network (the OpenAI-compatible endpoint
+  at a local address, or one the owner confirmed is on their device) keeps
+  every call: side calls stay on it instead of the fast model, and nothing is
+  rerouted or sent to a fallback from it.
 - A model pinned for one use (`MELETE_MEMORY_MODEL`, `MELETE_REVIEW_MODEL`,
   `MELETE_COMPANIES_MODEL`) wins over the fast model for that use. Learning
   proposals keep the default model.
@@ -1530,14 +1553,20 @@ The rules, in order:
   images (by the owner's word in Settings, `MELETE_DEFAULT_MODEL_VISION`, or
   Melete's catalog) keeps its pictures on that model. Otherwise the engine is
   only told to send pictures when `MELETE_MODEL_VISION` is set, and each
-  request that carries one goes to that model. A request with a picture takes
-  no fallback, since the fallbacks may not read images.
+  request that carries one goes to that model. A request with a picture never
+  takes a fallback, since the fallbacks may not read images.
 - The gateway relays a request as the engine wrote it, so a vision model or
   fallback is only taken when it speaks the same protocol as the turn's model
   (chat completions, responses or messages); another is ignored. A fallback
   without a key is passed over.
 - A request the provider refuses as written (a 400 or 404) is not sent
-  elsewhere.
+  elsewhere. Only the protocol and the context window are checked for a
+  fallback; one that does not support the request's tools, or a field a
+  provider-specific side call adds, answers 400 and the call fails as it would
+  have without it.
+- Each model named here is checked at start-up: a provider the gateway does
+  not have, or one with no key in the environment, is named in a warning on
+  the service log.
 
 Each rerouted call is recorded with the model that served it: the trail's
 `model_receipt` carries `route` (`vision` or `fallback`) and `routed_from`, and
@@ -1550,6 +1579,11 @@ own receipt.
 `MELETE_REASONING_EFFORT_SIDE` (default `low`) say how hard a reasoning model
 thinks on agent turns and on the service's side calls: `none`, `low`,
 `medium`, `high`, or `off` to send nothing and keep the provider's default.
+`none` is sent as `none` to the models that take it, as `minimal` to GPT-5,
+and not at all to the o-series and Gemini Pro. A model that refuses the
+parameter is asked again without it, and is not sent it again until the
+service restarts. The parameter is only ever added: structured-output fields
+and other reasoning settings in the request are kept.
 The gateway adds the provider's own parameter, `reasoning.effort` over the
 responses protocol and `reasoning_effort` over chat completions, only for
 model families that accept it (OpenAI o-series, GPT-5 and GPT-6; DeepSeek,
@@ -1580,7 +1614,8 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
 
 Alerts are off until a webhook or an email address is set. One alert is sent
 when the service turns unhealthy, again every repeat interval while it stays
-so, and one more when it is healthy again.
+so, and one more when it is healthy again. With several instances on one
+database, the instance holding the `health-alerts` lease sends them.
 
 `GET /health/detail` (through the web server, `/api/health/detail`) returns
 each check with what it found, `200` while all pass and `503` while any fails:
@@ -1678,8 +1713,8 @@ request to any of them.
 **Work one instance does at a time.** The sandbox sweep and reconciliation, the
 learning proposal drain, removing stdio server data for removed connections,
 removing what stopped instances left behind, the blob collector, episode and
-egress record retention and the background process monitor each run on the
-instance that holds that work's lease. A lease is a Postgres advisory lock on a connection the
+egress record retention, the background process monitor and the health alerts
+each run on the instance that holds that work's lease. A lease is a Postgres advisory lock on a connection the
 instance keeps for leases alone, never recycled by age and with TCP keepalives
 of about half a minute. Every check asks Postgres whether that connection holds
 the lock; a held lease is checked every five seconds, and the sandbox sweep and

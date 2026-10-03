@@ -26,6 +26,8 @@ import { z } from 'zod';
 export type ExtractionRequest = {
   /** The space whose mailbox this is, so its privacy settings apply to the call. */
   spaceId: string;
+  /** Who started the scan; its model calls count against their spending limits. */
+  principalId?: string;
   messageId: string;
   companyName: string;
   domain: string;

@@ -27,4 +27,5 @@ CREATE TABLE "spending_notice" (
 );
 --> statement-breakpoint
 CREATE INDEX "model_usage_created_idx" ON "model_usage" USING btree ("created_at");--> statement-breakpoint
-CREATE INDEX "model_usage_principal_idx" ON "model_usage" USING btree ("principal_id","created_at");
+CREATE INDEX "model_usage_principal_idx" ON "model_usage" USING btree ("principal_id","created_at");--> statement-breakpoint
+CREATE INDEX "model_usage_space_idx" ON "model_usage" USING btree ("space_id","created_at");

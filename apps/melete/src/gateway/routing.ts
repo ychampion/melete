@@ -19,7 +19,13 @@
  * The gateway relays the request as the engine wrote it, so an alternative
  * model is only ever taken when it speaks the same protocol as the request.
  */
-import { modelApiMode } from './providers.ts';
+import { localHostLiteral } from '../privacy/local.ts';
+import {
+  CHATGPT_PROVIDER,
+  modelApiMode,
+  PROVIDER_NAMES,
+  providerKeyVariables,
+} from './providers.ts';
 import type { GatewayRoutes } from './types.ts';
 
 export type ModelChoice = { provider: string; model: string };
@@ -61,6 +67,29 @@ export function routingFromEnv(env: {
       .filter(Boolean)
       .map((entry) => parseModelChoice(entry, 'MELETE_MODEL_FALLBACK')),
   };
+}
+
+/** Whether an endpoint address is on this machine or the person's network. */
+export function addressIsLocal(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return false;
+  try {
+    return localHostLiteral(new URL(baseUrl).hostname) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A provider the operator or owner pointed at a model server on their own
+ * machine or network. Its calls never move to another model, and cost nothing
+ * unless the operator prices it.
+ */
+export function providerIsLocal(provider: {
+  baseUrl: string;
+  allowHttp?: boolean;
+  fake?: boolean;
+}): boolean {
+  return !provider.fake && provider.allowHttp === true && addressIsLocal(provider.baseUrl);
 }
 
 export const sameModel = (a: ModelChoice, b: ModelChoice) =>
@@ -110,4 +139,36 @@ export function allowedWithRoutes(
   return all.filter(
     (choice, index) => all.findIndex((other) => sameModel(other, choice)) === index,
   );
+}
+
+/**
+ * What the operator should hear at start-up about the routing models: one the
+ * gateway has no provider for, or one with no key in the environment, would
+ * make every call routed to it fail.
+ */
+export function routingWarnings(
+  env: Record<string, string | undefined>,
+  routing: ModelRouting,
+): string[] {
+  const named: [string, ModelChoice][] = [
+    ...(routing.fast ? [['MELETE_MODEL_FAST', routing.fast] as [string, ModelChoice]] : []),
+    ...(routing.vision ? [['MELETE_MODEL_VISION', routing.vision] as [string, ModelChoice]] : []),
+    ...routing.fallback.map((choice) => ['MELETE_MODEL_FALLBACK', choice] as [string, ModelChoice]),
+  ];
+  const warnings: string[] = [];
+  for (const [setting, { provider }] of named) {
+    if (provider === 'fake' || provider === CHATGPT_PROVIDER) continue;
+    if (!PROVIDER_NAMES.includes(provider)) {
+      warnings.push(
+        `${setting} names the provider "${provider}", which the gateway does not have; calls routed to it will fail. Use one of: ${PROVIDER_NAMES.join(', ')}.`,
+      );
+      continue;
+    }
+    const keys = providerKeyVariables(provider, env.OPENAI_COMPAT_BASE_URL);
+    if (!keys.some((name) => env[name]))
+      warnings.push(
+        `${setting} names ${provider}, but ${keys.join(' and ') || 'its key'} is empty; calls routed to it fail unless a key is connected in Settings › Models.`,
+      );
+  }
+  return warnings;
 }

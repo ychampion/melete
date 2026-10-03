@@ -17892,9 +17892,11 @@ export interface paths {
                     content: {
                         "application/json": {
                             day_resets_at: components["schemas"]["__schema163"];
-                            installation: components["schemas"]["__schema566"];
+                            /** @description Every account’s calls; only for the installation’s owner */
+                            installation: components["schemas"]["__schema566"] | null;
                             limits: {
-                                installation: components["schemas"]["__schema568"];
+                                /** @description Only for the installation’s owner */
+                                installation: components["schemas"]["__schema568"] | null;
                                 person: components["schemas"]["__schema568"];
                             };
                             /** @description This month’s calls for this account, by the model that served them */

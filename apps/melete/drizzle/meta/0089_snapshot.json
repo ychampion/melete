@@ -1,5 +1,5 @@
 {
-  "id": "075d153e-8da5-4260-b808-1f86ee7cfd98",
+  "id": "18fd2ba7-8c31-4585-b37f-dd0d240a8fba",
   "prevId": "5782e8e8-01b3-44db-b328-4574eb659874",
   "version": "7",
   "dialect": "postgresql",
@@ -3626,6 +3626,27 @@
           "columns": [
             {
               "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "model_usage_space_idx": {
+          "name": "model_usage_space_idx",
+          "columns": [
+            {
+              "expression": "space_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

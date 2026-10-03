@@ -86,6 +86,8 @@ export function pointToQuestion(
 export type CompanionCall = {
   spaceId: string;
   conversationId: string;
+  /** Who is talking; the aside counts against their spending limits. */
+  principalId?: string;
   request: VoiceAsideRequest;
   context: CompanionContext;
   signal?: AbortSignal;
@@ -96,7 +98,11 @@ export type CompanionCall = {
  * the provider answered with a refusal (nothing was generated), `unanswered`
  * when the call never came back (it may have been served).
  */
-export type CompanionResult = { answer: VoiceAside } | { failed: 'refused' | 'unanswered' };
+export type CompanionResult =
+  | { answer: VoiceAside }
+  | { failed: 'refused' | 'unanswered' }
+  /** A spending limit is reached; `message` says when it resets. */
+  | { failed: 'limit'; message: string };
 
 export interface VoiceCompanion {
   answer(call: CompanionCall): Promise<CompanionResult>;
@@ -318,7 +324,7 @@ export type CompanionGatewayOptions = {
  * The caller closes it when the service stops.
  */
 export async function openVoiceCompanion(options: CompanionGatewayOptions) {
-  type Call = { spaceId: string; conversationId: string } & ServiceModel;
+  type Call = { spaceId: string; conversationId: string; principalId?: string } & ServiceModel;
   const tokens = new Map<string, Call>();
   const principals = new WeakMap<GatewayPrincipal, Call>();
   const budget: GatewayBudget = {
@@ -358,6 +364,7 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
       if (!call) throw new GatewayError(401, 'voice_principal_denied');
       const fallback = serviceFallback(options.routing ?? NO_ROUTING, call);
       const principal: GatewayPrincipal = {
+        ...(call.principalId ? { actor: call.principalId } : {}),
         jobId: call.conversationId,
         attemptId: `voice:${token.slice(0, 8)}`,
         // The conversation's own privacy decides where its words may go.
@@ -396,7 +403,12 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
         companionInput(call.request, call.context),
       );
       const token = randomUUID();
-      tokens.set(token, { spaceId: call.spaceId, conversationId: call.conversationId, ...target });
+      tokens.set(token, {
+        spaceId: call.spaceId,
+        conversationId: call.conversationId,
+        ...(call.principalId ? { principalId: call.principalId } : {}),
+        ...target,
+      });
       try {
         const timeout = AbortSignal.timeout(COMPANION_LIMITS.timeout_ms + 1000);
         const response = await fetch(`${base}/providers/${target.provider}/v1/${protocol}`, {
@@ -412,6 +424,13 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
           redirect: 'error',
           signal: call.signal ? AbortSignal.any([call.signal, timeout]) : timeout,
         });
+        if (response.status === 402) {
+          const refused = (await response.json().catch(() => null)) as {
+            error?: { code?: string; message?: string };
+          } | null;
+          if (refused?.error?.code === 'spending_limit_reached' && refused.error.message)
+            return { failed: 'limit', message: refused.error.message };
+        }
         if (!response.ok) return { failed: 'refused' };
         return { answer: parseCompanionReply(replyText(protocol, await response.json())) };
       } catch {

@@ -49,8 +49,17 @@ export const usageResponse = z
     month_resets_at: timestamp,
     day_resets_at: timestamp,
     person: periodTotals.nullable().meta({ description: 'This account’s own model calls' }),
-    installation: periodTotals,
-    limits: z.object({ person: periodLimits, installation: periodLimits }).strict(),
+    installation: periodTotals
+      .nullable()
+      .meta({ description: 'Every account’s calls; only for the installation’s owner' }),
+    limits: z
+      .object({
+        person: periodLimits,
+        installation: periodLimits
+          .nullable()
+          .meta({ description: 'Only for the installation’s owner' }),
+      })
+      .strict(),
     notice: usageNotice.nullable(),
     models: z
       .array(

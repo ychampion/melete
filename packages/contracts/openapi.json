@@ -20588,7 +20588,15 @@
                       "description": "This account’s own model calls"
                     },
                     "installation": {
-                      "$ref": "#/components/schemas/__schema566"
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/__schema566"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Every account’s calls; only for the installation’s owner"
                     },
                     "limits": {
                       "type": "object",
@@ -20597,7 +20605,15 @@
                           "$ref": "#/components/schemas/__schema568"
                         },
                         "installation": {
-                          "$ref": "#/components/schemas/__schema568"
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/__schema568"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Only for the installation’s owner"
                         }
                       },
                       "required": [

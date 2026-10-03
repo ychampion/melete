@@ -24,6 +24,7 @@ import {
   type GatewayPrincipal,
   type GatewaySettlement,
   type GatewaySpending,
+  type GatewaySpendingCall,
 } from './types.ts';
 
 export type SpendingWindow = { usd: number | null; tokens: number | null };
@@ -79,7 +80,8 @@ export type SpendingSummary = {
   month_resets_at: string;
   day_resets_at: string;
   person: { month: SpendingTotals; day: SpendingTotals } | null;
-  installation: { month: SpendingTotals; day: SpendingTotals };
+  /** Only for the installation's owner. */
+  installation: { month: SpendingTotals; day: SpendingTotals } | null;
   limits: SpendingLimits;
   notice: SpendingNotice | null;
   models: { provider: string; model: string; calls: number; usd: number; tokens: number }[];
@@ -123,8 +125,36 @@ function warningMessage(period: Period, percent: number): string {
 
 const round = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
 
+type Totals = {
+  installation: { month: SpendingTotals; day: SpendingTotals };
+  person: { month: SpendingTotals; day: SpendingTotals } | null;
+};
+
+/** A call admitted and still running: what it may cost, held against the limits. */
+type Hold = { personId: string | null; usd: number; tokens: number; at: number };
+
+/** How long totals read from the database are reused before they are read again. */
+const TOTALS_TTL_MS = 2_000;
+/** A hold whose call never reported back is let go after this long. */
+const HOLD_TTL_MS = 10 * 60_000;
+
+/**
+ * The person who caused a job's calls: whoever spoke last in its conversation;
+ * for a job nobody has written in (a routine, a background job), whoever
+ * created it; else the space's owner.
+ */
+const PERSON_FOR_JOB = (sql: Sql, jobId: string) => sql`select j.space_id, coalesce(
+    (select e.payload->>'principal_id' from event e
+      where e.job_id = j.id and e.type = 'notice' and e.payload->>'kind' = 'user_message'
+        and e.payload->>'principal_id' is not null
+      order by e.seq desc limit 1),
+    j.principal_id, s.owner_principal_id) as person_id
+  from job j join space s on s.id = j.space_id where j.id = ${jobId}`;
+
 export class SpendingGuard implements GatewaySpending {
   private readonly scopes = new WeakMap<GatewayPrincipal, Promise<SpendingScope>>();
+  private readonly holds = new Map<GatewayPrincipal, Hold[]>();
+  private readonly cached = new Map<string, { at: number; totals: Totals }>();
   /** Told when a job's call is refused, so its attempt can end at once. */
   onRefused?: (scope: SpendingScope, principal: GatewayPrincipal, message: string) => void;
   /** Told the first time in a period that a limit passes the notice level. */
@@ -164,21 +194,22 @@ export class SpendingGuard implements GatewaySpending {
     const privacy = principal.privacy;
     const jobId = privacy.kind === 'job' ? principal.jobId : privacy.sourceJobId;
     const purpose = privacy.kind === 'job' ? 'agent' : privacy.purpose;
+    const actor = principal.actor ?? null;
     if (jobId) {
-      const [row] = await this.sql`select j.space_id,
-          coalesce(j.principal_id, s.owner_principal_id) as person_id
-        from job j join space s on s.id = j.space_id where j.id = ${jobId}`;
+      const [row] = await PERSON_FOR_JOB(this.sql, jobId);
       if (row)
         return {
           spaceId: String(row.space_id),
-          personId: row.person_id ? String(row.person_id) : null,
+          personId: actor ?? (row.person_id ? String(row.person_id) : null),
           jobId,
           purpose,
         };
     }
     const spaceId = privacy.kind === 'service' ? privacy.spaceId : null;
     if (spaceId) {
-      const [row] = await this.sql`select owner_principal_id from space where id = ${spaceId}`;
+      const [row] = actor
+        ? [{ owner_principal_id: actor }]
+        : await this.sql`select owner_principal_id from space where id = ${spaceId}`;
       return {
         spaceId,
         personId: row?.owner_principal_id ? String(row.owner_principal_id) : null,
@@ -186,27 +217,35 @@ export class SpendingGuard implements GatewaySpending {
         purpose,
       };
     }
-    return { spaceId: null, personId: null, jobId: jobId ?? null, purpose };
+    return { spaceId: null, personId: actor, jobId: jobId ?? null, purpose };
   }
 
-  /** The person's and the installation's totals for today and this month. */
-  async totals(personId: string | null, now = this.now()) {
+  /**
+   * The person's and the installation's totals for today and this month. A
+   * read is reused for a moment, so a busy conversation does not scan the
+   * month on every call; recording a call reads afresh.
+   */
+  async totals(personId: string | null, now = this.now(), fresh = false): Promise<Totals> {
+    const key = personId ?? '';
+    const hit = this.cached.get(key);
+    if (!fresh && hit && now.getTime() - hit.at < TOTALS_TTL_MS) return hit.totals;
     const { monthStart, dayStart } = periodBounds(now);
+    const day = dayStart.toISOString();
     const [row] = await this.sql`select
         coalesce(sum(cost_usd), 0)::float8 as im_usd,
         coalesce(sum(input_tokens + output_tokens), 0)::float8 as im_tokens,
-        coalesce(sum(cost_usd) filter (where created_at >= ${dayStart.toISOString()}::timestamptz), 0)::float8 as id_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where created_at >= ${dayStart.toISOString()}::timestamptz), 0)::float8 as id_tokens,
+        coalesce(sum(cost_usd) filter (where created_at >= ${day}::timestamptz), 0)::float8 as id_usd,
+        coalesce(sum(input_tokens + output_tokens) filter (where created_at >= ${day}::timestamptz), 0)::float8 as id_tokens,
         coalesce(sum(cost_usd) filter (where principal_id = ${personId}), 0)::float8 as pm_usd,
         coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId}), 0)::float8 as pm_tokens,
-        coalesce(sum(cost_usd) filter (where principal_id = ${personId} and created_at >= ${dayStart.toISOString()}::timestamptz), 0)::float8 as pd_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId} and created_at >= ${dayStart.toISOString()}::timestamptz), 0)::float8 as pd_tokens
+        coalesce(sum(cost_usd) filter (where principal_id = ${personId} and created_at >= ${day}::timestamptz), 0)::float8 as pd_usd,
+        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId} and created_at >= ${day}::timestamptz), 0)::float8 as pd_tokens
       from model_usage where created_at >= ${monthStart.toISOString()}::timestamptz`;
     const total = (usd: unknown, tokens: unknown): SpendingTotals => ({
       usd: round(Number(usd ?? 0)),
       tokens: Number(tokens ?? 0),
     });
-    return {
+    const totals: Totals = {
       installation: {
         month: total(row?.im_usd, row?.im_tokens),
         day: total(row?.id_usd, row?.id_tokens),
@@ -215,16 +254,46 @@ export class SpendingGuard implements GatewaySpending {
         ? { month: total(row?.pm_usd, row?.pm_tokens), day: total(row?.pd_usd, row?.pd_tokens) }
         : null,
     };
+    if (this.cached.size > 1000) this.cached.clear();
+    this.cached.set(key, { at: now.getTime(), totals });
+    return totals;
+  }
+
+  /** The totals with the calls still running in this process added. */
+  private withHolds(totals: Totals, personId: string | null, now: number): Totals {
+    let all = { usd: 0, tokens: 0 };
+    let mine = { usd: 0, tokens: 0 };
+    for (const [principal, list] of this.holds) {
+      const live = list.filter((hold) => now - hold.at < HOLD_TTL_MS);
+      if (!live.length) this.holds.delete(principal);
+      else if (live.length !== list.length) this.holds.set(principal, live);
+      for (const hold of live) {
+        all = { usd: all.usd + hold.usd, tokens: all.tokens + hold.tokens };
+        if (personId && hold.personId === personId)
+          mine = { usd: mine.usd + hold.usd, tokens: mine.tokens + hold.tokens };
+      }
+    }
+    const add = (a: SpendingTotals, b: { usd: number; tokens: number }) => ({
+      usd: round(a.usd + b.usd),
+      tokens: a.tokens + b.tokens,
+    });
+    return {
+      installation: {
+        month: add(totals.installation.month, all),
+        day: add(totals.installation.day, all),
+      },
+      person: totals.person
+        ? { month: add(totals.person.month, mine), day: add(totals.person.day, mine) }
+        : null,
+    };
   }
 
   /**
    * The most pressing notice for these totals: a reached limit before a
-   * warning, and a month before a day, since it lasts longer.
+   * warning, and a month before a day, since it lasts longer. `installation` false leaves
+   * warnings about the installation's limits out, for a person who may not see them.
    */
-  noticeFor(
-    totals: Awaited<ReturnType<SpendingGuard['totals']>>,
-    now = this.now(),
-  ): SpendingNotice | null {
+  noticeFor(totals: Totals, now = this.now(), installation = true): SpendingNotice | null {
     const { nextMonth, nextDay } = periodBounds(now);
     let best: SpendingNotice | null = null;
     const rank = (notice: SpendingNotice) =>
@@ -250,7 +319,7 @@ export class SpendingGuard implements GatewaySpending {
           message: limitMessage(period, resets),
           resets_at: resets.toISOString(),
         };
-      else if (fraction * 100 >= this.limits.noticePercent)
+      else if (fraction * 100 >= this.limits.noticePercent && (installation || scope === 'person'))
         notice = {
           level: 'warning',
           period,
@@ -272,47 +341,88 @@ export class SpendingGuard implements GatewaySpending {
   /** The sentence for a reached limit that applies to this person, or null. */
   async reached(personId: string | null): Promise<string | null> {
     if (!this.limited) return null;
-    const notice = this.noticeFor(await this.totals(personId));
+    const now = this.now();
+    const totals = this.withHolds(await this.totals(personId, now), personId, now.getTime());
+    const notice = this.noticeFor(totals, now);
     return notice?.level === 'reached' ? notice.message : null;
   }
 
-  /** The reached-limit sentence for a job's person, or null; read by the runner. */
+  /** The reached-limit sentence for the person a job's work is for, or null; read by the runner. */
   async reachedForJob(jobId: string): Promise<string | null> {
     if (!this.limited) return null;
-    const [row] = await this.sql`select coalesce(j.principal_id, s.owner_principal_id) as person_id
-      from job j join space s on s.id = j.space_id where j.id = ${jobId}`;
+    const [row] = await PERSON_FOR_JOB(this.sql, jobId);
     return this.reached(row?.person_id ? String(row.person_id) : null);
   }
 
-  async admit(principal: GatewayPrincipal): Promise<void> {
+  /** What a call may cost: nothing on the person's own model unless the operator priced it. */
+  private costOf(
+    call: { provider: string; model: string; local?: boolean },
+    usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number },
+  ): number {
+    if (call.local) {
+      const priced = this.prices.operatorPrice(call.provider, call.model);
+      return priced ? this.prices.cost(call.provider, call.model, usage) : 0;
+    }
+    return this.prices.cost(call.provider, call.model, usage);
+  }
+
+  async admit(principal: GatewayPrincipal, call?: GatewaySpendingCall): Promise<void> {
     if (!this.limited) return;
     const scope = await this.scopeOf(principal);
     const message = await this.reached(scope.personId);
-    if (!message) return;
-    try {
-      this.onRefused?.(scope, principal, message);
-    } catch {
-      // Ending the attempt early is a courtesy; the refusal stands either way.
+    if (message) {
+      try {
+        this.onRefused?.(scope, principal, message);
+      } catch {
+        // Ending the attempt early is a courtesy; the refusal stands either way.
+      }
+      throw new GatewayError(402, 'spending_limit_reached', message);
     }
-    throw new GatewayError(402, 'spending_limit_reached', message);
+    // While it runs, the call's most it can cost is held against the limits,
+    // so calls running side by side cannot all slip in under one.
+    if (call) {
+      const hold: Hold = {
+        personId: scope.personId,
+        usd: this.costOf(call, {
+          inputTokens: call.inputTokens,
+          outputTokens: call.maxOutputTokens,
+          cachedInputTokens: 0,
+        }),
+        tokens: call.inputTokens + call.maxOutputTokens,
+        at: this.now().getTime(),
+      };
+      this.holds.set(principal, [...(this.holds.get(principal) ?? []), hold]);
+    }
   }
 
   async record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void> {
+    const list = this.holds.get(principal);
+    if (list?.length) {
+      list.shift();
+      if (!list.length) this.holds.delete(principal);
+    }
     try {
       const scope = await this.scopeOf(principal);
-      const usage = settlement.usage;
-      const model = settlement.modelRequested;
-      const cost = usage ? this.prices.cost(settlement.provider, model, usage) : 0;
+      const usage = settlement.usage ?? settlement.spendEstimate ?? null;
+      // The model that answered: the person's local model when the privacy
+      // router sent the call there.
+      const served = settlement.servedBy ?? {
+        provider: settlement.provider,
+        model: settlement.modelRequested,
+      };
+      const cost = usage
+        ? this.costOf({ ...served, local: settlement.servedLocally === true }, usage)
+        : 0;
       await this.sql`insert into model_usage (id, created_at, space_id, principal_id, job_id,
           purpose, provider, model, model_actual, route, routed_from, status,
           input_tokens, output_tokens, cached_input_tokens, cost_usd, usage_estimated)
         values (${randomUUID()}, ${this.now().toISOString()}::timestamptz, ${scope.spaceId}, ${scope.personId}, ${scope.jobId},
-          ${scope.purpose}, ${settlement.provider}, ${model}, ${settlement.modelActual},
+          ${scope.purpose}, ${served.provider}, ${served.model}, ${settlement.modelActual},
           ${settlement.route ?? null},
           ${settlement.routedFrom ? `${settlement.routedFrom.provider}/${settlement.routedFrom.model}` : null},
           ${settlement.status}, ${usage?.inputTokens ?? 0}, ${usage?.outputTokens ?? 0},
           ${usage?.cachedInputTokens ?? 0}, ${cost},
-          ${usage === null || settlement.usageEstimated === true})`;
+          ${settlement.usage === null || settlement.usageEstimated === true})`;
       if (this.limited) await this.noticeOnce(scope.personId);
     } catch (error) {
       process.stderr.write(
@@ -324,7 +434,7 @@ export class SpendingGuard implements GatewaySpending {
   /** Tell the person once per period that a limit is close or reached. */
   private async noticeOnce(personId: string | null): Promise<void> {
     const now = this.now();
-    const notice = this.noticeFor(await this.totals(personId, now), now);
+    const notice = this.noticeFor(await this.totals(personId, now, true), now);
     if (!notice) return;
     const owner = notice.scope === 'person' ? `person:${personId}` : 'installation';
     const period = notice.resets_at;
@@ -335,11 +445,14 @@ export class SpendingGuard implements GatewaySpending {
     this.onNotice?.(notice, personId);
   }
 
-  /** What Settings shows: this month and today, the limits, the notice and the models. */
-  async summary(personId: string | null): Promise<SpendingSummary> {
+  /**
+   * What Settings shows: this month and today, the limits, the notice and the
+   * models. The installation's figures are for its owner alone.
+   */
+  async summary(personId: string | null, installation = true): Promise<SpendingSummary> {
     const now = this.now();
     const { monthStart, nextMonth, nextDay } = periodBounds(now);
-    const totals = await this.totals(personId, now);
+    const totals = await this.totals(personId, now, true);
     const models = await this.sql`select provider, model, count(*)::int as calls,
         coalesce(sum(cost_usd), 0)::float8 as usd,
         coalesce(sum(input_tokens + output_tokens), 0)::float8 as tokens
@@ -351,9 +464,9 @@ export class SpendingGuard implements GatewaySpending {
       month_resets_at: nextMonth.toISOString(),
       day_resets_at: nextDay.toISOString(),
       person: totals.person,
-      installation: totals.installation,
+      installation: installation ? totals.installation : null,
       limits: this.limits,
-      notice: this.noticeFor(totals, now),
+      notice: this.noticeFor(totals, now, installation),
       models: models.map((row) => ({
         provider: String(row.provider),
         model: String(row.model),

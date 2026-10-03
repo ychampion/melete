@@ -228,11 +228,15 @@ export class HealthMonitor {
       repeatMs: number;
       now?: () => number;
       onError?: (error: Error) => void;
+      /** Whether this instance sends the alerts now, when several share the database. */
+      leads?: () => Promise<boolean>;
     },
   ) {}
 
   /** One round of checks; returns the alert it sent, if any. */
   async tick(): Promise<Alert | null> {
+    // One instance alerts for all of them.
+    if (this.options.leads && !(await this.options.leads().catch(() => false))) return null;
     const now = this.options.now?.() ?? Date.now();
     let detail: HealthDetail;
     try {

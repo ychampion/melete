@@ -150,6 +150,8 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
       if (!call) throw new GatewayError(401, 'memory_principal_denied');
       const fallback = serviceFallback(options.routing ?? NO_ROUTING, call);
       const principal: GatewayPrincipal = {
+        // The person whose words are read: the reads count against their limits.
+        actor: call.ownerId,
         jobId: `memory:${call.spaceId}`,
         attemptId: `memory:${call.workId}`,
         // The message's own conversation decides where it may be read: a
@@ -262,6 +264,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
 /**
  * Why a call failed, in the three kinds the worker treats differently:
  * - `memory_daily_budget`: the person's reads are spent; wait for tomorrow's;
+ * - `spending_limit_reached`: a spending limit is reached; wait for it to reset;
  * - `extraction_call_refused` / `extraction_provider_refused`: asking again
  *   cannot succeed (the call is too large for the gateway or the model, or the
  *   provider rejected the request itself, a wrong model name for one); stop;
@@ -275,6 +278,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
  */
 export function failureCode(status: number, body: string, provider: number | null | undefined) {
   if (body.includes('memory_daily_budget')) return 'memory_daily_budget';
+  if (body.includes('spending_limit_reached')) return 'spending_limit_reached';
   if (/privacy_confirmation_required|privacy_scope_/.test(body)) return 'extraction_kept_private';
   if (status === 504 && body.includes('request_aborted')) return 'extraction_gateway_timeout';
   if (status === 413 || /memory_call_too_large|input_context_exceeded/.test(body))

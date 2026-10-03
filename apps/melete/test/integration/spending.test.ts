@@ -4,6 +4,7 @@ import type { Server } from 'node:http';
 import type { AttemptBundle, AttemptOutcome, RuntimeAdapter } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { attempt, job, principal, space } from '../../src/db/schema.ts';
+import { appendEvent } from '../../src/events/store.ts';
 import { createModelGateway, providersFromEnv } from '../../src/gateway/index.ts';
 import { PriceTable } from '../../src/gateway/prices.ts';
 import { NO_LIMIT, SpendingGuard, type SpendingLimits } from '../../src/gateway/spending.ts';
@@ -176,11 +177,12 @@ withDb('spending caps', () => {
     expect(warned.person?.month.usd).toBeCloseTo(0.8, 6);
     expect(notices).toEqual(["warning:You have used 80% of this month's model allowance."]);
 
-    // A slow call is admitted below the limit; a quick one then takes the
-    // person past it. The slow one still finishes and is counted.
+    // A slow call is admitted below the limit, and what it may cost is held
+    // while it runs, so a quick one beside it is refused. The slow one still
+    // finishes and is counted, which takes the person past the limit.
     const slow = call('slow');
     await Bun.sleep(100);
-    expect((await call('quick')).status).toBe(200);
+    expect((await call('quick')).status).toBe(402);
     const finished = await slow;
     expect(finished.status).toBe(200);
     expect(((await finished.json()) as { choices: unknown[] }).choices).toHaveLength(1);
@@ -195,13 +197,13 @@ withDb('spending caps', () => {
     });
     const [counted] =
       await handle.sql`select count(*)::int as calls, sum(cost_usd)::float8 as usd from model_usage where principal_id = ${personId}`;
-    expect(counted?.calls).toBe(4);
-    expect(Number(counted?.usd)).toBeCloseTo(1.6, 6);
+    expect(counted?.calls).toBe(3);
+    expect(Number(counted?.usd)).toBeCloseTo(1.2, 6);
     expect(notices.at(-1)).toBe("reached:This month's limit is reached; it resets on November 1.");
     const summary = await guard.summary(personId);
     expect(summary.notice?.level).toBe('reached');
     expect(summary.models).toEqual([
-      { provider: 'fireworks', model: MODEL, calls: 4, usd: 1.6, tokens: 200 },
+      { provider: 'fireworks', model: MODEL, calls: 3, usd: 1.2, tokens: 150 },
     ]);
   });
 
@@ -318,6 +320,124 @@ withDb('spending caps', () => {
     const [row] = await handle.sql`select cost_usd, status, purpose from model_usage`;
     expect(row).toMatchObject({ cost_usd: 0, status: 'failed', purpose: 'memory' });
     expect(await guard.reached(personId)).toBeNull();
+  });
+
+  test("calls on a person's own model cost nothing, so they never reach the installation's dollar limit", async () => {
+    const { handle } = fixture();
+    const guard = new SpendingGuard(
+      handle.sql,
+      {
+        installation: { day: NO_LIMIT, month: { usd: 1, tokens: null } },
+        person: { day: NO_LIMIT, month: NO_LIMIT },
+        noticePercent: 80,
+      },
+      prices,
+      () => NOW,
+    );
+    // Addressed to a cloud model, answered by the person's local one.
+    for (let call = 0; call < 5; call++)
+      await guard.record(servicePrincipal(), {
+        ...settlement(100_000),
+        servedLocally: true,
+        servedBy: { provider: 'local', model: 'llama3.1:8b' },
+      });
+    expect(await guard.reached(personId)).toBeNull();
+    const [row] =
+      await handle.sql`select sum(cost_usd)::float8 as usd, sum(output_tokens)::int as tokens, min(provider) as provider from model_usage`;
+    expect(row).toMatchObject({ usd: 0, tokens: 500_000, provider: 'local' });
+    // An operator who prices the local model has it counted.
+    const priced = new SpendingGuard(
+      handle.sql,
+      limits(),
+      new PriceTable({ 'local/*': { input: 0, output: 1 } }),
+      () => NOW,
+    );
+    await priced.record(servicePrincipal(), {
+      ...settlement(1_000_000),
+      servedLocally: true,
+      servedBy: { provider: 'local', model: 'llama3.1:8b' },
+    });
+    const [after] = await handle.sql`select max(cost_usd)::float8 as usd from model_usage`;
+    expect(after?.usd).toBeCloseTo(1, 6);
+  });
+
+  test("a person at their limit is refused in another person's conversation, and that person is not charged", async () => {
+    const { handle, jobs } = fixture();
+    const other = newId('own');
+    await handle.db.insert(principal).values({ id: other, email: `${other}@example.test` });
+    const guard = new SpendingGuard(
+      handle.sql,
+      limits({ day: { usd: 0.5, tokens: null } }),
+      prices,
+      () => NOW,
+    );
+    // The space owner's conversation; the other person writes in it.
+    const shared = await createJob('Plan the offsite');
+    await jobs.transaction((tx) =>
+      appendEvent(tx, {
+        jobId: shared.id,
+        type: 'notice',
+        payload: { kind: 'user_message', text: 'add a dinner', principal_id: other },
+        dedupKey: `${shared.id}:input:spending-test`,
+      }),
+    );
+    await guard.record({ ...servicePrincipal(), actor: other }, settlement(60));
+    expect(await guard.reached(other)).not.toBeNull();
+    let refused: unknown;
+    await guard.admit(jobPrincipal(shared.id)).catch((error) => {
+      refused = error;
+    });
+    expect(refused).toMatchObject({ code: 'spending_limit_reached' });
+    expect(await guard.reached(personId)).toBeNull();
+    // The owner, writing next, is charged for their own turn and admitted.
+    await jobs.transaction((tx) =>
+      appendEvent(tx, {
+        jobId: shared.id,
+        type: 'notice',
+        payload: { kind: 'user_message', text: 'and lunch', principal_id: personId },
+        dedupKey: `${shared.id}:input:spending-test-2`,
+      }),
+    );
+    await guard.admit(jobPrincipal(shared.id));
+    await guard.record(jobPrincipal(shared.id), settlement(10));
+    const rows =
+      await handle.sql`select principal_id, count(*)::int as calls from model_usage group by principal_id order by principal_id`;
+    expect(Object.fromEntries(rows.map((row) => [row.principal_id, row.calls]))).toEqual({
+      [other]: 1,
+      [personId]: 1,
+    });
+  });
+
+  test('calls running side by side are held against the limit until they report', async () => {
+    const { handle } = fixture();
+    const guard = new SpendingGuard(
+      handle.sql,
+      limits({ month: { usd: 1, tokens: null } }),
+      prices,
+      () => NOW,
+    );
+    const call = {
+      provider: 'fireworks',
+      model: MODEL,
+      inputTokens: 10,
+      maxOutputTokens: 60,
+      local: false,
+    };
+    const first = servicePrincipal();
+    await guard.admit(first, call);
+    // $0.60 is held for the first call; a second may still start ($0.60 < $1).
+    const second = servicePrincipal();
+    await guard.admit(second, call);
+    // $1.20 is now held: a third is refused while both run.
+    let refused: unknown;
+    await guard.admit(servicePrincipal(), call).catch((error) => {
+      refused = error;
+    });
+    expect(refused).toMatchObject({ code: 'spending_limit_reached' });
+    // Both report having used little; the holds go and calls start again.
+    await guard.record(first, settlement(5));
+    await guard.record(second, settlement(5));
+    await guard.admit(servicePrincipal(), call);
   });
 
   test('the health detail is ok when healthy and names a stuck job queue', async () => {

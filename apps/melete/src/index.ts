@@ -68,6 +68,7 @@ import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
+import { owner } from './db/schema.ts';
 import { mountDevices } from './devices/routes.ts';
 import { moveWorkspaceScreensUntilDone } from './devices/screens.ts';
 import { DeviceService } from './devices/service.ts';
@@ -82,7 +83,7 @@ import { providerSignIn } from './gateway/configured.ts';
 import type { ProviderSignIn } from './gateway/credentials.ts';
 import type { GatewayOptions } from './gateway/index.ts';
 import { ModelSettingsService } from './gateway/model-settings.ts';
-import { routingFromEnv } from './gateway/routing.ts';
+import { routingFromEnv, routingWarnings } from './gateway/routing.ts';
 import { type SpendingGuard, spendingFromEnv } from './gateway/spending.ts';
 import {
   alertSendersFromEnv,
@@ -343,7 +344,15 @@ export function createApp(deps: AppDeps) {
     mountProviderSignIn(app, { db: deps.db, signIn });
     mountModelSettings(app, { db: deps.db, settings: modelSettings });
   }
-  if (deps.spending) mountUsage(app, { spending: deps.spending });
+  if (deps.spending)
+    mountUsage(app, {
+      spending: deps.spending,
+      isOwner: async (actor) => {
+        if (!actor || !deps.db) return false;
+        const [installation] = await deps.db.select({ id: owner.id }).from(owner).limit(1);
+        return installation?.id === actor;
+      },
+    });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -564,6 +573,11 @@ export async function bootstrap(
       "WARNING: Hermes process attempts are not sandboxed and run with the service user's OS access. Use the Docker supervisor for container isolation.\n",
     );
   for (const warning of demonstrationWarnings(env)) process.stderr.write(`WARNING: ${warning}\n`);
+  for (const warning of routingWarnings(
+    env as unknown as Record<string, string | undefined>,
+    routingFromEnv(env),
+  ))
+    process.stderr.write(`WARNING: ${warning}\n`);
   // An engine the supervisor cannot drive is named here, before the database is
   // opened or migrated, instead of as a Docker 400 on the first attempt.
   if (!options.runtime && env.MELETE_RUNTIME_ADAPTER === 'docker')
@@ -1256,6 +1270,7 @@ export async function bootstrap(
         intervalMs: env.MELETE_ALERT_INTERVAL_SECONDS * 1000,
         repeatMs: env.MELETE_ALERT_REPEAT_MINUTES * 60_000,
         onError: (error) => process.stderr.write(`alert not sent: ${error.message}\n`),
+        leads: () => leading(leases, 'health-alerts'),
       });
       healthMonitor.start();
     }
