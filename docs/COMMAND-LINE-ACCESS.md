@@ -215,33 +215,53 @@ Python makes for the same requests.
   `aws` command line signs uploads whole or sends them unsigned with a trailing
   checksum (`STREAMING-UNSIGNED-PAYLOAD-TRAILER`), which goes through.
 
-**What reads and what asks.**
+**What reads and what asks.** The relay knows each AWS service from the AWS
+SDK's own service definitions (a table generated from them sits beside the
+adapter): its host, its signing name, and the protocols its endpoint speaks. A
+request's operation is believed only where its service reads it.
 
-- Query, JSON and CBOR services are read by their operation (the `Action`
-  parameter, the `X-Amz-Target` header, or the operation in the path).
-  Operations whose names begin with Get, List, Describe, Head, Query, Scan,
-  BatchGet, Select, Lookup, Search or Filter read; everything else asks. A
-  request that names its operation twice, or names none, asks.
+- Query and EC2 services by the `Action` parameter, read from the query and
+  from the body as a form whatever its content type; JSON services by
+  `X-Amz-Target`, which must be the service's own target prefix and one
+  operation; CBOR services by the operation in the path. Operations whose names
+  begin with Get, List, Describe, Head, Query, Scan, BatchGet, Select, Lookup,
+  Search or Filter read; everything else asks.
+- REST services by method and path alone: `GET` and `HEAD` read unless the
+  service's definition names that route as something else; every other method
+  asks.
+- A request that names its operation twice, in two ways, or in a way its
+  service does not read (an `Action` sent to a REST service, say) is refused. A
+  service the definitions do not know asks for everything. Where one host
+  serves several APIs, a request reads only if it reads for each of them.
 - **S3** reads with `GET` and `HEAD`. Every other request asks, named as the
   operation it is (`s3:PutObject`, `s3:DeleteObjects`, `s3:PutBucketPolicy` and
-  so on) with the bucket and key; a delete of many objects lists them. The
-  parts of a multipart upload pass without asking, because nothing anyone can
-  see changes until the upload is completed: starting the upload asks (it
-  carries the object's settings, such as its ACL), and completing it asks.
-- Other REST services read with `GET` and `HEAD` where they are known to:
-  Lambda, EKS, Route 53, CloudFront, API Gateway's own API, EFS, AppSync and
-  Glacier. Any other REST host asks for everything.
+  so on) with the bucket and key, read from the host the way S3 reads it; a
+  delete of many objects lists them. Starting a multipart upload asks (it
+  carries the object's settings, such as its ACL), and completing it asks. In
+  between, the parts pass without asking only into an upload this job started
+  with an approval, for the same bucket and key, up to 10,000 parts and 64 GiB;
+  any other part asks on its own.
 - Reading a stored secret asks like a change: Secrets Manager
-  `GetSecretValue`, a Systems Manager parameter read with decryption, and EC2
-  `GetPasswordData`.
-- Operations that hand out credentials are refused, because their answer would
-  put a secret in the computer: assuming a role or getting a session or
-  federation token from STS, creating an access key or service credential in
-  IAM, SSO role credentials, Cognito identity credentials, ECR and CodeArtifact
-  authorization tokens, Redshift database credentials, Lightsail access
-  details, EMR cluster credentials and S3 Express sessions, and in any service
-  an operation named as getting, creating, generating or assuming credentials,
-  a token or a presigned sign-in link.
+  `GetSecretValue`, a Systems Manager parameter read with decryption (including
+  its history), Cognito user pool client details, API Gateway keys with their
+  values, and EC2 `GetPasswordData`.
+- Operations that hand out credentials are refused: assuming a role, getting a
+  session or federation token from STS, creating an access key or service
+  credential in IAM, SSO role credentials, Cognito identity credentials, ECR and
+  CodeArtifact authorization tokens, Redshift database credentials, Lightsail
+  and GameLift access details, EMR cluster credentials and S3 Express
+  sessions, and in any service an operation named as assuming a role or as
+  getting, creating or generating credentials, a token or a presigned sign-in
+  link. Any other operation whose name speaks of a credential, token, key pair,
+  password or private key asks, and says it may hand one back.
+- **Every answer is checked.** An answer to a signed request (other than an S3
+  object, which is the person's own file) that holds an AWS secret access key, a
+  session token, a private key or a field named `Secret` is kept from the
+  computer, which is told why; the connection's record notes it, and for a
+  change that was made, its receipt does too.
+- A signed request to a server that runs on AWS rather than one of AWS's APIs
+  (an EC2 instance's public name, a load balancer) is refused: the account is
+  not used there.
 
 Each card names the operation, the bucket and key or the region, and the
 request; a delete or overwrite says so, and `RunInstances`,
@@ -288,10 +308,12 @@ ETag and version. S3 can answer a copy or the completion of an upload with
   Express One Zone) are refused. Some answers carry short-lived links of their
   own (Lambda's `GetFunction` returns a link to the function's code); they
   reach the computer as AWS sends them, each opening one object for minutes.
-- AWS: a service the classifier does not list is read by its operation's name
-  alone; an operation named like a read that changes something would read
-  without asking. The operations known to hand out credentials or stored
-  secrets are refused or ask, as above; other reads return whatever the account
-  may read, including values kept in a resource's settings, such as a Lambda
-  function's environment variables. Give the key, or the role, only the
-  permissions the work needs.
+- AWS: other reads return whatever the account may read, including values kept
+  in a resource's settings, such as a Lambda function's environment variables,
+  unless the answer holds one of the credentials above. Give the key, or the
+  role, only the permissions the work needs.
+- AWS: with an account connected, `connected_hosts_only` lets the computer reach
+  every name under `amazonaws.com`, including resources other people own (their
+  buckets, their APIs on API Gateway). A request signed there carries the
+  account's key id and a short-lived session token, never its secret, and a
+  change there asks like any other.
