@@ -35,20 +35,29 @@ export const NOT_REMEMBERED_NOTE =
   'Memory has not kept what the person wrote in this turn and will not: this conversation is private and there is no local model set up to read it. If they asked you to remember something, tell them plainly that it was not saved; never say it was saved or that you will remember it.';
 
 /**
- * Whether memory refused to read any of this attempt's new messages because
- * they came from a private conversation with no local model to read them on
- * (`extraction_kept_private`). Memory's own record is the fact: a message that
- * is still waiting to be read is not counted, since it may yet be kept.
+ * Whether memory will not keep this attempt's new messages because they came
+ * from a private conversation with no local model to read them on. Decided
+ * when the bundle is built, before memory has read anything, from two facts:
+ * - `refusesRead`: the privacy router's own answer, the one memory's read
+ *   would get, that a read of this conversation is refused now (private, no
+ *   local model, and no agreement to a redacted cloud request);
+ * - memory's record that it already refused one of these messages
+ *   (`extraction_kept_private`), which covers a message read before the
+ *   person agreed: it is not read again.
+ * A message still waiting while reads are allowed may yet be kept, so it does
+ * not count.
  */
 export async function newMessagesNotRemembered(
   sql: MemorySql,
   scope: MemoryScope,
   bundle: Pick<AttemptBundle, 'attempt' | 'inputs'>,
+  refusesRead?: (jobId: string) => Promise<boolean>,
 ): Promise<boolean> {
   const times = bundle.inputs.new_user_messages.flatMap((message) =>
     message.at ? [Date.parse(message.at)] : [],
   );
   if (!times.length) return false;
+  if (refusesRead && (await refusesRead(bundle.attempt.job_id))) return true;
   // `at` is the message event's time cut to milliseconds, so the earliest one
   // is at or just before that event.
   const since = new Date(Math.min(...times)).toISOString();
@@ -291,6 +300,12 @@ export function withMemoryRuntime(
      * out, it never is.
      */
     recallsPrivateMemory?: (jobId: string, attemptId: string) => Promise<boolean>;
+    /**
+     * Whether memory's read of this job's conversation would be refused now,
+     * as the privacy router decides it. Left out, only memory's own record of
+     * a refusal tells the agent a message was not kept.
+     */
+    refusesMemoryRead?: (jobId: string) => Promise<boolean>;
   } = {},
 ): RuntimeAdapter {
   return {
@@ -366,7 +381,12 @@ export function withMemoryRuntime(
           (await pendingRepairBriefs(sql, scope, bundle.attempt.job_id)));
       // Accepted action constraints come directly from job state, outside optional memory trimming.
       const since = (assembled ?? bundle).since_last;
-      const unremembered = await newMessagesNotRemembered(sql, scope, bundle);
+      const unremembered = await newMessagesNotRemembered(
+        sql,
+        scope,
+        bundle,
+        options.refusesMemoryRead,
+      );
       const next: AttemptBundle = {
         ...(assembled ?? bundle),
         job: {
