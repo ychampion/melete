@@ -265,3 +265,39 @@ test('a second name for a file elsewhere is refused on write, and the file is le
   ).rejects.toThrow(SyncRefusal);
   expect(await readFile(elsewhere, 'utf8')).toBe('kept');
 });
+
+test("a paired computer's old screenshot never goes to a sandbox, and one a sandbox still holds is removed", async () => {
+  // Into the sandbox: left out.
+  const left = path.join(root, 'work', JOB, 'device');
+  await mkdir(left, { recursive: true });
+  await writeFile(path.join(left, 'screenshot-act_01OLD.png'), 'screen');
+  await writeFile(path.join(left, 'notes.txt'), 'mine');
+  const sent: string[] = [];
+  await syncIn({
+    provider: {
+      async putFiles(_handle: SandboxHandle, files: AsyncIterable<{ path: string }>) {
+        for await (const entry of files) sent.push(entry.path);
+      },
+    } as unknown as SandboxProvider,
+    handle: HANDLE,
+    workRoot: path.join(root, 'work'),
+    jobId: JOB,
+    signal: AbortSignal.timeout(5_000),
+  });
+  expect(sent).toEqual(['/work/device/notes.txt']);
+
+  // Back from a sandbox that holds a copy from before: not written back, and removed there.
+  await rm(left, { recursive: true });
+  const removed: string[][] = [];
+  const provider = listing([file('device/screenshot-act_01OLD.png', 'screen'), file('kept.txt')]);
+  Object.assign(provider, {
+    async exec(_handle: SandboxHandle, spec: { argv: string[] }) {
+      removed.push(spec.argv);
+      return { exitCode: 0 };
+    },
+  });
+  expect(await out(provider)).toMatchObject({ files: 1 });
+  expect(removed).toEqual([['rm', '-f', '--', '/work/device/screenshot-act_01OLD.png']]);
+  expect(existsSync(path.join(root, 'work', JOB, 'device'))).toBe(false);
+  expect(await readFile(path.join(root, 'work', JOB, 'kept.txt'), 'utf8')).toBe('x');
+});

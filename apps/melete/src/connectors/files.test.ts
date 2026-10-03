@@ -285,3 +285,32 @@ test.skipIf(!linux)(
   },
   4000,
 );
+
+test("a paired computer's screenshot an earlier version left in the workspace cannot be opened", async () => {
+  const left = path.join(root, 'work', 'job_01', 'device');
+  await mkdir(left, { recursive: true });
+  await writeFile(path.join(left, 'screenshot-act_01OLD.png'), 'the person\u2019s screen');
+  for (const [kind, payload] of [
+    ['files.read', { path: 'device/screenshot-act_01OLD.png' }],
+    ['files.read', { path: './device/screenshot-act_01OLD.png' }],
+    ['files.move', { from: 'device/screenshot-act_01OLD.png', to: 'mine.png' }],
+    ['files.write', { path: 'device/screenshot-act_01OLD.png', content: 'x' }],
+  ] as const) {
+    const result = await execute(kind, payload).catch((error: unknown) => error);
+    expect(JSON.stringify(result instanceof Error ? result.message : result)).not.toContain(
+      'person',
+    );
+    if (!(result instanceof Error)) expect(result).toMatchObject({ outcome: 'failed' });
+  }
+  // The same name in the person's own Files is theirs and opens as usual.
+  await mkdir(path.join(root, 'spaces', 'sp_01', 'artifacts', 'device'), { recursive: true });
+  await writeFile(
+    path.join(root, 'spaces', 'sp_01', 'artifacts', 'device', 'screenshot-act_01OLD.png'),
+    'theirs',
+  );
+  const theirs = await execute('files.read', {
+    path: 'device/screenshot-act_01OLD.png',
+    area: 'artifacts',
+  });
+  expect(JSON.stringify(theirs)).toContain('theirs');
+});

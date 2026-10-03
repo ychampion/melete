@@ -66,7 +66,7 @@ import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { mountDevices } from './devices/routes.ts';
-import { moveWorkspaceScreens } from './devices/screens.ts';
+import { moveWorkspaceScreensUntilDone } from './devices/screens.ts';
 import { DeviceService } from './devices/service.ts';
 import { startEgressRetention } from './egress/records.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
@@ -1023,13 +1023,12 @@ export async function bootstrap(
         if (options.workers !== false) removals.start();
       }
       if (options.workers !== false) {
-        // Before any attempt: a paired computer's screenshots an earlier version
-        // kept in job workspaces move to the service's own store.
-        await moveWorkspaceScreens(env.MELETE_WORK_DIR).catch((error: unknown) => {
-          process.stderr.write(
-            `device screenshots were not moved out of job workspaces: ${error instanceof Error ? error.message : String(error)}\n`,
-          );
-        });
+        // A paired computer's screenshots an earlier version kept in job
+        // workspaces move to the service's own store, and are tried again until
+        // they have; each attempt also moves its own job's first.
+        void moveWorkspaceScreensUntilDone(env.MELETE_WORK_DIR, (line) =>
+          process.stderr.write(`${line}\n`),
+        );
         await operations.start();
         await triggers.start();
         await runner.start();

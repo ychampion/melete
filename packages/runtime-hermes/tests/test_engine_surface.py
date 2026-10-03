@@ -1227,23 +1227,31 @@ def test_a_screenshot_reaches_the_provider_as_a_picture_only_for_a_vision_model(
 # tool message is written there as it lands (agent/tool_executor.py
 # `_flush_session_db_after_tool_progress`), through
 # agent/session_persistence.py `_durable_content`, which at the pin turns a
-# picture into the text "[screenshot]". A screenshot taken just before such a
-# restart therefore reached the model as its receipt and that word.
+# picture into the text "[screenshot]". With the picture seam the agent's own
+# screenshot is stored whole; a paired computer's is stored as text, never as a
+# picture (code the agent runs can read the store), and the broker is asked for
+# it again when the next run's history is read.
 
 
+@pytest.mark.parametrize(("tool", "shared"), [
+    ("computer.screenshot", True), ("device.screenshot", True), ("device.screenshot", False),
+])
 def test_a_screenshot_reaches_the_provider_again_in_the_next_run_of_the_session(
-    hermes_home, monkeypatch, tmp_path,
+    hermes_home, monkeypatch, tmp_path, tool, shared,
 ):
     import io
+    import sqlite3
 
     from PIL import Image
 
     from hermes_state import SessionDB
     from melete_plugin import build_handler, engine_result
+    from melete_plugin.vision import Withheld
+    from melete_plugin.vision import restore as restore_picture
+    from melete_runtime_hooks import register_picture_restorer, restore_pictures
     from run_agent import AIAgent
     from tools.registry import registry
 
-    tool = "device.screenshot"
     monkeypatch.setenv("MELETE_ENGINE_SUPPORTS_VISION", "1")
     monkeypatch.setenv("MELETE_MODEL_KEY", "melete-surrogate-probe")
     out = io.BytesIO()
@@ -1254,7 +1262,8 @@ def test_a_screenshot_reaches_the_provider_again_in_the_next_run_of_the_session(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}/v1"
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
     try:
         config = shipped_config()
         config["model"].update({"default": "probe-model", "supports_vision": True})
@@ -1280,10 +1289,21 @@ def test_a_screenshot_reaches_the_provider_again_in_the_next_run_of_the_session(
         try:
             run("take a screenshot")
             first = len(server.captured)
-            # The next run of the attempt, as the API server starts it.
-            run("continue", db.get_messages_as_conversation("job_probe"))
+            # What code the agent runs could read: the store holds no paired
+            # computer's picture, only the agent's own.
+            with sqlite3.connect(db_path) as raw:
+                stored = " ".join(str(row[0]) for row in raw.execute("select content from messages"))
+            assert ("data:image/jpeg;base64," in stored) == (tool == "computer.screenshot")
+            # The next run of the attempt, as the API server starts it: history
+            # read back, then the plugin's restorer, as the seam calls it.
+            if not shared:
+                client.picture = None
+                client.screenshot = lambda _id: Withheld("kept private")
+            register_picture_restorer(lambda name, content: restore_picture(name, content, client.screenshot))
+            run("continue", restore_pictures(db.get_messages_as_conversation("job_probe")))
         finally:
             registry.deregister(tool)
+            register_picture_restorer(lambda _name, content: content)
     finally:
         server.shutdown()
         server.server_close()
@@ -1292,6 +1312,10 @@ def test_a_screenshot_reaches_the_provider_again_in_the_next_run_of_the_session(
     assert first >= 2 and len(server.captured) > first, "the second run sent nothing"
     [result] = [m for m in server.captured[first]["messages"] if m.get("role") == "tool"]
     content = result["content"]
+    if not shared:
+        assert isinstance(content, str) and "image_url" not in content
+        assert json.loads(content)["picture"] == "kept private"
+        return
     assert isinstance(content, list), f"the picture did not survive the run: {str(content)[:300]}"
     assert [part["type"] for part in content] == ["text", "image_url"]
     assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")

@@ -16,8 +16,9 @@
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { recordId } from '../broker/records.ts';
 import { noLinks, openedAt, pinDirectory, segmentsFor } from '../connectors/files.ts';
-import { LEGACY_SCREEN_PATH } from '../devices/screens.ts';
+import { LEGACY_SCREEN_PATH } from '../devices/screen-paths.ts';
 import type { SandboxHandle, SandboxProvider } from './types.ts';
 
 const MiB = 1024 * 1024;
@@ -263,6 +264,23 @@ export async function syncIn(options: SyncOptions): Promise<SyncReport> {
   return { files: files.length, directories: 0, bytes };
 }
 
+/** Remove files from the sandbox's `/work`; each path is a checked portable one under it. */
+async function removeFromSandbox(options: SyncOptions, paths: string[]): Promise<void> {
+  const outcome = await options.provider.exec(
+    options.handle,
+    {
+      marker: recordId('act'),
+      argv: ['rm', '-f', '--', ...paths],
+      cwd: SANDBOX_WORKDIR,
+      timeoutMs: 30_000,
+      maxOutputBytes: 4096,
+    },
+    options.signal,
+  );
+  if (outcome.exitCode !== 0)
+    throw new SyncRefusal('changed', "a paired computer's old screenshot could not be removed");
+}
+
 /**
  * Copy the sandbox's `/work` into `<workRoot>/<job_id>`. Files deleted in the
  * sandbox are not deleted here: the workspace on this machine is the record.
@@ -272,6 +290,7 @@ export async function syncOut(options: SyncOptions): Promise<SyncReport> {
   checkJob(options.jobId);
   const listing = await options.provider.listFiles(options.handle, SANDBOX_WORKDIR, options.signal);
   const seen = new Set<string>();
+  const stale: string[] = [];
   const directories: string[][] = [];
   const files: { relative: string; segments: string[]; size: number; mode: number }[] = [];
   let declared = 0;
@@ -288,8 +307,12 @@ export async function syncOut(options: SyncOptions): Promise<SyncReport> {
     if (seen.has(key))
       throw new SyncRefusal('duplicate', `a path was listed twice: ${JSON.stringify(entry.path)}`);
     seen.add(key);
-    // Nor does one a sandbox still holds come back into the workspace.
-    if (!entry.directory && LEGACY_SCREEN_PATH.test(segments.join('/'))) continue;
+    // Nor does one a sandbox still holds come back into the workspace; it is
+    // removed from the sandbox below.
+    if (!entry.directory && LEGACY_SCREEN_PATH.test(segments.join('/'))) {
+      stale.push(`${SANDBOX_WORKDIR}/${segments.join('/')}`);
+      continue;
+    }
     if (entry.directory) {
       directories.push(segments);
       if (directories.length > limits.maxFiles)
@@ -324,6 +347,7 @@ export async function syncOut(options: SyncOptions): Promise<SyncReport> {
       );
     fetched.push({ relative: file.relative, bytes, mode: file.mode });
   }
+  if (stale.length) await removeFromSandbox(options, stale);
   const base = await jobBase(options.workRoot, options.jobId);
   directories.sort((a, b) => a.length - b.length);
   for (const segments of directories) await ensureDirectory(base, [options.jobId, ...segments]);

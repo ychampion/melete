@@ -26,6 +26,7 @@ import {
   VISION_ENV,
 } from '@melete/runtime-hermes';
 import { stringify } from 'yaml';
+import { moveJobScreens } from '../devices/screens.ts';
 import { modelApiMode } from '../gateway/providers.ts';
 import { newId } from '../ids.ts';
 import { ATTEMPT_LOG_CONFIG } from './docker.ts';
@@ -623,6 +624,8 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
     signal.throwIfAborted();
     await this.checkEngineRoot();
     const workspace = await jobWorkspace(this.options.workRoot, bundle.attempt.job_id);
+    // Nothing of a paired computer's screen is in it when the engine starts.
+    await moveJobScreens(this.options.workRoot, bundle.attempt.job_id);
     const token = randomBytes(32).toString('base64url');
     const features = attemptEngineFeatures(bundle.tools);
     const config = this.engineConfig(bundle.model, features, bundle.attempt.token);
@@ -822,6 +825,7 @@ export class DockerRuntimeSupervisor implements RuntimeSupervisor {
       throw new Error('Runtime image does not carry the pinned Hermes commit');
     signal.throwIfAborted();
     await jobWorkspace(this.options.workRoot, bundle.attempt.job_id);
+    await moveJobScreens(this.options.workRoot, bundle.attempt.job_id);
     const name = `melete-${bundle.attempt.id.toLowerCase()}`;
     const token = randomBytes(32).toString('base64url');
     const environment = {

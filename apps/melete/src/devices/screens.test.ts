@@ -20,7 +20,9 @@ import path from 'node:path';
 import {
   DEVICE_SCREENS_DIRECTORY,
   LEGACY_SCREEN_PATH,
+  moveJobScreens,
   moveWorkspaceScreens,
+  moveWorkspaceScreensUntilDone,
   readDeviceScreen,
   saveDeviceScreen,
 } from './screens.ts';
@@ -124,17 +126,48 @@ describe('screenshots an earlier version left in a workspace', () => {
     expect(await moveWorkspaceScreens(work)).toBe(0);
   });
 
-  test('an emptied folder goes, and a second name for a file is left alone', async () => {
-    const { work, job, outside } = await fixture();
+  test('a second name for a file is copied out and only that name removed', async () => {
+    const { work, job, store, outside } = await fixture();
     await mkdir(path.join(job, 'device'));
-    await writeFile(path.join(job, 'device', 'screenshot-act_8.png'), PNG);
     const victim = path.join(outside, 'notes.md');
     await writeFile(victim, 'kept');
-    await mkdir(path.join(work, 'job_shot2', 'device'), { recursive: true });
-    await link(victim, path.join(work, 'job_shot2', 'device', 'screenshot-act_9.png'));
-    expect(await moveWorkspaceScreens(work)).toBe(1);
+    await link(victim, path.join(job, 'device', 'screenshot-act_9.png'));
+    expect(await moveJobScreens(work, JOB)).toBe(1);
+    // The emptied folder goes, the other name is untouched, the copy is the store's own.
     expect(await readdir(job)).toEqual([]);
     expect(await readFile(victim, 'utf8')).toBe('kept');
+    expect(await readFile(path.join(store, JOB, 'act_9.png'), 'utf8')).toBe('kept');
+    if (process.platform !== 'win32') expect((await stat(victim)).nlink).toBe(1);
+  });
+
+  test('each attempt moves its own job first, and other jobs are left for the start-up move', async () => {
+    const { work, job } = await fixture();
+    await mkdir(path.join(job, 'device'));
+    await writeFile(path.join(job, 'device', 'screenshot-act_10.png'), PNG);
+    await mkdir(path.join(work, 'job_shot2', 'device'), { recursive: true });
+    await writeFile(path.join(work, 'job_shot2', 'device', 'screenshot-act_11.png'), PNG);
+    expect(await moveJobScreens(work, JOB)).toBe(1);
+    expect(await readdir(path.join(work, 'job_shot2', 'device'))).toEqual([
+      'screenshot-act_11.png',
+    ]);
+    expect(await moveJobScreens(work, 'job_nothing')).toBe(0);
+    await expect(moveJobScreens(work, '../outside')).rejects.toThrow();
+  });
+
+  test('a failed start-up move is said and tried again until it is done', async () => {
+    const { work, job } = await fixture();
+    await mkdir(path.join(job, 'device'));
+    await writeFile(path.join(job, 'device', 'screenshot-act_12.png'), PNG);
+    // The store's place is taken by a file, so the first try fails.
+    const store = path.join(work, DEVICE_SCREENS_DIRECTORY);
+    await writeFile(store, 'in the way');
+    const said: string[] = [];
+    const done = moveWorkspaceScreensUntilDone(work, (line) => said.push(line), 20);
+    await Bun.sleep(60);
+    expect(said.some((line) => line.includes('trying again'))).toBe(true);
+    await rm(store);
+    await done;
+    expect(said.at(-1)).toBe('moved 1 device screenshot(s) out of job workspaces');
   });
 
   test('the workspace sync recognises exactly those names', () => {

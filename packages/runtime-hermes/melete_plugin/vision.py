@@ -196,3 +196,33 @@ def attach(
         ],
         "text_summary": summary,
     }
+
+
+#: How the engine's session store keeps a tool result's picture (agent/session_persistence.py).
+STORED_PICTURE = "\n[screenshot]"
+
+
+def restore(name: Any, content: Any, fetch: Optional[Callable[[str], Any]] = None) -> Any:
+    """A paired computer's screenshot as the next run of the session should see it.
+
+    The session store keeps it as its receipt and the word ``[screenshot]``,
+    never the picture. Read back, it is asked of the broker again: the picture
+    returns only while that computer still lets cloud models see its screen,
+    and the model reads exactly what it read the first time. Anything else is
+    returned unchanged.
+    """
+    if not isinstance(name, str) or not isinstance(content, str) or not content.endswith(STORED_PICTURE):
+        return content
+    tool = _ACCOUNT_SUFFIX.sub("", name)
+    if tool not in SCREENSHOT_TOOLS or tool == "computer.screenshot":
+        return content
+    try:
+        result = json.loads(content[: -len(STORED_PICTURE)])
+    except ValueError:
+        return content
+    if not isinstance(result, dict):
+        return content
+    shaped = attach(name, result, fetch)
+    if isinstance(shaped, dict) and shaped.get("_multimodal") is True:
+        return shaped["content"]
+    return json.dumps(shaped, ensure_ascii=False) if isinstance(shaped, dict) else content

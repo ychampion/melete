@@ -20,6 +20,7 @@ import {
   HermesRuntimeAdapter,
   type ParkedActions,
 } from '@melete/runtime-hermes';
+import { moveJobScreens } from '../devices/screens.ts';
 import { modelApiMode } from '../gateway/providers.ts';
 import { DOCKER_API_VERSION, type DockerVersionSource } from './docker-engine.ts';
 
@@ -638,6 +639,8 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     try {
       await this.initialize();
       signal.throwIfAborted();
+      // Before the job's directory is mounted, nothing of a paired computer's screen is in it.
+      await moveJobScreens(this.options.workRoot, bundle.attempt.job_id);
       const setup = this.engineSetup(bundle.model, bundle.tools);
       const warm = sharing ? undefined : await this.claimSpare(setup, bundle, signal);
       let url: string;

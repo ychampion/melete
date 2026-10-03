@@ -20,8 +20,8 @@ and the process supervisor used for local development, apply Melete's lifecycle
 observer bridge (packages/runtime-hermes/patches/observer_bridge.py) to the
 installed tree. It adds a compaction dispatch and binds Melete's plugin
 observations to the current HTTP run queue, puts the model's reasoning on
-the run's event stream, and keeps a screenshot's picture in the session store
-for the next run; it changes no upstream decision, and
+the run's event stream, and keeps a screenshot's picture for the next run of
+a session; it changes no upstream decision, and
 it refuses to apply unless the three source sections it edits match the reviewed
 release. See packages/runtime-hermes/README.md.
 

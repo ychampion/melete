@@ -11,16 +11,19 @@
  * enter, and leaves it in two ways only: to the person's own trail, and to the
  * model as a picture when that computer lets cloud models see its screen.
  */
+
+import type { Dirent } from 'node:fs';
 import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, open, readdir, realpath, rename, rmdir } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readdir, realpath, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { noLinks, openedAt, pinDirectory, READ_FLAGS } from '../connectors/files.ts';
 
 /** Under the workspace root, beside the job directories; never mounted or synchronised. */
 export const DEVICE_SCREENS_DIRECTORY = '.melete-device-screens';
 
-/** Where a workspace used to hold one, relative to the job's directory. */
-export const LEGACY_SCREEN_PATH = /^device\/screenshot-act_[A-Za-z0-9]{1,64}\.png$/;
+import { LEGACY_SCREEN_PATH } from './screen-paths.ts';
+
+export { LEGACY_SCREEN_PATH };
 
 const JOB = /^job_[A-Za-z0-9]+$/;
 const ACTION = /^act_[A-Za-z0-9]{1,64}$/;
@@ -114,51 +117,98 @@ export async function readDeviceScreen(
   }
 }
 
+/** The largest legacy file moved: a device's own cap is 8 MB. */
+const MAX_LEGACY_BYTES = 16 * 1024 * 1024;
+
 /**
- * Move the screenshots an earlier version kept in job workspaces
- * (`<job>/device/screenshot-<action>.png`) into the store. Run once at start,
- * before any attempt; anything that is not exactly such a file is left alone.
- * Returns how many were moved.
+ * Move the screenshots an earlier version kept in one job's workspace
+ * (`<job>/device/screenshot-<action>.png`) into the store. Each is copied,
+ * synced and then its name in the workspace removed, so a second name for the
+ * same file, or a store on another filesystem, is handled the same way. Run
+ * before every attempt of the job and, for every job, at start. Anything that
+ * is not exactly such a file is left alone. Returns how many were moved.
  */
-export async function moveWorkspaceScreens(workRoot: string): Promise<number> {
-  let base: string;
+export async function moveJobScreens(workRoot: string, jobId: string): Promise<number> {
+  if (!JOB.test(jobId)) throw new Error('invalid trusted job scope');
+  let folder: string;
+  let found: string[];
   try {
-    base = await realpath(workRoot);
+    folder = path.join(await realpath(workRoot), jobId, 'device');
+    const stat = await lstat(folder);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return 0;
+    found = await readdir(folder);
   } catch (error) {
     if (missing(error)) return 0;
     throw error;
   }
   let moved = 0;
-  for (const entry of await readdir(base, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !JOB.test(entry.name)) continue;
-    const folder = path.join(base, entry.name, 'device');
-    let found: string[];
+  for (const name of found) {
+    if (!LEGACY_SCREEN_PATH.test(`device/${name}`)) continue;
+    const source = path.join(folder, name);
+    if (!(await lstat(source)).isFile()) continue;
+    const handle = await open(source, READ_FLAGS);
+    let bytes: Buffer;
     try {
-      const stat = await lstat(folder);
-      if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
-      found = await readdir(folder);
-    } catch (error) {
-      if (missing(error)) continue;
-      throw error;
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > MAX_LEGACY_BYTES) continue;
+      bytes = await handle.readFile();
+    } finally {
+      await handle.close();
     }
-    for (const name of found) {
-      const relative = `device/${name}`;
-      if (!LEGACY_SCREEN_PATH.test(relative)) continue;
-      const source = path.join(folder, name);
-      const held = await lstat(source);
-      if (!held.isFile() || held.nlink !== 1) continue;
-      const actionId = name.slice('screenshot-'.length, -'.png'.length);
-      const [job, file] = names(entry.name, actionId);
-      const root = await storeRoot(workRoot, true);
-      await privateDirectory(await noLinks(root, [job], false));
-      // Same filesystem: the store is beside the workspaces it is moved from.
-      const target = await noLinks(root, [job, file], false);
-      await rename(source, target);
-      await chmod(target, 0o600);
-      moved += 1;
-    }
-    // An emptied folder goes too, so the workspace looks as it would have.
-    await rmdir(folder).catch(() => {});
+    await saveDeviceScreen(
+      workRoot,
+      jobId,
+      name.slice('screenshot-'.length, -'.png'.length),
+      bytes,
+    );
+    await unlink(source);
+    moved += 1;
   }
+  // An emptied folder goes too, so the workspace looks as it would have.
+  await rmdir(folder).catch(() => {});
   return moved;
+}
+
+/** `moveJobScreens` for every job under the workspace root. */
+export async function moveWorkspaceScreens(workRoot: string): Promise<number> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(await realpath(workRoot), { withFileTypes: true });
+  } catch (error) {
+    if (missing(error)) return 0;
+    throw error;
+  }
+  let moved = 0;
+  for (const entry of entries)
+    if (entry.isDirectory() && JOB.test(entry.name))
+      moved += await moveJobScreens(workRoot, entry.name);
+  return moved;
+}
+
+/**
+ * Keep moving them at start until every one is out, saying each time what
+ * happened; a failure is tried again a minute later rather than left behind.
+ */
+export function moveWorkspaceScreensUntilDone(
+  workRoot: string,
+  report: (line: string) => void,
+  retryMs = 60_000,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const attempt = () => {
+      moveWorkspaceScreens(workRoot).then(
+        (moved) => {
+          if (moved) report(`moved ${moved} device screenshot(s) out of job workspaces`);
+          resolve();
+        },
+        (error: unknown) => {
+          report(
+            `device screenshots were not moved out of job workspaces, trying again: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          setTimeout(attempt, retryMs).unref?.();
+        },
+      );
+    };
+    attempt();
+  });
 }

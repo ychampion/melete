@@ -232,3 +232,47 @@ def test_a_result_without_a_real_action_id_is_sent_as_its_receipt(client, broker
     monkeypatch.setenv(VISION_ENV, "1")
     broker.propose_response = {**broker.propose_response, "action_id": "act_../../x"}
     assert isinstance(run(client, broker), str)
+
+
+def test_a_device_picture_read_back_from_the_session_store_is_asked_for_again(monkeypatch):
+    """The engine's store keeps a paired computer's screenshot as its receipt and
+    the word [screenshot]; the next run gets the picture only from the broker."""
+    from melete_plugin.vision import STORED_PICTURE, Withheld, restore
+
+    monkeypatch.setenv(VISION_ENV, "1")
+    result = {"status": "succeeded", "action_id": ACTION, "receipt": device_receipt()["receipt"]}
+    stored = json.dumps(result) + STORED_PICTURE
+    asked = []
+
+    def fetch(action_id):
+        asked.append(action_id)
+        return png(800, 600)
+
+    back = restore("device.screenshot", stored, fetch)
+    assert asked == [ACTION]
+    assert [part["type"] for part in back] == ["text", "image_url"]
+    # Kept private now: the receipt and why, never a picture.
+    kept = json.loads(restore("device.screenshot__0123456789ab", stored, lambda _id: Withheld("private")))
+    assert kept["picture"] == "private"
+    # The agent's own screenshot, anything not stored that way, and other tools are left alone.
+    assert restore("computer.screenshot", stored, fetch) == stored
+    assert restore("device.read_file", stored, fetch) == stored
+    assert restore("device.screenshot", "plain text", fetch) == "plain text"
+    assert asked == [ACTION]
+
+
+def test_history_read_back_goes_through_the_registered_restorer():
+    from melete_runtime_hooks import register_picture_restorer, restore_pictures
+
+    history = [
+        {"role": "user", "content": "look"},
+        {"role": "tool", "tool_name": "device.screenshot", "content": "receipt"},
+    ]
+    register_picture_restorer(lambda name, content: f"{name}:{content}")
+    try:
+        assert restore_pictures(history)[1]["content"] == "device.screenshot:receipt"
+        assert history[0]["content"] == "look"
+        register_picture_restorer(lambda _name, _content: (_ for _ in ()).throw(RuntimeError()))
+        assert restore_pictures(history)[1]["content"] == "device.screenshot:receipt"
+    finally:
+        register_picture_restorer(lambda _name, content: content)
