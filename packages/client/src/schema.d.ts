@@ -22360,6 +22360,7 @@ export interface components {
             policy: components["schemas"]["__schema349"];
         };
         __schema368: {
+            builtin: boolean;
             id: components["schemas"]["__schema351"];
             label: string;
             provider: string;

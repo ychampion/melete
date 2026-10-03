@@ -10,9 +10,6 @@ import { AddConnection } from '../screens/ConnectionInstall.tsx';
 import { toast } from '../shell/Shell.tsx';
 import { type RoomConnection, type RoomDetail, type RoomPolicy, roomsApi } from './api.ts';
 
-/** The room's own tools, which every room has; the list shows accounts. */
-const BUILT_IN = new Set(['apps', 'artifacts', 'files', 'room', 'web']);
-
 export const APPROVER_CHOICES: readonly {
   value: RoomPolicy['approvers'];
   title: string;
@@ -66,7 +63,8 @@ export function RoomSettings({
       if (result.data)
         setAccounts(
           result.data.connections.filter(
-            (entry) => entry.shared_use === 'room' && !BUILT_IN.has(entry.provider),
+            // The tools every room has are not accounts anyone added.
+            (entry) => entry.shared_use === 'room' && !entry.builtin,
           ),
         );
     });

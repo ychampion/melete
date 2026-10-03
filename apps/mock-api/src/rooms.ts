@@ -1120,6 +1120,7 @@ Thanks`,
             provider: entry.provider,
             status: entry.status,
             shared_use: 'room' as const,
+            builtin: entry.builtin === true,
           })),
       });
     }),

@@ -36369,6 +36369,9 @@
               "owner",
               "room"
             ]
+          },
+          "builtin": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -36376,7 +36379,8 @@
           "label",
           "provider",
           "status",
-          "shared_use"
+          "shared_use",
+          "builtin"
         ],
         "additionalProperties": false
       },
