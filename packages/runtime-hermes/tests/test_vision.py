@@ -110,6 +110,65 @@ def test_a_paired_device_screenshot_is_shown_too(client, broker, workspace, monk
     ]
 
 
+def test_a_screenshot_from_one_of_two_paired_computers_is_shown(client, broker, workspace, monkeypatch):  # noqa: F811
+    """With two paired computers each one's tools are named per connection
+    (`accountToolName`); the picture still arrives."""
+    monkeypatch.setenv(VISION_ENV, "1")
+    broker.screenshots[ACTION] = png(800, 600)
+    result = run(client, broker, "device.screenshot__0123456789ab", f"device/screenshot-{ACTION}.png")
+    assert isinstance(result, dict) and result["_multimodal"] is True
+    assert decoded(result).size == (800, 600)
+    # A name that only looks like one is not a screenshot tool.
+    assert isinstance(run(client, broker, "device.screenshot__notahexsuffix"), str)
+
+
+def device_receipt() -> dict:
+    """A paired computer's receipt: no path, since the picture is in no workspace."""
+    return {
+        "id": ACTION,
+        "receipt": {
+            "action_id": ACTION,
+            "connection_id": CONNECTION,
+            "external_ref": None,
+            "detail": {"device": "Laptop", "bytes": 100, "width": 800, "height": 600, "content_hash": HASH},
+        },
+    }
+
+
+def run_device(client, broker):  # noqa: F811
+    broker.catalog = [screenshot_tool("device.screenshot")]
+    broker.action_record = device_receipt()
+    ctx = RecordingContext()
+    register(ctx, client)
+    return ctx.tools[0]["handler"]({}, task_id="engine")
+
+
+def test_a_device_screenshot_with_no_path_is_shown_when_the_computer_allows_it(client, broker, workspace, monkeypatch):  # noqa: F811
+    monkeypatch.setenv(VISION_ENV, "1")
+    broker.screenshots[ACTION] = png(800, 600)
+    result = run_device(client, broker)
+    assert isinstance(result, dict) and result["_multimodal"] is True
+    assert decoded(result).size == (800, 600)
+    assert result["text_summary"].startswith("Screenshot from device.screenshot (800x600). ")
+
+
+def test_a_device_screenshot_kept_private_is_said_so_and_never_shown(client, broker, workspace, monkeypatch):  # noqa: F811
+    monkeypatch.setenv(VISION_ENV, "1")
+    broker.screenshots[ACTION] = "The screenshot was taken and is kept private."
+    result = run_device(client, broker)
+    assert isinstance(result, str) and "image_url" not in result
+    shown = json.loads(result)
+    assert shown["picture"] == "The screenshot was taken and is kept private."
+    assert "path" not in shown["receipt"]["detail"]
+
+
+def test_a_model_without_vision_is_told_a_device_screenshot_is_not_a_file(client, broker, workspace, monkeypatch):  # noqa: F811
+    monkeypatch.setenv(VISION_ENV, "0")
+    shown = json.loads(run_device(client, broker))
+    assert "not a file" in shown["picture"]
+    assert not [r for r in broker.requests if r["path"].endswith("/screenshot")]
+
+
 def test_a_model_without_vision_gets_the_text_receipt_unchanged(client, broker, workspace, monkeypatch):  # noqa: F811
     monkeypatch.setenv(VISION_ENV, "0")
     result = run(client, broker)
@@ -173,3 +232,47 @@ def test_a_result_without_a_real_action_id_is_sent_as_its_receipt(client, broker
     monkeypatch.setenv(VISION_ENV, "1")
     broker.propose_response = {**broker.propose_response, "action_id": "act_../../x"}
     assert isinstance(run(client, broker), str)
+
+
+def test_a_device_picture_read_back_from_the_session_store_is_asked_for_again(monkeypatch):
+    """The engine's store keeps a paired computer's screenshot as its receipt and
+    the word [screenshot]; the next run gets the picture only from the broker."""
+    from melete_plugin.vision import STORED_PICTURE, Withheld, restore
+
+    monkeypatch.setenv(VISION_ENV, "1")
+    result = {"status": "succeeded", "action_id": ACTION, "receipt": device_receipt()["receipt"]}
+    stored = json.dumps(result) + STORED_PICTURE
+    asked = []
+
+    def fetch(action_id):
+        asked.append(action_id)
+        return png(800, 600)
+
+    back = restore("device.screenshot", stored, fetch)
+    assert asked == [ACTION]
+    assert [part["type"] for part in back] == ["text", "image_url"]
+    # Kept private now: the receipt and why, never a picture.
+    kept = json.loads(restore("device.screenshot__0123456789ab", stored, lambda _id: Withheld("private")))
+    assert kept["picture"] == "private"
+    # The agent's own screenshot, anything not stored that way, and other tools are left alone.
+    assert restore("computer.screenshot", stored, fetch) == stored
+    assert restore("device.read_file", stored, fetch) == stored
+    assert restore("device.screenshot", "plain text", fetch) == "plain text"
+    assert asked == [ACTION]
+
+
+def test_history_read_back_goes_through_the_registered_restorer():
+    from melete_runtime_hooks import register_picture_restorer, restore_pictures
+
+    history = [
+        {"role": "user", "content": "look"},
+        {"role": "tool", "tool_name": "device.screenshot", "content": "receipt"},
+    ]
+    register_picture_restorer(lambda name, content: f"{name}:{content}")
+    try:
+        assert restore_pictures(history)[1]["content"] == "device.screenshot:receipt"
+        assert history[0]["content"] == "look"
+        register_picture_restorer(lambda _name, _content: (_ for _ in ()).throw(RuntimeError()))
+        assert restore_pictures(history)[1]["content"] == "device.screenshot:receipt"
+    finally:
+        register_picture_restorer(lambda _name, content: content)

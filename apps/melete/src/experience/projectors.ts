@@ -314,6 +314,15 @@ export function stepAsk(kind: string, payload: Record<string, unknown>): string 
       return 'Read a file on your computer';
     case 'device.status':
       return 'Check your computer is connected';
+    case 'files.move': {
+      const file = named(typeof payload.from === 'string' ? payload.from.split('/').pop() : null);
+      const into = (payload.to_area ?? payload.area) === 'artifacts';
+      const from = payload.area === 'artifacts';
+      const what = file ?? 'a file';
+      if (into && !from) return `Move ${what} into your Files`;
+      if (from && !into) return `Move ${what} out of your Files`;
+      return into ? `Move ${what} within your Files` : null;
+    }
     default:
       return null;
   }
@@ -938,7 +947,8 @@ export function projectPermission(input: {
   const what = isSend
     ? `${base} to ${recipientText(payload)}`
     : file
-      ? `Save ${file.path}`
+      ? // Where it lands, plainly: the person's own Files are not the agent's workspace.
+        `Save ${file.path}${payload.area === 'artifacts' ? ' to your Files' : ''}`
       : (egress?.title ??
         stepAsk(input.action.kind, payload) ??
         DEVICE_ASKS[input.action.kind] ??

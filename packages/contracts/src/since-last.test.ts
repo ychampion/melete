@@ -16,6 +16,38 @@ describe('the delta brief', () => {
     expect(sinceLast.parse({})).toEqual(EMPTY_SINCE_LAST);
   });
 
+  test("the person's answer on an unconfirmed effect is told as theirs, and a no is reported and asked about", () => {
+    const delta = sinceLast.parse({
+      attempt_id: ATTEMPT,
+      ended_at: at,
+      actions: [
+        { action_id: ACTION, kind: 'files.move', status: 'failed', at, decided_by: 'owner' },
+        {
+          action_id: `act_${ulid('1')}`,
+          kind: 'email.send',
+          status: 'succeeded',
+          at,
+          decided_by: 'owner',
+        },
+      ],
+    });
+    const [, no, yes] = renderSinceLast(delta).split('\n');
+    expect(no).toContain(`action ${ACTION} (files.move) did not happen: the person said so.`);
+    expect(no).toContain('ask what they want next');
+    expect(no).toContain('Do not try it again');
+    expect(no).toContain('do not save or move anything in their Files they did not ask for');
+    expect(yes).toContain('(email.send) happened: the person said so.');
+    // An answer Melete never asked for is not invented.
+    expect(
+      renderSinceLast(
+        sinceLast.parse({
+          attempt_id: ATTEMPT,
+          actions: [{ action_id: ACTION, kind: 'files.move', status: 'failed', at }],
+        }),
+      ),
+    ).toBe(`Since the last attempt (${ATTEMPT}):\n- action ${ACTION} (files.move) is failed`);
+  });
+
   test('a prior attempt that produced nothing says that too', () => {
     const delta = sinceLast.parse({ attempt_id: ATTEMPT, ended_at: at });
     expect(renderSinceLast(delta)).toContain('nothing was produced and nothing is waiting');

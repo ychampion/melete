@@ -37,7 +37,6 @@ import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import { ConnectorFaultError } from '../connectors/faults.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
-import { writePrivateWorkspaceFile } from '../sandbox/workspace.ts';
 import { type DeviceHub, sharedDeviceHub } from './hub.ts';
 import {
   DevicePathError,
@@ -46,6 +45,7 @@ import {
   openableUrl,
   pageAddress,
 } from './paths.ts';
+import { saveDeviceScreen } from './screens.ts';
 
 const pathArgument = {
   type: 'string',
@@ -387,7 +387,7 @@ export type DeviceConnectorOptions = {
   connectionId: string;
   name: string;
   sql: Sql;
-  /** Where job workspaces live: a screenshot is kept in `<workRoot>/<job_id>/device/`. */
+  /** Where job workspaces live; a screenshot is kept beside them, never in one (screens.ts). */
   workRoot: string;
   hub?: DeviceHub;
 };
@@ -409,22 +409,6 @@ export function unreadableReply(
   return DEVICE_TOOL_SHAPES[tool].effect_class === 'read'
     ? { outcome: 'failed', reason, retryable: false }
     : { outcome: 'unknown', reason: `${reason} It may have happened on the computer.` };
-}
-
-/**
- * Keep a screenshot in the job's workspace, under `device/`, and return the
- * path relative to the workspace. The computer can write to that workspace, so
- * no link or second name in it is followed out of it.
- */
-export async function saveScreenshot(
-  workRoot: string,
-  jobId: string,
-  actionId: string,
-  bytes: Uint8Array,
-): Promise<string> {
-  const file = `device/screenshot-${actionId}.png`;
-  await writePrivateWorkspaceFile(workRoot, jobId, file, bytes);
-  return file;
 }
 
 export function createDeviceConnector(options: DeviceConnectorOptions): Connector {
@@ -668,12 +652,13 @@ export function createDeviceConnector(options: DeviceConnectorOptions): Connecto
           throw new Error('the screenshot is larger than the cap');
         if (bytes.byteLength < 24 || !bytes.subarray(0, 8).equals(PNG_MAGIC))
           throw new Error('the screenshot is not a PNG image');
-        const saved = await saveScreenshot(options.workRoot, ctx.job_id, action.id, bytes);
+        // Kept by the service, outside the job's workspace: the agent's own
+        // computer, sandbox and files tools never see it (screens.ts).
+        await saveDeviceScreen(options.workRoot, ctx.job_id, action.id, bytes);
         const hash = digest(bytes);
         return {
           detail: {
             ...(tool === 'browser_screenshot' ? { tab_id: Number(sent.tab_id) } : {}),
-            path: saved,
             bytes: bytes.byteLength,
             width: bytes.readUInt32BE(16),
             height: bytes.readUInt32BE(20),

@@ -124,6 +124,8 @@ export const actionSinceLast = z.object({
   status: z.string().min(1),
   receipt_ref: z.string().max(500).nullable().default(null),
   at: timestamp,
+  /** Set when the person said what happened to an effect nobody could confirm. */
+  decided_by: z.enum(['owner']).optional(),
 });
 export type ActionSinceLast = z.infer<typeof actionSinceLast>;
 
@@ -176,6 +178,22 @@ export const EMPTY_SINCE_LAST: SinceLast = {
 };
 
 /**
+ * What an effect nobody could confirm is, once the person has said. A "did not"
+ * is the person's answer, not an invitation to find out for them: the work
+ * reports and asks, and does not redo it, hunt for it or make files of its own.
+ */
+const OWNER_DECIDED: Record<string, string> = {
+  succeeded: 'happened: the person said so.',
+  failed:
+    'did not happen: the person said so. Tell them plainly what it was and ask what they want ' +
+    'next. Do not try it again, work around it or search for traces of it, and do not save or ' +
+    'move anything in their Files they did not ask for.',
+  unresolved:
+    'is still unconfirmed: the person cannot tell yet. Do not try it again; say what you would ' +
+    'need to know.',
+};
+
+/**
  * The delta brief as the model reads it. Plain lines, no ceremony, and nothing
  * that is not on a durable row. An empty brief renders as one sentence saying
  * so, because "this is the first wake" is itself worth knowing.
@@ -186,6 +204,12 @@ export function renderSinceLast(delta: SinceLast): string {
   ];
   for (const item of delta.actions) {
     const receipt = item.receipt_ref ? `, receipt ${item.receipt_ref}` : '';
+    if (item.decided_by === 'owner') {
+      lines.push(
+        `- action ${item.action_id} (${item.kind}) ${OWNER_DECIDED[item.status] ?? `is ${item.status}: the person said so.`}`,
+      );
+      continue;
+    }
     const status = item.status === 'succeeded' && !item.receipt_ref ? 'not confirmed' : item.status;
     lines.push(`- action ${item.action_id} (${item.kind}) is ${status}${receipt}`);
   }
