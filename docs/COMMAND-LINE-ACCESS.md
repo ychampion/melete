@@ -36,6 +36,11 @@ For each request inside a terminated connection:
 - **A read** goes out with the account added. The answer comes back
   uncompressed, without `Alt-Svc` or `Set-Cookie`, and with every form of the
   secret replaced by `[redacted]`, even if the service echoes it.
+- An answer that holds a new credential the service handed out (a GitLab
+  personal, deploy, runner or trigger token, an npm token) is not passed on:
+  one seen before the answer starts is replaced by a plain refusal, and one
+  seen later cuts the answer off before any of it is sent. A change whose
+  answer is withheld this way is recorded as possibly landed.
 - **A change** is held while Melete asks. The approval is bound to the request
   as it will be sent: its method, address, the digest of its exact body bytes,
   and every header that goes with it (only `User-Agent`, `Date`, `Traceparent`,
@@ -207,7 +212,9 @@ Everything else is a change and asks:
   exact bytes of the command list. Push options matter more here: GitLab reads
   them to open or merge a merge request (`merge_request.create`,
   `merge_request.merge_when_pipeline_succeeds`) or to skip or vary a pipeline
-  (`ci.skip`, `ci.variable`), so the card lists each one.
+  (`ci.skip`, `ci.variable`), so the card says in plain words what GitLab will
+  also do, for example "open a merge request into main, merge it when its
+  pipeline passes", and lists each option.
 - **A REST call** with any method other than `GET` or `HEAD` is bound to its
   method, path, query and body. Merge requests (open, merge, approve, comment,
   close, reopen), issues, releases, pipelines and jobs (run, retry, cancel),
@@ -218,9 +225,21 @@ Everything else is a change and asks:
 - **A GraphQL document** with a mutation anywhere in it, or one that does not
   parse, is bound to its exact text and variables.
 
-Two kinds of request are refused and never sent with the account: one that
-asks to act as another user (`Sudo`, as a header or a parameter), and the usage
-reports `glab` sends after each command. `glab` carries on without them.
+Three kinds of request are refused and never sent with the account:
+
+- one that asks to act as another user (`Sudo`, as a header, or as a
+  parameter in the query or any kind of body);
+- one that would make a credential the computer then holds: a personal,
+  project, group, impersonation or deploy token, a token rotation, a pipeline
+  trigger token, a runner, an SSH or deploy key, or an OAuth token, through
+  REST or GraphQL. Make one on GitLab yourself if the work needs it;
+- the usage reports `glab` sends after each command. `glab` carries on without
+  them.
+
+Reads return what the account can read, secrets included: reading a project's
+CI/CD variables (`glab variable list`, `GET .../variables`) returns their
+values to the computer. Give the token only the projects the work needs, or a
+role that cannot read variables.
 
 A held push prints its reason beside each ref, as on GitHub, and `glab` prints
 the same sentence as the API's error message. A push keeps on its receipt the
@@ -252,9 +271,13 @@ downloads), and the audit lookups `npm install` and `npm audit` send as POSTs.
 Everything else is a change and asks:
 
 - **A publish** shows the package, each version it adds, its tags, its access,
-  the tarball's name and size, its integrity, and any script that runs when
-  someone installs it. The approval is bound to the exact bytes of the request,
-  so a different tarball is a new approval.
+  the tarball's name and size, and its integrity. The scripts that run when
+  someone installs it are read from the tarball's own `package.json`, which is
+  what an install uses; the card says when that file disagrees with what the
+  publish declares, and when a `binding.gyp` builds native code on install. A
+  tarball that cannot be read is shown with the declared scripts, marked as
+  unchecked. The approval is bound to the exact bytes of the request, so a
+  different tarball is a new approval.
 - **An unpublish** of the whole package or of one version, a **deprecation**,
   a **maintainer** change, and any other change to a package's record show each
   field the change sets as it will be afterwards (the versions kept, the
@@ -262,6 +285,11 @@ Everything else is a change and asks:
   maintainers or tags is marked as such.
 - **A dist-tag** change shows the tag and the version it will name; **access**,
   **team** and **organisation** changes say what they grant or take away.
+
+Logging in (`npm login`, `npm adduser`, the end of a web login), making a
+token and a trusted-publishing token exchange are refused: each would put a
+credential in the computer. Make a token on npmjs.com yourself if the work
+needs one.
 
 A held change fails the npm command with the reason in npm's own error line:
 
