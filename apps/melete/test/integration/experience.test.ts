@@ -524,6 +524,56 @@ withDb('experience rows and authenticated scope', () => {
     );
     expect(after.turns[0]?.answer).toBe('Hey!');
   });
+  test('a compaction reaches the stream as a bare marker, with none of the summary', async () => {
+    const chat = await createConversation();
+    await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'go on' }, 'compact-one');
+    const row = await required(jobs).get(chat.id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    const attemptId = claimed.claims.attempt_id;
+    const at = new Date().toISOString();
+    await required(runner).emit(claimed.claims, {
+      type: 'hook_event',
+      attempt_id: attemptId,
+      local_seq: 1,
+      dedup_key: dedupKey(attemptId, 1),
+      at,
+      capture_id: `${attemptId}:hook:1`,
+      name: 'on_compaction',
+      tool_name: null,
+      timing: { captured_at: at, duration_ms: 40 },
+      outcome: 'succeeded',
+      redacted_args_digest: null,
+      detail: { compression_count: 1, in_place: true },
+    });
+    await required(runner).emit(claimed.claims, {
+      type: 'text_delta',
+      attempt_id: attemptId,
+      local_seq: 2,
+      dedup_key: dedupKey(attemptId, 2),
+      at,
+      text: 'Carrying on.',
+    });
+    await required(runner).commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: 'Carrying on.',
+      evidence: [],
+    });
+    const items = (
+      await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id)
+    ).events.map((event) => event.item);
+    expect(items.filter((item) => item.type === 'compacted')).toEqual([{ type: 'compacted' }]);
+    // The marker comes before what the agent said after it.
+    expect(items.findIndex((item) => item.type === 'compacted')).toBeLessThan(
+      items.findIndex((item) => item.type === 'text_delta'),
+    );
+  });
   test('an answer naming its model streams whole and is saved whole; only a key is hidden', async () => {
     const chat = await createConversation();
     await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'name?' }, 'model-id');

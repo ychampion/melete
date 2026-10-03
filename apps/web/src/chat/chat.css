@@ -247,33 +247,40 @@
 .worklog {
   display: flex;
   flex-direction: column;
-  gap: 10px;
   min-width: 0;
 }
+/* A finished turn's one line: how long it worked and what it did, opening onto the log. */
 .worklog-head {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
   align-self: stretch;
   min-height: 32px;
   padding: 4px 0 8px;
   border-bottom: 1px solid var(--line);
+  border-radius: 0;
   font-size: 14px;
   font-weight: 500;
   color: var(--muted);
   text-align: left;
+  transition: color 120ms ease;
 }
 .worklog-head:hover {
   color: var(--text);
 }
-.worklog-head > .worklog-chevron {
-  transition: transform 120ms ease;
+.worklog-words {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
-.worklog-head[aria-expanded="false"] > .worklog-chevron {
-  transform: rotate(-90deg);
+.worklog-head > .worklog-chevron {
+  flex-shrink: 0;
+  transition: transform 200ms ease;
+}
+.worklog-head[aria-expanded="true"] > .worklog-chevron {
+  transform: rotate(90deg);
 }
 .worklog-sub {
-  margin: 0;
+  margin: 6px 0 0;
   font-size: 13px;
   line-height: 19px;
   color: var(--muted);
@@ -283,21 +290,106 @@
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+  padding-top: 12px;
+}
+/* While the turn runs the log is the conversation itself, with no line over it. */
+.worklog[data-state="live"] .worklog-body {
+  padding-top: 0;
+}
+.worklog-kept {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 12px;
+}
+.worklog .log-live {
+  margin-top: 8px;
 }
 .previous-messages {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 4px;
   align-self: stretch;
   min-height: 32px;
+  margin: 0;
   padding: 4px 0 8px;
   border-bottom: 1px solid var(--line);
+  border-radius: 0;
   font-size: 14px;
   font-weight: 500;
   color: var(--muted);
+  text-align: left;
 }
-.previous-messages:hover {
+button.previous-messages:hover {
   color: var(--text);
+}
+.previous-chevron {
+  flex-shrink: 0;
+  transition: transform 200ms ease;
+}
+.previous-messages[aria-expanded="true"] > .previous-chevron {
+  transform: rotate(90deg);
+}
+.worklog-head:focus-visible,
+.previous-messages:focus-visible,
+.log-line:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ring);
+  border-radius: 8px;
+}
+
+/*
+ * Unfolding in place: the height grows from nothing and the words fade in.
+ * The clip reaches a little past each side so a row's hover wash is not cut.
+ */
+.reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  min-width: 0;
+  opacity: 0;
+  transition:
+    grid-template-rows 240ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    opacity 200ms ease;
+}
+.reveal[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.reveal-clip {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  margin-inline: -8px;
+  padding-inline: 8px;
+}
+.reveal[data-motion="off"] {
+  transition: none;
+}
+
+/* Words for work under way: a soft light passes over them, and holds still for reduced motion. */
+@keyframes text-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+.shimmer-text {
+  color: var(--muted);
+  background: linear-gradient(
+    90deg,
+    var(--muted) 0%,
+    var(--muted) 40%,
+    var(--heading) 50%,
+    var(--muted) 60%,
+    var(--muted) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: text-shimmer 2.4s linear infinite;
 }
 
 /* A line of work: an icon and a muted sentence, opening onto its preview. */
@@ -369,18 +461,18 @@ button.log-line[aria-expanded="true"] > .log-chevron {
 .log-group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
   min-width: 0;
 }
 .log-group-rows {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
+  padding: 2px 0 0 24px;
 }
 .log-detail {
   min-width: 0;
-  padding-bottom: 4px;
+  padding: 4px 0 6px 24px;
 }
 .log-agent .log-icon {
   width: 16px;
@@ -402,13 +494,12 @@ button.log-line[aria-expanded="true"] > .log-chevron {
   margin-top: 2px;
 }
 
-/* A command's shell. */
+/* A command's shell: a light panel under its row, no frame. */
 .log-shell {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-block, 12px);
+  border-radius: 10px;
   background: var(--soft);
   overflow: hidden;
 }
@@ -448,8 +539,7 @@ button.log-line[aria-expanded="true"] > .log-chevron {
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
-  padding: 6px 12px 8px;
-  border-top: 1px solid var(--line);
+  padding: 0 12px 8px;
   font-size: 12px;
   color: var(--muted);
 }
@@ -460,16 +550,12 @@ button.log-line[aria-expanded="true"] > .log-chevron {
   color: var(--danger);
 }
 
-/* What a read or a page brought back. */
+/* What a read or a page brought back: the words themselves, set under the row. */
 .log-preview {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-block, 12px);
-  background: var(--soft);
 }
 .log-pre {
   margin: 0;
@@ -608,6 +694,25 @@ button.log-line[aria-expanded="true"] > .log-chevron {
   }
   .log-line {
     min-height: 32px;
+  }
+  .log-group-rows {
+    padding-left: 12px;
+  }
+  .log-detail {
+    padding-left: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal,
+  .worklog-head > .worklog-chevron,
+  .previous-chevron,
+  .log-chevron {
+    transition: none;
+  }
+  .shimmer-text {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: currentColor;
   }
 }
 

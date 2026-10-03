@@ -79,6 +79,7 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
         connected: isConnected(active.provider),
         vision: effectiveVision(active.provider, active.model, chosen?.vision),
         vision_source: typeof chosen?.vision === 'boolean' ? 'app' : 'catalog',
+        provider_vision: null,
         updated_at: chosen?.at ?? null,
       },
       operator_default: OPERATOR_DEFAULT,

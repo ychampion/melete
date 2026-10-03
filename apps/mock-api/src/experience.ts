@@ -1123,7 +1123,8 @@ export class ExperienceMock {
       this.event(chat, { type: 'question', question });
       this.state(chat, 'needs_you');
       return;
-    } else if (step.step === 'notice')
+    } else if (step.step === 'compact') this.event(chat, { type: 'compacted' });
+    else if (step.step === 'notice')
       this.event(chat, {
         type: 'note',
         text: plainText(step.body || step.title, 'There is an update.'),

@@ -1,5 +1,5 @@
 {
-  "id": "6aa0876b-1dfe-4806-92ae-588316ba421d",
+  "id": "5782e8e8-01b3-44db-b328-4574eb659874",
   "prevId": "a0d8f085-5977-4c70-b524-f3198dca1bb3",
   "version": "7",
   "dialect": "postgresql",
@@ -2741,12 +2741,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "author_principal_id": {
-          "name": "author_principal_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "text": {
           "name": "text",
           "type": "text",
@@ -2802,19 +2796,6 @@
           "tableTo": "agent",
           "columnsFrom": [
             "agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "experience_turn_author_principal_id_principal_id_fk": {
-          "name": "experience_turn_author_principal_id_principal_id_fk",
-          "tableFrom": "experience_turn",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "author_principal_id"
           ],
           "columnsTo": [
             "id"
@@ -3156,25 +3137,6 @@
           "notNull": true,
           "default": "'owner'"
         },
-        "audience": {
-          "name": "audience",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'principal'"
-        },
-        "requested_by_principal_id": {
-          "name": "requested_by_principal_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "room_thread_id": {
-          "name": "room_thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -3233,21 +3195,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "job_room_thread_idx": {
-          "name": "job_room_thread_idx",
-          "columns": [
-            {
-              "expression": "room_thread_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -3289,19 +3236,6 @@
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
-        },
-        "job_requested_by_principal_id_principal_id_fk": {
-          "name": "job_requested_by_principal_id_principal_id_fk",
-          "tableFrom": "job",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "requested_by_principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -3315,12 +3249,7 @@
         }
       },
       "policies": {},
-      "checkConstraints": {
-        "job_audience": {
-          "name": "job_audience",
-          "value": "\"job\".\"audience\" in ('principal', 'room')"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.knowledge_record": {
@@ -3618,6 +3547,52 @@
       "compositePrimaryKeys": {
         "model_vision_provider_model_pk": {
           "name": "model_vision_provider_model_pk",
+          "columns": [
+            "provider",
+            "model"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.model_vision_report": {
+      "name": "model_vision_report",
+      "schema": "",
+      "columns": {
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "supports_vision": {
+          "name": "supports_vision",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reported_at": {
+          "name": "reported_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "model_vision_report_provider_model_pk": {
+          "name": "model_vision_report_provider_model_pk",
           "columns": [
             "provider",
             "model"
@@ -4010,19 +3985,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'person'"
-        },
-        "display_name": {
-          "name": "display_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -4044,12 +4006,7 @@
         }
       },
       "policies": {},
-      "checkConstraints": {
-        "principal_kind": {
-          "name": "principal_kind",
-          "value": "\"principal\".\"kind\" in ('person', 'guest', 'room')"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.provider_credential": {
@@ -5580,12 +5537,6 @@
           "notNull": true,
           "default": 0
         },
-        "purpose": {
-          "name": "purpose",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -5702,7 +5653,7 @@
       "checkConstraints": {
         "membership_role": {
           "name": "membership_role",
-          "value": "\"space_membership\".\"role\" in ('owner', 'member', 'guest', 'agent')"
+          "value": "\"space_membership\".\"role\" in ('owner', 'member')"
         },
         "membership_generation": {
           "name": "membership_generation",
@@ -15664,417 +15615,6 @@
         }
       },
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.room_message": {
-      "name": "room_message",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "space_id": {
-          "name": "space_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "thread_id": {
-          "name": "thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "author_principal_id": {
-          "name": "author_principal_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'person'"
-        },
-        "via_agent": {
-          "name": "via_agent",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "text": {
-          "name": "text",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "mentions": {
-          "name": "mentions",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "request_state": {
-          "name": "request_state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'none'"
-        },
-        "request_job_id": {
-          "name": "request_job_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "submission_id": {
-          "name": "submission_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "stream_seq": {
-          "name": "stream_seq",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "redacted_at": {
-          "name": "redacted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "room_message_thread_idx": {
-          "name": "room_message_thread_idx",
-          "columns": [
-            {
-              "expression": "thread_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "room_message_stream_idx": {
-          "name": "room_message_stream_idx",
-          "columns": [
-            {
-              "expression": "thread_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "stream_seq",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "room_message_pending_idx": {
-          "name": "room_message_pending_idx",
-          "columns": [
-            {
-              "expression": "space_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "request_state",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"room_message\".\"request_state\" = 'pending'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "room_message_space_id_space_id_fk": {
-          "name": "room_message_space_id_space_id_fk",
-          "tableFrom": "room_message",
-          "tableTo": "space",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "room_message_thread_id_room_thread_id_fk": {
-          "name": "room_message_thread_id_room_thread_id_fk",
-          "tableFrom": "room_message",
-          "tableTo": "room_thread",
-          "columnsFrom": [
-            "thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "room_message_author_principal_id_principal_id_fk": {
-          "name": "room_message_author_principal_id_principal_id_fk",
-          "tableFrom": "room_message",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "author_principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "room_message_request_job_id_job_id_fk": {
-          "name": "room_message_request_job_id_job_id_fk",
-          "tableFrom": "room_message",
-          "tableTo": "job",
-          "columnsFrom": [
-            "request_job_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "room_message_submission_id_unique": {
-          "name": "room_message_submission_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "submission_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "room_message_kind": {
-          "name": "room_message_kind",
-          "value": "\"room_message\".\"kind\" in ('person', 'handoff_result', 'system')"
-        },
-        "room_message_request_state": {
-          "name": "room_message_request_state",
-          "value": "\"room_message\".\"request_state\" in ('none', 'pending', 'started')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.room_presence": {
-      "name": "room_presence",
-      "schema": "",
-      "columns": {
-        "space_id": {
-          "name": "space_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "principal_id": {
-          "name": "principal_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "last_seen_at": {
-          "name": "last_seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "room_presence_space_id_space_id_fk": {
-          "name": "room_presence_space_id_space_id_fk",
-          "tableFrom": "room_presence",
-          "tableTo": "space",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "room_presence_principal_id_principal_id_fk": {
-          "name": "room_presence_principal_id_principal_id_fk",
-          "tableFrom": "room_presence",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "room_presence_space_id_principal_id_pk": {
-          "name": "room_presence_space_id_principal_id_pk",
-          "columns": [
-            "space_id",
-            "principal_id"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.room_thread": {
-      "name": "room_thread",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "space_id": {
-          "name": "space_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_by": {
-          "name": "created_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "last_activity_at": {
-          "name": "last_activity_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "archived_at": {
-          "name": "archived_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "room_thread_space_idx": {
-          "name": "room_thread_space_idx",
-          "columns": [
-            {
-              "expression": "space_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "last_activity_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "room_thread_space_id_space_id_fk": {
-          "name": "room_thread_space_id_space_id_fk",
-          "tableFrom": "room_thread",
-          "tableTo": "space",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "room_thread_created_by_principal_id_fk": {
-          "name": "room_thread_created_by_principal_id_fk",
-          "tableFrom": "room_thread",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "created_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

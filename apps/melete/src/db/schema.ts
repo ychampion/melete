@@ -226,6 +226,23 @@ export const modelVision = pgTable(
   (table) => [primaryKey({ columns: [table.provider, table.model] })],
 );
 
+/**
+ * What a provider's own model list said about which of its models read
+ * images, kept from the last time the list was fetched. A provider's rows are
+ * replaced whenever its list is fetched again. Shown to the owner; it never
+ * decides whether a model is shown pictures.
+ */
+export const modelVisionReport = pgTable(
+  'model_vision_report',
+  {
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    supportsVision: boolean('supports_vision').notNull(),
+    reportedAt: timestamp('reported_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.provider, table.model] })],
+);
+
 export const connection = pgTable(
   'connection',
   {
