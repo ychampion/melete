@@ -20,6 +20,7 @@ import { and, asc, desc, eq, gt, ilike, inArray, isNull, ne, or, sql } from 'dri
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import {
+  agent,
   approval,
   connection,
   event,
@@ -37,6 +38,7 @@ import type { AttemptRunner } from '../jobs/runner.ts';
 import { principalContext, spaceAuthority } from '../principals/authority.ts';
 import type { PrincipalService } from '../principals/service.ts';
 import { ComputerFault, type SandboxComputerService } from '../sandbox/computer.ts';
+import { mentionsOf } from './mentions.ts';
 import { askLimitReached, readRoomPolicy, writeRoomPolicy } from './policy.ts';
 import { presentIn } from './presence.ts';
 import { messageView, requestView, threadView } from './projection.ts';
@@ -50,6 +52,9 @@ import {
   touchMessage,
 } from './release.ts';
 import { roomMessage, roomPresence, roomThread } from './schema.ts';
+
+export { mentionsOf };
+
 import { displayName, namesOf, personLabel, roomHandle } from './transcript.ts';
 
 const missing = () => new ServiceError('not_found', 'That room is not here.', 404);
@@ -62,30 +67,6 @@ const connectionView = (row: typeof connection.$inferSelect) => ({
 });
 const roomOwnerOnly = () =>
   new ServiceError('scope_denied', 'Only an owner of this room can do that.', 403);
-
-/** The room's agent is asked when a message names it: `@Melete`, or `@` and the agent's name. */
-export function mentionsOf(text: string, agentName: string): { mentions: string[]; asks: boolean } {
-  const mentions = [...text.matchAll(/(?:^|[^\w@])@([\p{L}\p{N}_.-]+)/gu)].map(
-    (match) => match[1]?.replace(/[.-]+$/, '') ?? '',
-  );
-  const lower = text.toLowerCase();
-  const names = [...new Set(['melete', agentName.trim().toLowerCase()])].filter(Boolean);
-  const word = /[\p{L}\p{N}_]/u;
-  // `@name` standing on its own: not inside an address, and not the start of a longer word.
-  const asks = names.some((name) => {
-    for (let at = lower.indexOf(`@${name}`); at >= 0; at = lower.indexOf(`@${name}`, at + 1)) {
-      const before = lower[at - 1];
-      const after = lower[at + name.length + 1];
-      if (
-        (before === undefined || !(word.test(before) || before === '@' || before === '.')) &&
-        (after === undefined || !word.test(after))
-      )
-        return true;
-    }
-    return false;
-  });
-  return { mentions: mentions.filter(Boolean), asks };
-}
 
 /**
  * Whether a name is another account's: its chosen name, or the part before the
@@ -453,7 +434,16 @@ export class RoomService {
         thread = made;
         first = true;
       }
-      const { mentions, asks: named } = mentionsOf(input.text, persona.name);
+      // Any agent the room can use answers to its name: the room's own, and
+      // the others its space keeps that have not been deleted.
+      const usable = await tx
+        .select({ name: agent.name })
+        .from(agent)
+        .where(and(eq(agent.spaceId, spaceId), isNull(agent.deletedAt)));
+      const { mentions, asks: named } = mentionsOf(input.text, [
+        persona.name,
+        ...usable.map((row) => row.name),
+      ]);
       // Asked outright: by name, by starting the thread with an ask, or by
       // following straight on from the agent's answer to this person.
       const asked =

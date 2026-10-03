@@ -688,13 +688,25 @@ export async function buildAttemptSkeleton(
   const [activeTurn] = row.currentTurnId
     ? await tx.select().from(experienceTurn).where(eq(experienceTurn.id, row.currentTurnId))
     : [];
+  // The turn's agent, else the job's. One deleted since answers no more: its
+  // work goes to the space's own agent, Melete, as deleting it moves its chats.
+  // A room's request always has an agent: the room's.
   const personaId = activeTurn?.agentId ?? row.agentId;
-  const [persona] = personaId
+  const [bound] = personaId
     ? await tx
         .select()
         .from(agent)
         .where(and(eq(agent.id, personaId), eq(agent.spaceId, row.spaceId)))
     : [];
+  const [persona] =
+    bound?.deletedAt || (!bound && room)
+      ? await tx
+          .select()
+          .from(agent)
+          .where(and(eq(agent.spaceId, row.spaceId), eq(agent.isDefault, true)))
+      : bound
+        ? [bound]
+        : [];
   const procedures = await selectProcedureSkills(tx, row, model, runtimeVersion);
   const context = await selectedContext(
     tx,

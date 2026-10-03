@@ -13,6 +13,7 @@ import type { Database } from '../db/client.ts';
 import { agent, job, space, spaceMembership } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { MELETE_AGENT } from '../experience/agents.ts';
 import { newId } from '../ids.ts';
 import { type JobRow, type JobService, roomRequestInput } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
@@ -42,25 +43,32 @@ export async function roomPrincipalOf(tx: Pick<Transaction, 'select'>, spaceId: 
   return row;
 }
 
-/** The room's agent: the first one the room has, or Melete, made the first time it is asked. */
+/**
+ * The room's agent: the room space's default agent, Melete, made the first
+ * time it is asked. It is the agent every space has, so the room and the
+ * space's own agent list name the same one; it is never deleted. It reaches
+ * what the room marks for its requests (see `jobs/scopes.ts`), so its own list
+ * of connections starts open.
+ */
 export async function roomAgentOf(tx: Transaction, spaceId: string) {
-  const [existing] = await tx
-    .select()
-    .from(agent)
-    .where(eq(agent.spaceId, spaceId))
-    .orderBy(asc(agent.createdAt), asc(agent.id))
-    .limit(1);
+  const find = () =>
+    tx
+      .select()
+      .from(agent)
+      .where(and(eq(agent.spaceId, spaceId), eq(agent.isDefault, true)))
+      .limit(1);
+  const [existing] = await find();
   if (existing) return existing;
   const [room] = await tx
     .select({ purpose: space.purpose })
     .from(space)
     .where(eq(space.id, spaceId));
-  const [made] = await tx
+  await tx
     .insert(agent)
     .values({
       id: newId('agent'),
       spaceId,
-      name: 'Melete',
+      name: MELETE_AGENT.name,
       role: 'Room agent',
       colour: '#7D8CDB',
       surface: 'rounded',
@@ -69,8 +77,11 @@ export async function roomAgentOf(tx: Transaction, spaceId: string) {
       standingInstruction: room?.purpose
         ? `This room is for: ${room.purpose}`
         : 'Help the people in this room with what they ask.',
+      allowedConnectionIds: null,
+      isDefault: true,
     })
-    .returning();
+    .onConflictDoNothing();
+  const [made] = await find();
   if (!made) throw new Error('Agent insert returned no row');
   return made;
 }

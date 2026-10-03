@@ -26,6 +26,9 @@ import { calendarManifest } from '../../src/connectors/calendar.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { loadEnv } from '../../src/env.ts';
+import { agentAccess } from '../../src/experience/access.ts';
+import { ExperienceService } from '../../src/experience/service.ts';
+import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
@@ -217,6 +220,21 @@ async function installCalendar(spaceId: string, sharedUse: 'owner' | 'room') {
       ${JSON.stringify(scopes)}::jsonb, ${sharedUse})`;
   registry.register(id, fixtureCalendar());
   return id;
+}
+/** An agent made in a space the way its owner makes one, or one already deleted. */
+async function addAgent(spaceId: string, name: string, deleted = false) {
+  const id = newId('agent');
+  await database().sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour,
+      tone, standing_instruction, created_at, deleted_at)
+    values (${id}, ${spaceId}, ${name}, 'Helper', '#2F5FD6', 'rounded', '#14275C', 'Plain',
+      ${`You are ${name}.`}, now() - interval '1 day',
+      case when ${deleted} then now() end)`;
+  return id;
+}
+async function turnAgent(jobId: string) {
+  const [row] = await database().sql`select agent_id from experience_turn where job_id = ${jobId}
+    order by created_at desc, id desc limit 1`;
+  return String(row?.agent_id ?? '');
 }
 /** Read a live stream until it ends, or give up after `ms`. */
 async function readUntilClosed(response: Response, ms: number) {
@@ -703,9 +721,24 @@ withDb('rooms', () => {
         '/quick-answers',
         '/actions',
         `/search?q=surprise`,
+        // Work, attention, activity and the rest of a person's own surfaces.
+        '/runs',
+        '/activity',
+        '/plans',
+        '/tasks',
+        '/automations',
+        '/agents',
+        '/approvals',
+        '/questions',
+        '/notifications',
+        '/waiting-on',
+        '/reply-obligations',
+        '/handoffs',
+        '/apps',
+        `/spaces/${roomId}/companies`,
       ]) {
         const response = await send(cookie, path);
-        expect([path, [200, 403].includes(response.status)]).toEqual([path, true]);
+        expect([path, [200, 403, 404].includes(response.status)]).toEqual([path, true]);
         const text = await response.text();
         expect([path, text.includes(request) || text.includes('Surprise planned')]).toEqual([
           path,
@@ -1015,6 +1048,68 @@ withDb('rooms', () => {
     ]);
   }, 60_000);
 
+  test("the room's agent is its space's own Melete, and a deleted agent never answers there", async () => {
+    const { sql, db } = database();
+    const roomId = await makeRoom('One agent');
+    // An agent made before the room's Melete and deleted since would come first by age.
+    const ghost = await addAgent(roomId, 'Ghost', true);
+    // The space's own agent list, as its owner reads it, names one Melete: the room's.
+    const listed = await principalContext.run(world.alice.id, () =>
+      new ExperienceService(db).agents(roomId),
+    );
+    const meletes = listed.agents.filter((agent) => agent.name === 'Melete');
+    expect(meletes.map((agent) => agent.is_default)).toEqual([true]);
+    const melete = meletes[0]?.id ?? '';
+    const detail = roomDetail.parse(await ok(send(world.bob.cookie, `/rooms/${roomId}`)));
+    expect(detail.room.agent_name).toBe('Melete');
+
+    const opened = await startThread(world.bob, roomId, '@Melete what is on today?');
+    const request = opened.request_job_id ?? '';
+    const [row] = await sql`select agent_id from job where id = ${request}`;
+    expect(row?.agent_id).toBe(melete);
+    // A request whose agent was deleted since is answered by the room's Melete.
+    await sql`update job set agent_id = ${ghost} where id = ${request}`;
+    await sql`update experience_turn set agent_id = ${ghost} where job_id = ${request}`;
+    expect((await agentAccess(sql, request)).agentId).toBe(melete);
+    const { bundle } = await claim(request);
+    expect(bundle.identity).toContain('In this room you are Melete');
+    expect(bundle.identity).not.toContain('Ghost');
+  }, 60_000);
+
+  test("naming one of the room's agents hands it that message, and only an agent the room can use", async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('Scouting');
+    const scout = await addAgent(roomId, 'Scout');
+    await addAgent(roomId, 'Ghost', true);
+    const [own] = await sql`select id from space where kind = 'personal'
+      and owner_principal_id = ${world.bob.id}`;
+    if (!own) throw new Error('Bob has no space of his own');
+    await addAgent(String(own.id), 'Keeper');
+    const [melete] = await sql`select id from agent where space_id = ${roomId} and is_default`;
+
+    // A member names Scout: that asks, and Scout answers the message.
+    const opened = await startThread(world.bob, roomId, '@Scout find the venue list');
+    const request = opened.request_job_id ?? '';
+    expect(request).not.toBe('');
+    expect(await turnAgent(request)).toBe(scout);
+    const first = await claim(request);
+    expect(first.bundle.identity).toContain('In this room you are Scout');
+    await database().runner.commitOutcome(first.claims, {
+      kind: 'completed',
+      summary: 'Three venues.',
+      evidence: [],
+    });
+    // The next message goes back to the room's agent, as in a person's own chat.
+    const next = await post(world.bob, roomId, opened.thread.id, 'And their prices?');
+    expect(next.request_job_id).toBe(request);
+    expect(await turnAgent(request)).toBe(String(melete?.id));
+    const [kept] = await sql`select agent_id from job where id = ${request}`;
+    expect(kept?.agent_id).toBe(String(melete?.id));
+    // A deleted agent, and an agent of someone's own space, are no one here.
+    for (const text of ['@Ghost are you there?', '@Keeper read my notes'])
+      expect((await startThread(world.bob, roomId, text)).request_job_id).toBeNull();
+  }, 60_000);
+
   test('a shared space made before rooms becomes a room with one room principal', async () => {
     const { sql } = database();
     // A shared space as it was before rooms: its owner's membership and nothing else.
@@ -1028,7 +1123,7 @@ withDb('rooms', () => {
       values (${files}, ${legacy}, 'files', 'Files', '["files.read"]'::jsonb,
         '{"builtin":"files"}'::jsonb)`;
     const migration = await readFile(
-      new URL('../../drizzle/0070_rooms.sql', import.meta.url),
+      new URL('../../drizzle/0088_rooms.sql', import.meta.url),
       'utf8',
     );
     const backfill = migration

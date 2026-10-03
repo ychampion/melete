@@ -38,6 +38,7 @@ import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { inConversation, withdrawPermissions } from '../jobs/withdraw.ts';
 import { ownJob, requestPrincipal, spaceAuthority } from '../principals/authority.ts';
+import { mentionedRoomAgent } from '../rooms/mentions.ts';
 import { AGENT_TEMPLATES, agentValues, agentView, MELETE_AGENT, mentionedAgent } from './agents.ts';
 import { answerStream } from './answer-filter.ts';
 import type { ExperienceEvents } from './events.ts';
@@ -132,16 +133,26 @@ export class ExperienceService {
           .select({ kind: space.kind, owner: space.ownerPrincipalId })
           .from(space)
           .where(eq(space.id, row.spaceId));
-        const mayHandOn = place?.kind !== 'shared' || (speaker !== null && speaker === place.owner);
-        const mentioned = mayHandOn
-          ? mentionedAgent(
-              text,
-              await tx
-                .select({ id: agent.id, name: agent.name })
-                .from(agent)
-                .where(and(eq(agent.spaceId, row.spaceId), isNull(agent.deletedAt))),
-            )
-          : null;
+        // A room's request is the room's: whoever asked it hands a message to
+        // any agent the room can use, which reaches only what the room marks.
+        const room = row.audience === 'room';
+        const mayHandOn =
+          room || place?.kind !== 'shared' || (speaker !== null && speaker === place.owner);
+        const usable = mayHandOn
+          ? await tx
+              .select({ id: agent.id, name: agent.name, isDefault: agent.isDefault })
+              .from(agent)
+              .where(and(eq(agent.spaceId, row.spaceId), isNull(agent.deletedAt)))
+          : [];
+        const mentioned = !mayHandOn
+          ? null
+          : room
+            ? mentionedRoomAgent(
+                text,
+                usable,
+                usable.find((candidate) => candidate.isDefault) ?? null,
+              )
+            : mentionedAgent(text, usable);
         const agentId = mentioned?.id ?? row.agentId;
         const turnId = newId('turn');
         const author = requestPrincipal() ?? row.principalId;
