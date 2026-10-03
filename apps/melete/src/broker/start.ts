@@ -10,6 +10,7 @@ import {
 } from '../connectors/configured.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { DatabaseHandle } from '../db/client.ts';
+import { bindEgressAdmission } from '../egress/credentials.ts';
 import { type Env, parseBrokerBind } from '../env.ts';
 import {
   chaseFollowUpPort,
@@ -28,6 +29,7 @@ import type { PrivacyRouter } from '../privacy/router.ts';
 import type { BrowserSessionService } from '../workers/browser/routes.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
 import type { ComposeExecutor } from './compose.ts';
+import { egressAdmission } from './egress-admission.ts';
 import { createInternalServer } from './internal-server.ts';
 import { configuredReviewGateway } from './review-gateway.ts';
 import type { BrokerOptions, BrokerService } from './service.ts';
@@ -151,6 +153,8 @@ export async function startEffectBoundary(
       },
     });
     await internal.broker.recoverDispatched();
+    // Changes a command makes with a connected account are admitted by this broker.
+    const unbindEgress = bindEgressAdmission(egressAdmission(internal.broker));
     await new Promise<void>((resolve, reject) => {
       internal.server.once('error', reject);
       internal.server.listen(port, hostname, resolve);
@@ -174,6 +178,7 @@ export async function startEffectBoundary(
       registry,
       close: async () => {
         clearInterval(recovery);
+        unbindEgress();
         await new Promise<void>((resolve) => internal.server.close(() => resolve()));
         try {
           await activeQueue.stop();

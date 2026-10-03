@@ -14,6 +14,11 @@
  * paused sandbox can appear on a closed row and on the live row after it. For
  * a `paused` row, `lease_expires_at` is when it was suspended: its lease ended
  * then, and retention counts from it.
+ *
+ * A `ready` workspace is held either by the attempt that opened it or, once
+ * that attempt has ended, by the background processes still running in it
+ * (`held_by = 'processes'`, `attempt_id` null). Held by processes, it is kept
+ * running until they end, and the next attempt for the agent takes it over.
  */
 
 import type { ProcessState } from '@melete/contracts';
@@ -22,11 +27,13 @@ import {
   bigint,
   boolean,
   check,
+  date,
   doublePrecision,
   index,
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -36,6 +43,8 @@ import type { SessionPersistence } from './manifest.ts';
 import type { EgressPolicy } from './types.ts';
 
 export type SessionStatus = 'opening' | 'ready' | 'paused' | 'closing' | 'closed' | 'lost';
+/** What keeps a ready session: its attempt, or the processes left running after it. */
+export type SessionHolder = 'attempt' | 'processes';
 
 export const sandboxSession = pgTable(
   'sandbox_session',
@@ -65,6 +74,8 @@ export const sandboxSession = pgTable(
     secondsCharged: doublePrecision('seconds_charged'),
     budgetLedgerId: text('budget_ledger_id'),
     lastError: text('last_error'),
+    /** Null on rows written before processes could hold a computer: the attempt. */
+    heldBy: text('held_by').$type<SessionHolder>(),
   },
   (t) => [
     uniqueIndex('sandbox_session_provider_idx')
@@ -84,6 +95,10 @@ export const sandboxSession = pgTable(
     check(
       'sandbox_session_persistence_check',
       sql`${t.persistence} in ('ephemeral', 'pause', 'snapshot')`,
+    ),
+    check(
+      'sandbox_session_held_by_check',
+      sql`${t.heldBy} is null or ${t.heldBy} in ('attempt', 'processes')`,
     ),
   ],
 );
@@ -158,4 +173,22 @@ export const sandboxProcess = pgTable(
       sql`${t.state} in ('starting', 'running', 'exited', 'stopped', 'expired', 'lost')`,
     ),
   ],
+);
+
+/**
+ * How long each day a space's computers were kept running by their processes
+ * alone, after the attempts that used them ended: the time metered onto
+ * sessions while `held_by = 'processes'`, in seconds, by UTC day. Every
+ * provider counts, so the daily allowance is one number per space.
+ */
+export const sandboxAwakeDay = pgTable(
+  'sandbox_awake_day',
+  {
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    day: date('day', { mode: 'string' }).notNull(),
+    seconds: doublePrecision('seconds').notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.spaceId, t.day] })],
 );

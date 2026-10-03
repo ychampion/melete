@@ -17,6 +17,15 @@
  * the scheduler that already owns retries. A workspace nobody resumes within
  * the retention period is destroyed by the sweep, snapshot included.
  *
+ * Background processes change one thing. A workspace whose processes still
+ * run when its attempt ends is not suspended: the row stays `ready` with no
+ * attempt and `held_by = 'processes'`, and the sweep keeps its lease while
+ * any of them lives. Control stays exclusive, since the next attempt for the
+ * agent takes the running workspace over on a new row instead of resuming
+ * it; only occupancy is shared. The time a workspace is held this way is
+ * metered into the space's awake time for the day, which the process caps
+ * read. Once nothing runs in it, it is suspended as usual.
+ *
  * Sandbox time is always metered onto the row. A cap is optional and belongs
  * to the job: when one is given and the job has used it, opening another
  * session is refused. Nothing here ever stops a sandbox or a command because
@@ -26,7 +35,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { recordId } from '../broker/records.ts';
 import { type ComputerControls, computerControls } from './computer-control.ts';
 import { checkSpec, LABEL_SESSION, SandboxRefusal, type SessionPersistence } from './manifest.ts';
-import type { SessionStatus } from './schema.ts';
+import type { SessionHolder, SessionStatus } from './schema.ts';
 import {
   type EgressPolicy,
   SandboxGone,
@@ -61,6 +70,8 @@ export type SessionRow = {
   secondsCharged: number | null;
   budgetLedgerId: string | null;
   lastError: string | null;
+  /** Null on rows from before processes could hold a computer: the attempt. */
+  heldBy: SessionHolder | null;
 };
 
 export type OpenSession = {
@@ -147,6 +158,7 @@ const toRow = (row: Row): SessionRow => ({
   secondsCharged: row.seconds_charged === null ? null : Number(row.seconds_charged),
   budgetLedgerId: (row.budget_ledger_id as string | null) ?? null,
   lastError: (row.last_error as string | null) ?? null,
+  heldBy: (row.held_by as SessionHolder | null) ?? null,
 });
 
 export const sessionHandle = (row: SessionRow): SandboxHandle => ({
@@ -192,6 +204,48 @@ const egressKey = (policy: EgressPolicy) =>
 
 const BUSY =
   'another attempt is using this agent’s workspace; it is not shared, and this attempt is refused rather than kept waiting';
+
+const PERSON_BUSY =
+  'a person has taken over this agent’s computer; it is theirs until they hand it back, and this attempt is refused';
+
+const DAY_MS = 86_400_000;
+
+/** Seconds between two instants, split at each UTC midnight, keyed by day. */
+export function secondsByDay(from: number, to: number): Map<string, number> {
+  const days = new Map<string, number>();
+  let at = from;
+  while (to > at) {
+    const end = Math.min(to, at - (at % DAY_MS) + DAY_MS);
+    const day = new Date(at).toISOString().slice(0, 10);
+    days.set(day, (days.get(day) ?? 0) + (end - at) / 1000);
+    at = end;
+  }
+  return days;
+}
+
+/**
+ * A space's awake time today (UTC), in seconds: what was metered from its
+ * held workspaces, and what those still held have run since they were last
+ * metered.
+ */
+export async function awakeSecondsToday(sql: Query, spaceId: string): Promise<number> {
+  const [row] = await sql`select
+      coalesce((select seconds from sandbox_awake_day
+        where space_id = ${spaceId} and day = (now() at time zone 'utc')::date), 0)
+      + coalesce((select sum(greatest(0, extract(epoch from now()
+            - greatest(opened_at + make_interval(secs => coalesce(seconds_charged, 0)),
+                date_trunc('day', now() at time zone 'utc') at time zone 'utc'))))
+          from sandbox_session
+          where space_id = ${spaceId} and status = 'ready' and held_by = 'processes'), 0)
+      as seconds`;
+  return Number(row?.seconds ?? 0);
+}
+
+/** Live background processes in the computer a session row is. */
+const liveProcesses = (sql: Query) => sql`exists (select 1 from sandbox_process p
+    where p.space_id = sandbox_session.space_id and p.agent_id = sandbox_session.agent_id
+      and p.connection_id = sandbox_session.connection_id
+      and p.state in ('starting', 'running'))`;
 
 /**
  * A session whose attempt is no longer alive: the attempt ended, its lease ran
@@ -244,6 +298,11 @@ async function usedSeconds(tx: Query, jobId: string): Promise<number> {
 export class SandboxSessions {
   private readonly ids: () => string;
   private readonly controls: ComputerControls;
+
+  /** How long a lease runs, in seconds. */
+  get leaseSeconds(): number {
+    return this.options.leaseSeconds;
+  }
 
   constructor(
     private readonly sql: Sql,
@@ -330,14 +389,23 @@ export class SandboxSessions {
    * count and passing. The lock is the installation's, which is what the
    * ceiling belongs to; a connection's own allowance is counted under it too.
    */
-  private async checkConcurrency(tx: TransactionSql, input: OpenSession) {
+  private async checkConcurrency(tx: TransactionSql, input: OpenSession, takesOver = false) {
     const limit = input.concurrency;
     if (!limit || (!Number.isFinite(limit.perConnection) && !Number.isFinite(limit.installation)))
       return;
     await tx`select pg_advisory_xact_lock(hashtext('sandbox-open'))`;
+    // A computer its processes keep running is running, so it counts. The one
+    // this opening would take over is not counted: taking it over starts
+    // nothing new.
     const [counted] = await tx`select count(*)::int as live,
         count(*) filter (where connection_id = ${input.connectionId})::int as own
-      from sandbox_session where status in ('opening', 'ready')`;
+      from sandbox_session where status in ('opening', 'ready')
+        ${
+          takesOver && input.agentId
+            ? tx`and not (held_by is not distinct from 'processes' and space_id = ${input.spaceId}
+                and agent_id = ${input.agentId} and connection_id = ${input.connectionId})`
+            : tx``
+        }`;
     const live = Number(counted?.live ?? 0);
     const mine = Number(counted?.own ?? 0);
     // The connection's own first: it names the account that is full.
@@ -470,37 +538,55 @@ export class SandboxSessions {
   ): Promise<WorkspaceSession> {
     const { id, spec, cap } = this.prepare(input, provider, specFor, input.persistence);
     let suspended: SessionRow | null = null;
+    let adopted: SessionRow | null = null;
     try {
       await this.sql.begin(async (tx) => {
         await this.checkConnection(tx, input);
         await this.checkCap(tx, input, cap);
         // Before the workspace lock, and in that order in both paths: two locks
         // taken in opposite orders by two openings would deadlock.
-        await this.checkConcurrency(tx, input);
+        await this.checkConcurrency(tx, input, true);
         await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-workspace:${input.spaceId}:${input.agentId}`}))`;
         const live = (
           await tx`select * from sandbox_session
             where space_id = ${input.spaceId} and agent_id = ${input.agentId}
               and status in ('opening', 'ready', 'paused')`
         ).map(toRow);
-        if (live.some((row) => row.status !== 'paused'))
+        // Kept running by its processes, with no attempt: taken over, not busy.
+        const held = live.find(
+          (row) => row.status === 'ready' && row.heldBy === 'processes' && row.attemptId === null,
+        );
+        if (live.some((row) => row.status !== 'paused' && row !== held))
           throw new SandboxRefusal('workspace_busy', BUSY);
-        const paused = live[0] ?? null;
-        if (paused) {
+        const kept = held ?? live[0] ?? null;
+        if (kept) {
           if (
-            paused.adapter !== provider.capabilities.adapter ||
-            paused.persistence !== input.persistence ||
-            !paused.resumeRef
+            kept.adapter !== provider.capabilities.adapter ||
+            kept.persistence !== input.persistence ||
+            (held ? held.connectionId !== input.connectionId : !kept.resumeRef)
           )
             throw new SandboxRefusal(
               'workspace_incompatible',
-              `this agent's workspace is a ${paused.persistence} workspace on ${paused.adapter}; destroy it to open another kind`,
+              `this agent's workspace is a ${kept.persistence} workspace on ${kept.adapter}; destroy it to open another kind`,
             );
-          if (egressKey(paused.egressPolicy) !== egressKey(spec.egress))
+          if (egressKey(kept.egressPolicy) !== egressKey(spec.egress))
             throw new SandboxRefusal(
               'workspace_incompatible',
               "this agent's workspace was created under a different egress policy; destroy it to change the policy",
             );
+        }
+        if (held) {
+          // A person who took the computer over keeps it until they hand it
+          // back: no attempt is given it meanwhile.
+          if (this.heldByPerson(held.providerSandboxId))
+            throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
+          // Running, with its processes in it: taken over as it is, on a new
+          // row, so nothing is paused or resumed under them.
+          adopted = await this.takeOver(tx, held, id, input);
+          return;
+        }
+        const paused = kept;
+        if (paused) {
           // Closed first: the attempt that suspended it may be the one resuming it.
           await tx`update sandbox_session set status = 'closed', closed_at = now()
             where id = ${paused.id} and status = 'paused'`;
@@ -519,9 +605,185 @@ export class SandboxSessions {
     } catch (error) {
       throw this.refusalFor(error);
     }
+    const taken = adopted as SessionRow | null;
+    if (taken) return { ...taken, resumed: true };
     const from = suspended as SessionRow | null;
     if (!from) return { ...(await this.create(id, provider, spec, signal)), resumed: false };
     return { ...(await this.resume(id, from, provider, spec, signal)), resumed: true };
+  }
+
+  /**
+   * Hand a workspace its processes kept running to the attempt opening it:
+   * the held row's time is metered and the row closed, and a new `ready` row
+   * for this attempt takes over the same sandbox, in one transaction.
+   */
+  private async takeOver(
+    tx: TransactionSql,
+    held: SessionRow,
+    id: string,
+    input: OpenWorkspace,
+  ): Promise<SessionRow> {
+    await this.meterHeld(tx, held.id);
+    const [closed] = await tx`update sandbox_session set status = 'closed', closed_at = now(),
+        held_by = null, seconds_charged = extract(epoch from now() - opened_at)
+      where id = ${held.id} and status = 'ready' and held_by = 'processes' and attempt_id is null
+      returning id`;
+    if (!closed) throw new SandboxRefusal('workspace_busy', BUSY);
+    const [row] = await tx`insert into sandbox_session (id, connection_id, space_id, job_id,
+        attempt_id, agent_id, adapter, provider_sandbox_id, image_ref, image_digest, region,
+        egress_policy, persistence, resume_ref, status, lease_expires_at, held_by)
+      values (${id}, ${input.connectionId}, ${input.spaceId}, ${input.jobId}, ${input.attemptId},
+        ${input.agentId}, ${held.adapter}, ${held.providerSandboxId}, ${held.imageRef},
+        ${held.imageDigest}, ${held.region}, ${JSON.stringify(held.egressPolicy)}::jsonb,
+        ${held.persistence}, ${held.resumeRef}, 'ready',
+        now() + make_interval(secs => ${this.options.leaseSeconds}), 'attempt')
+      returning *`;
+    if (!row) throw new Error('the workspace was not taken over');
+    return toRow(row);
+  }
+
+  /**
+   * Add the time a held row has been held since it was last metered to its
+   * space's awake time, by UTC day, and meter the row up to now. Inside the
+   * caller's transaction and under a lock on the row, so no two meters count
+   * the same time.
+   */
+  private async meterHeld(tx: Query, id: string): Promise<void> {
+    const [row] = await tx`select space_id, opened_at, coalesce(seconds_charged, 0) as charged,
+        now() as now
+      from sandbox_session
+      where id = ${id} and status = 'ready' and held_by = 'processes'
+      for update`;
+    if (!row) return;
+    const from = toDate(row.opened_at).getTime() + Number(row.charged) * 1000;
+    const to = toDate(row.now).getTime();
+    for (const [day, seconds] of secondsByDay(from, to))
+      await tx`insert into sandbox_awake_day (space_id, day, seconds)
+        values (${row.space_id as string}, ${day}, ${seconds})
+        on conflict (space_id, day)
+          do update set seconds = sandbox_awake_day.seconds + excluded.seconds`;
+    await tx`update sandbox_session set seconds_charged = extract(epoch from now() - opened_at)
+      where id = ${id}`;
+  }
+
+  /** Whether background processes still run in the computer this row is. */
+  async hasLiveProcesses(id: string): Promise<boolean> {
+    const [row] = await this.sql`select ${liveProcesses(this.sql)} as live
+      from sandbox_session where id = ${id}`;
+    return row?.live === true;
+  }
+
+  /**
+   * At the end of its attempt, keep a workspace running for the processes
+   * still in it instead of suspending it: the attempt lets go, and the
+   * processes hold it. Returns the row, or null when it is not a ready
+   * workspace of this attempt with live processes. A null attempt is the
+   * sweep's: whatever attempt the row names, it is gone.
+   */
+  async holdForProcesses(id: string, attemptId: string | null): Promise<SessionRow | null> {
+    const [row] = await this.sql`update sandbox_session set attempt_id = null,
+        held_by = 'processes',
+        lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds}),
+        seconds_charged = extract(epoch from now() - opened_at)
+      where id = ${id} and status = 'ready' and held_by is distinct from 'processes'
+        and ${attemptId === null ? this.sql`true` : this.sql`attempt_id = ${attemptId}`}
+        and agent_id is not null and persistence <> 'ephemeral'
+        and ${liveProcesses(this.sql)}
+      returning *`;
+    return row ? toRow(row) : null;
+  }
+
+  /**
+   * Every workspace its processes hold: the time since each was last metered
+   * goes to its space's awake time, and its lease is kept while a process
+   * lives in it. One where nothing lives any more is suspended, as its
+   * attempt's end would have done. A provider that ends a sandbox on its own
+   * timer is asked to keep it for another two leases. Returns what was
+   * suspended.
+   */
+  async keepAwake(providerFor: ProviderFor, signal: AbortSignal): Promise<string[]> {
+    const held = (
+      await this.sql`select *, ${liveProcesses(this.sql)} as live from sandbox_session
+        where status = 'ready' and held_by = 'processes'
+        order by lease_expires_at limit 200`
+    ).map((raw) => ({ row: toRow(raw), live: raw.live === true }));
+    const released: string[] = [];
+    for (const { row, live } of held) {
+      if (signal.aborted) break;
+      // A person driving it keeps it, as they would any computer they took
+      // over: its lease is kept and it is not suspended under them, and the
+      // time is theirs rather than the processes'.
+      if (this.heldByPerson(row.providerSandboxId)) {
+        await this.sql`update sandbox_session
+          set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds}),
+            seconds_charged = extract(epoch from now() - opened_at)
+          where id = ${row.id} and status = 'ready' and held_by = 'processes'`;
+        continue;
+      }
+      const provider = await this.reachable(row, providerFor);
+      // A computer the provider no longer has is lost, not held: it holds no
+      // place and uses no awake time from here on.
+      const where = provider
+        ? await provider.inspect(sessionHandle(row), signal).catch(() => null)
+        : null;
+      if (where === 'gone') {
+        await markSessionLost(
+          this.sql,
+          row.id,
+          `the provider no longer has this computer, which its processes were keeping running`,
+          'ready',
+        );
+        continue;
+      }
+      await this.sql.begin((tx) => this.meterHeld(tx, row.id));
+      if (live) {
+        await this.sql`update sandbox_session
+          set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds})
+          where id = ${row.id} and status = 'ready' and held_by = 'processes'`;
+        if (!provider?.keepAlive) continue;
+        try {
+          await provider.keepAlive(sessionHandle(row), this.options.leaseSeconds * 2, signal);
+        } catch (error) {
+          if (error instanceof SandboxGone) {
+            await markSessionLost(
+              this.sql,
+              row.id,
+              `the provider no longer has this computer: ${message(error)}`,
+              'ready',
+            );
+            continue;
+          }
+          await this.sql`update sandbox_session
+            set last_error = ${`the computer could not be kept running for its processes: ${message(error)}`}
+            where id = ${row.id}`;
+        }
+        continue;
+      }
+      if (!provider) continue;
+      try {
+        await this.suspendWorkspace(row.id, provider, signal);
+        released.push(row.id);
+      } catch {
+        // Recorded on the row; the lease sweep holds or suspends it again.
+      }
+    }
+    return released;
+  }
+
+  /**
+   * The sandboxes of one adapter that live background processes keep awake,
+   * read from the process records: a provider that stops idle sandboxes
+   * itself must not stop these.
+   */
+  async awakeSandboxes(adapter: string): Promise<Set<string>> {
+    const rows = await this.sql`select provider_sandbox_id from sandbox_session
+      where adapter = ${adapter} and status in ('opening', 'ready', 'paused')
+        and agent_id is not null and ${liveProcesses(this.sql)}`;
+    return new Set(rows.map((row) => String(row.provider_sandbox_id)));
+  }
+
+  awakeSecondsToday(spaceId: string): Promise<number> {
+    return awakeSecondsToday(this.sql, spaceId);
   }
 
   private async resume(
@@ -630,9 +892,14 @@ export class SandboxSessions {
     provider: SandboxProvider,
     signal: AbortSignal,
   ): Promise<SessionRow> {
-    // The lease is renewed first, so the sweep does not take the row meanwhile.
+    // Time its processes held it is counted before it stops.
+    await this.sql.begin((tx) => this.meterHeld(tx, id));
+    // The lease is renewed first, so the sweep does not take the row meanwhile,
+    // and the processes let go in the same statement: a row being suspended
+    // is busy, never handed to an attempt while its sandbox pauses.
     const [claimed] = await this.sql`update sandbox_session
-      set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds})
+      set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds}),
+        held_by = case when held_by = 'processes' then null else held_by end
       where id = ${id} and status = 'ready' and agent_id is not null
         and persistence in ('pause', 'snapshot')
       returning *`;
@@ -690,7 +957,7 @@ export class SandboxSessions {
   private async markSuspended(id: string, resumeRef: string, note: string | null) {
     const [row] = await this.sql`update sandbox_session set status = 'paused',
         resume_ref = ${resumeRef}, seconds_charged = extract(epoch from now() - opened_at),
-        lease_expires_at = now(), last_error = ${note}
+        lease_expires_at = now(), last_error = ${note}, held_by = null
       where id = ${id} and status = 'ready'
       returning *`;
     if (row) return toRow(row);
@@ -711,6 +978,7 @@ export class SandboxSessions {
       set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds}),
         seconds_charged = extract(epoch from now() - opened_at)
       where id = ${id} and status in ('opening', 'ready') and job_id is not null
+        and held_by is distinct from 'processes'
       returning *`;
     return row ? toRow(row) : null;
   }
@@ -950,6 +1218,9 @@ export class SandboxSessions {
     // would have run out: nothing is left to use it, and while it stays live
     // the agent's workspace is refused to every other attempt.
     if (!only) await this.expireOrphaned();
+    // A workspace its processes hold is kept, or suspended once they end,
+    // here and nowhere else: its lease is theirs, not an attempt's.
+    if (!only) await this.keepAwake(providerFor, signal);
     // A session whose job was removed is taken now rather than when its lease
     // runs out: no attempt is left to use it, and its time counts against no
     // job's cap.
@@ -957,6 +1228,7 @@ export class SandboxSessions {
       await this.sql`select * from sandbox_session
         where status in ('opening', 'ready', 'closing')
           and (lease_expires_at < now() or job_id is null)
+          and held_by is distinct from 'processes'
           ${only ? this.sql`and id in ${this.sql(only)}` : this.sql``}
         order by lease_expires_at limit 100`
     ).map(toRow);
@@ -965,6 +1237,10 @@ export class SandboxSessions {
       if (!provider) continue;
       const workspace = candidate.agentId !== null && candidate.persistence !== 'ephemeral';
       if (workspace && candidate.status === 'ready') {
+        // An attempt that ended without settling its computer (the service
+        // stopped, say) leaves its processes to hold it, as its end would have.
+        if (provider.capabilities.keepAwake && (await this.holdForProcesses(candidate.id, null)))
+          continue;
         // A workspace outlives its attempt: it is suspended, not destroyed.
         await this.suspendWorkspace(candidate.id, provider, signal).catch(() => {
           // Recorded on the row, which keeps running; the next sweep tries again.

@@ -1,0 +1,148 @@
+# Written by hand from the git, Git LFS and GitHub API documentation: request shapes the recorded
+# corpus does not cover. A label is what the request does, not what is convenient.
+### read base64
+POST https://github.com/alice/site.git/git-receive-pack
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+
+MDAwMA==
+
+### write base64
+POST https://github.com/alice/site.git/git-receive-pack
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+
+MDAyYnB1c2gtY2VydAAgcmVwb3J0LXN0YXR1cyBzaWRlLWJhbmQtNjRrCjAwMWNjZXJ0aWZpY2F0ZSB2ZXJzaW9uIDAuMQowMDJlcHVzaGVyIEEgPGFAZXhhbXBsZS5jb20+IDE3OTAwMDAwMDAgKzAwMDAKMDAwNQowMDY2ZWY1ZTYzY2Q4MDhlZGRiZTlmYWQ4MWY4NWIxNTM0MTE4ODA5M2IxYiA3M2NkOTExYjU2MjZkZGJmOGFiZDcyN2FjOTM2NDJmMTgyNWNjM2UyIHJlZnMvaGVhZHMvbWFpbgowMDEycHVzaC1jZXJ0LWVuZAowMDAwUEFDSw==
+
+### write base64
+POST https://github.com/alice/site.git/git-receive-pack
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+
+MDAzNHNoYWxsb3cgZWY1ZTYzY2Q4MDhlZGRiZTlmYWQ4MWY4NWIxNTM0MTE4ODA5M2IxYjAwODJlZjVlNjNjZDgwOGVkZGJlOWZhZDgxZjg1YjE1MzQxMTg4MDkzYjFiIDczY2Q5MTFiNTYyNmRkYmY4YWJkNzI3YWM5MzY0MmYxODI1Y2MzZTIgcmVmcy9oZWFkcy9tYWluACByZXBvcnQtc3RhdHVzIHNpZGUtYmFuZC02NGswMDAwUEFDSw==
+
+### write base64
+POST https://github.com/alice/site.git/git-receive-pack
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+content-encoding: gzip
+
+H4sIAAAAAAAACgXByxFCIQwAQEuhAeclhE84Oh692EJCwujBzwD27y5ATT6yF+rGwG6m3oYY4+CsmCkhMkMjRQ2VujVEzSUWMx0sajVW6Y1KigM55t7JY5g+1vFwsXW85Pk+henfz9zntWX/FgDA/XK9/QFvlXA1fAAAAA==
+
+### write
+POST https://github.com/alice/site.git/info/lfs/objects/batch
+accept: application/vnd.git-lfs+json
+content-type: application/vnd.git-lfs+json
+
+{"operation":"upload","transfers":["basic"],"ref":{"name":"refs/heads/main"},"objects":[{"oid":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","size":12}],"hash_algo":"sha256"}
+
+### read
+POST https://github.com/alice/site.git/info/lfs/objects/batch
+accept: application/vnd.git-lfs+json
+content-type: application/vnd.git-lfs+json
+
+{"operation":"download","transfers":["basic"],"objects":[{"oid":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","size":12}]}
+
+### write
+POST https://github.com/alice/site.git/info/lfs/locks
+accept: application/vnd.git-lfs+json
+content-type: application/vnd.git-lfs+json
+
+{"path":"assets/logo.psd","ref":{"name":"refs/heads/main"}}
+
+### read
+POST https://github.com/alice/site.git/info/lfs/locks/verify
+accept: application/vnd.git-lfs+json
+content-type: application/vnd.git-lfs+json
+
+{"ref":{"name":"refs/heads/main"}}
+
+### write
+POST https://github.com/alice/site/../mallory/site.git/git-upload-pack
+content-type: application/x-git-upload-pack-request
+
+0000
+
+### read
+GET https://raw.githubusercontent.com/alice/site/main/README.md
+accept: */*
+
+### read
+GET https://codeload.github.com/alice/site/tar.gz/refs/heads/main
+accept: */*
+
+### refuse
+POST https://uploads.github.com/repos/alice/site/releases/9/assets?name=site.tar.gz
+content-type: application/gzip
+
+not really a tarball
+
+### refuse
+PUT https://raw.githubusercontent.com/alice/site/main/README.md
+content-type: text/plain
+
+overwritten
+
+### read
+POST https://api.github.com/graphql
+content-type: application/json
+
+{"query":"{ viewer { login } }"}
+
+### write
+POST https://api.github.com/graphql
+content-type: application/json
+
+{"query":"mutation { addStar(input: {starrableId: \"R_1\"}) { clientMutationId } }"}
+
+### write
+POST https://api.github.com/graphql
+content-type: application/json
+
+{"query":"query Read { viewer { login } } mutation Change { deleteRef(input: {refId: \"REF_1\"}) { clientMutationId } }","operationName":"Read"}
+
+### write
+POST https://api.github.com/graphql
+content-type: application/json
+
+{"query":"subscription { issueChanged { id } }"}
+
+### write
+POST https://api.github.com/graphql
+content-type: application/json
+
+{"query":"mutation { this is not graphql"}
+
+### write
+POST https://api.github.com/graphql
+content-type: application/json
+
+[{"query":"{ viewer { login } }"},{"query":"mutation { deleteRef(input: {refId: \"REF_1\"}) { clientMutationId } }"}]
+
+### write
+GET https://api.github.com/graphql?query=mutation%20%7B%20deleteRef(input%3A%20%7BrefId%3A%20%22REF_1%22%7D)%20%7B%20clientMutationId%20%7D%20%7D
+accept: application/json
+
+### read
+GET https://api.github.com/repos/alice/site/pulls?state=open
+accept: application/vnd.github+json
+
+### read
+HEAD https://api.github.com/repos/alice/site
+accept: application/vnd.github+json
+
+### write
+POST https://api.github.com/repos/alice/site/hooks
+content-type: application/json
+
+{"name":"web","config":{"url":"https://example.com/hook"}}
+
+### write
+OPTIONS https://api.github.com/repos/alice/site
+accept: */*
+
+### write
+PATCH https://api.github.com/repos/alice/site/git/refs/heads/main
+content-type: application/json
+
+{"sha":"73cd911b5626ddbf8abd727ac93642f1825cc3e2","force":true}

@@ -195,6 +195,18 @@ export function createE2bStandin(
         expireIn(sandbox, null);
         return json(204);
       }
+      if (parts[2] === 'timeout' && method === 'POST') {
+        const body = JSON.parse(new TextDecoder().decode(bodyBytes(init.body)) || '{}') as {
+          timeout?: unknown;
+        };
+        if (typeof body.timeout !== 'number')
+          return json(400, { code: 400, message: 'timeout is required' });
+        // A new timeout counted from now, within the continuous-runtime window.
+        const begun = windows.get(sandbox.id) ?? Date.now();
+        const left = maxContinuous - (Date.now() - begun) / 1000;
+        expireIn(sandbox, Math.max(0, Math.min(body.timeout, left)));
+        return json(204);
+      }
       if (parts[2] === 'connect' && method === 'POST') {
         const body = JSON.parse(new TextDecoder().decode(bodyBytes(init.body)) || '{}') as {
           timeout?: unknown;

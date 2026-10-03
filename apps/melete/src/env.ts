@@ -496,8 +496,9 @@ const variables = z.object({
   ),
   /**
    * How long a space's background processes may keep its computers running
-   * in one day (UTC). Past it they are stopped and new ones refused until
-   * the next day.
+   * in one day (UTC), after the turns that used them ended, added up over its
+   * computers. Past it they are stopped and new ones refused until the next
+   * day.
    */
   MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY: unsetWhenBlank(
     z.coerce.number().int().positive().default(PROCESS_LIMITS.awake_seconds_per_day),
@@ -613,6 +614,25 @@ const variables = z.object({
   ),
   /** How many days the record of where each computer connected is kept. */
   MELETE_EGRESS_RECORD_DAYS: unsetWhenBlank(z.coerce.number().int().min(1).max(3650).default(30)),
+  /**
+   * The largest change from the command line the egress relay holds while it
+   * asks for approval. A larger one is refused with a plain message.
+   */
+  MELETE_EGRESS_HOLD_MAX_BYTES: unsetWhenBlank(
+    z.coerce
+      .number()
+      .int()
+      .min(1024 * 1024)
+      .max(512 * 1024 * 1024)
+      .default(64 * 1024 * 1024),
+  ),
+  /**
+   * How long a change from the command line waits inside its command for an
+   * answer, always ending at least ten seconds before the command's own time.
+   */
+  MELETE_EGRESS_APPROVAL_HOLD_SECONDS: unsetWhenBlank(
+    z.coerce.number().int().min(0).max(600).default(90),
+  ),
 });
 
 /**

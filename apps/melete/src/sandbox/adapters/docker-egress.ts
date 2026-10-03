@@ -32,6 +32,14 @@ import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { connect, isIP, type Socket } from 'node:net';
 import { publicPin, type ResolvedAddress, resolveHost } from '../../connectors/web.ts';
+import type { EgressCredentialPort } from '../../egress/credentials.ts';
+import {
+  type BodyBudget,
+  DEFAULT_HOLD_MAX_BYTES,
+  type InterceptOptions,
+  interceptTunnel,
+  MAX_HELD_PER_COMPUTER,
+} from '../../egress/intercept.ts';
 import type { EgressRecordSink } from '../../egress/records.ts';
 import {
   type EgressAttribution,
@@ -59,6 +67,14 @@ export type SandboxEgressOptions = {
   /** Records one computer may add per minute before the rest are counted on one record. */
   recordsPerMinute?: number;
   now?: () => number;
+  /**
+   * Connected command-line accounts. With one for a command's space and host,
+   * the tunnel is terminated and each request checked and credentialed (see
+   * egress/intercept.ts); without, every tunnel stays blind.
+   */
+  credentials?: EgressCredentialPort;
+  /** Limits and test routes for terminated tunnels. */
+  intercept?: InterceptOptions;
 };
 
 /** How long a record budget lasts, and how often coalesced counts are written. */
@@ -133,6 +149,10 @@ type Grant = {
   space: string | null;
   tunnels: Set<() => void>;
   records: RecordWindow;
+  /** Requests of this computer held for an answer right now. */
+  held: { count: number };
+  /** Request-body bytes of this computer in memory right now. */
+  bodies: BodyBudget;
 };
 
 export type SandboxEgressGrantOptions = {
@@ -155,11 +175,19 @@ export class SandboxEgressGuard {
   private listening?: Promise<number>;
   /** The tokens of commands running in granted computers. */
   readonly tokens = new EgressTokens();
+  /** Request-body bytes every computer together has in memory right now. */
+  private readonly bodies: BodyBudget;
   private readonly now: () => number;
   private readonly flusher: ReturnType<typeof setInterval>;
 
   constructor(private readonly options: SandboxEgressOptions = {}) {
     this.now = options.now ?? Date.now;
+    this.bodies = {
+      used: 0,
+      max:
+        options.intercept?.globalBodyBytes ??
+        4 * MAX_HELD_PER_COMPUTER * (options.intercept?.holdMaxBytes ?? DEFAULT_HOLD_MAX_BYTES),
+    };
     this.flusher = setInterval(() => this.flushRecords(), RECORD_FLUSH_MS);
     this.flusher.unref?.();
     this.resolve = options.resolve ?? resolveHost;
@@ -212,6 +240,13 @@ export class SandboxEgressGuard {
       space: options.space ?? null,
       tunnels: new Set(),
       records: this.freshWindow(),
+      held: { count: 0 },
+      bodies: {
+        used: 0,
+        max:
+          this.options.intercept?.computerBodyBytes ??
+          MAX_HELD_PER_COMPUTER * (this.options.intercept?.holdMaxBytes ?? DEFAULT_HOLD_MAX_BYTES),
+      },
     });
   }
 
@@ -229,6 +264,12 @@ export class SandboxEgressGuard {
   /** Writes the counts that grew since they were last written. */
   flushRecords(): void {
     for (const grant of this.grants.values()) this.flushWindow(grant.records);
+  }
+
+  /** The space a granted computer belongs to, or null. */
+  spaceOf(sandbox: string): string | null {
+    for (const grant of this.grants.values()) if (grant.sandbox === sandbox) return grant.space;
+    return null;
   }
 
   granted(sandbox: string): string[] {
@@ -406,6 +447,93 @@ export class SandboxEgressGuard {
     this.recordRefusal(found.grant, found.token, host, port, 'https_only');
   }
 
+  /** A terminated tunnel: counted and recorded like a blind one, with its reads and writes. */
+  private async credentialed(
+    client: Socket,
+    head: Buffer,
+    input: {
+      grant: Grant;
+      token: EgressTokenEntry;
+      host: string;
+      pinned: ResolvedAddress;
+      counters: EgressHostCounters | null;
+      record: string | null;
+      port: EgressCredentialPort;
+    },
+  ) {
+    const { grant, token, counters } = input;
+    if (counters) counters.credentialed = true;
+    let bytesUp = 0;
+    let bytesDown = 0;
+    let reads = 0;
+    let writes = 0;
+    const written: string[] = [];
+    let closed = false;
+    let stop: (() => void) | undefined;
+    const release = () => {
+      grant.tunnels.delete(release);
+      token.ended.delete(release);
+      stop?.();
+      client.destroy();
+      if (closed) return;
+      closed = true;
+      if (input.record)
+        this.options.records?.closed(input.record, {
+          bytesUp,
+          bytesDown,
+          closedAt: new Date(),
+          reads,
+          writes,
+          writeActionIds: written,
+        });
+    };
+    grant.tunnels.add(release);
+    // Closed when its command settles: an account is never used past its command.
+    token.ended.add(release);
+    client.once('close', release);
+    const idle = this.options.idleMs ?? 5 * 60_000;
+    client.setTimeout(idle, release);
+    client.on('data', (chunk: Buffer) => {
+      bytesUp += chunk.length;
+      if (counters) counters.bytesUp += chunk.length;
+    });
+    const write = client.write.bind(client);
+    client.write = ((chunk: unknown, ...rest: unknown[]) => {
+      const size = typeof chunk === 'string' ? Buffer.byteLength(chunk) : (chunk as Buffer).length;
+      bytesDown += size;
+      if (counters) counters.bytesDown += size;
+      return (write as (...args: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof client.write;
+    try {
+      stop = await interceptTunnel(client, head, {
+        host: input.host,
+        pinned: input.pinned,
+        token,
+        tokens: this.tokens,
+        space: grant.space,
+        port: input.port,
+        counters,
+        held: grant.held,
+        budgets: [grant.bodies, this.bodies],
+        onRead: () => {
+          reads += 1;
+          if (counters) counters.reads = (counters.reads ?? 0) + 1;
+        },
+        onWrite: (actionId) => {
+          writes += 1;
+          if (counters) counters.writes = (counters.writes ?? 0) + 1;
+          if (actionId && written.length < 256) written.push(actionId);
+        },
+        options: { ...this.options.intercept, now: this.now },
+      });
+      if (closed) stop();
+    } catch {
+      // No leaf for this host: nothing is sent, and the computer is told so.
+      if (!closed) refuse(client, 403, 'credential_unavailable');
+      release();
+    }
+  }
+
   private async tunnel(
     target: string,
     authorization: string | string[] | undefined,
@@ -450,6 +578,23 @@ export class SandboxEgressGuard {
       return refuse(client, 407, 'not_a_sandbox');
     const counters = this.counters(token, host);
     if (counters) counters.tunnels += 1;
+    // A command with a live token, at a host of an account its space connected:
+    // the tunnel is terminated and each request credentialed or refused.
+    let use: Awaited<ReturnType<EgressCredentialPort['find']>> = null;
+    if (token && this.options.credentials) {
+      try {
+        use = await this.options.credentials.find({
+          space: grant.space,
+          attribution: token.attribution,
+          host,
+        });
+      } catch {
+        // An account that cannot be looked up is not used: the tunnel stays blind.
+        use = null;
+      }
+      if (this.grants.get(clientAddress(client.remoteAddress)) !== grant)
+        return refuse(client, 407, 'not_a_sandbox');
+    }
     const record = randomUUID();
     const session = token?.attribution.sessionId ?? grant.session;
     const recorded = !!session && !!this.options.records && this.admit(this.window(grant), session);
@@ -463,10 +608,21 @@ export class SandboxEgressGuard {
         tokenKind: token?.attribution.kind ?? null,
         host,
         port,
-        verdict: token ? 'tunnel' : 'unattributed',
+        verdict: use ? 'credentialed' : token ? 'tunnel' : 'unattributed',
         reason: null,
         count: 1,
         openedAt: new Date(this.now()),
+        ...(use ? { connectionId: use.connectionId } : {}),
+      });
+    if (use && token && this.options.credentials)
+      return this.credentialed(client, head, {
+        grant,
+        token,
+        host,
+        pinned,
+        counters,
+        record: recorded ? record : null,
+        port: this.options.credentials,
       });
     let bytesUp = 0;
     let bytesDown = 0;

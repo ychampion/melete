@@ -346,8 +346,16 @@ jobs:
           MELETE_SANDBOX_LIVE: docker
           DATABASE_URL: postgres://melete_test:melete_test@127.0.0.1:5432/postgres
         run: bun test apps/melete/src/sandbox/adapters/docker-processes.live.test.ts --timeout=900000 --max-concurrency=1
+      # A job waiting on a background process is woken by the line it waits for, with no
+      # attempt in between.
+      - name: Wake a waiting job from its background process
+        env:
+          MELETE_SANDBOX_LIVE: docker
+          DATABASE_URL: postgres://melete_test:melete_test@127.0.0.1:5432/postgres
+        run: bun test apps/melete/src/sandbox/adapters/docker-process-wakes.live.test.ts --timeout=300000 --max-concurrency=1
       # Open egress needs the caller in a container on the same engine, as the service is in
       # the Compose deployment, so it can join each sandbox's network as its only way out.
+      # git serves the GitHub test repository the computer clones and pushes through the relay.
       - name: Reach the internet only through the service
         run: |
           docker run --rm \
@@ -356,7 +364,8 @@ jobs:
             -e MELETE_SANDBOX_LIVE=docker \
             -e MELETE_SANDBOX_LIVE_OUT=/repo/sandbox-shots \
             "oven/bun:$(cat .bun-version)" \
-            bun test apps/melete/src/sandbox/adapters/docker.live.test.ts --timeout=300000 --test-name-pattern 'open egress'
+            sh -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null \
+              && bun test apps/melete/src/sandbox/adapters/docker.live.test.ts --timeout=300000 --test-name-pattern 'open egress'"
       # What the sandbox desktop showed: the test page after the agent's input, and a public
       # page reached through the service.
       - name: Keep the desktop screenshots

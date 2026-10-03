@@ -4,12 +4,22 @@
  *
  * A row names the session and space, and the job, attempt and command when the
  * connection carried that command's token. A connection with no token, or one
- * whose command had already ended, is `unattributed`. Counts of credentialed
- * reads and writes stay zero until a connected account is used on the wire.
+ * whose command had already ended, is `unattributed`. A tunnel to a host of a
+ * connected command-line account is `credentialed`, with its reads, its writes
+ * and the writes' actions.
  * Rows are kept for `MELETE_EGRESS_RECORD_DAYS` and go with their space.
  */
 import { sql } from 'drizzle-orm';
-import { bigint, check, index, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import {
+  bigint,
+  check,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+} from 'drizzle-orm/pg-core';
 import { space } from '../db/schema.ts';
 import { sandboxSession } from '../sandbox/schema.ts';
 
@@ -44,6 +54,8 @@ export const egressRecord = pgTable(
     connectionId: text('connection_id'),
     reads: integer('reads').notNull().default(0),
     writes: integer('writes').notNull().default(0),
+    /** The actions of the writes a credentialed tunnel carried, each admitted on its own. */
+    writeActionIds: jsonb('write_action_ids').$type<string[]>().notNull().default([]),
     bytesUp: bigint('bytes_up', { mode: 'number' }).notNull().default(0),
     bytesDown: bigint('bytes_down', { mode: 'number' }).notNull().default(0),
     openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
@@ -66,4 +78,25 @@ export const egressRecord = pgTable(
       sql`${t.tokenKind} is null or ${t.tokenKind} in ('command', 'process')`,
     ),
   ],
+);
+
+/**
+ * The installation's egress certificate authority: one current row, the rest
+ * superseded. Its key is ECDSA P-256, sealed with the master key for the
+ * purpose `egress-ca`, and never leaves the service. Its name constraints are
+ * the DNS subtrees of the command-line adapters this installation offers, so
+ * the certificate a computer trusts can vouch for those names and no other.
+ */
+export const egressCa = pgTable(
+  'egress_ca',
+  {
+    id: text('id').primaryKey(),
+    certPem: text('cert_pem').notNull(),
+    sealedKey: text('sealed_key').notNull(),
+    nameConstraints: jsonb('name_constraints').$type<string[]>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    notAfter: timestamp('not_after', { withTimezone: true }).notNull(),
+    supersededAt: timestamp('superseded_at', { withTimezone: true }),
+  },
+  (t) => [index('egress_ca_current_idx').on(t.supersededAt, t.createdAt)],
 );

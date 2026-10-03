@@ -1,0 +1,8 @@
+# gh label create bug --repo alice/site
+### write
+POST https://api.github.com/repos/alice/site/labels
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json; charset=utf-8
+user-agent: GitHub CLI 2.83.2
+
+{"color":"0052CC","description":"","name":"bug"}

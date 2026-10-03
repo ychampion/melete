@@ -1,0 +1,6 @@
+# git push --dry-run origin HEAD:refs/heads/x
+### read base64
+GET https://github.com/alice/site.git/info/refs?service=git-receive-pack
+accept: */*
+user-agent: git/2.39.5
+

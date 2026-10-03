@@ -39,6 +39,12 @@ export type SandboxCapabilities = {
   readonly billing: 'per_second' | 'per_minute' | 'per_hour';
   readonly regions: readonly string[];
   readonly maxUploadBytes: number;
+  /**
+   * Whether a computer can be left running between attempts while background
+   * processes run in it. Where it cannot, suspending it ends them, so they
+   * are stopped, with the reason, when the attempt that used it ends.
+   */
+  readonly keepAwake: boolean;
 };
 
 export type SandboxSpec = {
@@ -176,6 +182,11 @@ export interface SandboxProvider {
   deleteSnapshot?(snapshotRef: string, s: AbortSignal): Promise<void>;
   /** Asks the provider whether it still holds a snapshot; false only when it says so. */
   snapshotHeld?(snapshotRef: string, s: AbortSignal): Promise<boolean>;
+  /**
+   * For a provider that ends a running sandbox on its own timer: keep this one
+   * running for at least `seconds` from now, within the provider's own limits.
+   */
+  keepAlive?(h: SandboxHandle, seconds: number, s: AbortSignal): Promise<void>;
   /** Idempotent: a sandbox that is already gone is destroyed. */
   destroy(handle: SandboxHandle, signal: AbortSignal): Promise<void>;
   /** Asks the provider; `gone` is an authoritative answer, never a guess from a failed call. */

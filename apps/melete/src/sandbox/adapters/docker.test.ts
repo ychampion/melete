@@ -246,8 +246,8 @@ describe('creating a sandbox', () => {
       attemptId: 'att_one',
       actionId: 'act_one',
     };
-    const first = host.attributeCommand(handle, attribution);
-    const second = host.attributeCommand(handle, { ...attribution, actionId: 'act_two' });
+    const first = await host.attributeCommand(handle, attribution);
+    const second = await host.attributeCommand(handle, { ...attribution, actionId: 'act_two' });
     const token = (proxy: string) =>
       new RegExp(`^http://cmd:([A-Za-z0-9_-]{32})@${EGRESS_ALIAS}:8791$`).exec(proxy)?.[1] ?? '';
     const one = token(first.env.HTTPS_PROXY);
@@ -258,6 +258,7 @@ describe('creating a sandbox', () => {
       https_proxy: first.env.HTTPS_PROXY,
       HTTP_PROXY: first.env.HTTPS_PROXY,
       http_proxy: first.env.HTTPS_PROXY,
+      GIT_HTTP_PROXY_AUTHMETHOD: 'basic',
     });
     expect(guard.tokens.find(one)).toMatchObject({ sandbox: NAME, attribution });
     expect(first.settle()).toEqual([]);
@@ -657,6 +658,59 @@ describe('the life of a sandbox', () => {
     expect(engine.volumes.has('melete-sbx-proj-sbx_quiet-work')).toBe(true);
     await host.connect(handleOf('melete-sbx-proj-sbx_quiet'), signal());
     expect(engine.containers.get('melete-sbx-proj-sbx_quiet')?.running).toBe(true);
+  });
+
+  test('a container its processes keep awake is not idle-stopped, and its idle clock starts when they end', async () => {
+    let awake: ReadonlySet<string> = new Set(['melete-sbx-proj-sbx_server']);
+    let failing = false;
+    const { engine, host, advance } = setup({
+      settings: {
+        idleSeconds: 600,
+        awake: async () => {
+          if (failing) throw new Error('the database did not answer');
+          return awake;
+        },
+      },
+    });
+    await host.create(
+      spec('sbx_server', { kind: 'deny_all' }, { lifetimeSeconds: 86_400 }),
+      signal(),
+    );
+    await host.create(
+      spec('sbx_quiet', { kind: 'deny_all' }, { lifetimeSeconds: 86_400 }),
+      signal(),
+    );
+    // Nothing execs into either for an hour.
+    for (let minute = 0; minute < 60; minute += 5) {
+      advance(300_000);
+      await host.reap(signal());
+    }
+    expect(engine.containers.get('melete-sbx-proj-sbx_server')?.running).toBe(true);
+    expect(engine.containers.get('melete-sbx-proj-sbx_quiet')?.running).toBe(false);
+    // The processes end: idle from then, not from the last command.
+    awake = new Set();
+    advance(300_000);
+    expect(await host.reap(signal())).toEqual([]);
+    advance(300_000);
+    expect(await host.reap(signal())).toEqual(['melete-sbx-proj-sbx_server']);
+    // Without an answer from the records, nothing is taken for idle.
+    await host.connect(handleOf('melete-sbx-proj-sbx_server'), signal());
+    failing = true;
+    advance(3_600_000);
+    expect(await host.reap(signal())).toEqual([]);
+    expect(engine.containers.get('melete-sbx-proj-sbx_server')?.running).toBe(true);
+  });
+
+  test('a container its processes keep awake is still stopped at its lifetime', async () => {
+    const { engine, host, advance } = setup({
+      settings: { idleSeconds: 600, awake: async () => new Set(['melete-sbx-proj-sbx_long']) },
+    });
+    await host.create(spec('sbx_long', { kind: 'deny_all' }, { lifetimeSeconds: 7_200 }), signal());
+    advance(3_600_000);
+    expect(await host.reap(signal())).toEqual([]);
+    advance(3_600_000);
+    expect(await host.reap(signal())).toEqual(['melete-sbx-proj-sbx_long']);
+    expect(engine.containers.get('melete-sbx-proj-sbx_long')?.running).toBe(false);
   });
 
   test('the idle clock leaves containers it did not make alone', async () => {

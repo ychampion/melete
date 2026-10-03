@@ -13,7 +13,15 @@ import { err, ID_PREFIXES, ok, prefixedId, type Result, timestamp } from './comm
 import { connectionProvider, connectionView } from './entities.ts';
 import { MCP_STDIO_RUNNERS, mcpConnectionConfig, mcpStdioConnectionConfig } from './mcp.ts';
 
-export const CONNECTION_KINDS = ['mail', 'caldav', 'ics', 'mcp', 'mcp_stdio', 'sandbox'] as const;
+export const CONNECTION_KINDS = [
+  'mail',
+  'caldav',
+  'ics',
+  'mcp',
+  'mcp_stdio',
+  'sandbox',
+  'command_line',
+] as const;
 export const connectionKind = z.enum(CONNECTION_KINDS);
 export type ConnectionKind = z.infer<typeof connectionKind>;
 
@@ -226,6 +234,28 @@ export function sandboxCredentialRefusal(adapter: SandboxAdapter, key: string): 
     : null;
 }
 
+/**
+ * The services a command-line account reaches from the agent's computer. The
+ * egress relay holds the account and adds it on the wire; the computer only
+ * ever holds a placeholder.
+ */
+export const COMMAND_LINE_ADAPTERS = ['github'] as const;
+export const commandLineConnectionConfig = z
+  .object({ adapter: z.enum(COMMAND_LINE_ADAPTERS) })
+  .strict()
+  .meta({ id: 'CommandLineConnectionConfig' });
+export type CommandLineConnectionConfig = z.infer<typeof commandLineConnectionConfig>;
+/** A token as the service issues it: printable, no spaces. */
+export const commandLineCredentials = z
+  .object({
+    token: z
+      .string()
+      .min(1)
+      .max(1024)
+      .regex(/^[!-~]+$/),
+  })
+  .strict();
+
 /** The grants each kind may receive. MCP grants are declared in its own operator policy. */
 export const CONNECTION_KIND_SCOPES = {
   mail: ['email.search', 'email.read', 'email.draft', 'email.discard', 'email.send'],
@@ -246,7 +276,10 @@ export const CONNECTION_KIND_SCOPES = {
     'process.signal',
     'process.stop',
     'process.extend',
+    'process.wait',
   ],
+  // Reading through the relay at all, and the changes it brings to the broker.
+  command_line: ['egress.github_read', 'egress.github_write'],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
 export const createConnectionRequest = z.object({
@@ -267,6 +300,7 @@ export const createConnectionRequest = z.object({
   mcp_stdio: mcpStdioConnectionConfig.optional(),
   ics: icsConnectionConfig.optional(),
   sandbox: sandboxConnectionConfig.optional(),
+  command_line: commandLineConnectionConfig.optional(),
 });
 export type CreateConnectionRequest = z.infer<typeof createConnectionRequest>;
 
@@ -305,6 +339,13 @@ export type ConnectionInstallation =
       /** Null for an adapter that takes no key. */
       credentials: SandboxCredentials | null;
       scopes: string[];
+    }
+  | {
+      kind: 'command_line';
+      provider: 'command_line';
+      config: CommandLineConnectionConfig;
+      credentials: z.infer<typeof commandLineCredentials>;
+      scopes: string[];
     };
 
 const KIND_PROVIDER = {
@@ -314,8 +355,10 @@ const KIND_PROVIDER = {
   mcp: 'mcp',
   mcp_stdio: 'mcp',
   sandbox: 'sandbox',
+  command_line: 'command_line',
 } as const;
-const EXACTLY_ONE = 'Supply exactly one of mail, caldav, ics, mcp, mcp_stdio or sandbox.';
+const EXACTLY_ONE =
+  'Supply exactly one of mail, caldav, ics, mcp, mcp_stdio, sandbox or command_line.';
 
 /** Decide which kind a parsed request installs, or say in plain words why it installs none. */
 export function connectionInstallation(
@@ -344,6 +387,24 @@ export function connectionInstallation(
   )
     return err(`A ${kind} connection grants only: ${allowed.join(', ')}.`);
   const scopes = request.scopes.length ? request.scopes : [...allowed];
+  if (kind === 'command_line') {
+    if (!request.command_line) return err('Supply the service in command_line.');
+    const credentials = commandLineCredentials.safeParse(request.credentials);
+    if (!credentials.success) return err('A command-line account needs credentials.token only.');
+    const adapter = request.command_line.adapter;
+    // Each service's grants are its own: egress.<service>_read and _write.
+    if (!scopes.every((scope) => scope.startsWith(`egress.${adapter}_`)))
+      return err(
+        `A ${adapter} account grants only egress.${adapter}_read and egress.${adapter}_write.`,
+      );
+    return ok({
+      kind,
+      provider: 'command_line',
+      config: request.command_line,
+      credentials: credentials.data,
+      scopes,
+    });
+  }
   if (kind === 'sandbox') {
     if (!request.sandbox) return err('Supply the sandbox configuration in sandbox.');
     const { cidrs, ...rest } = request.sandbox;
@@ -1193,6 +1254,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
           ['process.signal', 'Send a signal to that work', 'write_reversible'],
           ['process.stop', 'Stop that work', 'write_reversible'],
           ['process.extend', 'Give that work more time', 'write_reversible'],
+          ['process.wait', 'Wait for that work to finish, print or listen', 'read'],
         ] as const
       ).map(([scope, label, effect_class]) => ({
         scope,
@@ -1201,6 +1263,40 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         asks_first: false,
         default: true,
       })),
+    ],
+  },
+  {
+    id: 'command_line',
+    kind: 'command_line',
+    title: 'GitHub for the agent’s computer',
+    description:
+      'Lets git and gh in the agent’s computer use your GitHub account. The token stays on this server and the computer never holds it. Reads just work; every push, pull request, comment and other change asks you first. Works with the computer on this server (Docker).',
+    fixed: [
+      { path: 'provider', value: 'command_line' },
+      { path: 'command_line.adapter', value: 'github' },
+    ],
+    fields: [
+      text('credentials.token', 'Fine-grained token', {
+        input: 'password',
+        secret: true,
+        help: 'Create one at github.com/settings/personal-access-tokens. Choose only the repositories it needs, and give read and write on Contents and Pull requests.',
+      }),
+    ],
+    scopes: [
+      {
+        scope: 'egress.github_read',
+        label: 'Read your repositories',
+        effect_class: 'read',
+        asks_first: false,
+        default: true,
+      },
+      {
+        scope: 'egress.github_write',
+        label: 'Push and make changes (asks you each time)',
+        effect_class: 'write_external',
+        asks_first: true,
+        default: true,
+      },
     ],
   },
   {

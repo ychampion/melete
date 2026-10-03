@@ -37,7 +37,9 @@ recipient's origin is owner-stated or connector-verified, the rule is unrevoked
 and inside both its expiry and its re-consent window, and the cap has room;
 each use is recorded once, at admission. Rules exist for named kinds only:
 sending a message, creating, changing or removing an event, discarding a draft,
-and saving or restoring a file. A `spend` asks every time, and an action the
+saving or restoring a file, and pushing to `melete/` branches of one repository
+from the agent's computer
+([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github)). A `spend` asks every time, and an action the
 owner is already reviewing keeps its own approval. [CLIENT](CLIENT.md)
 describes the cards, `GET /rules` and `DELETE /rules/{id}`.
 Evidence for the default effect gate is conformance 4, `An approval cannot be
@@ -171,6 +173,7 @@ passwords. `POST /connections` takes exactly one configuration block:
 | Calendar feed (ICS address) | `caldav` | `ics`: one HTTPS or `webcal` address | the address itself | `calendar.list` |
 | MCP over HTTP | `mcp` | `mcp`: see [Installed MCP servers](#installed-mcp-servers) | optional token fields | declared in the block |
 | MCP from a package or image | `mcp` | `mcp_stdio`: see [the advanced path](#the-advanced-path) | `mcp_stdio.secret_env` | declared in the block |
+| GitHub for the agent's computer | `command_line` | `command_line`: `{ "adapter": "github" }` | `credentials.token`, a fine-grained token; GitHub is asked whose it is before it is kept | `egress.github_read`, `egress.github_write` (asks each time); see [COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github) |
 
 `scopes` may narrow the grants of the first three kinds; left empty it means all
 of them, and a scope outside the kind is refused. `space_id` may be left out, in

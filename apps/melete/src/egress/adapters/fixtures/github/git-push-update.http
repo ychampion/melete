@@ -1,0 +1,21 @@
+# git push origin melete/fix-login (fast-forward)
+### read base64
+GET https://github.com/alice/site.git/info/refs?service=git-receive-pack
+accept: */*
+user-agent: git/2.39.5
+
+
+### write base64
+POST https://github.com/alice/site.git/git-receive-pack
+accept: application/x-git-receive-pack-result
+content-type: application/x-git-receive-pack-request
+user-agent: git/2.39.5
+
+MDBjNTczY2Q5MTFiNTYyNmRkYmY4YWJkNzI3YWM5MzY0MmYxODI1Y2MzZTIgYTY1NzA1MGQ2MGEw
+YzdjNmZlZjM0ZWJmNWUzOWQ5NWU5ZmM2MmFlMCByZWZzL2hlYWRzL21lbGV0ZS9maXgtbG9naW4A
+IHJlcG9ydC1zdGF0dXMtdjIgc2lkZS1iYW5kLTY0ayBxdWlldCBvYmplY3QtZm9ybWF0PXNoYTEg
+YWdlbnQ9Z2l0LzIuMzkuNS5kZWJpYW4uMTIwMDAwUEFDSwAAAAIAAAADlgx4nI3KSQoCMRBA0X1O
+UXtBKlMlARHdeI9KUmkD9kAToY9vH8G/fPyxiwBb15gErY4kiXyVgLmSdz5LIGlSkaIEqzbeZRkQ
+bKlJ6+zJUK25Rc41mMAlWXKm6Wh8KVaM4u94rzs84cYPOXjePnIt63wHHRJGFyMiXPBMnTr3MeSv
+Wb36AZ916gvwxH1RP3X3OU6hAnicMzQwMDMxUUjTK6koYXCQuqPRqWbr6cloasrKwfCd49q/cwCS
+7Ao5OXicy8hUSExPzMzjAgAPxwL8pUm4y3Ax/O2LwrBW4+1rpvRmNzc=

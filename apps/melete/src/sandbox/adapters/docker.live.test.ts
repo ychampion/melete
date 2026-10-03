@@ -14,10 +14,23 @@
  * is run with the adapter declaring deny-all only, which is all it offers there.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
+import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer as createHttpsServer } from 'node:https';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
+import type { EgressWriteInput } from '../../broker/egress-admission.ts';
+import { resolveHost } from '../../connectors/web.ts';
+import { githubAdapter } from '../../egress/adapters/github.ts';
+import type { CredentialAdapter } from '../../egress/adapters/types.ts';
+import { fixtureUpstream, memoryCredentialPort } from '../../egress/fixtures.ts';
+import { type GitRequestSeen, gitSmartHttp } from '../../egress/git-fixture.ts';
 import type { EgressRecordOpen } from '../../egress/records.ts';
+import { certificateAuthority, leafCertificate, newKeyPair, pem } from '../../egress/x509.ts';
+import { selfSignedPair } from '../../gateway/fixtures/self-signed.ts';
 import { sandboxConformance } from '../conformance.ts';
 import { serviceContainerId } from '../docker-default.ts';
 import { openSandbox, sandboxLabels } from '../manifest.ts';
@@ -31,6 +44,7 @@ import {
   type DockerSandboxSettings,
   DockerSandboxSocket,
 } from './docker.ts';
+import { SandboxEgressGuard } from './docker-egress.ts';
 
 const live = process.env.MELETE_SANDBOX_LIVE === 'docker';
 const socket = process.env.MELETE_DOCKER_SOCKET ?? '/var/run/docker.sock';
@@ -519,6 +533,94 @@ if (!live) {
     });
   });
 
+  // The computer's own git (curl with GnuTLS) holds the egress CA to its name
+  // constraints: a leaf the CA's key signed for another name is refused, with or
+  // without a subject alternative name, while one inside them is trusted.
+  test("the computer's git refuses a leaf the egress CA signed outside its constraints", async () => {
+    const ca = newKeyPair();
+    const notBefore = new Date(Date.now() - 60_000);
+    const notAfter = new Date(Date.now() + 3_600_000);
+    const caCert = certificateAuthority({
+      keys: ca,
+      commonName: 'Melete egress CA',
+      permitted: ['test'],
+      notBefore,
+      notAfter,
+    });
+    const leaf = (host: string, withoutSubjectAltName = false) => {
+      const keys = newKeyPair();
+      return {
+        cert: pem(
+          'CERTIFICATE',
+          leafCertificate({
+            host,
+            keys,
+            caCert,
+            caKey: ca.privateKey,
+            caCommonName: 'Melete egress CA',
+            notBefore,
+            notAfter,
+            withoutSubjectAltName,
+          }),
+        ),
+        key: keys.privateKey.export({ type: 'pkcs8', format: 'pem' }) as string,
+      };
+    };
+    const cases = [
+      { name: 'inside', host: 'ok.creds.test', port: 8443, pair: leaf('ok.creds.test') },
+      { name: 'outside', host: 'evil.example', port: 8444, pair: leaf('evil.example') },
+      { name: 'cn_only', host: 'evil.example', port: 8445, pair: leaf('evil.example', true) },
+    ];
+    const b64 = (value: string) => Buffer.from(value).toString('base64');
+    const server = [
+      'import socket, ssl, sys, threading, time',
+      'def serve(port, cert, key):',
+      '    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)',
+      '    ctx.load_cert_chain(cert, key)',
+      '    s = socket.socket()',
+      '    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)',
+      "    s.bind(('127.0.0.1', port))",
+      '    s.listen(8)',
+      '    while True:',
+      '        c, _ = s.accept()',
+      '        try:',
+      '            t = ctx.wrap_socket(c, server_side=True)',
+      '            t.recv(65536)',
+      "            t.sendall(b'HTTP/1.1 404 Not Found\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n')",
+      '            t.close()',
+      '        except Exception:',
+      '            c.close()',
+      ...cases.map(
+        (each) =>
+          `threading.Thread(target=serve, args=(${each.port}, '/tmp/${each.name}.crt', '/tmp/${each.name}.key'), daemon=True).start()`,
+      ),
+      'time.sleep(40)',
+    ].join('\n');
+    const script = [
+      `echo ${b64(pem('CERTIFICATE', caCert))} | base64 -d > /tmp/egress-ca.pem`,
+      ...cases.flatMap((each) => [
+        `echo ${b64(each.pair.cert)} | base64 -d > /tmp/${each.name}.crt`,
+        `echo ${b64(each.pair.key)} | base64 -d > /tmp/${each.name}.key`,
+      ]),
+      `echo ${b64(server)} | base64 -d > /tmp/serve.py`,
+      'python3 /tmp/serve.py >/dev/null 2>&1 & SERVER=$!; sleep 2',
+      ...cases.map(
+        (each) =>
+          `echo ${each.name}=$(env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy GIT_SSL_CAINFO=/tmp/egress-ca.pem GIT_TERMINAL_PROMPT=0 git -c http.curloptResolve=${each.host}:${each.port}:127.0.0.1 ls-remote https://${each.host}:${each.port}/r.git 2>&1 | grep -ciE 'certificate|issuer|verif')`,
+      ),
+      `echo reached=$(env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy GIT_SSL_CAINFO=/tmp/egress-ca.pem GIT_TERMINAL_PROMPT=0 git -c http.curloptResolve=ok.creds.test:8443:127.0.0.1 ls-remote https://ok.creds.test:8443/r.git 2>&1 | grep -ciE '404|not found')`,
+      // git's own HTTPS helper links its own libcurl; the curl command may use another TLS library.
+      'git --version; echo tls=$(ldd "$(git --exec-path)/git-remote-https" | grep -oE "libgnutls|libssl" | head -1); kill $SERVER',
+    ].join('; ');
+    const probe = await shell(await open(), script);
+    process.stdout.write(`docker live, git trust: ${probe.text}\n`);
+    expect(probe.text).toContain('tls=libgnutls');
+    expect(probe.text).toContain('inside=0');
+    expect(probe.text).toMatch(/reached=[1-9]/);
+    expect(probe.text).toMatch(/outside=[1-9]/);
+    expect(probe.text).toMatch(/cn_only=[1-9]/);
+  }, 120_000);
+
   describe.skipIf(!selfId)('docker sandbox live: open egress through the service', () => {
     test('public HTTPS goes through the guard; nothing else leaves', async () => {
       const handle = await open({ kind: 'open' });
@@ -605,7 +707,7 @@ if (!live) {
       const one = await open({ kind: 'open' }, watched);
       const two = await open({ kind: 'open' }, watched);
       const session = one.providerSandboxId;
-      const command = watched.attributeCommand(one, attribution('act_LIVE_one', session));
+      const command = await watched.attributeCommand(one, attribution('act_LIVE_one', session));
       expect(await run(one, `${CODE} https://example.com/`, command.env)).toBe('200');
       const reached = command.settle();
       process.stdout.write(`docker live, egress hosts: ${JSON.stringify(reached)}\n`);
@@ -616,7 +718,10 @@ if (!live) {
       // Without its token the computer still gets out, unattributed.
       expect(await run(one, `${CODE} https://example.com/`, {})).toBe('200');
       // Another computer's live token is refused outright.
-      const borrowed = watched.attributeCommand(one, attribution('act_LIVE_borrowed', session));
+      const borrowed = await watched.attributeCommand(
+        one,
+        attribution('act_LIVE_borrowed', session),
+      );
       const refused = await run(two, `${CODE} https://example.com/; echo " exit=$?"`, borrowed.env);
       borrowed.settle();
       expect(refused).toMatch(/exit=(56|7)\b/);
@@ -652,5 +757,248 @@ if (!live) {
         ['www.iana.org', 'refused', 'host_not_connected'],
       );
     });
+
+    // Conformance scenario 12, credential egress: a real computer uses a
+    // connected account through the relay, and never holds its secret.
+    test('a computer uses a connected account through the relay, and its environment, files and output never hold the secret', async () => {
+      const HOST = 'api.creds.test';
+      const secret = `tok_live_${randomBytes(16).toString('hex')}`;
+      const upstream = await fixtureUpstream(HOST);
+      const port = memoryCredentialPort({ secret, hosts: [HOST] });
+      const guard = new SandboxEgressGuard({
+        resolve: async (name) =>
+          name === HOST ? [{ address: '93.184.216.34', family: 4 }] : resolveHost(name),
+        credentials: port,
+        intercept: {
+          upstream: () => ({ address: { address: '127.0.0.1', family: 4 }, port: upstream.port }),
+          upstreamCa: upstream.ca,
+        },
+      });
+      const credentialed = new DockerSandboxHost(
+        settings({ egressPort: 18_793, egressCredentials: port }),
+        new DockerSandboxSocket(socket),
+        { guard },
+      );
+      try {
+        const handle = await open({ kind: 'open' }, credentialed);
+        const command = await credentialed.attributeCommand(
+          handle,
+          attribution('act_LIVE_credentialed', handle.providerSandboxId),
+        );
+        // The secret is looked for in two halves, so this command's own text never holds it.
+        const half = Math.floor(secret.length / 2);
+        const outcome = await credentialed.exec(
+          handle,
+          {
+            marker: `act_${Date.now()}`,
+            argv: [
+              '/bin/sh',
+              '-c',
+              [
+                `echo answer=$(curl -s -m 20 https://${HOST}/user)`,
+                'echo trusted=$(test -s "$SSL_CERT_FILE" && echo yes)',
+                `A='${secret.slice(0, half)}'; B='${secret.slice(half)}'`,
+                'env | grep -cF "$A$B" | sed "s/^/env=/"',
+                'grep -rlF "$A$B" /home /work /tmp /etc 2>/dev/null | wc -l | sed "s/^/files=/"',
+              ].join('; '),
+            ],
+            cwd: '/work',
+            timeoutMs: 60_000,
+            maxOutputBytes: 64 * 1024,
+            env: command.env,
+          },
+          signal(),
+        );
+        command.settle();
+        const printed = text(outcome.output);
+        process.stdout.write(`docker live, credential egress: ${printed}\n`);
+        expect(printed).toContain('trusted=yes');
+        expect(printed).toContain('Bearer [redacted]');
+        expect(printed).toContain('env=0');
+        expect(printed).toContain('files=0');
+        expect(printed).not.toContain(secret);
+        expect(upstream.seen.map((request) => request.headers.authorization)).toEqual([
+          `Bearer ${secret}`,
+        ]);
+      } finally {
+        await guard.close();
+        await upstream.close();
+      }
+    });
+
+    // GitHub through the relay: the computer's own git and gh, a git server
+    // that speaks smart HTTP and checks the account, and an API fixture. The
+    // first push is held and git prints why; the same push run again goes
+    // through, bound to the same ref updates.
+    test('git and gh in a real computer clone, push and change GitHub through the relay, and the computer never holds the token', async () => {
+      const token = `github_pat_live_${randomBytes(16).toString('hex')}`;
+      const run = promisify(execFile);
+      const root = await mkdtemp(path.join(tmpdir(), 'melete-live-git-'));
+      const bare = path.join(root, 'alice', 'site.git');
+      await run('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+      const seed = path.join(root, 'seed');
+      await run('git', ['init', '-q', '-b', 'main', seed]);
+      await run('git', [
+        '-C',
+        seed,
+        '-c',
+        'user.name=A',
+        '-c',
+        'user.email=a@example.com',
+        'commit',
+        '-q',
+        '--allow-empty',
+        '-m',
+        'Start',
+      ]);
+      await run('git', ['-C', seed, 'push', '-q', bare, 'main']);
+      const pair = selfSignedPair('github.com');
+      const gitSeen: GitRequestSeen[] = [];
+      const gitServer = createHttpsServer(
+        { key: pair.key, cert: pair.cert },
+        gitSmartHttp({
+          root,
+          account: `Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`,
+          seen: gitSeen,
+        }),
+      );
+      await new Promise<void>((resolve) => gitServer.listen(0, '127.0.0.1', resolve));
+      const gitPort = (gitServer.address() as AddressInfo).port;
+      const api = await fixtureUpstream('api.github.com', (request) =>
+        request.path === '/user'
+          ? { body: JSON.stringify({ login: 'alice' }) }
+          : request.path === '/repos/alice/site/issues'
+            ? {
+                status: 201,
+                body: JSON.stringify({
+                  number: 1,
+                  html_url: 'https://github.com/alice/site/issues/1',
+                }),
+              }
+            : undefined,
+      );
+      const writes: EgressWriteInput[] = [];
+      const port = memoryCredentialPort({
+        secret: token,
+        account: { adapter: githubAdapter as CredentialAdapter, config: {} },
+        admitWrite: async (input) => {
+          writes.push(input);
+          // The first change waits for the person; after that, each is approved.
+          if (writes.length === 1)
+            return {
+              kind: 'waiting',
+              actionId: 'act_LIVE_push',
+              message: `Waiting for your approval in Melete: ${input.write.summary.title}. Run the same command again once it is approved.`,
+            };
+          return {
+            kind: 'sent',
+            actionId: `act_LIVE_${writes.length}`,
+            result: await input.forward(),
+          };
+        },
+      });
+      const ports: Record<string, number> = {
+        'github.com': gitPort,
+        'api.github.com': api.port,
+      };
+      const guard = new SandboxEgressGuard({
+        resolve: async (name) =>
+          name in ports ? [{ address: '140.82.112.3', family: 4 }] : resolveHost(name),
+        credentials: port,
+        intercept: {
+          upstream: (host) => ({
+            address: { address: '127.0.0.1', family: 4 },
+            port: ports[host] ?? 0,
+          }),
+          upstreamCa: [pair.cert.toString(), api.ca],
+        },
+      });
+      const credentialed = new DockerSandboxHost(
+        settings({ egressPort: 18_794, egressCredentials: port }),
+        new DockerSandboxSocket(socket),
+        { guard },
+      );
+      try {
+        const handle = await open({ kind: 'open' }, credentialed);
+        const command = await credentialed.attributeCommand(
+          handle,
+          attribution('act_LIVE_github', handle.providerSandboxId),
+        );
+        const half = Math.floor(token.length / 2);
+        const outcome = await credentialed.exec(
+          handle,
+          {
+            marker: `act_${Date.now()}`,
+            argv: [
+              '/bin/sh',
+              '-c',
+              [
+                'cd /work',
+                'git clone -q https://github.com/alice/site site 2>&1; echo clone=$?',
+                'cd site && git checkout -q -b melete/fix-login',
+                'echo fixed > login.txt && git add login.txt',
+                'git -c user.name=A -c user.email=a@example.com commit -q -m "Fix login"',
+                'echo new=$(git rev-parse HEAD)',
+                'git push origin melete/fix-login 2>&1 | sed "s/^/first: /"',
+                'git push origin melete/fix-login 2>&1 | sed "s/^/second: /"',
+                'echo gh_user=$(gh api user --jq .login 2>&1)',
+                'echo issue=$(gh api -X POST repos/alice/site/issues -f title=Hello --jq .html_url 2>&1)',
+                'echo gh=$(gh --version | head -1)',
+                `A='${token.slice(0, half)}'; B='${token.slice(half)}'`,
+                'env | grep -cF "$A$B" | sed "s/^/env=/"',
+                'grep -rlF "$A$B" /home /work /tmp /etc 2>/dev/null | wc -l | sed "s/^/files=/"',
+              ].join('\n'),
+            ],
+            cwd: '/work',
+            timeoutMs: 120_000,
+            maxOutputBytes: 64 * 1024,
+            env: command.env,
+          },
+          signal(),
+        );
+        command.settle();
+        const printed = text(outcome.output);
+        process.stdout.write(`docker live, github: ${printed}\n`);
+        expect(printed).toContain('clone=0');
+        const newId = /new=([0-9a-f]{40})/.exec(printed)?.[1] ?? '';
+        expect(newId).toMatch(/^[0-9a-f]{40}$/);
+        // Held: git itself says why, beside the branch it pushed.
+        expect(printed).toContain(
+          'first:  ! [remote rejected] melete/fix-login -> melete/fix-login (Waiting for your approval in Melete: Push to alice/site (melete/fix-login).',
+        );
+        expect(printed).toContain('first: remote: Waiting for your approval in Melete');
+        // Run again: sent once, and the branch is on the server at the commit approved.
+        expect(printed).toMatch(
+          /second: .*\* \[new branch\]\s+melete\/fix-login -> melete\/fix-login/,
+        );
+        const onServer = await run('git', ['-C', bare, 'rev-parse', 'refs/heads/melete/fix-login']);
+        expect(onServer.stdout.trim()).toBe(newId);
+        // Both runs asked for the same change, down to its bound bytes and headers.
+        const [held, sent] = writes;
+        expect(held?.write.payload).toMatchObject({
+          resource: 'alice/site',
+          updates: [{ ref: 'refs/heads/melete/fix-login', old: '0'.repeat(40), new: newId }],
+        });
+        expect(JSON.stringify(sent?.write.payload)).toBe(JSON.stringify(held?.write.payload));
+        // gh reads and asks through the same relay.
+        expect(printed).toContain('gh_user=alice');
+        expect(printed).toContain('issue=https://github.com/alice/site/issues/1');
+        expect(printed).toContain('gh=gh version 2.83.2');
+        expect(writes[2]?.write.summary.title).toBe('Open an issue in alice/site: Hello');
+        // Every request upstream carried the account; nothing in the computer did.
+        expect(gitSeen.length).toBeGreaterThanOrEqual(4);
+        expect(new Set(api.seen.map((request) => request.headers.authorization))).toEqual(
+          new Set([`Bearer ${token}`]),
+        );
+        expect(printed).toContain('env=0');
+        expect(printed).toContain('files=0');
+        expect(printed).not.toContain(token);
+      } finally {
+        await guard.close();
+        await api.close();
+        gitServer.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 240_000);
   });
 }

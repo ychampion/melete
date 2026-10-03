@@ -1,0 +1,9 @@
+# gh gist create --public -
+### write
+POST https://api.github.com/gists
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json; charset=utf-8
+user-agent: GitHub CLI 2.83.2
+
+{"description":"","files":{"gistfile0.txt":{"content":"hi\n"}},"updated_at":"0001-01-01T00:00:00Z","public":true}
+

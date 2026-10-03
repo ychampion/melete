@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import {
+  type ConnectorHealth,
   caldavConnectionConfig,
   mailConnectionConfig,
   sandboxAdapterTakesKey,
@@ -8,7 +9,11 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { createDeviceConnector } from '../devices/connector.ts';
 import type { DeviceHub } from '../devices/hub.ts';
+import { githubAccount } from '../egress/adapters/github.ts';
+import { credentialAdapters } from '../egress/adapters/index.ts';
+import { createCommandLineConnector } from '../egress/connector.ts';
 import { egressRecorder } from '../egress/records.ts';
+import { egressCredentialsFromEnv } from '../egress/wiring.ts';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import type { DockerSandboxSettings } from '../sandbox/adapters/docker.ts';
@@ -212,6 +217,8 @@ export type ConnectorOptions = {
   google?: { client: AccountClient; endpoints?: GoogleEndpoints };
   /** The operator's Microsoft client, as for Google; `tenant` is `common` unless named. */
   microsoft?: { client: AccountClient; tenant?: string; endpoints?: MicrosoftEndpoints };
+  /** Where a command-line account's own check goes. Only a test replaces it. */
+  commandLine?: { fetch?: typeof fetch; githubApi?: string };
 };
 
 /**
@@ -448,6 +455,38 @@ export class ConnectorFactory {
     }
     if (row.provider === 'test' && options.enableTestConnector)
       return createTestConnector(options.sql);
+    if (row.provider === 'command_line') {
+      // Its account is used by the egress relay; the connector only carries its writes' admission.
+      const adapter = row.configuration?.kind === 'command_line' ? row.configuration.adapter : null;
+      const offered = credentialAdapters({ test: options.enableTestConnector === true });
+      if (typeof adapter !== 'string' || !offered.has(adapter as never)) return undefined;
+      const secretRef = row.secretRef;
+      // A GitHub account is checked by asking GitHub whose token it is.
+      const health =
+        adapter === 'github' && secretRef
+          ? async (): Promise<ConnectorHealth> => {
+              const checked = await this.secrets.withSecret(secretRef, row.spaceId, (token) =>
+                githubAccount(token, {
+                  ...(options.commandLine?.fetch ? { fetch: options.commandLine.fetch } : {}),
+                  ...(options.commandLine?.githubApi ? { api: options.commandLine.githubApi } : {}),
+                  signal: AbortSignal.timeout(20_000),
+                }),
+              );
+              const checkedAt = new Date().toISOString();
+              return checked.ok
+                ? { status: 'ok', detail: 'GitHub answered.', checked_at: checkedAt }
+                : {
+                    status: 'failing',
+                    detail: 'GitHub did not answer for this account.',
+                    checked_at: checkedAt,
+                    ...(checked.code === 'credential_refused'
+                      ? { reason: 'credential_refused' as const }
+                      : {}),
+                  };
+            }
+          : undefined;
+      return ownerOnly(createCommandLineConnector(adapter as never, health ? { health } : {}));
+    }
     if (
       (stored?.kind === 'gmail' && row.provider === 'imap') ||
       (stored?.kind === 'google_calendar' && row.provider === 'caldav')
@@ -728,6 +767,47 @@ type ConnectorExtras = {
   privateContext?: PrivateContext;
 };
 
+/** The docker settings, with egress records and, where offered, command-line accounts. */
+function dockerWithEgress(sql: Sql, env: Env): DockerSandboxSettings {
+  const accounts = egressCredentialsFromEnv(sql, env);
+  return {
+    ...dockerSandboxSettings(env),
+    egressRecords: egressRecorder(sql),
+    ...(accounts
+      ? { egressCredentials: accounts.credentials, egressIntercept: accounts.intercept }
+      : {}),
+  };
+}
+
+function sandboxOptions(sql: Sql, env: Env): NonNullable<ConnectorOptions['sandbox']> {
+  const sessions = new SandboxSessions(sql, {
+    leaseSeconds: env.MELETE_SANDBOX_LEASE_SECONDS,
+    workspaceRetentionSeconds: env.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS,
+  });
+  return {
+    sessions,
+    processes: new SandboxProcesses(sql, {
+      limits: {
+        maxPerComputer: env.MELETE_PROCESS_MAX_PER_COMPUTER,
+        maxPerSpace: env.MELETE_PROCESS_MAX_PER_SPACE,
+        defaultTtlMinutes: env.MELETE_PROCESS_DEFAULT_TTL_MINUTES,
+        maxTtlMinutes: env.MELETE_PROCESS_MAX_TTL_MINUTES,
+        outputMaxBytes: env.MELETE_PROCESS_OUTPUT_MAX_BYTES,
+        awakeSecondsPerDay: env.MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY,
+      },
+    }),
+    project: env.MELETE_SANDBOX_PROJECT ?? '',
+    e2bPlan: env.MELETE_E2B_PLAN,
+    snapshotTtlSeconds: env.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS,
+    maxConcurrent: env.MELETE_SANDBOX_MAX_CONCURRENT,
+    maxPerConnection:
+      env.MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION ?? env.MELETE_SANDBOX_MAX_CONCURRENT,
+    modalRefusal: modalEnvironmentRefusal(process.env, env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT),
+    // The idle stop asks the process records which containers are in use.
+    docker: { ...dockerWithEgress(sql, env), awake: () => sessions.awakeSandboxes('docker') },
+  };
+}
+
 export function connectorOptionsFromEnv(
   sql: Sql,
   env: Env,
@@ -766,37 +846,7 @@ export function connectorOptionsFromEnv(
           },
         }
       : {}),
-    ...(env.MELETE_SANDBOX_PROJECT
-      ? {
-          sandbox: {
-            sessions: new SandboxSessions(sql, {
-              leaseSeconds: env.MELETE_SANDBOX_LEASE_SECONDS,
-              workspaceRetentionSeconds: env.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS,
-            }),
-            processes: new SandboxProcesses(sql, {
-              limits: {
-                maxPerComputer: env.MELETE_PROCESS_MAX_PER_COMPUTER,
-                maxPerSpace: env.MELETE_PROCESS_MAX_PER_SPACE,
-                defaultTtlMinutes: env.MELETE_PROCESS_DEFAULT_TTL_MINUTES,
-                maxTtlMinutes: env.MELETE_PROCESS_MAX_TTL_MINUTES,
-                outputMaxBytes: env.MELETE_PROCESS_OUTPUT_MAX_BYTES,
-                awakeSecondsPerDay: env.MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY,
-              },
-            }),
-            project: env.MELETE_SANDBOX_PROJECT,
-            e2bPlan: env.MELETE_E2B_PLAN,
-            snapshotTtlSeconds: env.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS,
-            maxConcurrent: env.MELETE_SANDBOX_MAX_CONCURRENT,
-            maxPerConnection:
-              env.MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION ?? env.MELETE_SANDBOX_MAX_CONCURRENT,
-            modalRefusal: modalEnvironmentRefusal(
-              process.env,
-              env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT,
-            ),
-            docker: { ...dockerSandboxSettings(env), egressRecords: egressRecorder(sql) },
-          },
-        }
-      : {}),
+    ...(env.MELETE_SANDBOX_PROJECT ? { sandbox: sandboxOptions(sql, env) } : {}),
     env: {
       OPENAI_API_KEY: env.OPENAI_API_KEY,
       OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
