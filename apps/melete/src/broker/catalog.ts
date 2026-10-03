@@ -200,11 +200,11 @@ export type CoreSelectionContext = {
 const namespace = (name: string) => (name.includes('.') ? name.slice(0, name.indexOf('.')) : null);
 const writesOutside = (item: CatalogItem) =>
   item.entry.effect_class === 'write_external' || item.entry.effect_class === 'spend';
-/** Whether the installation vouches for this entry's own words. An MCP server writes its own. */
 /** Web tools every agent has in its first catalog whenever a web connection grants them. */
 export const ALWAYS_OFFERED_WEB_TOOLS = ['web.search', 'web.fetch'] as const;
 /** The agent's own computer's terminal, which the engine builds its terminal from. */
 const OWN_TERMINAL_TOOL = 'terminal.run';
+/** Whether the installation vouches for this entry's own words. An MCP server writes its own. */
 const granted = (item: CatalogItem) => (item.entry.source === 'mcp' ? 0 : 1);
 
 /**

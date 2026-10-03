@@ -2,10 +2,15 @@ import { afterEach, expect, test } from 'bun:test';
 import type { SearchRequest } from '../connectors/web-search.ts';
 import { SearchRefused } from '../connectors/web-search.ts';
 import { isProviderSearchTool } from '../gateway/index.ts';
-import type { GatewayBudget, GatewayProvider, GatewaySettlement } from '../gateway/types.ts';
+import {
+  type GatewayBudget,
+  GatewayError,
+  type GatewayProvider,
+  type GatewaySettlement,
+} from '../gateway/types.ts';
 import { PrivacyRouter } from '../privacy/router.ts';
 import { MemoryPrivacyStore } from '../privacy/store.ts';
-import { openSearchGateway, SEARCH_MAX_USES } from './search-gateway.ts';
+import { openSearchGateway, SEARCH_BUDGET_REFUSED, SEARCH_MAX_USES } from './search-gateway.ts';
 
 const providers: GatewayProvider[] = [
   {
@@ -186,7 +191,7 @@ test('an OpenAI model searches with the Responses web_search tool and its source
   expect(found?.searches).toBe(1);
   expect(upstream[0]?.url).toBe('https://api.openai.com/v1/responses');
   expect(bodies[0]).toMatchObject({
-    tools: [{ type: 'web_search' }],
+    tools: [{ type: 'web_search', search_context_size: 'low' }],
     include: ['web_search_call.action.sources'],
   });
 });
@@ -253,4 +258,79 @@ test('only a provider’s own search tool is let through, no other built-in tool
   expect(isProviderSearchTool({ type: 'web_search_preview' })).toBe(true);
   for (const type of ['code_interpreter', 'computer_use_preview', 'file_search', 'web_search_x'])
     expect(isProviderSearchTool({ type })).toBe(false);
+});
+
+test('native results lose markup and credentials, like every other backend', async () => {
+  const { gateway } = await open({
+    model: { provider: 'anthropic', model: 'claude-sonnet-4-5' },
+    reply: {
+      ...MESSAGES_REPLY,
+      content: [
+        {
+          type: 'web_search_tool_result',
+          tool_use_id: 'srvtoolu_1',
+          content: [
+            {
+              type: 'web_search_result',
+              url: 'https://user:pw@rents.example/a?token=abcdefghijklmnop1234567890&q=lisbon',
+              title: '<b>Lisbon</b> &amp; rents',
+            },
+            { type: 'web_search_result', url: 'javascript:alert(1)', title: 'Bad' },
+          ],
+        },
+      ],
+    },
+  });
+  const found = await gateway.backend.search(request);
+  expect(found?.results).toEqual([
+    {
+      title: 'Lisbon & rents',
+      url: 'https://rents.example/a?token=%5Bredacted%5D&q=lisbon',
+      snippet: '',
+    },
+  ]);
+});
+
+test('the provider’s search count is settled as the fee, and a budget refusal stops the search', async () => {
+  const counted: number[] = [];
+  const counting = await openSearchGateway({
+    sql: undefined as never,
+    providers,
+    privacy: false,
+    attemptModel: async () => ({ provider: 'anthropic', model: 'claude-sonnet-4-5' }),
+    budget: () => ({
+      reserve: async () => ({ id: 'res_1' }),
+      settle: async () => {},
+      searched: async (_call, searches) => {
+        counted.push(searches);
+      },
+    }),
+    fetch: async () => Response.json(MESSAGES_REPLY),
+  });
+  closers.push(counting.close);
+  await counting.backend.search(request);
+  expect(counted).toEqual([1]);
+
+  const upstream: Request[] = [];
+  const exhausted = await openSearchGateway({
+    sql: undefined as never,
+    providers,
+    privacy: false,
+    attemptModel: async () => ({ provider: 'anthropic', model: 'claude-sonnet-4-5' }),
+    budget: () => ({
+      reserve: async () => {
+        throw new GatewayError(429, 'search_budget_exceeded');
+      },
+      settle: async () => {},
+    }),
+    fetch: async (outbound) => {
+      upstream.push(outbound);
+      return Response.json(MESSAGES_REPLY);
+    },
+  });
+  closers.push(exhausted.close);
+  const error = await exhausted.backend.search(request).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(SearchRefused);
+  expect((error as Error).message).toBe(SEARCH_BUDGET_REFUSED);
+  expect(upstream).toEqual([]);
 });

@@ -1141,6 +1141,15 @@ Wikipedia). When a key is set, searches use that API first. The order, the
 privacy rules and what each search records are in
 [CONNECTORS](CONNECTORS.md#web-search).
 
+The keyless search is not an official API: it reads DuckDuckGo's results page,
+which is meant for people, from your server's address, and DuckDuckGo's terms
+may not allow automated use. Melete paces it (one request at a time, two
+seconds apart, a repeated query reused for ten minutes, nothing sent for
+fifteen minutes after DuckDuckGo answers with a robot check), and the service
+log says at start when no key is set. DuckDuckGo can still block the address,
+and Wikipedia then answers with encyclopedia articles only. For a hosted or
+shared installation, set `BRAVE_SEARCH_API_KEY` or `TAVILY_API_KEY`.
+
 `MELETE_DEFAULT_MAX_OUTPUT_TOKENS` (default `4096`) is the output limit the
 gateway gives a model request that names none. The runtime names none unless its
 own configuration sets one, so this is the usual ceiling on one reply; a few

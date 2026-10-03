@@ -66,7 +66,7 @@ import {
 } from './connectors/configured.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
-import { webSearchFromEnv } from './connectors/web-search.ts';
+import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { mountDevices } from './devices/routes.ts';
@@ -714,6 +714,9 @@ export async function bootstrap(
       }
       // One connector registry serves the API catalog, the effect boundary and
       // the experience routes; the boundary builds the one configured broker.
+      // Searches may fall to DuckDuckGo's page from this address; the operator is told once.
+      const keyless = keylessSearchNotice(env);
+      if (keyless) process.stderr.write(`${keyless}\n`);
       // The model's own web search goes through a gateway of its own, metered on the job.
       searchGateway = await configuredSearchGateway(handle.sql, env, privacy, {
         signIn,

@@ -12,7 +12,7 @@ import { agentResponse, type CapabilityClaims, type JsonObject } from '@melete/c
 import { eq } from 'drizzle-orm';
 import { BrokerFault } from '../../src/broker/errors.ts';
 import { recordId } from '../../src/broker/records.ts';
-import { openSearchGateway } from '../../src/broker/search-gateway.ts';
+import { openSearchGateway, SEARCH_BUDGET_REFUSED } from '../../src/broker/search-gateway.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { ensureBuiltinConnections } from '../../src/connectors/builtin.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -184,8 +184,14 @@ if (handle) {
       '{"builtin":"web"}'::jsonb)`;
 }
 
+/** A conversation's own limits: a turn has room for real work. */
+const turnBudget = { ...defaultBudget, max_output_tokens: 400_000 };
+
 /** A running conversation on `model`, and the claims its runtime holds. */
-async function conversation(model: { provider: string; model: string }): Promise<CapabilityClaims> {
+async function conversation(
+  model: { provider: string; model: string },
+  budget = turnBudget,
+): Promise<CapabilityClaims> {
   if (!handle) throw new Error('Postgres unavailable');
   const jobId = recordId('job');
   const attemptId = recordId('att');
@@ -193,7 +199,7 @@ async function conversation(model: { provider: string; model: string }): Promise
   await handle.sql`insert into job (id, space_id, principal_id, title, objective, kind, agent_id,
       state, lease_epoch, budget, constraints)
     values (${jobId}, ${spaceId}, ${ownerId}, 'Look something up', 'Search the web', 'chat',
-      ${agent}, 'running', 1, ${JSON.stringify(defaultBudget)}::jsonb,
+      ${agent}, 'running', 1, ${JSON.stringify(budget)}::jsonb,
       ${JSON.stringify({ public_compartment: false, allowed_domains: [] })}::jsonb)`;
   await handle.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
     values (${attemptId}, ${jobId}, 1, 'fake', ${model.provider}, ${model.model})`;
@@ -208,8 +214,8 @@ async function conversation(model: { provider: string; model: string }): Promise
     scopes: ['web.fetch', 'web.search'],
     budget: {
       max_actions: defaultBudget.max_actions,
-      max_output_tokens: defaultBudget.max_output_tokens,
-      max_usd_est: defaultBudget.max_usd_est,
+      max_output_tokens: budget.max_output_tokens,
+      max_usd_est: budget.max_usd_est,
     },
     exp: Math.floor(Date.now() / 1000) + 3600,
   };
@@ -259,13 +265,19 @@ withDb('web search', () => {
       expect(keylessHosts.length).toBe(before.keyless);
       const body = (await upstream.at(-1)?.clone().json()) as { tools?: unknown };
       expect(body.tools).toEqual([
-        { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
+        { type: 'web_search_20250305', name: 'web_search', max_uses: 2 },
       ]);
-      // Metered: the output is charged to the job under this action, and the
-      // request and its receipt are in the job's ledger.
-      const ledger = await handle.sql`select kind, reserved, settled from budget_ledger
-        where job_id = ${claims.job_id} and action_id = ${row.id} and kind = 'tokens'`;
-      expect([...ledger]).toEqual([{ kind: 'tokens', reserved: 3000, settled: 120 }]);
+      // Metered: the whole call (its search results are input) on the token
+      // budget, and one search's fee on the spending estimate, both under this
+      // action; the request and its receipt are in the job's ledger.
+      const ledger = await handle.sql`select kind, reserved::float8 as reserved,
+          settled::float8 as settled from budget_ledger
+        where job_id = ${claims.job_id} and action_id = ${row.id}
+          and kind in ('tokens', 'usd_est') order by kind`;
+      expect([...ledger]).toEqual([
+        { kind: 'tokens', reserved: 15_000, settled: 1_020 },
+        { kind: 'usd_est', reserved: 0.02, settled: 0.01 },
+      ]);
       const notices = await handle.sql`select payload from event
         where job_id = ${claims.job_id} and type = 'notice'
           and payload->>'phase' in ('search_request', 'search_receipt') order by seq`;
@@ -280,7 +292,12 @@ withDb('web search', () => {
         privacy: { route: 'cloud' },
       });
       const [attempt] = await handle.sql`select usage from attempt where id = ${claims.attempt_id}`;
-      expect(attempt?.usage).toMatchObject({ output_tokens: 120, search_requests: 1 });
+      expect(attempt?.usage).toMatchObject({
+        output_tokens: 120,
+        search_requests: 1,
+        web_searches: 1,
+        usd_est: 0.01,
+      });
       // The trail: "Searched the web for …", with each result as a source.
       const [web] = await handle.db
         .select()
@@ -333,6 +350,23 @@ withDb('web search', () => {
       expect(apiRequests.length).toBe(before.api + 1);
       expect(upstream.length).toBe(before.upstream);
       active = searches.default;
+    },
+    SLOW,
+  );
+
+  test(
+    'a native search over the job’s spending limit is refused, not moved to the keyless search',
+    async () => {
+      active = searches.default;
+      const before = { upstream: upstream.length, keyless: keylessHosts.length };
+      const claims = await conversation(CLAUDE, { ...turnBudget, max_usd_est: 0.005 });
+      const row = await searchAs(claims, { query: 'weather in Lisbon' });
+      expect(row.status).toBe('failed');
+      expect((row.reconciliation as { reason?: string } | null)?.reason).toBe(
+        SEARCH_BUDGET_REFUSED,
+      );
+      expect(upstream.length).toBe(before.upstream);
+      expect(keylessHosts.length).toBe(before.keyless);
     },
     SLOW,
   );

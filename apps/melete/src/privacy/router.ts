@@ -41,7 +41,7 @@ import {
   classifyStrong,
   type TopicHits,
 } from './classify.ts';
-import { type Detection, detect } from './detect.ts';
+import type { Detection } from './detect.ts';
 import { isLocalUrl, type LocalModel, localDetect, pinLocalModel } from './local.ts';
 import { type Protocol, Redactor } from './redact.ts';
 import {
@@ -209,12 +209,20 @@ export class PrivacyRouter {
     // The person said this conversation is not sensitive; the query is not read for a topic.
     if (!conversation?.cleared && classifyParts([query], settings.topics, this.topics))
       return SEARCH_KEPT_TOPIC;
-    const lowered = query.toLowerCase();
-    if (
-      detect(query, settings.enabled).length > 0 ||
-      settings.known.some((known) => known.value && lowered.includes(known.value.toLowerCase()))
-    )
-      return SEARCH_KEPT_DETAILS;
+    // The same redactor the gateway runs on a cloud request, over the query as
+    // it would leave: this conversation's vault (every detail it has already
+    // swapped, local-detector names included, in any spelling), the listed
+    // values, what memory learned in private conversations, and the detectors.
+    // Anything it would swap means the query carries what no cloud model sees.
+    if (/[⟦⟧]/.test(query)) return SEARCH_KEPT_DETAILS;
+    const remembered = await this.store.privateMemory(scope.spaceId);
+    const state = await this.state(scope, settings, `${settings.version}:${digest(remembered)}`);
+    const redactor = new Redactor(state.vault, {
+      enabled: settings.enabled,
+      known: [...settings.known, ...memoryValues(remembered)],
+      extra: (text) => state.ner.get(text),
+    });
+    if (redactor.spans(query).length > 0) return SEARCH_KEPT_DETAILS;
     return null;
   }
 

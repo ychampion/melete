@@ -351,18 +351,42 @@ A search goes to the first of these that answers:
    on the OpenAI-compatible endpoint Melete uses for Google.
 3. A search that needs no key: DuckDuckGo's HTML results page, then Wikipedia's
    search API when DuckDuckGo does not serve results. Both are read through the
-   same pinned, public-address-only transport as `web.fetch`.
+   same pinned, public-address-only transport as `web.fetch`. DuckDuckGo's page
+   is meant for people and is not an official API, so it is paced: one request
+   at a time, two seconds apart, a repeated query answered from a ten-minute
+   cache, and nothing sent for fifteen minutes after a robot check. The service
+   logs a warning at start when no search key is set (see
+   [DEPLOYMENT](DEPLOYMENT.md)). Wikipedia is told who is calling, as its API
+   policy asks.
 
-A backend that fails or finds nothing hands the search to the next one.
+A backend that fails or finds nothing hands the search to the next one, and the
+receipt's `tried` names every backend that was asked. That includes the model's
+own search: when the provider refuses or fails the call, or it returns no
+sources, the query goes on to the keyless search, so a site other than the
+model's provider can see it. Two native failures stop the search instead: a
+privacy refusal, and the job's budget running out (the agent is told the search
+was not run). Neither is ever moved to a free backend.
 
 The model's own search is one bounded request through a model gateway of the
 service's own (`apps/melete/src/broker/search-gateway.ts`), which permits that
 provider search tool and no other built-in tool. The provider key stays in the
-gateway. The request is reserved on the job's output budget under the
-`web.search` action, settled at the provider's usage, and recorded as a
-`search_request` and a `search_receipt` notice in the job's ledger, with the
-attempt's usage counting `search_requests`. The privacy router reads it as the
-job's own service call.
+gateway. The call is bounded: at most two searches on the Messages tool, the
+smallest search context on the Responses tool, and a reply of at most 1 MB. It
+is charged to the job under the `web.search` action, and only to the job's
+current attempt:
+
+- The token budget is charged the call's whole usage, input included, since
+  that input is the provider's own search results. 3,000 output plus 12,000
+  result tokens are reserved first, then settled at the provider's count.
+- The spending estimate (`usd_est`) is charged $0.01 per search the provider
+  ran, the list price of both providers' search tools. Two searches' worth is
+  reserved first.
+
+The call is recorded as a `search_request` and a `search_receipt` notice in the
+job's ledger. The attempt's usage counts `search_requests`, `web_searches` and
+the fee in `usd_est`. The privacy router reads the call as the job's own service
+call. A private decision there refuses it (`privacy_confirmation_required`),
+and the search stops.
 
 What the receipt keeps: the query, which backend answered and which were tried,
 the model for a native search, how many searches the provider ran, the
@@ -382,12 +406,17 @@ before any backend is asked, when:
 - the space or the agent is marked private, or the conversation is marked
   sensitive (`PrivacyRouter.outsideSearchRefusal`);
 - the query itself is about a sensitive topic, unless the person said the
-  conversation is not sensitive, or it carries a detail the space's privacy
-  categories detect or a value they list.
+  conversation is not sensitive;
+- the query carries anything the gateway's redactor would swap for a
+  placeholder in a cloud request: a value this conversation's vault already
+  holds (whatever found it, the local detector included, in any spelling), a
+  value the space lists (numbers with or without separators, text in any case),
+  what memory learned in private conversations, a detail the enabled categories
+  detect, or an unresolved placeholder. The model reads placeholders, but its
+  tool arguments come back with real values, so this check is what keeps a
+  private value out of the query.
 
-A check that cannot answer refuses. If the privacy router sends a native call
-to the person's own model instead, the search ends there and no other backend
-is tried. Evidence: `web-search.test.ts` (connector and backends),
+A check that cannot answer refuses. Evidence: `web-search.test.ts` (connector and backends),
 `search-gateway.test.ts`, `privacy/search.test.ts`, and the integration test
 [web-search.test.ts](../apps/melete/test/integration/web-search.test.ts):
 `a Claude conversation searches with its own search tool, metered on the job,

@@ -24,6 +24,7 @@ import {
   SearchRefused,
   type SearchRequest,
   type SearchResult,
+  searchResult,
 } from '../connectors/web-search.ts';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
@@ -38,19 +39,40 @@ import {
   type GatewayProtocol,
 } from '../gateway/types.ts';
 import { reserveLocked } from './budget.ts';
+import { BrokerFault } from './errors.ts';
 import { appendEvent, lockJob } from './records.ts';
 
 export const SEARCH_INPUT_TOKENS = 4_000;
 export const SEARCH_OUTPUT_TOKENS = 3_000;
-/** Searches one call may run before it answers. */
-export const SEARCH_MAX_USES = 3;
+/**
+ * The provider's search results come back as input to the call. This much of
+ * them is reserved up front; the call settles at what the provider reports.
+ */
+export const SEARCH_RESULT_TOKENS = 12_000;
+/** Searches one call may run before it answers (the Messages tool's own cap). */
+export const SEARCH_MAX_USES = 2;
+/**
+ * What one search is charged as on the job's spending estimate: the providers'
+ * list price for their search tools, $10 per thousand. An estimate the budget
+ * holds back, not the provider's bill.
+ */
+export const SEARCH_FEE_USD = 0.01;
+/** The most of a search reply the gateway reads. */
+export const SEARCH_MAX_REPLY_BYTES = 1024 * 1024;
 
 const PRIVACY_REFUSED =
   'This conversation is private, so its words are not sent to an outside search.';
+export const SEARCH_BUDGET_REFUSED =
+  'This conversation has reached its spending limit, so the search was not run.';
 
 type Target = { provider: string; model: string };
-/** One call in flight. `route` is where the privacy router sent it, once it settles. */
-type Call = { request: SearchRequest; target: Target; route?: string };
+/** One call in flight, and the spending reservation it holds once reserved. */
+type Call = { request: SearchRequest; target: Target; usdLedger?: string };
+
+/** The ledger a search call is kept in; `searched` settles its per-search fee. */
+export type SearchBudget = GatewayBudget & {
+  searched?(call: Call, searches: number): Promise<void>;
+};
 
 /** The principal of one search call: one request, one model, the job that searched. */
 export function searchPrincipal(call: Call): GatewayPrincipal {
@@ -73,14 +95,18 @@ export function searchPrincipal(call: Call): GatewayPrincipal {
 }
 
 /**
- * Records each search call on the job that made it: the output it may produce
- * is reserved on the job's token budget under the web.search action, and the
- * request and its receipt are notices in the job's ledger.
+ * Records each search call on the job that made it, under the web.search
+ * action. The job's token budget is charged the call's whole usage, input
+ * included, because the input is the provider's own search results rather
+ * than the conversation; its spending estimate is charged each search's fee.
+ * Both are reserved before the call at their ceilings and settled at what
+ * the provider reports. The request and its receipt are notices in the job's
+ * ledger.
  */
 export function jobSearchBudget(
   sql: Sql,
   calls: (principal: GatewayPrincipal) => Call | undefined,
-): GatewayBudget {
+): SearchBudget {
   const reserved = new Map<string, Call>();
   return {
     async reserve(request) {
@@ -93,39 +119,67 @@ export function jobSearchBudget(
       )
         throw new GatewayError(403, 'search_principal_denied');
       const { jobId, attemptId, actionId } = call.request;
-      const id = await sql.begin(async (tx) => {
-        const job = await lockJob(tx, jobId);
-        // The job's own limits, charged to the attempt and the action that searched.
-        const claims = { attempt_id: attemptId, budget: job.budget } as unknown as CapabilityClaims;
-        const [tokens] = await reserveLocked(tx, job, claims, actionId, [
-          { kind: 'tokens', amount: request.maxOutputTokens },
-        ]);
-        if (!tokens) throw new Error('Incomplete search reservation');
-        await appendEvent(tx, job.id, attemptId, 'notice', {
-          phase: 'search_request',
-          action_id: actionId,
-          reservation_id: tokens.id,
-          provider: request.provider,
-          model_requested: request.model,
-          estimated_tokens: request.estimatedTokens,
-          max_output_tokens: request.maxOutputTokens,
+      const tokenCeiling = request.maxOutputTokens + SEARCH_RESULT_TOKENS;
+      const usdCeiling = SEARCH_MAX_USES * SEARCH_FEE_USD;
+      let held: { tokens: string; usd: string };
+      try {
+        held = await sql.begin(async (tx) => {
+          const job = await lockJob(tx, jobId);
+          // Only the job's current attempt spends: one a newer attempt
+          // replaced has no authority left.
+          const [attempt] = await tx`select epoch from attempt
+            where id = ${attemptId} and job_id = ${jobId}`;
+          if (!attempt || Number(attempt.epoch) !== job.lease_epoch)
+            throw new GatewayError(409, 'search_attempt_stale');
+          // An attempt's capability carries its job's limits, as issued when it
+          // was claimed (jobs/runner.ts); the job row is that budget as it
+          // stands now, charged to the attempt and the action that searched.
+          const claims = {
+            attempt_id: attemptId,
+            budget: job.budget,
+          } as unknown as CapabilityClaims;
+          const reservations = await reserveLocked(tx, job, claims, actionId, [
+            { kind: 'tokens', amount: tokenCeiling },
+            { kind: 'usd_est', amount: usdCeiling },
+          ]);
+          const tokens = reservations.find((row) => row.kind === 'tokens');
+          const usd = reservations.find((row) => row.kind === 'usd_est');
+          if (!tokens || !usd) throw new Error('Incomplete search reservation');
+          await appendEvent(tx, job.id, attemptId, 'notice', {
+            phase: 'search_request',
+            action_id: actionId,
+            reservation_id: tokens.id,
+            usd_reservation_id: usd.id,
+            provider: request.provider,
+            model_requested: request.model,
+            estimated_tokens: request.estimatedTokens,
+            max_output_tokens: request.maxOutputTokens,
+            reserved_tokens: tokenCeiling,
+            reserved_usd_est: usdCeiling,
+          });
+          return { tokens: tokens.id, usd: usd.id };
         });
-        return tokens.id;
-      });
-      reserved.set(id, call);
-      return { id };
+      } catch (error) {
+        if (error instanceof BrokerFault && error.code === 'budget_exceeded')
+          throw new GatewayError(429, 'search_budget_exceeded');
+        throw error;
+      }
+      call.usdLedger = held.usd;
+      reserved.set(held.tokens, call);
+      return { id: held.tokens };
     },
     async settle(reservation, settlement) {
       const call = reserved.get(reservation.id);
       reserved.delete(reservation.id);
       if (!call) throw new GatewayError(409, 'reservation_not_found');
-      call.route = settlement.privacy?.route;
       const { jobId, attemptId, actionId } = call.request;
       const usage = settlement.usage;
       await sql.begin(async (tx) => {
         const job = await lockJob(tx, jobId);
+        // The whole call, its search results included. Without usage the
+        // reservation stays charged at its ceiling.
         if (usage)
-          await tx`update budget_ledger set settled = ${usage.outputTokens}
+          await tx`update budget_ledger set settled = ${usage.inputTokens + usage.outputTokens}
             where id = ${reservation.id} and settled is null`;
         const [attempt] = await tx`select usage from attempt where id = ${attemptId} for update`;
         if (attempt && usage) {
@@ -163,6 +217,24 @@ export function jobSearchBudget(
         });
       });
     },
+    async searched(call, searches) {
+      const { jobId, attemptId } = call.request;
+      if (!call.usdLedger || !Number.isSafeInteger(searches) || searches < 0) return;
+      const charge = searches * SEARCH_FEE_USD;
+      await sql.begin(async (tx) => {
+        await lockJob(tx, jobId);
+        await tx`update budget_ledger set settled = ${charge}
+          where id = ${call.usdLedger ?? ''} and settled is null`;
+        const [attempt] = await tx`select usage from attempt where id = ${attemptId} for update`;
+        if (!attempt) return;
+        const previous = (attempt.usage ?? {}) as Record<string, unknown>;
+        await tx`update attempt set usage = ${JSON.stringify({
+          ...previous,
+          web_searches: Number(previous.web_searches ?? 0) + searches,
+          usd_est: Number(previous.usd_est ?? 0) + charge,
+        })}::jsonb where id = ${attemptId}`;
+      });
+    },
   };
 }
 
@@ -194,7 +266,8 @@ export function searchBody(
       model,
       input: prompt,
       max_output_tokens: SEARCH_OUTPUT_TOKENS,
-      tools: [{ type: 'web_search' }],
+      // The smallest context the tool offers, so its results stay small.
+      tools: [{ type: 'web_search', search_context_size: 'low' }],
       include: ['web_search_call.action.sources'],
     };
   return null;
@@ -207,21 +280,8 @@ const object = (value: unknown): Record<string, unknown> =>
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
 
-const resultOf = (title: unknown, url: unknown, snippet: unknown): SearchResult | null => {
-  const address = text(url);
-  if (!/^https?:\/\//i.test(address)) return null;
-  let host = address;
-  try {
-    host = new URL(address).hostname;
-  } catch {
-    return null;
-  }
-  return {
-    title: (text(title).trim() || host).slice(0, 200),
-    url: address,
-    snippet: text(snippet).replace(/\s+/g, ' ').trim().slice(0, 400),
-  };
-};
+/** Native results get the same receipt treatment as every other backend's. */
+const resultOf = searchResult;
 
 /** What a Messages reply with web search found: the pages, the cited text, the answer. */
 export function messagesSearchOutcome(reply: unknown, limit: number) {
@@ -290,7 +350,7 @@ export type SearchGatewayOptions = {
   fetch?: GatewayOptions['fetch'];
   timeoutMs?: number;
   /** Test injection: how a call's ledger is kept. */
-  budget?: (calls: (principal: GatewayPrincipal) => Call | undefined) => GatewayBudget;
+  budget?: (calls: (principal: GatewayPrincipal) => Call | undefined) => SearchBudget;
   /** Test injection: the model an attempt runs on. */
   attemptModel?: (request: SearchRequest) => Promise<Target | null>;
 };
@@ -299,10 +359,11 @@ export type SearchGatewayOptions = {
 export async function openSearchGateway(options: SearchGatewayOptions) {
   const live = new Map<string, Call>();
   const byPrincipal = new WeakMap<GatewayPrincipal, Call>();
+  const budget = (options.budget ?? ((calls) => jobSearchBudget(options.sql, calls)))((principal) =>
+    byPrincipal.get(principal),
+  );
   const server = createModelGateway({
-    budget: (options.budget ?? ((calls) => jobSearchBudget(options.sql, calls)))((principal) =>
-      byPrincipal.get(principal),
-    ),
+    budget,
     providers: options.providers,
     ...(options.currentProviders ? { currentProviders: options.currentProviders } : {}),
     fetch: options.fetch,
@@ -310,7 +371,7 @@ export async function openSearchGateway(options: SearchGatewayOptions) {
     providerSearch: true,
     timeoutMs: options.timeoutMs ?? 60_000,
     maxRequestBytes: 64 * 1024,
-    maxResponseBytes: 2 * 1024 * 1024,
+    maxResponseBytes: SEARCH_MAX_REPLY_BYTES,
     async authenticate(token) {
       // One token, one call: spent the moment the gateway accepts it.
       const call = live.get(token);
@@ -375,18 +436,20 @@ export async function openSearchGateway(options: SearchGatewayOptions) {
           const code = String(
             object(object(await response.json().catch(() => null)).error).code ?? '',
           );
+          // A private conversation's words go nowhere, and a search over
+          // the job's limit is not moved to a free backend to get round it.
+          // Any other failure hands the search to Melete's own backends.
           if (/^privacy_/.test(code)) throw new SearchRefused(PRIVACY_REFUSED);
+          if (code === 'search_budget_exceeded') throw new SearchRefused(SEARCH_BUDGET_REFUSED);
           throw new Error(`search gateway ${response.status} ${code}`);
         }
         const reply = await response.json();
-        const call = live.get(token) ?? sent;
-        // Sent to the person's own model instead: that is no web search, and
-        // the conversation is private, so nothing else may search either.
-        if (call.route === 'local') throw new SearchRefused(PRIVACY_REFUSED);
         const found =
           protocol === 'messages'
             ? messagesSearchOutcome(reply, request.maxResults)
             : responsesSearchOutcome(reply, request.maxResults);
+        // The fee is for the searches the provider ran, sources or not.
+        await budget.searched?.(sent, found.searches);
         // A reply with no sources searched nothing; Melete's own search tries.
         if (found.results.length === 0) throw new Error('native search returned no sources');
         return {

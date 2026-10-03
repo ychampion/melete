@@ -30,6 +30,8 @@ export type WebTransport = (
     accept?: string;
     /** GET unless named; nothing here sends a body. */
     method?: 'GET' | 'HEAD';
+    /** Sent instead of the default user agent. */
+    userAgent?: string;
   },
 ) => Promise<WebResponse>;
 
@@ -195,7 +197,7 @@ export const pinnedWebRequest: WebTransport = (url, address, options) =>
         headers: {
           accept: options.accept ?? 'text/plain, text/html, application/json',
           'accept-encoding': 'gzip, deflate, br',
-          'user-agent': 'Melete/0.1',
+          'user-agent': options.userAgent ?? 'Melete/0.1',
         },
       },
       (response) => {

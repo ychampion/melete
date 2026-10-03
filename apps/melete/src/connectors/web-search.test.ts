@@ -4,6 +4,9 @@ import { connectorAction, connectorContext } from './test-fixtures.ts';
 import { createWebConnector, SEARCH_PRIVATE, WEB_SEARCH_NOTICE } from './web.ts';
 import {
   createWebSearch,
+  duckDuckGoSearch,
+  keylessSearchNotice,
+  MAX_API_REPLY_BYTES,
   parseDuckDuckGo,
   type SearchBackend,
   SearchRefused,
@@ -325,4 +328,65 @@ test('when no backend answers, the search fails and can be tried again', async (
     outcome: 'failed',
     retryable: true,
   });
+});
+
+test('the keyless search is paced: a gap between requests, repeats from cache, a cool-off after a block', async () => {
+  let clock = 1_000_000;
+  const slept: number[] = [];
+  const pacing = {
+    minIntervalMs: 2_000,
+    cacheMs: 600_000,
+    coolOffMs: 900_000,
+    now: () => clock,
+    sleep: async (ms: number) => {
+      slept.push(ms);
+      clock += ms;
+    },
+  };
+  let serve = { status: 200, body: DDG_PAGE };
+  const asked: string[] = [];
+  const ddg = duckDuckGoSearch({
+    pacing,
+    get: async (url) => {
+      asked.push(url.searchParams.get('q') ?? '');
+      return serve;
+    },
+  });
+  await ddg.search(request('first'));
+  await ddg.search(request('second'));
+  // The second request waited out the gap; nothing was waited before the first.
+  expect(slept).toEqual([2_000]);
+  // A repeated query is answered from the cache, without a request.
+  expect((await ddg.search(request('FIRST')))?.results.length).toBe(2);
+  expect(asked).toEqual(['first', 'second']);
+  // A robot check starts a cool-off: nothing is sent until it ends.
+  clock += 5_000;
+  serve = { status: 202, body: '<div class="anomaly-modal">' };
+  await expect(ddg.search(request('third'))).rejects.toThrow('did not serve results');
+  serve = { status: 200, body: DDG_PAGE };
+  await expect(ddg.search(request('fourth'))).rejects.toThrow('cooling off');
+  expect(asked).toEqual(['first', 'second', 'third']);
+  clock += 900_000;
+  expect((await ddg.search(request('fourth')))?.backend).toBe('duckduckgo');
+  expect(asked).toEqual(['first', 'second', 'third', 'fourth']);
+});
+
+test('the operator is told at start when searches can fall to the keyless search', () => {
+  expect(keylessSearchNotice({})).toContain('DuckDuckGo');
+  expect(keylessSearchNotice({ BRAVE_SEARCH_API_KEY: 'k' })).toBeNull();
+  expect(keylessSearchNotice({ TAVILY_API_KEY: 'k' })).toBeNull();
+});
+
+test('a search API reply larger than the limit is not read', async () => {
+  const { get } = keyless();
+  const huge = JSON.stringify({ web: { results: [] }, pad: 'x'.repeat(MAX_API_REPLY_BYTES) });
+  const found = await webSearchFromEnv(
+    { BRAVE_SEARCH_API_KEY: 'brave-key' },
+    {
+      get,
+      fetch: async () => new Response(huge, { headers: { 'content-type': 'application/json' } }),
+    },
+  ).search(request());
+  expect(found.tried).toEqual(['brave', 'duckduckgo']);
+  expect(found.backend).toBe('duckduckgo');
 });

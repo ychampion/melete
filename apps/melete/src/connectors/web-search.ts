@@ -99,8 +99,12 @@ export function plainText(html: string): string {
   return decodeEntities(text).replace(/\s+/g, ' ').trim();
 }
 
-/** A result as the receipt keeps it: an http(s) address without credentials, clipped text. */
-function result(title: unknown, url: unknown, snippet: unknown): SearchResult | null {
+/**
+ * A result as the receipt keeps it: an http(s) address without credentials,
+ * text without markup, clipped. Every backend's results go through this,
+ * the model's own search included.
+ */
+export function searchResult(title: unknown, url: unknown, snippet: unknown): SearchResult | null {
   if (typeof url !== 'string') return null;
   let parsed: URL;
   try {
@@ -146,14 +150,31 @@ function apiSignal(signal: AbortSignal | undefined): AbortSignal {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
+/** The most a search API's reply may be; a larger one is not read. */
+export const MAX_API_REPLY_BYTES = 1024 * 1024;
+
 async function apiJson(fetcher: Fetch, request: Request, name: string): Promise<unknown> {
   const response = await fetcher(request);
-  if (!response.ok) {
+  if (!response.ok || !response.body) {
     await response.body?.cancel();
     // The status only: an API's error body can echo the key.
     throw new Error(`${name} answered ${response.status}`);
   }
-  return response.json();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_API_REPLY_BYTES) throw new Error(`${name} reply exceeds the size limit`);
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
 const records = (value: unknown): Record<string, unknown>[] =>
@@ -182,7 +203,9 @@ export function braveSearch(options: { apiKey: string; fetch?: Fetch }): SearchB
       return {
         backend: 'brave',
         results: distinctResults(
-          records(body?.web?.results).map((item) => result(item.title, item.url, item.description)),
+          records(body?.web?.results).map((item) =>
+            searchResult(item.title, item.url, item.description),
+          ),
           request.maxResults,
         ),
       };
@@ -217,7 +240,7 @@ export function tavilySearch(options: { apiKey: string; fetch?: Fetch }): Search
       return {
         backend: 'tavily',
         results: distinctResults(
-          records(body?.results).map((item) => result(item.title, item.url, item.content)),
+          records(body?.results).map((item) => searchResult(item.title, item.url, item.content)),
           request.maxResults,
         ),
       };
@@ -241,11 +264,14 @@ export function publicGetter(
     resolve?: (hostname: string) => Promise<ResolvedAddress[]>;
     transport?: WebTransport;
     timeoutMs?: number;
+    /** Sent instead of the default user agent, for a service that asks to be told who calls. */
+    userAgent?: string;
   } = {},
 ): PublicGet {
   const resolve = options.resolve ?? resolveHost;
   const transport = options.transport ?? pinnedWebRequest;
   return async (url, accept, signal) => {
+    const userAgent = options.userAgent;
     const host = url.hostname.replace(/^\[|\]$/g, '');
     const family = isIP(host);
     const pinned = publicPin(
@@ -257,6 +283,7 @@ export function publicGetter(
       maxBytes: 2 * 1024 * 1024,
       timeoutMs: options.timeoutMs ?? 15_000,
       accept,
+      ...(userAgent ? { userAgent } : {}),
     });
     return { status: response.status, body: response.body };
   };
@@ -314,7 +341,7 @@ export function parseDuckDuckGo(html: string, limit = MAX_SEARCH_RESULTS): Searc
       if (start !== -1 && end !== -1) snippet = block.slice(start + 1, end);
     }
     const target = href ? duckDuckGoTarget(href) : null;
-    if (target) found.push(result(title, target, snippet));
+    if (target) found.push(searchResult(title, target, snippet));
     index = next;
   }
   return distinctResults(found, limit);
@@ -324,29 +351,114 @@ export function parseDuckDuckGo(html: string, limit = MAX_SEARCH_RESULTS): Searc
 const looksBlocked = (status: number, body: string) =>
   status === 202 || status === 403 || status === 429 || /anomaly-modal|challenge-form/.test(body);
 
-/** DuckDuckGo's HTML results, which need no key and no account. */
-export function duckDuckGoSearch(options: { get?: PublicGet } = {}): SearchBackend {
+/** How the keyless search is kept polite to DuckDuckGo. */
+export type KeylessPacing = {
+  /** The least time between two requests from this installation. */
+  minIntervalMs?: number;
+  /** How long a query's results are reused. */
+  cacheMs?: number;
+  /** How long nothing is sent after DuckDuckGo served its robot check. */
+  coolOffMs?: number;
+  now?: () => number;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+};
+
+const CACHE_ENTRIES = 200;
+
+const pause = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const stop = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', stop);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', stop, { once: true });
+  });
+
+/**
+ * DuckDuckGo's HTML results, which need no key and no account. It is an
+ * unofficial use of a page meant for people, sent from this server's address,
+ * so it is paced: one request at a time with a gap between them, a query's
+ * results reused for a while, and nothing sent for a cool-off period after
+ * DuckDuckGo answers with its robot check.
+ */
+export function duckDuckGoSearch(
+  options: { get?: PublicGet; pacing?: KeylessPacing } = {},
+): SearchBackend {
   const get = options.get ?? publicGetter();
+  const pacing = options.pacing ?? {};
+  const minIntervalMs = pacing.minIntervalMs ?? 2_000;
+  const cacheMs = pacing.cacheMs ?? 10 * 60_000;
+  const coolOffMs = pacing.coolOffMs ?? 15 * 60_000;
+  const now = pacing.now ?? Date.now;
+  const sleep = pacing.sleep ?? pause;
+  const cache = new Map<string, { at: number; results: SearchResult[] }>();
+  let blockedUntil = 0;
+  let lastAt = Number.NEGATIVE_INFINITY;
+  let queue: Promise<unknown> = Promise.resolve();
+  const send = async (request: SearchRequest): Promise<SearchResult[]> => {
+    if (now() < blockedUntil) throw new Error('duckduckgo is cooling off after a block');
+    const wait = lastAt + minIntervalMs - now();
+    if (wait > 0) await sleep(wait, request.signal);
+    lastAt = now();
+    const url = new URL('https://html.duckduckgo.com/html/');
+    url.searchParams.set('q', request.query);
+    const response = await get(url, 'text/html', request.signal);
+    if (looksBlocked(response.status, response.body)) {
+      blockedUntil = now() + coolOffMs;
+      throw new Error('duckduckgo did not serve results');
+    }
+    if (response.status !== 200) throw new Error(`duckduckgo answered ${response.status}`);
+    return parseDuckDuckGo(response.body, MAX_SEARCH_RESULTS);
+  };
   return {
     name: 'duckduckgo',
     async search(request) {
-      const url = new URL('https://html.duckduckgo.com/html/');
-      url.searchParams.set('q', request.query);
-      const response = await get(url, 'text/html', request.signal);
-      if (looksBlocked(response.status, response.body))
-        throw new Error('duckduckgo did not serve results');
-      if (response.status !== 200) throw new Error(`duckduckgo answered ${response.status}`);
-      return {
-        backend: 'duckduckgo',
-        results: parseDuckDuckGo(response.body, request.maxResults),
-      };
+      const key = request.query.toLowerCase();
+      const kept = cache.get(key);
+      let results: SearchResult[];
+      if (kept && now() - kept.at < cacheMs) results = kept.results;
+      else {
+        // One at a time: the gap is between requests, not between callers.
+        const turn = queue.then(() => send(request));
+        queue = turn.catch(() => {});
+        results = await turn;
+        cache.delete(key);
+        cache.set(key, { at: now(), results });
+        if (cache.size > CACHE_ENTRIES) cache.delete(cache.keys().next().value as string);
+      }
+      return { backend: 'duckduckgo', results: results.slice(0, request.maxResults) };
     },
   };
 }
 
+/** What the operator is told at start when searches may fall to the keyless search. */
+export function keylessSearchNotice(env: {
+  BRAVE_SEARCH_API_KEY?: string;
+  TAVILY_API_KEY?: string;
+}): string | null {
+  if (env.BRAVE_SEARCH_API_KEY?.trim() || env.TAVILY_API_KEY?.trim()) return null;
+  return (
+    'web search: no search key is set, so searches the model cannot run itself read ' +
+    "DuckDuckGo's results page from this server's address. That page is meant for people, " +
+    'is paced and may stop answering; set BRAVE_SEARCH_API_KEY or TAVILY_API_KEY for a hosted installation.'
+  );
+}
+
+/** Wikipedia's API asks callers to say who they are. */
+const WIKIPEDIA_USER_AGENT =
+  'Melete/0.1 (self-hosted assistant; https://github.com/ychampion/melete)';
+
 /** Wikipedia's search API: narrow, but keyless and steady when DuckDuckGo is not. */
 export function wikipediaSearch(options: { get?: PublicGet } = {}): SearchBackend {
-  const get = options.get ?? publicGetter();
+  const get = options.get ?? publicGetter({ userAgent: WIKIPEDIA_USER_AGENT });
   return {
     name: 'wikipedia',
     async search(request) {
@@ -368,7 +480,7 @@ export function wikipediaSearch(options: { get?: PublicGet } = {}): SearchBacken
         results: distinctResults(
           records(body?.query?.search).map((item) =>
             typeof item.title === 'string'
-              ? result(
+              ? searchResult(
                   item.title,
                   `https://en.wikipedia.org/wiki/${encodeURIComponent(item.title.replaceAll(' ', '_'))}`,
                   item.snippet,
@@ -424,7 +536,12 @@ export function createWebSearch(backends: readonly SearchBackend[]): WebSearch {
  */
 export function webSearchFromEnv(
   env: { BRAVE_SEARCH_API_KEY?: string; TAVILY_API_KEY?: string },
-  options: { native?: SearchBackend; fetch?: Fetch; get?: PublicGet } = {},
+  options: {
+    native?: SearchBackend;
+    fetch?: Fetch;
+    get?: PublicGet;
+    pacing?: KeylessPacing;
+  } = {},
 ): WebSearch {
   const backends: SearchBackend[] = [];
   const brave = env.BRAVE_SEARCH_API_KEY?.trim();
@@ -432,7 +549,9 @@ export function webSearchFromEnv(
   if (brave) backends.push(braveSearch({ apiKey: brave, fetch: options.fetch }));
   if (tavily) backends.push(tavilySearch({ apiKey: tavily, fetch: options.fetch }));
   if (options.native) backends.push(options.native);
-  const get = options.get ?? publicGetter();
-  backends.push(duckDuckGoSearch({ get }), wikipediaSearch({ get }));
+  backends.push(
+    duckDuckGoSearch({ ...(options.get ? { get: options.get } : {}), pacing: options.pacing }),
+    wikipediaSearch(options.get ? { get: options.get } : {}),
+  );
   return createWebSearch(backends);
 }
