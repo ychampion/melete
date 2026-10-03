@@ -22,7 +22,7 @@
  */
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, realpath } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import {
   type Action,
   ARTIFACT_MIME,
@@ -182,12 +182,11 @@ export function createExecConnector(options: ExecOptions): Connector {
     let storedBytes: number | null = null;
     let stored: Buffer | null = null;
     if (record.output_path) {
-      const target = await resolveInWorkspace(ctx, record.output_path).catch(() => {
+      await resolveInWorkspace(ctx, record.output_path).catch(() => {
         throw new Error(
           `the recorded output file is outside this job workspace: ${record.output_path}`,
         );
       });
-      await lstat(target);
       stored = await readStored(ctx, record.output_path);
       storedBytes = stored.byteLength;
       if (storedBytes !== record.output_bytes)

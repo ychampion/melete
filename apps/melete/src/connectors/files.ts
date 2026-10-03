@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { constants, lstatSync } from 'node:fs';
 import {
   type FileHandle,
+  link,
   lstat,
   mkdir,
   open,
@@ -263,7 +264,7 @@ async function refusedOpen(error: unknown, at: string): Promise<unknown> {
   return new Error('not a directory');
 }
 
-/** A directory held open by `holdBeneath`. */
+/** A directory held open by `holdBeneath` or `holdWithin`. */
 export type HeldDirectory = {
   /** Its path, as built from the base and the names walked. */
   path: string;
@@ -271,8 +272,99 @@ export type HeldDirectory = {
   self: string;
   /** A name for an entry in the held directory, wherever that directory is now. */
   at: (name: string) => string;
+  /**
+   * True when the directory is held by an open descriptor. False where the
+   * system has no descriptor paths, and entries are named by path.
+   */
+  pinned: boolean;
   close: () => Promise<void>;
 };
+
+/**
+ * One name inside a directory: never empty, `.` or `..`, and never more than
+ * one name. The walk enforces this itself, whatever its caller checked.
+ */
+function checkName(name: string): void {
+  if (!name || name === '.' || name === '..' || /[/\\\0]/.test(name))
+    throw new Error('path traversal or device path is not allowed');
+}
+
+function heldBy(handle: FileHandle, at: string): HeldDirectory {
+  const self = `/proc/self/fd/${handle.fd}`;
+  return {
+    path: at,
+    self,
+    at: (name) => `${self}/${name}`,
+    pinned: true,
+    close: () => handle.close(),
+  };
+}
+
+function heldByPath(at: string): HeldDirectory {
+  return {
+    path: at,
+    self: at,
+    at: (name) => path.join(at, name),
+    pinned: false,
+    close: async () => {},
+  };
+}
+
+/** Hold a trusted directory, by descriptor where the system can name one. */
+async function holdRoot(base: string): Promise<HeldDirectory> {
+  if (process.platform === 'linux') {
+    const handle = await open(base, DIRECTORY_FLAGS);
+    try {
+      if ((await descriptorPath(handle)) !== null) return heldBy(handle, base);
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+    await handle.close();
+  }
+  if (!(await lstat(base)).isDirectory()) throw new Error('not a directory');
+  return heldByPath(base);
+}
+
+/**
+ * Hold the directory `name` inside a held one: opened inside it, never
+ * through a link, and made there first when missing and `create` is set.
+ * The parent stays held; close both.
+ */
+export async function holdWithin(
+  parent: HeldDirectory,
+  name: string,
+  create = false,
+): Promise<HeldDirectory> {
+  checkName(name);
+  const at = parent.at(name);
+  const where = path.join(parent.path, name);
+  if (parent.pinned) {
+    try {
+      return heldBy(await open(at, DIRECTORY_FLAGS), where);
+    } catch (error) {
+      if (!create || !missing(error)) throw await refusedOpen(error, at);
+      // Made inside the held parent; a link already at the name is never followed.
+      await mkdir(at).catch((made: unknown) => {
+        if (codeOf(made) !== 'EEXIST') throw made;
+      });
+      return holdWithin(parent, name, false);
+    }
+  }
+  let stat = await lstat(at).catch((error: unknown) => {
+    if (create && missing(error)) return null;
+    throw error;
+  });
+  if (!stat) {
+    await mkdir(at).catch((error: unknown) => {
+      if (codeOf(error) !== 'EEXIST') throw error;
+    });
+    stat = await lstat(at);
+  }
+  if (stat.isSymbolicLink()) throw new Error('symbolic links are not allowed');
+  if (!stat.isDirectory()) throw new Error('not a directory');
+  return heldByPath(where);
+}
 
 /**
  * Walk from a trusted `base` one name at a time, each opened inside the
@@ -283,86 +375,61 @@ export type HeldDirectory = {
  * each inside the held directory before it.
  *
  * Where the system has no descriptor paths (anything but Linux), the walk is
- * by path and each name is checked as it is reached; the open after it is
- * then checked again by `openBeneath`.
+ * by path and each name is checked as it is reached; `openIn` then checks the
+ * open against the path again.
  */
 export async function holdBeneath(
   base: string,
   segments: string[],
   create = false,
 ): Promise<HeldDirectory> {
-  if (process.platform === 'linux') {
-    let handle = await open(base, DIRECTORY_FLAGS);
-    try {
-      if ((await descriptorPath(handle)) !== null) {
-        let current = base;
-        for (const segment of segments) {
-          current = path.join(current, segment);
-          const next = await openDirectoryIn(handle, segment, create);
-          await handle.close();
-          handle = next;
-        }
-        const held = handle;
-        const self = `/proc/self/fd/${held.fd}`;
-        return {
-          path: current,
-          self,
-          at: (name) => `${self}/${name}`,
-          close: () => held.close(),
-        };
-      }
-    } catch (error) {
-      await handle.close();
-      throw error;
-    }
-    await handle.close();
-  }
-  let current = base;
-  for (const segment of segments) {
-    current = path.join(current, segment);
-    let stat = await lstat(current).catch((error: unknown) => {
-      if (create && missing(error)) return null;
-      throw error;
-    });
-    if (!stat) {
-      await mkdir(current).catch((error: unknown) => {
-        if (codeOf(error) !== 'EEXIST') throw error;
-      });
-      stat = await lstat(current);
-    }
-    if (stat.isSymbolicLink()) throw new Error('symbolic links are not allowed');
-    if (!stat.isDirectory()) throw new Error('not a directory');
-  }
-  const held = current;
-  return { path: held, self: held, at: (name) => path.join(held, name), close: async () => {} };
-}
-
-async function openDirectoryIn(
-  parent: FileHandle,
-  name: string,
-  create: boolean,
-): Promise<FileHandle> {
-  const at = `/proc/self/fd/${parent.fd}/${name}`;
+  for (const segment of segments) checkName(segment);
+  let held = await holdRoot(base);
   try {
-    return await open(at, DIRECTORY_FLAGS);
-  } catch (error) {
-    if (create && missing(error)) {
-      // Made inside the held parent; a link already at the name is never followed.
-      await mkdir(at).catch((made: unknown) => {
-        if (codeOf(made) !== 'EEXIST') throw made;
-      });
-      return openDirectoryIn(parent, name, false);
+    for (const segment of segments) {
+      const next = await holdWithin(held, segment, create);
+      await held.close();
+      held = next;
     }
-    throw await refusedOpen(error, at);
+    return held;
+  } catch (error) {
+    await held.close();
+    throw error;
   }
 }
 
 /**
- * Open the file at `base/...segments` the way `holdBeneath` walks: every
- * folder on the way opened inside the one before it, and the file itself
- * opened inside the last without following a link. A file that is missing
- * fails with ENOENT, as a plain open would.
+ * Open the entry `name` in a held directory without following a link. Where
+ * the directory is named by path, the open must still be the file now at that
+ * path. A file that is missing fails with ENOENT, as a plain open would.
  */
+export async function openIn(
+  directory: HeldDirectory,
+  name: string,
+  flags: number,
+  mode?: number,
+): Promise<FileHandle> {
+  checkName(name);
+  const at = directory.at(name);
+  const file = await open(at, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, mode).catch(
+    async (error: unknown) => {
+      throw await refusedOpen(error, at);
+    },
+  );
+  if (!directory.pinned) {
+    try {
+      const [opened, named, real] = await Promise.all([file.stat(), lstat(at), realpath(at)]);
+      if (real !== at || named.dev !== opened.dev || named.ino !== opened.ino)
+        throw new Error('symbolic links are not allowed');
+    } catch (error) {
+      await file.close();
+      throw error;
+    }
+  }
+  return file;
+}
+
+/** Open the file at `base/...segments` the way `holdBeneath` walks and `openIn` opens. */
 export async function openBeneath(
   base: string,
   segments: string[],
@@ -373,34 +440,42 @@ export async function openBeneath(
   if (!name) throw new Error('path names no file');
   const directory = await holdBeneath(base, segments.slice(0, -1), options.create ?? false);
   try {
-    const at = directory.at(name);
-    const file = await open(
-      at,
-      flags | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      options.mode,
-    ).catch(async (error: unknown) => {
-      throw await refusedOpen(error, at);
-    });
-    if (directory.self === directory.path) {
-      // Walked by path: the open must still be the file now at that path.
-      const target = path.join(directory.path, name);
-      try {
-        const [opened, named, real] = await Promise.all([
-          file.stat(),
-          lstat(target),
-          realpath(target),
-        ]);
-        if (real !== target || named.dev !== opened.dev || named.ino !== opened.ino)
-          throw new Error('symbolic links are not allowed');
-      } catch (error) {
-        await file.close();
-        throw error;
-      }
-    }
-    return file;
+    return await openIn(directory, name, flags, options.mode);
   } finally {
     await directory.close();
   }
+}
+
+/**
+ * Directories under a trusted `base`, each held once while entries in it are
+ * opened, for going through many files in path order: only the folders on the
+ * way to the current one stay open, and each is walked as `holdBeneath` walks.
+ */
+export function heldDirectories(base: string, create = false) {
+  const chain: { name: string; held: HeldDirectory }[] = [];
+  let root: HeldDirectory | null = null;
+  const closeFrom = async (depth: number) => {
+    while (chain.length > depth) await chain.pop()?.held.close();
+  };
+  return {
+    /** The held directory at `base/...segments`. Valid until the next call or `close`. */
+    async at(segments: string[]): Promise<HeldDirectory> {
+      root ??= await holdRoot(base);
+      let depth = 0;
+      while (depth < chain.length && chain[depth]?.name === segments[depth]) depth += 1;
+      await closeFrom(depth);
+      for (const name of segments.slice(depth)) {
+        const parent = chain.at(-1)?.held ?? root;
+        chain.push({ name, held: await holdWithin(parent, name, create) });
+      }
+      return chain.at(-1)?.held ?? root;
+    },
+    async close() {
+      await closeFrom(0);
+      await root?.close();
+      root = null;
+    },
+  };
 }
 
 const pathSchema = { type: 'string', minLength: 1 };
@@ -509,6 +584,49 @@ export const filesManifest: ConnectorManifest = {
   ],
 };
 
+/**
+ * Move a file to a name that must be unused. A second name is made first, so
+ * a file that appeared at the destination meanwhile is never replaced; where
+ * the system will not make one (another owner's file, another filesystem),
+ * the name is checked and the file renamed.
+ */
+async function moveWithoutReplacing(from: string, to: string): Promise<void> {
+  try {
+    await link(from, to);
+  } catch (error) {
+    const code = codeOf(error);
+    if (code === 'EEXIST') throw new Error('move destination already exists');
+    if (code !== 'EPERM' && code !== 'EXDEV' && code !== 'ENOTSUP' && code !== 'EMLINK')
+      throw error;
+    try {
+      await lstat(to);
+      throw new Error('move destination already exists');
+    } catch (absent) {
+      if (!missing(absent)) throw absent;
+    }
+    await rename(from, to);
+    return;
+  }
+  await unlink(from).catch(async (error: unknown) => {
+    if (missing(error)) return;
+    await unlink(to).catch(() => {});
+    throw error;
+  });
+}
+
+/** Give a file the agent's computer must read the modes a synchronised file has (0644 or 0755). */
+async function readableToAgent(directory: HeldDirectory, name: string): Promise<void> {
+  const file = await openIn(directory, name, constants.O_RDONLY);
+  try {
+    const stat = await file.stat();
+    // Only the service's own files need it, and only those it may change.
+    if (stat.isFile() && stat.uid === process.getuid?.() && (stat.mode & 0o044) !== 0o044)
+      await file.chmod((stat.mode & 0o111) !== 0 ? 0o755 : 0o644);
+  } finally {
+    await file.close();
+  }
+}
+
 /** A file of a job: the trusted root, the names under it, and the path they make. */
 type Located = { base: string; segments: string[]; target: string };
 
@@ -547,13 +665,9 @@ export function createFilesConnector(options: FilesOptions): Connector {
   };
   const read = async (located: Located): Promise<Buffer> =>
     readHandle(await openBeneath(located.base, located.segments, READ_FLAGS));
-  /** A file in a held directory (`HeldDirectory.at`), which the open does not follow if it is a link. */
-  const readOpened = async (at: string): Promise<Buffer> =>
-    readHandle(
-      await open(at, READ_FLAGS).catch(async (error: unknown) => {
-        throw await refusedOpen(error, at);
-      }),
-    );
+  /** A file in a held directory, which the open does not follow if it is a link. */
+  const readOpened = async (directory: HeldDirectory, name: string): Promise<Buffer> =>
+    readHandle(await openIn(directory, name, READ_FLAGS));
   /** One folder's entries, listed through the folder the walk holds open. */
   const listFolder = async (located: Located) => {
     const folder = await holdBeneath(located.base, located.segments);
@@ -812,9 +926,11 @@ export function createFilesConnector(options: FilesOptions): Connector {
         try {
           const toDirectory = await holdBeneath(target.base, target.segments.slice(0, -1), true);
           try {
-            const sourceAt = fromDirectory.at(path.basename(source.target));
-            const targetAt = toDirectory.at(path.basename(target.target));
-            const content = await readOpened(sourceAt);
+            const sourceName = path.basename(source.target);
+            const targetName = path.basename(target.target);
+            const sourceAt = fromDirectory.at(sourceName);
+            const targetAt = toDirectory.at(targetName);
+            const content = await readOpened(fromDirectory, sourceName);
             hash = digest(content);
             if (payload.content_hash !== undefined && payload.content_hash !== hash) {
               // Nothing was moved. The file on disk is not the content this action
@@ -836,13 +952,12 @@ export function createFilesConnector(options: FilesOptions): Connector {
                 throw error;
               });
             } else {
-              try {
-                await lstat(targetAt);
-                throw new Error('move destination already exists');
-              } catch (error) {
-                if (!missing(error)) throw error;
-              }
-              await rename(sourceAt, targetAt);
+              await moveWithoutReplacing(sourceAt, targetAt);
+              // Out of the person's Files, the file is the agent's again: one
+              // the service kept to itself (0600) is made readable to the
+              // agent's computer, as a synchronised file would be.
+              if (area === 'artifacts' && toArea === 'work')
+                await readableToAgent(toDirectory, targetName);
             }
           } finally {
             await toDirectory.close();
@@ -927,13 +1042,15 @@ export function createFilesConnector(options: FilesOptions): Connector {
             throw new Error('content exceeds the write limit');
           const { base, segments, target } = located as Located;
           hash = digest(content);
-          // Nobody was asked about a write into the person's Files only because
-          // the name was unused (`staysInSpace`), so the open must still create
-          // it: one that appeared since is theirs, and is not replaced unasked.
-          const onlyNew = area === 'artifacts' && !action.authorization_ref;
+          // A write into the person's Files let through only because the name
+          // was unused (`staysInSpace`, `only_new`) must still create it: one
+          // that appeared since is theirs, and is not replaced unasked. An
+          // approval or a standing permission to save files covers replacing.
+          const onlyNew = area === 'artifacts' && ctx.only_new === true;
           const directory = await holdBeneath(base, segments.slice(0, -1), true);
           try {
-            const at = directory.at(path.basename(target));
+            const name = path.basename(target);
+            const at = directory.at(name);
             const file = await open(
               at,
               constants.O_WRONLY |
@@ -945,7 +1062,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
             ).catch(async (error: unknown) => {
               if (!onlyNew || codeOf(error) !== 'EEXIST') throw error;
               // A retry of this same write finds its own bytes there and is done.
-              const there = await readOpened(at).catch(() => null);
+              const there = await readOpened(directory, name).catch(() => null);
               if (there && digest(there) === hash) return null;
               throw new Error(
                 "the person's Files already have a file with that name; saving over it needs the person to approve",
@@ -1034,7 +1151,14 @@ export function createFilesConnector(options: FilesOptions): Connector {
             requiredString(payload, 'from'),
           );
           try {
-            await lstat(source.target);
+            // Looked up inside the walked folder, so a parent swapped for a
+            // link cannot make a source that is still there look gone.
+            const folder = await holdBeneath(source.base, source.segments.slice(0, -1));
+            try {
+              await lstat(folder.at(path.basename(source.target)));
+            } finally {
+              await folder.close();
+            }
             return { decision: 'undecided', reason: 'the move source still exists' };
           } catch (error) {
             if (!missing(error)) throw error;

@@ -18,9 +18,11 @@ import { chmod, lstat, mkdir, open, readdir, realpath, rmdir, unlink } from 'nod
 import path from 'node:path';
 import {
   holdBeneath,
+  holdWithin,
   noLinks,
   openBeneath,
   openedAt,
+  openIn,
   pathCheck,
   pinDirectory,
   READ_FLAGS,
@@ -139,54 +141,54 @@ const MAX_LEGACY_BYTES = 16 * 1024 * 1024;
  */
 export async function moveJobScreens(workRoot: string, jobId: string): Promise<number> {
   if (!JOB.test(jobId)) throw new Error('invalid trusted job scope');
-  let base: string;
-  let folder: string;
-  try {
-    base = await realpath(workRoot);
-    folder = path.join(base, jobId, 'device');
-    const stat = await lstat(folder);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) return 0;
-    await pathCheck.noLinks(base, [jobId, 'device'], false);
-  } catch (error) {
-    if (missing(error)) return 0;
-    throw error;
-  }
-  // The folder is in the agent's workspace, which its commands can change at
-  // any moment: it is walked and held, and each file read and removed in it.
-  const held = await holdBeneath(base, [jobId, 'device']).catch((error: unknown) => {
+  const absent = (error: unknown) => {
     if (missing(error)) return null;
     throw error;
-  });
-  if (!held) return 0;
+  };
+  // The folder is in the agent's workspace, which its commands can change at
+  // any moment: the job's folder and then `device` are walked and held, and
+  // each file is read and removed inside the held folder.
+  const job = await realpath(workRoot)
+    .then((base) => holdBeneath(base, [jobId]))
+    .catch(absent);
+  if (!job) return 0;
   let moved = 0;
   try {
-    for (const name of await readdir(held.self)) {
-      if (!LEGACY_SCREEN_PATH.test(`device/${name}`)) continue;
-      const source = held.at(name);
-      if (!(await lstat(source)).isFile()) continue;
-      const handle = await open(source, READ_FLAGS);
-      let bytes: Buffer;
-      try {
-        const stat = await handle.stat();
-        if (!stat.isFile() || stat.size > MAX_LEGACY_BYTES) continue;
-        bytes = await handle.readFile();
-      } finally {
-        await handle.close();
+    const stat = await lstat(job.at('device')).catch(absent);
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return 0;
+    await pathCheck.noLinks(job.path, ['device'], false);
+    const held = await holdWithin(job, 'device').catch(absent);
+    if (!held) return 0;
+    try {
+      for (const name of await readdir(held.self)) {
+        if (!LEGACY_SCREEN_PATH.test(`device/${name}`)) continue;
+        if (!(await lstat(held.at(name))).isFile()) continue;
+        const handle = await openIn(held, name, READ_FLAGS);
+        let bytes: Buffer;
+        try {
+          const stat = await handle.stat();
+          if (!stat.isFile() || stat.size > MAX_LEGACY_BYTES) continue;
+          bytes = await handle.readFile();
+        } finally {
+          await handle.close();
+        }
+        await saveDeviceScreen(
+          workRoot,
+          jobId,
+          name.slice('screenshot-'.length, -'.png'.length),
+          bytes,
+        );
+        await unlink(held.at(name));
+        moved += 1;
       }
-      await saveDeviceScreen(
-        workRoot,
-        jobId,
-        name.slice('screenshot-'.length, -'.png'.length),
-        bytes,
-      );
-      await unlink(source);
-      moved += 1;
+    } finally {
+      await held.close();
     }
+    // An emptied folder goes too, so the workspace looks as it would have.
+    await rmdir(job.at('device')).catch(() => {});
   } finally {
-    await held.close();
+    await job.close();
   }
-  // An emptied folder goes too, so the workspace looks as it would have.
-  await rmdir(folder).catch(() => {});
   return moved;
 }
 

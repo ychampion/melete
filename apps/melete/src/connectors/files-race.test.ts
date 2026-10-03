@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import {
   link,
+  lstat,
   mkdir,
   mkdtemp,
   open,
@@ -210,19 +211,24 @@ test.skipIf(!linux)(
 );
 
 test.skipIf(!linux)(
-  'a copy into the sandbox whose folder becomes a link after the check sends nothing outside',
+  'a copy into the sandbox whose folder becomes a link after the listing sends nothing outside',
   async () => {
     await mkdir(path.join(work, 'src'));
     // The same size, so only where the bytes come from tells the two apart.
     await writeFile(path.join(work, 'src', 'main.py'), 'print(1)\n');
     await writeFile(path.join(outside, 'main.py'), 'secret!!\n');
     const sent: string[] = [];
+    let swaps = 0;
     const provider = {
       async putFiles(_handle: SandboxHandle, files: AsyncIterable<{ bytes: Uint8Array }>) {
+        // The workspace has been listed; the files are read as they are sent.
+        await rename(path.join(work, 'src'), path.join(work, 'src-aside'));
+        await symlink(outside, path.join(work, 'src'), 'dir');
+        swaps += 1;
         for await (const file of files) sent.push(Buffer.from(file.bytes).toString('utf8'));
       },
     } as unknown as SandboxProvider;
-    const swapped = swapAfterCheck(path.join(work, 'src'), outside, 'main.py');
+    const swapped = () => swaps;
     const result = await settle(
       syncIn({
         provider,
@@ -288,23 +294,20 @@ test('a write into the person’s Files let through as new never replaces a file
     area: 'artifacts',
     content: 'from the agent',
   });
-  // Decided while the name was unused, so nobody was asked.
+  // Decided while the name was unused, so nobody was asked: the broker says
+  // so with `only_new`.
   expect(connector().staysInSpace?.(action, 'sp_01')).toBe(true);
-  expect(action.authorization_ref).toBeNull();
+  const onlyNew = { ...connectorContext(action), only_new: true };
   await writeFile(path.join(artifacts, 'plan.md'), 'the person’s own plan');
-  await expect(connector().execute(action, connectorContext(action))).rejects.toThrow(
-    'needs the person to approve',
-  );
+  await expect(connector().execute(action, onlyNew)).rejects.toThrow('needs the person to approve');
   expect(await readFile(path.join(artifacts, 'plan.md'), 'utf8')).toBe('the person’s own plan');
   // A retry of a write that did land finds its own bytes and is done.
   await writeFile(path.join(artifacts, 'plan.md'), 'from the agent');
-  expect((await connector().execute(action, connectorContext(action))).outcome).toBe('succeeded');
-  // Once the person has approved it, saving over theirs goes ahead.
+  expect((await connector().execute(action, onlyNew)).outcome).toBe('succeeded');
+  // Approved, or covered by a standing permission to save files, saving over
+  // theirs goes ahead: the broker does not say `only_new` then.
   await writeFile(path.join(artifacts, 'plan.md'), 'the person’s own plan');
-  const approved = { ...action, authorization_ref: 'apr_01' };
-  expect((await connector().execute(approved, connectorContext(approved))).outcome).toBe(
-    'succeeded',
-  );
+  expect((await connector().execute(action, connectorContext(action))).outcome).toBe('succeeded');
   expect(await readFile(path.join(artifacts, 'plan.md'), 'utf8')).toBe('from the agent');
 });
 
@@ -323,3 +326,54 @@ test('a move into the person’s Files never replaces a file that appeared since
   expect(await readFile(path.join(artifacts, 'notes.txt'), 'utf8')).toBe('theirs');
   expect(await readFile(path.join(work, 'notes.txt'), 'utf8')).toBe('mine');
 });
+
+test.skipIf(!linux)('the walk itself refuses a name that is not one plain name', async () => {
+  const base = path.join(root, 'work');
+  await writeFile(path.join(outside, 'notes.txt'), 'secret');
+  for (const segments of [
+    ['job_01', '..', '..', 'outside', 'notes.txt'],
+    ['job_01', '.', 'notes.txt'],
+    ['job_01', '', 'notes.txt'],
+    ['job_01', 'sub/notes.txt'],
+    ['job_01', `${outside}/notes.txt`],
+    ['job_01', 'a\0b'],
+  ])
+    await expect(openBeneath(base, segments, READ_FLAGS)).rejects.toThrow('not allowed');
+  await expect(holdBeneath(base, ['..'])).rejects.toThrow('not allowed');
+});
+
+test.skipIf(!linux)(
+  'a file moved out of the person’s Files is readable in the agent’s computer',
+  async () => {
+    await execute('files.write', { path: 'kept.txt', area: 'artifacts', content: 'theirs' });
+    expect((await lstat(path.join(artifacts, 'kept.txt'))).mode & 0o777).toBe(0o600);
+    const action = {
+      ...connectorAction('files.move', {
+        from: 'kept.txt',
+        to: 'back.txt',
+        area: 'artifacts',
+        to_area: 'work',
+      }),
+      authorization_ref: 'apr_01',
+    };
+    expect((await connector().execute(action, connectorContext(action))).outcome).toBe('succeeded');
+    expect((await lstat(path.join(work, 'back.txt'))).mode & 0o777).toBe(0o644);
+    expect(await readFile(path.join(work, 'back.txt'), 'utf8')).toBe('theirs');
+  },
+);
+
+test.skipIf(!linux)(
+  'a move within the person’s Files never replaces a file already at the name',
+  async () => {
+    await writeFile(path.join(artifacts, 'a.txt'), 'first');
+    await writeFile(path.join(artifacts, 'b.txt'), 'second');
+    await expect(
+      execute('files.move', { from: 'a.txt', to: 'b.txt', area: 'artifacts' }),
+    ).rejects.toThrow('already exists');
+    expect(await readFile(path.join(artifacts, 'b.txt'), 'utf8')).toBe('second');
+    expect(
+      (await execute('files.move', { from: 'a.txt', to: 'c.txt', area: 'artifacts' })).outcome,
+    ).toBe('succeeded');
+    expect((await readdir(artifacts)).sort()).toEqual(['b.txt', 'c.txt']);
+  },
+);
