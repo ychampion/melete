@@ -126,22 +126,58 @@ describe('procedure admission', () => {
     expect(estimateTokens(admitted.body)).toBeLessThanOrEqual(400);
   });
 
-  test('a step citing a span that is not there is rejected', () => {
-    const shifted = base();
-    const first = shifted.steps[0];
-    if (!first) throw new Error('No step');
-    first.evidence = {
-      ...first.evidence,
-      start: first.evidence.start + 1,
-      end: first.evidence.end + 1,
-    };
-    expect(reasonOf(() => admit(shifted))).toBe('span_not_verbatim');
+  test('a quote is placed where it occurs, whatever offsets the model counted', () => {
+    const expected = admit(base()).evidence;
+    // Off by one, past the end, empty, or left out: the quote decides the span.
+    for (const change of [
+      (span: { start: number; end: number }) => ({ start: span.start + 1, end: span.end + 1 }),
+      (span: { start: number; end: number }) => ({
+        start: span.start,
+        end: intervention.length + 40,
+      }),
+      () => ({ start: 10, end: 10 }),
+      () => ({ start: undefined, end: undefined }),
+    ]) {
+      const proposal = base();
+      for (const step of proposal.steps)
+        step.evidence = { ...step.evidence, ...change(step.evidence) } as typeof step.evidence;
+      expect(admit(proposal).evidence).toEqual(expected);
+    }
+  });
 
-    const outside = base();
-    const second = outside.steps[1];
-    if (!second) throw new Error('No step');
-    second.evidence = { ...second.evidence, end: intervention.length + 40 };
-    expect(reasonOf(() => admit(outside))).toBe('span_outside_source');
+  test('a quote copied loosely cites the source text itself', () => {
+    const proposal = base();
+    const first = proposal.steps[0];
+    if (!first) throw new Error('No step');
+    const quote = first.evidence.quote;
+    first.evidence = {
+      source: first.evidence.source,
+      quote: `  ${quote.toUpperCase().replace(/ /g, '   ')}`,
+    } as typeof first.evidence;
+    const admitted = admit(proposal);
+    expect(admitted.evidence[0]?.quote).toBe(quote);
+    expect(intervention.slice(admitted.evidence[0]?.start, admitted.evidence[0]?.end)).toBe(quote);
+  });
+
+  test('a step citing a span that is not there is rejected', () => {
+    const missing = base();
+    const absent = missing.steps[0];
+    if (!absent) throw new Error('No step');
+    absent.evidence = { source: 'intervention', quote: 'Payment 2291 confirmed' } as never;
+    expect(reasonOf(() => admit(missing))).toBe('span_not_verbatim');
+
+    const unsupplied = base();
+    const elsewhere = unsupplied.steps[0];
+    if (!elsewhere) throw new Error('No step');
+    elsewhere.evidence = { source: 'objective', quote: elsewhere.evidence.quote } as never;
+    expect(
+      reasonOf(() =>
+        admitProposal(unsupplied, {
+          sources: sources.filter((source) => source.id !== 'objective'),
+          objective,
+        }),
+      ),
+    ).toBe('span_outside_source');
 
     const unknown = base();
     (unknown.steps[0] as { evidence: { source: string } }).evidence.source = 'receipt';
@@ -158,12 +194,6 @@ describe('procedure admission', () => {
       quote: 'Payment 2291 confirmed',
     };
     expect(reasonOf(() => admit(receipt))).toBe('span_not_verbatim');
-
-    const reversed = base();
-    const backwards = reversed.steps[0];
-    if (!backwards) throw new Error('No step');
-    backwards.evidence = { ...backwards.evidence, start: 10, end: 10 };
-    expect(reasonOf(() => admit(reversed))).toBe('span_outside_source');
   });
 
   test('authority language is rejected with the permission-system reason', () => {
