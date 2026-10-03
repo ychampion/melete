@@ -1178,6 +1178,8 @@ export async function bootstrap(
         if (handle)
           stopGuestExpiry = startGuestExpiry(
             new PrincipalService(handle.db, env.MELETE_SPACES_DIR, jobs),
+            undefined,
+            () => leading(leases, 'guest-expiry'),
           );
         // A chase spends most of its life waiting on a reply, and the wait it
         // holds is an event wait on a `mail.new` trigger. Without something
