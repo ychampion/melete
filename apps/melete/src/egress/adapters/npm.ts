@@ -16,6 +16,7 @@
  * list of reads asks, and a request this adapter cannot read asks as itself.
  */
 import { createHash } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 import type { JsonObject } from '@melete/contracts';
 import { z } from 'zod';
 import { canonicalBody, requestWrite, shownBody, shownText } from './generic.ts';
@@ -156,8 +157,68 @@ const record = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
-/** Scripts npm runs when someone installs the package. */
-const INSTALL_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepare'];
+/** Scripts npm runs when someone installs the package from the registry. */
+const INSTALL_SCRIPTS = ['preinstall', 'install', 'postinstall'];
+/** The most a tarball may unpack to for the card to look inside it. */
+const TARBALL_READ_MAX = 64 * 1024 * 1024;
+
+/** What an installer acts on inside a tarball: its own package.json, and whether it builds native code. */
+type Packed = { manifest: Record<string, unknown> | null; bindingGyp: boolean };
+
+/**
+ * Reads a package tarball (gzip, then tar) for the files an install acts on:
+ * the package's own package.json and a binding.gyp at its root. The registry
+ * does not check that the publish document's manifest matches the tarball,
+ * and an install runs the tarball's. Null when the tarball cannot be read.
+ */
+export function packedManifest(data: Buffer): Packed | null {
+  let tar: Buffer;
+  try {
+    tar = gunzipSync(data, { maxOutputLength: TARBALL_READ_MAX });
+  } catch {
+    return null;
+  }
+  const out: Packed = { manifest: null, bindingGyp: false };
+  let offset = 0;
+  while (offset + 512 <= tar.length) {
+    const header = tar.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const field = (start: number, length: number) =>
+      header
+        .subarray(start, start + length)
+        .toString('utf8')
+        .replace(/\0.*$/s, '');
+    const size = Number.parseInt(field(124, 12).trim() || '0', 8);
+    if (!Number.isFinite(size) || size < 0) return null;
+    const prefix = field(345, 155);
+    const name = prefix ? `${prefix}/${field(0, 100)}` : field(0, 100);
+    const type = field(156, 1) || '0';
+    const body = tar.subarray(offset + 512, offset + 512 + size);
+    // The package's root is the tarball's first directory, whatever it is called.
+    const inside = name.split('/').slice(1).join('/');
+    if (type === '0' && inside === 'package.json') {
+      try {
+        const parsed: unknown = JSON.parse(body.toString('utf8'));
+        out.manifest =
+          parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : null;
+      } catch {
+        return null;
+      }
+    }
+    if (type === '0' && inside === 'binding.gyp') out.bindingGyp = true;
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return out.manifest ? out : null;
+}
+
+/** The fields an install acts on where the publish document and the tarball disagree. */
+function disagreements(declared: Record<string, unknown>, packed: Record<string, unknown>) {
+  const fields = ['name', 'version', 'scripts', 'dependencies', 'optionalDependencies', 'bin'];
+  const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  return fields.filter((field) => !same(declared[field], packed[field]));
+}
 
 /** A publish: the versions it adds, as their manifests say, and the tarballs it carries. */
 function publish(request: InterceptedRequest, pkg: string, doc: Record<string, unknown>): Write {
@@ -167,11 +228,17 @@ function publish(request: InterceptedRequest, pkg: string, doc: Record<string, u
   const tagged = Object.entries(tags)
     .map(([tag, version]) => `${tag} → ${String(version)}`)
     .sort();
-  const tarballs = Object.entries(record(doc._attachments)).map(([file, value]) => {
+  const attached = Object.entries(record(doc._attachments)).map(([file, value]) => {
     const item = record(value);
     const data = typeof item.data === 'string' ? Buffer.from(item.data, 'base64') : Buffer.alloc(0);
-    return { file, bytes: data.length, sha256: sha256(data) };
+    return { file, data };
   });
+  const tarballs = attached.map(({ file, data }) => ({
+    file,
+    bytes: data.length,
+    sha256: sha256(data),
+  }));
+  let mismatch = false;
   const facts: CardSummary['facts'] = [
     { label: 'Package', value: pkg },
     { label: 'Versions', value: numbers.join(', ') || 'none named' },
@@ -180,13 +247,40 @@ function publish(request: InterceptedRequest, pkg: string, doc: Record<string, u
   if (typeof doc.access === 'string') facts.push({ label: 'Access', value: doc.access });
   for (const version of numbers) {
     const manifest = record(versions[version]);
-    const scripts = record(manifest.scripts);
+    // The tarball that carries this version: named for it, or the only one.
+    const carried =
+      attached.find(({ file }) => file.endsWith(`-${version}.tgz`)) ??
+      (attached.length === 1 && numbers.length === 1 ? attached[0] : undefined);
+    const packed = carried ? packedManifest(carried.data) : null;
+    // What an install runs comes from the tarball, not from what the registry is told.
+    const scripts = record((packed?.manifest ?? manifest).scripts);
     const run = INSTALL_SCRIPTS.filter((name) => typeof scripts[name] === 'string');
+    const label = packed
+      ? `Scripts that run on install (${version})`
+      : `Scripts that run on install (${version}), as the publish document declares them`;
     if (run.length)
       facts.push({
-        label: `Scripts that run on install (${version})`,
+        label,
         value: run.map((name) => `${name}: ${String(scripts[name])}`).join('\n'),
       });
+    if (!packed)
+      facts.push({
+        label: `Tarball (${version})`,
+        value: 'Its package.json could not be read, so its scripts were not checked.',
+      });
+    if (packed?.bindingGyp && !run.some((name) => name === 'install' || name === 'preinstall'))
+      facts.push({
+        label: `Native build on install (${version})`,
+        value: 'binding.gyp: an install runs node-gyp rebuild, which runs code from the package.',
+      });
+    const differs = packed?.manifest ? disagreements(manifest, packed.manifest) : [];
+    if (differs.length) {
+      mismatch = true;
+      facts.push({
+        label: `Differs from its tarball (${version})`,
+        value: `The publish document and the tarball's own package.json disagree on: ${differs.join(', ')}. An install uses the tarball's.`,
+      });
+    }
     const dist = record(manifest.dist);
     if (typeof dist.integrity === 'string')
       facts.push({ label: `Integrity (${version})`, value: dist.integrity.slice(0, 200) });
@@ -207,7 +301,7 @@ function publish(request: InterceptedRequest, pkg: string, doc: Record<string, u
     'publish',
     pkg,
     {
-      title: `Publish ${named} to npm${tagNames ? ` (tag ${tagNames})` : ''}${doc.access === 'public' ? ', public' : ''}`,
+      title: `Publish ${named} to npm${tagNames ? ` (tag ${tagNames})` : ''}${doc.access === 'public' ? ', public' : ''}${mismatch ? ', with a tarball whose package.json differs from what it declares' : ''}`,
       facts,
     },
     false,
@@ -411,7 +505,32 @@ function registrySettings(request: InterceptedRequest, parts: string[]): Classif
   return generic(request);
 }
 
+/**
+ * Requests that log in or make a token, whose answer is a credential the
+ * computer would then hold: web and legacy logins, the end of a web login
+ * (a GET), new tokens, and trusted-publishing token exchanges. Listing
+ * tokens shows none of their values and reads.
+ */
+function mintsCredential(request: InterceptedRequest): boolean {
+  let path: string;
+  try {
+    path = decodeURIComponent(request.path).toLowerCase();
+  } catch {
+    path = request.path.toLowerCase();
+  }
+  if (/^\/-\/v1\/(?:login|done)(?:\/|$)/.test(path)) return true;
+  if (/^\/-\/user\/org\.couchdb\.user:/.test(path)) return !READS.has(request.method);
+  if (/^\/-\/npm\/v1\/oidc\//.test(path)) return true;
+  return /^\/-\/npm\/v1\/tokens\/?$/.test(path) && !READS.has(request.method);
+}
+
 function classifyRegistry(request: InterceptedRequest): Classification {
+  if (mintsCredential(request))
+    return {
+      kind: 'refuse',
+      reason:
+        'Logging in or making a token with this account is refused: it would put a credential in the computer. Make one on npmjs.com yourself if you need it.',
+    };
   if (READS.has(request.method)) return { kind: 'read' };
   if (request.method === 'POST' && READ_POSTS.has(request.path) && !request.query)
     return { kind: 'read' };
@@ -509,6 +628,7 @@ export const npmAdapter: CredentialAdapter<NpmAdapterConfig> = {
   redactions: (secret) => [secret, Buffer.from(secret).toString('base64')],
   receipt,
   heldAnswer,
+  mintedCredentials: ['npm'],
 };
 
 /** What the registry says about a token: the account it belongs to, or why it was refused. */

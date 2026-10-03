@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { canonicalizePayload } from '@melete/contracts';
 import { egressPayload } from '../../broker/egress-admission.ts';
 import { requestBinding, upstreamHeaders } from '../intercept.ts';
@@ -44,6 +45,47 @@ const put = (target: string, body: unknown): InterceptedRequest => ({
   headers: { 'content-type': 'application/json' },
   body: Buffer.from(JSON.stringify(body)),
 });
+
+/** A ustar tarball, gzipped, holding `files`. */
+function tarball(files: Record<string, string>): Buffer {
+  const blocks: Buffer[] = [];
+  for (const [name, text] of Object.entries(files)) {
+    const body = Buffer.from(text);
+    const header = Buffer.alloc(512);
+    header.write(name, 0);
+    header.write('0000644\0', 100);
+    header.write('0000000\0', 108);
+    header.write('0000000\0', 116);
+    header.write(`${body.length.toString(8).padStart(11, '0')}\0`, 124);
+    header.write('00000000000\0', 136);
+    header.write('        ', 148);
+    header.write('0', 156);
+    header.write('ustar\0', 257);
+    header.write('00', 263);
+    const sum = header.reduce((total, byte) => total + byte, 0);
+    header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148);
+    blocks.push(header, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
+}
+
+/** A publish of `manifest` carrying a tarball of `files`. */
+function publishOf(manifest: Record<string, unknown>, files: Record<string, string>) {
+  const name = String(manifest.name);
+  const version = String(manifest.version);
+  return put(`/${name}`, {
+    _id: name,
+    name,
+    'dist-tags': { latest: version },
+    versions: { [version]: { ...manifest, _id: `${name}@${version}` } },
+    _attachments: {
+      [`${name}-${version}.tgz`]: {
+        content_type: 'application/octet-stream',
+        data: tarball(files).toString('base64'),
+      },
+    },
+  });
+}
 
 describe('the npm classifier on recorded npm requests', () => {
   test('every change in the npm corpus is classified as a write, and installs and audits read', () => {
@@ -99,16 +141,56 @@ describe('the npm classifier on recorded npm requests', () => {
     );
   });
 
-  test('a publish shows the scripts that run when someone installs it', () => {
-    const published = write(
+  test('a publish shows the scripts the tarball itself runs on install, and says when its declared ones differ', () => {
+    // npm's own tarball: what it declares and what it carries agree.
+    const recorded = write(one('npm-publish.http', 2));
+    expect(recorded.summary.facts.map((fact) => fact.label)).not.toContainEqual(
+      expect.stringMatching(/^(Differs|Tarball \()/),
+    );
+    // The document declares no scripts, and the tarball runs one: the card shows the tarball's.
+    const declared = { name: 'melete-demo', version: '2.0.0', main: 'index.js' };
+    const confused = write(
+      publishOf(declared, {
+        'package/package.json': JSON.stringify({
+          ...declared,
+          scripts: { postinstall: 'node x.js' },
+        }),
+        'package/index.js': 'module.exports = 1;',
+      }),
+    );
+    expect(confused.summary.facts).toContainEqual({
+      label: 'Scripts that run on install (2.0.0)',
+      value: 'postinstall: node x.js',
+    });
+    expect(confused.summary.facts).toContainEqual({
+      label: 'Differs from its tarball (2.0.0)',
+      value:
+        "The publish document and the tarball's own package.json disagree on: scripts. An install uses the tarball's.",
+    });
+    expect(confused.summary.title).toEndWith(
+      'with a tarball whose package.json differs from what it declares',
+    );
+    // A native build runs code on install with no script named at all.
+    const native = write(
+      publishOf(declared, {
+        'package/package.json': JSON.stringify(declared),
+        'package/binding.gyp': '{"targets":[]}',
+      }),
+    );
+    expect(native.summary.facts.map((fact) => fact.label)).toContain(
+      'Native build on install (2.0.0)',
+    );
+    // A tarball that cannot be read is said to be unchecked, and its scripts are the declared ones.
+    const unread = write(
       recordedFile(FIXTURES, 'edge-hand-written.http', [NPM_TOKEN_PLACEHOLDER]).find((entry) =>
         entry.request.body.toString().includes('postinstall'),
       )?.request as InterceptedRequest,
     );
-    expect(published.summary.facts).toContainEqual({
-      label: 'Scripts that run on install (0.3.0)',
+    expect(unread.summary.facts).toContainEqual({
+      label: 'Scripts that run on install (0.3.0), as the publish document declares them',
       value: 'postinstall: node setup.js',
     });
+    expect(unread.summary.facts.map((fact) => fact.label)).toContain('Tarball (0.3.0)');
   });
 
   test('unpublishing, deprecating and changing maintainers are shown as the record they leave', () => {
@@ -187,6 +269,31 @@ describe('the npm classifier on recorded npm requests', () => {
     expect(
       npmAdapter.classify({ ...put('/x', {}), host: 'registry.example.com' }, config).kind,
     ).toBe('refuse');
+  });
+
+  test('logging in or making a token is refused, the end of a web login included', () => {
+    const request = (method: string, target: string): InterceptedRequest => ({
+      ...put(target, {}),
+      method,
+    });
+    for (const [method, target] of [
+      ['POST', '/-/v1/login'],
+      ['GET', '/-/v1/done'],
+      ['PUT', '/-/user/org.couchdb.user:alice'],
+      ['POST', '/-/npm/v1/tokens'],
+      ['POST', '/-/npm/v1/%74okens'],
+      ['POST', '/-/npm/v1/oidc/token/exchange/package/melete-demo'],
+    ] as const)
+      expect({ target, kind: npmAdapter.classify(request(method, target), config).kind }).toEqual({
+        target,
+        kind: 'refuse',
+      });
+    // Listing tokens and looking a user up show no token values.
+    expect(npmAdapter.classify(request('GET', '/-/npm/v1/tokens'), config).kind).toBe('read');
+    expect(npmAdapter.classify(request('GET', '/-/user/org.couchdb.user:bob'), config).kind).toBe(
+      'read',
+    );
+    expect(npmAdapter.mintedCredentials).toEqual(['npm']);
   });
 
   test('the token goes as a bearer token, and the placeholder never travels', () => {

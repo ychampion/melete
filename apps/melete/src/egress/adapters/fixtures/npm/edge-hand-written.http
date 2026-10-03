@@ -19,19 +19,19 @@ content-type: application/json
 
 {"melete-demo":["1.0.0"]}
 
-### write
+### refuse
 POST https://registry.npmjs.org/-/v1/login
 content-type: application/json
 
 {"hostname":"computer"}
 
-### write
+### refuse
 PUT https://registry.npmjs.org/-/user/org.couchdb.user:alice
 content-type: application/json
 
 {"_id":"org.couchdb.user:alice","name":"alice","password":"x","type":"user","roles":[]}
 
-### write
+### refuse
 POST https://registry.npmjs.org/-/npm/v1/tokens
 content-type: application/json
 
@@ -103,3 +103,18 @@ PATCH https://registry.npmjs.org/melete-demo
 content-type: application/json
 
 {"deprecated":"x"}
+
+### refuse
+GET https://registry.npmjs.org/-/v1/done?sessionId=abc123
+
+### refuse
+POST https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/melete-demo
+
+### refuse
+POST https://registry.npmjs.org/-/npm/v1/%74okens
+content-type: application/json
+
+{"password":"x","readonly":false}
+
+### read
+GET https://registry.npmjs.org/-/npm/v1/tokens

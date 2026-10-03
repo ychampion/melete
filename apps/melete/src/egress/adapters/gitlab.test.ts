@@ -5,7 +5,12 @@ import { egressPayload } from '../../broker/egress-admission.ts';
 import { parseReportStatus } from '../git-pktline.ts';
 import { requestBinding, upstreamHeaders } from '../intercept.ts';
 import { recordedCorpus, recordedFile } from './corpus.ts';
-import { GITLAB_TOKEN_PLACEHOLDER, gitlabAccount, gitlabAdapter } from './gitlab.ts';
+import {
+  GITLAB_TOKEN_PLACEHOLDER,
+  gitlabAccount,
+  gitlabAdapter,
+  pushOptionWords,
+} from './gitlab.ts';
 import type { ClassifiedWrite, InterceptedRequest } from './types.ts';
 
 const FIXTURES = path.join(import.meta.dir, 'fixtures', 'gitlab');
@@ -179,11 +184,94 @@ describe('the GitLab classifier on recorded glab and git requests', () => {
     }
   });
 
+  test('a change that would make a token, a runner or a key is refused, however its path is written', () => {
+    const minting = [
+      api('POST', '/api/v4/personal_access_tokens/self/rotate', '{}'),
+      api('POST', '/api/v4/user/personal_access_tokens', '{"name":"x","scopes":["api"]}'),
+      api('POST', '/api/v4/users/1/personal_access_tokens', '{"name":"x"}'),
+      api('POST', '/api/v4/users/1/impersonation_tokens', '{"name":"x"}'),
+      api('POST', '/api/v4/projects/alice%2Fsite/access_tokens', '{"name":"bot"}'),
+      api('POST', '/api/v4/groups/acme/access_tokens/9/rotate'),
+      api('POST', '/api/v4/projects/42/deploy_tokens', '{"name":"ci"}'),
+      api('POST', '/api/v4/projects/42/%64eploy_tokens', '{"name":"ci"}'),
+      api('POST', '/api/v4/groups/acme/deploy_tokens', '{"name":"ci"}'),
+      api('POST', '/api/v4/user/runners', '{"runner_type":"instance_type"}'),
+      api('POST', '/api/v4/runners', 'token=x'),
+      api('POST', '/api/v4/projects/alice%2Fsite/runners/reset_registration_token'),
+      api('POST', '/api/v4/projects/alice%2Fsite/triggers', '{"description":"x"}'),
+      api('POST', '/api/v4/user/keys', '{"key":"ssh-ed25519 AAAA"}'),
+      api('POST', '/api/v4/projects/alice%2Fsite/deploy_keys', '{"can_push":true}'),
+      api('POST', '/oauth/token', 'grant_type=password'),
+      api(
+        'POST',
+        '/api/graphql',
+        JSON.stringify({
+          query: 'mutation { runnerCreate(input: {runnerType: INSTANCE_TYPE}) { token } }',
+        }),
+      ),
+    ];
+    for (const request of minting) {
+      const verdict = gitlabAdapter.classify(request, config);
+      expect({ path: request.path, kind: verdict.kind }).toEqual({
+        path: request.path,
+        kind: 'refuse',
+      });
+    }
+    // Listing tokens shows none of their values, and a file called keys is only a file.
+    expect(
+      gitlabAdapter.classify(api('GET', '/api/v4/user/personal_access_tokens'), config).kind,
+    ).toBe('read');
+    expect(
+      gitlabAdapter.classify(
+        api('POST', '/api/v4/projects/alice%2Fsite/repository/files/keys', '{"branch":"main"}'),
+        config,
+      ).kind,
+    ).toBe('write');
+    // Whatever slips past, an answer holding one of GitLab's tokens is kept from the computer.
+    expect(gitlabAdapter.mintedCredentials).toEqual([
+      'gitlab_personal',
+      'gitlab_deploy',
+      'gitlab_runner',
+      'gitlab_trigger',
+    ]);
+  });
+
+  test('a push whose options make GitLab open or merge a merge request says so in plain words', () => {
+    const options = write(one('git-push-options.http', 1));
+    expect(options.summary.title).toBe(
+      'Push to alice/site (melete/fix-login), and open a merge request into main, skip the pipeline',
+    );
+    expect(options.summary.facts[0]).toEqual({
+      label: 'GitLab will also',
+      value: 'open a merge request into main, skip the pipeline',
+    });
+    expect(
+      pushOptionWords([
+        'merge_request.create',
+        'merge_request.merge_when_pipeline_succeeds',
+        'merge_request.remove_source_branch',
+        'ci.variable=DEPLOY=1',
+      ]),
+    ).toBe(
+      'open a merge request, merge it when its pipeline passes, with no further question, delete the branch once merged, run the pipeline with the variables DEPLOY',
+    );
+    expect(pushOptionWords([])).toBeNull();
+  });
+
   test('a request acting as another user, and glab usage reports, are refused', () => {
     const refusals = [
       api('GET', '/api/v4/user', '', { sudo: 'root' }),
       api('GET', '/api/v4/projects?Sudo=bob'),
       api('POST', '/api/v4/projects/alice%2Fsite/issues', '{"title":"x","sudo":"bob"}'),
+      api('POST', '/api/v4/projects/alice%2Fsite/issues', 'title=x&sudo%5B%5D=bob', {
+        'content-type': 'application/x-www-form-urlencoded',
+      }),
+      api(
+        'POST',
+        '/api/v4/projects/alice%2Fsite/uploads',
+        '--b\r\nContent-Disposition: form-data; name="sudo"\r\n\r\nbob\r\n--b--\r\n',
+        { 'content-type': 'multipart/form-data; boundary=b' },
+      ),
       api('POST', '/api/v4/usage_data/track_event', '{"event":"gitlab_cli_command_used"}'),
       { ...api('GET', '/api/v4/user'), host: 'evil.gitlab.com' },
     ];

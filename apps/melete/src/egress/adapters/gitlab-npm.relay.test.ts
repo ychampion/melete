@@ -181,7 +181,7 @@ describe.skipIf(!git)('git through the relay to GitLab', () => {
       const first = await command('git', pushArgs, { cwd: dir, env: through });
       expect(first.code).not.toBe(0);
       expect(first.stderr).toContain(
-        '! [remote rejected] main -> melete/fix-login (Waiting for your approval in Melete: Push to alice/site (melete/fix-login).',
+        '! [remote rejected] main -> melete/fix-login (Waiting for your approval in Melete: Push to alice/site (melete/fix-login), and open a merge request.',
       );
       const second = await command('git', pushArgs, { cwd: dir, env: through });
       expect(second.stderr).toContain('* [new branch]      main -> melete/fix-login');

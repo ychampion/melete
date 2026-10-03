@@ -106,6 +106,53 @@ function generic(request: InterceptedRequest, project?: string): Classification 
 const GIT_ACTION =
   /^(.+?)(?:\.git)?\/(info\/refs|git-upload-pack|git-receive-pack|info\/lfs\/objects\/batch|info\/lfs\/locks\/verify)$/;
 
+/**
+ * What GitLab does beyond moving the branch for the push options it reads,
+ * in plain words: open or merge a merge request, or skip or vary the
+ * pipeline. Null when the push names none GitLab acts on.
+ */
+export function pushOptionWords(options: readonly string[]): string | null {
+  const value = (name: string) =>
+    options.find((option) => option.startsWith(`${name}=`))?.slice(name.length + 1);
+  const has = (name: string) => options.includes(name) || value(name) !== undefined;
+  const words: string[] = [];
+  if (has('merge_request.create')) {
+    const target = value('merge_request.target');
+    words.push(`open a merge request${target ? ` into ${target}` : ''}`);
+  } else if (has('merge_request.target'))
+    words.push(`point its merge request at ${value('merge_request.target')}`);
+  const title = value('merge_request.title');
+  if (title) words.push(`title it "${title.slice(0, 120)}"`);
+  if (has('merge_request.merge_when_pipeline_succeeds') || has('merge_request.auto_merge'))
+    words.push('merge it when its pipeline passes, with no further question');
+  if (has('merge_request.remove_source_branch')) words.push('delete the branch once merged');
+  if (has('merge_request.draft')) words.push('mark it as a draft');
+  const variables = options
+    .filter((option) => option.startsWith('ci.variable='))
+    .map((option) => option.slice('ci.variable='.length).split('=')[0]);
+  if (has('ci.skip')) words.push('skip the pipeline');
+  if (variables.length) words.push(`run the pipeline with the variables ${variables.join(', ')}`);
+  if (has('integrations.skip_ci')) words.push('skip the CI integrations');
+  return words.length ? words.join(', ') : null;
+}
+
+/** A push whose options make GitLab do more says so in its title and in plain words. */
+function withPushOptions(verdict: Classification): Classification {
+  if (verdict.kind !== 'write' || verdict.operation !== 'push') return verdict;
+  const options = Array.isArray(verdict.payload.push_options)
+    ? (verdict.payload.push_options as string[])
+    : [];
+  const words = pushOptionWords(options);
+  if (!words) return verdict;
+  return {
+    ...verdict,
+    summary: {
+      title: `${verdict.summary.title}, and ${words}`,
+      facts: [{ label: 'GitLab will also', value: words }, ...verdict.summary.facts],
+    },
+  };
+}
+
 function classifyGit(request: InterceptedRequest): Classification {
   if (READS.has(request.method)) return { kind: 'read' };
   const match = canonicalPath(request.path) ? GIT_ACTION.exec(request.path.slice(1)) : null;
@@ -114,7 +161,8 @@ function classifyGit(request: InterceptedRequest): Classification {
   const action = match[2];
   if (request.method !== 'POST') return generic(request, project);
   if (action === 'git-upload-pack' && !request.query) return { kind: 'read' };
-  if (action === 'git-receive-pack') return classifyPush(request, project, GITLAB_HOST);
+  if (action === 'git-receive-pack')
+    return withPushOptions(classifyPush(request, project, GITLAB_HOST));
   if (action === 'info/lfs/objects/batch' && !request.query)
     return classifyLfsBatch(request, project, GITLAB_HOST);
   // Asks which locks are held; it changes none.
@@ -166,6 +214,12 @@ function classifyGraphql(request: InterceptedRequest): Classification {
   const changes = operations.filter((operation) => operation.operation !== 'query');
   if (!changes.length) return { kind: 'read' };
   const fields = changes.flatMap(rootFields);
+  if (fields.some((field) => MINTING_MUTATION.test(field)))
+    return {
+      kind: 'refuse',
+      reason:
+        'Making a token, a runner or a key with this account is refused: it would put a credential in the computer.',
+    };
   const [first = 'mutation'] = fields;
   const input = inputOf(sent.variables);
   const variables = canonical(sent.variables);
@@ -506,25 +560,69 @@ function classifyRest(request: InterceptedRequest): Classification {
 // ---------------------------------------------------------------- what is refused
 
 /**
+ * API paths whose changes make a credential the computer would then hold: a
+ * personal, project, group, impersonation or deploy token, a pipeline trigger
+ * token, a runner and its token, a reset of one, and an SSH or deploy key,
+ * which would let the computer push without the relay at all.
+ */
+const MINTS_CREDENTIAL = [
+  /^\/api\/v4\/(?:projects|groups|users)\/[^/]+\/(?:access_tokens|personal_access_tokens|impersonation_tokens|deploy_tokens|triggers|runners|deploy_keys|keys)(?:\/|$)/,
+  /^\/api\/v4\/user\/(?:personal_access_tokens|runners|keys)(?:\/|$)/,
+  /^\/api\/v4\/(?:personal_access_tokens|deploy_tokens|runners|keys)(?:\/|$)/,
+];
+/** GraphQL mutations that make a token, a runner or a key. */
+export const MINTING_MUTATION = /token|runner(?:Create|Register)|key/i;
+
+/**
+ * The path with each segment's escapes undone once, an escaped `/` kept
+ * escaped so it stays inside its segment, as GitLab routes it.
+ */
+const routed = (path: string) =>
+  path
+    .split('/')
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment).replaceAll('/', '%2F');
+      } catch {
+        return segment;
+      }
+    })
+    .join('/')
+    .toLowerCase();
+
+/** Whether a parameter name asks to act as another user: `sudo`, or a form of it such as `sudo[]`. */
+const sudoKey = (key: string) => key.toLowerCase().startsWith('sudo');
+
+/**
  * Why a request is never sent with the person's token: one that would act as
- * another user (an administrator's `Sudo`, as a header or a parameter), and
- * glab's usage reports, which are no change the person asked for.
+ * another user (an administrator's `Sudo`, as a header or a parameter in the
+ * query or any kind of body), one that would make a credential for the
+ * computer, and glab's usage reports, which are no change the person asked
+ * for.
  */
 function refusal(request: InterceptedRequest): string | null {
+  const type = request.headers['content-type'] ?? '';
   const query = new URLSearchParams(request.query);
-  const form = /^application\/x-www-form-urlencoded\b/i.test(request.headers['content-type'] ?? '')
+  const form = /^application\/x-www-form-urlencoded\b/i.test(type)
     ? new URLSearchParams(request.body.toString('utf8'))
     : null;
   const json = jsonObject(request.body);
+  const multipartSudo =
+    /^multipart\//i.test(type) && /name\s*=\s*"?sudo/i.test(request.body.toString('latin1'));
   if (
     'sudo' in request.headers ||
-    [...query.keys()].some((key) => key.toLowerCase() === 'sudo') ||
-    [...(form?.keys() ?? [])].some((key) => key.toLowerCase() === 'sudo') ||
-    Object.keys(json ?? {}).some((key) => key.toLowerCase() === 'sudo')
+    [...query.keys()].some(sudoKey) ||
+    [...(form?.keys() ?? [])].some(sudoKey) ||
+    Object.keys(json ?? {}).some(sudoKey) ||
+    multipartSudo
   )
     return 'Acting as another GitLab user is refused for this account.';
-  if (request.method !== 'GET' && request.path.startsWith('/api/v4/usage_data/'))
+  if (READS.has(request.method)) return null;
+  const path = routed(request.path);
+  if (path.startsWith('/api/v4/usage_data/'))
     return 'Usage reports from the command line are kept on this computer.';
+  if (MINTS_CREDENTIAL.some((route) => route.test(path)) || path.startsWith('/oauth/'))
+    return 'Making a token, a runner or a key with this account is refused: it would put a credential in the computer. Make it on GitLab yourself if you need one.';
   return null;
 }
 
@@ -685,6 +783,7 @@ export const gitlabAdapter: CredentialAdapter<GitlabAdapterConfig> = {
   rejected,
   uncertain,
   heldAnswer,
+  mintedCredentials: ['gitlab_personal', 'gitlab_deploy', 'gitlab_runner', 'gitlab_trigger'],
 };
 
 /** What GitLab says about a token: the account it belongs to, or why it was refused. */

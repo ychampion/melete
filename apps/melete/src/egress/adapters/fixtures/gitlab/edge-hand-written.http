@@ -89,7 +89,7 @@ GET https://gitlab.com/alice/site/-/raw/main/README.md
 ### read
 GET https://gitlab.com/alice/site/-/archive/main/site-main.tar.gz
 
-### write
+### refuse
 POST https://gitlab.com/oauth/token
 content-type: application/x-www-form-urlencoded
 
@@ -174,7 +174,7 @@ content-type: application/json
 ### write
 DELETE https://gitlab.com/api/v4/projects/alice%2Fsite/repository/branches/melete%2Ffix-login
 
-### write
+### refuse
 POST https://gitlab.com/api/v4/users/1/personal_access_tokens
 content-type: application/json
 
@@ -203,3 +203,100 @@ POST https://gitlab.com/api/v4/usage_data/increment_unique_users
 content-type: application/json
 
 {"event":"x"}
+
+### refuse
+POST https://gitlab.com/api/v4/personal_access_tokens/self/rotate
+content-type: application/json
+
+{}
+
+### refuse
+POST https://gitlab.com/api/v4/user/personal_access_tokens
+content-type: application/json
+
+{"name":"more","scopes":["api"]}
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/access_tokens
+content-type: application/json
+
+{"name":"bot","scopes":["api"],"access_level":40}
+
+### refuse
+POST https://gitlab.com/api/v4/groups/acme/access_tokens/9/rotate
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/deploy_tokens
+content-type: application/json
+
+{"name":"ci","scopes":["read_repository"]}
+
+### refuse
+POST https://gitlab.com/api/v4/projects/42/%64eploy_tokens
+content-type: application/json
+
+{"name":"ci","scopes":["read_repository"]}
+
+### refuse
+POST https://gitlab.com/api/v4/user/runners
+content-type: application/json
+
+{"runner_type":"project_type","project_id":42}
+
+### refuse
+POST https://gitlab.com/api/v4/runners
+content-type: application/x-www-form-urlencoded
+
+token=glrt-registration
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/runners/reset_registration_token
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/triggers
+content-type: application/json
+
+{"description":"deploy"}
+
+### refuse
+POST https://gitlab.com/api/v4/user/keys
+content-type: application/json
+
+{"title":"computer","key":"ssh-ed25519 AAAA"}
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/deploy_keys
+content-type: application/json
+
+{"title":"computer","key":"ssh-ed25519 AAAA","can_push":true}
+
+### refuse
+POST https://gitlab.com/api/graphql
+content-type: application/json
+
+{"query":"mutation { runnerCreate(input: {runnerType: PROJECT_TYPE, projectId: \"gid://gitlab/Project/42\"}) { token } }"}
+
+### write
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/repository/files/docs%2Fkeys
+content-type: application/json
+
+{"branch":"main","content":"x","commit_message":"Add keys notes"}
+
+### read
+GET https://gitlab.com/api/v4/user/personal_access_tokens
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/issues
+content-type: application/x-www-form-urlencoded
+
+title=Hi&sudo%5B%5D=bob
+
+### refuse
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/uploads
+content-type: multipart/form-data; boundary=x
+
+--x
+Content-Disposition: form-data; name="sudo"
+
+bob
+--x--

@@ -270,7 +270,7 @@ if (!live || !selfId) {
         const newId = /new=([0-9a-f]{40})/.exec(printed)?.[1] ?? '';
         expect(newId).toMatch(/^[0-9a-f]{40}$/);
         expect(printed).toContain(
-          'first:  ! [remote rejected] melete/fix-login -> melete/fix-login (Waiting for your approval in Melete: Push to alice/site (melete/fix-login).',
+          'first:  ! [remote rejected] melete/fix-login -> melete/fix-login (Waiting for your approval in Melete: Push to alice/site (melete/fix-login), and open a merge request.',
         );
         expect(printed).toMatch(
           /second: .*\* \[new branch\]\s+melete\/fix-login -> melete\/fix-login/,
