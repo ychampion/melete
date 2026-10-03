@@ -1,0 +1,73 @@
+/* A file's name and what it is, on a tile in the box or on a sent message. */
+.attach-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 16px;
+}
+.attach-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.attach-meta {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Files on a sent message: thumbnails and named tiles above its words. */
+.bubble-files {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: 100%;
+}
+.bubble-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  min-height: 48px;
+  padding: 6px 12px 6px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  text-decoration: none;
+}
+.bubble-file:hover {
+  border-color: var(--line-strong);
+}
+.bubble-file:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.bubble-file[data-picture="true"] {
+  padding: 0;
+  overflow: hidden;
+  width: 120px;
+  height: 120px;
+}
+.bubble-file[data-picture="true"] img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+@media (max-width: 767px) {
+  .bubble-file[data-picture="true"] {
+    width: 96px;
+    height: 96px;
+  }
+  .bubble-file {
+    max-width: 100%;
+  }
+}

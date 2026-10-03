@@ -46,6 +46,8 @@ import {
 import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-companion.ts';
 import { mountApps } from './apps/routes.ts';
 import { mountAppViews } from './apps/serve.ts';
+import { mountAttachments } from './attachments/routes.ts';
+import { AttachmentService } from './attachments/store.ts';
 import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import { configuredSearchGateway } from './broker/search-gateway.ts';
@@ -256,6 +258,8 @@ export type AppDeps = {
   blobs?: BlobStore;
   /** Signs app views. Left out, keyed from the master key. */
   viewTokens?: ViewTokens;
+  /** The files people send in chat. Left out, nothing can be attached. */
+  attachments?: AttachmentService;
 };
 
 export function createApp(deps: AppDeps) {
@@ -321,6 +325,7 @@ export function createApp(deps: AppDeps) {
       tokens: deps.viewTokens ?? new ViewTokens(deps.env.MELETE_MASTER_KEY),
     });
   if (deps.db) mountScreenshots(app, deps.db, deps.env.MELETE_WORK_DIR, personalSpace);
+  if (deps.attachments) mountAttachments(app, deps.attachments, personalSpace, limits);
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   // After mountPrincipals, so the owner-only guard it installs on every
   // non-GET under /spaces/:id runs before the handler that removes one.
@@ -427,6 +432,7 @@ export function createApp(deps: AppDeps) {
       browser: Boolean(deps.browserSessions),
       privacy,
       runs: deps.runs ?? deps.runner?.runs ?? (deps.jobs ? new RunService(deps.jobs) : undefined),
+      attachments: deps.attachments,
     });
   if (deps.db)
     mountCompanies(app, {
@@ -618,6 +624,7 @@ export async function bootstrap(
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
   let removals: SpaceRemovalService | undefined;
   let blobs: ReturnType<typeof startBlobs> | undefined;
+  let attachments: AttachmentService | undefined;
   let memoryGateway: Awaited<ReturnType<typeof configuredMemoryGateway>> | undefined;
   let voiceCompanion: Awaited<ReturnType<typeof configuredVoiceCompanion>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
@@ -712,6 +719,11 @@ export async function bootstrap(
         const id = instances.id;
         leases = new Leases(() => leaseConnection(url, id));
       }
+      // The blob store first: the connectors, the gateway and the routes keep files in it.
+      blobs = startBlobs(handle.sql, env, options.workers !== false, () =>
+        leading(leases, 'blob-collector'),
+      );
+      attachments = new AttachmentService(handle.sql, blobs.store);
       await closeInterruptedScans(handle.db);
       await expireEpisodes(handle.sql);
       // One sign-in service, so the API and the gateway share one refresh per provider.
@@ -770,6 +782,8 @@ export async function bootstrap(
         connections,
         browserSessions: browser?.sessions,
         stdioLauncher,
+        // A file the person sent can be saved into the agent's workspace.
+        attachments,
         // A space or agent the person marked private reads no public web pages.
         privateContext: ({ spaceId, agentId }, query) =>
           privacy.marksPrivate(spaceId, agentId, query),
@@ -962,6 +976,7 @@ export async function bootstrap(
           signIn,
           modelSettings,
           spending,
+          blobs: blobs?.store,
         });
         const Supervisor =
           env.MELETE_RUNTIME_SUPERVISOR === 'docker'
@@ -1162,14 +1177,11 @@ export async function bootstrap(
           modelSettings,
           runs,
           spending,
+          blobs: blobs?.store,
         });
       // A removal outlives the request that asked for it and the process that
       // was running it, so it is resumed at startup and every minute after.
       const journal = (deploymentMemory?.routes ?? memory)?.journal;
-      if (handle)
-        blobs = startBlobs(handle.sql, env, options.workers !== false, () =>
-          leading(leases, 'blob-collector'),
-        );
       if (handle && journal) {
         removals = new SpaceRemovalService({
           db: handle.db,
@@ -1334,6 +1346,11 @@ export async function bootstrap(
     modelSettings,
     voiceCompanion: voiceCompanion?.companion ?? null,
     checkDatabase,
+    attachments,
+    checkDatabase: async () => {
+      if (!handle) return 'not_configured';
+      return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
+    },
     ...(handle ? { checkMemory: () => memoryHealth(handle.sql) } : {}),
   });
 

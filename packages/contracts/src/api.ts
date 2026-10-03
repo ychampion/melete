@@ -134,15 +134,23 @@ export const jobListQuery = z.object({
 export const jobListResponse = z.object({ jobs: z.array(job) });
 export const jobResponse = z.object({ job });
 
-export const postMessageRequest = z.object({
-  text: z.string().min(1),
-  /**
-   * The answer this message corrects, by its message id, when the person says so
-   * (a "correct this" reply rather than a new request). Learning reads it only
-   * when it names the latest answer on the same job.
-   */
-  corrects: messageId.optional(),
-});
+export const postMessageRequest = z
+  .object({
+    /** May be empty only when the message carries files. */
+    text: z.string(),
+    /**
+     * The answer this message corrects, by its message id, when the person says so
+     * (a "correct this" reply rather than a new request). Learning reads it only
+     * when it names the latest answer on the same job.
+     */
+    corrects: messageId.optional(),
+    /** Files uploaded for this message, checked as the person's own and unsent when it is accepted. */
+    attachments: z.array(z.string().min(1).max(240)).max(10).optional(),
+  })
+  .refine((value) => value.text.length > 0 || (value.attachments?.length ?? 0) > 0, {
+    message: 'A message needs words or a file.',
+    path: ['text'],
+  });
 
 export const cancelJobRequest = z.object({
   reason: z.string().max(500).optional(),

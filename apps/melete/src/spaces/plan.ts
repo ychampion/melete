@@ -168,6 +168,9 @@ const SPACE_KEYED_OPERATIONAL = [
   // configuration left go here, since an emptied space keeps its row and the
   // cascade from it never fires.
   'browser_site_profile',
+  // Files people sent in chat went with their chats; one uploaded and never
+  // sent has no chat. Their bytes go in the blobs phase, by reference.
+  'attachment',
 ] as const;
 
 /**

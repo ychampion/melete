@@ -4,6 +4,7 @@
  * Each renders from the contract's typed data and calls back with the one
  * thing a person can do to it.
  */
+
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { AgentFace, faceStateFor } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
@@ -42,6 +43,7 @@ import type {
   TurnStatus,
 } from '../experience/types.ts';
 import { href } from '../router.ts';
+import { MessageFiles } from './MessageFiles.tsx';
 import { longMessage } from './worklog.ts';
 
 export const timeOf = (iso: string) =>
@@ -117,31 +119,35 @@ export function UserBubble({
   const [whole, setWhole] = useState(false);
   const bodyId = useId();
   // A turn started elsewhere is drawn from its events before its message is read.
-  if (!turn.turn.text) return null;
+  const files = turn.turn.attachments ?? [];
+  if (!turn.turn.text && !files.length) return null;
   const long = longMessage(turn.turn.text);
   return (
     <div className="bubble-wrap">
-      <div
-        className="bubble"
-        data-pending={delivery ? 'true' : undefined}
-        data-folded={long && !whole ? 'true' : undefined}
-      >
-        <div className="bubble-text" id={bodyId}>
-          {turn.turn.text}
+      <MessageFiles files={files} />
+      {turn.turn.text ? (
+        <div
+          className="bubble"
+          data-pending={delivery ? 'true' : undefined}
+          data-folded={long && !whole ? 'true' : undefined}
+        >
+          <div className="bubble-text" id={bodyId}>
+            {turn.turn.text}
+          </div>
+          {long ? (
+            <button
+              type="button"
+              className="bubble-more"
+              aria-expanded={whole}
+              aria-controls={bodyId}
+              onClick={() => setWhole(!whole)}
+            >
+              {whole ? 'Show less' : 'Show more'}
+              <Icon name="chevronDown" size={14} />
+            </button>
+          ) : null}
         </div>
-        {long ? (
-          <button
-            type="button"
-            className="bubble-more"
-            aria-expanded={whole}
-            aria-controls={bodyId}
-            onClick={() => setWhole(!whole)}
-          >
-            {whole ? 'Show less' : 'Show more'}
-            <Icon name="chevronDown" size={14} />
-          </button>
-        ) : null}
-      </div>
+      ) : null}
       {reactions.length ? <ReactionRow reactions={reactions} /> : null}
       <div className="bubble-meta">
         {delivery === 'sending' ? (
