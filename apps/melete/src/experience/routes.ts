@@ -11,6 +11,7 @@ import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { readEventCursor } from '../api/events.ts';
+import type { AttachmentService } from '../attachments/store.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import { loadAction } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
@@ -66,6 +67,8 @@ export type ExperienceDeps = {
   privacy?: Pick<PrivacyRouter, 'resolvePayload'>;
   /** Long work in the background. */
   runs?: RunService;
+  /** The files people send in chat. */
+  attachments?: AttachmentService;
 };
 /**
  * Rows these routes keep for the space as a whole rather than for one job: the
@@ -98,6 +101,7 @@ const SPACE_OWNER_SURFACES = new Set([
 
 export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
+  if (deps.attachments) service.attachments = deps.attachments;
   const questions = new ExperienceQuestions(deps.db, deps.questions, deps.sql);
   const memory = deps.sql
     ? new ExperienceMemory(deps.sql, deps.memoryJournal, deps.memoryProvision)
@@ -567,7 +571,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
           forget = async (sources) => (await memory?.forgetSources(spaceId, ownerId, sources)) ?? 0;
       }
       const removal = await removeJobs(
-        { jobs: deps.jobs, sql: deps.sql, runner: deps.runner },
+        { jobs: deps.jobs, sql: deps.sql, runner: deps.runner, blobs: deps.attachments?.store },
         ids,
         forget,
       );

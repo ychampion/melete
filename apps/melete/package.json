@@ -29,6 +29,7 @@
     "libsodium-wrappers": "0.8.4",
     "mailparser": "3.9.24",
     "nodemailer": "10.0.3",
+    "pdfjs-dist": "6.3.289",
     "pg-boss": "12.31.0",
     "playwright": "1.63.0",
     "postgres": "3.4.9",

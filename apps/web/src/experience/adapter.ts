@@ -254,12 +254,13 @@ export const adapter = {
     guard<{ conversation: Conversation }>(() => api.POST('/conversations', { body })),
   turns: (id: string) =>
     guard<{ turns: Turn[] }>(() => api.GET('/conversations/{id}/messages', path(id))),
-  send: (id: string, text: string, key: string) =>
+  /** `attachments` names files uploaded for this message, in the order they show. */
+  send: (id: string, text: string, key: string, attachments: readonly string[] = []) =>
     guard<MessageAcceptance>(() =>
       api.POST('/conversations/{id}/messages', {
         ...path(id),
         headers: { 'Idempotency-Key': key },
-        body: { text },
+        body: { text, ...(attachments.length ? { attachments: [...attachments] } : {}) },
       }),
     ),
   pause: (id: string) =>

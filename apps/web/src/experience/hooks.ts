@@ -189,7 +189,12 @@ export type ConversationState = {
   error: string | null;
   loading: boolean;
   /** Draw the message before the service confirms it; settle it when it answers. */
-  local: (text: string, agentId: string, delivery: Turn['delivery']) => string;
+  local: (
+    text: string,
+    agentId: string,
+    delivery: Turn['delivery'],
+    attachments?: NonNullable<Turn['attachments']>,
+  ) => string;
   accepted: (localId: string, turnId: string, receivedAt: string) => void;
   settle: (localId: string, delivery: Turn['delivery']) => void;
   /** Show the conversation as the service now has it, after a rename. */
@@ -370,11 +375,24 @@ export function useConversation(id: string | null): ConversationState {
     [],
   );
   const local = useCallback(
-    (text: string, agentId: string, delivery: Turn['delivery']) => {
+    (
+      text: string,
+      agentId: string,
+      delivery: Turn['delivery'],
+      attachments: NonNullable<Turn['attachments']> = [],
+    ) => {
       const localId = `local_${Date.now()}`;
-      setTranscriptState((previous) =>
-        addLocalTurn(previous, text, agentId, id ?? '', delivery, localId),
-      );
+      setTranscriptState((previous) => {
+        const next = addLocalTurn(previous, text, agentId, id ?? '', delivery, localId);
+        if (!attachments.length) return next;
+        // The files show on the message from the moment it is drawn.
+        return {
+          ...next,
+          turns: next.turns.map((entry) =>
+            entry.id === localId ? { ...entry, turn: { ...entry.turn, attachments } } : entry,
+          ),
+        };
+      });
       return localId;
     },
     [id],

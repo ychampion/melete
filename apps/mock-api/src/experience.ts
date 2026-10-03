@@ -18,6 +18,7 @@ import {
   projectCards,
 } from '../../melete/src/experience/projectors.ts';
 import type { AppDeps } from './app.ts';
+import type { MockAttachment } from './attachments.ts';
 import { MockBeliefError, MockBeliefs } from './beliefs.ts';
 import { ComputerMock } from './computer.ts';
 import { DEMO_AGENTS } from './demo-agents.ts';
@@ -139,6 +140,8 @@ export class ExperienceMock {
   /** Deleted agents, kept only to name the turns they answered. */
   readonly removedAgents = new Map<string, C.ExperienceAgent>();
   readonly chats = new Map<string, Chat>();
+  /** Files uploaded for messages, sent or not yet. */
+  readonly attachments = new Map<string, MockAttachment>();
   readonly permissions = new Map<string, C.PermissionCard>();
   readonly permissionDrafts = new Map<string, string>();
   readonly decisions = new Map<
@@ -1146,6 +1149,15 @@ export class ExperienceMock {
     const input = C.conversationMessage.parse(raw);
     const fingerprint = `${chat.view.id}:${key}`;
     const previous = key ? this.submissions.get(fingerprint) : undefined;
+    const files = (input.attachments ?? []).map((id) => {
+      const entry = this.attachments.get(id);
+      if (!entry || (entry.sent && !previous))
+        throw new MockExperienceError(
+          409,
+          'One of the files is no longer available. Remove it and attach it again.',
+        );
+      return entry;
+    });
     if (previous) {
       if (previous.text !== input.text)
         throw new MockExperienceError(
@@ -1170,14 +1182,31 @@ export class ExperienceMock {
       status: 'queued',
       delivery: null,
       created_at: this.now(),
+      ...(files.length ? { attachments: files.map((file) => file.view) } : {}),
     });
+    for (const file of files) file.sent = true;
     chat.turns.push(turn);
     chat.view.progress = undefined;
     // The person's message is an event too, so a reaction can land on it.
     const spoken = this.deps.store.append({
       type: 'notice',
       job_id: chat.view.id,
-      payload: { kind: 'user_message', text: input.text },
+      payload: {
+        kind: 'user_message',
+        text: input.text,
+        ...(files.length
+          ? {
+              attachments: files.map(({ view }) => ({
+                id: view.id,
+                name: view.name,
+                media_type: view.media_type,
+                kind: view.kind,
+                size: view.size,
+                pages: view.pages,
+              })),
+            }
+          : {}),
+      },
     });
     // The service stores both records in one transaction with the same creation timestamp.
     turn.created_at = spoken.created_at;

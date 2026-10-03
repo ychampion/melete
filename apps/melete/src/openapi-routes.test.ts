@@ -49,6 +49,7 @@ function servedRoutes(): string[] {
     removals: stub,
     broker: stub,
     spending: stub,
+    attachments: stub,
   };
   const routes = createApp(deps)
     .routes.filter((route) => route.method !== 'ALL')

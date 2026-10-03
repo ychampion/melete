@@ -1,0 +1,140 @@
+/**
+ * Uploading a file for a message, reading it back, and taking back one not
+ * sent yet. The space and the person come from the session, never from the
+ * request.
+ */
+import {
+  ATTACHMENT_LIMITS,
+  attachmentContentQuery,
+  attachmentResponse,
+  attachmentSize,
+} from '@melete/contracts';
+import type { Context, Hono } from 'hono';
+import { ServiceError } from '../api/errors.ts';
+import type { SpaceResolver } from '../api/reactions.ts';
+import { type LimitStore, MemoryLimitStore } from '../ops/limiter.ts';
+import { requestPrincipal } from '../principals/authority.ts';
+import type { AttachmentScope, AttachmentService } from './store.ts';
+
+/** Uploads one person may have under way at once. */
+export const UPLOADS_AT_ONCE = 3;
+/** Uploads one person may start in a window, and the window. */
+export const UPLOAD_RATE = { count: 60, windowMs: 10 * 60 * 1000 };
+
+/** Room for the small copy of a picture and the form's own framing. */
+const FORM_OVERHEAD = ATTACHMENT_LIMITS.model_image_bytes + 64 * 1024;
+
+export function mountAttachments(
+  app: Hono,
+  attachments: AttachmentService,
+  resolveSpace: SpaceResolver,
+  /** Where upload counts are kept, shared by every instance; left out, this process counts. */
+  limits: LimitStore = new MemoryLimitStore(),
+): void {
+  const underWay = new Map<string, number>();
+  /** A fixed window: how many uploads this person started in it. */
+  const counted = (key: string) =>
+    limits.update<{ count: number; started: number }, boolean>(
+      'attachment-upload',
+      key,
+      Date.now(),
+      (state) => {
+        const now = Date.now();
+        const live =
+          state && now - state.started < UPLOAD_RATE.windowMs ? state : { count: 0, started: now };
+        if (live.count >= UPLOAD_RATE.count)
+          return { state: live, expiresAt: live.started + UPLOAD_RATE.windowMs, result: false };
+        const next = { count: live.count + 1, started: live.started };
+        return { state: next, expiresAt: next.started + UPLOAD_RATE.windowMs, result: true };
+      },
+    );
+  const scopeFor = async (c: Context): Promise<AttachmentScope> => {
+    const scope = await resolveSpace(c);
+    if (!scope) throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
+    return { spaceId: scope.spaceId, principalId: requestPrincipal() ?? null };
+  };
+
+  app.post('/attachments', async (c) => {
+    const scope = await scopeFor(c);
+    const declared = Number(c.req.header('content-length') ?? 0);
+    if (declared > ATTACHMENT_LIMITS.file_bytes + FORM_OVERHEAD)
+      throw new ServiceError(
+        'attachment_too_large',
+        `Files can be up to ${attachmentSize(ATTACHMENT_LIMITS.file_bytes)}.`,
+        413,
+      );
+    if (!/^multipart\/form-data/i.test(c.req.header('content-type') ?? ''))
+      throw new ServiceError('invalid_request', 'Send the file as multipart/form-data.', 400);
+    const who = `${scope.spaceId}:${scope.principalId ?? 'owner'}`;
+    if ((underWay.get(who) ?? 0) >= UPLOADS_AT_ONCE)
+      throw new ServiceError(
+        'attachment_busy',
+        `You can upload ${UPLOADS_AT_ONCE} files at a time. Wait for one to finish, then try again.`,
+        429,
+      );
+    if (!(await counted(who)))
+      throw new ServiceError(
+        'attachment_rate',
+        'You have uploaded a lot of files in the last few minutes. Try again shortly.',
+        429,
+      );
+    underWay.set(who, (underWay.get(who) ?? 0) + 1);
+    try {
+      return await receive(c, scope);
+    } finally {
+      const left = (underWay.get(who) ?? 1) - 1;
+      if (left > 0) underWay.set(who, left);
+      else underWay.delete(who);
+    }
+  });
+
+  const receive = async (c: Context, scope: AttachmentScope) => {
+    let form: FormData;
+    try {
+      form = await c.req.formData();
+    } catch {
+      throw new ServiceError('invalid_request', 'The upload could not be read.', 400);
+    }
+    const file = form.get('file');
+    if (!(file instanceof Blob))
+      throw new ServiceError('invalid_request', 'Send the file in the field named file.', 400);
+    const preview = form.get('preview');
+    const view = await attachments.upload(scope, {
+      // An empty part can arrive as a bare blob, with no name.
+      name: file instanceof File && typeof file.name === 'string' ? file.name : '',
+      mediaType: file.type ?? '',
+      bytes: new Uint8Array(await file.arrayBuffer()),
+      preview: preview instanceof Blob ? new Uint8Array(await preview.arrayBuffer()) : null,
+    });
+    return c.json(attachmentResponse.parse({ attachment: view }), 201);
+  };
+
+  app.get('/attachments/:id/content', async (c) => {
+    const scope = await scopeFor(c);
+    const query = attachmentContentQuery.safeParse(c.req.query());
+    if (!query.success) throw new ServiceError('invalid_request', 'Unknown variant.', 400);
+    const { row, bytes, mediaType } = await attachments.content(
+      scope,
+      c.req.param('id'),
+      query.data.variant ?? 'original',
+    );
+    const inline = mediaType.startsWith('image/') || mediaType === 'application/pdf';
+    return new Response(Uint8Array.from(bytes), {
+      headers: {
+        'content-type': mediaType,
+        'content-length': String(bytes.length),
+        'cache-control': 'private, no-store',
+        'x-content-type-options': 'nosniff',
+        // A file someone sent is shown, never run: no script, no frames, no plugins.
+        'content-security-policy':
+          "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+        'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.name)}`,
+      },
+    });
+  });
+
+  app.delete('/attachments/:id', async (c) => {
+    await attachments.remove(await scopeFor(c), c.req.param('id'));
+    return c.json({ ok: true as const });
+  });
+}

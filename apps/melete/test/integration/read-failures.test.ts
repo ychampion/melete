@@ -156,7 +156,7 @@ databaseTest(
 );
 
 databaseTest(
-  'reading a picture fails plainly with its reason, and the read is settled at once',
+  'reading a picture says plainly why there is no text, and the read is settled at once',
   async () => {
     const ctx = await setup(['files.read'], 'files', (roots) => {
       // A PNG as a paired computer's screenshot leaves it: NUL bytes and all.
@@ -175,11 +175,16 @@ databaseTest(
       connection_id: ctx.connectionId,
       payload: { path: 'device/screenshot-1.png' },
     });
-    expect(read.status).toBe('failed');
-    expect(read.message).toContain('is a picture; files.read reads UTF-8 text only');
+    // The read settles with no content and a sentence saying why; no bytes go back.
+    expect(read.status).toBe('succeeded');
     expect(await standing(ctx.sql, ctx.claims.job_id)).toEqual({ state: 'running', questions: 0 });
-    const actions = await ctx.sql`select status from action where job_id = ${ctx.claims.job_id}`;
-    expect(actions.map((row) => row.status)).toEqual(['failed']);
+    const actions =
+      await ctx.sql`select status, receipt from action where job_id = ${ctx.claims.job_id}`;
+    expect(actions.map((row) => row.status)).toEqual(['succeeded']);
+    const detail =
+      (actions[0]?.receipt as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
+    expect(detail.content).toBeNull();
+    expect(String(detail.note)).toContain('is a picture of 17 bytes');
   },
   SLOW,
 );

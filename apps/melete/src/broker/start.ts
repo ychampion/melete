@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SecureContextOptions } from 'node:tls';
 import { loadSkills } from '@melete/skills';
+import { gatewayAttachments } from '../attachments/model.ts';
 import {
   type ConfiguredConnection,
   configuredBrowserSessions,
@@ -29,6 +30,7 @@ import { startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
+import type { BlobStore } from '../storage/blob.ts';
 import type { BrowserSessionService } from '../workers/browser/routes.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
 import type { ComposeExecutor } from './compose.ts';
@@ -65,6 +67,8 @@ export async function startEffectBoundary(
     runs?: BrokerOptions['runs'];
     /** The installation's spending caps, shared by every gateway of the service. */
     spending?: SpendingGuard;
+    /** Where the files people send in chat are kept, for the gateway to show the model. */
+    blobs?: BlobStore;
   },
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -154,6 +158,13 @@ export async function startEffectBoundary(
       spending,
       routes: (attempt) => modelSettings.attemptRoutes(routing, attempt),
       reasoningEffort: env.MELETE_REASONING_EFFORT_AGENT,
+      ...(dependencies.blobs
+        ? {
+            attachments: gatewayAttachments(handle.sql, dependencies.blobs, (provider, model) =>
+              modelSettings.visionFor(provider, model),
+            ),
+          }
+        : {}),
       resolveAuthority: dependencies.resolveAuthority,
       resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
       resolveStandingGrant: resolvePersonGrant,
