@@ -339,7 +339,8 @@ describe.skipIf(!npm)('npm through the relay to the registry', () => {
       const loaded = await command('node', ['check.js'], { cwd: app, env });
       expect(loaded.stdout.trim()).toBe('42');
       // Every request that reached the registry carried the account.
-      expect(served.seen.length).toBeGreaterThanOrEqual(4);
+      // The publish, the package record and its tarball at least (npm may skip the audit lookup).
+      expect(served.seen.length).toBeGreaterThanOrEqual(3);
       expect(new Set(served.seen.map((request) => request.authorization))).toEqual(
         new Set([`Bearer ${secret}`]),
       );
