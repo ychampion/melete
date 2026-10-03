@@ -3,8 +3,11 @@
  *
  * A search goes to the first backend that can answer, in this order:
  *
- * 1. A search API the operator configured (`BRAVE_SEARCH_API_KEY`, then
- *    `TAVILY_API_KEY`). Setting one is a choice, so it comes first.
+ * 1. A search API the operator configured (`TAVILY_API_KEY`, then
+ *    `BRAVE_SEARCH_API_KEY`). Setting one is a choice, so it comes first.
+ *    Tavily goes first when both are set because its results carry the
+ *    passages of each page that match the query, so the agent can often
+ *    answer without reading the pages one by one.
  * 2. The search tool of the model the conversation runs on, when its provider
  *    has one (`modelSupportsNativeSearch`). That call goes through Melete's
  *    model gateway, so it is metered against the job and the privacy router
@@ -28,12 +31,26 @@ import {
   type WebTransport,
 } from './web.ts';
 
-export type SearchResult = { title: string; url: string; snippet: string };
+export type SearchResult = {
+  title: string;
+  url: string;
+  snippet: string;
+  /** The passages of the page that match the query, when the backend returns them. */
+  content?: string;
+  /** When the page was published (an ISO day), when the backend says. */
+  published?: string;
+};
+
+/** How recent the results of a search must be. */
+export const SEARCH_RECENCY = ['day', 'week', 'month', 'year'] as const;
+export type SearchRecency = (typeof SEARCH_RECENCY)[number];
 
 /** One search, with the job it is for. Everything but the query comes from trusted state. */
 export type SearchRequest = {
   query: string;
   maxResults: number;
+  /** Only results from this recent past, when asked. */
+  recency?: SearchRecency;
   jobId: string;
   spaceId: string;
   /** The attempt that asked, whose model a native search uses. */
@@ -77,6 +94,8 @@ export class SearchUnavailable extends Error {
 
 const MAX_TITLE = 200;
 const MAX_SNIPPET = 400;
+/** The most page text one result carries. */
+export const MAX_RESULT_CONTENT = 1_600;
 
 const clip = (text: string, limit: number) =>
   text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text;
@@ -104,7 +123,12 @@ export function plainText(html: string): string {
  * text without markup, clipped. Every backend's results go through this,
  * the model's own search included.
  */
-export function searchResult(title: unknown, url: unknown, snippet: unknown): SearchResult | null {
+export function searchResult(
+  title: unknown,
+  url: unknown,
+  snippet: unknown,
+  extra: { content?: unknown; published?: unknown } = {},
+): SearchResult | null {
   if (typeof url !== 'string') return null;
   let parsed: URL;
   try {
@@ -115,11 +139,23 @@ export function searchResult(title: unknown, url: unknown, snippet: unknown): Se
   if (!['http:', 'https:'].includes(parsed.protocol)) return null;
   const address = receiptUrl(parsed);
   const name = plainText(typeof title === 'string' ? title : '') || parsed.hostname;
+  const content =
+    typeof extra.content === 'string' ? clip(plainText(extra.content), MAX_RESULT_CONTENT) : '';
+  const published = publishedDay(extra.published);
   return {
     title: clip(name, MAX_TITLE),
     url: address,
     snippet: clip(plainText(typeof snippet === 'string' ? snippet : ''), MAX_SNIPPET),
+    ...(content ? { content } : {}),
+    ...(published ? { published } : {}),
   };
+}
+
+/** A publication date as an ISO day, or null when the value is not a date. */
+function publishedDay(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length > 64) return null;
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? null : new Date(time).toISOString().slice(0, 10);
 }
 
 /** Distinct by address, in order, at most `limit`. */
@@ -182,6 +218,13 @@ const records = (value: unknown): Record<string, unknown>[] =>
     ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
     : [];
 
+const BRAVE_FRESHNESS: Record<SearchRecency, string> = {
+  day: 'pd',
+  week: 'pw',
+  month: 'pm',
+  year: 'py',
+};
+
 /** Brave Search API (https://api.search.brave.com), with `BRAVE_SEARCH_API_KEY`. */
 export function braveSearch(options: { apiKey: string; fetch?: Fetch }): SearchBackend {
   const fetcher = options.fetch ?? ((request: Request) => fetch(request));
@@ -191,6 +234,7 @@ export function braveSearch(options: { apiKey: string; fetch?: Fetch }): SearchB
       const url = new URL('https://api.search.brave.com/res/v1/web/search');
       url.searchParams.set('q', request.query);
       url.searchParams.set('count', String(request.maxResults));
+      if (request.recency) url.searchParams.set('freshness', BRAVE_FRESHNESS[request.recency]);
       const body = (await apiJson(
         fetcher,
         new Request(url.href, {
@@ -213,7 +257,25 @@ export function braveSearch(options: { apiKey: string; fetch?: Fetch }): SearchB
   };
 }
 
-/** Tavily (https://api.tavily.com), with `TAVILY_API_KEY`. */
+/** The only address the Tavily key is ever sent to. */
+const TAVILY_API = 'https://api.tavily.com';
+
+const tavilyHeaders = (apiKey: string) => ({
+  accept: 'application/json',
+  'content-type': 'application/json',
+  authorization: `Bearer ${apiKey}`,
+});
+
+/**
+ * Tavily Search (https://api.tavily.com/search), with `TAVILY_API_KEY`.
+ *
+ * `basic` depth costs one credit and returns, for each page, up to three
+ * passages reranked against the query. Those passages reach the agent as the
+ * result's `content`, so a search often answers without a `web.fetch` for
+ * each page. Tavily's own written answer and whole-page text are not asked
+ * for: the agent writes the answer from the sources, and whole pages are what
+ * `web.fetch` is for.
+ */
 export function tavilySearch(options: { apiKey: string; fetch?: Fetch }): SearchBackend {
   const fetcher = options.fetch ?? ((request: Request) => fetch(request));
   return {
@@ -221,16 +283,20 @@ export function tavilySearch(options: { apiKey: string; fetch?: Fetch }): Search
     async search(request) {
       const body = (await apiJson(
         fetcher,
-        new Request('https://api.tavily.com/search', {
+        new Request(`${TAVILY_API}/search`, {
           method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${options.apiKey}`,
-          },
+          headers: tavilyHeaders(options.apiKey),
           body: JSON.stringify({
             query: request.query,
             max_results: request.maxResults,
             search_depth: 'basic',
+            chunks_per_source: 3,
+            include_answer: false,
+            include_raw_content: false,
+            include_images: false,
+            ...(request.recency
+              ? { time_range: request.recency, include_published_date: true }
+              : {}),
           }),
           redirect: 'error',
           signal: apiSignal(request.signal),
@@ -240,12 +306,82 @@ export function tavilySearch(options: { apiKey: string; fetch?: Fetch }): Search
       return {
         backend: 'tavily',
         results: distinctResults(
-          records(body?.results).map((item) => searchResult(item.title, item.url, item.content)),
+          records(body?.results).map((item) =>
+            searchResult(item.title, item.url, item.content, {
+              content: item.content,
+              published: item.published_date,
+            }),
+          ),
           request.maxResults,
         ),
       };
     },
   };
+}
+
+/**
+ * Reads one public page through a hosted reader, for a page the direct read
+ * got no text from. Null when the reader got nothing either.
+ */
+export type PageExtractor = {
+  name: string;
+  read(
+    url: string,
+    options: { signal?: AbortSignal; timeoutMs: number; maxChars: number },
+  ): Promise<{ text: string; truncated: boolean } | null>;
+};
+
+/**
+ * Tavily Extract (https://api.tavily.com/extract), with `TAVILY_API_KEY`.
+ * `advanced` depth renders the page before reading it, which a page built by
+ * scripts needs. It costs at most two credits, and a page it cannot read
+ * costs none.
+ */
+export function tavilyExtract(options: { apiKey: string; fetch?: Fetch }): PageExtractor {
+  const fetcher = options.fetch ?? ((request: Request) => fetch(request));
+  return {
+    name: 'tavily',
+    async read(url, read) {
+      const timeoutMs = Math.max(1_000, Math.min(read.timeoutMs, 60_000));
+      const timeout = AbortSignal.timeout(timeoutMs);
+      const body = (await apiJson(
+        fetcher,
+        new Request(`${TAVILY_API}/extract`, {
+          method: 'POST',
+          headers: tavilyHeaders(options.apiKey),
+          body: JSON.stringify({
+            urls: [url],
+            extract_depth: 'advanced',
+            format: 'text',
+            include_images: false,
+            // Tavily's own limit, a second inside ours so its answer can arrive.
+            timeout: Math.max(1, Math.floor(timeoutMs / 1000) - 1),
+          }),
+          redirect: 'error',
+          signal: read.signal ? AbortSignal.any([read.signal, timeout]) : timeout,
+        }),
+        'tavily',
+      )) as { results?: unknown } | null;
+      const [page] = records(body?.results);
+      if (typeof page?.raw_content !== 'string') return null;
+      // A NUL never carries meaning in a page, and a receipt cannot store one.
+      const text = page.raw_content.replaceAll('\u0000', '').trim();
+      if (!text) return null;
+      return {
+        text: text.length > read.maxChars ? text.slice(0, read.maxChars) : text,
+        truncated: text.length > read.maxChars,
+      };
+    },
+  };
+}
+
+/** The reader `web.fetch` falls back to for a page it got no text from, when one is set. */
+export function webExtractFromEnv(
+  env: { TAVILY_API_KEY?: string },
+  options: { fetch?: Fetch } = {},
+): PageExtractor | undefined {
+  const tavily = env.TAVILY_API_KEY?.trim();
+  return tavily ? tavilyExtract({ apiKey: tavily, fetch: options.fetch }) : undefined;
 }
 
 // --------------------------------------------------------------------------
@@ -410,6 +546,7 @@ export function duckDuckGoSearch(
     lastAt = now();
     const url = new URL('https://html.duckduckgo.com/html/');
     url.searchParams.set('q', request.query);
+    if (request.recency) url.searchParams.set('df', request.recency.slice(0, 1));
     const response = await get(url, 'text/html', request.signal);
     if (looksBlocked(response.status, response.body)) {
       blockedUntil = now() + coolOffMs;
@@ -421,7 +558,7 @@ export function duckDuckGoSearch(
   return {
     name: 'duckduckgo',
     async search(request) {
-      const key = request.query.toLowerCase();
+      const key = `${request.recency ?? 'any'}:${request.query.toLowerCase()}`;
       const kept = cache.get(key);
       let results: SearchResult[];
       if (kept && now() - kept.at < cacheMs) results = kept.results;
@@ -448,7 +585,7 @@ export function keylessSearchNotice(env: {
   return (
     'web search: no search key is set, so searches the model cannot run itself read ' +
     "DuckDuckGo's results page from this server's address. That page is meant for people, " +
-    'is paced and may stop answering; set BRAVE_SEARCH_API_KEY or TAVILY_API_KEY for a hosted installation.'
+    'is paced and may stop answering; set TAVILY_API_KEY or BRAVE_SEARCH_API_KEY for a hosted installation.'
   );
 }
 
@@ -462,6 +599,8 @@ export function wikipediaSearch(options: { get?: PublicGet } = {}): SearchBacken
   return {
     name: 'wikipedia',
     async search(request) {
+      // Articles carry no publication date, so a search for recent pages passes on.
+      if (request.recency) return null;
       const url = new URL('https://en.wikipedia.org/w/api.php');
       for (const [name, value] of Object.entries({
         action: 'query',
@@ -546,8 +685,8 @@ export function webSearchFromEnv(
   const backends: SearchBackend[] = [];
   const brave = env.BRAVE_SEARCH_API_KEY?.trim();
   const tavily = env.TAVILY_API_KEY?.trim();
-  if (brave) backends.push(braveSearch({ apiKey: brave, fetch: options.fetch }));
   if (tavily) backends.push(tavilySearch({ apiKey: tavily, fetch: options.fetch }));
+  if (brave) backends.push(braveSearch({ apiKey: brave, fetch: options.fetch }));
   if (options.native) backends.push(options.native);
   backends.push(
     duckDuckGoSearch({ ...(options.get ? { get: options.get } : {}), pacing: options.pacing }),

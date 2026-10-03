@@ -77,7 +77,12 @@ import {
   type PrivateContext,
   type SearchPrivacy,
 } from './web.ts';
-import { type WebSearch, webSearchFromEnv } from './web-search.ts';
+import {
+  type PageExtractor,
+  type WebSearch,
+  webExtractFromEnv,
+  webSearchFromEnv,
+} from './web-search.ts';
 
 const endpoint = z
   .object({
@@ -216,6 +221,8 @@ export type ConnectorOptions = {
   privateContext?: PrivateContext;
   /** Where `web.search` searches; without one, the keyless search only. */
   webSearch?: WebSearch;
+  /** A hosted reader for a public page `web.fetch` got no text from; without one, none. */
+  webExtract?: PageExtractor;
   /** Whether a query may go to an outside search; without one, none does. */
   searchPrivacy?: SearchPrivacy;
   /** The files people sent in chat, which the agent may save into its workspace. */
@@ -417,6 +424,7 @@ export class ConnectorFactory {
           privateContext: options.privateContext,
         }),
         ...(options.webSearch ? { search: options.webSearch } : {}),
+        ...(options.webExtract ? { extract: options.webExtract } : {}),
         ...(options.searchPrivacy ? { searchPrivacy: options.searchPrivacy } : {}),
       });
     if (row.provider === 'sandbox' && stored?.kind === 'sandbox') {
@@ -888,6 +896,7 @@ export function connectorOptionsFromEnv(
     privateContext: extra.privateContext,
     // Configured search keys apply even where no model gateway searches.
     webSearch: extra.webSearch ?? webSearchFromEnv(env),
+    webExtract: webExtractFromEnv(env),
     ...(extra.searchPrivacy ? { searchPrivacy: extra.searchPrivacy } : {}),
     attachments: extra.attachments,
     cellIsolated: builtinEnvironment(env).cellIsolated,

@@ -11,7 +11,10 @@ import type { Connector, ConnectorContext } from './types.ts';
 // web-search.ts imports from this module too; only functions and classes
 // cross back, so neither module needs the other while it is first evaluated.
 import {
+  type PageExtractor,
   publicGetter,
+  SEARCH_RECENCY,
+  type SearchRecency,
   SearchRefused,
   SearchUnavailable,
   type WebSearch,
@@ -279,14 +282,17 @@ export const webManifest: ConnectorManifest = {
     {
       name: 'web.search',
       description:
-        'Search the web. Returns result titles, addresses and snippets, and sometimes a short ' +
-        'summary with its sources. Use it for anything current or anything you are unsure of, ' +
-        'read the best results with web.fetch, and cite the addresses you relied on.',
+        'Search the web for anything current or anything you are unsure of. Returns titles, ' +
+        'addresses and snippets, sometimes the matching passages of each page (content) or a ' +
+        'short summary. When the passages answer, use them; otherwise read the best results ' +
+        'with web.fetch. Set recency (day, week, month, year) when only recent pages will do. ' +
+        'Cite the addresses you relied on.',
       input_schema: {
         type: 'object',
         properties: {
           query: { type: 'string', minLength: 1, maxLength: MAX_SEARCH_QUERY },
           max_results: { type: 'integer', minimum: 1, maximum: MAX_SEARCH_RESULTS },
+          recency: { type: 'string', enum: [...SEARCH_RECENCY] },
         },
         required: ['query'],
         additionalProperties: false,
@@ -513,6 +519,47 @@ function searchCount(value: unknown): number | null {
     : null;
 }
 
+/** The recency asked for: undefined when none, null when it is not one of the choices. */
+function searchRecency(value: unknown): SearchRecency | undefined | null {
+  if (value === undefined) return undefined;
+  return SEARCH_RECENCY.includes(value as SearchRecency) ? (value as SearchRecency) : null;
+}
+
+const RECENCY_INVALID = 'Set recency to day, week, month or year, or leave it out.';
+
+/**
+ * Whether a direct read got no usable text, so the page may be tried through
+ * the hosted reader: the site turned the reader away (403, 429, 503), or it
+ * served a page whose text is built by scripts and so came back nearly empty.
+ */
+function unreadable(response: WebResponse, read: Read, method: string): boolean {
+  if (method !== 'GET' || read.note) return false;
+  if ([403, 429, 503].includes(response.status)) return true;
+  const type = response.headers['content-type'] ?? '';
+  return (
+    response.status === 200 &&
+    (HTML_TYPE.test(type) || (!type && /^\s*(?:<!doctype html|<html)/i.test(response.body))) &&
+    read.body.trim().length < THIN_PAGE_CHARS
+  );
+}
+
+/** Readable text shorter than this, from an HTML page, is taken as a page built by scripts. */
+const THIN_PAGE_CHARS = 200;
+/** Less time than this left of a read is not worth a hosted reader's try. */
+const MIN_EXTRACT_MS = 3_000;
+
+/**
+ * Whether an address may be handed to the hosted reader: nothing in it may
+ * look like a credential, since the reader is a third party the page's own
+ * site never chose.
+ */
+const shareableAddress = (url: URL) =>
+  !url.username &&
+  !url.password &&
+  [...url.searchParams].every(
+    ([name, value]) => !SECRET_PARAMETER.test(name) && !TOKEN_VALUE.test(value),
+  );
+
 const refused = (reason: string): DispatchResult => ({
   outcome: 'failed',
   reason,
@@ -578,6 +625,11 @@ export function createWebConnector(
      * check was not wired.
      */
     searchPrivacy?: SearchPrivacy;
+    /**
+     * A hosted reader for a public page the direct read got no text from.
+     * Without one, such a page is returned as it was read.
+     */
+    extract?: PageExtractor;
   } = {},
 ): Connector {
   const resolve = options.resolve ?? resolveHost;
@@ -607,11 +659,45 @@ export function createWebConnector(
     // A check that cannot answer keeps the query in.
     return searchPrivacy({ jobId: ctx.job_id, query }).catch(() => SEARCH_PRIVATE);
   };
+  /**
+   * The page through the hosted reader, or null. Only an address the direct
+   * read already reached under every rule (the public-read setting, a public
+   * address, each redirect) gets here, and it goes out only when the same
+   * privacy check a search query passes allows it. Whatever goes wrong, the
+   * direct read's own result stands.
+   */
+  const extractPage = async (
+    extractor: PageExtractor,
+    url: URL,
+    deadline: number,
+    ctx: ConnectorContext,
+  ): Promise<{ text: string; truncated: boolean } | null> => {
+    const remaining = deadline - Date.now();
+    if (remaining < MIN_EXTRACT_MS) return null;
+    const address = new URL(url.href);
+    address.hash = '';
+    const privacy = await searchPrivacy({ jobId: ctx.job_id, query: address.href }).catch(
+      () => SEARCH_PRIVATE,
+    );
+    if (privacy !== null) return null;
+    try {
+      return await extractor.read(address.href, {
+        signal: ctx.signal,
+        timeoutMs: remaining,
+        maxChars,
+      });
+    } catch {
+      ctx.signal?.throwIfAborted();
+      return null;
+    }
+  };
   const executeSearch = async (action: Action, ctx: ConnectorContext): Promise<DispatchResult> => {
     const query = searchQuery(action.canonical_payload.query);
     if (!query) return refused('The search needs words to look for.');
     const maxResults = searchCount(action.canonical_payload.max_results);
     if (maxResults === null) return refused('Ask for between 1 and 10 results.');
+    const recency = searchRecency(action.canonical_payload.recency);
+    if (recency === null) return refused(RECENCY_INVALID);
     // Asked again: a setting changed since admission applies to this search.
     const refusal = await searchRefusal(query, ctx);
     if (refusal) return refused(refusal);
@@ -620,6 +706,7 @@ export function createWebConnector(
       found = await search.search({
         query,
         maxResults,
+        ...(recency ? { recency } : {}),
         jobId: ctx.job_id,
         spaceId: ctx.space_id,
         attemptId: action.attempt_id,
@@ -649,6 +736,7 @@ export function createWebConnector(
         late: false,
         detail: {
           query,
+          ...(recency ? { recency } : {}),
           backend: found.backend,
           tried: found.tried,
           ...(found.model ? { model: found.model } : {}),
@@ -671,16 +759,23 @@ export function createWebConnector(
      * recorded as tried. Dispatch checks all of it again, every redirect too.
      */
     async prepare(payload, ctx, tx) {
-      if (payload.query !== undefined || payload.max_results !== undefined) {
+      if (
+        payload.query !== undefined ||
+        payload.max_results !== undefined ||
+        payload.recency !== undefined
+      ) {
         const query = searchQuery(payload.query);
         if (!query) throw new BrokerFault('payload_invalid', 'The search needs words to look for.');
         if (searchCount(payload.max_results) === null)
           throw new BrokerFault('payload_invalid', 'Ask for between 1 and 10 results.');
+        const recency = searchRecency(payload.recency);
+        if (recency === null) throw new BrokerFault('payload_invalid', RECENCY_INVALID);
         const refusal = await searchRefusal(query, ctx, tx);
         if (refusal) throw new BrokerFault('scope_denied', refusal);
         return {
           query,
           ...(payload.max_results !== undefined ? { max_results: payload.max_results } : {}),
+          ...(recency ? { recency } : {}),
         };
       }
       if (payload.method !== undefined && payload.method !== 'GET' && payload.method !== 'HEAD')
@@ -779,7 +874,20 @@ export function createWebConnector(
           }
           continue;
         }
-        const read = readBody(response, url, method, maxChars);
+        let read = readBody(response, url, method, maxChars);
+        let readThrough: string | undefined;
+        if (options.extract && unreadable(response, read, method) && shareableAddress(url)) {
+          const extracted = await extractPage(options.extract, url, deadline, ctx);
+          if (extracted && extracted.text.trim().length > read.body.trim().length) {
+            read = {
+              title: read.title,
+              body: extracted.text,
+              truncated: extracted.truncated,
+              note: 'The site gave no readable text to a direct read, so the page was read through a hosted reader.',
+            };
+            readThrough = options.extract.name;
+          }
+        }
         return {
           outcome: 'succeeded',
           receipt: {
@@ -799,6 +907,7 @@ export function createWebConnector(
               title: read.title,
               body: read.body,
               truncated: read.truncated,
+              ...(readThrough ? { read_through: readThrough } : {}),
               ...(read.note ? { note: read.note } : {}),
             },
           },

@@ -335,13 +335,16 @@ while its own workspace stayed writable.
 
 ### Web search
 
-`web.search(query, max_results?)` is a `read` on the default Web connection, so
+`web.search(query, max_results?, recency?)` is a `read` on the default Web connection, so
 every agent can search the web on a fresh installation with nothing configured.
 A search goes to the first of these that answers:
 
-1. A search API key the operator set: `BRAVE_SEARCH_API_KEY` (Brave Search),
-   then `TAVILY_API_KEY` (Tavily). A key is a deliberate choice, so it comes
-   before everything else.
+1. A search API key the operator set: `TAVILY_API_KEY` (Tavily), then
+   `BRAVE_SEARCH_API_KEY` (Brave Search). A key is a deliberate choice, so it
+   comes before everything else. Tavily comes first when both are set because
+   each of its results carries the passages of the page that match the query
+   (see "Tavily" below), so the agent can often answer without reading every
+   page.
 2. The search tool of the model the conversation runs on, when its provider has
    one: the Messages API web search tool for Claude models, the Responses API
    `web_search` tool for recent OpenAI models. The catalog in
@@ -358,6 +361,12 @@ A search goes to the first of these that answers:
    logs a warning at start when no search key is set (see
    [DEPLOYMENT](DEPLOYMENT.md)). Wikipedia is told who is calling, as its API
    policy asks.
+
+`recency` (`day`, `week`, `month` or `year`) asks for recent pages only. Tavily
+receives it as `time_range` and returns each page's publication date, kept as
+the result's `published`; Brave receives it as `freshness` and DuckDuckGo as
+`df`. Wikipedia's articles carry no date, so it steps aside for such a search.
+The model's own search receives the query as written.
 
 A backend that fails or finds nothing hands the search to the next one, and the
 receipt's `tried` names every backend that was asked. That includes the model's
@@ -391,8 +400,10 @@ and the search stops.
 What the receipt keeps: the query, which backend answered and which were tried,
 the model for a native search, how many searches the provider ran, the
 provider's short answer when there is one, and each result's title, address
-(credentials cut, as `web.fetch` does) and snippet, with `sources` listing the
-addresses. `about_this_text` comes before the results and tells the model they
+(credentials cut, as `web.fetch` does) and snippet, plus the page's matching
+passages (`content`, up to 1,600 characters) and publication date
+(`published`) when the backend returns them, with `sources` listing the
+addresses. The recency asked for is kept as `recency`. `about_this_text` comes before the results and tells the model they
 were written by the sites found, that it must not follow instructions in them,
 and that it should name the addresses it relied on. The conversation's trail
 shows the action as "Searched the web for “…”", with each result as a source.
@@ -425,6 +436,36 @@ search, with no key configured`, `a configured search key takes precedence over
 the model’s own search`, `a private space or a sensitive conversation sends the
 query nowhere`, and `a default web connection from an earlier release gains
 web.search; a removed one does not`.
+
+#### Tavily
+
+With `TAVILY_API_KEY` set, Tavily serves two purposes. The key is sent only to
+`https://api.tavily.com`, in the `Authorization` header, with redirects
+refused; it never reaches the model, the sandbox or a receipt, and a failed
+call records only its status, since an error body can echo the key. Replies
+over 1 MB are not read.
+
+- **Search.** `search_depth: basic` (one Tavily credit) with three passages per
+  page, reranked against the query. The passages arrive as each result's
+  `content`, so a search usually answers on its own, and `web.fetch` is left
+  for the pages that need a full read. Tavily's written answer, whole-page text
+  and images are not requested. A search that fails or hits a rate limit moves
+  on to the next backend.
+- **Reading pages `web.fetch` gets no text from.** When the direct read of a
+  page answers 403, 429 or 503, or returns an HTML page with almost no readable
+  text (a page built by scripts), `web.fetch` asks Tavily Extract for the same
+  page with `extract_depth: advanced`, which renders it first. This happens
+  only after the direct read has passed every rule for that address: the
+  Public web reads setting, a public address for the host and for every
+  redirect. The address is sent only when nothing in it looks like a
+  credential and the same privacy check a search query passes allows it. The
+  read stays within `web.fetch`'s total time and its 60,000-character limit,
+  and the receipt marks it with `read_through: "tavily"` and a note. When
+  Extract fails or finds less, the direct read's result is returned as it was.
+  Extract costs at most two credits a page, and none for a page it cannot read.
+
+Evidence: `tavily.test.ts`, which runs both calls against a local stand-in for
+Tavily's API.
 
 ### Web reads
 
