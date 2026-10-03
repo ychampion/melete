@@ -9,8 +9,7 @@
  * the space a reference belongs to is read from the app the version belongs to.
  */
 import { constants } from 'node:fs';
-import { lstat, open, readdir, readlink, realpath } from 'node:fs/promises';
-import path from 'node:path';
+import { lstat, readdir, realpath } from 'node:fs/promises';
 import {
   APP_ENTRY,
   APP_LIMITS,
@@ -21,7 +20,7 @@ import {
   canonicalizePayload,
 } from '@melete/contracts';
 import type { Sql, TransactionSql } from 'postgres';
-import { noLinks, segmentsFor } from '../connectors/files.ts';
+import { heldDirectories, holdBeneath, openBeneath, segmentsFor } from '../connectors/files.ts';
 import { newId } from '../ids.ts';
 import {
   type BlobKey,
@@ -83,46 +82,57 @@ export async function readBundle(
     throw new BundleRefused(`${dir} is not a folder in this conversation's workspace`);
   }
   const base = await realpath(workRoot);
-  let root: string;
+  // Every folder is held open from the workspace root down, never looked up by
+  // name again: a folder swapped for a link mid-walk is refused, not followed.
+  const top = [jobId, ...segments];
   try {
-    root = await noLinks(base, [jobId, ...segments], false);
-    const stat = await lstat(root);
-    if (!stat.isDirectory()) throw new Error('not a folder');
+    await (await holdBeneath(base, top)).close();
   } catch {
     throw new BundleRefused(`${dir} is not a folder in this conversation's workspace`);
   }
 
-  const realRoot = await realpath(root);
-  type Found = { path: string; full: string; size: number };
+  type Found = { path: string; size: number };
   const found: Found[] = [];
   const problems: string[] = [];
   let total = 0;
   // Folders count too, so a tree of empty folders cannot make the walk long.
   let visited = 0;
-  const walk = async (folder: string, prefix: string, depth: number): Promise<void> => {
+  const folders = heldDirectories(base);
+  const walk = async (inside: string[], depth: number): Promise<void> => {
+    const prefix = inside.join('/');
     if (depth > MAX_DEPTH) {
       problems.push(`${prefix} is more than ${MAX_DEPTH} folders deep`);
       return;
     }
-    const entries = await readdir(folder, { withFileTypes: true });
-    visited += entries.length;
+    let names: string[];
+    try {
+      const held = await folders.at([...top, ...inside]);
+      names = (await readdir(held.self)).sort();
+    } catch {
+      problems.push(`${prefix || dir} changed while it was being read`);
+      return;
+    }
+    visited += names.length;
     if (visited > MAX_ENTRIES) {
       problems.push(`the folder has more than ${MAX_ENTRIES} files and folders`);
       return;
     }
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    for (const entry of entries) {
-      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const full = path.join(folder, entry.name);
-      // Checked again with lstat: the entry type is what readdir saw, and a
-      // link must be refused whatever it points at.
-      const stat = await lstat(full);
+    for (const name of names) {
+      const relative = prefix ? `${prefix}/${name}` : name;
+      let stat: Awaited<ReturnType<typeof lstat>>;
+      try {
+        // Named through the held folder, so a link is seen as a link wherever it points.
+        stat = await lstat((await folders.at([...top, ...inside])).at(name));
+      } catch {
+        problems.push(`${relative} changed while it was being read`);
+        continue;
+      }
       if (stat.isSymbolicLink()) {
         problems.push(`${relative} is a link; copy the file in instead`);
         continue;
       }
       if (stat.isDirectory()) {
-        await walk(full, relative, depth + 1);
+        await walk([...inside, name], depth + 1);
         if (visited > MAX_ENTRIES) return;
         continue;
       }
@@ -146,11 +156,15 @@ export async function readBundle(
           `${relative} is ${byteText(stat.size)}, over the ${byteText(APP_LIMITS.max_file_bytes)} a file may be`,
         );
       total += stat.size;
-      found.push({ path: relative, full, size: stat.size });
+      found.push({ path: relative, size: stat.size });
       if (found.length > APP_LIMITS.max_files) return;
     }
   };
-  await walk(root, '', 0);
+  try {
+    await walk([], 0);
+  } finally {
+    await folders.close();
+  }
   if (found.length > APP_LIMITS.max_files)
     problems.push(`the folder has more than ${APP_LIMITS.max_files} files`);
   if (total > APP_LIMITS.max_total_bytes)
@@ -166,22 +180,18 @@ export async function readBundle(
   const changed = (file: Found) =>
     new BundleRefused(`${file.path} changed while it was being read; publish again`);
   for (const file of found) {
-    // Never waits on something that is not a file: a pipe put in a file's
-    // place opens at once and is then refused by its type.
-    const handle = await open(
-      file.full,
-      constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0),
+    // Opened beneath the workspace root one held folder at a time, never through
+    // a link, and never waiting on something that is not a file.
+    const handle = await openBeneath(
+      base,
+      [...top, ...file.path.split('/')],
+      constants.O_RDONLY,
     ).catch(() => {
       throw changed(file);
     });
     try {
       const stat = await handle.stat();
       if (!stat.isFile() || stat.size > APP_LIMITS.max_file_bytes) throw changed(file);
-      // O_NOFOLLOW covers only the last component, so a folder swapped for a
-      // link after the walk would be followed. What was opened is checked to
-      // be where the walk found it, inside the bundle folder.
-      if ((await openedPath(handle.fd, file.full)) !== path.join(realRoot, ...file.path.split('/')))
-        throw changed(file);
       const bytes = new Uint8Array(await handle.readFile());
       if (bytes.byteLength > APP_LIMITS.max_file_bytes) throw changed(file);
       files.push({
@@ -202,12 +212,6 @@ export async function readBundle(
 
 const MAX_ENTRIES = 1_000;
 const MAX_DEPTH = 32;
-
-/** Where an open file really is: from the descriptor on Linux, from its path elsewhere. */
-async function openedPath(fd: number, full: string): Promise<string> {
-  if (process.platform === 'linux') return readlink(`/proc/self/fd/${fd}`).catch(() => '');
-  return realpath(full).catch(() => '');
-}
 
 export function manifestFor(
   files: readonly BundleFile[],
