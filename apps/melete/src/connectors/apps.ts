@@ -44,6 +44,7 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { newestRecorded } from '../apps/data.ts';
+import { readResponses } from '../apps/response-guard.ts';
 import {
   AppUnavailable,
   appRoleFor,
@@ -52,7 +53,7 @@ import {
   type DesiredGrant,
   manifestFor,
   manifestHash,
-  othersCanOpen,
+  othersWhoCanOpen,
   publishVersion,
   readBundle,
   setCurrentVersion,
@@ -128,7 +129,7 @@ const audienceSchema = {
 /** Bound by the service: why the person is asked (see `risksOf`). */
 const RISKS_SCHEMA = {
   type: 'array',
-  maxItems: 4,
+  maxItems: 5,
   items: { type: 'string', maxLength: 2000 },
 };
 
@@ -552,22 +553,36 @@ async function wideningLine(
 }
 
 /**
- * Whether anyone besides the person acting could open the app after this
- * change: the people or everyone the audience names, or, for an app that
- * exists, anyone who can open it now and keeps that (see othersCanOpen). A new
- * app is open to its publisher and the space's owner.
+ * Who besides the person acting could open the app after this change, by
+ * address: the people or everyone the audience names, and, for an app that
+ * exists, anyone who can open it now and keeps that (see othersWhoCanOpen). A
+ * new app is open to its publisher and the space's owner. At most ten are
+ * named; the rest are counted.
  */
-async function sharedAfter(
+async function othersAfter(
   tx: Query,
   ctx: ConnectorContext,
   appId: string | null,
   audience: JsonObject | null,
   actor: string,
-): Promise<boolean> {
-  if (audience?.kind === 'people' || audience?.kind === 'everyone') return true;
-  if (appId) return othersCanOpen(tx, appId, actor, audience?.kind !== 'only_me');
-  const [space] = await tx`select owner_principal_id from space where id = ${ctx.space_id}`;
-  return space?.owner_principal_id !== actor;
+): Promise<string> {
+  const named = new Set<string>();
+  if (audience?.kind === 'everyone') named.add('everyone with an account here');
+  if (audience?.kind === 'people' && Array.isArray(audience.emails))
+    for (const email of audience.emails) named.add(String(email));
+  if (appId)
+    for (const who of await othersWhoCanOpen(tx, appId, actor, audience?.kind !== 'only_me'))
+      named.add(who);
+  else {
+    const [space] = await tx`select p.email from space s join principal p
+      on p.id = s.owner_principal_id where s.id = ${ctx.space_id}
+        and s.owner_principal_id <> ${actor}`;
+    if (space?.email) named.add(String(space.email));
+  }
+  const all = [...named].sort();
+  return all.length > 10
+    ? `${all.slice(0, 10).join(', ')} and ${all.length - 10} more`
+    : all.join(', ');
 }
 
 /**
@@ -598,16 +613,17 @@ async function risksOf(
   const collecting = Object.keys(input.collections)
     .filter((name) => !Object.hasOwn(before.collections, name))
     .sort();
-  const shared =
-    (added.length || collecting.length) &&
-    (await sharedAfter(tx, ctx, input.appId, input.audience, input.publisher));
+  const others =
+    added.length || collecting.length
+      ? await othersAfter(tx, ctx, input.appId, input.audience, input.publisher)
+      : '';
   const newData =
-    added.length && shared
-      ? `It would show its viewers data they do not see now: ${added.join(', ')}.`
+    added.length && others
+      ? `It would show data they do not see now to ${others}: ${added.join(', ')}.`
       : null;
   const newCollections =
-    collecting.length && shared
-      ? `It would collect responses from its viewers it does not collect now: ${collecting.join(', ')}.`
+    collecting.length && others
+      ? `It would collect responses it does not collect now from ${others}: ${collecting.join(', ')}.`
       : null;
   const connecting =
     input.connecting === null
@@ -615,7 +631,11 @@ async function risksOf(
       : input.connecting.length
         ? 'Its code can open direct connections to other servers (WebRTC).'
         : null;
-  return [widening, connecting, newData, newCollections].filter(
+  // A viewer's response may be written as instructions; a publish after one is the person's call.
+  const afterResponses = (await readResponses(tx, ctx.job_id))
+    ? 'This conversation read responses viewers sent, which may have steered it.'
+    : null;
+  return [widening, connecting, newData, newCollections, afterResponses].filter(
     (line): line is string => line !== null,
   );
 }
