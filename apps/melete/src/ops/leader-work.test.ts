@@ -6,6 +6,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { Sql } from 'postgres';
 import { startEgressRetention } from '../egress/records.ts';
+import { startEpisodeRetention } from '../learning/retention.ts';
 import { ProcessMonitor } from '../sandbox/process-monitor.ts';
 import type { BlobStore } from '../storage/blob.ts';
 import { BlobCollector } from '../storage/gc.ts';
@@ -68,6 +69,21 @@ describe('singleton work and the leader lease', () => {
       expect(calls.filter((query) => query.includes('delete from egress_record'))).toHaveLength(
         leading ? 1 : 0,
       );
+    });
+
+  for (const leading of [false, true])
+    test(`episode retention ${leading ? 'expires episodes' : 'touches nothing'} when this instance ${leading ? 'leads' : 'does not lead'}`, async () => {
+      let opened = 0;
+      const sql = {
+        begin: async () => {
+          opened += 1;
+          return 0;
+        },
+      } as never;
+      const stop = startEpisodeRetention(sql, () => leading, 5);
+      await settle();
+      stop();
+      expect(opened > 0).toBe(leading);
     });
 
   for (const leading of [false, true])

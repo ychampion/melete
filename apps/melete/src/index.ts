@@ -108,7 +108,7 @@ import { mountProcedures } from './learning/procedure-routes.ts';
 import { ProcedureService } from './learning/procedures.ts';
 import { mountProposals } from './learning/proposal-routes.ts';
 import type { ProcedureProposer } from './learning/proposer.ts';
-import { expireEpisodes } from './learning/retention.ts';
+import { expireEpisodes, startEpisodeRetention } from './learning/retention.ts';
 import { mountLearning } from './learning/routes.ts';
 import { startLearning } from './learning/start.ts';
 import { mountMcpServer } from './mcp-server/routes.ts';
@@ -573,7 +573,7 @@ export async function bootstrap(
   let effectBoundary: Awaited<ReturnType<typeof startEffectBoundary>> | undefined;
   let browser: Awaited<ReturnType<typeof configuredBrowserSessions>>;
   let connections: ConfiguredConnection[] = [];
-  let episodeRetention: ReturnType<typeof setInterval> | undefined;
+  let stopEpisodeRetention: (() => void) | undefined;
   let stopEgressRetention: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
@@ -606,7 +606,7 @@ export async function bootstrap(
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
     supervisedRuntime?.beginShutdown();
-    clearInterval(episodeRetention);
+    stopEpisodeRetention?.();
     stopEgressRetention?.();
     clearInterval(leftovers);
     sandboxes?.stop();
@@ -673,12 +673,9 @@ export async function bootstrap(
       signIn = providerSignIn(handle.sql, env);
       // One reader of the model chosen in the app, for the API, the runner and the gateway.
       modelSettings = new ModelSettingsService({ db: handle.db, env, signIn });
-      episodeRetention = setInterval(() => {
-        void expireEpisodes(handle.sql).catch(() =>
-          process.stderr.write('episode retention failed\n'),
-        );
-      }, 60_000);
-      episodeRetention.unref();
+      stopEpisodeRetention = startEpisodeRetention(handle.sql, () =>
+        leading(leases, 'episode-retention'),
+      );
       stopEgressRetention = startEgressRetention(
         handle.sql,
         env.MELETE_EGRESS_RECORD_DAYS,
