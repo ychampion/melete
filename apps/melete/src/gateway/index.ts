@@ -12,8 +12,13 @@ import {
 } from '@melete/contracts';
 import { localEndpoint, PrivacyRouter } from '../privacy/index.ts';
 import type { PreparedRequest } from '../privacy/router.ts';
+import {
+  carriesAttachedPicture,
+  type GatewayAttachments,
+  mediaTokens,
+  withAttachedFiles,
+} from './attachments.ts';
 import { effortRefused, type ReasoningEffort, refuseEffort, withEffort } from './effort.ts';
-import { type GatewayAttachments, mediaTokens, withAttachedFiles } from './attachments.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { countImages, isInlineImage, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
@@ -339,7 +344,11 @@ export function createModelGateway(options: GatewayOptions): Server {
       // within the limits countImages holds it to.
       if (containsRemoteInput(options.providerSearch ? withoutSearchTools(body) : body))
         throw new GatewayError(400, 'unmetered_input_denied');
-      const carriesPictures = countImages(body) > 0;
+      // A picture the person attached counts too: it is routed as a screenshot
+      // is, and shown only where the model that serves the call reads pictures.
+      const carriesPictures =
+        countImages(body) > 0 ||
+        (options.attachments !== undefined && carriesAttachedPicture(body));
       // The models this call may be served by, in order: the one it names (or
       // the vision model, for a picture its own model cannot read), then the
       // operator's fallbacks. Each speaks this request's protocol.

@@ -24,7 +24,7 @@
  * not fit keeps its text.
  */
 import { type AttachmentKind, MAX_REQUEST_IMAGES, modelSupportsVision } from '@melete/contracts';
-import { blockIntact, FILE_BLOCK } from '../attachments/render.ts';
+import { blockIntact, FILE_BLOCK, PICTURE_NOT_SHOWN } from '../attachments/render.ts';
 import { countImages, imageTokens } from './images.ts';
 import type { GatewayPrincipal, GatewayProtocol } from './types.ts';
 
@@ -255,6 +255,12 @@ export async function withAttachedFiles(input: {
     holder.replace(parts);
   }
   return body;
+}
+
+/** Whether the request names a picture the person attached, still as its sentence. */
+export function carriesAttachedPicture(body: Record<string, unknown>): boolean {
+  const text = JSON.stringify(body);
+  return text.includes('[[melete-file ') && text.includes(PICTURE_NOT_SHOWN.slice(0, 40));
 }
 
 /** True for a PDF the request carries itself, in any protocol. */

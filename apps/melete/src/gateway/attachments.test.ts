@@ -125,6 +125,7 @@ async function start(options: {
   attachments: GatewayAttachments;
   store?: MemoryPrivacyStore;
   job?: string;
+  routes?: GatewayPrincipal['routes'];
   maxRequestBytes?: number;
 }) {
   const principal: GatewayPrincipal = {
@@ -135,7 +136,11 @@ async function start(options: {
     revision: 1,
     maxRequests: 10,
     maxTokens: 20_000,
-    allowedModels: PROVIDERS.map((provider) => ({ provider: provider.name, model: 'cloud-model' })),
+    allowedModels: [
+      ...PROVIDERS.map((provider) => ({ provider: provider.name, model: 'cloud-model' })),
+      { provider: 'openai', model: 'vision-model' },
+    ],
+    ...(options.routes ? { routes: options.routes } : {}),
   };
   const reservations: GatewayReservationRequest[] = [];
   const sent: { url: string; body: string }[] = [];
@@ -396,6 +401,27 @@ describe('files the person sent, as the model is given them', () => {
       new Map(),
     );
     expect(words).not.toContain('[[melete-file');
+  });
+
+  test("an attached picture is routed as a screenshot is: to the operator's vision model, shown there", async () => {
+    const attachments = source(true);
+    // Only the vision model reads pictures; the model the request names does not.
+    attachments.vision = async (_provider, model) => model === 'vision-model';
+    const { chat, sent } = await start({
+      attachments,
+      routes: { vision: { provider: 'openai', model: 'vision-model' } },
+    });
+    expect((await chat()).status).toBe(200);
+    expect(sent[0]?.url).toBe('https://api.openai.com/v1/chat/completions');
+    expect(JSON.parse(sent[0]?.body ?? '{}').model).toBe('vision-model');
+    expect(sent[0]?.body).toContain(PNG_DATA);
+    // With no vision route, the picture stays its sentence on the text model.
+    const plain = source(true);
+    plain.vision = async (_provider, model) => model === 'vision-model';
+    const unrouted = await start({ attachments: plain });
+    expect((await unrouted.chat()).status).toBe(200);
+    expect(unrouted.sent[0]?.body).not.toContain(PNG_DATA);
+    expect(unrouted.sent[0]?.body).toContain(PICTURE_NOT_SHOWN);
   });
 
   test('a document is charged by its pages, not by its base64 text', () => {

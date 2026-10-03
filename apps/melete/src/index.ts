@@ -1347,10 +1347,6 @@ export async function bootstrap(
     voiceCompanion: voiceCompanion?.companion ?? null,
     checkDatabase,
     attachments,
-    checkDatabase: async () => {
-      if (!handle) return 'not_configured';
-      return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
-    },
     ...(handle ? { checkMemory: () => memoryHealth(handle.sql) } : {}),
   });
 
