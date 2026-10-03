@@ -27,6 +27,7 @@ import type { ProcessState } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { appendEvent, recordId } from '../broker/records.ts';
 import {
+  type ComputerStatus,
   helperComputer,
   type ProcessComputer,
   type ProcessComputerFor,
@@ -78,7 +79,8 @@ export type ProcessRow = {
   createdAt: Date;
 };
 
-function rowOf(raw: Record<string, unknown>): ProcessRow {
+/** One `sandbox_process` row as the service reads it. */
+export function rowOf(raw: Record<string, unknown>): ProcessRow {
   const date = (value: unknown) => (value ? new Date(value as string) : null);
   return {
     id: String(raw.id),
@@ -377,7 +379,23 @@ export class SandboxProcesses {
     computer: ProcessComputer,
     signal: AbortSignal,
   ): Promise<ProcessRow[]> {
-    const status = await computer.status('all', signal);
+    return this.reconcileWith(
+      spaceId,
+      agentId,
+      computer,
+      await computer.status('all', signal),
+      signal,
+    );
+  }
+
+  /** The same, from an answer to `status('all')` the caller already has. */
+  async reconcileWith(
+    spaceId: string,
+    agentId: string,
+    computer: ProcessComputer,
+    status: ComputerStatus,
+    signal: AbortSignal,
+  ): Promise<ProcessRow[]> {
     const found = new Map(status.processes.map((facts) => [facts.id, facts]));
     const rows = await this.forComputer(spaceId, agentId);
     const out: ProcessRow[] = [];

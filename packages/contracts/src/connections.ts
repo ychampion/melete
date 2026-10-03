@@ -276,6 +276,7 @@ export const CONNECTION_KIND_SCOPES = {
     'process.signal',
     'process.stop',
     'process.extend',
+    'process.wait',
   ],
   // Reading through the relay at all, and the changes it brings to the broker.
   command_line: ['egress.github_read', 'egress.github_write'],
@@ -1253,6 +1254,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
           ['process.signal', 'Send a signal to that work', 'write_reversible'],
           ['process.stop', 'Stop that work', 'write_reversible'],
           ['process.extend', 'Give that work more time', 'write_reversible'],
+          ['process.wait', 'Wait for that work to finish, print or listen', 'read'],
         ] as const
       ).map(([scope, label, effect_class]) => ({
         scope,

@@ -72,7 +72,20 @@ export const PROCESS_LIMITS = {
   stop_grace_ms: 10_000,
   /** Where read output is kept, under the job workspace. */
   output_dir: '.melete/proc',
+  /** The longest one wait for a process holds its attempt, in seconds. */
+  wait_max_seconds: 100,
+  wait_default_seconds: 30,
+  /** How many processes one job may be woken by at once. */
+  watches_per_job: 4,
+  /** A watch on output wakes its job at most this often. */
+  output_wake_seconds: 60,
+  /** The most of a process's last output a wake carries. */
+  wake_tail_bytes: 4_096,
 } as const;
+
+/** What a job can be woken by in a process: its end, a line it prints, or a port it opens. */
+export const PROCESS_WATCH_KINDS = ['exit', 'output', 'listening'] as const;
+export type ProcessWatchKind = (typeof PROCESS_WATCH_KINDS)[number];
 
 /** Where a process is in its life. Every state after `running` is final. */
 export const PROCESS_STATES = [

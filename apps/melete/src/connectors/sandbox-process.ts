@@ -19,9 +19,12 @@ import { createHash } from 'node:crypto';
 import {
   type Action,
   type ConnectorManifest,
+  compileWatchPattern,
   type DispatchResult,
   type JsonValue,
   PROCESS_LIMITS,
+  PROCESS_WATCH_KINDS,
+  type ProcessWatchKind,
   type Receipt,
   type SandboxConnectionConfig,
   type VerifyResult,
@@ -29,14 +32,17 @@ import {
 import type { Sql } from 'postgres';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
 import { terminalText } from '../experience/computer.ts';
+import { createProcessWatch, ProcessWatchRefusal } from '../jobs/triggers.ts';
 import {
   PROCESS_SIGNALS,
   type ProcessComputer,
+  type ProcessFacts,
   ProcessHelperLost,
   ProcessHelperRefusal,
   ProcessHelperUnavailable,
   type ProcessSignal,
 } from '../sandbox/process-helper.ts';
+import { lineOf } from '../sandbox/process-monitor.ts';
 import {
   END_REASONS,
   LIVE_STATES,
@@ -70,6 +76,13 @@ const step = {
     'Counts your process actions in this job: 1, 2, 3 and so on. A number used before repeats nothing and returns the earlier result.',
 };
 const processId = { type: 'string', pattern: '^prc_[A-Za-z0-9]{8,64}$' };
+const watchPattern = { type: 'string', maxLength: 1000 };
+const notifySchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['on'],
+  properties: { on: { type: 'string', enum: [...PROCESS_WATCH_KINDS] }, pattern: watchPattern },
+};
 const schema = (properties: Record<string, unknown>, required: string[] = []) => ({
   type: 'object',
   additionalProperties: false,
@@ -95,7 +108,7 @@ const tool = (
 export const PROCESS_TOOLS: ToolManifest[] = [
   tool(
     'process.start',
-    "Start a command in the agent's computer in the background: a test suite, a build, a dev server, anything longer than two minutes. Never use & or nohup in a terminal command instead. It keeps running after this job until it ends, is stopped or reaches its time limit (two hours unless set). Returns its id and first output. Give port for a server.",
+    "Start a command in the agent's computer in the background: a test suite, a build, a dev server, anything longer than two minutes. Never use & or nohup in a terminal command instead. It keeps running after this job until it ends, is stopped or reaches its time limit (two hours unless set). Returns its id and first output. Give port for a server, and notify to be woken by it.",
     schema(
       {
         command: { type: 'string', minLength: 1, maxLength: 20000 },
@@ -103,6 +116,7 @@ export const PROCESS_TOOLS: ToolManifest[] = [
         name: { type: 'string', minLength: 1, maxLength: 80 },
         port: { type: 'integer', minimum: 1, maximum: 65535 },
         ttl_minutes: { type: 'integer', minimum: 1, maximum: PROCESS_LIMITS.max_ttl_minutes },
+        notify: notifySchema,
       },
       ['command'],
     ),
@@ -160,6 +174,24 @@ export const PROCESS_TOOLS: ToolManifest[] = [
     schema({ process_id: processId }, ['process_id']),
     'write_reversible',
   ),
+  // A read: it waits, or with `later` it records a watch for this job, which is
+  // Melete's own state, idempotent and bounded at a few per job.
+  tool(
+    'process.wait',
+    'Wait up to 100 s in this turn for a background process to exit, print a line matching pattern (RE2) or listen on its port. With later, nothing waits now: this job is woken when it happens; end the turn with job.wait, event_name process:<process_id>.',
+    schema(
+      {
+        process_id: processId,
+        until: { type: 'string', enum: ['exit', 'pattern', 'listening'] },
+        pattern: watchPattern,
+        cursor: { type: 'integer', minimum: 0 },
+        timeout_seconds: { type: 'integer', minimum: 1, maximum: PROCESS_LIMITS.wait_max_seconds },
+        later: { type: 'boolean' },
+      },
+      ['process_id', 'until'],
+    ),
+    'read',
+  ),
   tool(
     'process.extend',
     'Give a running background process more time: its time limit becomes this many minutes from now, up to twelve hours from its start.',
@@ -207,6 +239,73 @@ function idOf(payload: Payload): string {
   return value;
 }
 
+/** What a job asks to be woken by, checked before anything runs. */
+function watchOf(
+  on: unknown,
+  pattern: unknown,
+  where: string,
+): { kind: ProcessWatchKind; pattern: string | null } {
+  if (!PROCESS_WATCH_KINDS.includes(on as ProcessWatchKind))
+    throw new ProcessPayloadRefusal(`${where} must be one of ${PROCESS_WATCH_KINDS.join(', ')}`);
+  if (pattern === undefined) return { kind: on as ProcessWatchKind, pattern: null };
+  if (on !== 'output') throw new ProcessPayloadRefusal('a pattern is for watching output');
+  if (typeof pattern !== 'string' || !pattern.length || pattern.length > 1000)
+    throw new ProcessPayloadRefusal('pattern must be text of at most 1000 characters');
+  try {
+    compileWatchPattern(pattern);
+  } catch {
+    throw new ProcessPayloadRefusal(
+      'pattern is not a supported regular expression (RE2: no lookarounds or backreferences)',
+    );
+  }
+  return { kind: 'output', pattern };
+}
+
+function notifyOf(payload: Payload): { kind: ProcessWatchKind; pattern: string | null } | null {
+  const notify = payload.notify;
+  if (notify === undefined) return null;
+  if (!notify || typeof notify !== 'object' || Array.isArray(notify))
+    throw new ProcessPayloadRefusal('notify must be an object with on');
+  const value = notify as Payload;
+  if (Object.keys(value).some((key) => key !== 'on' && key !== 'pattern'))
+    throw new ProcessPayloadRefusal('notify takes on and pattern only');
+  return watchOf(value.on, value.pattern, 'notify.on');
+}
+
+const WAIT_UNTIL = ['exit', 'pattern', 'listening'] as const;
+type WaitUntil = (typeof WAIT_UNTIL)[number];
+
+function waitOf(payload: Payload): {
+  until: WaitUntil;
+  pattern: string | null;
+  seconds: number;
+  later: boolean;
+} {
+  const until = payload.until;
+  if (!WAIT_UNTIL.includes(until as WaitUntil))
+    throw new ProcessPayloadRefusal(`until must be one of ${WAIT_UNTIL.join(', ')}`);
+  const seconds =
+    integer(payload, 'timeout_seconds', 1, PROCESS_LIMITS.wait_max_seconds) ??
+    PROCESS_LIMITS.wait_default_seconds;
+  if (payload.later !== undefined && typeof payload.later !== 'boolean')
+    throw new ProcessPayloadRefusal('later must be true or false');
+  const later = payload.later === true;
+  if (until !== 'pattern') {
+    if (payload.pattern !== undefined)
+      throw new ProcessPayloadRefusal('a pattern is for waiting until a line matches it');
+    return { until: until as WaitUntil, pattern: null, seconds, later };
+  }
+  const pattern = string(payload, 'pattern', 1000, true) as string;
+  try {
+    compileWatchPattern(pattern);
+  } catch {
+    throw new ProcessPayloadRefusal(
+      'pattern is not a supported regular expression (RE2: no lookarounds or backreferences)',
+    );
+  }
+  return { until: 'pattern', pattern, seconds, later };
+}
+
 /** A working directory inside the computer's `/work`, never above it. */
 function cwdOf(payload: Payload): { relative: string; absolute: string } {
   const cwd = string(payload, 'cwd', 1024);
@@ -240,10 +339,23 @@ export function processDispatchBudgetMs(
     }
     case 'process.stop':
       return PROCESS_LIMITS.stop_grace_ms + margin;
+    case 'process.wait': {
+      const wait = payload.timeout_seconds;
+      return (
+        (typeof wait === 'number'
+          ? Math.min(wait, PROCESS_LIMITS.wait_max_seconds)
+          : PROCESS_LIMITS.wait_default_seconds) *
+          1000 +
+        margin
+      );
+    }
     default:
       return 30_000 + margin;
   }
 }
+
+/** How often a wait for an exit or a port asks the computer. */
+const WAIT_POLL_MS = 1_000;
 
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
@@ -378,6 +490,151 @@ export function createProcessTools(options: ProcessToolOptions) {
     egress: session.egressPolicy.kind,
   });
 
+  /**
+   * Make the watch a job asked for, and say on the receipt how to wait on it,
+   * or why there is nothing to wait for.
+   */
+  const watchFor = async (
+    ctx: ConnectorContext,
+    row: ProcessRow,
+    asked: { kind: ProcessWatchKind; pattern: string | null },
+    fromCursor: number,
+  ): Promise<Record<string, JsonValue>> => {
+    try {
+      const made = await createProcessWatch(sql, {
+        jobId: ctx.job_id,
+        spaceId: ctx.space_id,
+        connectionId: options.connectionId,
+        processId: row.id,
+        kind: asked.kind,
+        pattern: asked.pattern,
+        fromCursor,
+      });
+      return {
+        watch: {
+          trigger_id: made.triggerId,
+          on: asked.kind,
+          pattern: asked.pattern,
+          event_name: made.eventName,
+          wait_with: `process:${row.id}`,
+        },
+        next_step: `End your turn with job.wait, kind event and event_name process:${row.id}. This job wakes when it happens, and nothing is spent until then.`,
+      };
+    } catch (error) {
+      if (error instanceof ProcessWatchRefusal)
+        return { watch: null, watch_refused: error.message };
+      throw error;
+    }
+  };
+
+  /**
+   * Wait inside this attempt for a process to end, print a matching line or
+   * open its port, for a bounded time. Lines are read whole, from `cursor`
+   * or from the oldest output the computer still holds.
+   */
+  async function wait(
+    action: Action,
+    row: ProcessRow,
+    computer: ProcessComputer,
+    signal: AbortSignal,
+  ): Promise<DispatchResult> {
+    const payload = action.canonical_payload as Payload;
+    const asked = waitOf(payload);
+    const began = Date.now();
+    const deadline = began + asked.seconds * 1000;
+    let current = row;
+    let met: Record<string, JsonValue> | null = null;
+    let nextCursor: number | null = null;
+    if (asked.until === 'pattern') {
+      const pattern = compileWatchPattern(asked.pattern as string);
+      let cursor = integer(payload, 'cursor', 0, Number.MAX_SAFE_INTEGER) ?? 0;
+      let carry = new Uint8Array(0);
+      for (;;) {
+        signal.throwIfAborted();
+        const left = deadline - Date.now();
+        const answer = await computer.read(
+          current.id,
+          cursor,
+          PROCESS_LIMITS.read_max_bytes,
+          Math.max(0, Math.min(left, PROCESS_LIMITS.read_max_wait_seconds * 1000)),
+          signal,
+        );
+        current = await processes.apply(current, answer.process, answer.boot);
+        // Bytes the ring dropped meanwhile break the line that was carried.
+        if (answer.read.from !== cursor) carry = new Uint8Array(0);
+        const start = answer.read.from - carry.byteLength;
+        const bytes = new Uint8Array(carry.byteLength + answer.data.byteLength);
+        bytes.set(carry);
+        bytes.set(answer.data, carry.byteLength);
+        cursor = answer.read.next;
+        nextCursor = cursor;
+        const ended = !LIVE_STATES.includes(current.state);
+        const end = ended ? bytes.byteLength : bytes.lastIndexOf(0x0a) + 1;
+        for (let offset = 0; offset < end; ) {
+          const newline = bytes.indexOf(0x0a, offset);
+          const stop = newline === -1 || newline >= end ? end : newline;
+          const line = lineOf(bytes.subarray(offset, stop));
+          if (pattern.matcher(line).find()) {
+            met = { line, line_cursor: start + offset };
+            nextCursor = start + stop + 1;
+            break;
+          }
+          offset = stop + 1;
+        }
+        if (met || ended || Date.now() >= deadline) break;
+        carry = bytes.slice(end);
+        if (carry.byteLength > PROCESS_LIMITS.read_max_bytes) carry = new Uint8Array(0);
+      }
+    } else {
+      for (;;) {
+        signal.throwIfAborted();
+        const status = await computer.status([current.id], signal);
+        const facts: ProcessFacts | undefined = status.processes.find(
+          (each) => each.id === current.id,
+        );
+        if (facts) current = await processes.apply(current, facts, status.boot);
+        const live = LIVE_STATES.includes(current.state);
+        if (asked.until === 'exit' && !live) met = {};
+        if (asked.until === 'listening' && live && facts) {
+          const open =
+            current.port === null ? facts.ports.length > 0 : facts.ports.includes(current.port);
+          if (open) met = { port: current.port ?? facts.ports[0] ?? null, ports: facts.ports };
+        }
+        if (met || !live || Date.now() >= deadline) break;
+        await Bun.sleep(Math.min(WAIT_POLL_MS, Math.max(0, deadline - Date.now())));
+      }
+    }
+    const ended = !LIVE_STATES.includes(current.state);
+    let tail: string | null = null;
+    if (ended) {
+      const last = await computer
+        .read(current.id, -1, PROCESS_LIMITS.wake_tail_bytes, 0, signal)
+        .catch(() => null);
+      tail = last
+        ? terminalText(new TextDecoder().decode(last.data), PROCESS_LIMITS.wake_tail_bytes, 'last')
+        : null;
+    }
+    return {
+      outcome: 'succeeded',
+      receipt: receipt(action, {
+        ...view(current),
+        until: asked.until,
+        met: met !== null,
+        ...(met ?? {}),
+        waited_seconds: Math.round((Date.now() - began) / 1000),
+        next_cursor: nextCursor,
+        tail,
+        ...(met === null
+          ? {
+              note: ended
+                ? 'The process ended first.'
+                : 'Not yet. For a longer wait, call process.wait with later and end your turn with job.wait.',
+            }
+          : {}),
+      }),
+    };
+  }
+
   async function start(
     action: Action,
     ctx: ConnectorContext,
@@ -392,6 +649,7 @@ export function createProcessTools(options: ProcessToolOptions) {
     const name = string(payload, 'name', 80);
     const port = integer(payload, 'port', 1, 65_535) ?? null;
     const ttl = integer(payload, 'ttl_minutes', 1, PROCESS_LIMITS.max_ttl_minutes) ?? null;
+    const notify = notifyOf(payload);
     // Ended processes free their places before the caps are counted.
     await processes.reconcile(ctx.space_id, agentId, computer, signal);
     let admitted: Awaited<ReturnType<SandboxProcesses['admit']>>;
@@ -419,9 +677,11 @@ export function createProcessTools(options: ProcessToolOptions) {
       throw error;
     }
     const { row } = admitted;
-    const detail = (current: ProcessRow, first: Uint8Array, dropped: number) => {
+    const detail = async (current: ProcessRow, first: Uint8Array, dropped: number) => {
       const text = shown(first);
+      const watching = notify ? await watchFor(ctx, current, notify, 0) : {};
       return receipt(action, {
+        ...watching,
         ...view(current),
         first_output: text.text,
         first_output_binary: text.binary,
@@ -440,7 +700,7 @@ export function createProcessTools(options: ProcessToolOptions) {
       });
     };
     if (admitted.repeated && row.state !== 'starting')
-      return { outcome: 'succeeded', receipt: detail(row, new Uint8Array(0), 0) };
+      return { outcome: 'succeeded', receipt: await detail(row, new Uint8Array(0), 0) };
     try {
       await syncIn({
         provider,
@@ -479,7 +739,7 @@ export function createProcessTools(options: ProcessToolOptions) {
         const facts = found?.processes.find((each) => each.id === row.id);
         if (found && facts) {
           const current = await processes.apply(row, facts, found.boot);
-          return { outcome: 'succeeded', receipt: detail(current, new Uint8Array(0), 0) };
+          return { outcome: 'succeeded', receipt: await detail(current, new Uint8Array(0), 0) };
         }
         return {
           outcome: 'unknown',
@@ -494,10 +754,13 @@ export function createProcessTools(options: ProcessToolOptions) {
       const found = await computer.status([row.id], signal);
       const facts = found.processes.find((each) => each.id === row.id);
       const current = facts ? await processes.apply(row, facts, found.boot) : row;
-      return { outcome: 'succeeded', receipt: detail(current, new Uint8Array(0), 0) };
+      return { outcome: 'succeeded', receipt: await detail(current, new Uint8Array(0), 0) };
     }
     const current = await processes.apply(row, answer.process, answer.boot);
-    return { outcome: 'succeeded', receipt: detail(current, answer.data, answer.read.dropped) };
+    return {
+      outcome: 'succeeded',
+      receipt: await detail(current, answer.data, answer.read.dropped),
+    };
   }
 
   async function list(
@@ -595,6 +858,22 @@ export function createProcessTools(options: ProcessToolOptions) {
           );
         return { outcome: 'succeeded', receipt: receipt(action, view(extended)) };
       }
+      if (action.kind === 'process.wait' && waitOf(payload).later) {
+        // A wait for later needs only the record: the monitor asks the computer.
+        const asked = waitOf(payload);
+        const current = row as ProcessRow;
+        const made = await watchFor(
+          ctx,
+          current,
+          {
+            kind: asked.until === 'pattern' ? 'output' : asked.until,
+            pattern: asked.pattern,
+          },
+          current.outputCursor,
+        );
+        if (made.watch === null) return refused(String(made.watch_refused));
+        return { outcome: 'succeeded', receipt: receipt(action, { ...view(current), ...made }) };
+      }
       if (action.kind === 'process.start') {
         // Checked before the computer opens, so a malformed start opens nothing.
         string(payload, 'command', 20_000, true);
@@ -602,6 +881,7 @@ export function createProcessTools(options: ProcessToolOptions) {
         string(payload, 'name', 80);
         integer(payload, 'port', 1, 65_535);
         integer(payload, 'ttl_minutes', 1, PROCESS_LIMITS.max_ttl_minutes);
+        notifyOf(payload);
       }
       if (action.kind === 'process.write') {
         string(payload, 'text', PROCESS_LIMITS.write_max_bytes, true);
@@ -628,6 +908,8 @@ export function createProcessTools(options: ProcessToolOptions) {
             return await list(action, ctx, agentId, computer, signal);
           case 'process.read':
             return await read(action, ctx, row as ProcessRow, computer, signal);
+          case 'process.wait':
+            return await wait(action, row as ProcessRow, computer, signal);
           case 'process.write': {
             const current = row as ProcessRow;
             if (!LIVE_STATES.includes(current.state))
@@ -713,6 +995,7 @@ export function createProcessTools(options: ProcessToolOptions) {
     switch (action.kind) {
       case 'process.list':
       case 'process.read':
+      case 'process.wait':
         return refused(
           'the service stopped before the answer came back; reading again is safe',
           true,
