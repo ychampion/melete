@@ -902,23 +902,26 @@ export class BrokerService implements BrokerOperations {
       const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
       auto = {
         tier,
-        outcome: connectorAsks
-          ? 'person'
-          : tier.tier === 'sandbox' && allowed && !toolAsks
-            ? 'policy_approved'
-            : // Publishing an app that reaches nobody new. An agent set to ask before
-              // acting promises that publishes wait, and a conversation that read
-              // an app's responses asks before changing what an app shows.
-              tier.tier === 'apps' && allowed && !agentAsks && !afterResponses
+        // The connector's own question, and a write a viewer's response may have
+        // steered to a file an app shows, are the person's: never policy's or the reviewer's.
+        outcome:
+          connectorAsks || afterResponses
+            ? 'person'
+            : tier.tier === 'sandbox' && allowed && !toolAsks
               ? 'policy_approved'
-              : // An agent set to ask before acting promises that sends, bookings and payments
-                // wait for the person, so its calendar changes do. A reversible app change is
-                // none of those, and the person switched that class on themselves.
-                tier.tier === 'reviewable' &&
-                  allowed &&
-                  (!agentAsks || tier.actionClass === 'app_changes')
-                ? 'review'
-                : 'person',
+              : // Publishing an app that reaches nobody new. An agent set to ask before
+                // acting promises that publishes wait, and a conversation that read
+                // an app's responses asks before changing what an app shows.
+                tier.tier === 'apps' && allowed && !agentAsks && !afterResponses
+                ? 'policy_approved'
+                : // An agent set to ask before acting promises that sends, bookings and payments
+                  // wait for the person, so its calendar changes do. A reversible app change is
+                  // none of those, and the person switched that class on themselves.
+                  tier.tier === 'reviewable' &&
+                    allowed &&
+                    (!agentAsks || tier.actionClass === 'app_changes')
+                  ? 'review'
+                  : 'person',
       };
     }
     const policyApproved = auto?.outcome === 'policy_approved';
