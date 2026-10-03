@@ -64,6 +64,7 @@ const connectionView = (row: typeof connection.$inferSelect) => ({
   provider: row.provider,
   status: row.status,
   shared_use: row.sharedUse === 'room' ? ('room' as const) : ('owner' as const),
+  builtin: row.configuration.builtin !== undefined,
 });
 const roomOwnerOnly = () =>
   new ServiceError('scope_denied', 'Only an owner of this room can do that.', 403);

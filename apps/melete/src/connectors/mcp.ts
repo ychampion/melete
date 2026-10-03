@@ -297,7 +297,10 @@ async function openMcpSession(
           action.connection_id !== binding.connectionId ||
           context.space_id !== binding.spaceId ||
           context.job_id !== action.job_id ||
-          context.audience !== config.audience ||
+          // The operator's own audience, or a room's space where its owners added
+          // the server; the connector has already held the call to this connection's
+          // own space and refused it to a public compartment.
+          (context.audience !== config.audience && context.audience !== 'space') ||
           !tool.required_scopes.every(
             (item) => context.scopes.includes(item) && config.allowed_scopes.includes(item),
           ) ||

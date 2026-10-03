@@ -1267,6 +1267,30 @@ withDb('installing each kind of connection through the API', () => {
     for (const url of [`${server.url}mcp`, `http://localhost:${server.port}/mcp`]) {
       expect((await h.install(body(url), member)).status).toBe(400);
     }
+    // A room the setup owner made serves everyone in it, so it is held to
+    // public addresses too: at install, and on every request its server makes.
+    const madeRoom = await h.app.request('/rooms', h.as(h.cookie, { name: 'Inside room' }));
+    expect(madeRoom.status).toBe(201);
+    const roomId = ((await madeRoom.json()) as { room: { id: string } }).room.id;
+    for (const url of [`${server.url}mcp`, `http://localhost:${server.port}/mcp`]) {
+      expect((await h.install({ ...body(url), space_id: roomId })).status).toBe(400);
+    }
+    expect(
+      await fixture.sql`select id from connection where space_id = ${roomId} and provider = 'mcp'`,
+    ).toHaveLength(0);
+    const inRoom = newId('conn');
+    const plantedInRoom = {
+      server: { ...policy, endpoint: { transport: 'http', url: `${server.url}mcp` } },
+    };
+    await fixture.sql`insert into connection (id, space_id, provider, label, scopes, configuration, status, setup_state, shared_use)
+      values (${inRoom}, ${roomId}, 'mcp', 'Planted in the room', '["mcp_inside.lookup"]'::jsonb,
+        ${JSON.stringify(plantedInRoom)}::jsonb, 'error', 'error', 'room')`;
+    const roomCheck = await h.app.request(`/connections/${inRoom}/health`, h.as(h.cookie, {}));
+    expect(roomCheck.status).toBe(200);
+    expect(((await roomCheck.json()) as { check: { status: string } }).check.status).toBe(
+      'failing',
+    );
+    expect(hits).toBe(0);
     // A public server with a token endpoint on this machine is refused too, before
     // anything is opened: the refresh would otherwise post there.
     expect(

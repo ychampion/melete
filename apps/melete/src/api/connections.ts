@@ -442,7 +442,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     // Authority is settled first, so no address in the request is resolved and
     // no connector is opened on the word of someone who may not install here.
     await requireInstaller(deps.db, spaceId, actor, installation.kind);
-    // An MCP server outside the setup owner's own spaces must be a public
+    // An MCP server outside the setup owner's own space must be a public
     // address; the connector holds it to that again on every request.
     if (installation.kind === 'mcp' && !(await setupOwnersSpace(deps.sql, spaceId))) {
       const tokenUrl = installation.credentials?.token_url;

@@ -1,5 +1,6 @@
 import { type Action, jobConstraints } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { connectionServesJob } from '../jobs/scopes.ts';
 import { type McpServerConfig, type McpWorker, openMcpWorker } from './mcp.ts';
 import { mcpCredentialAccess, mcpCredentialUrl } from './mcp-credentials.ts';
 import { publicOnlyFetch } from './public-fetch.ts';
@@ -22,7 +23,11 @@ export function mcpConnector(
   session?: McpSessionHooks,
 ): Connector {
   async function granted(action: Action, context: ConnectorContext) {
-    const [row] = await sql`select c.scopes, s.audience, j.constraints from connection c
+    const [row] = await sql`select c.scopes, c.shared_use, s.audience, s.kind,
+        coalesce(s.owner_principal_id, (select id from owner limit 1)) as space_owner_id,
+        coalesce(j.principal_id, (select id from owner limit 1)) as principal_id,
+        j.audience as job_audience, j.constraints
+      from connection c
       join space s on s.id = c.space_id
       join job j on j.space_id = s.id and j.id = ${context.job_id}
       where c.id = ${binding.connectionId} and c.space_id = ${binding.spaceId}
@@ -31,6 +36,16 @@ export function mcpConnector(
     return row &&
       tool &&
       (row.audience === 'owner' || row.audience === 'space') &&
+      // In a room, the server serves only the jobs its sharing names.
+      connectionServesJob(
+        {
+          kind: String(row.kind),
+          spaceOwnerId: row.space_owner_id ?? null,
+          principalId: row.principal_id ?? null,
+          audience: String(row.job_audience),
+        },
+        String(row.shared_use),
+      ) &&
       action.connection_id === binding.connectionId &&
       context.space_id === binding.spaceId &&
       !jobConstraints.parse(row.constraints).public_compartment &&
@@ -115,7 +130,7 @@ export async function openConfiguredMcpConnector(
   const [row] = await sql`select secret_ref from connection where id = ${binding.connectionId}`;
   if (row?.secret_ref && !secrets) throw new Error('MCP credential store is unavailable');
   if (row?.secret_ref) mcpCredentialUrl.parse(config.endpoint.url);
-  // Only the setup owner's spaces may reach a private address. Everyone else's
+  // Only the setup owner's own space may reach a private address. Everyone else's
   // server and token endpoint are resolved, checked and pinned on every request,
   // so a name that later answers with an internal address reaches nothing.
   const pinned = (await setupOwnersSpace(sql, binding.spaceId)) ? undefined : publicOnlyFetch();
@@ -130,13 +145,15 @@ export async function openConfiguredMcpConnector(
 }
 
 /**
- * Whether a space belongs to the setup owner, who runs the installation and may
+ * Whether a space is the setup owner's own, who runs the installation and may
  * point a server at an address inside it. A space that names no owner predates
- * accounts and is the setup owner's, and before setup there is nobody else.
+ * accounts and is the setup owner's, and before setup there is nobody else. A
+ * room the setup owner made is not their own: its requests come from everyone
+ * in it, so its servers are held to public addresses like anyone else's.
  */
 export async function setupOwnersSpace(sql: Sql, spaceId: string): Promise<boolean> {
-  const [row] =
-    await sql`select o.id is null or coalesce(s.owner_principal_id, o.id) = o.id as setup
+  const [row] = await sql`select s.kind = 'personal'
+      and (o.id is null or coalesce(s.owner_principal_id, o.id) = o.id) as setup
     from space s left join lateral (select id from owner order by created_at limit 1) o on true
     where s.id = ${spaceId}`;
   return row?.setup === true;
