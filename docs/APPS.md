@@ -14,10 +14,30 @@ nothing from other sites.
 - At most 200 files, 25 MiB together, and 8 MiB for any one file.
 - A folder that breaks a rule is refused before you are asked, with the list of what to fix.
 
-## Publishing asks first
+## When publishing asks
 
-Publishing makes the app something other people can open, so the agent asks you every time,
-including for each new version. The question shows:
+Publishing an app, a new version of one, or going back to an earlier version goes ahead on its own
+when nothing about it is risky: nobody new can open the app, its code opens no direct connections,
+and it shows its viewers no data they do not see now. Each one leaves a receipt in the
+conversation, and an earlier version is one step away on the Apps screen.
+
+The agent asks you first, with a line saying why, when:
+
+- new people could open the app: people you name who cannot open it now, or everyone with an
+  account here;
+- its code uses WebRTC, which can send what the app shows, or what a viewer types into it, to
+  another server;
+- it shows its viewers data they do not see now: a file it did not show before, or one it showed
+  only after your review. Data in an app only you can open is yours already, so it does not ask,
+  and data under update review never reaches viewers before you let it through;
+- it starts collecting responses its viewers could not send before. An app only you can open
+  collects only from you, so it does not ask.
+
+To be asked every time, switch off "Publishing your apps" in Settings → Approvals ("Ask me for
+everything" asks too). A conversation set to ask before acting, or one that has read an app's
+responses, always asks.
+
+The question shows:
 
 - the app's name, how many files it has and how large they are. A new version names the app by
   the name it has now, and a new name is shown as a change of its own;
@@ -28,8 +48,10 @@ including for each new version. The question shows:
   conversations in the space it is published from;
 - the responses it collects, if any.
 
-Nothing is stored and nobody sees anything until you allow it. If a file changes after you allowed
-it, that publish stops, and the agent asks again with the files as they are now.
+Nothing is stored and nobody sees anything until you allow it, or the publish goes ahead on its
+own. If a file changes after that, the publish stops, and the agent asks again with the files as
+they are now. Who can open the app, and the data it shows them, are checked again just before it
+runs: a publish that would now reach new people or show new data stops in the same way.
 
 Viewers need an account on this installation. There are no public links.
 
@@ -106,8 +128,9 @@ Every publish is a version. Each version names every file by its hash, so what p
 exactly what was published. The app shows one version at a time:
 
 - From the Apps screen, a manager can choose any earlier version. It takes effect at once.
-- The agent can ask to go back to an earlier version with `apps.rollback`. That asks you first,
-  and the question shows the data that version shows and who can open the app now.
+- The agent can go back to an earlier version with `apps.rollback`. It goes ahead on its own
+  unless that version uses WebRTC or shows data its viewers do not see now; then it asks, and the
+  question shows the data that version shows and who can open the app now.
 
 ## Who can open an app
 
@@ -233,5 +256,6 @@ const melete = (() => {
 | `DELETE /apps/{id}/submissions?from={account}` | Delete every response from one person (managers) |
 
 The agent's tools are on the built-in Apps connection, which every space has. `apps.publish` and
-`apps.rollback` are `write_external` and always ask. `apps.list`, `apps.routines` and
-`apps.read_submissions` only read.
+`apps.rollback` are `write_external`; each binds `risks`, the reasons it asks, and goes ahead
+without asking when there are none and the space's `apps` approval setting is on (the default).
+`apps.list`, `apps.routines` and `apps.read_submissions` only read.

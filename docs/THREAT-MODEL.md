@@ -629,10 +629,33 @@ SAMEORIGIN`, so another site cannot frame them.
 connections, and no header in today's browsers stops them: an app can reach a
 STUN or TURN server it names, and send what it shows, or what a viewer types
 into it, to that server. Names the page looks up can carry data the same way.
-Neither carries the viewer's session. The question to publish warns when the
-app's code uses WebRTC by name (`RTCPeerConnection`, `RTCDataChannel`,
-`getUserMedia`); code that hides those names is not found. Apps are for code
-the person trusts with the data it shows.
+Neither carries the viewer's session. A publish whose code uses WebRTC by
+name (`RTCPeerConnection`, `RTCDataChannel`, `getUserMedia`) always asks, with
+a warning; code that hides those names is not found. Apps are for code the
+person trusts with the data it shows.
+
+**Publishing without a question.** By default a publish, a new version or a
+rollback goes ahead without asking when it reaches nobody new, its code names
+no WebRTC, and it shows its viewers no data they do not see now. A question for
+each version shows file counts, not code, so it adds a step without adding
+something a person can check. What still asks is what changes who is exposed: a wider audience (new people or everyone), WebRTC by name, and new
+data or responses. Those reasons are worked out by the service from the
+database, never taken from the agent, and are checked again at admission and
+dispatch, so a viewer added or data shared in between sends it back to the
+person. A grant the person changes from the Apps screen in the moment between
+that last check and the publish is their own choice, and stands. The paths of
+the files an app shows are left out of origin checking for this connection
+only, because the connector proves each is a recorded file of the publisher's
+own in this space, before asking and again before it runs; who will see them
+is one of the reasons above. Every
+publish leaves a receipt in the conversation and on the auto-review record,
+and the version before it is one step away. The person can switch the rule off
+in Settings → Approvals. What this accepts: a new version written under a
+prompt injection reaches the same viewers without a question, with the same
+data, and code that hides its use of WebRTC can send that data elsewhere. That
+was open before too, since the question showed file counts and not code. A
+conversation that read an app's responses, or that is set to ask before
+acting, still asks for every publish.
 
 ## Attacker 10: a page served from the agent's computer
 

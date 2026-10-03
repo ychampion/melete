@@ -2,10 +2,17 @@
  * Publishing apps, and choosing which version of one people see.
  *
  * An app is a folder of web files the agent wrote in its workspace. Publishing
- * it makes it something other people can open, so it is `write_external` and
- * asks every time, a new version of an existing app included. The question
- * names the app, how many files it has and how large they are, who will be
- * able to open it, and which data it shows.
+ * it makes it something other people can open, so it is `write_external`. The
+ * question names the app, how many files it has and how large they are, who
+ * will be able to open it, and which data it shows.
+ *
+ * Before anyone is asked, `prepare` binds `risks`: the plain reasons this one
+ * should be the person's to decide. New people could open the app, its code
+ * opens direct connections (WebRTC), or it shows its viewers data they do not
+ * see now. With none of them, auto-review's fixed rule for apps lets it go
+ * ahead with a receipt, unless the person switched that off (see
+ * `reviewTier`). `validateBinding` works the risks out again at admission and
+ * at dispatch, and refuses an action that gained one since it was decided.
  *
  * Nothing is stored before the approval. `prepare` reads the folder, applies
  * the bundle rules and binds the hash of the manifest it would publish. The
@@ -14,7 +21,7 @@
  * which has to be asked for again. Only then are the files stored and the
  * version, the app's pointer and its grants written, in one transaction.
  *
- * Rolling back to an earlier version is the agent's request too, so it asks.
+ * Rolling back to an earlier version is the agent's request too, under the same rule.
  * The person does both from the Apps screen without asking: those are their
  * own actions on their own app.
  *
@@ -48,6 +55,7 @@ import {
   publishVersion,
   readBundle,
   setCurrentVersion,
+  storedWebrtcUse,
   versionIdFor,
   webrtcUse,
 } from '../apps/service.ts';
@@ -116,6 +124,13 @@ const audienceSchema = {
   ],
 };
 
+/** Bound by the service: why the person is asked (see `risksOf`). */
+const RISKS_SCHEMA = {
+  type: 'array',
+  maxItems: 4,
+  items: { type: 'string', maxLength: 2000 },
+};
+
 export const appsManifest: ConnectorManifest = {
   name: 'apps',
   version: '0.1.0',
@@ -127,7 +142,7 @@ export const appsManifest: ConnectorManifest = {
     {
       name: 'apps.publish',
       description:
-        'Publish a folder from the workspace as an app, or a new version of one: index.html on top, web files only (html, js, css, json, images, woff2; 200 files, 25 MiB). Bundle everything. data names files it reads, each saved first with files.write and expect; review:true asks before each new version reaches viewers. collections names the responses it collects. The person is asked first.',
+        'Publish a workspace folder as an app, or a new version of one: index.html on top, web files only (html, js, css, json, images, woff2; 200 files, 25 MiB). Bundle everything. data names files it reads, each saved first with files.write and expect; review:true asks before each version reaches viewers. collections: responses it collects. Asks if it reaches new people, has WebRTC or shows new data.',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -207,6 +222,7 @@ export const appsManifest: ConnectorManifest = {
             maxItems: 10,
             items: { type: 'string', maxLength: 512 },
           },
+          risks: RISKS_SCHEMA,
         },
       },
       effect_class: 'write_external',
@@ -217,7 +233,7 @@ export const appsManifest: ConnectorManifest = {
     {
       name: 'apps.rollback',
       description:
-        'Make an earlier version of an app the one people see. The person is asked first.',
+        'Make an earlier version of an app the one people see. Asks first if that version has WebRTC or shows viewers other data.',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -239,6 +255,7 @@ export const appsManifest: ConnectorManifest = {
             maxItems: APP_LIMITS.max_collections,
             items: { type: 'string', maxLength: 100 },
           },
+          risks: RISKS_SCHEMA,
         },
       },
       effect_class: 'write_external',
@@ -480,6 +497,143 @@ function grantsFor(audience: JsonObject): DesiredGrant[] | null {
   return [];
 }
 
+type Binding = AppManifest['data'][string];
+
+/**
+ * Whether viewers already see what this binding shows: an earlier binding of
+ * the same file from the same source, shown without review. A binding under
+ * review shows nothing until the publisher releases a version, so it is never
+ * new data on its own.
+ */
+const shownBefore = (binding: Binding, before: AppManifest['data']) =>
+  binding.review === true ||
+  Object.values(before).some(
+    (old) =>
+      old.path === binding.path &&
+      old.source_job_id === binding.source_job_id &&
+      old.review !== true,
+  );
+
+/** The data and collections of the version people see now; none for an app with no version yet. */
+async function currentVersion(
+  tx: Query,
+  appId: string | null,
+): Promise<Pick<AppManifest, 'data' | 'collections'>> {
+  if (!appId) return { data: {}, collections: {} };
+  const [row] = await tx<{ manifest: AppManifest }[]>`select v.manifest from app a
+    join app_version v on v.id = a.current_version_id where a.id = ${appId}`;
+  return { data: row?.manifest.data ?? {}, collections: row?.manifest.collections ?? {} };
+}
+
+/**
+ * Who could open the app now that cannot: a line naming them, or null. Only
+ * an audience the payload sets can widen it; `unchanged` and `only_me` never do.
+ */
+async function wideningLine(
+  tx: Query,
+  appId: string | null,
+  audience: JsonObject,
+): Promise<string | null> {
+  if (audience.kind === 'everyone') {
+    const [already] = appId
+      ? await tx`select 1 from app_grant where app_id = ${appId} and revoked_at is null
+          and grantee_kind = 'installation'`
+      : [];
+    return already ? null : 'Everyone with an account here could open it.';
+  }
+  if (audience.kind !== 'people') return null;
+  const emails = Array.isArray(audience.emails) ? audience.emails.map(String) : [];
+  const ids = Array.isArray(audience.principal_ids) ? audience.principal_ids.map(String) : [];
+  const fresh: string[] = [];
+  for (const [index, id] of ids.entries())
+    if (!appId || (await appRoleFor(tx, appId, id)) === null) fresh.push(emails[index] ?? id);
+  return fresh.length ? `New people could open it: ${fresh.join(', ')}.` : null;
+}
+
+/**
+ * Whether anyone besides the publisher could open the app after this change:
+ * the people or everyone the audience names, anyone holding a grant it keeps,
+ * or the space's owner when that is someone else.
+ */
+async function sharedAfter(
+  tx: Query,
+  ctx: ConnectorContext,
+  appId: string | null,
+  audience: JsonObject | null,
+  publisher: string,
+): Promise<boolean> {
+  if (audience?.kind === 'people' || audience?.kind === 'everyone') return true;
+  const [space] = await tx`select owner_principal_id from space where id = ${ctx.space_id}`;
+  if (space?.owner_principal_id !== publisher) return true;
+  if (!appId) return false;
+  // `only_me` takes back every view grant; the managers stay.
+  const viewersStay = audience?.kind !== 'only_me';
+  const [kept] = await tx`select 1 from app_grant where app_id = ${appId} and revoked_at is null
+    and not (grantee_kind = 'principal' and grantee_id = ${publisher})
+    and (${viewersStay} or role = 'manage') limit 1`;
+  return Boolean(kept);
+}
+
+/**
+ * Why the person should decide this publish or rollback, one plain line per
+ * reason, in a fixed order: new people could open the app; its code opens
+ * direct connections; it shows data its viewers do not see now. Data in an app
+ * only its publisher can open is theirs already, so it is no reason to ask.
+ */
+async function risksOf(
+  tx: Query,
+  ctx: ConnectorContext,
+  input: {
+    appId: string | null;
+    audience: JsonObject | null;
+    data: AppManifest['data'];
+    collections: AppManifest['collections'];
+    /** Files whose code opens direct connections; null when they could not be read. */
+    connecting: readonly string[] | null;
+    publisher: string;
+  },
+): Promise<string[]> {
+  const widening = input.audience ? await wideningLine(tx, input.appId, input.audience) : null;
+  const before = await currentVersion(tx, input.appId);
+  const added = Object.entries(input.data)
+    .filter(([, binding]) => !shownBefore(binding, before.data))
+    .map(([name, binding]) => `${name} (${binding.path})`)
+    .sort();
+  const collecting = Object.keys(input.collections)
+    .filter((name) => !Object.hasOwn(before.collections, name))
+    .sort();
+  const shared =
+    (added.length || collecting.length) &&
+    (await sharedAfter(tx, ctx, input.appId, input.audience, input.publisher));
+  const newData =
+    added.length && shared
+      ? `It would show its viewers data they do not see now: ${added.join(', ')}.`
+      : null;
+  const newCollections =
+    collecting.length && shared
+      ? `It would collect responses from its viewers it does not collect now: ${collecting.join(', ')}.`
+      : null;
+  const connecting =
+    input.connecting === null
+      ? "Melete could not read this version's code to check it for direct connections."
+      : input.connecting.length
+        ? 'Its code can open direct connections to other servers (WebRTC).'
+        : null;
+  return [widening, connecting, newData, newCollections].filter(
+    (line): line is string => line !== null,
+  );
+}
+
+/**
+ * A risk that was not there when the action was decided, or null. Each kind
+ * of risk is one line; a line that is new, or now reads differently, means the
+ * action is no longer the one that was decided, by the person or by the rule.
+ */
+function newRisk(bound: unknown, now: readonly string[]): string | null {
+  const before = new Set(Array.isArray(bound) ? bound.map(String) : []);
+  return now.find((line) => !before.has(line)) ?? null;
+}
+
 const receiptFor = (
   action: Action,
   detail: Record<string, JsonValue>,
@@ -661,6 +815,21 @@ export function createAppsConnector(options: AppsOptions): Connector {
         if (!version) throw refused('That version is not one of this app.');
         // What people would see after it: that version's data, to today's viewers.
         const manifest = version.manifest as AppManifest;
+        let connecting: string[] | null;
+        try {
+          connecting = await storedWebrtcUse(options.blobs, manifest);
+        } catch {
+          // Unreadable code is a reason to ask, never a reason to skip the check.
+          connecting = null;
+        }
+        const risks = await risksOf(tx, ctx, {
+          appId,
+          audience: null,
+          data: manifest.data,
+          collections: manifest.collections,
+          connecting,
+          publisher,
+        });
         return {
           app_id: appId,
           version_id: payload.version_id,
@@ -680,6 +849,7 @@ export function createAppsConnector(options: AppsOptions): Connector {
               ),
           ),
           collections_shown: Object.keys(manifest.collections).sort(),
+          risks,
         };
       }
       const existing = typeof payload.app_id === 'string' ? payload.app_id : null;
@@ -712,7 +882,26 @@ export function createAppsConnector(options: AppsOptions): Connector {
         total_bytes: Object.values(manifest.files).reduce((sum, file) => sum + file.size, 0),
         // Shown on the card as a warning; it never refuses the bundle.
         ...(connecting.length ? { opens_connections: connecting } : {}),
+        risks: await risksOf(tx, ctx, {
+          appId: existing,
+          audience,
+          data: bindings,
+          collections: collectionsOf(payload.collections),
+          connecting,
+          publisher,
+        }),
       };
+    },
+    /**
+     * A publish's data paths: `prepare` resolved each to a recorded file of the
+     * publisher's own conversation or routine in this space, and
+     * `validateBinding` proves it again. Who will see them is a risk of its own.
+     */
+    verifiedFields(action) {
+      if (action.kind !== 'apps.publish') return [];
+      const data = action.canonical_payload.data;
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
+      return Object.keys(data).map((name) => `data.${name}.path`);
     },
     async validateBinding(action, ctx, tx) {
       if (READ_TOOLS.has(action.kind)) return;
@@ -727,6 +916,38 @@ export function createAppsConnector(options: AppsOptions): Connector {
         if (typeof shownName === 'string' && shownName !== app.name && !renamedHere)
           throw refused('The app was renamed after the person was asked; ask again.');
       }
+      // Who could open it, and what it shows them, as things stand now. The
+      // code is the bound bundle's (publish, compared again at dispatch) or a
+      // stored version's (rollback), which cannot change, so its line stands.
+      const isRollback = action.kind === 'apps.rollback';
+      const appId = isRollback || payload.create !== true ? String(payload.app_id) : null;
+      const [target] = isRollback
+        ? await tx<{ manifest: AppManifest }[]>`select manifest from app_version
+            where id = ${String(payload.version_id)} and app_id = ${appId}`
+        : [];
+      if (isRollback && !target) throw refused('That version is not one of this app.');
+      // Each file a publish shows is proved again to be the publisher's own
+      // recorded file in this space: origin checking leaves these paths to it
+      // (see verifiedFields), so the proof has to hold now, not only at prepare.
+      if (!isRollback) await resolveData(tx, ctx, payload.data, publisher);
+      const now = await risksOf(tx, ctx, {
+        appId,
+        audience: isRollback ? null : ((payload.audience ?? { kind: 'only_me' }) as JsonObject),
+        data: (target?.manifest.data ?? payload.data ?? {}) as AppManifest['data'],
+        collections: (target?.manifest.collections ??
+          collectionsOf(payload.collections)) as AppManifest['collections'],
+        connecting: isRollback
+          ? []
+          : Array.isArray(payload.opens_connections)
+            ? payload.opens_connections.map(String)
+            : [],
+        publisher,
+      });
+      const risen = newRisk(payload.risks, now);
+      if (risen)
+        throw refused(
+          `Something changed since this was decided: ${risen} Publish again to ask with it as it is now.`,
+        );
       // The folder is read and compared at dispatch, outside this transaction.
     },
     async execute(action, ctx) {

@@ -4316,12 +4316,16 @@
                       },
                       "app_changes": {
                         "type": "boolean"
+                      },
+                      "apps": {
+                        "type": "boolean"
                       }
                     },
                     "required": [
                       "sandbox",
                       "calendar",
-                      "app_changes"
+                      "app_changes",
+                      "apps"
                     ],
                     "additionalProperties": false
                   }
@@ -30476,12 +30480,16 @@
                   },
                   "app_changes": {
                     "type": "boolean"
+                  },
+                  "apps": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
                   "sandbox",
                   "calendar",
-                  "app_changes"
+                  "app_changes",
+                  "apps"
                 ],
                 "additionalProperties": false
               }

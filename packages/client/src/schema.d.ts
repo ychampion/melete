@@ -791,6 +791,7 @@ export interface paths {
                     "application/json": {
                         classes: {
                             app_changes: boolean;
+                            apps: boolean;
                             calendar: boolean;
                             sandbox: boolean;
                         };
@@ -19222,6 +19223,7 @@ export interface components {
             settings: {
                 classes: {
                     app_changes: boolean;
+                    apps: boolean;
                     calendar: boolean;
                     sandbox: boolean;
                 };

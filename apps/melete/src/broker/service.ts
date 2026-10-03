@@ -229,10 +229,11 @@ type Admissibility = {
   authorized_by: string | null;
   /**
    * What auto-review makes of an action that would ask the person: approved by
-   * the sandbox rule, put to the reviewer, or left for the person to decide.
-   * Null when auto-review is off or the action asks nobody anyway.
+   * a fixed rule (the sandbox's, or the one for publishing apps), put to the
+   * reviewer, or left for the person to decide. Null when auto-review is off or
+   * the action asks nobody anyway.
    */
-  auto: { tier: TierDecision; outcome: 'sandbox_approved' | 'review' | 'person' } | null;
+  auto: { tier: TierDecision; outcome: 'policy_approved' | 'review' | 'person' } | null;
 };
 
 /** A review to run once the proposal's transaction has committed. */
@@ -436,8 +437,25 @@ export class BrokerService implements BrokerOperations {
       kind: action.kind,
       effect_class: action.effect_class,
       canonical_payload: action.canonical_payload,
-      fields: collectOriginFields(action.canonical_payload),
+      fields: this.originFields(action),
     });
+  }
+
+  /**
+   * The fields whose origin decides admission: every one `collectOriginFields`
+   * finds, less the resource fields the action's connector proved itself.
+   */
+  private originFields(
+    action: Pick<Action, 'connection_id' | 'kind' | 'canonical_payload'>,
+    kind?: string,
+  ) {
+    const fields = collectOriginFields(action.canonical_payload, kind);
+    const verified = new Set(
+      this.options.connectors.get(action.connection_id)?.verifiedFields?.(action) ?? [],
+    );
+    return verified.size
+      ? fields.filter((field) => field.category !== 'resource' || !verified.has(field.path))
+      : fields;
   }
 
   private async tool(
@@ -824,7 +842,7 @@ export class BrokerService implements BrokerOperations {
         changes &&
         tierOf([]).tier === 'sandbox');
     const gated = isTrustGatedEffect(tool.effect_class);
-    const fields = gated ? collectOriginFields(action.canonical_payload, action.kind) : [];
+    const fields = gated ? this.originFields(action, action.kind) : [];
     const warnings = await resolveOriginWarnings(
       tx,
       gated
@@ -887,23 +905,28 @@ export class BrokerService implements BrokerOperations {
         outcome: connectorAsks
           ? 'person'
           : tier.tier === 'sandbox' && allowed && !toolAsks
-            ? 'sandbox_approved'
-            : // An agent set to ask before acting promises that sends, bookings and payments
-              // wait for the person, so its calendar changes do. A reversible app change is
-              // none of those, and the person switched that class on themselves.
-              tier.tier === 'reviewable' &&
-                allowed &&
-                (!agentAsks || tier.actionClass === 'app_changes')
-              ? 'review'
-              : 'person',
+            ? 'policy_approved'
+            : // Publishing an app that reaches nobody new. An agent set to ask before
+              // acting promises that publishes wait, and a conversation that read
+              // an app's responses asks before changing what an app shows.
+              tier.tier === 'apps' && allowed && !agentAsks && !afterResponses
+              ? 'policy_approved'
+              : // An agent set to ask before acting promises that sends, bookings and payments
+                // wait for the person, so its calendar changes do. A reversible app change is
+                // none of those, and the person switched that class on themselves.
+                tier.tier === 'reviewable' &&
+                  allowed &&
+                  (!agentAsks || tier.actionClass === 'app_changes')
+                ? 'review'
+                : 'person',
       };
     }
-    const sandboxApproved = auto?.outcome === 'sandbox_approved';
+    const policyApproved = auto?.outcome === 'policy_approved';
     return {
       warnings,
       warnings_hash: hashOriginWarnings(warnings),
       standing_grant: granted,
-      requires_approval: requiresApproval && !granted && !sandboxApproved,
+      requires_approval: requiresApproval && !granted && !policyApproved,
       authorized_by: authorizedBy,
       auto,
     };
@@ -1462,14 +1485,14 @@ export class BrokerService implements BrokerOperations {
         await this.setStatus(tx, created, 'needs_approval');
         const escalated = await this.recordPolicyEscalation(tx, review, classified);
         await this.askOwner(tx, job, created, approvalId, classified, escalated);
-      } else if (classified.auto?.outcome === 'sandbox_approved')
+      } else if (classified.auto?.outcome === 'policy_approved')
         await recordReview(tx, {
           action_id: id,
           job_id: job.id,
           space_id: job.space_id,
           attempt_id: claims.attempt_id,
-          tier: 'sandbox',
-          action_class: 'sandbox',
+          tier: classified.auto.tier.tier,
+          action_class: classified.auto.tier.actionClass,
           decided_by: 'policy',
           outcome: 'approved',
           risk: null,

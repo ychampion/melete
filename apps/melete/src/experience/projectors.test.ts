@@ -678,6 +678,20 @@ test('a permission to publish an app names it, its size, who can open it and the
     value:
       'Its code can open direct connections to other servers (WebRTC, in call.js), which can send what the app shows, or what a viewer types into it, anywhere. Publish it only if you trust that code with that data.',
   });
+  // Why it came to the person rather than going ahead on its own leads the card.
+  expect(
+    ask({
+      risks: [
+        'New people could open it: bo@example.test.',
+        'Its code can open direct connections to other servers (WebRTC).',
+      ],
+    }).preview?.facts[0],
+  ).toEqual({
+    label: 'Why you are asked',
+    value:
+      'New people could open it: bo@example.test. Its code can open direct connections to other servers (WebRTC).',
+  });
+  expect(ask({ risks: [] }).preview?.facts).toEqual(shown.preview?.facts);
   // A new version names the app it replaces as it is called now, whatever name
   // the request gives, and a new name is a fact of its own on the card.
   const again = ask({
