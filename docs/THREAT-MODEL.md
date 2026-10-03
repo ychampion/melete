@@ -529,8 +529,11 @@ something a person can check. What still asks is what changes who is exposed: a 
 data or responses. Those reasons are worked out by the service from the
 database, never taken from the agent, and are checked again at admission and
 dispatch, so a viewer added or data shared in between sends it back to the
-person. A grant the person changes from the Apps screen in the moment between
-that last check and the publish is their own choice, and stands. The paths of
+person. They are checked once more under the app's own lock as the version is
+written, the lock a change to its grants takes too, so a share that lands in
+between stops the publish. Who can open an app is counted as access counts it:
+the space's owner and the person who published it keep access whatever a
+publish's audience says, and the card names them. The paths of
 the files an app shows are left out of origin checking for this connection
 only, because the connector proves each is a recorded file of the publisher's
 own in this space, before asking and again before it runs; who will see them
