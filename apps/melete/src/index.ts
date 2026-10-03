@@ -1124,9 +1124,9 @@ export async function bootstrap(
         // A paired computer's screenshots an earlier version kept in job
         // workspaces move to the service's own store, and are tried again until
         // they have; each attempt also moves its own job's first.
-        void moveWorkspaceScreensUntilDone(env.MELETE_WORK_DIR, (line) =>
-          process.stderr.write(`${line}\n`),
-        );
+        void moveWorkspaceScreensUntilDone(env.MELETE_WORK_DIR, {
+          report: (line) => process.stderr.write(`${line}\n`),
+        });
         await operations.start();
         await triggers.start();
         await runner.start();
