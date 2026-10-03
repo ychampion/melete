@@ -1580,6 +1580,36 @@ for its owner alone.
 Removing a space keeps its calls' amounts, so a limit is not reset by deleting
 a space; which space and job they came from is removed with it.
 
+## Attachments
+
+Files sent in chat (pictures, PDFs, Word documents, spreadsheets and text
+files) are taken up to a size and a number per message. Nothing limits how
+many files one person uploads unless you set a limit, so a self-hosted
+installation never turns someone away for uploading; an installation shared
+with many people, such as a hosted one, can set the per-person limits.
+
+| Setting | Limit |
+| --- | --- |
+| `MELETE_ATTACHMENT_MAX_MB` | The largest file, in MB (default `20`, at most `100`) |
+| `MELETE_ATTACHMENTS_PER_MESSAGE` | The most files in one message (default `10`, at most `100`) |
+| `MELETE_ATTACHMENT_UPLOADS_AT_ONCE` | Uploads one person may have under way at once (default: no limit) |
+| `MELETE_ATTACHMENT_UPLOADS_PER_WINDOW` | Uploads one person may start in a window (default: no limit) |
+| `MELETE_ATTACHMENT_UPLOAD_WINDOW_MINUTES` | That window, in minutes (default `10`) |
+
+- A file over the size, or a message over the number, is refused with a plain
+  sentence before anything is kept: "Files can be up to 20 MB. scan.pdf is
+  25 MB."
+- Past an upload limit the request gets `429` and a sentence ("You can upload
+  3 files at a time. Wait for one to finish, then try again."). The web client
+  reads the limits from `GET /attachments/limits` and queues its uploads to
+  the number at once, so a person picking many files never sees that refusal.
+  With no limit set it uploads four at a time.
+- The upload window is counted where sign-in limits are, in Postgres, so every
+  service instance shares it; the number at once is counted by each instance.
+- Reading a file stays bounded whatever these are: two reads run at a time
+  with a short queue, each with a deadline and a memory ceiling, and archives
+  and page counts are capped, so a crafted file cannot take the service down.
+
 ## Model routing
 
 By default every call uses the model chosen in Settings › Models, else

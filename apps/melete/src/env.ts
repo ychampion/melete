@@ -5,7 +5,7 @@
  */
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EXEC_LIMITS, PROCESS_LIMITS } from '@melete/contracts';
+import { ATTACHMENT_LIMITS, EXEC_LIMITS, PROCESS_LIMITS } from '@melete/contracts';
 import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete/runtime-hermes';
 import { z } from 'zod';
 import { REASONING_EFFORTS } from './gateway/effort.ts';
@@ -469,6 +469,35 @@ const variables = z.object({
   MELETE_SPEND_DAILY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
   MELETE_SPEND_PERSON_MONTHLY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
   MELETE_SPEND_PERSON_DAILY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
+  /**
+   * Files sent in chat: the largest file in MB and the most files in one
+   * message, and, unset by default (no limit), how many uploads one person may
+   * have under way at once and may start in a window of minutes. A hosted
+   * install sets the last two. docs/DEPLOYMENT.md, "Attachments".
+   */
+  MELETE_ATTACHMENT_MAX_MB: unsetWhenBlank(
+    z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(ATTACHMENT_LIMITS.file_bytes_ceiling / (1024 * 1024))
+      .default(ATTACHMENT_LIMITS.file_bytes / (1024 * 1024)),
+  ),
+  MELETE_ATTACHMENTS_PER_MESSAGE: unsetWhenBlank(
+    z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(ATTACHMENT_LIMITS.per_message_ceiling)
+      .default(ATTACHMENT_LIMITS.per_message),
+  ),
+  MELETE_ATTACHMENT_UPLOADS_AT_ONCE: unsetWhenBlank(z.coerce.number().int().positive().optional()),
+  MELETE_ATTACHMENT_UPLOADS_PER_WINDOW: unsetWhenBlank(
+    z.coerce.number().int().positive().optional(),
+  ),
+  MELETE_ATTACHMENT_UPLOAD_WINDOW_MINUTES: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(1440).default(10),
+  ),
   /** Percent of a limit at which the person is told it is close. */
   MELETE_SPEND_NOTICE_PERCENT: unsetWhenBlank(z.coerce.number().int().min(1).max(99).default(80)),
   /** Per-million-token prices that replace the built-in estimates, as JSON. */

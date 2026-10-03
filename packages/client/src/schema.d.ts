@@ -1905,7 +1905,7 @@ export interface paths {
         put?: never;
         /**
          * Upload a file to send with a message
-         * @description Multipart form data: the file in `file`, and for a picture optionally a small copy in `preview` (at most 1280 pixels on its longest side, small enough for a model request). Pictures, PDFs, Word documents, spreadsheets and text files up to 20 MB are taken. The file waits, visible only to whoever uploaded it, until a message names it in `attachments`; one never sent is deleted after a day. A sent file belongs to its chat and is deleted with it.
+         * @description Multipart form data: the file in `file`, and for a picture optionally a small copy in `preview` (at most 1280 pixels on its longest side, small enough for a model request). Pictures, PDFs, Word documents, spreadsheets and text files are taken, up to the size `GET /attachments/limits` gives (20 MB unless the operator sets another). The file waits, visible only to whoever uploaded it, until a message names it in `attachments`; one never sent is deleted after a day. A sent file belongs to its chat and is deleted with it.
          */
         post: {
             parameters: {
@@ -1965,6 +1965,15 @@ export interface paths {
                 };
                 /** @description A kind of file Melete does not read */
                 415: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema172"];
+                    };
+                };
+                /** @description More uploads at once, or in a while, than the operator allows */
+                429: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -2085,6 +2094,58 @@ export interface paths {
                 };
                 /** @description No such file for this person */
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema172"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/attachments/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What files this installation takes
+         * @description The largest file, the most files in one message, and how many uploads one person may have under way at once (null when the operator sets no limit, the default). A client queues its uploads to that number.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The limits */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            file_bytes: number;
+                            per_message: number;
+                            uploads_at_once: number | null;
+                        };
+                    };
+                };
+                /** @description A session is required */
+                401: {
                     headers: {
                         [name: string]: unknown;
                     };

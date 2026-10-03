@@ -46,6 +46,7 @@ import {
 import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-companion.ts';
 import { mountApps } from './apps/routes.ts';
 import { mountAppViews } from './apps/serve.ts';
+import { attachmentSettingsFromEnv } from './attachments/limits.ts';
 import { mountAttachments } from './attachments/routes.ts';
 import { AttachmentService } from './attachments/store.ts';
 import { verifyCapability } from './broker/capability.ts';
@@ -723,7 +724,7 @@ export async function bootstrap(
       blobs = startBlobs(handle.sql, env, options.workers !== false, () =>
         leading(leases, 'blob-collector'),
       );
-      attachments = new AttachmentService(handle.sql, blobs.store);
+      attachments = new AttachmentService(handle.sql, blobs.store, attachmentSettingsFromEnv(env));
       await closeInterruptedScans(handle.db);
       await expireEpisodes(handle.sql);
       // One sign-in service, so the API and the gateway share one refresh per provider.

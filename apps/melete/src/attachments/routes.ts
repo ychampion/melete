@@ -1,7 +1,8 @@
 /**
  * Uploading a file for a message, reading it back, and taking back one not
  * sent yet. The space and the person come from the session, never from the
- * request.
+ * request. How many uploads one person may have under way, or start in a
+ * while, is limited only where the operator sets a limit.
  */
 import {
   ATTACHMENT_LIMITS,
@@ -14,12 +15,8 @@ import { ServiceError } from '../api/errors.ts';
 import type { SpaceResolver } from '../api/reactions.ts';
 import { type LimitStore, MemoryLimitStore } from '../ops/limiter.ts';
 import { requestPrincipal } from '../principals/authority.ts';
+import { attachmentLimitsView } from './limits.ts';
 import type { AttachmentScope, AttachmentService } from './store.ts';
-
-/** Uploads one person may have under way at once; the message box queues to the same number. */
-export const UPLOADS_AT_ONCE = ATTACHMENT_LIMITS.uploads_at_once;
-/** Uploads one person may start in a window, and the window. */
-export const UPLOAD_RATE = { count: 60, windowMs: 10 * 60 * 1000 };
 
 /** Room for the small copy of a picture and the form's own framing. */
 const FORM_OVERHEAD = ATTACHMENT_LIMITS.model_image_bytes + 64 * 1024;
@@ -31,36 +28,44 @@ export function mountAttachments(
   /** Where upload counts are kept, shared by every instance; left out, this process counts. */
   limits: LimitStore = new MemoryLimitStore(),
 ): void {
+  const { fileBytes, uploadsAtOnce, uploadRate } = attachments.settings;
   const underWay = new Map<string, number>();
-  /** A fixed window: how many uploads this person started in it. */
-  const counted = (key: string) =>
-    limits.update<{ count: number; started: number }, boolean>(
+  /** A fixed window: how many uploads this person started in it. True with no limit set. */
+  const counted = async (key: string) => {
+    if (!uploadRate) return true;
+    return limits.update<{ count: number; started: number }, boolean>(
       'attachment-upload',
       key,
       Date.now(),
       (state) => {
         const now = Date.now();
         const live =
-          state && now - state.started < UPLOAD_RATE.windowMs ? state : { count: 0, started: now };
-        if (live.count >= UPLOAD_RATE.count)
-          return { state: live, expiresAt: live.started + UPLOAD_RATE.windowMs, result: false };
+          state && now - state.started < uploadRate.windowMs ? state : { count: 0, started: now };
+        if (live.count >= uploadRate.count)
+          return { state: live, expiresAt: live.started + uploadRate.windowMs, result: false };
         const next = { count: live.count + 1, started: live.started };
-        return { state: next, expiresAt: next.started + UPLOAD_RATE.windowMs, result: true };
+        return { state: next, expiresAt: next.started + uploadRate.windowMs, result: true };
       },
     );
+  };
   const scopeFor = async (c: Context): Promise<AttachmentScope> => {
     const scope = await resolveSpace(c);
     if (!scope) throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
     return { spaceId: scope.spaceId, principalId: requestPrincipal() ?? null };
   };
 
+  app.get('/attachments/limits', async (c) => {
+    await scopeFor(c);
+    return c.json(attachmentLimitsView(attachments.settings));
+  });
+
   app.post('/attachments', async (c) => {
     const scope = await scopeFor(c);
     const declared = Number(c.req.header('content-length') ?? 0);
-    if (declared > ATTACHMENT_LIMITS.file_bytes + FORM_OVERHEAD)
+    if (declared > fileBytes + FORM_OVERHEAD)
       throw new ServiceError(
         'attachment_too_large',
-        `Files can be up to ${attachmentSize(ATTACHMENT_LIMITS.file_bytes)}.`,
+        `Files can be up to ${attachmentSize(fileBytes)}.`,
         413,
       );
     if (!/^multipart\/form-data/i.test(c.req.header('content-type') ?? ''))
@@ -69,10 +74,10 @@ export function mountAttachments(
     // Checked and counted together, before anything is awaited: parallel
     // uploads cannot all pass the check while none has been counted yet.
     const now = underWay.get(who) ?? 0;
-    if (now >= UPLOADS_AT_ONCE)
+    if (uploadsAtOnce !== null && now >= uploadsAtOnce)
       throw new ServiceError(
         'attachment_busy',
-        `You can upload ${UPLOADS_AT_ONCE} files at a time. Wait for one to finish, then try again.`,
+        `You can upload ${uploadsAtOnce} files at a time. Wait for one to finish, then try again.`,
         429,
       );
     underWay.set(who, now + 1);

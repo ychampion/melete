@@ -15,6 +15,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { attachmentSettingsFromEnv } from '../attachments/limits.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { session } from '../db/auth-schema.ts';
 import type { Database } from '../db/client.ts';
@@ -53,27 +54,22 @@ const publicBody = bodyLimit({ maxSize: PUBLIC_BODY_BYTES, onError: tooLarge });
 const sessionLimit = bodyLimit({ maxSize: SESSION_BODY_BYTES, onError: tooLarge });
 /**
  * A file uploaded for a message may be larger than any JSON body: the file at
- * its limit, the small copy a picture brings, and the form around them.
+ * the operator's limit, the small copy a picture brings, and the form around them.
  */
-const UPLOAD_BODY_BYTES =
-  ATTACHMENT_LIMITS.file_bytes + ATTACHMENT_LIMITS.model_image_bytes + 64 * 1024;
-const uploadLimit = bodyLimit({
-  maxSize: UPLOAD_BODY_BYTES,
-  onError: (c) =>
-    c.json(
-      {
-        error: {
-          code: 'attachment_too_large',
-          message: `Files can be up to ${attachmentSize(ATTACHMENT_LIMITS.file_bytes)}.`,
+const uploadLimitFor = (fileBytes: number) =>
+  bodyLimit({
+    maxSize: fileBytes + ATTACHMENT_LIMITS.model_image_bytes + 64 * 1024,
+    onError: (c) =>
+      c.json(
+        {
+          error: {
+            code: 'attachment_too_large',
+            message: `Files can be up to ${attachmentSize(fileBytes)}.`,
+          },
         },
-      },
-      413,
-    ),
-});
-const sessionBody = (c: Context, next: () => Promise<void>) =>
-  c.req.method === 'POST' && c.req.path === '/attachments'
-    ? uploadLimit(c, next)
-    : sessionLimit(c, next);
+        413,
+      ),
+  });
 /** One JSON-RPC message from an assistant: a tool's arguments, never an upload. */
 const mcpBody = bodyLimit({ maxSize: 1024 * 1024, onError: tooLarge });
 /** Browsers that have not signed in to an account before share this many attempts on it. */
@@ -225,6 +221,11 @@ export function mountAuth(
 ): void {
   const { db, env, registry } = deps;
   const handle = deps.sql;
+  const uploadLimit = uploadLimitFor(attachmentSettingsFromEnv(env).fileBytes);
+  const sessionBody = (c: Context, next: () => Promise<void>) =>
+    c.req.method === 'POST' && c.req.path === '/attachments'
+      ? uploadLimit(c, next)
+      : sessionLimit(c, next);
   /**
    * An account can reach its first request without a space of its own, and the
    * session makes one for it. The space is furnished where it is made, so the

@@ -40,7 +40,7 @@ import {
   triggerResponse,
 } from './api.ts';
 import { appsPaths } from './apps-openapi.ts';
-import { attachmentContentQuery, attachmentResponse } from './attachments.ts';
+import { attachmentContentQuery, attachmentLimits, attachmentResponse } from './attachments.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
 import {
@@ -2322,8 +2322,9 @@ export function buildOpenApiDocument() {
             description:
               'Multipart form data: the file in `file`, and for a picture optionally a small copy ' +
               'in `preview` (at most 1280 pixels on its longest side, small enough for a model ' +
-              'request). Pictures, PDFs, Word documents, spreadsheets and text files up to 20 MB ' +
-              'are taken. The file waits, visible only to whoever uploaded it, until a message ' +
+              'request). Pictures, PDFs, Word documents, spreadsheets and text files are taken, up ' +
+              'to the size `GET /attachments/limits` gives (20 MB unless the operator sets ' +
+              'another). The file waits, visible only to whoever uploaded it, until a message ' +
               'names it in `attachments`; one never sent is deleted after a day. A sent file ' +
               'belongs to its chat and is deleted with it.',
             security: [{ session: [] }],
@@ -2344,6 +2345,22 @@ export function buildOpenApiDocument() {
               '401': problem('A session is required'),
               '413': problem('Larger than the limit'),
               '415': problem('A kind of file Melete does not read'),
+              '429': problem('More uploads at once, or in a while, than the operator allows'),
+            },
+          },
+        },
+        '/attachments/limits': {
+          get: {
+            tags: ['experience'],
+            summary: 'What files this installation takes',
+            description:
+              'The largest file, the most files in one message, and how many uploads one ' +
+              'person may have under way at once (null when the operator sets no limit, the ' +
+              'default). A client queues its uploads to that number.',
+            security: [{ session: [] }],
+            responses: {
+              '200': jsonResponse('The limits', attachmentLimits),
+              '401': problem('A session is required'),
             },
           },
         },

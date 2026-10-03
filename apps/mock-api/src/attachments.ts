@@ -11,6 +11,7 @@ import {
   attachmentKindFor,
   attachmentResponse,
   attachmentTooLarge,
+  DEFAULT_ATTACHMENT_LIMITS,
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import type { ExperienceMock } from './experience.ts';
@@ -31,6 +32,9 @@ export function mountAttachmentsMock(app: Hono, experience: ExperienceMock): voi
   ) => c.json({ error: { code, message } }, status);
   const signedOut = (c: Context) =>
     experience.signedOut ? fail(c, 401, 'unauthorized', 'A session is required.') : null;
+
+  // A self-hosted install by default: no limit on uploads at once.
+  app.get('/attachments/limits', (c) => signedOut(c) ?? c.json(DEFAULT_ATTACHMENT_LIMITS));
 
   app.post('/attachments', async (c) => {
     const refused = signedOut(c);

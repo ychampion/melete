@@ -2927,7 +2927,7 @@
                                 "$ref": "#/components/schemas/__schema239"
                               },
                               "attachments": {
-                                "maxItems": 10,
+                                "maxItems": 100,
                                 "type": "array",
                                 "items": {
                                   "$ref": "#/components/schemas/__schema243"
@@ -18062,7 +18062,7 @@
           "experience"
         ],
         "summary": "Upload a file to send with a message",
-        "description": "Multipart form data: the file in `file`, and for a picture optionally a small copy in `preview` (at most 1280 pixels on its longest side, small enough for a model request). Pictures, PDFs, Word documents, spreadsheets and text files up to 20 MB are taken. The file waits, visible only to whoever uploaded it, until a message names it in `attachments`; one never sent is deleted after a day. A sent file belongs to its chat and is deleted with it.",
+        "description": "Multipart form data: the file in `file`, and for a picture optionally a small copy in `preview` (at most 1280 pixels on its longest side, small enough for a model request). Pictures, PDFs, Word documents, spreadsheets and text files are taken, up to the size `GET /attachments/limits` gives (20 MB unless the operator sets another). The file waits, visible only to whoever uploaded it, until a message names it in `attachments`; one never sent is deleted after a day. A sent file belongs to its chat and is deleted with it.",
         "security": [
           {
             "session": []
@@ -18143,6 +18143,82 @@
           },
           "415": {
             "description": "A kind of file Melete does not read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema172"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "More uploads at once, or in a while, than the operator allows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema172"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/attachments/limits": {
+      "get": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "What files this installation takes",
+        "description": "The largest file, the most files in one message, and how many uploads one person may have under way at once (null when the operator sets no limit, the default). A client queues its uploads to that number.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The limits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "file_bytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 104857600
+                    },
+                    "per_message": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 100
+                    },
+                    "uploads_at_once": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "file_bytes",
+                    "per_message",
+                    "uploads_at_once"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A session is required",
             "content": {
               "application/json": {
                 "schema": {
@@ -24993,7 +25069,7 @@
         "pattern": "^[1-9][0-9]{0,17}$"
       },
       "__schema18": {
-        "maxItems": 10,
+        "maxItems": 100,
         "type": "array",
         "items": {
           "$ref": "#/components/schemas/__schema13"

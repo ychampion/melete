@@ -18,8 +18,8 @@ import {
   turnList,
 } from '@melete/contracts';
 import { pdfWith, TINY_PNG } from '../../src/attachments/fixtures.ts';
+import { attachmentSettingsFromEnv } from '../../src/attachments/limits.ts';
 import { gatewayAttachments } from '../../src/attachments/model.ts';
-import { UPLOAD_RATE, UPLOADS_AT_ONCE } from '../../src/attachments/routes.ts';
 import { AttachmentService } from '../../src/attachments/store.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import { owner, space } from '../../src/db/schema.ts';
@@ -61,6 +61,22 @@ const app =
         checkDatabase: async () => 'ok',
       })
     : null;
+/** The same service where the operator limits uploads, as a hosted install does. */
+const limitedEnv = loadEnv({
+  NODE_ENV: 'test',
+  MELETE_ATTACHMENT_UPLOADS_AT_ONCE: '3',
+  MELETE_ATTACHMENT_UPLOADS_PER_WINDOW: '60',
+});
+const limitedSettings = attachmentSettingsFromEnv(limitedEnv);
+const limitedApp = handle
+  ? createApp({
+      db: handle.db,
+      env: limitedEnv,
+      sql: handle.sql,
+      attachments: new AttachmentService(handle.sql, store, limitedSettings),
+      checkDatabase: async () => 'ok',
+    })
+  : null;
 const spaceId = newId('sp');
 const ownerId = newId('own');
 const token = randomBytes(32).toString('base64url');
@@ -91,12 +107,18 @@ async function request(path: string, method = 'GET', body?: unknown, key?: strin
   });
 }
 
-async function upload(name: string, type: string, bytes: Uint8Array, preview?: Uint8Array) {
-  if (!app) throw new Error('Postgres unavailable');
+async function upload(
+  name: string,
+  type: string,
+  bytes: Uint8Array,
+  preview?: Uint8Array,
+  to = app,
+) {
+  if (!to) throw new Error('Postgres unavailable');
   const form = new FormData();
   form.append('file', new File([bytes], name, { type }));
   if (preview) form.append('preview', new File([preview], 'preview.jpg', { type: 'image/jpeg' }));
-  return app.request('/attachments', {
+  return to.request('/attachments', {
     method: 'POST',
     headers: { Cookie: `melete_session=${token}` },
     body: form,
@@ -384,26 +406,54 @@ const LEASE = pdfWith(['The lease starts in May.', 'Repairs are due within 14 da
     expect(await store.head((row?.blob_key ?? '') as BlobKey)).toBeNull();
   }, 60_000);
 
-  test('twelve uploads at once from one person: three go ahead, nine are asked to wait', async () => {
+  test('with no limit set, twelve uploads at once from one person all go ahead', async () => {
+    const limits = await request('/attachments/limits');
+    expect(await limits.json()).toEqual({
+      file_bytes: ATTACHMENT_LIMITS.file_bytes,
+      per_message: ATTACHMENT_LIMITS.per_message,
+      uploads_at_once: null,
+    });
+    const results = await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        upload(`open-${index}.pdf`, 'application/pdf', pdfWith([`Open ${index}`])),
+      ),
+    );
+    expect(results.map((response) => response.status)).toEqual(Array(12).fill(201));
+  }, 120_000);
+
+  test('where the operator limits uploads at once, three go ahead and nine are asked to wait', async () => {
+    if (!limitedApp) throw new Error('Postgres unavailable');
+    const limits = await limitedApp.request('/attachments/limits', {
+      headers: { Cookie: `melete_session=${token}` },
+    });
+    expect(((await limits.json()) as { uploads_at_once: number }).uploads_at_once).toBe(3);
     // PDFs, so each upload spends a while reading and they overlap.
     const results = await Promise.all(
       Array.from({ length: 12 }, (_, index) =>
-        upload(`parallel-${index}.pdf`, 'application/pdf', pdfWith([`Parallel ${index}`])),
+        upload(
+          `parallel-${index}.pdf`,
+          'application/pdf',
+          pdfWith([`Parallel ${index}`]),
+          undefined,
+          limitedApp,
+        ),
       ),
     );
     const refused = results.filter((response) => response.status === 429);
-    expect(results.filter((response) => response.status === 201)).toHaveLength(UPLOADS_AT_ONCE);
-    expect(refused).toHaveLength(12 - UPLOADS_AT_ONCE);
+    expect(results.filter((response) => response.status === 201)).toHaveLength(3);
+    expect(refused).toHaveLength(9);
     for (const response of refused)
       expect(await said(response)).toBe(
-        `You can upload ${UPLOADS_AT_ONCE} files at a time. Wait for one to finish, then try again.`,
+        'You can upload 3 files at a time. Wait for one to finish, then try again.',
       );
   }, 120_000);
 
-  test('one person uploading too many files in a short time is asked to wait', async () => {
+  test('where the operator limits uploads in a while, one person uploading too many is asked to wait', async () => {
+    const count = limitedSettings.uploadRate?.count ?? 0;
+    expect(count).toBe(60);
     let refused: Response | null = null;
-    for (let index = 0; index < UPLOAD_RATE.count + 1 && !refused; index++) {
-      const response = await upload(`p${index}.png`, 'image/png', TINY_PNG);
+    for (let index = 0; index < count + 1 && !refused; index++) {
+      const response = await upload(`p${index}.png`, 'image/png', TINY_PNG, undefined, limitedApp);
       if (response.status === 429) refused = response;
       else expect(response.status).toBe(201);
     }
