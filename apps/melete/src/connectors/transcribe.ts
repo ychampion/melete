@@ -12,6 +12,7 @@
  * trip (speak a script, then transcribe the file) is a real test with no key
  * and no network. The real adapter is ElevenLabs Scribe (elevenlabs.ts).
  */
+import { constants } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -31,7 +32,7 @@ import {
   receipt,
 } from '@melete/contracts';
 import { z } from 'zod';
-import { noLinks, segmentsFor } from './files.ts';
+import { noLinks, openBeneath, segmentsFor } from './files.ts';
 import { atomicWrite, capabilityDirectory, digest, readBytes } from './tts.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import { scriptFromWav, spokenDurationMs } from './wav.ts';
@@ -241,15 +242,23 @@ export function createTranscriptionConnector(options: TranscriptionConnectorOpti
       throw new Error('invalid trusted file scope');
     const mime = mediaTypeFor(relative);
     if (!mime) throw new Error('source must be an audio or video file');
-    const file = await noLinks(
-      await realpath(area === 'artifacts' ? options.spacesRoot : options.workRoot),
-      [
-        ...(area === 'artifacts' ? [ctx.space_id, 'artifacts'] : [ctx.job_id]),
-        ...segmentsFor(relative),
-      ],
-      false,
+    const base = await realpath(area === 'artifacts' ? options.spacesRoot : options.workRoot);
+    const segments = [
+      ...(area === 'artifacts' ? [ctx.space_id, 'artifacts'] : [ctx.job_id]),
+      ...segmentsFor(relative),
+    ];
+    const file = await noLinks(base, segments, false);
+    // Opened by walking the names, so a folder swapped for a link since the check opens nothing.
+    const bytes = await openBeneath(base, segments, constants.O_RDONLY).then(
+      async (handle) => {
+        try {
+          return new Uint8Array(await handle.readFile());
+        } finally {
+          await handle.close();
+        }
+      },
+      () => null,
     );
-    const bytes = await readBytes(file);
     if (!bytes) throw new Error('source file was not found');
     if (bytes.length > TRANSCRIBE_MAX_BYTES) throw new Error('source file is larger than 100 MB');
     return { bytes, mime, name: path.basename(file) };

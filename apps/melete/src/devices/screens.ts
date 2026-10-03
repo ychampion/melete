@@ -16,7 +16,17 @@ import type { Dirent } from 'node:fs';
 import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, readdir, realpath, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
-import { noLinks, openedAt, pinDirectory, READ_FLAGS } from '../connectors/files.ts';
+import {
+  holdBeneath,
+  holdWithin,
+  noLinks,
+  openBeneath,
+  openedAt,
+  openIn,
+  pathCheck,
+  pinDirectory,
+  READ_FLAGS,
+} from '../connectors/files.ts';
 
 /** Under the workspace root, beside the job directories; never mounted or synchronised. */
 export const DEVICE_SCREENS_DIRECTORY = '.melete-device-screens';
@@ -106,8 +116,9 @@ export async function readDeviceScreen(
   maxBytes: number,
 ): Promise<Buffer> {
   const [job, file] = names(jobId, actionId);
-  const target = await noLinks(await storeRoot(workRoot, false), [job, file], false);
-  const handle = await open(target, READ_FLAGS);
+  const root = await storeRoot(workRoot, false);
+  await noLinks(root, [job, file], false);
+  const handle = await openBeneath(root, [job, file], READ_FLAGS);
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size > maxBytes) throw new Error('not a kept screenshot');
@@ -130,42 +141,59 @@ const MAX_LEGACY_BYTES = 16 * 1024 * 1024;
  */
 export async function moveJobScreens(workRoot: string, jobId: string): Promise<number> {
   if (!JOB.test(jobId)) throw new Error('invalid trusted job scope');
-  let folder: string;
-  let found: string[];
-  try {
-    folder = path.join(await realpath(workRoot), jobId, 'device');
-    const stat = await lstat(folder);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) return 0;
-    found = await readdir(folder);
-  } catch (error) {
-    if (missing(error)) return 0;
+  const absent = (error: unknown) => {
+    if (missing(error)) return null;
     throw error;
-  }
+  };
+  // The folder is in the agent's workspace, which its commands can change at
+  // any moment: the job's folder and then `device` are walked and held, and
+  // each file is read and removed inside the held folder.
+  // A job folder that is not a plain folder is left alone, for the workspace
+  // checks to refuse in their own words.
+  const job = await realpath(workRoot)
+    .then(async (base) => {
+      const stat = await lstat(path.join(base, jobId));
+      return stat.isDirectory() && !stat.isSymbolicLink() ? holdBeneath(base, [jobId]) : null;
+    })
+    .catch(absent);
+  if (!job) return 0;
   let moved = 0;
-  for (const name of found) {
-    if (!LEGACY_SCREEN_PATH.test(`device/${name}`)) continue;
-    const source = path.join(folder, name);
-    if (!(await lstat(source)).isFile()) continue;
-    const handle = await open(source, READ_FLAGS);
-    let bytes: Buffer;
+  try {
+    const stat = await lstat(job.at('device')).catch(absent);
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return 0;
+    await pathCheck.noLinks(job.path, ['device'], false);
+    const held = await holdWithin(job, 'device').catch(absent);
+    if (!held) return 0;
     try {
-      const stat = await handle.stat();
-      if (!stat.isFile() || stat.size > MAX_LEGACY_BYTES) continue;
-      bytes = await handle.readFile();
+      for (const name of await readdir(held.self)) {
+        if (!LEGACY_SCREEN_PATH.test(`device/${name}`)) continue;
+        if (!(await lstat(held.at(name))).isFile()) continue;
+        const handle = await openIn(held, name, READ_FLAGS);
+        let bytes: Buffer;
+        try {
+          const stat = await handle.stat();
+          if (!stat.isFile() || stat.size > MAX_LEGACY_BYTES) continue;
+          bytes = await handle.readFile();
+        } finally {
+          await handle.close();
+        }
+        await saveDeviceScreen(
+          workRoot,
+          jobId,
+          name.slice('screenshot-'.length, -'.png'.length),
+          bytes,
+        );
+        await unlink(held.at(name));
+        moved += 1;
+      }
     } finally {
-      await handle.close();
+      await held.close();
     }
-    await saveDeviceScreen(
-      workRoot,
-      jobId,
-      name.slice('screenshot-'.length, -'.png'.length),
-      bytes,
-    );
-    await unlink(source);
-    moved += 1;
+    // An emptied folder goes too, so the workspace looks as it would have.
+    await rmdir(job.at('device')).catch(() => {});
+  } finally {
+    await job.close();
   }
-  // An emptied folder goes too, so the workspace looks as it would have.
-  await rmdir(folder).catch(() => {});
   return moved;
 }
 

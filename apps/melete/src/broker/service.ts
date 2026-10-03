@@ -2139,7 +2139,17 @@ export class BrokerService implements BrokerOperations {
         }
         await tx`update action set dispatched_at = now() where id = ${id}`;
         await this.setStatus(tx, action, 'dispatched');
-        return { action: await loadAction(tx, id), context: this.context(job, action) };
+        // Nobody agreed to this one because its name was unused when it was
+        // checked; the connector keeps it to a new file (`only_new`).
+        const onlyNew =
+          !action.authorization_ref &&
+          this.options.connectors
+            .get(action.connection_id)
+            ?.staysInSpace?.(action, job.space_id) === true;
+        return {
+          action: await loadAction(tx, id),
+          context: { ...this.context(job, action), ...(onlyNew ? { only_new: true } : {}) },
+        };
       });
     } catch (error) {
       release();

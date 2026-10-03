@@ -24,6 +24,13 @@ export type ConnectorContext = {
    * the route the policy authorized; it is never a way to change what is sent.
    */
   repair?: RepairAttemptContext;
+  /**
+   * Set by the broker when this action was let through only because what it
+   * makes is new in the person's space (`staysInSpace`), with no approval and
+   * no standing permission behind it. The connector must then not replace
+   * anything that has appeared at that name since.
+   */
+  only_new?: boolean;
 };
 
 export interface Connector {
