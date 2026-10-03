@@ -49,6 +49,7 @@ import {
   imagesInRepositories,
   inspectLocal,
   inspectRemote,
+  isCommit,
   type RemoteImage,
   registryArchitecture,
   repositoryOf,
@@ -762,6 +763,14 @@ export async function runDeploy(
     const contractPath = join(context.deployDir, DEPLOY_FILE);
     const moveCheckout =
       facts.mode === 'checkout' && target.revision !== null && target.revision !== facts.head;
+    if (moveCheckout && !isCommit(target.revision)) {
+      steps.add({
+        id: 'switch.checkout',
+        level: 'fail',
+        detail: `${JSON.stringify(String(target.revision).slice(0, 80))} is not a commit hash, so the checkout was not moved.`,
+      });
+      return refuse('switch.checkout');
+    }
     if (moveCheckout && target.revision) {
       const branch = options.branch ?? null;
       const branchHead = branch
