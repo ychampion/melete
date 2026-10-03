@@ -6,6 +6,7 @@ import {
   agentTemplateList,
   connectionListResponse,
   experienceConnectionList,
+  type JsonObject,
   suggestedConnections,
 } from '@melete/contracts';
 import { BrokerService } from '../../src/broker/service.ts';
@@ -184,7 +185,7 @@ const journey = late ? await database() : null;
       expect(written.status).toBe('succeeded');
       // A new file in the person's own Files goes through, with its receipt;
       // saving over one of theirs or taking one out of their Files asks.
-      const propose = (kind: string, payload: Record<string, unknown>) =>
+      const propose = (kind: string, payload: JsonObject) =>
         broker.propose(claimed.claims, { connection_id: files.id, kind, payload });
       const saved = await propose('files.write', {
         path: 'imgtest.png',
