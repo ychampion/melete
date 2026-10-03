@@ -69,7 +69,10 @@ export async function extractBounded(
   if (kind === 'image') return { text: null, pages: null };
   const release = await turn();
   try {
-    const child = Bun.spawn([process.execPath, Bun.fileURLToPath(WORKER), kind], {
+    // No `.env` is read: the child gets this explicit environment and nothing
+    // else, and runs from the worker's own folder rather than the service's.
+    const child = Bun.spawn([process.execPath, '--no-env-file', Bun.fileURLToPath(WORKER), kind], {
+      cwd: Bun.fileURLToPath(new URL('.', WORKER)),
       stdin: bytes,
       stdout: 'pipe',
       stderr: 'ignore',

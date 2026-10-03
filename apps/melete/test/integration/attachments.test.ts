@@ -19,7 +19,7 @@ import {
 } from '@melete/contracts';
 import { pdfWith, TINY_PNG } from '../../src/attachments/fixtures.ts';
 import { gatewayAttachments } from '../../src/attachments/model.ts';
-import { UPLOAD_RATE } from '../../src/attachments/routes.ts';
+import { UPLOAD_RATE, UPLOADS_AT_ONCE } from '../../src/attachments/routes.ts';
 import { AttachmentService } from '../../src/attachments/store.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import { owner, space } from '../../src/db/schema.ts';
@@ -383,6 +383,22 @@ const LEASE = pdfWith(['The lease starts in May.', 'Repairs are due within 14 da
     expect(await handle.sql`select 1 from attachment where id = ${old.id}`).toHaveLength(0);
     expect(await store.head((row?.blob_key ?? '') as BlobKey)).toBeNull();
   }, 60_000);
+
+  test('twelve uploads at once from one person: three go ahead, nine are asked to wait', async () => {
+    // PDFs, so each upload spends a while reading and they overlap.
+    const results = await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        upload(`parallel-${index}.pdf`, 'application/pdf', pdfWith([`Parallel ${index}`])),
+      ),
+    );
+    const refused = results.filter((response) => response.status === 429);
+    expect(results.filter((response) => response.status === 201)).toHaveLength(UPLOADS_AT_ONCE);
+    expect(refused).toHaveLength(12 - UPLOADS_AT_ONCE);
+    for (const response of refused)
+      expect(await said(response)).toBe(
+        `You can upload ${UPLOADS_AT_ONCE} files at a time. Wait for one to finish, then try again.`,
+      );
+  }, 120_000);
 
   test('one person uploading too many files in a short time is asked to wait', async () => {
     let refused: Response | null = null;
