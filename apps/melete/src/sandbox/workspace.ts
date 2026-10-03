@@ -17,7 +17,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { recordId } from '../broker/records.ts';
-import { noLinks, openedAt, pinDirectory, segmentsFor } from '../connectors/files.ts';
+import { holdBeneath, openBeneath, openedAt, pathCheck, segmentsFor } from '../connectors/files.ts';
 import { LEGACY_SCREEN_PATH } from '../devices/screen-paths.ts';
 import type { SandboxHandle, SandboxProvider } from './types.ts';
 
@@ -90,15 +90,14 @@ async function jobBase(workRoot: string, jobId: string): Promise<string> {
 }
 
 async function ensureDirectory(base: string, segments: string[]): Promise<void> {
-  const target = await noLinks(base, segments, true);
-  try {
-    await mkdir(target);
-  } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
-  }
-  const stat = await lstat(target);
-  if (stat.isSymbolicLink() || !stat.isDirectory())
-    throw new SyncRefusal('not_regular', `not a directory: ${segments.slice(1).join('/')}`);
+  await pathCheck.noLinks(base, segments, false);
+  // Each folder is made inside the one before it, held open, never through a link.
+  const directory = await holdBeneath(base, segments, true).catch((error: unknown) => {
+    if ((error as Error).message === 'not a directory')
+      throw new SyncRefusal('not_regular', `not a directory: ${segments.slice(1).join('/')}`);
+    throw error;
+  });
+  await directory.close();
 }
 
 /**
@@ -135,9 +134,10 @@ async function writeConfined(
   mode: number,
 ): Promise<void> {
   const base = await jobBase(workRoot, jobId);
-  const target = await noLinks(base, [jobId, ...portable(relative)], true);
-  // The checked directory is held, so the file is created in it and nowhere else.
-  const directory = await pinDirectory(path.dirname(target));
+  const segments = [jobId, ...portable(relative)];
+  const target = await pathCheck.noLinks(base, segments, false);
+  // The directory is walked and held, so the file is created in it and nowhere else.
+  const directory = await holdBeneath(base, segments.slice(0, -1), true);
   try {
     // Non-blocking, so a pipe planted at the name fails the open instead of hanging it.
     const file = await open(
@@ -172,8 +172,9 @@ export async function readWorkspaceFile(
 ): Promise<Buffer> {
   checkJob(jobId);
   const base = await realpath(workRoot);
-  const target = await noLinks(base, [jobId, ...portable(relative)], false);
-  const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const segments = [jobId, ...portable(relative)];
+  await pathCheck.noLinks(base, segments, false);
+  const file = await openBeneath(base, segments, constants.O_RDONLY);
   try {
     const stat = await file.stat();
     if (!stat.isFile()) throw new SyncRefusal('not_regular', `not a regular file: ${relative}`);
@@ -235,15 +236,22 @@ export type SyncOptions = {
 export async function syncIn(options: SyncOptions): Promise<SyncReport> {
   const limits = { ...SYNC_LIMITS, ...options.limits };
   const base = await jobBase(options.workRoot, options.jobId);
-  const root = await noLinks(base, [options.jobId], false);
+  const root = await pathCheck.noLinks(base, [options.jobId], false);
   const files = await walkLocal(root, limits);
   let bytes = 0;
   async function* read() {
     for (const file of files) {
-      const target = await noLinks(base, [options.jobId, ...portable(file.relative)], false);
-      const handle = await open(
-        target,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      const segments = [options.jobId, ...portable(file.relative)];
+      await pathCheck.noLinks(base, segments, false);
+      // Opened by walking the names, so a folder swapped for a link since the
+      // walk above sends nothing from outside the workspace.
+      const handle = await openBeneath(base, segments, constants.O_RDONLY).catch(
+        (error: unknown) => {
+          throw new SyncRefusal(
+            'changed',
+            `a file changed while it was synchronised: ${file.relative} (${(error as Error).message})`,
+          );
+        },
       );
       try {
         const stat = await handle.stat();

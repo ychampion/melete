@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { open, realpath } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import { ID_PREFIXES, prefixedId } from '@melete/contracts';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import type { ArtifactRoots } from '../artifact/content.ts';
-import { noLinks, segmentsFor } from '../connectors/files.ts';
+import { noLinks, openBeneath, segmentsFor } from '../connectors/files.ts';
 import type { Database } from '../db/client.ts';
 import { artifact, job } from '../db/schema.ts';
 import { ownJob } from '../principals/authority.ts';
@@ -57,8 +57,10 @@ async function readArtifact(
 ): Promise<Uint8Array> {
   const location = artifactLocation(roots, spaceId, row);
   // Every component is checked, so a link anywhere on the way is refused.
-  const file = await noLinks(await realpath(location.root), location.segments, false);
-  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const base = await realpath(location.root);
+  await noLinks(base, location.segments, false);
+  // Opened by walking the names, so a folder swapped for a link since the check opens nothing.
+  const handle = await openBeneath(base, location.segments, constants.O_RDONLY);
   try {
     if (!(await handle.stat()).isFile()) throw notFound();
     return new Uint8Array(await handle.readFile());

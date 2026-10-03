@@ -20,7 +20,7 @@
  */
 import { createHash } from 'node:crypto';
 import { constants, lstatSync } from 'node:fs';
-import { mkdir, open, realpath } from 'node:fs/promises';
+import { type FileHandle, mkdir, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import {
   type Action,
@@ -33,7 +33,7 @@ import {
 import type { Sql } from 'postgres';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
-import { noLinks, segmentsFor } from './files.ts';
+import { noLinks, openBeneath, segmentsFor } from './files.ts';
 import type { MailAttachment } from './mail-transport.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
@@ -195,11 +195,11 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
     return row as ArtifactRow | undefined;
   };
 
-  const read = async (target: string): Promise<Buffer> => {
-    const file = await open(
-      target,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  const read = async (target: string): Promise<Buffer> =>
+    readHandle(
+      await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK),
     );
+  const readHandle = async (file: FileHandle): Promise<Buffer> => {
     try {
       const stat = await file.stat();
       if (!stat.isFile() || stat.size > limit)
@@ -215,7 +215,10 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
       throw new Error('invalid trusted file scope');
     const base = await realpath(area === 'work' ? options.workRoot : options.spacesRoot);
     const scope = area === 'work' ? [ctx.job_id] : [ctx.space_id, 'artifacts'];
-    return noLinks(base, [...scope, ...segmentsFor(relative)], false);
+    const segments = [...scope, ...segmentsFor(relative)];
+    await noLinks(base, segments, false);
+    // Opened by walking the names, so a folder swapped for a link since the check opens nothing.
+    return openBeneath(base, segments, constants.O_RDONLY);
   };
 
   const checkIdentity = (action: Action, ctx: ConnectorContext) => {
@@ -246,7 +249,7 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
     if (!record)
       throw new BrokerFault('payload_invalid', 'The approved artifact version is unavailable');
     const bytes = await source(ctx, area, relative)
-      .then(read)
+      .then(readHandle)
       .catch(() => {
         throw new BrokerFault('payload_invalid', 'The approved artifact file is unavailable');
       });

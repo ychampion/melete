@@ -9,6 +9,7 @@ import {
   readlink,
   realpath,
   rename,
+  unlink,
 } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -162,6 +163,14 @@ export async function noLinks(
 }
 
 /**
+ * The path check each open here begins with. It names a link or a file in the
+ * way plainly, but it only reads names: what the open after it reaches is
+ * decided by that open. Held in an object so a test can change the tree
+ * between this check and the open.
+ */
+export const pathCheck = { noLinks };
+
+/**
  * Where an open file or directory really is, read from its own descriptor in
  * one lookup. Null where the system offers no such view (anything but Linux,
  * or no /proc); callers then fall back to checking the path.
@@ -237,6 +246,162 @@ export async function pinDirectory(
 
 /** Opening never waits: a pipe planted at a name fails or is refused as not a regular file. */
 export const READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
+const DIRECTORY_FLAGS =
+  constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
+const codeOf = (error: unknown): string | undefined =>
+  error instanceof Error && 'code' in error ? String(error.code) : undefined;
+
+/** A refused open said in words: a link, or a file where a folder must be. */
+async function refusedOpen(error: unknown, at: string): Promise<unknown> {
+  const code = codeOf(error);
+  if (code !== 'ELOOP' && code !== 'ENOTDIR') return error;
+  const entry = await lstat(at).catch(() => null);
+  if (code === 'ELOOP' || entry?.isSymbolicLink())
+    return new Error('symbolic links are not allowed');
+  return new Error('not a directory');
+}
+
+/** A directory held open by `holdBeneath`. */
+export type HeldDirectory = {
+  /** Its path, as built from the base and the names walked. */
+  path: string;
+  /** A name for the held directory itself, for listing it. */
+  self: string;
+  /** A name for an entry in the held directory, wherever that directory is now. */
+  at: (name: string) => string;
+  close: () => Promise<void>;
+};
+
+/**
+ * Walk from a trusted `base` one name at a time, each opened inside the
+ * directory before it and never through a link, and hold the last one open.
+ * Nothing done to the tree after a name is walked changes where the walk
+ * goes, so this, not a check of the path beforehand, is what decides where
+ * an open lands. Missing folders are made on the way when `create` is set,
+ * each inside the held directory before it.
+ *
+ * Where the system has no descriptor paths (anything but Linux), the walk is
+ * by path and each name is checked as it is reached; the open after it is
+ * then checked again by `openBeneath`.
+ */
+export async function holdBeneath(
+  base: string,
+  segments: string[],
+  create = false,
+): Promise<HeldDirectory> {
+  if (process.platform === 'linux') {
+    let handle = await open(base, DIRECTORY_FLAGS);
+    try {
+      if ((await descriptorPath(handle)) !== null) {
+        let current = base;
+        for (const segment of segments) {
+          current = path.join(current, segment);
+          const next = await openDirectoryIn(handle, segment, create);
+          await handle.close();
+          handle = next;
+        }
+        const held = handle;
+        const self = `/proc/self/fd/${held.fd}`;
+        return {
+          path: current,
+          self,
+          at: (name) => `${self}/${name}`,
+          close: () => held.close(),
+        };
+      }
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+    await handle.close();
+  }
+  let current = base;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    let stat = await lstat(current).catch((error: unknown) => {
+      if (create && missing(error)) return null;
+      throw error;
+    });
+    if (!stat) {
+      await mkdir(current).catch((error: unknown) => {
+        if (codeOf(error) !== 'EEXIST') throw error;
+      });
+      stat = await lstat(current);
+    }
+    if (stat.isSymbolicLink()) throw new Error('symbolic links are not allowed');
+    if (!stat.isDirectory()) throw new Error('not a directory');
+  }
+  const held = current;
+  return { path: held, self: held, at: (name) => path.join(held, name), close: async () => {} };
+}
+
+async function openDirectoryIn(
+  parent: FileHandle,
+  name: string,
+  create: boolean,
+): Promise<FileHandle> {
+  const at = `/proc/self/fd/${parent.fd}/${name}`;
+  try {
+    return await open(at, DIRECTORY_FLAGS);
+  } catch (error) {
+    if (create && missing(error)) {
+      // Made inside the held parent; a link already at the name is never followed.
+      await mkdir(at).catch((made: unknown) => {
+        if (codeOf(made) !== 'EEXIST') throw made;
+      });
+      return openDirectoryIn(parent, name, false);
+    }
+    throw await refusedOpen(error, at);
+  }
+}
+
+/**
+ * Open the file at `base/...segments` the way `holdBeneath` walks: every
+ * folder on the way opened inside the one before it, and the file itself
+ * opened inside the last without following a link. A file that is missing
+ * fails with ENOENT, as a plain open would.
+ */
+export async function openBeneath(
+  base: string,
+  segments: string[],
+  flags: number,
+  options: { mode?: number; create?: boolean } = {},
+): Promise<FileHandle> {
+  const name = segments.at(-1);
+  if (!name) throw new Error('path names no file');
+  const directory = await holdBeneath(base, segments.slice(0, -1), options.create ?? false);
+  try {
+    const at = directory.at(name);
+    const file = await open(
+      at,
+      flags | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      options.mode,
+    ).catch(async (error: unknown) => {
+      throw await refusedOpen(error, at);
+    });
+    if (directory.self === directory.path) {
+      // Walked by path: the open must still be the file now at that path.
+      const target = path.join(directory.path, name);
+      try {
+        const [opened, named, real] = await Promise.all([
+          file.stat(),
+          lstat(target),
+          realpath(target),
+        ]);
+        if (real !== target || named.dev !== opened.dev || named.ino !== opened.ino)
+          throw new Error('symbolic links are not allowed');
+      } catch (error) {
+        await file.close();
+        throw error;
+      }
+    }
+    return file;
+  } finally {
+    await directory.close();
+  }
+}
 
 const pathSchema = { type: 'string', minLength: 1 };
 const areaSchema = { type: 'string', enum: ['work', 'artifacts'] };
@@ -344,14 +509,17 @@ export const filesManifest: ConnectorManifest = {
   ],
 };
 
+/** A file of a job: the trusted root, the names under it, and the path they make. */
+type Located = { base: string; segments: string[]; target: string };
+
 export function createFilesConnector(options: FilesOptions): Connector {
   const limit = options.maxBytes ?? 2 * 1024 * 1024;
-  const resolveFile = async (
-    ctx: ConnectorContext,
-    area: Area,
-    relative: string,
-    create = false,
-  ) => {
+  /**
+   * Where a file of the job is: the trusted root and the names under it. The
+   * path check here only names a problem early; every open walks the names
+   * itself (`openBeneath`), so a change made after this check lands nowhere.
+   */
+  const resolveFile = async (ctx: ConnectorContext, area: Area, relative: string) => {
     if (!/^job_[A-Za-z0-9]+$/.test(ctx.job_id) || !/^sp_[A-Za-z0-9]+$/.test(ctx.space_id)) {
       throw new Error('invalid trusted file scope');
     }
@@ -362,10 +530,10 @@ export function createFilesConnector(options: FilesOptions): Connector {
       throw new Error("that is a paired computer's screenshot, which is not a file you can open");
     const base = await realpath(area === 'work' ? options.workRoot : options.spacesRoot);
     const scope = area === 'work' ? [ctx.job_id] : [ctx.space_id, 'artifacts'];
-    return noLinks(base, [...scope, ...segments], create);
+    const names = [...scope, ...segments];
+    return { base, segments: names, target: await pathCheck.noLinks(base, names, false) };
   };
-  const read = async (target: string): Promise<Buffer> => {
-    const file = await open(target, READ_FLAGS);
+  const readHandle = async (file: FileHandle): Promise<Buffer> => {
     try {
       const stat = await file.stat();
       if (!stat.isFile() || stat.size > limit)
@@ -376,6 +544,53 @@ export function createFilesConnector(options: FilesOptions): Connector {
     } finally {
       await file.close();
     }
+  };
+  const read = async (located: Located): Promise<Buffer> =>
+    readHandle(await openBeneath(located.base, located.segments, READ_FLAGS));
+  /** A file in a held directory (`HeldDirectory.at`), which the open does not follow if it is a link. */
+  const readOpened = async (at: string): Promise<Buffer> =>
+    readHandle(
+      await open(at, READ_FLAGS).catch(async (error: unknown) => {
+        throw await refusedOpen(error, at);
+      }),
+    );
+  /** One folder's entries, listed through the folder the walk holds open. */
+  const listFolder = async (located: Located) => {
+    const folder = await holdBeneath(located.base, located.segments);
+    try {
+      return await readdir(folder.self, { withFileTypes: true });
+    } finally {
+      await folder.close();
+    }
+  };
+  /**
+   * A new file in a held directory (`HeldDirectory.at`) holding exactly
+   * `content`. Nothing else has a name or a handle for it. A name already
+   * taken refuses the write and is left alone.
+   */
+  const createWith = async (at: string, target: string, content: Buffer) => {
+    const file = await open(
+      at,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW |
+        constants.O_NONBLOCK,
+      0o600,
+    ).catch((error: unknown) => {
+      if (codeOf(error) === 'EEXIST') throw new Error('move destination already exists');
+      throw error;
+    });
+    try {
+      await openedAt(file, target);
+      await file.writeFile(content);
+      await file.sync();
+    } catch (error) {
+      await file.close();
+      await unlink(at).catch(() => {});
+      throw error;
+    }
+    await file.close();
   };
   const receiptFor = (
     action: Action,
@@ -522,8 +737,9 @@ export function createFilesConnector(options: FilesOptions): Connector {
     const scope = entry.area === 'work' ? [entry.jobId as string] : [ctx.space_id, 'artifacts'];
     if (entry.area === 'work' && !/^job_[A-Za-z0-9]+$/.test(entry.jobId ?? ''))
       throw new Error('invalid trusted file scope');
-    const target = await noLinks(base, [...scope, ...segmentsFor(entry.path)], false);
-    const content = await read(target).catch((error: unknown) => {
+    const names = [...scope, ...segmentsFor(entry.path)];
+    const target = await pathCheck.noLinks(base, names, false);
+    const content = await read({ base, segments: names, target }).catch((error: unknown) => {
       if (!missing(error)) throw error;
       throw new Error(`the file ${JSON.stringify(entry.name)} is no longer there`);
     });
@@ -587,17 +803,19 @@ export function createFilesConnector(options: FilesOptions): Connector {
       if (action.kind === 'files.move') {
         const from = requiredString(payload, 'from');
         const to = requiredString(payload, 'to');
+        const toArea = areaFor(payload.to_area ?? area);
         const source = await resolveFile(ctx, area, from);
-        const target = await resolveFile(ctx, areaFor(payload.to_area ?? area), to, true);
-        // Both directories are held from their check to the rename, so neither
-        // can be swapped for a link into another job's workspace meanwhile.
-        const fromDirectory = await pinDirectory(path.dirname(source));
+        const target = await resolveFile(ctx, toArea, to);
+        // Both directories are walked and held from here to the move, so
+        // neither can be swapped for a link anywhere else meanwhile.
+        const fromDirectory = await holdBeneath(source.base, source.segments.slice(0, -1));
         try {
-          const toDirectory = await pinDirectory(path.dirname(target));
+          const toDirectory = await holdBeneath(target.base, target.segments.slice(0, -1), true);
           try {
-            const sourceAt = fromDirectory.at(path.basename(source));
-            const targetAt = toDirectory.at(path.basename(target));
-            hash = digest(await read(sourceAt));
+            const sourceAt = fromDirectory.at(path.basename(source.target));
+            const targetAt = toDirectory.at(path.basename(target.target));
+            const content = await readOpened(sourceAt);
+            hash = digest(content);
             if (payload.content_hash !== undefined && payload.content_hash !== hash) {
               // Nothing was moved. The file on disk is not the content this action
               // recorded, which is a question for a person, not a retry.
@@ -606,20 +824,33 @@ export function createFilesConnector(options: FilesOptions): Connector {
                 detail: 'the file to move is not the content the action recorded',
               });
             }
-            try {
-              await lstat(targetAt);
-              throw new Error('move destination already exists');
-            } catch (error) {
-              if (!missing(error)) throw error;
+            if (area === 'work' && toArea === 'artifacts') {
+              // Into the person's Files, the bytes checked here go into a new
+              // file, never the workspace's own: a second name for it, or a
+              // handle a command still holds open, would let the agent's
+              // computer change the person's file after they agreed to it.
+              await createWith(targetAt, target.target, content);
+              await unlink(sourceAt).catch(async (error: unknown) => {
+                if (missing(error)) return;
+                await unlink(targetAt).catch(() => {});
+                throw error;
+              });
+            } else {
+              try {
+                await lstat(targetAt);
+                throw new Error('move destination already exists');
+              } catch (error) {
+                if (!missing(error)) throw error;
+              }
+              await rename(sourceAt, targetAt);
             }
-            await rename(sourceAt, targetAt);
           } finally {
             await toDirectory.close();
           }
         } finally {
           await fromDirectory.close();
         }
-        detail = { from, to, area, to_area: areaFor(payload.to_area ?? area), content_hash: hash };
+        detail = { from, to, area, to_area: toArea, content_hash: hash };
       } else {
         const relative = requiredString(payload, 'path');
         const elsewhere =
@@ -627,9 +858,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
           action.kind !== 'files.write' &&
           segmentsFor(relative)[0] === FROM_CHATS &&
           Boolean(options.sql);
-        const target = elsewhere
-          ? ''
-          : await resolveFile(ctx, area, relative, action.kind === 'files.write');
+        const located = elsewhere ? null : await resolveFile(ctx, area, relative);
         if (elsewhere && action.kind === 'files.list') {
           if (segmentsFor(relative).length !== 1)
             throw new Error(`there is no folder ${JSON.stringify(relative)} in ${area}`);
@@ -656,7 +885,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
         } else if (action.kind === 'files.list') {
           // An area is made on its first write, so a new job or space has none
           // yet: its root lists as empty. A folder that was never made is named.
-          const entries = await readdir(target, { withFileTypes: true }).catch((error: unknown) => {
+          const entries = await listFolder(located as Located).catch((error: unknown) => {
             if (!missing(error)) throw error;
             if (segmentsFor(relative).length === 0) return [];
             throw new Error(`there is no folder ${JSON.stringify(relative)} in ${area}`);
@@ -681,7 +910,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
             entries: listed.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
           };
         } else if (action.kind === 'files.read') {
-          const content = await read(target).catch((error: unknown) => {
+          const content = await read(located as Located).catch((error: unknown) => {
             if (!missing(error)) throw error;
             throw new Error(`there is no file ${JSON.stringify(relative)} in ${area}`);
           });
@@ -696,7 +925,8 @@ export function createFilesConnector(options: FilesOptions): Connector {
           const content = requiredString(payload, 'content');
           if (Buffer.byteLength(content) > limit)
             throw new Error('content exceeds the write limit');
-          const directory = await pinDirectory(path.dirname(target));
+          const { base, segments, target } = located as Located;
+          const directory = await holdBeneath(base, segments.slice(0, -1), true);
           try {
             const file = await open(
               directory.at(path.basename(target)),
@@ -718,7 +948,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
           // A file existing is not a delivery. Read back what was written and
           // compare it, so a short write or a racing writer is a bad output
           // rather than a receipt for content nobody has.
-          const written = digest(await read(target));
+          const written = digest(await read(located as Located));
           if (written !== hash) {
             throw new ConnectorFaultError({
               kind: 'bad_output',
@@ -776,8 +1006,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
           action.kind === 'files.write' ? payload.area : (payload.to_area ?? payload.area),
         );
         const relative = requiredString(payload, action.kind === 'files.write' ? 'path' : 'to');
-        const target = await resolveFile(ctx, area, relative);
-        const actual = digest(await read(target));
+        const actual = digest(await read(await resolveFile(ctx, area, relative)));
         if (actual !== expected)
           return { decision: 'undecided', reason: 'current file content differs from the action' };
         if (action.kind === 'files.move') {
@@ -787,7 +1016,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
             requiredString(payload, 'from'),
           );
           try {
-            await lstat(source);
+            await lstat(source.target);
             return { decision: 'undecided', reason: 'the move source still exists' };
           } catch (error) {
             if (!missing(error)) throw error;
