@@ -645,22 +645,28 @@ databaseTest(
   "the publisher manages an app while they belong to its space, and the space's owner always does",
   async () => {
     const ctx = await setup();
-    // A shared space: Cy owns it, Alice is a member who publishes.
-    await ctx.sql`update space set kind = 'shared', owner_principal_id = ${ctx.cy}
-      where id = ${ctx.claims.space_id}`;
-    await ctx.sql`insert into space_membership (principal_id, space_id, role)
-      values (${ctx.alice}, ${ctx.claims.space_id}, 'member'), (${ctx.cy}, ${ctx.claims.space_id}, 'owner')`;
-    // In a shared space a conversation's capability names its person.
-    ctx.claims.principal_id = ctx.alice;
-    ctx.claims.membership_generation = 0;
-    await ctx.sql`update attempt set principal_id = ${ctx.alice}, membership_generation = 0
-      where job_id = ${ctx.claims.job_id}`;
+    // Alice publishes from her own space.
     await ctx.write('index.html', 'shared');
     expect(
       (await ctx.approveAndRun(await ctx.propose('apps.publish', { dir: 'app', name: 'Shared' })))
         .status,
     ).toBe('succeeded');
     const [app] = await ctx.appRows();
+    // The space becomes a shared one: Cy owns it, and Alice stays as a member.
+    await ctx.sql`update space set kind = 'shared', owner_principal_id = ${ctx.cy}
+      where id = ${ctx.claims.space_id}`;
+    await ctx.sql`insert into space_membership (principal_id, space_id, role)
+      values (${ctx.alice}, ${ctx.claims.space_id}, 'member'), (${ctx.cy}, ${ctx.claims.space_id}, 'owner')`;
+    // A member's conversation acts through none of the owner's connections, the Apps one included.
+    ctx.claims.principal_id = ctx.alice;
+    ctx.claims.membership_generation = 0;
+    await ctx.sql`update attempt set principal_id = ${ctx.alice}, membership_generation = 0
+      where job_id = ${ctx.claims.job_id}`;
+    expect(
+      await rejectionOf(
+        ctx.propose('apps.publish', { dir: 'app', name: 'Shared', app_id: app?.id }),
+      ),
+    ).toMatchObject({ code: 'scope_denied' });
     expect((await ctx.api(ctx.alice)(`/apps/${app?.id}`)).status).toBe(200);
     expect((await ctx.api(ctx.cy)(`/apps/${app?.id}`)).status).toBe(200);
     // Alice leaves the space: the app is no longer hers to change.

@@ -156,7 +156,13 @@ databaseTest(
 
     // The person sets up a morning routine through the automations path.
     const persona = agentResponse.parse(
-      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+      await (
+        await request('/agents', 'POST', {
+          ...AGENT_TEMPLATES.templates[0]?.agent,
+          // A library agent starts with no connections; the person lets it use Files.
+          allowed_connection_ids: [filesConnection],
+        })
+      ).json(),
     ).agent;
     const routine = automationResponse.parse(
       await (
