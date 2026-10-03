@@ -38,10 +38,15 @@ export async function startLearning(
   signIn: ProviderSignIn | undefined,
   privacy: GatewayOptions['privacy'],
   settings?: ModelSettingsService,
+  /** Whether this instance drains now, when several share the database. */
+  leads?: () => Promise<boolean>,
+  spending?: GatewayOptions['spending'],
 ) {
   const gateway = await openProposalGateway({
     db: jobs.db,
     privacy,
+    spending,
+    reasoningEffort: env.MELETE_REASONING_EFFORT_SIDE,
     provider: env.MELETE_DEFAULT_PROVIDER,
     model: env.MELETE_DEFAULT_MODEL,
     // Proposals use the model new chats use, the one chosen in the app included.
@@ -70,7 +75,8 @@ export async function startLearning(
   let closed = false;
   const tick = () => {
     if (closed || pending) return;
-    pending = applyLearned(proposer, procedures)
+    pending = (leads ? leads() : Promise.resolve(true))
+      .then((leading) => (leading ? applyLearned(proposer, procedures) : undefined))
       .then(() => undefined)
       .catch(() => {
         process.stderr.write('learning proposal drain failed\n');

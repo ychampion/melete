@@ -174,6 +174,18 @@ export async function seedSpace(
   await sql`insert into blob_ref (key, owner_kind, owner_id, space_id)
     values (${`sha256/${createHash('sha256').update(spaceId).digest('hex')}`}, 'fixture', ${artifactId}, ${spaceId})`;
 
+  // A published app, with a version and a grant that go with it.
+  const appId = newId('app');
+  const versionId = createHash('sha256').update(appId).digest('hex');
+  await sql`insert into app (id, space_id, slug, name, publisher_principal_id)
+    values (${appId}, ${spaceId}, 'deals', 'Deals', ${principalId})`;
+  await sql`insert into app_version (id, app_id, manifest_hash, manifest, file_count, total_bytes)
+    values (${versionId}, ${appId}, ${versionId},
+      ${json({ entry: 'index.html', files: {}, data: {}, collections: {} })}::text::jsonb, 0, 0)`;
+  await sql`update app set current_version_id = ${versionId} where id = ${appId}`;
+  await sql`insert into app_grant (id, app_id, grantee_kind, grantee_id)
+    values (${newId('apg')}, ${appId}, 'installation', 'installation')`;
+
   await sql`insert into knowledge_record (id, space_id, path, frontmatter, content_hash)
     values (${newId('k')}, ${spaceId}, 'notes/one.md', '{}'::jsonb, 'khash')`;
   await sql`insert into skill (id, space_id, name, path, frontmatter)
@@ -210,6 +222,9 @@ export async function seedSpace(
   await sql`insert into activity_record (id, space_id, action_id, kind, effect_class, connection_label, provider, outcome, source, happened_at)
     values (${newId('act')}, ${spaceId}, ${newId('act')}, 'email.send', 'write_external', 'Mail', 'imap',
       'succeeded', 'A deleted chat', now())`;
+  // What one of the space's model calls cost; its amounts outlive the space.
+  await sql`insert into model_usage (id, space_id, principal_id, job_id, purpose, provider, model, status, input_tokens, output_tokens, cost_usd)
+    values (${newId('mu')}, ${spaceId}, ${principalId}, ${jobId}, 'agent', 'fake', 'scripted', 'succeeded', 10, 5, 0.01)`;
   await sql`insert into question (id, source, space_id, key, text, because, if_ignored)
     values (${newId('qst')}, 'memory', ${spaceId}, 'home.address', 'Which address is current?',
       ${json(['two revisions disagree'])}::text::jsonb, 'The key stays disputed.')`;

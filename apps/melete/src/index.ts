@@ -34,6 +34,7 @@ import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountScreenshots } from './api/screenshots.ts';
 import { mountTriggers } from './api/triggers.ts';
+import { mountHealthDetail, mountUsage } from './api/usage.ts';
 import {
   mountVoice,
   PostgresVoiceAllowance,
@@ -43,8 +44,11 @@ import {
   voiceProvidersFromEnv,
 } from './api/voice.ts';
 import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-companion.ts';
+import { mountApps } from './apps/routes.ts';
+import { mountAppViews } from './apps/serve.ts';
 import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
+import { configuredSearchGateway } from './broker/search-gateway.ts';
 import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
 import { CompanyReplyPoller, connectorReplyMailbox } from './companies/replies.ts';
@@ -63,8 +67,10 @@ import {
 } from './connectors/configured.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
+import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
+import { owner } from './db/schema.ts';
 import { mountDevices } from './devices/routes.ts';
 import { moveWorkspaceScreensUntilDone } from './devices/screens.ts';
 import { DeviceService } from './devices/service.ts';
@@ -79,6 +85,14 @@ import { providerSignIn } from './gateway/configured.ts';
 import type { ProviderSignIn } from './gateway/credentials.ts';
 import type { GatewayOptions } from './gateway/index.ts';
 import { ModelSettingsService } from './gateway/model-settings.ts';
+import { routingFromEnv, routingWarnings } from './gateway/routing.ts';
+import { type SpendingGuard, spendingFromEnv } from './gateway/spending.ts';
+import {
+  alertSendersFromEnv,
+  type HealthDetail,
+  HealthMonitor,
+  healthDetail,
+} from './health/monitor.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
@@ -106,7 +120,7 @@ import { mountProcedures } from './learning/procedure-routes.ts';
 import { ProcedureService } from './learning/procedures.ts';
 import { mountProposals } from './learning/proposal-routes.ts';
 import type { ProcedureProposer } from './learning/proposer.ts';
-import { expireEpisodes } from './learning/retention.ts';
+import { expireEpisodes, startEpisodeRetention } from './learning/retention.ts';
 import { mountLearning } from './learning/routes.ts';
 import { startLearning } from './learning/start.ts';
 import { mountMcpServer } from './mcp-server/routes.ts';
@@ -118,6 +132,9 @@ import { configuredMemoryGateway } from './memory/gateway.ts';
 import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { startServiceMemory } from './memory/start.ts';
+import { InstanceRegistry, instanceId } from './ops/instance.ts';
+import { Leases, leaseConnection } from './ops/leader.ts';
+import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
 import {
   refusedForRemoval,
   requestPrincipal,
@@ -144,6 +161,8 @@ import {
 } from './runtime/supervisor.ts';
 import { mountSandboxComputers, SandboxComputerService } from './sandbox/computer.ts';
 import { sandboxKeyCheck } from './sandbox/connection.ts';
+import { mountSandboxPreviews, previewsFor, type SandboxPreviews } from './sandbox/preview.ts';
+import { PREVIEW_PREFIX } from './sandbox/preview-path.ts';
 import { startProcessMonitor } from './sandbox/process-monitor.ts';
 import { startProcesses } from './sandbox/processes.ts';
 import {
@@ -154,8 +173,10 @@ import {
 } from './sandbox/wiring.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
-import { configuredBlobStore } from './storage/blob.ts';
+import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
 import { BlobCollector } from './storage/gc.ts';
+import { isolated, VIEW_PREFIX } from './viewer/headers.ts';
+import { ViewTokens } from './viewer/tokens.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
 import { type BrowserSessionService, mountBrowserSessions } from './workers/browser/routes.ts';
 import { mountBrowserSites } from './workers/browser/sites.ts';
@@ -171,6 +192,8 @@ export type AppDeps = {
   /** Long work in the background; built from `jobs` when left out. */
   runs?: RunService;
   loginThrottle?: LoginThrottle;
+  /** Where request limits are counted. Left out, in Postgres when `sql` is given. */
+  limits?: LimitStore;
   jobs?: JobService;
   triggers?: TriggerService;
   approvals?: ApprovalService;
@@ -201,6 +224,8 @@ export type AppDeps = {
   browserSessions?: BrowserSessionService;
   /** The desktops in docker sandboxes, to watch and take over. */
   sandboxComputers?: SandboxComputerService;
+  /** Previews of servers in agents' computers, and a person's stop and output of their processes. */
+  sandboxPreviews?: SandboxPreviews;
   removals?: SpaceRemovalService;
   runtimeAdapter?: string;
   runner?: AttemptRunner;
@@ -223,6 +248,14 @@ export type AppDeps = {
   modelSettings?: ModelSettingsService;
   /** How many problem reports one person may send in a short time; a test supplies its clock. */
   feedbackLimiter?: FeedbackLimiter;
+  /** The installation's spending caps; Settings shows usage from them. */
+  spending?: SpendingGuard;
+  /** The operator's health detail. Left out, the database and queue checks alone. */
+  healthDetail?: () => Promise<HealthDetail>;
+  /** Where published apps' files are kept. Left out, an app's files are not served. */
+  blobs?: BlobStore;
+  /** Signs app views. Left out, keyed from the master key. */
+  viewTokens?: ViewTokens;
 };
 
 export function createApp(deps: AppDeps) {
@@ -244,6 +277,11 @@ export function createApp(deps: AppDeps) {
       500,
     );
   });
+  // First, so it runs last: nothing under the app view path leaves without the
+  // isolation headers, whatever answered it.
+  app.use(`${VIEW_PREFIX}*`, isolated);
+  // The same for a preview of a server in an agent's computer.
+  app.use(`${PREVIEW_PREFIX}*`, isolated);
   const connections =
     deps.db && deps.sql && deps.registry
       ? { db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }
@@ -251,7 +289,9 @@ export function createApp(deps: AppDeps) {
   // Mounted before the routes it follows, so it runs once they have answered;
   // see mountDefaultConnections.
   if (connections) mountDefaultConnections(app, connections);
-  mountAuth(app, deps);
+  // Limits every instance on the database shares; one instance alone counts the same.
+  const limits = deps.limits ?? (deps.sql ? new PostgresLimitStore(deps.sql) : undefined);
+  mountAuth(app, { ...deps, limits });
   // The authenticated session names the space and the principal; a request header never does.
   const personalSpace: SpaceResolver =
     deps.resolveSpace ??
@@ -266,6 +306,20 @@ export function createApp(deps: AppDeps) {
       { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
       personalSpace,
     );
+  // Apps a person can open, and the changes they make to their own.
+  if (deps.sql)
+    mountApps(app, {
+      sql: deps.sql,
+      ...(deps.blobs ? { blobs: deps.blobs } : {}),
+      roots: { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
+    });
+  // Opening one: a view for the person, and the files it loads with its token.
+  if (deps.sql)
+    mountAppViews(app, {
+      sql: deps.sql,
+      ...(deps.blobs ? { blobs: deps.blobs } : {}),
+      tokens: deps.viewTokens ?? new ViewTokens(deps.env.MELETE_MASTER_KEY),
+    });
   if (deps.db) mountScreenshots(app, deps.db, deps.env.MELETE_WORK_DIR, personalSpace);
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   // After mountPrincipals, so the owner-only guard it installs on every
@@ -281,6 +335,7 @@ export function createApp(deps: AppDeps) {
         policy: deps.policy ?? (deps.jobs ? new PolicyService(deps.jobs) : undefined),
         ...(deps.jobs ? { jobs: deps.jobs } : {}),
       }),
+      limits,
     );
   const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
   // One reader of the model connected in the app, for its routes and the companies scan.
@@ -291,6 +346,15 @@ export function createApp(deps: AppDeps) {
     mountProviderSignIn(app, { db: deps.db, signIn });
     mountModelSettings(app, { db: deps.db, settings: modelSettings });
   }
+  if (deps.spending)
+    mountUsage(app, {
+      spending: deps.spending,
+      isOwner: async (actor) => {
+        if (!actor || !deps.db) return false;
+        const [installation] = await deps.db.select({ id: owner.id }).from(owner).limit(1);
+        return installation?.id === actor;
+      },
+    });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -375,6 +439,7 @@ export function createApp(deps: AppDeps) {
         jobs: deps.jobs,
         triggers: deps.triggers,
         modelSettings,
+        spending: deps.spending,
       }),
       ...deps.companies,
     });
@@ -385,6 +450,7 @@ export function createApp(deps: AppDeps) {
       env: deps.env,
       broker: deps.broker,
       registry: deps.registry,
+      limits,
     });
   if (deps.db) mountFeedback(app, { db: deps.db, version: VERSION, limiter: deps.feedbackLimiter });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
@@ -412,6 +478,14 @@ export function createApp(deps: AppDeps) {
   if (deps.browserSessions) mountBrowserLive(app, deps.browserSessions);
   if (deps.browserSessions) mountBrowserSites(app, deps.browserSessions.sites);
   if (deps.sandboxComputers) mountSandboxComputers(app, deps.sandboxComputers);
+  if (deps.sandboxPreviews) mountSandboxPreviews(app, deps.sandboxPreviews);
+
+  mountHealthDetail(app, {
+    token: deps.env.MELETE_OPERATOR_TOKEN,
+    detail:
+      deps.healthDetail ??
+      (() => healthDetail({ version: VERSION, database: deps.checkDatabase, sql: deps.sql })),
+  });
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
@@ -462,6 +536,16 @@ export function createApp(deps: AppDeps) {
   return app;
 }
 
+/** This instance's name and the instances running beside it, for the Docker backends. */
+const instanceOf = (instances: InstanceRegistry | undefined) =>
+  instances
+    ? { id: instances.id, running: (staleAfterMs?: number) => instances.others(staleAfterMs) }
+    : undefined;
+
+/** Whether this instance runs the named singleton work now. Without a database, it is alone. */
+const leading = (leases: Leases | undefined, name: string) =>
+  leases ? leases.leads(name) : Promise.resolve(true);
+
 /** Wire the real dependencies. Called only when this file is the entry point. */
 export async function bootstrap(
   options: {
@@ -491,6 +575,11 @@ export async function bootstrap(
       "WARNING: Hermes process attempts are not sandboxed and run with the service user's OS access. Use the Docker supervisor for container isolation.\n",
     );
   for (const warning of demonstrationWarnings(env)) process.stderr.write(`WARNING: ${warning}\n`);
+  for (const warning of routingWarnings(
+    env as unknown as Record<string, string | undefined>,
+    routingFromEnv(env),
+  ))
+    process.stderr.write(`WARNING: ${warning}\n`);
   // An engine the supervisor cannot drive is named here, before the database is
   // opened or migrated, instead of as a Docker 400 on the first attempt.
   if (!options.runtime && env.MELETE_RUNTIME_ADAPTER === 'docker')
@@ -522,7 +611,7 @@ export async function bootstrap(
   let effectBoundary: Awaited<ReturnType<typeof startEffectBoundary>> | undefined;
   let browser: Awaited<ReturnType<typeof configuredBrowserSessions>>;
   let connections: ConfiguredConnection[] = [];
-  let episodeRetention: ReturnType<typeof setInterval> | undefined;
+  let stopEpisodeRetention: (() => void) | undefined;
   let stopEgressRetention: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
@@ -533,6 +622,7 @@ export async function bootstrap(
   let voiceCompanion: Awaited<ReturnType<typeof configuredVoiceCompanion>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
+  let searchGateway: Awaited<ReturnType<typeof configuredSearchGateway>> | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
   let pushDispatcher: PushDispatcher | undefined;
@@ -543,18 +633,29 @@ export async function bootstrap(
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   let sandboxComputers: SandboxComputerService | undefined;
+  let sandboxPreviews: SandboxPreviews | undefined;
   let processSweep: { stop(): void } | undefined;
   let processMonitor: { stop(): void } | undefined;
   let processFactory: Parameters<typeof startProcessMonitor>[0] | undefined;
+  let spending: SpendingGuard | undefined;
+  let runtimeProbe: (() => Promise<unknown>) | undefined;
+  let healthMonitor: HealthMonitor | undefined;
+  const routing = routingFromEnv(env);
+  /** This instance among any others on the database, and the singleton work it leads. */
+  let instances: InstanceRegistry | undefined;
+  let leases: Leases | undefined;
+  let leftovers: ReturnType<typeof setInterval> | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
     supervisedRuntime?.beginShutdown();
-    clearInterval(episodeRetention);
+    stopEpisodeRetention?.();
     stopEgressRetention?.();
+    clearInterval(leftovers);
     sandboxes?.stop();
     processSweep?.stop();
     processMonitor?.stop();
+    await healthMonitor?.stop();
     let failure: unknown;
     for (const stop of [
       () =>
@@ -577,6 +678,7 @@ export async function bootstrap(
       () => blobs?.collector.stop(),
       () => memory?.stop(),
       () => memoryGateway?.close(),
+      () => searchGateway?.close(),
       () => voiceCompanion?.close(),
       () => deploymentMemory?.close(),
       () => effectBoundary?.close(),
@@ -584,6 +686,9 @@ export async function bootstrap(
       () => stdioLauncher?.close(),
       () => browser?.pool.close(),
       () => sandboxTeardown?.close(),
+      // Its cells are gone; another instance may now take its leases and clean up after it.
+      () => leases?.close(),
+      () => instances?.stop(),
       () => queue?.stop(),
       () => handle?.close(),
     ]) {
@@ -598,19 +703,32 @@ export async function bootstrap(
   try {
     if (handle) {
       await migrateDatabase(handle);
+      // Recorded before this instance starts anything another could remove.
+      instances = new InstanceRegistry(handle.sql, instanceId(env.MELETE_INSTANCE_ID));
+      await instances.start();
+      // Its own connection: a lease is a lock held by that one session.
+      if (env.DATABASE_URL) {
+        const url = env.DATABASE_URL;
+        const id = instances.id;
+        leases = new Leases(() => leaseConnection(url, id));
+      }
       await closeInterruptedScans(handle.db);
       await expireEpisodes(handle.sql);
       // One sign-in service, so the API and the gateway share one refresh per provider.
       signIn = providerSignIn(handle.sql, env);
       // One reader of the model chosen in the app, for the API, the runner and the gateway.
       modelSettings = new ModelSettingsService({ db: handle.db, env, signIn });
-      episodeRetention = setInterval(() => {
-        void expireEpisodes(handle.sql).catch(() =>
-          process.stderr.write('episode retention failed\n'),
-        );
-      }, 60_000);
-      episodeRetention.unref();
-      stopEgressRetention = startEgressRetention(handle.sql, env.MELETE_EGRESS_RECORD_DAYS);
+      // One record of what every model call cost, shared by every gateway.
+      spending = spendingFromEnv(handle.sql, env);
+      stopEpisodeRetention = startEpisodeRetention(handle.sql, () =>
+        leading(leases, 'episode-retention'),
+      );
+      stopEgressRetention = startEgressRetention(
+        handle.sql,
+        env.MELETE_EGRESS_RECORD_DAYS,
+        undefined,
+        () => leading(leases, 'egress-retention'),
+      );
     }
     if (handle) {
       // Before the registry is built, so an upgraded database gains its default connectors now.
@@ -627,14 +745,27 @@ export async function bootstrap(
           egressPort: env.MELETE_MCP_EGRESS_PORT,
           nodeImage: env.MELETE_MCP_NODE_IMAGE,
           pythonImage: env.MELETE_MCP_PYTHON_IMAGE,
+          instance: instanceOf(instances),
         });
-        // No server survives the process that started it; a removed installation's data goes too.
+        // No server survives the process that started it; a removed installation's
+        // data goes too, removed by one instance at a time.
         const kept = await handle.sql`select id from connection
           where provider = 'mcp' and status <> 'revoked'`;
-        await stdioLauncher.reconcile(new Set(kept.map((row) => String(row.id))));
+        await stdioLauncher.reconcile(new Set(kept.map((row) => String(row.id))), {
+          volumes: await leading(leases, 'mcp-stdio-data'),
+        });
       }
       // One connector registry serves the API catalog, the effect boundary and
       // the experience routes; the boundary builds the one configured broker.
+      // Searches may fall to DuckDuckGo's page from this address; the operator is told once.
+      const keyless = keylessSearchNotice(env);
+      if (keyless) process.stderr.write(`${keyless}\n`);
+      // The model's own web search goes through a gateway of its own, metered on the job.
+      searchGateway = await configuredSearchGateway(handle.sql, env, privacy, {
+        signIn,
+        settings: modelSettings,
+        spending,
+      });
       registry = await connectorsFromEnv(handle.sql, env, {
         connections,
         browserSessions: browser?.sessions,
@@ -642,6 +773,9 @@ export async function bootstrap(
         // A space or agent the person marked private reads no public web pages.
         privateContext: ({ spaceId, agentId }, query) =>
           privacy.marksPrivate(spaceId, agentId, query),
+        webSearch: webSearchFromEnv(env, { native: searchGateway.backend }),
+        // A private or sensitive conversation's words never go to an outside search.
+        searchPrivacy: ({ jobId, query }) => privacy.outsideSearchRefusal(jobId, query),
       });
       catalog = new RuntimeCatalog(handle.db, registry);
       // Sandboxes are the service's own: their providers come from the same
@@ -668,16 +802,25 @@ export async function bootstrap(
         );
       }
       processSweep = startProcesses(connectors);
+      sandboxPreviews = previewsFor(handle.sql, connectors, env.MELETE_MASTER_KEY);
       processFactory = connectors;
       // Boot reconciliation, before any attempt can open a session of its own.
+      // One instance at a time reconciles and sweeps; any instance may take over.
       if (sandboxes) {
-        await sandboxes.reconcile(AbortSignal.timeout(120_000));
-        sandboxes.start();
+        const lease = {
+          leads: () => leading(leases, 'sandbox'),
+          signal: () => leases?.signal('sandbox') ?? new AbortController().signal,
+        };
+        const bounded = () => AbortSignal.any([AbortSignal.timeout(120_000), lease.signal()]);
+        const first = await lease.leads();
+        if (first) await sandboxes.reconcile(bounded());
+        sandboxes.start(lease);
         // Sessions left by attempts that ended with the last process are
         // settled now, not when the first timed sweep comes round.
-        void sandboxes.sweep(AbortSignal.timeout(120_000)).catch(() => {
-          process.stderr.write('sandbox sweep at start failed\n');
-        });
+        if (first)
+          void sandboxes.sweep(bounded()).catch(() => {
+            process.stderr.write('sandbox sweep at start failed\n');
+          });
       }
     }
     if (handle) {
@@ -708,7 +851,7 @@ export async function bootstrap(
         env,
         options.fakeProvider,
         privacy,
-        { settings: modelSettings, signIn },
+        { settings: modelSettings, signIn, spending },
       );
     // Voice mode's companion: a short model call through the gateway, so the
     // privacy router reads it like any other. Only where voice mode exists.
@@ -716,6 +859,7 @@ export async function bootstrap(
       voiceCompanion = await configuredVoiceCompanion(env, options.fakeProvider, privacy, {
         settings: modelSettings,
         signIn,
+        spending,
       });
     if (handle && queue && env.MELETE_RUNTIME_ADAPTER === 'docker') {
       deploymentMemory = await startDeploymentMemory({
@@ -748,6 +892,7 @@ export async function bootstrap(
           workVolume: env.MELETE_WORK_VOLUME,
           probeUrl: env.MELETE_RUNTIME_URL,
           probeKey: env.MELETE_RUNTIME_KEY,
+          instance: instanceOf(instances),
           startTimeoutMs: env.MELETE_RUNTIME_START_TIMEOUT_MS,
           spares: env.MELETE_ENGINE_PREWARM,
           pendingWait: (bundle) => pendingRuntimeWait(handle.sql, bundle),
@@ -762,6 +907,20 @@ export async function bootstrap(
           },
         });
         await supervisedRuntime.initialize();
+        // Cells and stdio servers of instances that stopped without cleaning up,
+        // removed by one running instance at a time.
+        const runtime = supervisedRuntime;
+        leftovers = setInterval(() => {
+          void leading(leases, 'stopped-instances')
+            .then(async (leads) => {
+              if (!leads) return;
+              await runtime.removeStopped();
+              if (leases?.signal('stopped-instances').aborted) return;
+              await stdioLauncher?.reconcile(new Set(), { starting: false, volumes: false });
+            })
+            .catch(() => process.stderr.write("removing stopped instances' cells failed\n"));
+        }, 60_000);
+        leftovers.unref();
         // The first reply need not wait for an engine to load either: one is
         // loaded for the model the next attempt would be given.
         const next = await modelSettings?.activeChoice().catch(() => undefined);
@@ -802,6 +961,7 @@ export async function bootstrap(
           registry,
           signIn,
           modelSettings,
+          spending,
         });
         const Supervisor =
           env.MELETE_RUNTIME_SUPERVISOR === 'docker'
@@ -839,6 +999,9 @@ export async function bootstrap(
         supervisedRuntime ??
         hermesRuntime ??
         (env.MELETE_RUNTIME_ADAPTER === 'stub' ? new StubRuntimeAdapter() : undefined);
+      const probed = runtime;
+      if (probed && env.MELETE_RUNTIME_ADAPTER !== 'stub')
+        runtimeProbe = () => probed.capabilities();
       if (!runtime || !env.MELETE_CAPABILITY_KEY)
         throw new Error(
           'Configure MELETE_CAPABILITY_KEY and provide a RuntimeAdapter (or MELETE_RUNTIME_ADAPTER=stub for scripted local runs).',
@@ -889,9 +1052,17 @@ export async function bootstrap(
         artifactRoots: { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
-        // A model chosen in the app applies from the next attempt.
+        // A model chosen in the app applies from the next attempt. On the
+        // server's default, a configured vision model reads its pictures.
         ...(env.MELETE_RUNTIME_ADAPTER !== 'stub' && modelSettings
-          ? { resolveModel: modelSettings.activeChoice.bind(modelSettings) }
+          ? {
+              resolveModel: (tx: Parameters<ModelSettingsService['routedChoice']>[1]) =>
+                (modelSettings as ModelSettingsService).routedChoice(routing, tx),
+            }
+          : {}),
+        // Past a spending limit no attempt starts, and one cut short ends on it.
+        ...(spending
+          ? { spendingLimit: (jobId: string) => (spending as SpendingGuard).reachedForJob(jobId) }
           : {}),
         loadCatalog: catalog?.forAttempt,
         liveConnectionScopes: !env.MELETE_ENABLE_TEST_CONNECTOR,
@@ -913,6 +1084,14 @@ export async function bootstrap(
       // cut short by shutdown, and never inside the outcome transaction: both
       // are provider calls, and that transaction holds the event order lock.
       if (runs) attachRuns(runner, runs);
+      // A call refused at a spending limit ends its attempt at once.
+      if (spending) {
+        const stopping = runner;
+        spending.onRefused = (_scope, principal, message) => {
+          if (principal.privacy.kind === 'job')
+            stopping.stopForSpending(principal.jobId, principal.attemptId, message);
+        };
+      }
       if (sandboxes) runner.onSettled.push((attemptId) => sandboxes?.afterAttempt(attemptId));
       // Where the broker runs here, what a finished attempt left dispatched with
       // nobody waiting on it is settled before the attempt commits.
@@ -934,6 +1113,8 @@ export async function bootstrap(
         signIn,
         privacy,
         modelSettings,
+        () => leading(leases, 'learning-drain'),
+        spending,
       );
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
@@ -980,11 +1161,15 @@ export async function bootstrap(
           privacy,
           modelSettings,
           runs,
+          spending,
         });
       // A removal outlives the request that asked for it and the process that
       // was running it, so it is resumed at startup and every minute after.
       const journal = (deploymentMemory?.routes ?? memory)?.journal;
-      if (handle) blobs = startBlobs(handle.sql, env, options.workers !== false);
+      if (handle)
+        blobs = startBlobs(handle.sql, env, options.workers !== false, () =>
+          leading(leases, 'blob-collector'),
+        );
       if (handle && journal) {
         removals = new SpaceRemovalService({
           db: handle.db,
@@ -1026,9 +1211,9 @@ export async function bootstrap(
         // A paired computer's screenshots an earlier version kept in job
         // workspaces move to the service's own store, and are tried again until
         // they have; each attempt also moves its own job's first.
-        void moveWorkspaceScreensUntilDone(env.MELETE_WORK_DIR, (line) =>
-          process.stderr.write(`${line}\n`),
-        );
+        void moveWorkspaceScreensUntilDone(env.MELETE_WORK_DIR, {
+          report: (line) => process.stderr.write(`${line}\n`),
+        });
         await operations.start();
         await triggers.start();
         await runner.start();
@@ -1041,7 +1226,9 @@ export async function bootstrap(
           });
         }
         if (handle && processFactory)
-          processMonitor = startProcessMonitor(processFactory, handle.sql, triggers);
+          processMonitor = startProcessMonitor(processFactory, handle.sql, triggers, () =>
+            leading(leases, 'process-monitor'),
+          );
         // A chase spends most of its life waiting on a reply, and the wait it
         // holds is an event wait on a `mail.new` trigger. Without something
         // putting that event there, only the deadline ever wakes the job, and a
@@ -1077,9 +1264,40 @@ export async function bootstrap(
     throw error;
   }
 
+  const sqlForHealth = handle?.sql;
+  const checkDatabase = async () => {
+    if (!handle) return 'not_configured' as const;
+    return (await pingDatabase(handle)) ? ('ok' as const) : ('unreachable' as const);
+  };
+  const detail = () =>
+    healthDetail({
+      version: VERSION,
+      database: checkDatabase,
+      ...(runtimeProbe ? { runtime: runtimeProbe } : {}),
+      ...(sqlForHealth ? { sql: sqlForHealth } : {}),
+    });
+  // The operator is told when the service turns unhealthy, where alerts are configured.
+  if (options.workers !== false) {
+    const senders = alertSendersFromEnv(env);
+    if (senders.length) {
+      healthMonitor = new HealthMonitor({
+        check: detail,
+        senders,
+        intervalMs: env.MELETE_ALERT_INTERVAL_SECONDS * 1000,
+        repeatMs: env.MELETE_ALERT_REPEAT_MINUTES * 60_000,
+        onError: (error) => process.stderr.write(`alert not sent: ${error.message}\n`),
+        leads: () => leading(leases, 'health-alerts'),
+      });
+      healthMonitor.start();
+    }
+  }
+
   const app = createApp({
     env,
     privacy,
+    spending,
+    healthDetail: detail,
+    ...(blobs ? { blobs: blobs.store } : {}),
     db: handle?.db ?? null,
     jobs,
     triggers,
@@ -1101,6 +1319,7 @@ export async function bootstrap(
     memory: deploymentMemory?.routes ?? memory,
     browserSessions: browser?.sessions,
     sandboxComputers,
+    sandboxPreviews,
     removals,
     episodes,
     proposer: learning?.proposer,
@@ -1114,10 +1333,7 @@ export async function bootstrap(
     providerSignIn: signIn,
     modelSettings,
     voiceCompanion: voiceCompanion?.companion ?? null,
-    checkDatabase: async () => {
-      if (!handle) return 'not_configured';
-      return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
-    },
+    checkDatabase,
     ...(handle ? { checkMemory: () => memoryHealth(handle.sql) } : {}),
   });
 
@@ -1156,9 +1372,10 @@ export async function bootstrap(
  * The blob store this installation is configured for, and its collector, which
  * runs once a day where this process runs workers.
  */
-function startBlobs(sql: Sql, env: Env, workers: boolean) {
+function startBlobs(sql: Sql, env: Env, workers: boolean, leads: () => boolean | Promise<boolean>) {
   const store = configuredBlobStore(env);
-  const collector = new BlobCollector({ sql, store });
+  // Every instance may run workers; only the one holding the lease collects.
+  const collector = new BlobCollector({ sql, store, leads });
   if (workers) collector.start();
   return { store, collector };
 }

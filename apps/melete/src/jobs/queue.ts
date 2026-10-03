@@ -8,6 +8,7 @@
 import { type SchedulingClass, schedulingClass } from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import { fromDrizzle, PgBoss } from 'pg-boss';
+import { type VerifyingTls, verifyingTls } from '../db/tls.ts';
 import type { Transaction } from '../db/transaction.ts';
 
 /** The only queues v0.1 uses. Naming them here keeps the set closed. */
@@ -58,11 +59,51 @@ export type QueueHandle = {
 };
 
 /**
+ * The queue's connection, with DATABASE_URL read as the service's own client
+ * and libpq read it. pg-boss's driver reads `sslmode=require` as verify-full,
+ * reads `sslrootcert=system` as a file named "system", and, like the service's
+ * client, checks an IP-addressed server against "localhost". So, when no root
+ * certificate file is named:
+ * - `verify-ca`, `verify-full` and `sslrootcert=system` leave the URL, and the
+ *   server is checked against the URL's own host (db/tls.ts), with Node's
+ *   authorities plus NODE_EXTRA_CA_CERTS;
+ * - `require` leaves the URL, and TLS is asked for without verifying the
+ *   certificate, which is what `require` means to libpq.
+ * Every other setting stays as written.
+ */
+export function queueConnection(connectionString: string): {
+  connectionString: string;
+  ssl?: { rejectUnauthorized: false } | VerifyingTls;
+} {
+  let url: URL;
+  try {
+    url = new URL(connectionString);
+  } catch {
+    return { connectionString };
+  }
+  const rootCert = url.searchParams.get('sslrootcert');
+  if (rootCert !== null && rootCert !== 'system') return { connectionString };
+  const verifying = verifyingTls(connectionString);
+  if (verifying) {
+    url.searchParams.delete('sslmode');
+    url.searchParams.delete('sslrootcert');
+    return { connectionString: url.toString(), ssl: verifying };
+  }
+  if (rootCert === 'system') {
+    url.searchParams.delete('sslrootcert');
+    return { connectionString: url.toString() };
+  }
+  if (url.searchParams.get('sslmode') !== 'require') return { connectionString };
+  url.searchParams.delete('sslmode');
+  return { connectionString: url.toString(), ssl: { rejectUnauthorized: false } };
+}
+
+/**
  * Start pg-boss against the same connection string the service uses. The
  * schema is created on first start; nothing is scheduled here.
  */
 export async function startQueue(connectionString: string): Promise<QueueHandle> {
-  const boss = new PgBoss({ connectionString, schema: 'pgboss', max: 4 });
+  const boss = new PgBoss({ ...queueConnection(connectionString), schema: 'pgboss', max: 4 });
   boss.on('error', (error) => process.stderr.write(`pg-boss: ${error.message}\n`));
   try {
     await boss.start();

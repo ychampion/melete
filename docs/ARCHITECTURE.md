@@ -281,7 +281,7 @@ not give one`). A key the runtime set itself is replaced, never passed on.
 On a 60-turn chat with a million-token model, at least 70% of every request
 from the second turn on is a prefix of the one before it
 (`apps/melete/src/jobs/context-room.test.ts`). Cached input is recorded at the
-provider's cached price as `charged_input_tokens` beside the raw counts; the
+provider's cached price from the spending price table (`gateway/prices.ts`) as `charged_input_tokens` beside the raw counts; the
 learning evaluator keeps comparing raw counts, which do not depend on how warm
 a cache was. A live load the engine could not take is written to the runtime's
 log with the reason, and the engine's own failure detection is what marks it

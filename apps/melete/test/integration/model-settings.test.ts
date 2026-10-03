@@ -695,4 +695,97 @@ describeWithDb('the model, connected in the app', () => {
     ).find((p) => p.name === 'openai-compatible');
     expect(unbound?.signedIn).toBeUndefined();
   });
+
+  test('the provider’s answer on images is shown beside the switch, and never turns pictures on', async () => {
+    const SEES = 'accounts/fireworks/models/fixture-sees';
+    const BLIND = 'accounts/fireworks/models/qwen2p5-vl-32b-instruct';
+    const UNLISTED = 'accounts/fireworks/models/fixture-unlisted';
+    let answer: () => Response = () =>
+      Response.json({
+        data: [
+          { id: SEES, supports_image_input: true },
+          { id: BLIND, supports_image_input: false },
+        ],
+      });
+    const api = app({}, async () => answer());
+    const cookie = await owner(api);
+    await api.call('/model-settings/keys/fireworks', cookie, put({ api_key: FIREWORKS_KEY }));
+    const tested = await api.call('/model-settings/test', cookie, post({ provider: 'fireworks' }));
+    expect(tested.body).toMatchObject({ ok: true, models: [SEES, BLIND] });
+    const choose = async (model: string, supports_vision?: boolean | null) => {
+      const chosen = await api.call(
+        '/model-settings/default',
+        cookie,
+        put({ provider: 'fireworks', model, supports_vision }),
+      );
+      expect(chosen.status).toBe(200);
+      return chosen.body.active as Json;
+    };
+
+    // The provider says yes: it is shown, and pictures stay off until the owner turns them on.
+    expect(await choose(SEES)).toMatchObject({
+      vision: false,
+      vision_source: 'catalog',
+      provider_vision: true,
+    });
+    expect(await api.settings.activeChoice()).toMatchObject({ model: SEES, vision: false });
+    // The provider says no: shown, and Melete's list still decides.
+    expect(await choose(BLIND)).toMatchObject({
+      vision: true,
+      vision_source: 'catalog',
+      provider_vision: false,
+    });
+    // A model the list says nothing about.
+    expect(await choose(UNLISTED)).toMatchObject({
+      vision: false,
+      vision_source: 'catalog',
+      provider_vision: null,
+    });
+    // The owner's word decides.
+    expect(await choose(SEES, true)).toMatchObject({
+      vision: true,
+      vision_source: 'app',
+      provider_vision: true,
+    });
+    expect(await api.settings.activeChoice()).toMatchObject({ vision: true });
+    await api.settings.refreshVision('fireworks');
+
+    // A provider that cannot be reached leaves the answers already given.
+    answer = () => new Response('unavailable', { status: 503 });
+    const later = app({}, async () => answer());
+    await later.settings.refreshVision('fireworks');
+    expect(await choose(SEES)).toMatchObject({ vision: false, provider_vision: true });
+
+    // With no answer stored and the list unavailable, Settings answers at once
+    // without one, and nothing waits on the provider.
+    await database().sql`delete from model_vision_report`;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let asked = 0;
+    const slow = app({}, async () => {
+      asked += 1;
+      await held;
+      throw new TypeError('fetch failed');
+    });
+    const view = await slow.call('/model-settings', cookie);
+    expect(view.body.active).toMatchObject({ model: SEES, vision: false, provider_vision: null });
+    release();
+    await slow.settings.refreshVision('fireworks');
+    expect(asked).toBe(1);
+    expect((await slow.call('/model-settings', cookie)).body.active.provider_vision).toBeNull();
+
+    // The provider's answer arrives in the background, for the next read of Settings.
+    answer = () => Response.json({ data: [{ id: SEES, supports_image_input: true }] });
+    const fresh = app({}, async () => answer());
+    expect((await fresh.call('/model-settings', cookie)).body.active.provider_vision).toBeNull();
+    await fresh.settings.refreshVision('fireworks');
+    expect((await fresh.call('/model-settings', cookie)).body.active).toMatchObject({
+      vision: false,
+      provider_vision: true,
+    });
+    expect(await fresh.settings.activeChoice()).toMatchObject({ vision: false });
+    expect(answered.join('\n')).not.toContain(FIREWORKS_KEY);
+  });
 });

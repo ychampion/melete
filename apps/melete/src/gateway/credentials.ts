@@ -12,6 +12,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { SealedSecretStore, type SecretRepository } from '../connectors/secrets.ts';
+import { MemorySignInStore, type SignInStore } from '../ops/signin-store.ts';
 import {
   authorizeUrl,
   type DeviceCode,
@@ -246,10 +247,18 @@ export interface ProviderSignInOptions {
   now?: () => number;
   /** Service log. Lines carry a provider name and a fixed reason, never a token. */
   log?: (line: string) => void;
+  /**
+   * Where sign-ins wait to be finished. Left out, this process's memory; the
+   * service gives every instance the same Postgres store, so a sign-in started
+   * on one can be finished on another.
+   */
+  store?: SignInStore;
 }
 
+const PENDING = 'provider';
+
 export class ProviderSignIn {
-  private readonly pending = new Map<string, Pending>();
+  private readonly pending: SignInStore;
   private readonly refreshing = new Map<string, Promise<Rotation | Ended>>();
   /** Generations whose access token a provider refused; the next use refreshes first. */
   private readonly refused = new Map<string, number>();
@@ -264,6 +273,7 @@ export class ProviderSignIn {
     this.now = options.now ?? Date.now;
     this.log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
     this.box = sealer(options.masterKey ?? (() => process.env.MELETE_MASTER_KEY));
+    this.pending = options.store ?? new MemorySignInStore();
   }
 
   /** The providers this installation lets the owner sign in to. */
@@ -310,9 +320,7 @@ export class ProviderSignIn {
       source && typeof source !== 'function' && source.device ? ['device', 'browser'] : ['browser'];
     const label = this.options.labels?.[provider] ?? provider;
     const row = await this.options.repository.read(provider);
-    const waiting = [...this.pending.values()].some(
-      (entry) => entry.provider === provider && entry.expiresAt > this.now(),
-    );
+    const waiting = await this.pending.hasSubject(PENDING, provider, this.now());
     if (!row)
       return {
         provider,
@@ -347,16 +355,14 @@ export class ProviderSignIn {
     const chosen = method ?? (issuer.device ? 'device' : 'browser');
     if (chosen === 'device' && !issuer.device)
       throw new OAuthFailure('device_sign_in_unavailable', false);
-    this.sweep();
-    for (const [id, entry] of this.pending)
-      if (entry.provider === provider) this.pending.delete(id);
+    await this.pending.deleteSubject(PENDING, provider);
     const id = randomBytes(32).toString('base64url');
     const expiresAt = this.now() + PENDING_TTL_MS;
     const { verifier, challenge } = pkcePair();
     const state = randomState();
     if (chosen === 'device' && issuer.device) {
       const device = await requestDeviceCode(issuer, this.fetcher);
-      this.pending.set(id, {
+      await this.keep({
         id,
         provider,
         ownerId,
@@ -377,7 +383,7 @@ export class ProviderSignIn {
         expires_at: new Date(expiresAt).toISOString(),
       };
     }
-    this.pending.set(id, {
+    await this.keep({
       id,
       provider,
       ownerId,
@@ -408,8 +414,7 @@ export class ProviderSignIn {
     ownerId: string,
     input: { sign_in_id: string; callback_url?: string },
   ): Promise<SignInStatus | { state: 'pending'; interval: number }> {
-    this.sweep();
-    const entry = this.pending.get(input.sign_in_id);
+    const entry = await this.pending.get<Pending>(PENDING, input.sign_in_id, this.now());
     if (!entry || entry.provider !== provider || entry.ownerId !== ownerId)
       throw new OAuthFailure('sign_in_not_found', false);
     const issuer = await this.issuer(provider);
@@ -418,17 +423,21 @@ export class ProviderSignIn {
       if (this.now() < entry.nextPollAt)
         return { state: 'pending', interval: entry.device.intervalSeconds };
       entry.nextPollAt = this.now() + entry.device.intervalSeconds * 1000;
+      await this.keep(entry);
       try {
         tokens = await pollDeviceCode(issuer, entry.device, this.fetcher, this.now());
       } catch (error) {
-        if (error instanceof OAuthFailure && error.permanent) this.pending.delete(entry.id);
+        if (error instanceof OAuthFailure && error.permanent)
+          await this.pending.delete(PENDING, entry.id);
         throw error;
       }
       if (!tokens) return { state: 'pending', interval: entry.device.intervalSeconds };
     } else {
       const code = this.callbackCode(entry, input.callback_url);
-      // One use: a pasted address is spent whether or not the exchange succeeds.
-      this.pending.delete(entry.id);
+      // One use: a pasted address is spent whether or not the exchange succeeds,
+      // and of two finishes, on any instance, only one takes it.
+      if (!(await this.pending.take<Pending>(PENDING, entry.id, this.now())))
+        throw new OAuthFailure('sign_in_not_found', false);
       tokens = await exchangeCode(
         issuer,
         { code, verifier: entry.verifier, redirectUri: entry.redirectUri },
@@ -436,7 +445,7 @@ export class ProviderSignIn {
         this.now(),
       );
     }
-    this.pending.delete(entry.id);
+    await this.pending.delete(PENDING, entry.id);
     await this.store(issuer, ownerId, tokens);
     this.log(`provider sign-in: ${provider} signed in`);
     return this.status(provider);
@@ -503,8 +512,7 @@ export class ProviderSignIn {
    * metadata cannot be read, still leaves the owner signed out.
    */
   async signOut(provider: string): Promise<SignInStatus> {
-    for (const [id, entry] of this.pending)
-      if (entry.provider === provider) this.pending.delete(id);
+    await this.pending.deleteSubject(PENDING, provider);
     const removed = await this.options.repository.locked(provider, async (row, write) => {
       await write(null);
       return row?.ciphertext ? await this.box.open(row).catch(() => null) : null;
@@ -647,8 +655,7 @@ export class ProviderSignIn {
     return result;
   }
 
-  private sweep() {
-    for (const [id, entry] of this.pending)
-      if (entry.expiresAt <= this.now()) this.pending.delete(id);
+  private keep(entry: Pending) {
+    return this.pending.put(PENDING, entry.id, entry, entry.expiresAt, entry.provider);
   }
 }

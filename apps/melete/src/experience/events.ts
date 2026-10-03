@@ -766,6 +766,15 @@ export class ExperienceEvents {
             typeof payload.running === 'number'
           ) {
             await emit(source, { type: 'note', text: waitingForSlotNote(payload.running) });
+          } else if (
+            source.type === 'hook_event' &&
+            source.jobId === id &&
+            payload.name === 'on_compaction' &&
+            (payload.outcome === 'succeeded' || payload.outcome === 'observed')
+          ) {
+            // The engine summarised the conversation so far to make room. The
+            // page marks where; the summary's words never leave the engine.
+            await emit(source, { type: 'compacted' });
           } else if (source.type === 'notice' && payload.kind === 'gap') {
             await emit(source, {
               type: 'note',

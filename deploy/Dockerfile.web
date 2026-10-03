@@ -12,6 +12,7 @@ ENV VITE_MELETE_API=${VITE_MELETE_API}
 WORKDIR /app
 COPY package.json bun.lock ./
 COPY apps/web/package.json apps/web/
+COPY packages/cli/package.json packages/cli/
 COPY packages/client/package.json packages/client/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/device/package.json packages/device/
@@ -43,10 +44,13 @@ FROM oven/bun:1.3.13-slim@sha256:7e8ed3961db1cdedf17d516dda87948cfedbd294f53bf16
 
 WORKDIR /app
 COPY --from=build /app/apps/web/dist ./dist
-# Two source files at their repository paths, because the server imports the
-# peer-trust rule the owner API uses rather than keeping a second copy of it.
+# Three source files at their repository paths, because the server imports the
+# peer-trust rule and the app isolation check the owner API uses rather than
+# keeping a second copy of either.
 COPY deploy/scripts/serve-static.ts ./deploy/scripts/serve-static.ts
 COPY apps/melete/src/api/trusted-peer.ts ./apps/melete/src/api/trusted-peer.ts
+COPY apps/melete/src/viewer/headers.ts ./apps/melete/src/viewer/headers.ts
+COPY apps/melete/src/sandbox/preview-path.ts ./apps/melete/src/sandbox/preview-path.ts
 
 RUN useradd --uid 10003 --create-home --home-dir /home/web web
 USER web

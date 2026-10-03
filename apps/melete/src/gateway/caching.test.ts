@@ -6,7 +6,7 @@ import {
   promptCacheScope,
   SESSION_AFFINITY_HEADER,
 } from './caching.ts';
-import { CACHED_INPUT_PRICE, chargedInputTokens, withChargedInput } from './metering.ts';
+import { CACHE_PRICE_SHARE, PriceTable } from './prices.ts';
 
 const SECRET = 'an-install-secret-of-at-least-thirty-two-characters';
 const job = (jobId: string) => ({ jobId, attemptId: 'att_x', privacy: { kind: 'job' as const } });
@@ -184,51 +184,94 @@ describe('prompt-caching controls', () => {
   });
 });
 
-describe('cached input is charged at its cached price', () => {
+describe('cached input is charged at its cached price, from the one price table', () => {
+  const prices = new PriceTable();
+
   test('a cache read costs its share, a cache write its premium, the rest full price', () => {
     // Anthropic: 1,000 fresh + 9,000 read at a tenth + 200 written at 1.25.
     expect(
-      chargedInputTokens(
-        { inputTokens: 10_200, cachedInputTokens: 9_000, cacheWriteInputTokens: 200 },
-        'anthropic',
-      ),
+      prices.chargedInputTokens('anthropic', 'claude-sonnet-fixture', {
+        inputTokens: 10_200,
+        cachedInputTokens: 9_000,
+        cacheWriteInputTokens: 200,
+        outputTokens: 0,
+      }),
     ).toBe(1_000 + 900 + 250);
-    expect(chargedInputTokens({ inputTokens: 10_000, cachedInputTokens: 8_000 }, 'openai')).toBe(
-      2_800,
-    );
-    expect(chargedInputTokens({ inputTokens: 10_000, cachedInputTokens: 8_000 }, 'fireworks')).toBe(
-      6_000,
-    );
-    expect(CACHED_INPUT_PRICE.google?.read).toBe(0.25);
+    expect(
+      prices.chargedInputTokens('openai', 'gpt-fixture', {
+        inputTokens: 10_000,
+        cachedInputTokens: 8_000,
+        outputTokens: 0,
+      }),
+    ).toBe(2_800);
+    // Fireworks names no cached price, so its provider's share applies: half.
+    expect(
+      prices.chargedInputTokens('fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash', {
+        inputTokens: 10_000,
+        cachedInputTokens: 8_000,
+        outputTokens: 0,
+      }),
+    ).toBe(6_000);
+    expect(CACHE_PRICE_SHARE.google?.read).toBe(0.25);
   });
 
-  test('an unknown provider, or the person’s own model, is charged as though nothing was cached', () => {
-    for (const provider of ['openai-compatible', 'local', 'constructor', '__proto__'])
-      expect(chargedInputTokens({ inputTokens: 10_000, cachedInputTokens: 8_000 }, provider)).toBe(
-        10_000,
-      );
+  test('the dollar cost counts the same cached and written input the same way', () => {
+    // anthropic/*sonnet*: $3 in, $0.30 cached, a write at 1.25 x $3.
+    expect(
+      prices.cost('anthropic', 'claude-sonnet-fixture', {
+        inputTokens: 1_200_000,
+        cachedInputTokens: 1_000_000,
+        cacheWriteInputTokens: 100_000,
+        outputTokens: 0,
+      }),
+    ).toBeCloseTo(0.3 + 0.3 * 1.25 + 0.3, 6);
+    // Fireworks: half of the input price for a cache read.
+    expect(
+      prices.cost('fireworks', 'accounts/fireworks/models/llama-fixture', {
+        inputTokens: 1_000_000,
+        cachedInputTokens: 1_000_000,
+        outputTokens: 0,
+      }),
+    ).toBeCloseTo(0.1, 6);
+    // An operator's own price for cached input wins over the share.
+    const priced = new PriceTable({ 'fireworks/x': { input: 1, output: 1, cached_input: 0.2 } });
+    expect(
+      priced.chargedInputTokens('fireworks', 'x', {
+        inputTokens: 1_000,
+        cachedInputTokens: 1_000,
+        outputTokens: 0,
+      }),
+    ).toBe(200);
+  });
+
+  test('an unknown provider is charged as though nothing was cached', () => {
+    for (const provider of ['openai-compatible', 'constructor', '__proto__'])
+      expect(
+        prices.chargedInputTokens(provider, 'm', {
+          inputTokens: 10_000,
+          cachedInputTokens: 8_000,
+          outputTokens: 0,
+        }),
+      ).toBe(10_000);
   });
 
   test('impossible cached counts never charge below zero or above the input', () => {
-    expect(chargedInputTokens({ inputTokens: 100, cachedInputTokens: 500 }, 'openai')).toBe(10);
+    const openai = (inputTokens: number, cachedInputTokens: number, cacheWriteInputTokens = 0) =>
+      prices.chargedInputTokens('openai', 'gpt-fixture', {
+        inputTokens,
+        cachedInputTokens,
+        cacheWriteInputTokens,
+        outputTokens: 0,
+      });
+    expect(openai(100, 500)).toBe(10);
+    expect(openai(1, 1)).toBe(1);
     expect(
-      chargedInputTokens(
-        { inputTokens: 100, cachedInputTokens: 50, cacheWriteInputTokens: 500 },
-        'anthropic',
-      ),
+      prices.chargedInputTokens('anthropic', 'claude-sonnet-fixture', {
+        inputTokens: 100,
+        cachedInputTokens: 50,
+        cacheWriteInputTokens: 500,
+        outputTokens: 0,
+      }),
     ).toBe(5 + Math.ceil(50 * 1.25));
-    expect(chargedInputTokens({ inputTokens: 1, cachedInputTokens: 1 }, 'openai')).toBe(1);
-    expect(
-      withChargedInput(
-        { inputTokens: 10, outputTokens: 2, totalTokens: 12, cachedInputTokens: 0 },
-        'openai',
-      ),
-    ).toEqual({
-      inputTokens: 10,
-      outputTokens: 2,
-      totalTokens: 12,
-      cachedInputTokens: 0,
-      chargedInputTokens: 10,
-    });
   });
 });

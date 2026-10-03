@@ -1,0 +1,18 @@
+# Add to the base file with -f docker-compose.yml -f docker-compose.blobs-s3.yml,
+# or set "blobs": { "store": "s3", ... } in deploy/melete.deploy.json and the
+# melete command adds it. The service keeps the files it stores by their content
+# in the S3-compatible bucket deploy/.env names (AWS S3, Cloudflare R2, MinIO and
+# the like) instead of on the artifacts volume. The bucket and its keys are
+# required here, so Compose refuses to start a stack that would lack them. The
+# keys stay with the service and never reach an agent's computer.
+services:
+  melete:
+    environment:
+      MELETE_BLOB_STORE: s3
+      # Empty is AWS S3 for the region.
+      MELETE_BLOB_S3_ENDPOINT: ${MELETE_BLOB_S3_ENDPOINT:-}
+      MELETE_BLOB_S3_BUCKET: ${MELETE_BLOB_S3_BUCKET:?set the bucket with bun run melete set MELETE_BLOB_S3_BUCKET=<name>}
+      MELETE_BLOB_S3_REGION: ${MELETE_BLOB_S3_REGION:-}
+      MELETE_BLOB_S3_PREFIX: ${MELETE_BLOB_S3_PREFIX:-}
+      MELETE_BLOB_S3_ACCESS_KEY_ID: ${MELETE_BLOB_S3_ACCESS_KEY_ID:?run bun run melete set --from-env MELETE_BLOB_S3_ACCESS_KEY_ID}
+      MELETE_BLOB_S3_SECRET_ACCESS_KEY: ${MELETE_BLOB_S3_SECRET_ACCESS_KEY:?run bun run melete set --from-env MELETE_BLOB_S3_SECRET_ACCESS_KEY}

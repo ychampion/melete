@@ -1,16 +1,6 @@
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import {
-  chmod,
-  cp,
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  realpath,
-  rm,
-  writeFile,
-} from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -32,6 +22,9 @@ import { newId } from '../ids.ts';
 import { ATTEMPT_LOG_CONFIG } from './docker.ts';
 import { EngineRegistry, type ProcessTable } from './engines.ts';
 import { resolvePython } from './python.ts';
+import { jobWorkspace } from './workspace-fs.ts';
+
+export { jobWorkspace };
 
 const exec = promisify(execFile);
 export type RuntimeInstance = {
@@ -127,30 +120,6 @@ export function attemptEnvironment(
     // A space with no profile is UTC, never the host's zone.
     HERMES_TIMEZONE: canonicalTimeZone(bundle.time_zone),
   };
-}
-
-/** Validate a service-owned job directory before handing any path to a runtime. */
-export async function jobWorkspace(root: string, jobId: string): Promise<string> {
-  prefixedId('job').parse(jobId);
-  await mkdir(root, { recursive: true });
-  const base = await realpath(root);
-  const path = join(base, jobId);
-  let created = false;
-  try {
-    if ((await lstat(path)).isSymbolicLink()) throw new Error('A job workspace cannot be a link');
-  } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
-    await mkdir(path, { mode: 0o770 });
-    created = true;
-  }
-  const stat = await lstat(path);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || (await realpath(path)) !== path) {
-    throw new Error('The job workspace must be an ordinary directory under MELETE_WORK_DIR.');
-  }
-  // mkdir applies the service's umask. The runtime has a different UID and
-  // needs the shared group's write bit on this newly created directory.
-  if (created) await chmod(path, 0o770);
-  return path;
 }
 
 export async function waitRuntimeAddress(

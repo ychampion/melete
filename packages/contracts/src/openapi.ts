@@ -39,6 +39,7 @@ import {
   spaceListResponse,
   triggerResponse,
 } from './api.ts';
+import { appsPaths } from './apps-openapi.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
 import {
@@ -168,6 +169,7 @@ import {
   principal,
   spaceMembership,
 } from './principals.ts';
+import { processPreviewPaths } from './process-preview-openapi.ts';
 import {
   attributionReport,
   attributionRequest,
@@ -238,6 +240,7 @@ import {
   spaceRemovalPreview,
   spaceRemovalReport,
 } from './spaces.ts';
+import { healthDetailResponse, usageResponse } from './usage.ts';
 import {
   voiceAside,
   voiceAsideRequest,
@@ -720,6 +723,11 @@ export function buildOpenApiDocument() {
         securitySchemes: {
           session: { type: 'apiKey', in: 'cookie', name: 'melete_session' },
           device: { type: 'http', scheme: 'bearer' },
+          operator: {
+            type: 'http',
+            scheme: 'bearer',
+            description: 'MELETE_OPERATOR_TOKEN, for the operator’s health detail only.',
+          },
           assistant: {
             type: 'http',
             scheme: 'bearer',
@@ -738,6 +746,7 @@ export function buildOpenApiDocument() {
         { name: 'reactions' },
         { name: 'actions' },
         { name: 'artifacts' },
+        { name: 'apps' },
         { name: 'approvals' },
         { name: 'connections' },
         { name: 'devices' },
@@ -1603,6 +1612,25 @@ export function buildOpenApiDocument() {
             tags: ['health'],
             summary: 'Liveness and dependency check',
             responses: { '200': jsonResponse('Service is up', healthResponse) },
+          },
+        },
+
+        '/health/detail': {
+          get: {
+            tags: ['health'],
+            summary: 'Each health check the operator alerts on, with what it found',
+            description:
+              'The database, the runtime that runs attempts, the job queue (work due more than ' +
+              'ten minutes ago that has not started) and the error rate over the last fifteen ' +
+              'minutes. Takes MELETE_OPERATOR_TOKEN as a bearer token; without that setting the ' +
+              'route answers 404. Answers 503 while any check fails, so an uptime monitor can watch it.',
+            security: [{ operator: [] }],
+            responses: {
+              '200': jsonResponse('Every check passed', healthDetailResponse),
+              '401': problem('The operator token is missing or wrong'),
+              '404': problem('MELETE_OPERATOR_TOKEN is not set'),
+              '503': jsonResponse('At least one check failed', healthDetailResponse),
+            },
           },
         },
 
@@ -2866,6 +2894,22 @@ export function buildOpenApiDocument() {
           },
         },
 
+        '/usage': {
+          get: {
+            tags: ['model-providers'],
+            summary: 'Model spending today and this month, the limits, and any notice',
+            description:
+              'Every model call counts: agent turns, routines and background work, memory reads, ' +
+              'voice asides and reviews. Dollars are estimates from the price table. Past a ' +
+              '`reached` notice, new model calls are refused until the period resets. Days and ' +
+              'months are UTC.',
+            responses: {
+              '200': jsonResponse('Usage', usageResponse),
+              '401': problem('Not signed in'),
+            },
+          },
+        },
+
         '/model-settings': {
           get: {
             tags: ['model-providers'],
@@ -3151,6 +3195,8 @@ export function buildOpenApiDocument() {
           },
         },
         ...devicePaths(),
+        ...appsPaths(),
+        ...processPreviewPaths(),
       },
     },
     // Shared shapes such as `job` appear on many paths; emitting them once under

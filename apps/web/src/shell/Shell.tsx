@@ -47,6 +47,7 @@ import { zoneName } from '../experience/plain.ts';
 import { givenName } from '../experience/profile.ts';
 import type { CalendarEvent, Conversation, Home, Task } from '../experience/types.ts';
 import { FeedbackHost, openFeedback } from '../feedback/FeedbackPanel.tsx';
+import { UsageNotice } from '../models/Usage.tsx';
 import { href, navigate, useRoute } from '../router.ts';
 import { useTheme } from '../theme.ts';
 import { CommandPalette } from './CommandPalette.tsx';
@@ -127,6 +128,7 @@ const NAV: { icon: IconName; label: string; path: string; match: (path: string) 
     path: '/automations',
     match: (p) => p.startsWith('/automations'),
   },
+  { icon: 'apps', label: 'Apps', path: '/apps', match: (p) => p.startsWith('/apps') },
 ];
 
 const LIVE = new Set<Conversation['status']>(['queued', 'working', 'streaming']);
@@ -905,6 +907,7 @@ export function Shell({
           ) : null}
           <div className="shell-body">
             <main id="main" className="shell-content" tabIndex={-1}>
+              <UsageNotice />
               {children}
             </main>
             {panel}

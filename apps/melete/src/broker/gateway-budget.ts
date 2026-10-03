@@ -1,11 +1,13 @@
 import { type CapabilityClaims, inputTokenAllowance, inputTokenCeiling } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { allowedWithRoutes } from '../gateway/routing.ts';
 import {
   type GatewayBudget,
   GatewayError,
   type GatewayPrincipal,
   type GatewayReservation,
   type GatewayReservationRequest,
+  type GatewayRoutes,
   type GatewaySettlement,
 } from '../gateway/types.ts';
 import { remainingOutputTokensLocked, reserveLocked } from './budget.ts';
@@ -23,8 +25,11 @@ export class PostgresGatewayBudget implements GatewayBudget {
     private readonly options: {
       sql: Sql;
       capabilityKey: string;
-      /** The service supplies only an explicitly authorized fallback for this job revision. */
-      fallback?: (jobId: string, revision: number) => Promise<ModelChoice | null>;
+      /**
+       * The operator's alternatives for an attempt on this model: a vision
+       * model and fallbacks. None for a model the owner chose in the app.
+       */
+      routes?: (attempt: ModelChoice) => Promise<GatewayRoutes | undefined>;
     },
   ) {}
 
@@ -42,9 +47,9 @@ export class PostgresGatewayBudget implements GatewayBudget {
         const [attempt] =
           await tx`select provider, model from attempt where id = ${claims.attempt_id}`;
         if (!attempt) throw new BrokerFault('stale_epoch');
-        const allowedModels: ModelChoice[] = [{ provider: attempt.provider, model: attempt.model }];
-        const fallback = await this.options.fallback?.(job.id, job.revision);
-        if (fallback) allowedModels.push(fallback);
+        const primary = { provider: String(attempt.provider), model: String(attempt.model) };
+        const routes = await this.options.routes?.(primary);
+        const allowedModels = allowedWithRoutes(primary, routes);
         return {
           jobId: job.id,
           attemptId: claims.attempt_id,
@@ -59,6 +64,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
             inputTokenCeiling(attempt.model, claims.budget),
           ),
           allowedModels,
+          ...(routes ? { routes } : {}),
         };
       });
       this.claims.set(principal, claims);
@@ -97,17 +103,9 @@ export class PostgresGatewayBudget implements GatewayBudget {
         const [attempt] =
           await tx`select provider, model from attempt where id = ${claims.attempt_id}`;
         if (!attempt) throw new BrokerFault('stale_epoch');
+        // Another model than the attempt's is served only on a route the
+        // principal was issued with, checked above against `allowedModels`.
         const fallback = request.provider !== attempt.provider || request.model !== attempt.model;
-        if (fallback) {
-          const allowed = await this.options.fallback?.(job.id, job.revision);
-          if (
-            !allowed ||
-            allowed.provider !== request.provider ||
-            allowed.model !== request.model
-          ) {
-            throw new GatewayError(403, 'model_denied');
-          }
-        }
         const inputTokens = request.estimatedTokens - request.maxOutputTokens;
         // The window less this request's own output. The job's output budget
         // is spent across its requests and is checked by the reservation below.
@@ -239,6 +237,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
           late,
           ...(result.stopped ? { stopped: true } : {}),
           ...(result.privacy ? { privacy: result.privacy } : {}),
+          ...(result.route ? { route: result.route, routed_from: result.routedFrom } : {}),
         },
         dedup,
       );

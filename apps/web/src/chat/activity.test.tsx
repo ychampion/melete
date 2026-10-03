@@ -253,9 +253,9 @@ test('an opened row shows its output as plain monospace text', () => {
   expect(file).toContain('Download the file');
 });
 
-test('a running row spins while the turn runs', () => {
+test('a running row shimmers while the turn runs', () => {
   const running = entry('call:a:1', {});
   const html = renderToStaticMarkup(<WorkLine work={{ type: 'tool', tool: running }} live />);
-  expect(html).toContain('class="spin"');
+  expect(html).toContain('class="shimmer-text"');
   expect(html).toContain('Searching the web for “rent Lisbon”');
 });

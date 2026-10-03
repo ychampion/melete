@@ -12,6 +12,7 @@
  * trip (speak a script, then transcribe the file) is a real test with no key
  * and no network. The real adapter is ElevenLabs Scribe (elevenlabs.ts).
  */
+
 import { constants } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
@@ -32,6 +33,7 @@ import {
   receipt,
 } from '@melete/contracts';
 import { z } from 'zod';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { noLinks, openBeneath, segmentsFor } from './files.ts';
 import { atomicWrite, capabilityDirectory, digest, readBytes } from './tts.ts';
 import type { Connector, ConnectorContext } from './types.ts';
@@ -242,11 +244,13 @@ export function createTranscriptionConnector(options: TranscriptionConnectorOpti
       throw new Error('invalid trusted file scope');
     const mime = mediaTypeFor(relative);
     if (!mime) throw new Error('source must be an audio or video file');
-    const base = await realpath(area === 'artifacts' ? options.spacesRoot : options.workRoot);
-    const segments = [
-      ...(area === 'artifacts' ? [ctx.space_id, 'artifacts'] : [ctx.job_id]),
-      ...segmentsFor(relative),
-    ];
+    const { base, segments } =
+      area === 'artifacts'
+        ? {
+            base: await realpath(options.spacesRoot),
+            segments: [ctx.space_id, 'artifacts', ...segmentsFor(relative)],
+          }
+        : await new LocalWorkspaceFs(options.workRoot).location(ctx.job_id, relative);
     const file = await noLinks(base, segments, false);
     // Opened by walking the names, so a folder swapped for a link since the check opens nothing.
     const bytes = await openBeneath(base, segments, constants.O_RDONLY).then(

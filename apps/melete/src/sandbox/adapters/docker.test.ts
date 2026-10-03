@@ -739,6 +739,36 @@ describe('the life of a sandbox', () => {
   });
 });
 
+describe('previews', () => {
+  test('a preview reaches only the container address on its own network, at the port asked', async () => {
+    const { engine, host } = setup({ open: true });
+    await host.create(spec('sbx_one', { kind: 'open' }), signal());
+    const address = engine.containers.get(NAME)?.networks[`${NAME}-net`] ?? '';
+    expect(address).not.toBe('');
+    expect(await host.previewAddress(handleOf(NAME), 5173, signal())).toEqual({
+      host: address,
+      port: 5173,
+    });
+    for (const port of [0, -1, 65_536, 80.5])
+      expect(await host.previewAddress(handleOf(NAME), port, signal())).toBeNull();
+    // A stopped container is never started for a preview.
+    const calls = engine.calls.length;
+    const container = engine.containers.get(NAME);
+    if (container) container.running = false;
+    expect(await host.previewAddress(handleOf(NAME), 5173, signal())).toBeNull();
+    expect(engine.calls.slice(calls).some((call) => call.path.endsWith('/start'))).toBe(false);
+  });
+
+  test('a container with no network cannot be previewed', async () => {
+    const { host } = setup();
+    await host.create(spec(), signal());
+    expect(await host.previewAddress(handleOf(NAME), 5173, signal())).toBeNull();
+    await expect(host.previewAddress(handleOf('not-ours'), 5173, signal())).rejects.toBeInstanceOf(
+      SandboxAdapterRefusal,
+    );
+  });
+});
+
 describe('the desktop', () => {
   test('the docker host has a desktop and the others do not', () => {
     expect(isDesktopProvider(setup().host)).toBe(true);

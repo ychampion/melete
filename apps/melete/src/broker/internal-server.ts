@@ -54,6 +54,12 @@ export function createInternalServer(options: {
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
   /** Where model requests may go and what they may carry. */
   privacy: PrivacyRouter;
+  /** The installation's spending caps; each agent call is admitted and counted. */
+  spending?: GatewayOptions['spending'];
+  /** The operator's vision model and fallbacks for an attempt's model. */
+  routes?: ConstructorParameters<typeof PostgresGatewayBudget>[0]['routes'];
+  /** How hard a reasoning model thinks on an agent turn. */
+  reasoningEffort?: GatewayOptions['reasoningEffort'];
 }) {
   const broker =
     options.broker ??
@@ -93,6 +99,7 @@ export function createInternalServer(options: {
   const budget = new PostgresGatewayBudget({
     sql: options.sql,
     capabilityKey: options.capabilityKey,
+    ...(options.routes ? { routes: options.routes } : {}),
   });
   const reads = createActionReadApi({
     sql: options.sql,
@@ -128,6 +135,8 @@ export function createInternalServer(options: {
     connectTls: options.connectTls,
     fetch: options.gatewayFetch,
     privacy: options.privacy,
+    spending: options.spending,
+    reasoningEffort: options.reasoningEffort,
     // The install's capability key, so a conversation's cache key is the same
     // across service restarts and computable by nobody outside it.
     promptCacheSecret: options.capabilityKey,
