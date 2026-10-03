@@ -353,6 +353,11 @@ export type SearchGatewayOptions = {
   budget?: (calls: (principal: GatewayPrincipal) => Call | undefined) => SearchBudget;
   /** Test injection: the model an attempt runs on. */
   attemptModel?: (request: SearchRequest) => Promise<Target | null>;
+  /**
+   * The installation's spending caps: each search call, and its per-search fee,
+   * counts against the person who asked in the conversation.
+   */
+  spending?: GatewayOptions['spending'];
 };
 
 /** Opens the search gateway and returns the backend that searches through it. */
@@ -368,6 +373,7 @@ export async function openSearchGateway(options: SearchGatewayOptions) {
     ...(options.currentProviders ? { currentProviders: options.currentProviders } : {}),
     fetch: options.fetch,
     privacy: options.privacy,
+    spending: options.spending,
     providerSearch: true,
     timeoutMs: options.timeoutMs ?? 60_000,
     maxRequestBytes: 64 * 1024,
@@ -433,14 +439,18 @@ export async function openSearchGateway(options: SearchGatewayOptions) {
         });
         if (!response.ok) {
           // The gateway's own code: never the provider's body.
-          const code = String(
-            object(object(await response.json().catch(() => null)).error).code ?? '',
-          );
+          const refusal = await response.json().catch(() => null);
+          const code = String(object(object(refusal).error).code ?? '');
           // A private conversation's words go nowhere, and a search over
           // the job's limit is not moved to a free backend to get round it.
           // Any other failure hands the search to Melete's own backends.
           if (/^privacy_/.test(code)) throw new SearchRefused(PRIVACY_REFUSED);
           if (code === 'search_budget_exceeded') throw new SearchRefused(SEARCH_BUDGET_REFUSED);
+          // Nor is one past a spending limit: the person reads when it resets.
+          if (code === 'spending_limit_reached')
+            throw new SearchRefused(
+              String(object(object(refusal).error).message ?? SEARCH_BUDGET_REFUSED),
+            );
           throw new Error(`search gateway ${response.status} ${code}`);
         }
         const reply = await response.json();
@@ -450,6 +460,18 @@ export async function openSearchGateway(options: SearchGatewayOptions) {
             : responsesSearchOutcome(reply, request.maxResults);
         // The fee is for the searches the provider ran, sources or not.
         await budget.searched?.(sent, found.searches);
+        // The fee counts toward the spending caps too, against the same person.
+        if (found.searches > 0)
+          await options.spending?.record(searchPrincipal(sent), {
+            provider: target.provider,
+            modelRequested: target.model,
+            modelActual: null,
+            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0 },
+            latencyMs: 0,
+            status: 'succeeded',
+            httpStatus: null,
+            feeUsd: found.searches * SEARCH_FEE_USD,
+          });
         // A reply with no sources searched nothing; Melete's own search tries.
         if (found.results.length === 0) throw new Error('native search returned no sources');
         return {
@@ -488,11 +510,13 @@ export async function configuredSearchGateway(
     settings?: ModelSettingsService;
     /** The upstream transport; tests pass a stand-in provider. */
     fetch?: GatewayOptions['fetch'];
+    spending?: GatewayOptions['spending'];
   } = {},
 ) {
   const source = serviceModelSource({ env, settings: connected.settings });
   return openSearchGateway({
     sql,
+    spending: connected.spending,
     providers: configuredProviders(env, () => {}, connected.signIn),
     currentProviders: source.providers,
     privacy,

@@ -1273,3 +1273,50 @@ export const schema = {
 export const orphanedRoutineThread = pgTable('orphaned_routine_thread', {
   jobId: text('job_id').primaryKey(),
 });
+
+/**
+ * Every model call any of the service's gateways settled: who it counts
+ * against, which model served it and why, the tokens it used and what that
+ * is estimated to have cost. Spending caps and Settings' usage read it.
+ */
+export const modelUsage = pgTable(
+  'model_usage',
+  {
+    id: text('id').primaryKey(),
+    createdAt: created(),
+    spaceId: text('space_id'),
+    principalId: text('principal_id'),
+    jobId: text('job_id'),
+    /** `agent` for an agent turn, otherwise the service call's purpose (memory, voice, ...). */
+    purpose: text('purpose').notNull(),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    modelActual: text('model_actual'),
+    /** `vision` or `fallback` when the call went to another model than the one it named. */
+    route: text('route'),
+    routedFrom: text('routed_from'),
+    status: text('status').notNull(),
+    inputTokens: integer('input_tokens').notNull().default(0),
+    outputTokens: integer('output_tokens').notNull().default(0),
+    cachedInputTokens: integer('cached_input_tokens').notNull().default(0),
+    costUsd: doublePrecision('cost_usd').notNull().default(0),
+    usageEstimated: boolean('usage_estimated').notNull().default(false),
+  },
+  (t) => [
+    index('model_usage_created_idx').on(t.createdAt),
+    index('model_usage_principal_idx').on(t.principalId, t.createdAt),
+    index('model_usage_space_idx').on(t.spaceId, t.createdAt),
+  ],
+);
+
+/** A spending notice already given for a period, so each is given once. */
+export const spendingNotice = pgTable(
+  'spending_notice',
+  {
+    scope: text('scope').notNull(),
+    period: text('period').notNull(),
+    level: text('level').notNull(),
+    createdAt: created(),
+  },
+  (t) => [primaryKey({ columns: [t.scope, t.period, t.level] })],
+);

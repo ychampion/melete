@@ -286,6 +286,25 @@ change waits), "Auto-review low-risk", and a switch for each class.
 exercises each tier, every reviewer failure, both limits and recovery after a
 restart.
 
+## Spending caps, routing and alerts
+
+- **Spending caps.** Daily and monthly limits in estimated dollars and in
+  tokens, for the installation and for each person, over every model call:
+  agent turns, routines, background jobs and the service's own calls. At 80% the
+  person sees a quiet notice; at the limit new calls are refused with a plain
+  sentence that says when it resets, while a call in flight finishes. Settings ›
+  Models shows this month's usage. Evidence: `test/integration/spending.test.ts`.
+- **Model routing.** A fast model for memory reads, voice asides, reviews and
+  scans; a vision model for agent requests that carry pictures; fallbacks when a
+  provider limits or fails. A model the owner chose in the app wins. Every
+  rerouted call's receipt names the model that served it. Reasoning effort is
+  set per role. Evidence: `apps/melete/src/gateway/routing.test.ts`.
+- **Alerts.** A webhook and/or email when the database, the runtime, the job
+  queue or the error rate is unhealthy, and `GET /health/detail` for the
+  operator. Evidence: `apps/melete/src/health/monitor.test.ts`.
+
+See [DEPLOYMENT](DEPLOYMENT.md#spending-caps) for the settings.
+
 ## Verification
 
 ```sh

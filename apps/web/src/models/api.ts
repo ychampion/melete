@@ -23,6 +23,11 @@ export type SignInStart = Json<
   paths['/model-providers/{provider}/sign-in']['post']['responses'][201]
 >;
 
+export type Usage = Json<paths['/usage']['get']['responses'][200]>;
+
+/** This account's and the installation's model spending, the limits and any notice. */
+export const usage = () => call<Usage>('/usage');
+
 const provider = (name: string) => encodeURIComponent(name);
 
 export const models = {

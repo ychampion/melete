@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { EXEC_LIMITS, PROCESS_LIMITS } from '@melete/contracts';
 import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete/runtime-hermes';
 import { z } from 'zod';
+import { REASONING_EFFORTS } from './gateway/effort.ts';
+import { parseModelPrices } from './gateway/prices.ts';
+import { parseModelChoice } from './gateway/routing.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -454,6 +457,66 @@ const variables = z.object({
   MELETE_REVIEW_HOURLY_LIMIT: z.coerce.number().int().nonnegative().default(60),
 
   /**
+   * Spending caps on model calls, in US dollars (estimated from the price
+   * table) and in tokens, for the whole installation and for each person, per
+   * UTC day and month. Unset is no limit. docs/DEPLOYMENT.md, "Spending caps".
+   */
+  MELETE_SPEND_MONTHLY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
+  MELETE_SPEND_DAILY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
+  MELETE_SPEND_PERSON_MONTHLY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
+  MELETE_SPEND_PERSON_DAILY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
+  MELETE_SPEND_MONTHLY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
+  MELETE_SPEND_DAILY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
+  MELETE_SPEND_PERSON_MONTHLY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
+  MELETE_SPEND_PERSON_DAILY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
+  /** Percent of a limit at which the person is told it is close. */
+  MELETE_SPEND_NOTICE_PERCENT: unsetWhenBlank(z.coerce.number().int().min(1).max(99).default(80)),
+  /** Per-million-token prices that replace the built-in estimates, as JSON. */
+  MELETE_MODEL_PRICES: unsetWhenBlank(
+    z
+      .string()
+      .optional()
+      .superRefine((value, context) => {
+        try {
+          parseModelPrices(value);
+        } catch (error) {
+          context.addIssue({ code: 'custom', message: (error as Error).message });
+        }
+      }),
+  ),
+  /**
+   * Model routing, each `provider/model`: a fast model for the service's short
+   * calls, a vision model for agent requests that carry pictures, and
+   * fallbacks (comma-separated) for a provider that limits or fails.
+   */
+  MELETE_MODEL_FAST: unsetWhenBlank(z.string().max(400).optional()),
+  MELETE_MODEL_VISION: unsetWhenBlank(z.string().max(400).optional()),
+  MELETE_MODEL_FALLBACK: unsetWhenBlank(z.string().max(2000).optional()),
+  /** Reasoning effort for the agent's turns and for the service's side calls. */
+  MELETE_REASONING_EFFORT_AGENT: unsetWhenBlank(z.enum(REASONING_EFFORTS).default('medium')),
+  MELETE_REASONING_EFFORT_SIDE: unsetWhenBlank(z.enum(REASONING_EFFORTS).default('low')),
+
+  /**
+   * Operator alerts when the service is unhealthy: a webhook that receives a
+   * JSON POST, and/or email through an SMTP server. docs/DEPLOYMENT.md, "Alerts".
+   */
+  MELETE_ALERT_WEBHOOK_URL: unsetWhenBlank(z.url({ protocol: /^https?$/ }).optional()),
+  MELETE_ALERT_EMAIL_TO: unsetWhenBlank(z.string().max(500).optional()),
+  MELETE_ALERT_EMAIL_FROM: unsetWhenBlank(z.string().max(320).optional()),
+  /** smtp:// or smtps://user:password@host:port, for alert email. */
+  MELETE_ALERT_SMTP_URL: unsetWhenBlank(z.string().max(2000).optional()),
+  /** How often the service checks its own health, in seconds. */
+  MELETE_ALERT_INTERVAL_SECONDS: unsetWhenBlank(
+    z.coerce.number().int().min(10).max(3600).default(60),
+  ),
+  /** While unhealthy, how often the alert is repeated, in minutes. */
+  MELETE_ALERT_REPEAT_MINUTES: unsetWhenBlank(
+    z.coerce.number().int().min(5).max(10_080).default(60),
+  ),
+  /** A bearer token that opens GET /health/detail to the operator. */
+  MELETE_OPERATOR_TOKEN: unsetWhenBlank(z.string().min(24).max(512).optional()),
+
+  /**
    * What the engine in an attempt's cell is bounded by. Each is read again from
    * the environment when an attempt starts, which is where it is applied, but it
    * is checked here so a malformed value stops the service on boot rather than
@@ -713,6 +776,19 @@ export const envSchema = variables.transform((value, context) => {
           path: [name],
           message: `MELETE_BLOB_STORE=s3 needs ${name}`,
         });
+  for (const name of ['MELETE_MODEL_FAST', 'MELETE_MODEL_VISION', 'MELETE_MODEL_FALLBACK'] as const)
+    for (const entry of (value[name] ?? '').split(',').filter((part) => part.trim()))
+      try {
+        parseModelChoice(entry, name);
+      } catch (error) {
+        context.addIssue({ code: 'custom', path: [name], message: (error as Error).message });
+      }
+  if (value.MELETE_ALERT_EMAIL_TO && !value.MELETE_ALERT_SMTP_URL)
+    context.addIssue({
+      code: 'custom',
+      path: ['MELETE_ALERT_SMTP_URL'],
+      message: 'MELETE_ALERT_EMAIL_TO needs MELETE_ALERT_SMTP_URL to send through',
+    });
   if (Boolean(value.GOOGLE_OAUTH_CLIENT_ID) !== Boolean(value.GOOGLE_OAUTH_CLIENT_SECRET))
     context.addIssue({
       code: 'custom',

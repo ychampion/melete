@@ -334,3 +334,42 @@ test('the provider’s search count is settled as the fee, and a budget refusal 
   expect((error as Error).message).toBe(SEARCH_BUDGET_REFUSED);
   expect(upstream).toEqual([]);
 });
+
+test('a search past a spending limit is refused with its sentence, and the fee counts toward the caps', async () => {
+  const recorded: GatewaySettlement[] = [];
+  const upstream: Request[] = [];
+  const open = (refuse: boolean) =>
+    openSearchGateway({
+      sql: undefined as never,
+      providers,
+      privacy: false,
+      attemptModel: async () => ({ provider: 'anthropic', model: 'claude-sonnet-4-5' }),
+      budget: () => ({ reserve: async () => ({ id: 'res_1' }), settle: async () => {} }),
+      spending: {
+        admit: async () => {
+          if (refuse)
+            throw new GatewayError(
+              402,
+              'spending_limit_reached',
+              "This month's limit is reached; it resets on November 1.",
+            );
+        },
+        record: async (_principal, settlement) => void recorded.push(settlement),
+      },
+      fetch: async (outbound) => {
+        upstream.push(outbound);
+        return Response.json(MESSAGES_REPLY);
+      },
+    });
+  const capped = await open(true);
+  closers.push(capped.close);
+  const error = await capped.backend.search(request).catch((caught: unknown) => caught);
+  // Refused, not handed to a keyless backend.
+  expect(error).toBeInstanceOf(SearchRefused);
+  expect((error as Error).message).toBe("This month's limit is reached; it resets on November 1.");
+  expect(upstream).toEqual([]);
+  const allowed = await open(false);
+  closers.push(allowed.close);
+  await allowed.backend.search(request);
+  expect(recorded.map((settlement) => settlement.feeUsd ?? 0).filter(Boolean)).toEqual([0.01]);
+});

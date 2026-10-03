@@ -11,6 +11,8 @@ import {
   REQUEST_FRAMING_TOKENS,
 } from '@melete/contracts';
 import { localEndpoint, PrivacyRouter } from '../privacy/index.ts';
+import type { PreparedRequest } from '../privacy/router.ts';
+import { effortRefused, type ReasoningEffort, refuseEffort, withEffort } from './effort.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { countImages, imageTokens, isInlineImage, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
@@ -19,16 +21,21 @@ import {
   checkConnectTarget,
   PROVIDER_HOSTS,
   providersFromEnv,
+  providerUrl,
   requiresResponsesProtocol,
   resolveRoute,
 } from './providers.ts';
+import { providerIsLocal } from './routing.ts';
 import {
   type GatewayBudget,
   GatewayError,
   type GatewayPrincipal,
+  type GatewayProtocol,
   type GatewayProvider,
   type GatewayReservation,
   type GatewaySettlement,
+  type GatewaySpending,
+  type SignedInCredential,
 } from './types.ts';
 
 export * from './fake.ts';
@@ -72,6 +79,13 @@ export interface GatewayOptions {
    * transport.
    */
   privacy: PrivacyRouter | false;
+  /** The installation's spending caps. Left out, calls are limited by the job budget alone. */
+  spending?: GatewaySpending;
+  /**
+   * How hard a reasoning model thinks, for this gateway's role: the agent's
+   * turns or the service's side calls. Added only where a request names none.
+   */
+  reasoningEffort?: ReasoningEffort;
   /**
    * Lets a request carry its provider's own web search tool, and no other
    * built-in tool. Only the service's search gateway sets it: its calls are one
@@ -117,7 +131,9 @@ function fail(response: ServerResponse, error: unknown): void {
     'cache-control': 'no-store',
     connection: 'close',
   });
-  response.end(JSON.stringify({ error: { code: failure.code, message: failure.code } }));
+  response.end(
+    JSON.stringify({ error: { code: failure.code, message: failure.detail ?? failure.code } }),
+  );
 }
 
 async function readBody(
@@ -178,6 +194,15 @@ export function createModelGateway(options: GatewayOptions): Server {
     options.onError?.(
       new Error(error instanceof GatewayError ? error.code : 'gateway_ledger_failure'),
     );
+  /** Settle with the budget first, so the ledger holds the evidence, then count the spend. */
+  const settle = async (
+    principal: GatewayPrincipal,
+    reservation: GatewayReservation,
+    settlement: GatewaySettlement,
+  ) => {
+    await options.budget.settle(reservation, settlement);
+    await options.spending?.record(principal, settlement);
+  };
 
   const handle = async (
     request: IncomingMessage,
@@ -208,9 +233,16 @@ export function createModelGateway(options: GatewayOptions): Server {
     // Set when the attempt this call is for was stopped, so its receipt says so.
     let stopped = false;
     let untrack = () => {};
+    let caller: GatewayPrincipal | undefined;
+    // What the call that is answering was prepared with, for the reply below.
+    let prepared: PreparedRequest | null = null;
+    let local: PreparedRequest['local'] = null;
+    let signedIn: Awaited<ReturnType<SignedInCredential['current']>> | undefined;
+    let result: Response | undefined;
     try {
       if (request.method !== 'POST') throw new GatewayError(405, 'method_denied');
       const principal = inherited?.principal ?? (await options.authenticate(capability(request)));
+      caller = principal;
       untrack = trackModelCall({
         jobId: principal.jobId,
         attemptId: principal.attemptId,
@@ -231,9 +263,12 @@ export function createModelGateway(options: GatewayOptions): Server {
         }
         target = `https://${inherited.host}${target}`;
       }
+      const available = options.currentProviders
+        ? await options.currentProviders(providers)
+        : providers;
       const { provider, protocol, upstream } = resolveRoute(
         target,
-        options.currentProviders ? await options.currentProviders(providers) : providers,
+        available,
         options.defaultProvider ?? 'fireworks',
       );
       const surrogate =
@@ -264,7 +299,6 @@ export function createModelGateway(options: GatewayOptions): Server {
       // A multiplied completion count would evade the single-output reservation.
       if (body.n !== undefined && body.n !== 1)
         throw new GatewayError(400, 'multiple_outputs_denied');
-      const limitKey = protocol === 'responses' ? 'max_output_tokens' : 'max_tokens';
       // A limit the runtime names is honoured or refused, never rewritten. One
       // it leaves out is filled in, bounded by what the attempt may still spend,
       // so the substitute cannot itself be the reason a call is refused.
@@ -286,13 +320,6 @@ export function createModelGateway(options: GatewayOptions): Server {
       // cannot help a request like this one.
       if (requested > modelContextWindow(model) - REQUEST_FRAMING_TOKENS)
         throw new GatewayError(400, 'output_exceeds_context');
-      for (const key of ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
-        delete body[key];
-      body[
-        protocol === 'chat/completions' && provider.name === 'openai'
-          ? 'max_completion_tokens'
-          : limitKey
-      ] = requested;
       if (protocol === 'messages') {
         // Anthropic's current API rejects these controls. History remains append-only and untouched.
         for (const key of ['temperature', 'top_p', 'top_k']) delete body[key];
@@ -309,92 +336,225 @@ export function createModelGateway(options: GatewayOptions): Server {
       // within the limits countImages holds it to.
       if (containsRemoteInput(options.providerSearch ? withoutSearchTools(body) : body))
         throw new GatewayError(400, 'unmetered_input_denied');
-      countImages(body);
-      // Where this request may go and what it may carry: private conversations
-      // go to the person's own model, everything else leaves with its sensitive
-      // details swapped for placeholders. A refusal happens before anything is
-      // reserved, and nothing below sees the unredacted body again.
+      const carriesPictures = countImages(body) > 0;
+      // The models this call may be served by, in order: the one it names (or
+      // the vision model, for a picture its own model cannot read), then the
+      // operator's fallbacks. Each speaks this request's protocol.
+      // A model on the person's own machine or network keeps its calls: nothing
+      // is rerouted or sent to a cloud fallback from it.
+      const primaryLocal = providerIsLocal(provider);
+      const candidates: { provider: string; model: string; plain?: boolean }[] = primaryLocal
+        ? [{ provider: provider.name, model }]
+        : routeCandidates(principal, provider.name, model, carriesPictures);
       const router = options.privacy === false ? null : options.privacy;
-      const prepared = router
-        ? await router.prepare({ principal, provider, protocol, body })
-        : null;
-      // The runtime's mark on a screenshot is for the router; it never leaves.
-      const outbound = withoutMarks(prepared?.body ?? body);
-      const local = prepared?.local ?? null;
-      const encoded = JSON.stringify(outbound);
-      // A picture is charged as the flat count the engine compacts by, not as
-      // the base64 text it travels in.
-      const pictures = imageTokens(outbound);
-      const inputTokens =
-        estimateInputTokens(pictures.text === outbound ? encoded : JSON.stringify(pictures.text)) +
-        pictures.tokens +
-        REQUEST_FRAMING_TOKENS;
-      if (
-        inputTokens >
-        inputTokenAllowance(model, requested, { max_input_tokens: principal.maxInputTokens })
-      )
-        throw new GatewayError(413, 'input_context_exceeded');
-      const estimatedTokens = inputTokens + requested;
-      if (!local && !provider.fake && !provider.apiKey && !provider.signedIn)
-        throw new GatewayError(503, 'provider_key_unavailable');
-      // Opened before anything is reserved, so a provider nobody is signed in
-      // to refuses the call without charging the job.
-      const signedIn = local || provider.fake ? undefined : await provider.signedIn?.current();
-      const credential = local ? local.apiKey : (signedIn?.token ?? provider.apiKey);
-      reservation = await options.budget.reserve({
-        principal,
-        requestId: randomUUID(),
-        provider: provider.name,
-        model,
-        estimatedTokens,
-        maxOutputTokens: requested,
-      });
-      settlement = {
-        provider: provider.name,
-        modelRequested: model,
-        modelActual: null,
-        usage: null,
-        latencyMs: 0,
-        status: 'unknown',
-        httpStatus: null,
-        ...(prepared ? { privacy: prepared.receipt } : {}),
-        ...(stopped ? { stopped } : {}),
-      };
-      if (abort.signal.aborted) throw new GatewayError(504, 'request_aborted');
-      const headers = new Headers({
-        'content-type': 'application/json',
-        accept: 'application/json, text/event-stream',
-      });
-      for (const [name, value] of Object.entries(signedIn?.headers ?? {})) headers.set(name, value);
-      if (local) {
-        if (credential) headers.set('authorization', `Bearer ${credential}`);
-        // The router pinned the local model to the address it checked for this request.
-        if (local.host) headers.set('host', local.host);
-      } else if (protocol === 'messages') {
-        headers.set('x-api-key', credential ?? 'fake');
-        headers.set('anthropic-version', '2023-06-01');
-      } else headers.set('authorization', `Bearer ${credential ?? 'fake'}`);
-      const result =
-        provider.fake && !local
-          ? await fake(outbound, principal.attemptId, protocol)
-          : await transport(
-              new Request((local ? localEndpoint(local, 'chat/completions') : upstream).href, {
-                method: 'POST',
-                headers,
-                body: encoded,
-                redirect: 'error',
-                signal: abort.signal,
-              }),
-            );
-      settlement.httpStatus = result.status;
-      heard();
-      if (!result.ok || !result.body) {
-        // Provider errors may contain injected keys or internal request diagnostics.
-        await result.body?.cancel();
-        settlement.status = 'failed';
-        if (signedIn && result.status === 401) provider.signedIn?.rejected(signedIn.generation);
-        throw new GatewayError(result.status === 429 ? 429 : 502, 'provider_rejected_request');
+      let firstFailure: unknown;
+      for (const [index, candidate] of candidates.entries()) {
+        const last = index === candidates.length - 1;
+        const target =
+          candidate.provider === provider.name
+            ? { provider, upstream }
+            : routedProvider(available, candidate.provider, protocol);
+        if (!target) {
+          if (last) throw firstFailure ?? new GatewayError(403, 'provider_denied');
+          continue;
+        }
+        const callProvider = target.provider;
+        const callModel = candidate.model;
+        const callBody: Record<string, unknown> = { ...body, model: callModel };
+        for (const key of ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
+          delete callBody[key];
+        callBody[
+          protocol === 'chat/completions' && callProvider.name === 'openai'
+            ? 'max_completion_tokens'
+            : protocol === 'responses'
+              ? 'max_output_tokens'
+              : 'max_tokens'
+        ] = requested;
+        const reasoningOf = () => JSON.stringify([callBody.reasoning, callBody.reasoning_effort]);
+        const before = reasoningOf();
+        if (!candidate.plain && !effortRefused(callProvider.name, callModel))
+          withEffort(callBody, {
+            protocol,
+            provider: callProvider.name,
+            model: callModel,
+            effort: options.reasoningEffort,
+          });
+        const effortAdded = reasoningOf() !== before;
+        const rerouted = callModel !== model || callProvider.name !== provider.name;
+        const route: GatewaySettlement['route'] = !rerouted
+          ? undefined
+          : index === 0
+            ? 'vision'
+            : 'fallback';
+        let encoded: string;
+        let inputTokens: number;
+        try {
+          // Where this request may go and what it may carry: private conversations
+          // go to the person's own model, everything else leaves with its sensitive
+          // details swapped for placeholders. A refusal happens before anything is
+          // reserved, and nothing below sees the unredacted body again.
+          prepared = router
+            ? await router.prepare({ principal, provider: callProvider, protocol, body: callBody })
+            : null;
+          // The runtime's mark on a screenshot is for the router; it never leaves.
+          const outbound = withoutMarks(prepared?.body ?? callBody);
+          local = prepared?.local ?? null;
+          encoded = JSON.stringify(outbound);
+          // A picture is charged as the flat count the engine compacts by, not as
+          // the base64 text it travels in.
+          const pictures = imageTokens(outbound);
+          inputTokens =
+            estimateInputTokens(
+              pictures.text === outbound ? encoded : JSON.stringify(pictures.text),
+            ) +
+            pictures.tokens +
+            REQUEST_FRAMING_TOKENS;
+          if (
+            inputTokens >
+            inputTokenAllowance(callModel, requested, {
+              max_input_tokens: principal.maxInputTokens,
+            })
+          )
+            throw new GatewayError(413, 'input_context_exceeded');
+          if (!local && !callProvider.fake && !callProvider.apiKey && !callProvider.signedIn)
+            throw new GatewayError(503, 'provider_key_unavailable');
+          // Opened before anything is reserved, so a provider nobody is signed in
+          // to refuses the call without charging the job.
+          signedIn =
+            local || callProvider.fake ? undefined : await callProvider.signedIn?.current();
+        } catch (error) {
+          // An alternative that cannot take this request is passed over; the
+          // call then fails as the model it named did.
+          if (index === 0 || !(error instanceof GatewayError)) throw error;
+          if (last) throw firstFailure ?? error;
+          continue;
+        }
+        const credential = local ? local.apiKey : (signedIn?.token ?? callProvider.apiKey);
+        // Served on the person's own model: their local model, an endpoint the
+        // owner confirmed is on their device, or a model server on their network.
+        const servedLocally =
+          Boolean(local) || prepared?.route === 'on_device' || providerIsLocal(callProvider);
+        // Past a spending limit no new call is made; a call already running
+        // finishes and is counted.
+        await options.spending?.admit(principal, {
+          provider: local ? 'local' : callProvider.name,
+          model: local ? local.model : callModel,
+          inputTokens,
+          maxOutputTokens: requested,
+          local: servedLocally,
+        });
+        reservation = await options.budget.reserve({
+          principal,
+          requestId: randomUUID(),
+          provider: callProvider.name,
+          model: callModel,
+          estimatedTokens: inputTokens + requested,
+          maxOutputTokens: requested,
+        });
+        settlement = {
+          provider: callProvider.name,
+          modelRequested: callModel,
+          modelActual: null,
+          usage: null,
+          latencyMs: 0,
+          status: 'unknown',
+          httpStatus: null,
+          ...(prepared ? { privacy: prepared.receipt } : {}),
+          ...(stopped ? { stopped } : {}),
+          ...(route ? { route, routedFrom: { provider: provider.name, model } } : {}),
+          ...(servedLocally
+            ? {
+                servedLocally: true,
+                ...(local ? { servedBy: { provider: 'local', model: local.model } } : {}),
+              }
+            : {}),
+        };
+        charged = { input: inputTokens, output: requested };
+        if (abort.signal.aborted) throw new GatewayError(504, 'request_aborted');
+        const headers = new Headers({
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        });
+        for (const [name, value] of Object.entries(signedIn?.headers ?? {}))
+          headers.set(name, value);
+        if (local) {
+          if (credential) headers.set('authorization', `Bearer ${credential}`);
+          // The router pinned the local model to the address it checked for this request.
+          if (local.host) headers.set('host', local.host);
+        } else if (protocol === 'messages') {
+          headers.set('x-api-key', credential ?? 'fake');
+          headers.set('anthropic-version', '2023-06-01');
+        } else headers.set('authorization', `Bearer ${credential ?? 'fake'}`);
+        // A request kept on the person's own model has no alternative.
+        const alternatives = !last && !servedLocally;
+        let answer: Response;
+        try {
+          answer =
+            callProvider.fake && !local
+              ? await fake(JSON.parse(encoded), principal.attemptId, protocol)
+              : await transport(
+                  new Request(
+                    (local ? localEndpoint(local, 'chat/completions') : target.upstream).href,
+                    {
+                      method: 'POST',
+                      headers,
+                      body: encoded,
+                      redirect: 'error',
+                      signal: abort.signal,
+                    },
+                  ),
+                );
+        } catch (error) {
+          if (abort.signal.aborted || !alternatives) throw error;
+          // The provider could not be reached; the next model is tried.
+          settlement.status = 'failed';
+          settlement.latencyMs = Math.round(performance.now() - started);
+          await settle(principal, reservation, settlement);
+          firstFailure ??= new GatewayError(502, 'provider_unreachable');
+          reservation = undefined;
+          settlement = undefined;
+          continue;
+        }
+        settlement.httpStatus = answer.status;
+        heard();
+        if (!answer.ok || !answer.body) {
+          // Provider errors may contain injected keys or internal request diagnostics.
+          await answer.body?.cancel();
+          settlement.status = 'failed';
+          if (signedIn && answer.status === 401)
+            callProvider.signedIn?.rejected(signedIn.generation);
+          const failure = new GatewayError(
+            answer.status === 429 ? 429 : 502,
+            'provider_rejected_request',
+          );
+          // A model that refuses the reasoning control the gateway added is
+          // asked once more without it, before anything else is tried.
+          if (effortAdded && answer.status === 400 && !local) {
+            // Remembered for this process, so the next call to it goes plain at once.
+            refuseEffort(callProvider.name, callModel);
+            settlement.latencyMs = Math.round(performance.now() - started);
+            await settle(principal, reservation, settlement);
+            firstFailure ??= failure;
+            reservation = undefined;
+            settlement = undefined;
+            candidates.splice(index + 1, 0, { ...candidate, plain: true });
+            continue;
+          }
+          if (alternatives && retryableStatus(answer.status)) {
+            settlement.latencyMs = Math.round(performance.now() - started);
+            await settle(principal, reservation, settlement);
+            firstFailure ??= failure;
+            reservation = undefined;
+            settlement = undefined;
+            continue;
+          }
+          throw failure;
+        }
+        result = answer;
+        break;
       }
+      if (!result?.body || !reservation || !settlement)
+        throw firstFailure ?? new GatewayError(403, 'model_denied');
       const streaming = body.stream === true;
       const contentType = result.headers.get('content-type') ?? '';
       if (
@@ -406,7 +566,6 @@ export function createModelGateway(options: GatewayOptions): Server {
         throw new GatewayError(502, 'unexpected_provider_response');
       }
       collector = new UsageCollector(streaming, options.maxResponseBytes);
-      charged = { input: inputTokens, output: requested };
       const redactor = new SecretRedactor(
         [...secrets, signedIn?.token, local?.apiKey].filter((key): key is string => !!key),
       );
@@ -443,9 +602,15 @@ export function createModelGateway(options: GatewayOptions): Server {
       settlement.modelActual = collector.modelActual;
       settlement.usage = collector.completed ? collector.usage : null;
       settlement.status = collector.completed ? 'succeeded' : 'unknown';
+      // A reply cut off before its usage arrived is still billed by the
+      // provider. The job keeps its whole reservation charged; the spending
+      // caps count what it streamed, estimated.
+      if (!settlement.usage && charged)
+        settlement.spendEstimate =
+          collector.usage ?? collector.estimate(charged.input, charged.output);
       settlement.latencyMs = Math.round(performance.now() - started);
       // End-of-stream or the JSON result is released only after its evidence is durable.
-      await options.budget.settle(reservation, settlement);
+      await settle(principal, reservation, settlement);
       settled = true;
       if (!collector.completed) throw new GatewayError(502, 'incomplete_provider_response');
       if (streaming) response.end(tail);
@@ -469,11 +634,17 @@ export function createModelGateway(options: GatewayOptions): Server {
           settlement.usage = collector.estimate(charged.input, charged.output);
           settlement.usageEstimated = true;
         }
+        // A call that failed part way through its reply is billed too: the
+        // spending caps count what it streamed.
+        if (!settlement.usage && collector && charged)
+          settlement.spendEstimate =
+            collector.usage ?? collector.estimate(charged.input, charged.output);
         try {
           await options.budget.settle(reservation, settlement);
         } catch (ledgerError) {
           reportError(ledgerError);
         }
+        if (caller) await options.spending?.record(caller, settlement);
       }
       fail(response, error);
     } finally {
@@ -613,6 +784,51 @@ async function forwardToBroker(
   outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
   outgoing.end(Buffer.from(await response.arrayBuffer()));
 }
+
+/**
+ * The models one call may be served by, in the order they are tried. A request
+ * carrying a picture goes to the vision route, when the principal has one, and
+ * takes no fallback: the fallbacks may not read pictures.
+ */
+function routeCandidates(
+  principal: GatewayPrincipal,
+  provider: string,
+  model: string,
+  carriesPictures: boolean,
+): { provider: string; model: string }[] {
+  const allowed = (choice: { provider: string; model: string }) =>
+    principal.allowedModels.some(
+      (entry) => entry.provider === choice.provider && entry.model === choice.model,
+    );
+  const vision = principal.routes?.vision;
+  if (carriesPictures && vision && allowed(vision)) return [vision];
+  // A picture never goes to a fallback, which may not read it.
+  if (carriesPictures) return [{ provider, model }];
+  return [
+    { provider, model },
+    ...(principal.routes?.fallback ?? []).filter(
+      (choice) => allowed(choice) && !(choice.provider === provider && choice.model === model),
+    ),
+  ];
+}
+
+/** Another configured provider's endpoint for this protocol, or null when it has none. */
+function routedProvider(
+  providers: readonly GatewayProvider[],
+  name: string,
+  protocol: GatewayProtocol,
+): { provider: GatewayProvider; upstream: URL } | null {
+  const provider = providers.find((candidate) => candidate.name === name);
+  if (!provider?.protocols.includes(protocol)) return null;
+  try {
+    return { provider, upstream: providerUrl(provider, protocol) };
+  } catch {
+    return null;
+  }
+}
+
+/** A provider answer another model may not give: limited, timed out or failing. */
+const retryableStatus = (status: number) => status === 408 || status === 429 || status >= 500;
 
 function containsRemoteInput(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsRemoteInput);
