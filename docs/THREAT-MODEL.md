@@ -368,8 +368,9 @@ sent, undone or steered.
 Inside a shared space, a job's memory and connections follow the job's
 principal too. A member's job recalls what the space shares with its members,
 never what is private to the owner, on every memory deployment. A shared
-space's connections, built-in tools included, serve its owner unless marked
-for the room. A member's own job is offered none of them, cannot act through
+space's connections serve its owner unless marked for the room, and the
+built-in tools a room is given are marked for the room's requests. A member's
+own job is offered none of them, cannot act through
 them, and cannot watch what they receive, and the broker checks this again
 before anything is sent. Every answer to a permission records the person who
 gave it; one made with the operator's approval key is recorded as the service's.
@@ -720,12 +721,12 @@ was open before too, since the question showed file counts and not code. A
 conversation that read an app's responses, or that is set to ask before
 acting, still asks for every publish.
 
-## Attacker 10: a page served from the agent's computer
+## Attacker 11: a page served from the agent's computer
 
 A person can preview a web server a background process runs in the agent's
 computer (see [sandbox-docker](sandbox-docker.md#previewing-a-server)). The
 server and its pages were written by the agent, and may be hostile in the same
-ways an app may. The aims are those of Attacker 9, plus two of its own: to use
+ways an app may. The aims are those of Attacker 10, plus two of its own: to use
 the preview to reach something else on the computer's network, and to reach
 another person's computer.
 
@@ -769,6 +770,48 @@ ends the preview on its next request.
 WebRTC and name lookups are open to a previewed page as they are to an app.
 The preview shows what the agent's own server serves, to the person who asked
 for it.
+## Attacker 12: another member of a room
+
+A room is a shared space where several people talk to one agent (see
+[ROOMS](ROOMS.md)). Another member may be hostile. The aims are to read what a
+person keeps outside the room, to make the room's agent act on someone else's
+behalf, to steer or withdraw someone else's request, and to keep reading after
+being removed.
+
+The room's agent acts as the room's own principal, not as any member. That
+principal has no password and never holds a session: sign-in refuses it before
+any password is checked, at the cost of an unknown email, and a session written
+for it by any other means is not accepted. It is never listed among people or a
+room's members, and it is never added to a room. Its membership generation is
+the room's roster generation, bumped with every change of who is in the room,
+so a capability minted before the change is refused at the broker.
+
+Every speaker is shown, to people and to the agent, as their chosen name
+followed by their email in angle brackets. The email is unique and nobody
+chooses it, so it is what identifies a speaker; the agent is told the name
+before it is self-chosen. A name is one line of plain text without `<`, `>` or
+`@`, so it cannot pass for an email, and where a name enters the agent's input
+it is quoted. Each ask is its own request job, recorded with the person who asked, and only
+that person's words reach it: another member's message starts their own request
+or none, never touches someone else's, and so never withdraws their pending
+permission. A request reads the room's own material and the thread with each
+speaker's name, and acts only through the room's tools and the connections
+marked for the room. Nothing from a member's personal space reaches it.
+
+Every room route checks, on each request, that the caller is in the room now.
+A room's requests belong to the room's principal, so every personal surface
+(chats, plans, approvals, the job and event routes) hides them by its existing
+own-job rule; three paths admit room readers on purpose: a request's files, the
+room computer's view (owners alone take it over), and the room's own routes. A
+thread's live stream checks membership before every frame and closes when the
+reader is removed. Removing someone, or their leaving, fences work in flight,
+which starts again with the new roster; the requests they asked end.
+[rooms.test.ts](../apps/melete/test/integration/rooms.test.ts) holds each of
+these as a test, including the room computer through the service's own routes.
+
+What remains: what a member says in a room stays in the room after they leave.
+Isolation between a room and the rest of the installation is an application
+check, as it is between accounts.
 
 ## Credentials, host and storage
 

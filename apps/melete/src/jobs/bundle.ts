@@ -46,17 +46,19 @@ import {
   knowledgeRecord,
   planMilestone,
   question,
+  space,
   task,
   trigger,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
-import { agentIdentity, agentView } from '../experience/agents.ts';
+import { agentIdentity, agentView, roomIdentity } from '../experience/agents.ts';
 import { procedureReach, selectProcedureSkills } from '../learning/selection.ts';
 import type { MemoryScope, MemorySql } from '../memory/db.ts';
 import { pendingRepairBriefs } from '../memory/outputs.ts';
 import { asKnowledge, attemptRecallQuery, recall } from '../memory/recall.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { selectedContext } from '../principals/context.ts';
+import { roomTranscript } from '../rooms/transcript.ts';
 import { runBrief } from '../runs/record.ts';
 import { closedComputerStepColumn } from '../sandbox/closed-step.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
@@ -267,11 +269,35 @@ export function renderEarlierWork(actions: readonly EarlierAction[]): string {
   ].join('\n');
 }
 
+/**
+ * A room's thread and the request's own history as one conversation, in the
+ * order things were said. Each list is already in order; where two entries
+ * share a time the thread's comes first, and the history's own order (a tool
+ * call before its result) is never changed.
+ */
+export function inTimeOrder(
+  thread: readonly CanonicalMessage[],
+  history: readonly CanonicalMessage[],
+): CanonicalMessage[] {
+  const merged: CanonicalMessage[] = [];
+  let next = 0;
+  for (const entry of history) {
+    while (next < thread.length && (thread[next]?.at ?? '') <= entry.at) {
+      const said = thread[next++];
+      if (said) merged.push(said);
+    }
+    merged.push(entry);
+  }
+  return [...merged, ...thread.slice(next)];
+}
+
 /** Pure assembly is shared by the database reader and focused replay tests. */
 export function assembleHistory(
   events: readonly HistoryEvent[],
   attempts: readonly HistoryAttempt[],
   afterSeq: number,
+  /** In a room, the name of each person who spoke, by principal; each message carries its speaker's. */
+  names?: ReadonlyMap<string, string>,
 ): Pick<AttemptBundle, 'inputs' | 'transcript'> & { progressSummary: string } {
   const inputs: AttemptBundle['inputs'] = {
     new_user_messages: [],
@@ -302,9 +328,14 @@ export function assembleHistory(
       payload.kind === 'user_message' &&
       typeof payload.text === 'string'
     ) {
+      const speaker =
+        names && typeof payload.principal_id === 'string'
+          ? names.get(payload.principal_id)
+          : undefined;
       const message: CanonicalMessage = {
         role: 'user',
         content: pickedForAgent(payload.text, payload.chosen),
+        ...(speaker ? { name: speaker } : {}),
         at: row.createdAt.toISOString(),
       };
       transcript.push(message);
@@ -598,7 +629,14 @@ export async function buildAttemptSkeleton(
     }
     return [entry];
   });
-  const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq);
+  // A room's request reads its thread, with each person's name on what they said.
+  const room = row.audience === 'room' ? await roomTranscript(tx, row) : null;
+  const history = assembleHistory(
+    usableEvents,
+    attempts.filter(contextMatches),
+    afterSeq,
+    room?.names,
+  );
   // A decision names an action id; the attempt needs to know what that action
   // is. The row is this job's own, and the payload is the one the owner read.
   const decided = history.inputs.approval_results.map((entry) => entry.action_id);
@@ -722,12 +760,21 @@ export async function buildAttemptSkeleton(
     previous ? { id: previous.id, endedAt: previous.endedAt } : null,
     readDeferred(row),
   );
+  const [parentSpace] = room
+    ? await tx.select({ name: space.name }).from(space).where(eq(space.id, row.spaceId))
+    : [];
   const [profile] = await tx
     .select({ timeZone: experienceProfile.timeZone })
     .from(experienceProfile)
     .where(eq(experienceProfile.spaceId, row.spaceId));
   return responsibilityAttemptBundle.parse({
-    ...(persona ? { identity: agentIdentity(agentView(persona)) } : {}),
+    ...(persona
+      ? {
+          identity: room
+            ? roomIdentity(agentView(persona), parentSpace?.name ?? 'this room')
+            : agentIdentity(agentView(persona)),
+        }
+      : {}),
     ...(profile?.timeZone ? { time_zone: canonicalTimeZone(profile.timeZone) } : {}),
     ...(access.principalId
       ? { principal_id: access.principalId, membership_generation: access.generation }
@@ -736,7 +783,15 @@ export async function buildAttemptSkeleton(
     attempt: { ...attemptIdentity, job_id: row.id },
     job: {
       title: row.title,
-      objective: [row.objective, await situation(tx, row)].filter(Boolean).join('\n\n'),
+      objective: [
+        row.objective,
+        await situation(tx, row),
+        room
+          ? `Asked by ${JSON.stringify(room.requester)}. Only ${JSON.stringify(room.requester)} can answer this request's questions.`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
       constraints,
       progress_summary: [history.progressSummary, earlierWork].filter(Boolean).join('\n\n'),
       unresolved_questions: wait.kind === 'user_input' ? [wait.question] : [],
@@ -745,7 +800,9 @@ export async function buildAttemptSkeleton(
     },
     inputs: { ...history.inputs, ...(cancelledWait ? { cancelled_wait: cancelledWait } : {}) },
     since_last: delta,
-    transcript: history.transcript,
+    transcript: room
+      ? boundTranscript(inTimeOrder(room.thread, history.transcript))
+      : history.transcript,
     tools: [],
     skills: mergeSkills(procedures, context.skills),
     knowledge: context.knowledge,

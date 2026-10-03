@@ -6,6 +6,7 @@ import {
   boundTranscript,
   type CompletionRecords,
   evaluateCompletion,
+  inTimeOrder,
   renderEarlierWork,
   TRANSCRIPT_MAX_CHARACTERS,
   TRANSCRIPT_MAX_MESSAGES,
@@ -569,5 +570,51 @@ describe('work an earlier attempt already did', () => {
     ]);
     expect(summary).toContain('- Saved out.md in work (4 bytes)');
     expect(summary).not.toContain('<melete-earlier-');
+  });
+});
+
+describe("a room request's history", () => {
+  test('each message carries the name of the person who said it, and only when names are given', () => {
+    const events = [
+      {
+        seq: 1,
+        type: 'notice',
+        payload: { kind: 'user_message', text: 'Book the room.', principal_id: 'own_alice' },
+        createdAt: new Date(at),
+      },
+      {
+        seq: 2,
+        type: 'notice',
+        payload: { kind: 'user_message', text: 'For six.', principal_id: 'own_alice' },
+        createdAt: new Date(later),
+      },
+    ];
+    const named = assembleHistory(events, [], 1, new Map([['own_alice', 'Alice']]));
+    expect(named.transcript.map((message) => message.name)).toEqual(['Alice', 'Alice']);
+    expect(named.inputs.new_user_messages).toEqual([
+      { role: 'user', content: 'For six.', name: 'Alice', at: later },
+    ]);
+    expect(assembleHistory(events, [], 1).transcript.every((message) => !('name' in message))).toBe(
+      true,
+    );
+  });
+});
+
+describe('a room thread beside the request', () => {
+  test('the two read as one conversation in the order things were said, tool calls kept together', () => {
+    const message = (content: string, when: string, role: 'user' | 'tool' = 'user') => ({
+      role,
+      content,
+      at: `2026-09-11T08:00:0${when}.000Z`,
+    });
+    const thread = [message('talk before', '1'), message('talk after', '4')];
+    const history = [message('the ask', '2'), message('result', '3', 'tool'), message('more', '5')];
+    expect(inTimeOrder(thread, history).map((entry) => entry.content)).toEqual([
+      'talk before',
+      'the ask',
+      'result',
+      'talk after',
+      'more',
+    ]);
   });
 });

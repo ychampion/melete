@@ -36,13 +36,25 @@ export const owner = pgTable(
 );
 
 /** Login identities are independent of the installation's singleton setup guard. */
-export const principal = pgTable('principal', {
-  id: text('id').primaryKey(),
-  email: text('email').notNull().unique(),
-  passwordHash: text('password_hash'),
-  passkey: jsonb('passkey'),
-  createdAt: created(),
-});
+export const principal = pgTable(
+  'principal',
+  {
+    id: text('id').primaryKey(),
+    email: text('email').notNull().unique(),
+    passwordHash: text('password_hash'),
+    passkey: jsonb('passkey'),
+    /**
+     * `person` signs in. `room` is the identity a room's agent acts as: it has
+     * no password, never signs in and is never listed among people. `guest` is
+     * reserved for invited accounts.
+     */
+    kind: text('kind').notNull().default('person'),
+    /** The name other people in a room see. Null shows the part of the email before the @. */
+    displayName: text('display_name'),
+    createdAt: created(),
+  },
+  (t) => [check('principal_kind', sql`${t.kind} in ('person', 'guest', 'room')`)],
+);
 
 export const space = pgTable('space', {
   id: text('id').primaryKey(),
@@ -61,6 +73,8 @@ export const space = pgTable('space', {
    * from state made after it.
    */
   removalEpoch: integer('removal_epoch').notNull().default(0),
+  /** What a room is for, in its owner's words. Null for personal spaces. */
+  purpose: text('purpose'),
   createdAt: created(),
 });
 
@@ -81,7 +95,8 @@ export const spaceMembership = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.principalId, t.spaceId] }),
-    check('membership_role', sql`${t.role} in ('owner', 'member')`),
+    // `agent` is the room's own principal: its generation is the room's roster generation.
+    check('membership_role', sql`${t.role} in ('owner', 'member', 'guest', 'agent')`),
     check('membership_generation', sql`${t.generation} >= 0`),
   ],
 );
@@ -328,6 +343,16 @@ export const job = pgTable(
       .default([]),
     budget: jsonb('budget').notNull().default({}),
     createdBy: text('created_by').notNull().default('owner'),
+    /**
+     * `principal` is the job's own principal's work. `room` is a request someone
+     * made of a room's agent: the job's principal is the room, and it is read
+     * and steered only through the room's routes.
+     */
+    audience: text('audience').notNull().default('principal'),
+    /** For a room request, the member who asked. */
+    requestedByPrincipalId: text('requested_by_principal_id').references(() => principal.id),
+    /** For a room request, the thread it was asked in. */
+    roomThreadId: text('room_thread_id'),
     createdAt: created(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     stateVersion: integer('state_version').notNull().default(0),
@@ -336,6 +361,8 @@ export const job = pgTable(
     index('job_space_state_idx').on(t.spaceId, t.state),
     // The recovery scan reads this every 60 seconds.
     index('job_next_wake_idx').on(t.nextWakeAt),
+    index('job_room_thread_idx').on(t.roomThreadId),
+    check('job_audience', sql`${t.audience} in ('principal', 'room')`),
   ],
 );
 
@@ -907,6 +934,8 @@ export const experienceTurn = pgTable('experience_turn', {
     .notNull()
     .references(() => agent.id),
   submissionId: text('submission_id').notNull().unique(),
+  /** Who said this turn's words. Null on turns recorded before authors were. */
+  authorPrincipalId: text('author_principal_id').references(() => principal.id),
   text: text('text').notNull(),
   answer: text('answer').notNull().default(''),
   status: text('status').notNull().default('queued'),

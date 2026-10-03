@@ -224,6 +224,19 @@ describe('context assembly', () => {
     representative.job.constraints = { bloated: 'x'.repeat(16000) };
     expect(measureRenderedInput(representative).scaffolding).toBeGreaterThan(4000);
   });
+  test('a new message says who it is from: a named speaker in a room, the owner anywhere else', () => {
+    const room = structuredClone(bundle);
+    room.inputs.new_user_messages = [
+      { role: 'user', content: 'Can you book Friday?', name: 'Alice', at: '2026-09-11T00:00:00Z' },
+    ];
+    expect(renderInput(room)).toContain('## From "Alice"\n\nCan you book Friday?');
+    expect(renderInput(room)).not.toContain('## From the owner');
+    room.inputs.new_user_messages = [
+      { role: 'user', content: 'Can you book Friday?', at: '2026-09-11T00:00:00Z' },
+    ];
+    expect(renderInput(room)).toContain('## From the owner\n\nCan you book Friday?');
+  });
+
   test('an approved decision names the tool, the approved payload and how to carry it out', () => {
     const resumed = structuredClone(bundle);
     resumed.inputs.approval_results = [

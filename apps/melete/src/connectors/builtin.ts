@@ -177,7 +177,7 @@ export async function ensureBuiltinConnections(
     await tx`select pg_advisory_xact_lock(${BUILTIN_LOCK})`;
     const created: CreatedBuiltin[] = [];
     for (const builtin of wanted) {
-      const spaces = await tx<{ id: string }[]>`select s.id from space s
+      const spaces = await tx<{ id: string; kind: string }[]>`select s.id, s.kind from space s
         where (${spaceId ?? null}::text is null or s.id = ${spaceId ?? null})
           and s.git_path not like ${`${EVALUATION_SPACE_PATH}%`}
           -- A space being removed is never furnished again, by a request that
@@ -195,11 +195,14 @@ export async function ensureBuiltinConnections(
           ...builtin.configuration?.(environment),
           builtin: builtin.key,
         };
+        // A room's own tools (its files, the web, its computer) are for the
+        // requests people make of the room's agent.
+        const sharedUse = space.kind === 'shared' ? 'room' : 'owner';
         await tx`insert into connection
-          (id, space_id, provider, label, scopes, configuration, setup_state, status, health)
+          (id, space_id, provider, label, scopes, configuration, setup_state, status, health, shared_use)
           values (${id}, ${space.id}, ${builtin.provider}, ${builtin.label},
             ${JSON.stringify(builtin.scopes)}::jsonb, ${JSON.stringify(configuration)}::jsonb,
-            'connected', 'active', 'ok')`;
+            'connected', 'active', 'ok', ${sharedUse})`;
         created.push({
           id,
           spaceId: space.id,

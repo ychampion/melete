@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   CONTINUABLE_STATES,
   type CreateResponsibilityRequest,
@@ -38,6 +39,15 @@ import { type AttemptWake, enqueueWake } from './queue.ts';
 import { ENDED_STATES, withdrawEndedJobPermissions, withdrawOpenQuestion } from './withdraw.ts';
 
 export type JobRow = typeof job.$inferSelect;
+
+/** What makes a new job a request of a room's agent; see `createInTransaction`. */
+export type RoomRequest = { principalId: string; requestedBy: string; threadId: string };
+
+/**
+ * Set by the rooms module, around one input, to the request job it has checked
+ * the speaker may speak in. Input to a room's request is refused without it.
+ */
+export const roomRequestInput = new AsyncLocalStorage<string>();
 export const DEFAULT_BUDGET: JobBudget = {
   max_turns: 20,
   max_output_tokens: 8000,
@@ -145,6 +155,8 @@ export class JobService {
   onCancelled?: (id: string) => void;
   /** Called inside the transaction that cancelled a job, with its cancelled row. */
   readonly cancelledInTransaction: Array<(tx: Transaction, row: JobRow) => Promise<void>> = [];
+  /** Run in the transaction of every state change, after its event; rooms release a thread's next request here. */
+  readonly afterMove: ((tx: Transaction, before: JobRow, after: JobRow) => Promise<void>)[] = [];
   /** Ends a conversation's turn in flight as Stop does; see `AttemptRunner.stopTurn`. */
   stopTurn?: (tx: Transaction, row: JobRow) => Promise<boolean>;
   constructor(
@@ -212,6 +224,12 @@ export class JobService {
      * from a company's mail or a copy of another job's objective, is `derived`.
      */
     objectiveOrigin: ObjectiveOrigin = 'derived',
+    /**
+     * A request made of a room's agent: the job is the room principal's, and
+     * records who asked and in which thread. Only the rooms module passes this,
+     * after it has checked the person asking is in the room.
+     */
+    room?: RoomRequest,
   ): Promise<JobRow> {
     const value = createResponsibilityRequest.parse(input);
     const [parent] = await tx
@@ -219,7 +237,14 @@ export class JobService {
       .from(space)
       .where(eq(space.id, value.space_id));
     if (!parent) throw new ServiceError('not_found', 'Space not found.', 404);
-    const access = await spaceAuthority(tx, value.space_id, requestPrincipal(), true);
+    const access = await spaceAuthority(
+      tx,
+      value.space_id,
+      room ? room.principalId : requestPrincipal(),
+      true,
+    );
+    if (room && access.role !== 'agent')
+      throw new ServiceError('scope_denied', 'Space is not accessible.', 403);
     const base = experience?.kind === 'chat' ? CONVERSATION_BUDGET : DEFAULT_BUDGET;
     // A job offered background processes gets the wall time to use them,
     // unless its creator named one.
@@ -276,12 +301,20 @@ export class JobService {
         schedulingClass: value.scheduling_class,
         importance: value.importance,
         unreadThreshold: value.unread_threshold,
+        ...(room
+          ? {
+              audience: 'room',
+              requestedByPrincipalId: room.requestedBy,
+              roomThreadId: room.threadId,
+            }
+          : {}),
       })
       .returning();
     if (!row) throw new Error('job insert returned no row');
-    if (value.learning) await registerJobLearning(tx, row, value.learning);
+    // Learning is a person's own: a room's request teaches nothing.
+    if (!room && value.learning) await registerJobLearning(tx, row, value.learning);
     // A correction made on an ordinary request has to be able to teach something.
-    else if (row.principalId && !jobConstraints.parse(row.constraints).public_compartment)
+    else if (!room && row.principalId && !jobConstraints.parse(row.constraints).public_compartment)
       await registerJobLearning(tx, row, derivedScope(row.objective));
     await appendEvent(tx, {
       jobId: row.id,
@@ -391,6 +424,7 @@ export class JobService {
       await withdrawEndedJobPermissions(tx, row.id);
       await withdrawOpenQuestion(tx, row.id, 'responsibility_finished');
     }
+    for (const hook of this.afterMove) await hook(tx, row, updated);
     await this.faults.afterTransitionBeforeEnqueue?.(tx, updated);
     await this.enqueue(tx, updated, options.reason ?? 'recovery');
     return updated;
@@ -413,7 +447,18 @@ export class JobService {
     // a person work there, not speak in somebody else's job, and whatever reads
     // this message later takes it as said by the principal it records.
     const speaker = requestPrincipal();
-    if (speaker) await requireJobAccess(tx, id, speaker);
+    if (row.audience === 'room') {
+      // A room's request is the room's job, and only the person who asked it
+      // speaks in it, through the room's own routes and while still in the room.
+      // Every other path reaches this refusal.
+      if (
+        !speaker ||
+        roomRequestInput.getStore() !== id ||
+        speaker !== row.requestedByPrincipalId ||
+        (await spaceAuthority(tx, row.spaceId, speaker, true)).role === 'agent'
+      )
+        throw new ServiceError('scope_denied', 'Job is not accessible.', 403);
+    } else if (speaker) await requireJobAccess(tx, id, speaker);
     if (row.kind === 'chat' && (row.state === 'running' || row.state === 'queued' || row.paused))
       throw new ServiceError('turn_in_progress', 'Wait for this turn to finish.', 409);
     // A conversation goes on after a turn that failed, finished or left an

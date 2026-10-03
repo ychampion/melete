@@ -1,0 +1,41 @@
+import { describe, expect, test } from 'bun:test';
+import { mentionsOf } from './service.ts';
+import { personLabel } from './transcript.ts';
+
+describe('which messages ask a room agent', () => {
+  test('a message that names the agent asks it, by its own name or as Melete', () => {
+    expect(mentionsOf('@Melete what is on Friday?', 'Iris').asks).toBe(true);
+    expect(mentionsOf('can you check, @iris?', 'Iris').asks).toBe(true);
+    expect(mentionsOf('Thanks @Ada Lovelace bot, done', 'Ada Lovelace bot').asks).toBe(true);
+  });
+
+  test('a message that only talks about the agent, or names someone else, does not', () => {
+    expect(mentionsOf('Melete said Friday', 'Iris').asks).toBe(false);
+    expect(mentionsOf('@bob can you look?', 'Iris').asks).toBe(false);
+    expect(mentionsOf('mail me at bob@melete.example', 'Iris').asks).toBe(false);
+    expect(mentionsOf('@Meletes is not a name here', 'Iris').asks).toBe(false);
+  });
+
+  test('every name a message mentions is kept in order', () => {
+    expect(mentionsOf('@bob and @Melete, see @alice.', 'Iris').mentions).toEqual([
+      'bob',
+      'Melete',
+      'alice',
+    ]);
+  });
+});
+
+describe('names in a room', () => {
+  test('every person is named with their own email, whatever name they chose', () => {
+    expect(personLabel({ displayName: 'Alice', email: 'alice@example.test' })).toBe(
+      'Alice <alice@example.test>',
+    );
+    // A look-alike name still carries the email of the person who chose it.
+    expect(personLabel({ displayName: '\u0410lice', email: 'carol@example.test' })).toBe(
+      '\u0410lice <carol@example.test>',
+    );
+    expect(personLabel({ displayName: null, email: 'sam@example.test' })).toBe(
+      'sam <sam@example.test>',
+    );
+  });
+});

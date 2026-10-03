@@ -126,6 +126,8 @@ export type SandboxComputerOptions = {
   fps?: number;
 };
 
+/** `steer`: take over, hand back and send input. `watch`: see the screen. */
+type Reach = 'steer' | 'watch';
 export class SandboxComputerService {
   /** Attempts fenced by a takeover, for the runner to interrupt. */
   onPark?: (jobId: string, attemptIds: string[]) => void;
@@ -185,19 +187,36 @@ export class SandboxComputerService {
     };
   }
 
-  /** The computer a person may steer, or a refusal that reads as an absent session. */
-  async steerable(sessionId: string, principalId: string): Promise<Binding> {
+  /**
+   * What a principal may do with a job's computer. Their own job's they steer.
+   * A room's request belongs to the room: its members may watch the computer,
+   * and only the room's owners take it over. Anything else is nothing.
+   */
+  private async reach(jobId: string, principalId: string): Promise<Reach | null> {
+    if (await this.owns(jobId, principalId)) return 'steer';
+    const [room] = await this.sql`select m.role from job j
+      join space s on s.id = j.space_id
+      join space_membership m on m.space_id = s.id
+        and m.principal_id = ${principalId} and m.revoked_at is null
+      where j.id = ${jobId} and j.audience = 'room' and s.kind = 'shared' and s.removed_at is null`;
+    if (room?.role === 'owner') return 'steer';
+    return room?.role === 'member' || room?.role === 'guest' ? 'watch' : null;
+  }
+
+  /** The computer a person may steer (or, with `watch`, look at), or a refusal that reads as an absent session. */
+  async steerable(sessionId: string, principalId: string, need: Reach = 'steer'): Promise<Binding> {
     const [row] = await this.sql`select id, connection_id, space_id, job_id, agent_id, status,
         provider_sandbox_id, egress_policy
       from sandbox_session where id = ${sessionId} and status in ('ready', 'paused')`;
     const binding = row ? this.bindingOf(row) : null;
-    if (!binding || !(await this.owns(binding.jobId, principalId)))
+    const reach = binding ? await this.reach(binding.jobId, principalId) : null;
+    if (!binding || !reach || (need === 'steer' && reach !== 'steer'))
       throw new ComputerFault('session_not_found');
     return binding;
   }
 
   async list(jobId: string, principalId: string): Promise<SandboxComputer[]> {
-    if (!(await this.owns(jobId, principalId))) throw new ComputerFault('session_not_found');
+    if (!(await this.reach(jobId, principalId))) throw new ComputerFault('session_not_found');
     const rows = await this.sql`select id, connection_id, space_id, job_id, agent_id, status,
         provider_sandbox_id, egress_policy
       from sandbox_session
@@ -305,7 +324,7 @@ export class SandboxComputerService {
   // ---- live view ------------------------------------------------------------
 
   async open(sessionId: string, principalId: string, peer: string): Promise<LiveOpen> {
-    const binding = await this.steerable(sessionId, principalId);
+    const binding = await this.steerable(sessionId, principalId, 'watch');
     const held = this.controls.state(binding.sandbox);
     const current = this.bySandbox.get(binding.sandbox);
     if (current && !current.ended) {
@@ -344,10 +363,10 @@ export class SandboxComputerService {
     };
   }
 
-  private async bound(c: Context, sessionId: string, id: string) {
+  private async bound(c: Context, sessionId: string, id: string, need: Reach = 'steer') {
     if (!sameOrigin(c)) throw new ComputerFault('origin_refused');
     const principalId = c.get('owner').id as string;
-    const binding = await this.steerable(sessionId, principalId);
+    const binding = await this.steerable(sessionId, principalId, need);
     const channel = this.byId.get(id);
     if (!channel || channel.ended || channel.sessionId !== sessionId)
       throw new ComputerFault('live_closed');
@@ -361,7 +380,7 @@ export class SandboxComputerService {
   }
 
   async frames(c: Context, sessionId: string, id: string, lastEventId: number): Promise<Response> {
-    const { channel, binding } = await this.bound(c, sessionId, id);
+    const { channel, binding } = await this.bound(c, sessionId, id, 'watch');
     this.detach(channel);
     channel.ack = Math.max(channel.ack, lastEventId);
     const encoder = new TextEncoder();
@@ -469,7 +488,7 @@ export class SandboxComputerService {
 
   async close(c: Context, sessionId: string, body: unknown): Promise<{ closed: true }> {
     const request = liveClose.parse(body);
-    const { channel } = await this.bound(c, sessionId, request.live_id);
+    const { channel } = await this.bound(c, sessionId, request.live_id, 'watch');
     this.finish(channel, 'closed');
     return { closed: true };
   }

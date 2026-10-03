@@ -40,6 +40,7 @@ import { inConversation, withdrawPermissions } from '../jobs/withdraw.ts';
 import { ownJob, requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import { AGENT_TEMPLATES, agentValues, agentView, MELETE_AGENT, mentionedAgent } from './agents.ts';
 import { answerStream } from './answer-filter.ts';
+import type { ExperienceEvents } from './events.ts';
 import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
 
 /** Turn statuses of work not yet over: an agent is not deleted under one. */
@@ -96,6 +97,8 @@ export async function withdrawPendingPermissions(
 }
 
 export class ExperienceService {
+  /** The conversation projector the routes mounted beside this service, for the rooms routes. */
+  events?: ExperienceEvents;
   constructor(
     readonly db: Database,
     readonly jobs?: JobService,
@@ -138,11 +141,13 @@ export class ExperienceService {
           : null;
         const agentId = mentioned?.id ?? row.agentId;
         const turnId = newId('turn');
+        const author = requestPrincipal() ?? row.principalId;
         await tx.insert(experienceTurn).values({
           id: turnId,
           jobId: row.id,
           agentId,
           submissionId: receipt.submission_id,
+          authorPrincipalId: author,
           text,
         });
         // The message records who it was said to, so memory follows that agent's permission.
@@ -151,7 +156,10 @@ export class ExperienceService {
           .set({ payload: { ...(input?.payload as object), agent_id: agentId } })
           .where(eq(event.dedupKey, dedupKey));
         await tx.update(job).set({ currentTurnId: turnId }).where(eq(job.id, row.id));
-        await withdrawPendingPermissions(tx, row.id, SUPERSEDED_NOTE);
+        // A new message replaces what its own author asked for. In a room only the
+        // person who asked a request supersedes it; nobody else's words reach it.
+        if (row.audience !== 'room' || author === row.requestedByPrincipalId)
+          await withdrawPendingPermissions(tx, row.id, SUPERSEDED_NOTE);
       };
     }
   }

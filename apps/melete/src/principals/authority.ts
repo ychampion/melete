@@ -90,7 +90,7 @@ export async function spaceRole(
   query: Sql | TransactionSql,
   spaceId: string,
   principalId: string | null,
-): Promise<'owner' | 'member' | null> {
+): Promise<MembershipRole | null> {
   const [parent] = await query`select kind, removed_at,
     coalesce(owner_principal_id, (select id from owner limit 1)) as owner_id
     from space where id = ${spaceId}`;
@@ -100,8 +100,14 @@ export async function spaceRole(
   if (!actor) return null;
   const [membership] = await query`select role from space_membership
     where space_id = ${spaceId} and principal_id = ${actor} and revoked_at is null`;
-  return membership ? (membership.role as 'owner' | 'member') : null;
+  return membership ? (membership.role as MembershipRole) : null;
 }
+
+/**
+ * A membership's role. `agent` is a room's own principal, the identity its agent
+ * acts as: it reads what the room shares with its members and owns nothing.
+ */
+export type MembershipRole = 'owner' | 'member' | 'guest' | 'agent';
 
 /** What anyone asking a space under removal for anything is told. */
 export const SPACE_BEING_CLEARED = 'This space is being cleared.';
@@ -157,7 +163,7 @@ export async function spaceAuthority(
     space: parent,
     principalId: actor,
     ownerId,
-    role: membership.role as 'owner' | 'member',
+    role: membership.role as MembershipRole,
     generation: membership.generation,
   };
 }
