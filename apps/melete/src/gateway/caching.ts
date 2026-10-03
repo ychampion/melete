@@ -109,7 +109,12 @@ export function markAnthropicCache(body: Record<string, unknown>): number {
   if (hasCacheControl(body)) return 0;
   let placed = 0;
   const tools = Array.isArray(body.tools) ? body.tools : [];
-  const lastTool = object(tools.at(-1));
+  // The last of the request's own tools. A provider's built-in tool, such as
+  // its web search, is left exactly as the request named it.
+  const lastTool = tools
+    .map(object)
+    .filter((tool) => tool && (tool.type === undefined || tool.type === 'custom'))
+    .at(-1);
   if (lastTool) {
     lastTool.cache_control = EPHEMERAL;
     placed++;

@@ -169,6 +169,19 @@ describe('prompt-caching controls', () => {
     expect(promptCacheKey(scope)).not.toBe(promptCacheKey(scope, SECRET));
   });
 
+  test("a provider's built-in tool is never marked; the last of the request's own tools is", () => {
+    const body = {
+      tools: [
+        { name: 'notes_search', input_schema: { type: 'object' } },
+        { type: 'web_search_20250305', name: 'web_search', max_uses: 2 },
+      ],
+      messages: [{ role: 'user', content: 'hello' }],
+    };
+    expect(markAnthropicCache(body)).toBe(1);
+    expect(body.tools[0]).toHaveProperty('cache_control');
+    expect(body.tools[1]).not.toHaveProperty('cache_control');
+  });
+
   test('a cache_control property inside a schema or tool input does not switch the breakpoints off', () => {
     const body = {
       system: 'Melete',
