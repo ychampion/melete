@@ -34,15 +34,17 @@ The agent asks you first, with a line saying why, when:
   collects only from you, so it does not ask.
 
 To be asked every time, switch off "Publishing your apps" in Settings → Approvals ("Ask me for
-everything" asks too). A conversation set to ask before acting, or one that has read an app's
-responses, always asks.
+everything" asks too). If you had switched off work in the agent's own workspace before this
+switch existed, publishing starts switched off as well. A conversation set to ask before acting,
+or one that has read an app's responses, always asks, and the question says so.
 
 The question shows:
 
 - the app's name, how many files it has and how large they are. A new version names the app by
   the name it has now, and a new name is shown as a change of its own;
 - who will be able to open it: only you, the people named by the email of their account here, or
-  everyone with an account here;
+  everyone with an account here. The space's owner and the person who published the app can
+  always open it, and the question names them;
 - the data it shows, with the file and the conversation it comes from, and whether viewers see
   each new version at once or only after you review it. An app shows data only from your own
   conversations in the space it is published from;

@@ -44,6 +44,7 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { newestRecorded } from '../apps/data.ts';
+import { readResponses } from '../apps/response-guard.ts';
 import {
   AppUnavailable,
   appRoleFor,
@@ -52,6 +53,7 @@ import {
   type DesiredGrant,
   manifestFor,
   manifestHash,
+  othersWhoCanOpen,
   publishVersion,
   readBundle,
   setCurrentVersion,
@@ -83,7 +85,11 @@ const audienceSchema = {
       type: 'object',
       additionalProperties: false,
       required: ['kind'],
-      properties: { kind: { type: 'string', const: 'only_me' } },
+      properties: {
+        kind: { type: 'string', const: 'only_me' },
+        // Bound by the service: who keeps access whatever the audience says.
+        also: { type: 'string', maxLength: 4000 },
+      },
     },
     {
       type: 'object',
@@ -103,6 +109,7 @@ const audienceSchema = {
           maxItems: APP_LIMITS.max_people,
           items: { type: 'string', minLength: 1, maxLength: 200 },
         },
+        also: { type: 'string', maxLength: 4000 },
       },
     },
     {
@@ -127,7 +134,7 @@ const audienceSchema = {
 /** Bound by the service: why the person is asked (see `risksOf`). */
 const RISKS_SCHEMA = {
   type: 'array',
-  maxItems: 4,
+  maxItems: 5,
   items: { type: 'string', maxLength: 2000 },
 };
 
@@ -438,15 +445,39 @@ function collectionsOf(collections: unknown): AppManifest['collections'] {
   );
 }
 
-/** The live grants of an app, as a card line. */
-async function viewersNow(tx: Query, appId: string): Promise<string> {
-  const rows = await tx`select g.grantee_kind, p.email from app_grant g
-    left join principal p on g.grantee_kind = 'principal' and p.id = g.grantee_id
-    where g.app_id = ${appId} and g.revoked_at is null order by p.email nulls first`;
-  if (rows.some((row) => row.grantee_kind === 'installation'))
-    return 'everyone with an account here';
-  const emails = rows.flatMap((row) => (typeof row.email === 'string' ? [row.email] : []));
-  return emails.length ? `you and ${emails.join(', ')}` : 'only you';
+/** Up to ten names, the rest counted. */
+const nameList = (names: readonly string[]) =>
+  names.length > 10
+    ? `${names.slice(0, 10).join(', ')} and ${names.length - 10} more`
+    : names.join(', ');
+
+/**
+ * Who can open an app now, as a card line, by the same rules as access
+ * (othersWhoCanOpen): the space's owner and the app's publisher count as
+ * much as its grants.
+ */
+async function viewersNow(tx: Query, appId: string, actor: string): Promise<string> {
+  const others = await othersWhoCanOpen(tx, appId, actor, true);
+  if (others.includes('everyone with an account here')) return 'everyone with an account here';
+  return others.length ? `you and ${nameList(others)}` : 'only you';
+}
+
+/**
+ * Who keeps access to the app whatever a publish's audience says: for an app
+ * that exists, the space's owner, its publisher and its managers; for a new
+ * one, the space's owner. Bound on the card, so "only you" is never shown
+ * when others can still open it.
+ */
+async function keepAccess(
+  tx: Query,
+  spaceId: string,
+  appId: string | null,
+  actor: string,
+): Promise<string[]> {
+  if (appId) return othersWhoCanOpen(tx, appId, actor, false);
+  const [owner] = await tx`select p.email from space s join principal p
+    on p.id = s.owner_principal_id where s.id = ${spaceId} and s.owner_principal_id <> ${actor}`;
+  return owner?.email ? [String(owner.email)] : [];
 }
 
 /** The audience as bound into the payload, resolving addresses to accounts. */
@@ -455,13 +486,16 @@ async function resolveAudience(
   audience: unknown,
   publisher: string,
   existing: string | null,
+  spaceId: string,
 ): Promise<JsonObject> {
   const value = (audience ?? null) as { kind?: string; emails?: unknown } | null;
-  if (!value) {
-    if (existing) return { kind: 'unchanged', now: await viewersNow(tx, existing) };
-    return { kind: 'only_me' };
-  }
-  if (value.kind === 'only_me' || value.kind === 'everyone') return { kind: value.kind };
+  if (existing && !value)
+    return { kind: 'unchanged', now: await viewersNow(tx, existing, publisher) };
+  const kept = await keepAccess(tx, spaceId, existing, publisher);
+  const onlyMe = (): JsonObject =>
+    kept.length ? { kind: 'only_me', also: nameList(kept) } : { kind: 'only_me' };
+  if (!value || value.kind === 'only_me') return onlyMe();
+  if (value.kind === 'everyone') return { kind: value.kind };
   if (value.kind !== 'people' || !Array.isArray(value.emails))
     throw refused('Say who may open the app: only_me, people with their emails, or everyone.');
   const emails = [
@@ -477,11 +511,13 @@ async function resolveAudience(
     );
   const others = emails.filter((email) => found.get(email) !== publisher);
   // Naming only themselves is the same as only them.
-  if (!others.length) return { kind: 'only_me' };
+  if (!others.length) return onlyMe();
+  const also = kept.filter((who) => !others.includes(who));
   return {
     kind: 'people',
     emails: others,
     principal_ids: others.map((email) => found.get(email) as string),
+    ...(also.length ? { also: nameList(also) } : {}),
   };
 }
 
@@ -551,27 +587,33 @@ async function wideningLine(
 }
 
 /**
- * Whether anyone besides the publisher could open the app after this change:
- * the people or everyone the audience names, anyone holding a grant it keeps,
- * or the space's owner when that is someone else.
+ * Who besides the person acting could open the app after this change, by
+ * address: the people or everyone the audience names, and, for an app that
+ * exists, anyone who can open it now and keeps that (see othersWhoCanOpen). A
+ * new app is open to its publisher and the space's owner. At most ten are
+ * named; the rest are counted.
  */
-async function sharedAfter(
+async function othersAfter(
   tx: Query,
   ctx: ConnectorContext,
   appId: string | null,
   audience: JsonObject | null,
-  publisher: string,
-): Promise<boolean> {
-  if (audience?.kind === 'people' || audience?.kind === 'everyone') return true;
-  const [space] = await tx`select owner_principal_id from space where id = ${ctx.space_id}`;
-  if (space?.owner_principal_id !== publisher) return true;
-  if (!appId) return false;
-  // `only_me` takes back every view grant; the managers stay.
-  const viewersStay = audience?.kind !== 'only_me';
-  const [kept] = await tx`select 1 from app_grant where app_id = ${appId} and revoked_at is null
-    and not (grantee_kind = 'principal' and grantee_id = ${publisher})
-    and (${viewersStay} or role = 'manage') limit 1`;
-  return Boolean(kept);
+  actor: string,
+): Promise<string> {
+  const named = new Set<string>();
+  if (audience?.kind === 'everyone') named.add('everyone with an account here');
+  if (audience?.kind === 'people' && Array.isArray(audience.emails))
+    for (const email of audience.emails) named.add(String(email));
+  if (appId)
+    for (const who of await othersWhoCanOpen(tx, appId, actor, audience?.kind !== 'only_me'))
+      named.add(who);
+  else {
+    const [space] = await tx`select p.email from space s join principal p
+      on p.id = s.owner_principal_id where s.id = ${ctx.space_id}
+        and s.owner_principal_id <> ${actor}`;
+    if (space?.email) named.add(String(space.email));
+  }
+  return nameList([...named].sort());
 }
 
 /**
@@ -602,16 +644,17 @@ async function risksOf(
   const collecting = Object.keys(input.collections)
     .filter((name) => !Object.hasOwn(before.collections, name))
     .sort();
-  const shared =
-    (added.length || collecting.length) &&
-    (await sharedAfter(tx, ctx, input.appId, input.audience, input.publisher));
+  const others =
+    added.length || collecting.length
+      ? await othersAfter(tx, ctx, input.appId, input.audience, input.publisher)
+      : '';
   const newData =
-    added.length && shared
-      ? `It would show its viewers data they do not see now: ${added.join(', ')}.`
+    added.length && others
+      ? `It would show data they do not see now to ${others}: ${added.join(', ')}.`
       : null;
   const newCollections =
-    collecting.length && shared
-      ? `It would collect responses from its viewers it does not collect now: ${collecting.join(', ')}.`
+    collecting.length && others
+      ? `It would collect responses it does not collect now from ${others}: ${collecting.join(', ')}.`
       : null;
   const connecting =
     input.connecting === null
@@ -619,9 +662,65 @@ async function risksOf(
       : input.connecting.length
         ? 'Its code can open direct connections to other servers (WebRTC).'
         : null;
-  return [widening, connecting, newData, newCollections].filter(
+  // A viewer's response may be written as instructions; a publish after one is the person's call.
+  const afterResponses = (await readResponses(tx, ctx.job_id))
+    ? 'This conversation read responses viewers sent, which may have steered it.'
+    : null;
+  return [widening, connecting, newData, newCollections, afterResponses].filter(
     (line): line is string => line !== null,
   );
+}
+
+/**
+ * The risks of a bound publish or rollback as things stand now. The code is
+ * the bound bundle's (a publish, whose files are compared again before they are
+ * stored) or a stored version's (a rollback), which cannot change, so its line
+ * stands as it was bound.
+ */
+async function risksNow(
+  tx: Query,
+  ctx: ConnectorContext,
+  action: Pick<Action, 'kind' | 'canonical_payload'>,
+  publisher: string,
+): Promise<string[]> {
+  const payload = action.canonical_payload;
+  const isRollback = action.kind === 'apps.rollback';
+  const appId = isRollback || payload.create !== true ? String(payload.app_id) : null;
+  const [target] = isRollback
+    ? await tx<{ manifest: AppManifest }[]>`select manifest from app_version
+        where id = ${String(payload.version_id)} and app_id = ${appId}`
+    : [];
+  if (isRollback && !target) throw refused('That version is not one of this app.');
+  return risksOf(tx, ctx, {
+    appId,
+    audience: isRollback ? null : ((payload.audience ?? { kind: 'only_me' }) as JsonObject),
+    data: (target?.manifest.data ?? payload.data ?? {}) as AppManifest['data'],
+    collections: (target?.manifest.collections ??
+      collectionsOf(payload.collections)) as AppManifest['collections'],
+    connecting: isRollback
+      ? []
+      : Array.isArray(payload.opens_connections)
+        ? payload.opens_connections.map(String)
+        : [],
+    publisher,
+  });
+}
+
+/** A publish or rollback that gained a risk after it was decided. */
+class RiskRaised extends Error {}
+
+const riskMessage = (line: string) =>
+  `Something changed since this was decided: ${line} Publish again to ask with it as it is now.`;
+
+/** Refuse, under the caller's lock, an action whose risks grew since it was decided. */
+async function holdRisks(
+  tx: Query,
+  ctx: ConnectorContext,
+  action: Pick<Action, 'kind' | 'canonical_payload'>,
+  publisher: string,
+) {
+  const risen = newRisk(action.canonical_payload.risks, await risksNow(tx, ctx, action, publisher));
+  if (risen) throw new RiskRaised(riskMessage(risen));
 }
 
 /**
@@ -835,7 +934,7 @@ export function createAppsConnector(options: AppsOptions): Connector {
           version_id: payload.version_id,
           name: app.name,
           version_published_at: new Date(version.created_at as string).toISOString(),
-          viewers_now: await viewersNow(tx, appId),
+          viewers_now: await viewersNow(tx, appId, publisher),
           data_shown: await Promise.all(
             Object.entries(manifest.data)
               .sort(([a], [b]) => (a < b ? -1 : 1))
@@ -855,7 +954,13 @@ export function createAppsConnector(options: AppsOptions): Connector {
       const existing = typeof payload.app_id === 'string' ? payload.app_id : null;
       const current = existing ? await managedApp(tx, ctx, existing, publisher) : null;
       const { bindings, shown } = await resolveData(tx, ctx, payload.data, publisher);
-      const audience = await resolveAudience(tx, payload.audience, publisher, existing);
+      const audience = await resolveAudience(
+        tx,
+        payload.audience,
+        publisher,
+        existing,
+        ctx.space_id,
+      );
       const bound: JsonObject = {
         dir: payload.dir as string,
         name: String(payload.name).trim() || 'App',
@@ -916,38 +1021,14 @@ export function createAppsConnector(options: AppsOptions): Connector {
         if (typeof shownName === 'string' && shownName !== app.name && !renamedHere)
           throw refused('The app was renamed after the person was asked; ask again.');
       }
-      // Who could open it, and what it shows them, as things stand now. The
-      // code is the bound bundle's (publish, compared again at dispatch) or a
-      // stored version's (rollback), which cannot change, so its line stands.
-      const isRollback = action.kind === 'apps.rollback';
-      const appId = isRollback || payload.create !== true ? String(payload.app_id) : null;
-      const [target] = isRollback
-        ? await tx<{ manifest: AppManifest }[]>`select manifest from app_version
-            where id = ${String(payload.version_id)} and app_id = ${appId}`
-        : [];
-      if (isRollback && !target) throw refused('That version is not one of this app.');
       // Each file a publish shows is proved again to be the publisher's own
       // recorded file in this space: origin checking leaves these paths to it
       // (see verifiedFields), so the proof has to hold now, not only at prepare.
-      if (!isRollback) await resolveData(tx, ctx, payload.data, publisher);
-      const now = await risksOf(tx, ctx, {
-        appId,
-        audience: isRollback ? null : ((payload.audience ?? { kind: 'only_me' }) as JsonObject),
-        data: (target?.manifest.data ?? payload.data ?? {}) as AppManifest['data'],
-        collections: (target?.manifest.collections ??
-          collectionsOf(payload.collections)) as AppManifest['collections'],
-        connecting: isRollback
-          ? []
-          : Array.isArray(payload.opens_connections)
-            ? payload.opens_connections.map(String)
-            : [],
-        publisher,
-      });
-      const risen = newRisk(payload.risks, now);
-      if (risen)
-        throw refused(
-          `Something changed since this was decided: ${risen} Publish again to ask with it as it is now.`,
-        );
+      if (action.kind === 'apps.publish') await resolveData(tx, ctx, payload.data, publisher);
+      // Who could open it, and what it shows them, as things stand now; checked
+      // once more under the app's lock as it is written (see execute).
+      const risen = newRisk(payload.risks, await risksNow(tx, ctx, action, publisher));
+      if (risen) throw refused(riskMessage(risen));
       // The folder is read and compared at dispatch, outside this transaction.
     },
     async execute(action, ctx) {
@@ -965,14 +1046,17 @@ export function createAppsConnector(options: AppsOptions): Connector {
           await options.sql.begin(async (tx) => {
             if ((await appRoleFor(tx, appId, publisher)) !== 'manage')
               throw new AppUnavailable('no longer managed by this person');
-            const [row] =
-              await tx`select 1 from app where id = ${appId} and space_id = ${ctx.space_id}`;
+            const [row] = await tx`select 1 from app where id = ${appId}
+              and space_id = ${ctx.space_id} for update`;
             if (!row) throw new AppUnavailable('no such app in this space');
+            // Under the app's lock, which a change to its grants also takes.
+            await holdRisks(tx, ctx, action, publisher);
             await setCurrentVersion(tx, appId, versionId, action.id);
           });
         } catch (error) {
           if (error instanceof AppUnavailable)
             return notDone('The app or that version is no longer available, so nothing changed.');
+          if (error instanceof RiskRaised) return notDone(error.message);
           throw error;
         }
         const detail = { app_id: appId, version_id: versionId, link: linkFor(appId) };
@@ -1000,12 +1084,14 @@ export function createAppsConnector(options: AppsOptions): Connector {
           jobId: ctx.job_id,
           actionId: action.id,
           grants: grantsFor((payload.audience ?? { kind: 'only_me' }) as JsonObject),
+          recheck: (tx) => holdRisks(tx, ctx, action, publisher),
         });
       } catch (error) {
         if (error instanceof AppUnavailable)
           return notDone(
             'The app is no longer there, or no longer managed by this person, so nothing was published.',
           );
+        if (error instanceof RiskRaised) return notDone(error.message);
         throw error;
       }
       const detail = {

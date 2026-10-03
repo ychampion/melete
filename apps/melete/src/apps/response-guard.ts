@@ -18,9 +18,20 @@ const WORKSPACE_WRITES = new Set([
   'terminal.run',
 ]);
 
+/** Publishing an app, or choosing its version: what every viewer sees next. */
+const APP_CHANGES = new Set(['apps.publish', 'apps.rollback']);
+
+/** Whether this conversation has read the responses viewers sent an app. */
+export async function readResponses(tx: Sql | TransactionSql, jobId: string): Promise<boolean> {
+  const [row] = await tx<{ read: boolean }[]>`select exists (select 1 from action
+    where job_id = ${jobId} and kind = 'apps.read_submissions' and status = 'succeeded') as read`;
+  return row?.read === true;
+}
+
 /**
  * Whether this action must ask the person because the conversation read
- * responses to an app and the action may change a file an app shows. A
+ * responses to an app and the action may change what an app shows. Publishing
+ * or rolling back any app asks after such a read, whatever its data. A
  * response is a viewer's text; a write steered by it to a file other viewers
  * see would reach them without anyone deciding it. A named path asks only when
  * an app binds it; a command, which may write anything, asks whenever an app
@@ -31,6 +42,7 @@ export async function asksAfterResponses(
   jobId: string,
   action: { kind: string; canonical_payload: JsonObject },
 ): Promise<boolean> {
+  if (APP_CHANGES.has(action.kind)) return readResponses(tx, jobId);
   if (!WORKSPACE_WRITES.has(action.kind)) return false;
   const payload = action.canonical_payload;
   let path: string | null = null;

@@ -244,6 +244,11 @@ export async function loadApprovalSettings(tx: Query, spaceId: string): Promise<
     mode: row.mode,
     classes: {
       ...DEFAULT_APPROVAL_SETTINGS.classes,
+      // A row saved before publishing had its own switch follows the person's
+      // sandbox switch: someone who chose to be asked more is not asked less.
+      ...(typeof stored.sandbox === 'boolean' && !Object.hasOwn(stored, 'apps')
+        ? { apps: stored.sandbox }
+        : {}),
       ...Object.fromEntries(
         Object.entries(stored).filter(
           ([key, value]) => key in DEFAULT_APPROVAL_SETTINGS.classes && typeof value === 'boolean',

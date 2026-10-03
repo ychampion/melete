@@ -888,6 +888,15 @@ describe('approval settings', () => {
           classes: saved.classes,
         }),
       );
+      // A row from before publishing had its own switch follows the person's sandbox switch.
+      for (const sandbox of [false, true]) {
+        await fixture.sql`update approval_review_policy
+          set classes = ${JSON.stringify({ sandbox, calendar: false, app_changes: false })}::jsonb
+          where space_id = ${claims.space_id}`;
+        expect((await loadApprovalSettings(fixture.sql, claims.space_id)).classes.apps).toBe(
+          sandbox,
+        );
+      }
       await fixture.sql`update approval_review_policy set classes = '{"calendar":"yes","extra":true}'::jsonb
       where space_id = ${claims.space_id}`;
       expect((await loadApprovalSettings(fixture.sql, claims.space_id)).classes).toEqual(

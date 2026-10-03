@@ -348,6 +348,12 @@ export type PublishInput = {
   actionId: string;
   /** Null leaves an existing app's grants as they are. */
   grants: readonly DesiredGrant[] | null;
+  /**
+   * Run under the app's row lock, after the person's role is checked and
+   * before anything is written: throwing stops the publish with nothing stored
+   * in the database.
+   */
+  recheck?: (tx: TransactionSql) => Promise<void>;
 };
 
 export type Published = { appId: string; versionId: string; created: boolean; slug: string };
@@ -392,6 +398,8 @@ export async function publishVersion(
           throw new AppUnavailable('the app is no longer there to publish to');
         if (!created && (await appRoleFor(tx, input.appId, input.publisherId)) !== 'manage')
           throw new AppUnavailable('the person this publishes as no longer manages the app');
+        // Checked again under this app's lock, which a change to its grants also takes.
+        await input.recheck?.(tx);
         await tx`insert into app_version (id, app_id, manifest_hash, manifest, file_count,
             total_bytes, job_id, action_id, created_by)
           values (${versionId}, ${input.appId}, ${input.manifestHash},
@@ -540,6 +548,47 @@ export function appRoleSql(q: Sql | TransactionSql, principalId: string) {
           or g.grantee_kind = 'installation'))
         then 'view'
       else null end`;
+}
+
+/**
+ * Who besides `actor` could open app `appId` once a publish or a rollback has
+ * run, by the same rules as appRoleSql: the space's owner, the publisher while
+ * they still belong to the space, a manage grant, a view grant or a grant to
+ * everyone here. Each is named by their account's address, and a grant to
+ * everyone as "everyone with an account here". With `viewGrantsKept` false (a
+ * publish to `only_me`, which takes back view grants) only manage grants count
+ * among the grants; the space's owner and the publisher keep their access
+ * whatever the publish says. A change to who may open an app goes through
+ * appRoleSql and here together, so the two cannot drift apart.
+ */
+export async function othersWhoCanOpen(
+  sql: Sql | TransactionSql,
+  appId: string,
+  actor: string,
+  viewGrantsKept: boolean,
+): Promise<string[]> {
+  const [app] = await sql`select 1 from app where id = ${appId}`;
+  // An app that cannot be found is treated as open to others: the question is asked.
+  if (!app) return ['people Melete could not list'];
+  const rows = await sql<{ who: string | null; everyone: boolean }[]>`
+    select p.email as who, false as everyone from app a join space s on s.id = a.space_id
+      join principal p on p.id = s.owner_principal_id
+      where a.id = ${appId} and s.owner_principal_id <> ${actor}
+    union
+    select p.email, false from app a join principal p on p.id = a.publisher_principal_id
+      where a.id = ${appId} and a.publisher_principal_id <> ${actor} and exists (
+        select 1 from space_membership m where m.space_id = a.space_id
+          and m.principal_id = a.publisher_principal_id and m.revoked_at is null)
+    union
+    select p.email, g.grantee_kind = 'installation' from app_grant g
+      left join principal p on g.grantee_kind = 'principal' and p.id = g.grantee_id
+      where g.app_id = ${appId} and g.revoked_at is null
+        and not (g.grantee_kind = 'principal' and g.grantee_id = ${actor})
+        and (${viewGrantsKept} or g.role = 'manage')`;
+  const named = new Set<string>();
+  for (const row of rows)
+    named.add(row.everyone ? 'everyone with an account here' : (row.who ?? 'someone else here'));
+  return [...named].sort();
 }
 
 /**
