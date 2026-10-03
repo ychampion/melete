@@ -1106,6 +1106,24 @@ Thanks`,
       return answer(C.roomDetail, detail(room, room.role, viewer));
     }),
   );
+  // The accounts in the room's space. An account added to a room serves the room.
+  app.get(
+    '/rooms/:id/connections',
+    route((c) => {
+      const room = roomFor(param(c, 'id'), me());
+      return answer(C.roomConnectionList, {
+        connections: [...deps.store.connections.values()]
+          .filter((entry) => entry.space_id === room.id && entry.status !== 'revoked')
+          .map((entry) => ({
+            id: entry.id,
+            label: entry.label,
+            provider: entry.provider,
+            status: entry.status,
+            shared_use: 'room' as const,
+          })),
+      });
+    }),
+  );
   app.post(
     '/rooms/:id/members',
     route(async (c) => {
