@@ -99,6 +99,33 @@ export function withStructuredOutput(
   };
 }
 
+/**
+ * The request without its schema, for a model that cannot take one: a call
+ * the gateway reroutes to a fallback that has no structured outputs goes as
+ * the prose request it also is. Only the schema leaves; `output_config`
+ * keeps whatever else it carries.
+ */
+export function withoutStructuredOutput(
+  body: Record<string, unknown>,
+  target: { provider: string; model: string },
+): Record<string, unknown> {
+  if (supportsStructuredOutput(target.provider, target.model)) return body;
+  const { response_format: _format, ...rest } = body;
+  const text = rest.text as Record<string, unknown> | undefined;
+  if (text && typeof text === 'object' && 'format' in text) {
+    const { format: _schema, ...others } = text;
+    if (Object.keys(others).length) rest.text = others;
+    else delete rest.text;
+  }
+  const config = rest.output_config as Record<string, unknown> | undefined;
+  if (config && typeof config === 'object' && 'format' in config) {
+    const { format: _schema, ...others } = config;
+    if (Object.keys(others).length) rest.output_config = others;
+    else delete rest.output_config;
+  }
+  return rest;
+}
+
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 

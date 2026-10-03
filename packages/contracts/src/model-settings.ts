@@ -87,6 +87,15 @@ export const activeModel = z
         '`catalog`: Melete’s list of models that read images. `app`: the owner said so for ' +
         'this model in Settings. `operator`: MELETE_DEFAULT_MODEL_VISION.',
     }),
+    provider_vision: z
+      .boolean()
+      .nullable()
+      .meta({
+        description:
+          'What the provider’s own model list says about this model reading images, from the ' +
+          'last time the list was fetched; null when it has said nothing. Shown beside the ' +
+          'switch only: it never changes `vision`.',
+      }),
     updated_at: timestamp.nullable(),
   })
   .strict();

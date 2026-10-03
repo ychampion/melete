@@ -208,6 +208,18 @@ export async function ensureBuiltinConnections(
           configuration,
         });
       }
+      // A default made by an earlier release gains the tools its connector
+      // has added since (the web row gained web.search). A removed one stays
+      // removed, and nothing it already grants is taken away.
+      await tx`update connection c
+        set scopes = (select coalesce(jsonb_agg(granted order by granted), '[]'::jsonb)
+          from (select distinct granted
+            from jsonb_array_elements_text(c.scopes || ${JSON.stringify(builtin.scopes)}::jsonb) granted) wanted)
+        where c.provider = ${builtin.provider}
+          and c.configuration->>'builtin' = ${builtin.key}
+          and c.status <> 'revoked'
+          and (${spaceId ?? null}::text is null or c.space_id = ${spaceId ?? null})
+          and not (c.scopes @> ${JSON.stringify(builtin.scopes)}::jsonb)`;
     }
     return created;
   });

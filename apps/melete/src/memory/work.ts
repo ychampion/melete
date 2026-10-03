@@ -200,6 +200,14 @@ export async function deferWork(
 ): Promise<'deferred' | 'given_up'> {
   return sql.begin(async (tx) => {
     await lockSpace(tx, scope);
+    if (code === 'spending_limit_reached') {
+      // A spending limit is not the message's failure either: it waits, never
+      // given up on, and is looked at again every 30 minutes until the limit resets.
+      await tx`update memory_work set status = 'pending', lease_until = null, error_code = ${code},
+        retry_at = clock_timestamp() + ${PROVIDER_BACKOFF.max_seconds} * interval '1 second'
+        where id = ${batch.work.id} and space_id = ${scope.spaceId} and fence = ${batch.work.fence} and status = 'leased'`;
+      return 'deferred';
+    }
     if (code === 'memory_daily_budget') {
       // Spent reads are not a failure and are never given up on: the message
       // waits until the person's oldest counted read leaves the day's window,

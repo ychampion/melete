@@ -187,9 +187,12 @@ export async function proposeExtraction(
     const code = error instanceof MemoryError ? error.code : null;
     if (
       code !== null &&
-      !['extraction_gateway_failure', 'extraction_gateway_timeout', 'memory_daily_budget'].includes(
-        code,
-      )
+      ![
+        'extraction_gateway_failure',
+        'extraction_gateway_timeout',
+        'memory_daily_budget',
+        'spending_limit_reached',
+      ].includes(code)
     )
       throw error;
     await refundExtractionCall(sql, scope, batch);
@@ -199,7 +202,7 @@ export async function proposeExtraction(
       code === 'extraction_gateway_timeout' ||
       (error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name));
     throw new MemoryError(
-      code === 'memory_daily_budget'
+      code === 'memory_daily_budget' || code === 'spending_limit_reached'
         ? code
         : timedOut
           ? 'extraction_provider_timeout'

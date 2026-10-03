@@ -6,7 +6,9 @@
  * the text receipt it always got: where the picture was saved, its size and
  * its digest. Nothing is probed at run time (the engine has no route to a
  * provider), so the answer comes from this table, or from the owner, who can
- * say otherwise in the model settings.
+ * say otherwise in the model settings. What a provider's own model list says
+ * (`listedVision`) is shown to the owner beside the switch; it never turns
+ * pictures on by itself.
  *
  * A model the table does not recognise is treated as text-only. Telling a
  * text-only model it can see makes its provider refuse the request; telling a
@@ -63,6 +65,64 @@ export function effectiveVision(
   override: boolean | null | undefined,
 ): boolean {
   return typeof override === 'boolean' ? override : modelSupportsVision(provider, model);
+}
+
+/**
+ * What one entry of a provider's model list says about reading images, when it
+ * says anything. Fireworks answers `supports_image_input`; OpenRouter-style
+ * lists answer `architecture.input_modalities`; some servers answer
+ * `input_modalities`, `modalities.input`, `capabilities.image_input.supported`
+ * or a `capabilities` list. Lists that say nothing (OpenAI's, Google's
+ * OpenAI-compatible one) leave the answer to the catalog.
+ */
+export function listedVision(entry: unknown): boolean | undefined {
+  if (!entry || typeof entry !== 'object') return undefined;
+  const record = entry as Record<string, unknown>;
+  if (typeof record.supports_image_input === 'boolean') return record.supports_image_input;
+  const modalities = (value: unknown) =>
+    Array.isArray(value) && value.every((item) => typeof item === 'string')
+      ? value.some((item) => /^image/i.test(item))
+      : undefined;
+  const nested = (value: unknown, key: string) =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)[key]
+      : undefined;
+  const fromModalities =
+    modalities(nested(record.architecture, 'input_modalities')) ??
+    modalities(record.input_modalities) ??
+    modalities(nested(record.modalities, 'input'));
+  if (fromModalities !== undefined) return fromModalities;
+  const capabilities = record.capabilities;
+  if (Array.isArray(capabilities) && capabilities.every((item) => typeof item === 'string'))
+    return capabilities.some((item) => /^(vision|image(_input)?)$/i.test(item));
+  const supported = nested(nested(capabilities, 'image_input'), 'supported');
+  if (typeof supported === 'boolean') return supported;
+  const vision = nested(capabilities, 'vision');
+  return typeof vision === 'boolean' ? vision : undefined;
+}
+
+/**
+ * The models a provider's list answers for, by the id a call takes, and
+ * whether each reads images. Models the list says nothing about are left out.
+ */
+export function listedVisionByModel(body: unknown): Map<string, boolean> {
+  const answers = new Map<string, boolean>();
+  if (!body || typeof body !== 'object') return answers;
+  const record = body as { data?: unknown; models?: unknown };
+  const entries = Array.isArray(record.data)
+    ? record.data
+    : Array.isArray(record.models)
+      ? record.models
+      : [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const value =
+      (entry as { id?: unknown; name?: unknown }).id ?? (entry as { name?: unknown }).name;
+    if (typeof value !== 'string' || !value || value.length > 300) continue;
+    const vision = listedVision(entry);
+    if (vision !== undefined) answers.set(value.replace(/^models\//, ''), vision);
+  }
+  return answers;
 }
 
 /**

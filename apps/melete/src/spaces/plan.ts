@@ -99,6 +99,10 @@ export async function sweepOperational(
     // ledger, background operations, repair candidates, tool contexts, turns,
     // milestones, browser bindings and the learning rows below a job.
     await tx`delete from job where space_id = ${spaceId}`;
+    // What the space's model calls cost stays counted against its person, so
+    // removing a space does not reset a spending limit; which space and job
+    // they came from goes with the space.
+    await tx`update model_usage set space_id = null, job_id = null where space_id = ${spaceId}`;
     // Artifacts outlive their job by design: `job_id` is nulled, not cascaded.
     // They belong to the space, and they go with it, taking their validation
     // and publication rows.

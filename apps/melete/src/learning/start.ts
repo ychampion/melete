@@ -40,10 +40,13 @@ export async function startLearning(
   settings?: ModelSettingsService,
   /** Whether this instance drains now, when several share the database. */
   leads?: () => Promise<boolean>,
+  spending?: GatewayOptions['spending'],
 ) {
   const gateway = await openProposalGateway({
     db: jobs.db,
     privacy,
+    spending,
+    reasoningEffort: env.MELETE_REASONING_EFFORT_SIDE,
     provider: env.MELETE_DEFAULT_PROVIDER,
     model: env.MELETE_DEFAULT_MODEL,
     // Proposals use the model new chats use, the one chosen in the app included.

@@ -22,6 +22,12 @@ import {
   serviceModelSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
+import {
+  type ModelRouting,
+  NO_ROUTING,
+  routingFromEnv,
+  serviceFallback,
+} from '../gateway/routing.ts';
 import { replyOf, withStructuredOutput } from '../gateway/structured.ts';
 import { GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
 import {
@@ -47,6 +53,12 @@ export type ReviewGatewayOptions = {
   fake?: GatewayOptions['fake'];
   fetch?: GatewayOptions['fetch'];
   timeoutMs: number;
+  /** The installation's spending caps. */
+  spending?: GatewayOptions['spending'];
+  /** The operator's fallbacks for a provider that limits or fails. */
+  routing?: ModelRouting;
+  /** How hard a reasoning model thinks on a review. */
+  reasoningEffort?: GatewayOptions['reasoningEffort'];
 };
 
 /**
@@ -67,7 +79,9 @@ export function reviewPrincipal(
   token: string,
   scope: ReviewScope,
   target: ServiceModel,
+  routing: ModelRouting = NO_ROUTING,
 ): ReviewPrincipal {
+  const fallback = serviceFallback(routing, target);
   return {
     jobId: `review:${scope.spaceId}`,
     attemptId: `review:${token}`,
@@ -81,7 +95,8 @@ export function reviewPrincipal(
     revision: 0,
     maxRequests: 1,
     maxTokens: INPUT_TOKENS + OUTPUT_TOKENS,
-    allowedModels: [{ provider: target.provider, model: target.model }],
+    allowedModels: [{ provider: target.provider, model: target.model }, ...fallback],
+    ...(fallback.length ? { routes: { fallback } } : {}),
   };
 }
 
@@ -91,12 +106,10 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
   const server = createModelGateway({
     budget: {
       async reserve(request) {
-        const [allowed] = request.principal.allowedModels;
         if (
-          !allowed ||
-          request.principal.allowedModels.length !== 1 ||
-          request.provider !== allowed.provider ||
-          request.model !== allowed.model
+          !request.principal.allowedModels.some(
+            (allowed) => request.provider === allowed.provider && request.model === allowed.model,
+          )
         )
           throw new GatewayError(403, 'review_principal_denied');
         if (
@@ -115,6 +128,8 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
     privacy: options.privacy,
     defaultProvider: options.provider,
     timeoutMs: options.timeoutMs,
+    spending: options.spending,
+    reasoningEffort: options.reasoningEffort,
     maxRequestBytes: 128 * 1024,
     maxResponseBytes: 32 * 1024,
     async authenticate(token) {
@@ -122,7 +137,7 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
       const call = live.get(token);
       live.delete(token);
       if (!call) throw new GatewayError(401, 'review_principal_denied');
-      return reviewPrincipal(token, call.scope, call.target);
+      return reviewPrincipal(token, call.scope, call.target, options.routing);
     },
   });
   await new Promise<void>((resolve, reject) => {
@@ -204,6 +219,7 @@ export async function configuredReviewGateway(
     settings?: ModelSettingsService;
     /** The upstream transport; tests pass a stand-in provider. */
     fetch?: GatewayOptions['fetch'];
+    spending?: GatewayOptions['spending'];
   } = {},
 ): Promise<Awaited<ReturnType<typeof openReviewGateway>> | null> {
   const setting = env.MELETE_REVIEW_MODEL?.trim();
@@ -214,10 +230,19 @@ export async function configuredReviewGateway(
     model: pinned.model || env.MELETE_DEFAULT_MODEL,
     providers: configuredProviders(env, () => {}, signIn),
     privacy,
-    source: serviceModelSource({ env, settings: connected.settings, pinned }),
+    // A review is a short classification: the fast model, unless one is pinned.
+    source: serviceModelSource({
+      env,
+      settings: connected.settings,
+      pinned,
+      fast: routingFromEnv(env).fast,
+    }),
     fake,
     ...(connected.fetch ? { fetch: connected.fetch } : {}),
     timeoutMs: env.MELETE_REVIEW_TIMEOUT_MS,
+    spending: connected.spending,
+    routing: routingFromEnv(env),
+    reasoningEffort: env.MELETE_REASONING_EFFORT_SIDE,
   });
 }
 

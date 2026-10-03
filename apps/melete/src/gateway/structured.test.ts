@@ -6,6 +6,7 @@ import {
   strictObject,
   supportsStructuredOutput,
   withoutNulls,
+  withoutStructuredOutput,
   withStructuredOutput,
 } from './structured.ts';
 
@@ -154,5 +155,25 @@ describe('how a reply ended', () => {
       expect(error).toBeInstanceOf(StructuredAnswerError);
       expect((error as StructuredAnswerError).message).toBe('answer_envelope_invalid');
     }
+  });
+});
+
+describe('a fallback without structured outputs', () => {
+  test('is sent the request without its schema, everything else kept', () => {
+    const target = { provider: 'openai-compatible', model: 'local' };
+    expect(
+      withoutStructuredOutput(
+        { model: 'x', response_format: { type: 'json_schema' }, reasoning_effort: 'low' },
+        target,
+      ),
+    ).toEqual({ model: 'x', reasoning_effort: 'low' });
+    expect(
+      withoutStructuredOutput(
+        { model: 'x', text: { format: {}, verbosity: 'low' }, reasoning: { effort: 'low' } },
+        target,
+      ),
+    ).toEqual({ model: 'x', text: { verbosity: 'low' }, reasoning: { effort: 'low' } });
+    const kept = { model: 'x', response_format: { type: 'json_schema' } };
+    expect(withoutStructuredOutput(kept, { provider: 'openai', model: 'gpt-6-astra' })).toBe(kept);
   });
 });
