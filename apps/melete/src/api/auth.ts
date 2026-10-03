@@ -27,6 +27,8 @@ import {
   type SessionSpace,
   selectedSpace,
 } from '../principals/session-space.ts';
+import { previewPath } from '../sandbox/preview-path.ts';
+import { viewPath } from '../viewer/headers.ts';
 import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
 import type { RequestSource } from './listener.ts';
@@ -71,6 +73,12 @@ declare module 'hono' {
      * other.
      */
     createdSpaceId: string;
+    /**
+     * The digest of the browser session this request came with, so what is
+     * issued for the session (an app view) can end with it. Unset for an
+     * assistant's bearer token.
+     */
+    sessionDigest: string;
   }
 }
 
@@ -281,6 +289,13 @@ export function mountAuth(
     // checks the computer's own token and sets its own body limit; see
     // devices/routes.ts.
     if (c.req.path.startsWith('/device/')) return next();
+    // A framed app's files are fetched from an opaque origin, which holds no
+    // session. The token in the path is their whole authorisation; see
+    // apps/serve.ts. Reading is all these routes do.
+    if (viewPath(c.req.method, c.req.path)) return next();
+    // A preview of a server in an agent's computer is fetched the same way; see
+    // sandbox/preview.ts.
+    if (previewPath(c.req.method, c.req.path)) return next();
 
     const token = getCookie(c, SESSION_COOKIE);
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
@@ -297,6 +312,7 @@ export function mountAuth(
       return c.json({ error: { code: 'unauthorized', message: 'The session has expired.' } }, 401);
     }
     c.set('owner', publicOwner(active.owner));
+    c.set('sessionDigest', tokenHash(token));
     // The space follows the authenticated principal; no request or other account can supply it.
     const resolved = await resolveSessionSpace(
       db,

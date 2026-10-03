@@ -606,6 +606,170 @@ holds only placeholders, the egress CA's certificate and per-command tokens.
   audits read` run the classifiers over requests recorded from glab 1.120, git
   and npm 11, and over shapes written from the protocols.
 
+## Attacker 10: a published app and its viewers
+
+An app is a folder of web files the agent wrote and a person allowed to publish
+(see [APPS](APPS.md)). Its code may be hostile: written under a prompt
+injection, or changed by someone who manages it. The aims are to act as the
+viewer in Melete, to read their session, storage or other work, to send what
+the app shows somewhere else, to keep showing it after the viewer was removed,
+and to frame Melete itself to trick a person into a click.
+
+Every file of an app is served under `/api/apps/view/<token>/` with
+`Content-Security-Policy: sandbox allow-scripts allow-forms allow-downloads`,
+so the page runs with an opaque origin: it has no cookies, no storage, and no
+same-origin access to Melete, however it is opened. The Apps screen also frames
+it with the same `sandbox` attribute and without `allow-same-origin`. The rest
+of the policy lets it load scripts, styles, images and fonts only from its own
+files, and fetch nothing (`connect-src 'none'`), post no form, frame nothing,
+open no window and move no page but its own frame. Melete's own pages carry
+`frame-src 'self'`, so even that frame cannot be moved to another site. The
+headers are set in one place, and a response under that path that lacks the
+exact policy is replaced by a 500 before it leaves the service; the web server
+checks again and passes nothing on without it.
+
+A file is served only to a browser that says it is loading it inside a page
+(`Sec-Fetch-Dest`). A file asked for as a page of its own is refused, because a
+page opened on its own could move itself to another site and take what it
+holds with it.
+
+The page holds no credential. The token in its path names one person, one app,
+one version, the app's grant generation and the browser session it was opened
+from. It lasts at most twelve hours and is signed with a key derived from the
+master key; without a master key the key lasts as long as the process, so
+installations with more than one service instance need one. Every file
+request checks all of them again: any change to who may open the app, to the
+version it shows, or signing out ends the view on its next file request. A
+page already loaded keeps showing what it has until the Apps screen next
+checks, within a minute. The token names the person by their account id,
+which the app can read in its own address. The web server forwards these requests
+without the session cookie, and the app's own requests arrive marked
+cross-site, so no cookie travels with them anyway. Bytes are read whole and
+checked against the manifest's hash before they are sent.
+
+Data reaches an app only through the page around it, with the viewer's session,
+and only for the names its version declares, which the publish question listed.
+A data name resolves to the newest recorded version of one file in one
+conversation, and both the record and the conversation must belong to the
+space the app was published from, whatever the manifest says. Bytes on disk
+that no write recorded are not served. When the publisher reviews updates,
+viewers get only versions they let through, kept as blobs; a version can be let
+through only while it is the newest one and its bytes are the ones recorded.
+
+Responses are the app's way back in. An app's code can send them in the
+viewer's name without the viewer doing anything, so they are bounded: only for
+collections the version declares, at most the declared size (16 KiB at most),
+30 a minute per person per app, 500 kept per person per app, and 10,000 kept per
+app. The agent reads them
+only for apps in its own space that its person manages, and the receipt marks
+them as content Melete read (`external_content`), not as the person's word.
+Reading them asks nothing and grants nothing: any action the agent takes about
+a response goes through the same admission and approvals as any other, and a
+recipient or destination lifted from one is not a trusted origin. Workspace
+writes usually do not ask, so one more rule closes the path from a viewer's text
+to what every viewer sees: in a conversation that has read responses, a write or
+move to a file an app's current version shows, and any command (code runner
+or the agent's computer) in a conversation whose files an app shows, waits for
+the person. The rule follows the conversation that read the responses: another
+conversation or a routine that is later steered by a summary of them can still
+write a bound file without asking. Update review closes that path for the data
+it covers. A deleted
+response is removed from the app; copies the agent already read stay in that
+conversation and in the record of the read.
+
+What the app may ask for, it asks the Melete page around it with
+`postMessage`: the data the publish approval listed, read with the viewer's own
+session, and an https link, which opens in a new tab only after the person
+confirms it. The page answers only its own frame's window.
+
+Melete's own pages send `frame-ancestors 'self'` and `X-Frame-Options:
+SAMEORIGIN`, so another site cannot frame them.
+
+**WebRTC is open.** Browsers let any page, sandboxed or not, open WebRTC
+connections, and no header in today's browsers stops them: an app can reach a
+STUN or TURN server it names, and send what it shows, or what a viewer types
+into it, to that server. Names the page looks up can carry data the same way.
+Neither carries the viewer's session. A publish whose code uses WebRTC by
+name (`RTCPeerConnection`, `RTCDataChannel`, `getUserMedia`) always asks, with
+a warning; code that hides those names is not found. Apps are for code the
+person trusts with the data it shows.
+
+**Publishing without a question.** By default a publish, a new version or a
+rollback goes ahead without asking when it reaches nobody new, its code names
+no WebRTC, and it shows its viewers no data they do not see now. A question for
+each version shows file counts, not code, so it adds a step without adding
+something a person can check. What still asks is what changes who is exposed: a wider audience (new people or everyone), WebRTC by name, and new
+data or responses. Those reasons are worked out by the service from the
+database, never taken from the agent, and are checked again at admission and
+dispatch, so a viewer added or data shared in between sends it back to the
+person. They are checked once more under the app's own lock as the version is
+written, the lock a change to its grants takes too, so a share that lands in
+between stops the publish. Who can open an app is counted as access counts it:
+the space's owner and the person who published it keep access whatever a
+publish's audience says, and the card names them. The paths of
+the files an app shows are left out of origin checking for this connection
+only, because the connector proves each is a recorded file of the publisher's
+own in this space, before asking and again before it runs; who will see them
+is one of the reasons above. Every
+publish leaves a receipt in the conversation and on the auto-review record,
+and the version before it is one step away. The person can switch the rule off
+in Settings → Approvals. What this accepts: a new version written under a
+prompt injection reaches the same viewers without a question, with the same
+data, and code that hides its use of WebRTC can send that data elsewhere. That
+was open before too, since the question showed file counts and not code. A
+conversation that read an app's responses, or that is set to ask before
+acting, still asks for every publish.
+
+## Attacker 10: a page served from the agent's computer
+
+A person can preview a web server a background process runs in the agent's
+computer (see [sandbox-docker](sandbox-docker.md#previewing-a-server)). The
+server and its pages were written by the agent, and may be hostile in the same
+ways an app may. The aims are those of Attacker 9, plus two of its own: to use
+the preview to reach something else on the computer's network, and to reach
+another person's computer.
+
+The preview reuses the app viewer's isolation unchanged. Every answer under
+`/api/previews/<token>/` carries the same `Content-Security-Policy: sandbox`
+policy, set in the same place, and the Melete page frames it with the same
+`sandbox` attribute, so the page has an opaque origin, no cookies, no storage,
+fetches nothing and cannot move Melete's page. An answer without the exact
+policy is replaced by a 500 in the service and by a 502 in the web server. A
+page asked for on its own, rather than in a frame, is refused.
+
+The service forwards only reads (GET and HEAD), with a short list of request
+headers: the Melete cookie, any `Authorization`, `Origin` and every other
+header stay behind, and no connection upgrade is passed on. Answers come back
+with the isolation headers and a short list of the server's own; its cookies
+never reach the browser. A redirect is kept only when it points back at the
+same server, and made a path inside the preview.
+
+Each request goes to one address only: the computer's own address on the
+private network it shares with the service, at the port the process declared
+when it started. The address comes from the container engine, and the port from
+the process record; nothing in the request can choose either. A computer with
+no network (`deny_all`) cannot be previewed. On Docker that network holds only
+the computer and the service, so no other computer is reachable from it.
+
+The token in the path names one person, one process, the port and the computer
+it runs in, and the browser session it was opened from, and is signed with a
+key of its own. A preview lasts half an hour; the computer view opens a new
+one while it is on screen. Only the person whose job started the process can
+open one (a job with no recorded person is its space owner's), and only while
+the process runs and listens on its port. Every request checks again that the
+session is signed in, that the person may still use the space, that the
+computer's connection is active, and that the process record still says it
+runs, with that port, in that computer. Whether the process itself still
+listens is checked when the preview is opened, not on each request: if it
+stopped listening before the record caught up, another process in the same
+computer could answer on that port, and nothing outside that computer can.
+Stopping the process, revoking the connection, losing the space or signing out
+ends the preview on its next request.
+
+WebRTC and name lookups are open to a previewed page as they are to an app.
+The preview shows what the agent's own server serves, to the person who asked
+for it.
+
 ## Credentials, host and storage
 
 Connector secrets have tested sealing and scope checks: `stores randomized

@@ -1,0 +1,138 @@
+/* The background processes in the agent's computer, and a preview of one's server. */
+
+.computer-processes,
+.process-preview {
+  flex-shrink: 0;
+  border-radius: var(--radius-block);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  min-width: 0;
+}
+.computer-processes-head,
+.process-preview-head {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 8px 0 12px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.process-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.process-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.process-row + .process-row {
+  border-top: 1px solid var(--line);
+}
+.process-line {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.process-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--control);
+}
+.process-row[data-state="running"] .process-dot,
+.process-row[data-state="starting"] .process-dot {
+  background: var(--success);
+}
+.process-row[data-state="lost"] .process-dot,
+.process-row[data-state="expired"] .process-dot {
+  background: var(--danger);
+}
+.process-name {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--heading);
+  min-width: 0;
+}
+.process-port {
+  font:
+    12px / 1.4 ui-monospace,
+    "SFMono-Regular",
+    Menlo,
+    Consolas,
+    monospace;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.process-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+.process-last,
+.process-output {
+  margin: 0;
+  font:
+    12px / 1.5 ui-monospace,
+    "SFMono-Regular",
+    Menlo,
+    Consolas,
+    monospace;
+  color: var(--secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.process-last {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.process-output {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--studio);
+  color: var(--studio-text);
+}
+.process-actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.process-preview-head {
+  color: var(--text);
+}
+.process-preview .framed-view {
+  display: block;
+  width: 100%;
+  min-height: 420px;
+  border: 0;
+  /* A previewed page draws on the white page a browser gives it, whatever Melete's theme. */
+  background: #ffffff;
+  color-scheme: light;
+}
+.process-preview-ended {
+  margin: 0;
+  padding: 18px 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+@media (max-width: 520px) {
+  .process-preview .framed-view {
+    min-height: 360px;
+  }
+}

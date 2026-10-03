@@ -238,3 +238,40 @@ test('a process started by another person or in a sensitive conversation shows n
     last_line: null,
   });
 });
+
+test('a preview is offered only for a running server that the person reading started', () => {
+  const row = (
+    id: string,
+    state: 'running' | 'exited',
+    port: number | null,
+    previewable?: boolean,
+  ) => ({
+    id,
+    name: id,
+    state,
+    started_at: at(1),
+    created_at: at(1),
+    port,
+    last_line: null,
+    ...(previewable === undefined ? {} : { previewable }),
+  });
+  const view = projectComputer({
+    rows: [],
+    bindings: [],
+    processes: [
+      row('prc_mine', 'running', 5173, true),
+      row('prc_theirs', 'running', 5174, false),
+      row('prc_unknown', 'running', 5175),
+      row('prc_noport', 'running', null, true),
+      row('prc_ended', 'exited', 5176, true),
+    ],
+    available,
+  });
+  expect(Object.fromEntries(view.processes.map((each) => [each.id, each.can_preview]))).toEqual({
+    prc_mine: true,
+    prc_theirs: false,
+    prc_unknown: false,
+    prc_noport: false,
+    prc_ended: false,
+  });
+});

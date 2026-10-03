@@ -206,7 +206,17 @@ export interface SandboxProvider {
     connection: string | null,
   ): Promise<string[]>;
   openStream?(h: SandboxHandle, spec: StreamSpec, s: AbortSignal): Promise<DuplexStream>;
+  /**
+   * Where the service itself reaches `port` inside this running sandbox, for a
+   * person's preview of a server a process there runs. Only the sandbox's own
+   * address and only that port; null when the sandbox has no network the
+   * service shares, or is not running. Never starts or resumes it.
+   */
+  previewAddress?(h: SandboxHandle, port: number, s: AbortSignal): Promise<PreviewAddress | null>;
 }
+
+/** An address on a network the service shares with one sandbox, and nothing else. */
+export type PreviewAddress = { readonly host: string; readonly port: number };
 
 /**
  * The provider may or may not have acted: the request left, and no answer

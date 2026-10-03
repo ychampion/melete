@@ -98,6 +98,15 @@ export interface Connector {
    * work in the agent's own workspace, under the person's own settings.
    */
   staysInSpace?(action: Pick<Action, 'kind' | 'canonical_payload'>, spaceId: string): boolean;
+  /**
+   * Payload paths (as `collectOriginFields` names them) whose values this
+   * connector proved itself before anyone was asked, and proves again in
+   * `validateBinding`: a file it checked is the person's own. Where such a value
+   * came from in the conversation then says nothing more, so the broker leaves
+   * it out of origin checking. Only `resource` fields are ever left out; a
+   * recipient, destination or amount is always checked.
+   */
+  verifiedFields?(action: Pick<Action, 'kind' | 'canonical_payload'>): readonly string[];
   health(): Promise<ConnectorHealth>;
   /**
    * The shape the destination wants now. Answered after a `schema_drift` fault
