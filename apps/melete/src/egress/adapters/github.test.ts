@@ -326,9 +326,9 @@ describe('what GitHub answers become', () => {
 });
 
 describe('the account on the wire', () => {
-  test('git gets the token as a basic credential and the API as a bearer token, and both are redacted', () => {
+  test('git gets the token as a basic credential and the API as a bearer token, and both are redacted', async () => {
     const token = 'github_pat_11ABCDEFG0123456789';
-    const git = githubAdapter.authorize(
+    const git = await githubAdapter.authorize(
       {
         host: 'github.com',
         method: 'GET',
@@ -338,10 +338,11 @@ describe('the account on the wire', () => {
       },
       token,
       config,
+      { command: null },
     );
     const basic = Buffer.from(`x-access-token:${token}`).toString('base64');
     expect(git.headers.authorization).toBe(`Basic ${basic}`);
-    const api = githubAdapter.authorize(
+    const api = await githubAdapter.authorize(
       {
         host: 'api.github.com',
         method: 'GET',
@@ -351,6 +352,7 @@ describe('the account on the wire', () => {
       },
       token,
       config,
+      { command: null },
     );
     expect(api.headers.authorization).toBe(`Bearer ${token}`);
     expect(githubAdapter.redactions(token)).toEqual(expect.arrayContaining([token, basic]));

@@ -1,0 +1,20 @@
+# npm dist-tag add melete-demo@1.0.0 next
+
+### read
+GET https://registry.npmjs.org/-/package/melete-demo/dist-tags
+authorization: Bearer melete-proxy-adds-this
+npm-auth-type: web
+npm-command: dist-tag
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+accept: */*
+
+### write
+PUT https://registry.npmjs.org/-/package/melete-demo/dist-tags/next
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+content-type: application/json
+npm-auth-type: web
+npm-command: dist-tag
+authorization: Bearer melete-proxy-adds-this
+accept: */*
+
+"1.0.0"

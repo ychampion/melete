@@ -1,0 +1,3276 @@
+{
+  "source": "botocore 1.42.46",
+  "services": [
+    {
+      "id": "accessanalyzer",
+      "prefix": "access-analyzer",
+      "signing": "access-analyzer",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/policy/check-access-not-granted", "CheckAccessNotGranted"],
+        ["POST", "/policy/check-no-new-access", "CheckNoNewAccess"],
+        ["POST", "/policy/check-no-public-access", "CheckNoPublicAccess"],
+        ["PUT", "/access-preview", "CreateAccessPreview"],
+        ["GET", "/access-preview/{accessPreviewId}", "GetAccessPreview"],
+        ["POST", "/access-preview/{accessPreviewId}", "ListAccessPreviewFindings"],
+        ["GET", "/access-preview", "ListAccessPreviews"]
+      ]
+    },
+    {
+      "id": "account",
+      "prefix": "account",
+      "signing": "account",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "acm",
+      "prefix": "acm",
+      "signing": "acm",
+      "protocols": ["json"],
+      "target": "CertificateManager"
+    },
+    {
+      "id": "acm-pca",
+      "prefix": "acm-pca",
+      "signing": "acm-pca",
+      "protocols": ["json"],
+      "target": "ACMPrivateCA"
+    },
+    {
+      "id": "aiops",
+      "prefix": "aiops",
+      "signing": "aiops",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "amp",
+      "prefix": "aps",
+      "signing": "aps",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "amplify",
+      "prefix": "amplify",
+      "signing": "amplify",
+      "protocols": ["rest-json"],
+      "routes": [["POST", "/apps/{appId}/accesslogs", "GenerateAccessLogs"]]
+    },
+    {
+      "id": "amplifybackend",
+      "prefix": "amplifybackend",
+      "signing": "amplifybackend",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/backend/{appId}/challenge", "CreateToken"],
+        ["POST", "/backend/{appId}/challenge/{sessionId}/remove", "DeleteToken"],
+        ["GET", "/backend/{appId}/challenge/{sessionId}", "GetToken"]
+      ]
+    },
+    {
+      "id": "amplifyuibuilder",
+      "prefix": "amplifyuibuilder",
+      "signing": "amplifyuibuilder",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/tokens/{provider}", "ExchangeCodeForToken"],
+        ["GET", "/export/app/{appId}/environment/{environmentName}/components", "ExportComponents"],
+        ["GET", "/export/app/{appId}/environment/{environmentName}/forms", "ExportForms"],
+        ["GET", "/export/app/{appId}/environment/{environmentName}/themes", "ExportThemes"],
+        ["POST", "/tokens/{provider}/refresh", "RefreshToken"]
+      ]
+    },
+    {
+      "id": "apigateway",
+      "prefix": "apigateway",
+      "signing": "apigateway",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/domainnameaccessassociations", "CreateDomainNameAccessAssociation"],
+        [
+          "DELETE",
+          "/domainnameaccessassociations/{domain_name_access_association_arn}",
+          "DeleteDomainNameAccessAssociation"
+        ],
+        ["GET", "/domainnameaccessassociations", "GetDomainNameAccessAssociations"],
+        ["POST", "/rejectdomainnameaccessassociations", "RejectDomainNameAccessAssociation"]
+      ]
+    },
+    {
+      "id": "apigatewaymanagementapi",
+      "prefix": "execute-api",
+      "signing": "execute-api",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "apigatewayv2",
+      "prefix": "apigateway",
+      "signing": "apigateway",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "DELETE",
+          "/v2/apis/{apiId}/stages/{stageName}/accesslogsettings",
+          "DeleteAccessLogSettings"
+        ],
+        ["GET", "/v2/apis/{apiId}/exports/{specification}", "ExportApi"]
+      ]
+    },
+    {
+      "id": "appconfig",
+      "prefix": "appconfig",
+      "signing": "appconfig",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "appconfigdata",
+      "prefix": "appconfigdata",
+      "signing": "appconfig",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "appfabric",
+      "prefix": "appfabric",
+      "signing": "appfabric",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/useraccess/batchget", "BatchGetUserAccessTasks"],
+        ["POST", "/useraccess/start", "StartUserAccessTasks"]
+      ]
+    },
+    {
+      "id": "appflow",
+      "prefix": "appflow",
+      "signing": "appflow",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "appintegrations",
+      "prefix": "app-integrations",
+      "signing": "app-integrations",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "application-autoscaling",
+      "prefix": "application-autoscaling",
+      "signing": "application-autoscaling",
+      "protocols": ["json"],
+      "target": "AnyScaleFrontendService"
+    },
+    {
+      "id": "application-insights",
+      "prefix": "applicationinsights",
+      "signing": "applicationinsights",
+      "protocols": ["json"],
+      "target": "EC2WindowsBarleyService"
+    },
+    {
+      "id": "application-signals",
+      "prefix": "application-signals",
+      "signing": "application-signals",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "applicationcostprofiler",
+      "prefix": "application-cost-profiler",
+      "signing": "application-cost-profiler",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "appmesh",
+      "prefix": "appmesh",
+      "signing": "appmesh",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "apprunner",
+      "prefix": "apprunner",
+      "signing": "apprunner",
+      "protocols": ["json"],
+      "target": "AppRunner"
+    },
+    {
+      "id": "appstream",
+      "prefix": "appstream2",
+      "signing": "appstream",
+      "protocols": ["json"],
+      "target": "PhotonAdminProxyService"
+    },
+    {
+      "id": "appsync",
+      "prefix": "appsync",
+      "signing": "appsync",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "arc-region-switch",
+      "prefix": "arc-region-switch",
+      "signing": "arc-region-switch",
+      "protocols": ["smithy-rpc-v2-cbor", "json"],
+      "target": "ArcRegionSwitch"
+    },
+    {
+      "id": "arc-zonal-shift",
+      "prefix": "arc-zonal-shift",
+      "signing": "arc-zonal-shift",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "artifact",
+      "prefix": "artifact",
+      "signing": "artifact",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "athena",
+      "prefix": "athena",
+      "signing": "athena",
+      "protocols": ["json"],
+      "target": "AmazonAthena"
+    },
+    {
+      "id": "auditmanager",
+      "prefix": "auditmanager",
+      "signing": "auditmanager",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "autoscaling",
+      "prefix": "autoscaling",
+      "signing": "autoscaling",
+      "protocols": ["query"]
+    },
+    {
+      "id": "autoscaling-plans",
+      "prefix": "autoscaling-plans",
+      "signing": "autoscaling-plans",
+      "protocols": ["json"],
+      "target": "AnyScaleScalingPlannerFrontendService"
+    },
+    {
+      "id": "b2bi",
+      "prefix": "b2bi",
+      "signing": "b2bi",
+      "protocols": ["json"],
+      "target": "B2BI"
+    },
+    {
+      "id": "backup",
+      "prefix": "backup",
+      "signing": "backup",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["PUT", "/restore-access-backup-vaults", "CreateRestoreAccessBackupVault"],
+        [
+          "DELETE",
+          "/backup-vaults/{backupVaultName}/access-policy",
+          "DeleteBackupVaultAccessPolicy"
+        ],
+        ["GET", "/backup/plans/{backupPlanId}/toTemplate/", "ExportBackupPlanTemplate"],
+        ["GET", "/backup-vaults/{backupVaultName}/access-policy", "GetBackupVaultAccessPolicy"],
+        [
+          "GET",
+          "/logically-air-gapped-backup-vaults/{backupVaultName}/restore-access-backup-vaults/",
+          "ListRestoreAccessBackupVaults"
+        ],
+        ["PUT", "/backup-vaults/{backupVaultName}/access-policy", "PutBackupVaultAccessPolicy"],
+        [
+          "DELETE",
+          "/logically-air-gapped-backup-vaults/{backupVaultName}/restore-access-backup-vaults/{restoreAccessBackupVaultArn}",
+          "RevokeRestoreAccessBackupVault"
+        ]
+      ]
+    },
+    {
+      "id": "backup-gateway",
+      "prefix": "backup-gateway",
+      "signing": "backup-gateway",
+      "protocols": ["json"],
+      "target": "BackupOnPremises_v20210101"
+    },
+    {
+      "id": "backupsearch",
+      "prefix": "backup-search",
+      "signing": "backup-search",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "batch",
+      "prefix": "batch",
+      "signing": "batch",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "bcm-dashboards",
+      "prefix": "bcm-dashboards",
+      "signing": "bcm-dashboards",
+      "protocols": ["json"],
+      "target": "AWSBCMDashboardsService"
+    },
+    {
+      "id": "bcm-data-exports",
+      "prefix": "bcm-data-exports",
+      "signing": "bcm-data-exports",
+      "protocols": ["json"],
+      "target": "AWSBillingAndCostManagementDataExports"
+    },
+    {
+      "id": "bcm-pricing-calculator",
+      "prefix": "bcm-pricing-calculator",
+      "signing": "bcm-pricing-calculator",
+      "protocols": ["json"],
+      "target": "AWSBCMPricingCalculator"
+    },
+    {
+      "id": "bcm-recommended-actions",
+      "prefix": "bcm-recommended-actions",
+      "signing": "bcm-recommended-actions",
+      "protocols": ["json"],
+      "target": "AWSBillingAndCostManagementRecommendedActions"
+    },
+    {
+      "id": "bedrock",
+      "prefix": "bedrock",
+      "signing": "bedrock",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "GET",
+          "/automated-reasoning-policies/{policyArn}/export",
+          "ExportAutomatedReasoningPolicyVersion"
+        ],
+        ["GET", "/use-case-for-model-access", "GetUseCaseForModelAccess"],
+        ["POST", "/use-case-for-model-access", "PutUseCaseForModelAccess"]
+      ]
+    },
+    {
+      "id": "bedrock-agent",
+      "prefix": "bedrock-agent",
+      "signing": "bedrock",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "bedrock-agent-runtime",
+      "prefix": "bedrock-agent-runtime",
+      "signing": "bedrock",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "bedrock-agentcore",
+      "prefix": "bedrock-agentcore",
+      "signing": "bedrock-agentcore",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/identities/CompleteResourceTokenAuth", "CompleteResourceTokenAuth"],
+        ["POST", "/identities/oauth2/token", "GetResourceOauth2Token"],
+        ["POST", "/identities/GetWorkloadAccessToken", "GetWorkloadAccessToken"],
+        ["POST", "/identities/GetWorkloadAccessTokenForJWT", "GetWorkloadAccessTokenForJWT"],
+        ["POST", "/identities/GetWorkloadAccessTokenForUserId", "GetWorkloadAccessTokenForUserId"]
+      ]
+    },
+    {
+      "id": "bedrock-agentcore-control",
+      "prefix": "bedrock-agentcore-control",
+      "signing": "bedrock-agentcore",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/identities/CreateApiKeyCredentialProvider", "CreateApiKeyCredentialProvider"],
+        ["POST", "/identities/CreateOauth2CredentialProvider", "CreateOauth2CredentialProvider"],
+        ["POST", "/identities/DeleteApiKeyCredentialProvider", "DeleteApiKeyCredentialProvider"],
+        ["POST", "/identities/DeleteOauth2CredentialProvider", "DeleteOauth2CredentialProvider"],
+        ["POST", "/identities/GetApiKeyCredentialProvider", "GetApiKeyCredentialProvider"],
+        ["POST", "/identities/GetOauth2CredentialProvider", "GetOauth2CredentialProvider"],
+        ["POST", "/identities/get-token-vault", "GetTokenVault"],
+        ["POST", "/identities/ListApiKeyCredentialProviders", "ListApiKeyCredentialProviders"],
+        ["POST", "/identities/ListOauth2CredentialProviders", "ListOauth2CredentialProviders"],
+        ["POST", "/identities/set-token-vault-cmk", "SetTokenVaultCMK"],
+        ["POST", "/identities/UpdateApiKeyCredentialProvider", "UpdateApiKeyCredentialProvider"],
+        ["POST", "/identities/UpdateOauth2CredentialProvider", "UpdateOauth2CredentialProvider"]
+      ]
+    },
+    {
+      "id": "bedrock-data-automation",
+      "prefix": "bedrock-data-automation",
+      "signing": "bedrock",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "bedrock-data-automation-runtime",
+      "prefix": "bedrock-data-automation-runtime",
+      "signing": "bedrock",
+      "protocols": ["json"],
+      "target": "AmazonBedrockKeystoneRuntimeService"
+    },
+    {
+      "id": "bedrock-runtime",
+      "prefix": "bedrock-runtime",
+      "signing": "bedrock",
+      "protocols": ["rest-json"],
+      "routes": [["POST", "/model/{modelId}/count-tokens", "CountTokens"]]
+    },
+    {
+      "id": "billing",
+      "prefix": "billing",
+      "signing": "billing",
+      "protocols": ["json"],
+      "target": "AWSBilling"
+    },
+    {
+      "id": "billingconductor",
+      "prefix": "billingconductor",
+      "signing": "billingconductor",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "braket",
+      "prefix": "braket",
+      "signing": "braket",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "budgets",
+      "prefix": "budgets",
+      "signing": "budgets",
+      "protocols": ["json"],
+      "target": "AWSBudgetServiceGateway"
+    },
+    {
+      "id": "ce",
+      "prefix": "ce",
+      "signing": "ce",
+      "protocols": ["json"],
+      "target": "AWSInsightsIndexService"
+    },
+    {
+      "id": "chatbot",
+      "prefix": "chatbot",
+      "signing": "chatbot",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "chime",
+      "prefix": "chime",
+      "signing": "chime",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "POST",
+          "/accounts/{accountId}/bots/{botId}?operation=regenerate-security-token",
+          "RegenerateSecurityToken"
+        ]
+      ]
+    },
+    {
+      "id": "chime-sdk-identity",
+      "prefix": "identity-chime",
+      "signing": "chime",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "chime-sdk-media-pipelines",
+      "prefix": "media-pipelines-chime",
+      "signing": "chime",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "chime-sdk-meetings",
+      "prefix": "meetings-chime",
+      "signing": "chime",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "chime-sdk-messaging",
+      "prefix": "messaging-chime",
+      "signing": "chime",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "chime-sdk-voice",
+      "prefix": "voice-chime",
+      "signing": "chime",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "POST",
+          "/voice-connectors/{voiceConnectorId}/termination/credentials?operation=delete",
+          "DeleteVoiceConnectorTerminationCredentials"
+        ],
+        [
+          "GET",
+          "/voice-connectors/{voiceConnectorId}/termination/credentials",
+          "ListVoiceConnectorTerminationCredentials"
+        ],
+        [
+          "POST",
+          "/voice-connectors/{voiceConnectorId}/termination/credentials?operation=put",
+          "PutVoiceConnectorTerminationCredentials"
+        ]
+      ]
+    },
+    {
+      "id": "cleanrooms",
+      "prefix": "cleanrooms",
+      "signing": "cleanrooms",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "cleanroomsml",
+      "prefix": "cleanrooms-ml",
+      "signing": "cleanrooms-ml",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "cloud9",
+      "prefix": "cloud9",
+      "signing": "cloud9",
+      "protocols": ["json"],
+      "target": "AWSCloud9WorkspaceManagementService"
+    },
+    {
+      "id": "cloudcontrol",
+      "prefix": "cloudcontrolapi",
+      "signing": "cloudcontrolapi",
+      "protocols": ["json"],
+      "target": "CloudApiService"
+    },
+    {
+      "id": "clouddirectory",
+      "prefix": "clouddirectory",
+      "signing": "clouddirectory",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "cloudformation",
+      "prefix": "cloudformation",
+      "signing": "cloudformation",
+      "protocols": ["query"]
+    },
+    {
+      "id": "cloudfront",
+      "prefix": "cloudfront",
+      "signing": "cloudfront",
+      "protocols": ["rest-xml"],
+      "routes": [
+        [
+          "POST",
+          "/2020-05-31/origin-access-identity/cloudfront",
+          "CreateCloudFrontOriginAccessIdentity"
+        ],
+        ["POST", "/2020-05-31/origin-access-control", "CreateOriginAccessControl"],
+        [
+          "DELETE",
+          "/2020-05-31/origin-access-identity/cloudfront/{Id}",
+          "DeleteCloudFrontOriginAccessIdentity"
+        ],
+        ["DELETE", "/2020-05-31/origin-access-control/{Id}", "DeleteOriginAccessControl"],
+        [
+          "GET",
+          "/2020-05-31/origin-access-identity/cloudfront/{Id}",
+          "GetCloudFrontOriginAccessIdentity"
+        ],
+        [
+          "GET",
+          "/2020-05-31/origin-access-identity/cloudfront/{Id}/config",
+          "GetCloudFrontOriginAccessIdentityConfig"
+        ],
+        ["GET", "/2020-05-31/origin-access-control/{Id}", "GetOriginAccessControl"],
+        ["GET", "/2020-05-31/origin-access-control/{Id}/config", "GetOriginAccessControlConfig"],
+        [
+          "GET",
+          "/2020-05-31/origin-access-identity/cloudfront",
+          "ListCloudFrontOriginAccessIdentities"
+        ],
+        ["GET", "/2020-05-31/origin-access-control", "ListOriginAccessControls"],
+        [
+          "PUT",
+          "/2020-05-31/origin-access-identity/cloudfront/{Id}/config",
+          "UpdateCloudFrontOriginAccessIdentity"
+        ],
+        ["PUT", "/2020-05-31/origin-access-control/{Id}/config", "UpdateOriginAccessControl"]
+      ]
+    },
+    {
+      "id": "cloudfront-keyvaluestore",
+      "prefix": "cloudfront-keyvaluestore",
+      "signing": "cloudfront-keyvaluestore",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "cloudhsm",
+      "prefix": "cloudhsm",
+      "signing": "cloudhsm",
+      "protocols": ["json"],
+      "target": "CloudHsmFrontendService"
+    },
+    {
+      "id": "cloudhsmv2",
+      "prefix": "cloudhsmv2",
+      "signing": "cloudhsm",
+      "protocols": ["json"],
+      "target": "BaldrApiService"
+    },
+    {
+      "id": "cloudsearch",
+      "prefix": "cloudsearch",
+      "signing": "cloudsearch",
+      "protocols": ["query"]
+    },
+    {
+      "id": "cloudsearchdomain",
+      "prefix": "cloudsearchdomain",
+      "signing": "cloudsearch",
+      "protocols": ["rest-json"],
+      "routes": [["GET", "/2013-01-01/suggest?format=sdk&pretty=true", "Suggest"]]
+    },
+    {
+      "id": "cloudtrail",
+      "prefix": "cloudtrail",
+      "signing": "cloudtrail",
+      "protocols": ["json"],
+      "target": "com.amazonaws.cloudtrail.v20131101.CloudTrail_20131101"
+    },
+    {
+      "id": "cloudtrail-data",
+      "prefix": "cloudtrail-data",
+      "signing": "cloudtrail-data",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "cloudwatch",
+      "prefix": "monitoring",
+      "signing": "monitoring",
+      "protocols": ["smithy-rpc-v2-cbor", "json", "query"],
+      "target": "GraniteServiceVersion20100801"
+    },
+    {
+      "id": "codeartifact",
+      "prefix": "codeartifact",
+      "signing": "codeartifact",
+      "protocols": ["rest-json"],
+      "routes": [["POST", "/v1/authorization-token", "GetAuthorizationToken"]]
+    },
+    {
+      "id": "codebuild",
+      "prefix": "codebuild",
+      "signing": "codebuild",
+      "protocols": ["json"],
+      "target": "CodeBuild_20161006"
+    },
+    {
+      "id": "codecatalyst",
+      "prefix": "codecatalyst",
+      "signing": "codecatalyst",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["PUT", "/v1/accessTokens", "CreateAccessToken"],
+        ["DELETE", "/v1/accessTokens/{id}", "DeleteAccessToken"],
+        ["POST", "/v1/accessTokens", "ListAccessTokens"],
+        ["GET", "/session", "VerifySession"]
+      ]
+    },
+    {
+      "id": "codecommit",
+      "prefix": "codecommit",
+      "signing": "codecommit",
+      "protocols": ["json"],
+      "target": "CodeCommit_20150413"
+    },
+    {
+      "id": "codeconnections",
+      "prefix": "codeconnections",
+      "signing": "codeconnections",
+      "protocols": ["json"],
+      "target": "com.amazonaws.codeconnections.CodeConnections_20231201"
+    },
+    {
+      "id": "codedeploy",
+      "prefix": "codedeploy",
+      "signing": "codedeploy",
+      "protocols": ["json"],
+      "target": "CodeDeploy_20141006"
+    },
+    {
+      "id": "codeguru-reviewer",
+      "prefix": "codeguru-reviewer",
+      "signing": "codeguru-reviewer",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "codeguru-security",
+      "prefix": "codeguru-security",
+      "signing": "codeguru-security",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "codeguruprofiler",
+      "prefix": "codeguru-profiler",
+      "signing": "codeguru-profiler",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "codepipeline",
+      "prefix": "codepipeline",
+      "signing": "codepipeline",
+      "protocols": ["json"],
+      "target": "CodePipeline_20150709"
+    },
+    {
+      "id": "codestar-connections",
+      "prefix": "codestar-connections",
+      "signing": "codestar-connections",
+      "protocols": ["json"],
+      "target": "com.amazonaws.codestar.connections.CodeStar_connections_20191201"
+    },
+    {
+      "id": "codestar-notifications",
+      "prefix": "codestar-notifications",
+      "signing": "codestar-notifications",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "cognito-identity",
+      "prefix": "cognito-identity",
+      "signing": "cognito-identity",
+      "protocols": ["json"],
+      "target": "AWSCognitoIdentityService"
+    },
+    {
+      "id": "cognito-idp",
+      "prefix": "cognito-idp",
+      "signing": "cognito-idp",
+      "protocols": ["json"],
+      "target": "AWSCognitoIdentityProviderService"
+    },
+    {
+      "id": "cognito-sync",
+      "prefix": "cognito-sync",
+      "signing": "cognito-sync",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "comprehend",
+      "prefix": "comprehend",
+      "signing": "comprehend",
+      "protocols": ["json"],
+      "target": "Comprehend_20171127"
+    },
+    {
+      "id": "comprehendmedical",
+      "prefix": "comprehendmedical",
+      "signing": "comprehendmedical",
+      "protocols": ["json"],
+      "target": "ComprehendMedical_20181030"
+    },
+    {
+      "id": "compute-optimizer",
+      "prefix": "compute-optimizer",
+      "signing": "compute-optimizer",
+      "protocols": ["json"],
+      "target": "ComputeOptimizerService"
+    },
+    {
+      "id": "compute-optimizer-automation",
+      "prefix": "aco-automation",
+      "signing": "aco-automation",
+      "protocols": ["json"],
+      "target": "ComputeOptimizerAutomationService"
+    },
+    {
+      "id": "config",
+      "prefix": "config",
+      "signing": "config",
+      "protocols": ["json"],
+      "target": "StarlingDoveService"
+    },
+    {
+      "id": "connect",
+      "prefix": "connect",
+      "signing": "connect",
+      "protocols": ["rest-json"],
+      "routes": [["GET", "/user/federate/{InstanceId}", "GetFederationToken"]]
+    },
+    {
+      "id": "connect-contact-lens",
+      "prefix": "contact-lens",
+      "signing": "connect",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "connectcampaigns",
+      "prefix": "connect-campaigns",
+      "signing": "connect-campaigns",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "connectcampaignsv2",
+      "prefix": "connect-campaigns",
+      "signing": "connect-campaigns",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "connectcases",
+      "prefix": "cases",
+      "signing": "cases",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "connectparticipant",
+      "prefix": "participant.connect",
+      "signing": "execute-api",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "controlcatalog",
+      "prefix": "controlcatalog",
+      "signing": "controlcatalog",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "controltower",
+      "prefix": "controltower",
+      "signing": "controltower",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "cost-optimization-hub",
+      "prefix": "cost-optimization-hub",
+      "signing": "cost-optimization-hub",
+      "protocols": ["json"],
+      "target": "CostOptimizationHubService"
+    },
+    {
+      "id": "cur",
+      "prefix": "cur",
+      "signing": "cur",
+      "protocols": ["json"],
+      "target": "AWSOrigamiServiceGatewayService"
+    },
+    {
+      "id": "customer-profiles",
+      "prefix": "profile",
+      "signing": "profile",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "databrew",
+      "prefix": "databrew",
+      "signing": "databrew",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "dataexchange",
+      "prefix": "dataexchange",
+      "signing": "dataexchange",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "datapipeline",
+      "prefix": "datapipeline",
+      "signing": "datapipeline",
+      "protocols": ["json"],
+      "target": "DataPipeline"
+    },
+    {
+      "id": "datasync",
+      "prefix": "datasync",
+      "signing": "datasync",
+      "protocols": ["json"],
+      "target": "FmrsService"
+    },
+    {
+      "id": "datazone",
+      "prefix": "datazone",
+      "signing": "datazone",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "GET",
+          "/v2/domains/{domainIdentifier}/environments/{environmentIdentifier}/credentials",
+          "GetEnvironmentCredentials"
+        ]
+      ]
+    },
+    {
+      "id": "dax",
+      "prefix": "dax",
+      "signing": "dax",
+      "protocols": ["json"],
+      "target": "AmazonDAXV3"
+    },
+    {
+      "id": "deadline",
+      "prefix": "deadline",
+      "signing": "deadline",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["GET", "/2023-10-12/farms/{farmId}/fleets/{fleetId}/read-roles", "AssumeFleetRoleForRead"],
+        [
+          "GET",
+          "/2023-10-12/farms/{farmId}/fleets/{fleetId}/workers/{workerId}/fleet-roles",
+          "AssumeFleetRoleForWorker"
+        ],
+        ["GET", "/2023-10-12/farms/{farmId}/queues/{queueId}/read-roles", "AssumeQueueRoleForRead"],
+        ["GET", "/2023-10-12/farms/{farmId}/queues/{queueId}/user-roles", "AssumeQueueRoleForUser"],
+        [
+          "GET",
+          "/2023-10-12/farms/{farmId}/fleets/{fleetId}/workers/{workerId}/queue-roles",
+          "AssumeQueueRoleForWorker"
+        ]
+      ]
+    },
+    {
+      "id": "detective",
+      "prefix": "api.detective",
+      "signing": "detective",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "devicefarm",
+      "prefix": "devicefarm",
+      "signing": "devicefarm",
+      "protocols": ["json"],
+      "target": "DeviceFarm_20150623"
+    },
+    {
+      "id": "devops-guru",
+      "prefix": "devops-guru",
+      "signing": "devops-guru",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "directconnect",
+      "prefix": "directconnect",
+      "signing": "directconnect",
+      "protocols": ["json"],
+      "target": "OvertureService"
+    },
+    {
+      "id": "discovery",
+      "prefix": "discovery",
+      "signing": "discovery",
+      "protocols": ["json"],
+      "target": "AWSPoseidonService_V2015_11_01"
+    },
+    {
+      "id": "dlm",
+      "prefix": "dlm",
+      "signing": "dlm",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "dms",
+      "prefix": "dms",
+      "signing": "dms",
+      "protocols": ["json"],
+      "target": "AmazonDMSv20160101"
+    },
+    {
+      "id": "docdb",
+      "prefix": "rds",
+      "signing": "rds",
+      "protocols": ["query"]
+    },
+    {
+      "id": "docdb-elastic",
+      "prefix": "docdb-elastic",
+      "signing": "docdb-elastic",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "drs",
+      "prefix": "drs",
+      "signing": "drs",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "ds",
+      "prefix": "ds",
+      "signing": "ds",
+      "protocols": ["json"],
+      "target": "DirectoryService_20150416"
+    },
+    {
+      "id": "ds-data",
+      "prefix": "ds-data",
+      "signing": "ds-data",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "dsql",
+      "prefix": "dsql",
+      "signing": "dsql",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "dynamodb",
+      "prefix": "dynamodb",
+      "signing": "dynamodb",
+      "protocols": ["json"],
+      "target": "DynamoDB_20120810"
+    },
+    {
+      "id": "dynamodbstreams",
+      "prefix": "streams.dynamodb",
+      "signing": "dynamodb",
+      "protocols": ["json"],
+      "target": "DynamoDBStreams_20120810"
+    },
+    {
+      "id": "ebs",
+      "prefix": "ebs",
+      "signing": "ebs",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "ec2",
+      "prefix": "ec2",
+      "signing": "ec2",
+      "protocols": ["ec2"]
+    },
+    {
+      "id": "ec2-instance-connect",
+      "prefix": "ec2-instance-connect",
+      "signing": "ec2-instance-connect",
+      "protocols": ["json"],
+      "target": "AWSEC2InstanceConnectService"
+    },
+    {
+      "id": "ecr",
+      "prefix": "api.ecr",
+      "signing": "ecr",
+      "protocols": ["json"],
+      "target": "AmazonEC2ContainerRegistry_V20150921"
+    },
+    {
+      "id": "ecr-public",
+      "prefix": "api.ecr-public",
+      "signing": "ecr-public",
+      "protocols": ["json"],
+      "target": "SpencerFrontendService"
+    },
+    {
+      "id": "ecs",
+      "prefix": "ecs",
+      "signing": "ecs",
+      "protocols": ["json"],
+      "target": "AmazonEC2ContainerServiceV20141113"
+    },
+    {
+      "id": "efs",
+      "prefix": "elasticfilesystem",
+      "signing": "elasticfilesystem",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/2015-02-01/access-points", "CreateAccessPoint"],
+        ["DELETE", "/2015-02-01/access-points/{AccessPointId}", "DeleteAccessPoint"],
+        ["GET", "/2015-02-01/access-points", "DescribeAccessPoints"]
+      ]
+    },
+    {
+      "id": "eks",
+      "prefix": "eks",
+      "signing": "eks",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "POST",
+          "/clusters/{name}/access-entries/{principalArn}/access-policies",
+          "AssociateAccessPolicy"
+        ],
+        ["POST", "/clusters/{name}/access-entries", "CreateAccessEntry"],
+        ["DELETE", "/clusters/{name}/access-entries/{principalArn}", "DeleteAccessEntry"],
+        ["GET", "/clusters/{name}/access-entries/{principalArn}", "DescribeAccessEntry"],
+        [
+          "DELETE",
+          "/clusters/{name}/access-entries/{principalArn}/access-policies/{policyArn}",
+          "DisassociateAccessPolicy"
+        ],
+        ["GET", "/clusters/{name}/access-entries", "ListAccessEntries"],
+        ["GET", "/access-policies", "ListAccessPolicies"],
+        [
+          "GET",
+          "/clusters/{name}/access-entries/{principalArn}/access-policies",
+          "ListAssociatedAccessPolicies"
+        ],
+        ["POST", "/clusters/{name}/access-entries/{principalArn}", "UpdateAccessEntry"]
+      ]
+    },
+    {
+      "id": "eks-auth",
+      "prefix": "eks-auth",
+      "signing": "eks-auth",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/clusters/{clusterName}/assume-role-for-pod-identity", "AssumeRoleForPodIdentity"]
+      ]
+    },
+    {
+      "id": "elasticache",
+      "prefix": "elasticache",
+      "signing": "elasticache",
+      "protocols": ["query"]
+    },
+    {
+      "id": "elasticbeanstalk",
+      "prefix": "elasticbeanstalk",
+      "signing": "elasticbeanstalk",
+      "protocols": ["query"]
+    },
+    {
+      "id": "elb",
+      "prefix": "elasticloadbalancing",
+      "signing": "elasticloadbalancing",
+      "protocols": ["query"]
+    },
+    {
+      "id": "elbv2",
+      "prefix": "elasticloadbalancing",
+      "signing": "elasticloadbalancing",
+      "protocols": ["query"]
+    },
+    {
+      "id": "emr",
+      "prefix": "elasticmapreduce",
+      "signing": "elasticmapreduce",
+      "protocols": ["json"],
+      "target": "ElasticMapReduce"
+    },
+    {
+      "id": "emr-containers",
+      "prefix": "emr-containers",
+      "signing": "emr-containers",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "POST",
+          "/virtualclusters/{virtualClusterId}/endpoints/{endpointId}/credentials",
+          "GetManagedEndpointSessionCredentials"
+        ]
+      ]
+    },
+    {
+      "id": "emr-serverless",
+      "prefix": "emr-serverless",
+      "signing": "emr-serverless",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "entityresolution",
+      "prefix": "entityresolution",
+      "signing": "entityresolution",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "es",
+      "prefix": "es",
+      "signing": "es",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "POST",
+          "/2015-01-01/es/domain/{DomainName}/authorizeVpcEndpointAccess",
+          "AuthorizeVpcEndpointAccess"
+        ],
+        [
+          "GET",
+          "/2015-01-01/es/domain/{DomainName}/listVpcEndpointAccess",
+          "ListVpcEndpointAccess"
+        ],
+        [
+          "POST",
+          "/2015-01-01/es/domain/{DomainName}/revokeVpcEndpointAccess",
+          "RevokeVpcEndpointAccess"
+        ]
+      ]
+    },
+    {
+      "id": "events",
+      "prefix": "events",
+      "signing": "events",
+      "protocols": ["json"],
+      "target": "AWSEvents"
+    },
+    {
+      "id": "evidently",
+      "prefix": "evidently",
+      "signing": "evidently",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "evs",
+      "prefix": "evs",
+      "signing": "evs",
+      "protocols": ["json"],
+      "target": "AmazonElasticVMwareService"
+    },
+    {
+      "id": "finspace",
+      "prefix": "finspace",
+      "signing": "finspace",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "finspace-data",
+      "prefix": "finspace-api",
+      "signing": "finspace-api",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "POST",
+          "/datasets/{datasetId}/dataviewsv2/{dataviewId}/external-access-details",
+          "GetExternalDataViewAccessDetails"
+        ],
+        ["GET", "/credentials/programmatic", "GetProgrammaticAccessCredentials"],
+        ["POST", "/user/{userId}/password", "ResetUserPassword"]
+      ]
+    },
+    {
+      "id": "firehose",
+      "prefix": "firehose",
+      "signing": "firehose",
+      "protocols": ["json"],
+      "target": "Firehose_20150804"
+    },
+    {
+      "id": "fis",
+      "prefix": "fis",
+      "signing": "fis",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "fms",
+      "prefix": "fms",
+      "signing": "fms",
+      "protocols": ["json"],
+      "target": "AWSFMS_20180101"
+    },
+    {
+      "id": "forecast",
+      "prefix": "forecast",
+      "signing": "forecast",
+      "protocols": ["json"],
+      "target": "AmazonForecast"
+    },
+    {
+      "id": "forecastquery",
+      "prefix": "forecastquery",
+      "signing": "forecast",
+      "protocols": ["json"],
+      "target": "AmazonForecastRuntime"
+    },
+    {
+      "id": "frauddetector",
+      "prefix": "frauddetector",
+      "signing": "frauddetector",
+      "protocols": ["json"],
+      "target": "AWSHawksNestServiceFacade"
+    },
+    {
+      "id": "freetier",
+      "prefix": "freetier",
+      "signing": "freetier",
+      "protocols": ["json"],
+      "target": "AWSFreeTierService"
+    },
+    {
+      "id": "fsx",
+      "prefix": "fsx",
+      "signing": "fsx",
+      "protocols": ["json"],
+      "target": "AWSSimbaAPIService_v20180301"
+    },
+    {
+      "id": "gamelift",
+      "prefix": "gamelift",
+      "signing": "gamelift",
+      "protocols": ["json"],
+      "target": "GameLift"
+    },
+    {
+      "id": "gameliftstreams",
+      "prefix": "gameliftstreams",
+      "signing": "gameliftstreams",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "geo-maps",
+      "prefix": "geo-maps",
+      "signing": "geo-maps",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "geo-places",
+      "prefix": "geo-places",
+      "signing": "geo-places",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "geo-routes",
+      "prefix": "geo-routes",
+      "signing": "geo-routes",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "glacier",
+      "prefix": "glacier",
+      "signing": "glacier",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["DELETE", "/{accountId}/vaults/{vaultName}/access-policy", "DeleteVaultAccessPolicy"],
+        ["GET", "/{accountId}/vaults/{vaultName}/access-policy", "GetVaultAccessPolicy"],
+        ["PUT", "/{accountId}/vaults/{vaultName}/access-policy", "SetVaultAccessPolicy"]
+      ]
+    },
+    {
+      "id": "globalaccelerator",
+      "prefix": "globalaccelerator",
+      "signing": "globalaccelerator",
+      "protocols": ["json"],
+      "target": "GlobalAccelerator_V20180706"
+    },
+    {
+      "id": "glue",
+      "prefix": "glue",
+      "signing": "glue",
+      "protocols": ["json"],
+      "target": "AWSGlue"
+    },
+    {
+      "id": "grafana",
+      "prefix": "grafana",
+      "signing": "grafana",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "POST",
+          "/workspaces/{workspaceId}/serviceaccounts/{serviceAccountId}/tokens",
+          "CreateWorkspaceServiceAccountToken"
+        ],
+        [
+          "DELETE",
+          "/workspaces/{workspaceId}/serviceaccounts/{serviceAccountId}/tokens/{tokenId}",
+          "DeleteWorkspaceServiceAccountToken"
+        ],
+        [
+          "GET",
+          "/workspaces/{workspaceId}/serviceaccounts/{serviceAccountId}/tokens",
+          "ListWorkspaceServiceAccountTokens"
+        ]
+      ]
+    },
+    {
+      "id": "greengrass",
+      "prefix": "greengrass",
+      "signing": "greengrass",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "greengrassv2",
+      "prefix": "greengrass",
+      "signing": "greengrass",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "groundstation",
+      "prefix": "groundstation",
+      "signing": "groundstation",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "guardduty",
+      "prefix": "guardduty",
+      "signing": "guardduty",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "health",
+      "prefix": "health",
+      "signing": "health",
+      "protocols": ["json"],
+      "target": "AWSHealth_20160804"
+    },
+    {
+      "id": "healthlake",
+      "prefix": "healthlake",
+      "signing": "healthlake",
+      "protocols": ["json"],
+      "target": "HealthLake"
+    },
+    {
+      "id": "iam",
+      "prefix": "iam",
+      "signing": "iam",
+      "protocols": ["query"]
+    },
+    {
+      "id": "identitystore",
+      "prefix": "identitystore",
+      "signing": "identitystore",
+      "protocols": ["json"],
+      "target": "AWSIdentityStore"
+    },
+    {
+      "id": "imagebuilder",
+      "prefix": "imagebuilder",
+      "signing": "imagebuilder",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "importexport",
+      "prefix": "importexport",
+      "signing": "importexport",
+      "protocols": ["query"]
+    },
+    {
+      "id": "inspector",
+      "prefix": "inspector",
+      "signing": "inspector",
+      "protocols": ["json"],
+      "target": "InspectorService"
+    },
+    {
+      "id": "inspector-scan",
+      "prefix": "inspector-scan",
+      "signing": "inspector-scan",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "inspector2",
+      "prefix": "inspector2",
+      "signing": "inspector2",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "internetmonitor",
+      "prefix": "internetmonitor",
+      "signing": "internetmonitor",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "invoicing",
+      "prefix": "invoicing",
+      "signing": "invoicing",
+      "protocols": ["json"],
+      "target": "Invoicing"
+    },
+    {
+      "id": "iot",
+      "prefix": "iot",
+      "signing": "iot",
+      "protocols": ["rest-json"],
+      "routes": [["GET", "/confirmdestination/{confirmationToken+}", "ConfirmTopicRuleDestination"]]
+    },
+    {
+      "id": "iot-data",
+      "prefix": "data-ats.iot",
+      "signing": "iotdata",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "iot-jobs-data",
+      "prefix": "data.jobs.iot",
+      "signing": "iot-jobs-data",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "iot-managed-integrations",
+      "prefix": "api.iotmanagedintegrations",
+      "signing": "iotmanagedintegrations",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/credential-lockers", "CreateCredentialLocker"],
+        ["DELETE", "/credential-lockers/{Identifier}", "DeleteCredentialLocker"],
+        ["GET", "/credential-lockers/{Identifier}", "GetCredentialLocker"],
+        ["GET", "/credential-lockers", "ListCredentialLockers"]
+      ]
+    },
+    {
+      "id": "iotanalytics",
+      "prefix": "iotanalytics",
+      "signing": "iotanalytics",
+      "protocols": ["rest-json"],
+      "routes": [["GET", "/channels/{channelName}/sample", "SampleChannelData"]]
+    },
+    {
+      "id": "iotdeviceadvisor",
+      "prefix": "api.iotdeviceadvisor",
+      "signing": "iotdeviceadvisor",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "iotevents",
+      "prefix": "iotevents",
+      "signing": "iotevents",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "iotevents-data",
+      "prefix": "data.iotevents",
+      "signing": "ioteventsdata",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "iotfleetwise",
+      "prefix": "iotfleetwise",
+      "signing": "iotfleetwise",
+      "protocols": ["json"],
+      "target": "IoTAutobahnControlPlane"
+    },
+    {
+      "id": "iotsecuretunneling",
+      "prefix": "api.tunneling.iot",
+      "signing": "IoTSecuredTunneling",
+      "protocols": ["json"],
+      "target": "IoTSecuredTunneling"
+    },
+    {
+      "id": "iotsitewise",
+      "prefix": "iotsitewise",
+      "signing": "iotsitewise",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/access-policies", "CreateAccessPolicy"],
+        ["DELETE", "/access-policies/{accessPolicyId}", "DeleteAccessPolicy"],
+        ["GET", "/access-policies/{accessPolicyId}", "DescribeAccessPolicy"],
+        ["GET", "/access-policies", "ListAccessPolicies"],
+        ["PUT", "/access-policies/{accessPolicyId}", "UpdateAccessPolicy"]
+      ]
+    },
+    {
+      "id": "iotthingsgraph",
+      "prefix": "iotthingsgraph",
+      "signing": "iotthingsgraph",
+      "protocols": ["json"],
+      "target": "IotThingsGraphFrontEndService"
+    },
+    {
+      "id": "iottwinmaker",
+      "prefix": "iottwinmaker",
+      "signing": "iottwinmaker",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "iotwireless",
+      "prefix": "api.iotwireless",
+      "signing": "iotwireless",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "ivs",
+      "prefix": "ivs",
+      "signing": "ivs",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/DeletePlaybackKeyPair", "DeletePlaybackKeyPair"],
+        ["POST", "/GetPlaybackKeyPair", "GetPlaybackKeyPair"],
+        ["POST", "/ImportPlaybackKeyPair", "ImportPlaybackKeyPair"],
+        ["POST", "/ListPlaybackKeyPairs", "ListPlaybackKeyPairs"]
+      ]
+    },
+    {
+      "id": "ivs-realtime",
+      "prefix": "ivsrealtime",
+      "signing": "ivs",
+      "protocols": ["rest-json"],
+      "routes": [["POST", "/CreateParticipantToken", "CreateParticipantToken"]]
+    },
+    {
+      "id": "ivschat",
+      "prefix": "ivschat",
+      "signing": "ivschat",
+      "protocols": ["rest-json"],
+      "routes": [["POST", "/CreateChatToken", "CreateChatToken"]]
+    },
+    {
+      "id": "kafka",
+      "prefix": "kafka",
+      "signing": "kafka",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/v1/clusters/{clusterArn}/scram-secrets", "BatchAssociateScramSecret"],
+        ["PATCH", "/v1/clusters/{clusterArn}/scram-secrets", "BatchDisassociateScramSecret"],
+        ["GET", "/v1/clusters/{clusterArn}/scram-secrets", "ListScramSecrets"]
+      ]
+    },
+    {
+      "id": "kafkaconnect",
+      "prefix": "kafkaconnect",
+      "signing": "kafkaconnect",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "kendra",
+      "prefix": "kendra",
+      "signing": "kendra",
+      "protocols": ["json"],
+      "target": "AWSKendraFrontendService"
+    },
+    {
+      "id": "kendra-ranking",
+      "prefix": "kendra-ranking",
+      "signing": "kendra-ranking",
+      "protocols": ["json"],
+      "target": "AWSKendraRerankingFrontendService"
+    },
+    {
+      "id": "keyspaces",
+      "prefix": "cassandra",
+      "signing": "cassandra",
+      "protocols": ["json"],
+      "target": "KeyspacesService"
+    },
+    {
+      "id": "keyspacesstreams",
+      "prefix": "cassandra-streams",
+      "signing": "cassandra",
+      "protocols": ["json"],
+      "target": "KeyspacesStreams"
+    },
+    {
+      "id": "kinesis",
+      "prefix": "kinesis",
+      "signing": "kinesis",
+      "protocols": ["json"],
+      "target": "Kinesis_20131202"
+    },
+    {
+      "id": "kinesis-video-archived-media",
+      "prefix": "kinesisvideo",
+      "signing": "kinesisvideo",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "kinesis-video-media",
+      "prefix": "kinesisvideo",
+      "signing": "kinesisvideo",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "kinesis-video-signaling",
+      "prefix": "kinesisvideo",
+      "signing": "kinesisvideo",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "kinesis-video-webrtc-storage",
+      "prefix": "kinesisvideo",
+      "signing": "kinesisvideo",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "kinesisanalytics",
+      "prefix": "kinesisanalytics",
+      "signing": "kinesisanalytics",
+      "protocols": ["json"],
+      "target": "KinesisAnalytics_20150814"
+    },
+    {
+      "id": "kinesisanalyticsv2",
+      "prefix": "kinesisanalytics",
+      "signing": "kinesisanalytics",
+      "protocols": ["json"],
+      "target": "KinesisAnalytics_20180523"
+    },
+    {
+      "id": "kinesisvideo",
+      "prefix": "kinesisvideo",
+      "signing": "kinesisvideo",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "kms",
+      "prefix": "kms",
+      "signing": "kms",
+      "protocols": ["json"],
+      "target": "TrentService"
+    },
+    {
+      "id": "lakeformation",
+      "prefix": "lakeformation",
+      "signing": "lakeformation",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/AssumeDecoratedRoleWithSAML", "AssumeDecoratedRoleWithSAML"],
+        ["POST", "/GetTemporaryDataLocationCredentials", "GetTemporaryDataLocationCredentials"],
+        ["POST", "/GetTemporaryGluePartitionCredentials", "GetTemporaryGluePartitionCredentials"],
+        ["POST", "/GetTemporaryGlueTableCredentials", "GetTemporaryGlueTableCredentials"]
+      ]
+    },
+    {
+      "id": "lambda",
+      "prefix": "lambda",
+      "signing": "lambda",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "launch-wizard",
+      "prefix": "launchwizard",
+      "signing": "launchwizard",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "lex-models",
+      "prefix": "models.lex",
+      "signing": "lex",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "lex-runtime",
+      "prefix": "runtime.lex",
+      "signing": "lex",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "lexv2-models",
+      "prefix": "models-v2-lex",
+      "signing": "lex",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "lexv2-runtime",
+      "prefix": "runtime-v2-lex",
+      "signing": "lex",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "license-manager",
+      "prefix": "license-manager",
+      "signing": "license-manager",
+      "protocols": ["json"],
+      "target": "AWSLicenseManager"
+    },
+    {
+      "id": "license-manager-linux-subscriptions",
+      "prefix": "license-manager-linux-subscriptions",
+      "signing": "license-manager-linux-subscriptions",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "license-manager-user-subscriptions",
+      "prefix": "license-manager-user-subscriptions",
+      "signing": "license-manager-user-subscriptions",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "lightsail",
+      "prefix": "lightsail",
+      "signing": "lightsail",
+      "protocols": ["json"],
+      "target": "Lightsail_20161128"
+    },
+    {
+      "id": "location",
+      "prefix": "geo",
+      "signing": "geo",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "logs",
+      "prefix": "logs",
+      "signing": "logs",
+      "protocols": ["json"],
+      "target": "Logs_20140328"
+    },
+    {
+      "id": "lookoutequipment",
+      "prefix": "lookoutequipment",
+      "signing": "lookoutequipment",
+      "protocols": ["json"],
+      "target": "AWSLookoutEquipmentFrontendService"
+    },
+    {
+      "id": "m2",
+      "prefix": "m2",
+      "signing": "m2",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "machinelearning",
+      "prefix": "machinelearning",
+      "signing": "machinelearning",
+      "protocols": ["json"],
+      "target": "AmazonML_20141212"
+    },
+    {
+      "id": "macie2",
+      "prefix": "macie2",
+      "signing": "macie2",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "mailmanager",
+      "prefix": "mail-manager",
+      "signing": "ses",
+      "protocols": ["json"],
+      "target": "MailManagerSvc"
+    },
+    {
+      "id": "managedblockchain",
+      "prefix": "managedblockchain",
+      "signing": "managedblockchain",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/accessors", "CreateAccessor"],
+        ["DELETE", "/accessors/{AccessorId}", "DeleteAccessor"],
+        ["GET", "/accessors/{AccessorId}", "GetAccessor"],
+        ["GET", "/accessors", "ListAccessors"]
+      ]
+    },
+    {
+      "id": "managedblockchain-query",
+      "prefix": "managedblockchain-query",
+      "signing": "managedblockchain-query",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/batch-get-token-balance", "BatchGetTokenBalance"],
+        ["POST", "/get-token-balance", "GetTokenBalance"],
+        ["POST", "/list-token-balances", "ListTokenBalances"]
+      ]
+    },
+    {
+      "id": "marketplace-agreement",
+      "prefix": "agreement-marketplace",
+      "signing": "aws-marketplace",
+      "protocols": ["json"],
+      "target": "AWSMPCommerceService_v20200301"
+    },
+    {
+      "id": "marketplace-catalog",
+      "prefix": "catalog.marketplace",
+      "signing": "aws-marketplace",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "marketplace-deployment",
+      "prefix": "deployment-marketplace",
+      "signing": "aws-marketplace",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "marketplace-entitlement",
+      "prefix": "entitlement.marketplace",
+      "signing": "aws-marketplace",
+      "protocols": ["json"],
+      "target": "AWSMPEntitlementService"
+    },
+    {
+      "id": "marketplace-reporting",
+      "prefix": "reporting-marketplace",
+      "signing": "aws-marketplace",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "marketplacecommerceanalytics",
+      "prefix": "marketplacecommerceanalytics",
+      "signing": "marketplacecommerceanalytics",
+      "protocols": ["json"],
+      "target": "MarketplaceCommerceAnalytics20150701"
+    },
+    {
+      "id": "mediaconnect",
+      "prefix": "mediaconnect",
+      "signing": "mediaconnect",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "mediaconvert",
+      "prefix": "mediaconvert",
+      "signing": "mediaconvert",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "medialive",
+      "prefix": "medialive",
+      "signing": "medialive",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "mediapackage",
+      "prefix": "mediapackage",
+      "signing": "mediapackage",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["PUT", "/channels/{id}/credentials", "RotateChannelCredentials"],
+        [
+          "PUT",
+          "/channels/{id}/ingest_endpoints/{ingest_endpoint_id}/credentials",
+          "RotateIngestEndpointCredentials"
+        ]
+      ]
+    },
+    {
+      "id": "mediapackage-vod",
+      "prefix": "mediapackage-vod",
+      "signing": "mediapackage-vod",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "mediapackagev2",
+      "prefix": "mediapackagev2",
+      "signing": "mediapackagev2",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "mediastore",
+      "prefix": "mediastore",
+      "signing": "mediastore",
+      "protocols": ["json"],
+      "target": "MediaStore_20170901"
+    },
+    {
+      "id": "mediastore-data",
+      "prefix": "data.mediastore",
+      "signing": "mediastore",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "mediatailor",
+      "prefix": "api.mediatailor",
+      "signing": "mediatailor",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "medical-imaging",
+      "prefix": "medical-imaging",
+      "signing": "medical-imaging",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "memorydb",
+      "prefix": "memory-db",
+      "signing": "memorydb",
+      "protocols": ["json"],
+      "target": "AmazonMemoryDB"
+    },
+    {
+      "id": "meteringmarketplace",
+      "prefix": "metering.marketplace",
+      "signing": "aws-marketplace",
+      "protocols": ["json"],
+      "target": "AWSMPMeteringService"
+    },
+    {
+      "id": "mgh",
+      "prefix": "mgh",
+      "signing": "mgh",
+      "protocols": ["json"],
+      "target": "AWSMigrationHub"
+    },
+    {
+      "id": "mgn",
+      "prefix": "mgn",
+      "signing": "mgn",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "migration-hub-refactor-spaces",
+      "prefix": "refactor-spaces",
+      "signing": "refactor-spaces",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "migrationhub-config",
+      "prefix": "migrationhub-config",
+      "signing": "mgh",
+      "protocols": ["json"],
+      "target": "AWSMigrationHubMultiAccountService"
+    },
+    {
+      "id": "migrationhuborchestrator",
+      "prefix": "migrationhub-orchestrator",
+      "signing": "migrationhub-orchestrator",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "migrationhubstrategy",
+      "prefix": "migrationhub-strategy",
+      "signing": "migrationhub-strategy",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "mpa",
+      "prefix": "mpa",
+      "signing": "mpa",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "mq",
+      "prefix": "mq",
+      "signing": "mq",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "mturk",
+      "prefix": "mturk-requester",
+      "signing": "mturk-requester",
+      "protocols": ["json"],
+      "target": "MTurkRequesterServiceV20170117"
+    },
+    {
+      "id": "mwaa",
+      "prefix": "airflow",
+      "signing": "airflow",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/clitoken/{Name}", "CreateCliToken"],
+        ["POST", "/webtoken/{Name}", "CreateWebLoginToken"]
+      ]
+    },
+    {
+      "id": "mwaa-serverless",
+      "prefix": "airflow-serverless",
+      "signing": "airflow-serverless",
+      "protocols": ["json"],
+      "target": "AmazonMWAAServerless"
+    },
+    {
+      "id": "neptune",
+      "prefix": "rds",
+      "signing": "rds",
+      "protocols": ["query"]
+    },
+    {
+      "id": "neptune-graph",
+      "prefix": "neptune-graph",
+      "signing": "neptune-graph",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "neptunedata",
+      "prefix": "neptune-db",
+      "signing": "neptune-db",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "network-firewall",
+      "prefix": "network-firewall",
+      "signing": "network-firewall",
+      "protocols": ["json"],
+      "target": "NetworkFirewall_20201112"
+    },
+    {
+      "id": "networkflowmonitor",
+      "prefix": "networkflowmonitor",
+      "signing": "networkflowmonitor",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "networkmanager",
+      "prefix": "networkmanager",
+      "signing": "networkmanager",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["GET", "/organizations/service-access", "ListOrganizationServiceAccessStatus"],
+        ["POST", "/organizations/service-access", "StartOrganizationServiceAccessUpdate"]
+      ]
+    },
+    {
+      "id": "networkmonitor",
+      "prefix": "networkmonitor",
+      "signing": "networkmonitor",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "notifications",
+      "prefix": "notifications",
+      "signing": "notifications",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["DELETE", "/organization/access", "DisableNotificationsAccessForOrganization"],
+        ["POST", "/organization/access", "EnableNotificationsAccessForOrganization"],
+        ["GET", "/organization/access", "GetNotificationsAccessForOrganization"]
+      ]
+    },
+    {
+      "id": "notificationscontacts",
+      "prefix": "notifications-contacts",
+      "signing": "notifications-contacts",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "nova-act",
+      "prefix": "nova-act",
+      "signing": "nova-act",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "oam",
+      "prefix": "oam",
+      "signing": "oam",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "observabilityadmin",
+      "prefix": "observabilityadmin",
+      "signing": "observabilityadmin",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "odb",
+      "prefix": "odb",
+      "signing": "odb",
+      "protocols": ["json"],
+      "target": "Odb"
+    },
+    {
+      "id": "omics",
+      "prefix": "omics",
+      "signing": "omics",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["DELETE", "/s3accesspolicy/{s3AccessPointArn}", "DeleteS3AccessPolicy"],
+        ["GET", "/s3accesspolicy/{s3AccessPointArn}", "GetS3AccessPolicy"],
+        ["PUT", "/s3accesspolicy/{s3AccessPointArn}", "PutS3AccessPolicy"]
+      ]
+    },
+    {
+      "id": "opensearch",
+      "prefix": "es",
+      "signing": "es",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "POST",
+          "/2021-01-01/opensearch/domain/{DomainName}/authorizeVpcEndpointAccess",
+          "AuthorizeVpcEndpointAccess"
+        ],
+        [
+          "GET",
+          "/2021-01-01/opensearch/domain/{DomainName}/listVpcEndpointAccess",
+          "ListVpcEndpointAccess"
+        ],
+        [
+          "POST",
+          "/2021-01-01/opensearch/domain/{DomainName}/revokeVpcEndpointAccess",
+          "RevokeVpcEndpointAccess"
+        ]
+      ]
+    },
+    {
+      "id": "opensearchserverless",
+      "prefix": "aoss",
+      "signing": "aoss",
+      "protocols": ["json"],
+      "target": "OpenSearchServerless"
+    },
+    {
+      "id": "organizations",
+      "prefix": "organizations",
+      "signing": "organizations",
+      "protocols": ["json"],
+      "target": "AWSOrganizationsV20161128"
+    },
+    {
+      "id": "osis",
+      "prefix": "osis",
+      "signing": "osis",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "outposts",
+      "prefix": "outposts",
+      "signing": "outposts",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "panorama",
+      "prefix": "panorama",
+      "signing": "panorama",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "partnercentral-account",
+      "prefix": "partnercentral-account",
+      "signing": "partnercentral-account",
+      "protocols": ["json"],
+      "target": "PartnerCentralAccount"
+    },
+    {
+      "id": "partnercentral-benefits",
+      "prefix": "partnercentral-benefits",
+      "signing": "partnercentral-benefits",
+      "protocols": ["json"],
+      "target": "PartnerCentralBenefitsService"
+    },
+    {
+      "id": "partnercentral-channel",
+      "prefix": "partnercentral-channel",
+      "signing": "partnercentral-channel",
+      "protocols": ["json"],
+      "target": "PartnerCentralChannel"
+    },
+    {
+      "id": "partnercentral-selling",
+      "prefix": "partnercentral-selling",
+      "signing": "partnercentral-selling",
+      "protocols": ["json"],
+      "target": "AWSPartnerCentralSelling"
+    },
+    {
+      "id": "payment-cryptography",
+      "prefix": "controlplane.payment-cryptography",
+      "signing": "payment-cryptography",
+      "protocols": ["json"],
+      "target": "PaymentCryptographyControlPlane"
+    },
+    {
+      "id": "payment-cryptography-data",
+      "prefix": "dataplane.payment-cryptography",
+      "signing": "payment-cryptography",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "pca-connector-ad",
+      "prefix": "pca-connector-ad",
+      "signing": "pca-connector-ad",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "POST",
+          "/templates/{TemplateArn}/accessControlEntries",
+          "CreateTemplateGroupAccessControlEntry"
+        ],
+        [
+          "DELETE",
+          "/templates/{TemplateArn}/accessControlEntries/{GroupSecurityIdentifier}",
+          "DeleteTemplateGroupAccessControlEntry"
+        ],
+        [
+          "GET",
+          "/templates/{TemplateArn}/accessControlEntries/{GroupSecurityIdentifier}",
+          "GetTemplateGroupAccessControlEntry"
+        ],
+        [
+          "GET",
+          "/templates/{TemplateArn}/accessControlEntries",
+          "ListTemplateGroupAccessControlEntries"
+        ],
+        [
+          "PATCH",
+          "/templates/{TemplateArn}/accessControlEntries/{GroupSecurityIdentifier}",
+          "UpdateTemplateGroupAccessControlEntry"
+        ]
+      ]
+    },
+    {
+      "id": "pca-connector-scep",
+      "prefix": "pca-connector-scep",
+      "signing": "pca-connector-scep",
+      "protocols": ["rest-json"],
+      "routes": [["GET", "/challengePasswords/{ChallengeArn}", "GetChallengePassword"]]
+    },
+    {
+      "id": "pcs",
+      "prefix": "pcs",
+      "signing": "pcs",
+      "protocols": ["json"],
+      "target": "AWSParallelComputingService"
+    },
+    {
+      "id": "personalize",
+      "prefix": "personalize",
+      "signing": "personalize",
+      "protocols": ["json"],
+      "target": "AmazonPersonalize"
+    },
+    {
+      "id": "personalize-events",
+      "prefix": "personalize-events",
+      "signing": "personalize",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "personalize-runtime",
+      "prefix": "personalize-runtime",
+      "signing": "personalize",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "pi",
+      "prefix": "pi",
+      "signing": "pi",
+      "protocols": ["json"],
+      "target": "PerformanceInsightsv20180227"
+    },
+    {
+      "id": "pinpoint",
+      "prefix": "pinpoint",
+      "signing": "mobiletargeting",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "pinpoint-email",
+      "prefix": "email",
+      "signing": "ses",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "pinpoint-sms-voice",
+      "prefix": "sms-voice.pinpoint",
+      "signing": "sms-voice",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "pinpoint-sms-voice-v2",
+      "prefix": "sms-voice",
+      "signing": "sms-voice",
+      "protocols": ["json"],
+      "target": "PinpointSMSVoiceV2"
+    },
+    {
+      "id": "pipes",
+      "prefix": "pipes",
+      "signing": "pipes",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "polly",
+      "prefix": "polly",
+      "signing": "polly",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "pricing",
+      "prefix": "api.pricing",
+      "signing": "pricing",
+      "protocols": ["json"],
+      "target": "AWSPriceListService"
+    },
+    {
+      "id": "proton",
+      "prefix": "proton",
+      "signing": "proton",
+      "protocols": ["json"],
+      "target": "AwsProton20200720"
+    },
+    {
+      "id": "qapps",
+      "prefix": "data.qapps",
+      "signing": "qapps",
+      "protocols": ["rest-json"],
+      "routes": [["POST", "/apps.createPresignedUrl", "CreatePresignedUrl"]]
+    },
+    {
+      "id": "qbusiness",
+      "prefix": "qbusiness",
+      "signing": "qbusiness",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "GET",
+          "/applications/{applicationId}/index/{indexId}/users/{userId}/documents/{documentId}/check-document-access",
+          "CheckDocumentAccess"
+        ],
+        ["POST", "/applications/{applicationId}/dataaccessors", "CreateDataAccessor"],
+        [
+          "DELETE",
+          "/applications/{applicationId}/dataaccessors/{dataAccessorId}",
+          "DeleteDataAccessor"
+        ],
+        ["GET", "/applications/{applicationId}/dataaccessors/{dataAccessorId}", "GetDataAccessor"],
+        ["GET", "/applications/{applicationId}/dataaccessors", "ListDataAccessors"],
+        [
+          "PUT",
+          "/applications/{applicationId}/dataaccessors/{dataAccessorId}",
+          "UpdateDataAccessor"
+        ]
+      ]
+    },
+    {
+      "id": "qconnect",
+      "prefix": "wisdom",
+      "signing": "wisdom",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "quicksight",
+      "prefix": "quicksight",
+      "signing": "quicksight",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "PUT",
+          "/accounts/{AwsAccountId}/application-with-token-exchange-grant",
+          "UpdateApplicationWithTokenExchangeGrant"
+        ]
+      ]
+    },
+    {
+      "id": "ram",
+      "prefix": "ram",
+      "signing": "ram",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "rbin",
+      "prefix": "rbin",
+      "signing": "rbin",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "rds",
+      "prefix": "rds",
+      "signing": "rds",
+      "protocols": ["query"]
+    },
+    {
+      "id": "rds-data",
+      "prefix": "rds-data",
+      "signing": "rds-data",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "redshift",
+      "prefix": "redshift",
+      "signing": "redshift",
+      "protocols": ["query"]
+    },
+    {
+      "id": "redshift-data",
+      "prefix": "redshift-data",
+      "signing": "redshift-data",
+      "protocols": ["json"],
+      "target": "RedshiftData"
+    },
+    {
+      "id": "redshift-serverless",
+      "prefix": "redshift-serverless",
+      "signing": "redshift-serverless",
+      "protocols": ["json"],
+      "target": "RedshiftServerless"
+    },
+    {
+      "id": "rekognition",
+      "prefix": "rekognition",
+      "signing": "rekognition",
+      "protocols": ["json"],
+      "target": "RekognitionService"
+    },
+    {
+      "id": "repostspace",
+      "prefix": "repostspace",
+      "signing": "repostspace",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/spaces/{spaceId}/channels/{channelId}/roles", "BatchAddChannelRoleToAccessors"],
+        [
+          "PATCH",
+          "/spaces/{spaceId}/channels/{channelId}/roles",
+          "BatchRemoveChannelRoleFromAccessors"
+        ]
+      ]
+    },
+    {
+      "id": "resiliencehub",
+      "prefix": "resiliencehub",
+      "signing": "resiliencehub",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "resource-explorer-2",
+      "prefix": "resource-explorer-2",
+      "signing": "resource-explorer-2",
+      "protocols": ["rest-json"],
+      "routes": [["POST", "/ListStreamingAccessForServices", "ListStreamingAccessForServices"]]
+    },
+    {
+      "id": "resource-groups",
+      "prefix": "resource-groups",
+      "signing": "resource-groups",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "resourcegroupstaggingapi",
+      "prefix": "tagging",
+      "signing": "tagging",
+      "protocols": ["json"],
+      "target": "ResourceGroupsTaggingAPI_20170126"
+    },
+    {
+      "id": "rolesanywhere",
+      "prefix": "rolesanywhere",
+      "signing": "rolesanywhere",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "route53",
+      "prefix": "route53",
+      "signing": "route53",
+      "protocols": ["rest-xml"],
+      "routes": [["GET", "/2013-04-01/testdnsanswer", "TestDNSAnswer"]]
+    },
+    {
+      "id": "route53-recovery-cluster",
+      "prefix": "route53-recovery-cluster",
+      "signing": "route53-recovery-cluster",
+      "protocols": ["json"],
+      "target": "ToggleCustomerAPI"
+    },
+    {
+      "id": "route53-recovery-control-config",
+      "prefix": "route53-recovery-control-config",
+      "signing": "route53-recovery-control-config",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "route53-recovery-readiness",
+      "prefix": "route53-recovery-readiness",
+      "signing": "route53-recovery-readiness",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "route53domains",
+      "prefix": "route53domains",
+      "signing": "route53domains",
+      "protocols": ["json"],
+      "target": "Route53Domains_v20140515"
+    },
+    {
+      "id": "route53globalresolver",
+      "prefix": "route53globalresolver",
+      "signing": "route53globalresolver",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/access-sources", "CreateAccessSource"],
+        ["POST", "/tokens/{dnsViewId}", "CreateAccessToken"],
+        ["DELETE", "/access-sources/{accessSourceId}", "DeleteAccessSource"],
+        ["DELETE", "/tokens/{accessTokenId}", "DeleteAccessToken"],
+        ["GET", "/access-sources/{accessSourceId}", "GetAccessSource"],
+        ["GET", "/tokens/{accessTokenId}", "GetAccessToken"],
+        ["GET", "/access-sources", "ListAccessSources"],
+        ["GET", "/tokens/dns-view/{dnsViewId}", "ListAccessTokens"],
+        ["PATCH", "/access-sources/{accessSourceId}", "UpdateAccessSource"],
+        ["PATCH", "/tokens/{accessTokenId}", "UpdateAccessToken"]
+      ]
+    },
+    {
+      "id": "route53profiles",
+      "prefix": "route53profiles",
+      "signing": "route53profiles",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "route53resolver",
+      "prefix": "route53resolver",
+      "signing": "route53resolver",
+      "protocols": ["json"],
+      "target": "Route53Resolver"
+    },
+    {
+      "id": "rtbfabric",
+      "prefix": "rtbfabric",
+      "signing": "rtbfabric",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "rum",
+      "prefix": "rum",
+      "signing": "rum",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "s3",
+      "prefix": "s3",
+      "signing": "s3",
+      "protocols": ["rest-xml"],
+      "routes": [
+        ["GET", "/{Bucket}?session", "CreateSession"],
+        ["DELETE", "/{Bucket}?publicAccessBlock", "DeletePublicAccessBlock"],
+        ["GET", "/{Bucket}?publicAccessBlock", "GetPublicAccessBlock"],
+        ["PUT", "/{Bucket}?publicAccessBlock", "PutPublicAccessBlock"]
+      ]
+    },
+    {
+      "id": "s3control",
+      "prefix": "s3-control",
+      "signing": "s3",
+      "protocols": ["rest-xml"],
+      "routes": [
+        [
+          "POST",
+          "/v20180820/accessgrantsinstance/identitycenter",
+          "AssociateAccessGrantsIdentityCenter"
+        ],
+        ["POST", "/v20180820/accessgrantsinstance/grant", "CreateAccessGrant"],
+        ["POST", "/v20180820/accessgrantsinstance", "CreateAccessGrantsInstance"],
+        ["POST", "/v20180820/accessgrantsinstance/location", "CreateAccessGrantsLocation"],
+        ["PUT", "/v20180820/accesspoint/{name}", "CreateAccessPoint"],
+        ["PUT", "/v20180820/accesspointforobjectlambda/{name}", "CreateAccessPointForObjectLambda"],
+        ["POST", "/v20180820/async-requests/mrap/create", "CreateMultiRegionAccessPoint"],
+        ["DELETE", "/v20180820/accessgrantsinstance/grant/{id}", "DeleteAccessGrant"],
+        ["DELETE", "/v20180820/accessgrantsinstance", "DeleteAccessGrantsInstance"],
+        [
+          "DELETE",
+          "/v20180820/accessgrantsinstance/resourcepolicy",
+          "DeleteAccessGrantsInstanceResourcePolicy"
+        ],
+        ["DELETE", "/v20180820/accessgrantsinstance/location/{id}", "DeleteAccessGrantsLocation"],
+        ["DELETE", "/v20180820/accesspoint/{name}", "DeleteAccessPoint"],
+        [
+          "DELETE",
+          "/v20180820/accesspointforobjectlambda/{name}",
+          "DeleteAccessPointForObjectLambda"
+        ],
+        ["DELETE", "/v20180820/accesspoint/{name}/policy", "DeleteAccessPointPolicy"],
+        [
+          "DELETE",
+          "/v20180820/accesspointforobjectlambda/{name}/policy",
+          "DeleteAccessPointPolicyForObjectLambda"
+        ],
+        ["DELETE", "/v20180820/accesspoint/{name}/scope", "DeleteAccessPointScope"],
+        ["POST", "/v20180820/async-requests/mrap/delete", "DeleteMultiRegionAccessPoint"],
+        ["DELETE", "/v20180820/configuration/publicAccessBlock", "DeletePublicAccessBlock"],
+        [
+          "GET",
+          "/v20180820/async-requests/mrap/{request_token+}",
+          "DescribeMultiRegionAccessPointOperation"
+        ],
+        [
+          "DELETE",
+          "/v20180820/accessgrantsinstance/identitycenter",
+          "DissociateAccessGrantsIdentityCenter"
+        ],
+        ["GET", "/v20180820/accessgrantsinstance/grant/{id}", "GetAccessGrant"],
+        ["GET", "/v20180820/accessgrantsinstance", "GetAccessGrantsInstance"],
+        ["GET", "/v20180820/accessgrantsinstance/prefix", "GetAccessGrantsInstanceForPrefix"],
+        [
+          "GET",
+          "/v20180820/accessgrantsinstance/resourcepolicy",
+          "GetAccessGrantsInstanceResourcePolicy"
+        ],
+        ["GET", "/v20180820/accessgrantsinstance/location/{id}", "GetAccessGrantsLocation"],
+        ["GET", "/v20180820/accesspoint/{name}", "GetAccessPoint"],
+        [
+          "GET",
+          "/v20180820/accesspointforobjectlambda/{name}/configuration",
+          "GetAccessPointConfigurationForObjectLambda"
+        ],
+        ["GET", "/v20180820/accesspointforobjectlambda/{name}", "GetAccessPointForObjectLambda"],
+        ["GET", "/v20180820/accesspoint/{name}/policy", "GetAccessPointPolicy"],
+        [
+          "GET",
+          "/v20180820/accesspointforobjectlambda/{name}/policy",
+          "GetAccessPointPolicyForObjectLambda"
+        ],
+        ["GET", "/v20180820/accesspoint/{name}/policyStatus", "GetAccessPointPolicyStatus"],
+        [
+          "GET",
+          "/v20180820/accesspointforobjectlambda/{name}/policyStatus",
+          "GetAccessPointPolicyStatusForObjectLambda"
+        ],
+        ["GET", "/v20180820/accesspoint/{name}/scope", "GetAccessPointScope"],
+        ["GET", "/v20180820/accessgrantsinstance/dataaccess", "GetDataAccess"],
+        ["GET", "/v20180820/mrap/instances/{name+}", "GetMultiRegionAccessPoint"],
+        ["GET", "/v20180820/mrap/instances/{name+}/policy", "GetMultiRegionAccessPointPolicy"],
+        [
+          "GET",
+          "/v20180820/mrap/instances/{name+}/policystatus",
+          "GetMultiRegionAccessPointPolicyStatus"
+        ],
+        ["GET", "/v20180820/mrap/instances/{mrap+}/routes", "GetMultiRegionAccessPointRoutes"],
+        ["GET", "/v20180820/configuration/publicAccessBlock", "GetPublicAccessBlock"],
+        ["GET", "/v20180820/accessgrantsinstance/grants", "ListAccessGrants"],
+        ["GET", "/v20180820/accessgrantsinstances", "ListAccessGrantsInstances"],
+        ["GET", "/v20180820/accessgrantsinstance/locations", "ListAccessGrantsLocations"],
+        ["GET", "/v20180820/accesspoint", "ListAccessPoints"],
+        ["GET", "/v20180820/accesspointfordirectory", "ListAccessPointsForDirectoryBuckets"],
+        ["GET", "/v20180820/accesspointforobjectlambda", "ListAccessPointsForObjectLambda"],
+        ["GET", "/v20180820/accessgrantsinstance/caller/grants", "ListCallerAccessGrants"],
+        ["GET", "/v20180820/mrap/instances", "ListMultiRegionAccessPoints"],
+        [
+          "PUT",
+          "/v20180820/accessgrantsinstance/resourcepolicy",
+          "PutAccessGrantsInstanceResourcePolicy"
+        ],
+        [
+          "PUT",
+          "/v20180820/accesspointforobjectlambda/{name}/configuration",
+          "PutAccessPointConfigurationForObjectLambda"
+        ],
+        ["PUT", "/v20180820/accesspoint/{name}/policy", "PutAccessPointPolicy"],
+        [
+          "PUT",
+          "/v20180820/accesspointforobjectlambda/{name}/policy",
+          "PutAccessPointPolicyForObjectLambda"
+        ],
+        ["PUT", "/v20180820/accesspoint/{name}/scope", "PutAccessPointScope"],
+        ["POST", "/v20180820/async-requests/mrap/put-policy", "PutMultiRegionAccessPointPolicy"],
+        ["PUT", "/v20180820/configuration/publicAccessBlock", "PutPublicAccessBlock"],
+        ["PATCH", "/v20180820/mrap/instances/{mrap+}/routes", "SubmitMultiRegionAccessPointRoutes"],
+        ["PUT", "/v20180820/accessgrantsinstance/location/{id}", "UpdateAccessGrantsLocation"]
+      ]
+    },
+    {
+      "id": "s3outposts",
+      "prefix": "s3-outposts",
+      "signing": "s3-outposts",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "s3tables",
+      "prefix": "s3tables",
+      "signing": "s3tables",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "s3vectors",
+      "prefix": "s3vectors",
+      "signing": "s3vectors",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "sagemaker",
+      "prefix": "api.sagemaker",
+      "signing": "sagemaker",
+      "protocols": ["json"],
+      "target": "SageMaker"
+    },
+    {
+      "id": "sagemaker-a2i-runtime",
+      "prefix": "a2i-runtime.sagemaker",
+      "signing": "sagemaker",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "sagemaker-edge",
+      "prefix": "edge.sagemaker",
+      "signing": "sagemaker",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "sagemaker-featurestore-runtime",
+      "prefix": "featurestore-runtime.sagemaker",
+      "signing": "sagemaker",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "sagemaker-geospatial",
+      "prefix": "sagemaker-geospatial",
+      "signing": "sagemaker-geospatial",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "sagemaker-metrics",
+      "prefix": "metrics.sagemaker",
+      "signing": "sagemaker",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "sagemaker-runtime",
+      "prefix": "runtime.sagemaker",
+      "signing": "sagemaker",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "savingsplans",
+      "prefix": "savingsplans",
+      "signing": "savingsplans",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "scheduler",
+      "prefix": "scheduler",
+      "signing": "scheduler",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "schemas",
+      "prefix": "schemas",
+      "signing": "schemas",
+      "protocols": ["rest-json"],
+      "routes": [
+        [
+          "GET",
+          "/v1/registries/name/{registryName}/schemas/name/{schemaName}/export",
+          "ExportSchema"
+        ]
+      ]
+    },
+    {
+      "id": "sdb",
+      "prefix": "sdb",
+      "signing": "sdb",
+      "protocols": ["query"]
+    },
+    {
+      "id": "secretsmanager",
+      "prefix": "secretsmanager",
+      "signing": "secretsmanager",
+      "protocols": ["json"],
+      "target": "secretsmanager"
+    },
+    {
+      "id": "security-ir",
+      "prefix": "security-ir",
+      "signing": "security-ir",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "securityhub",
+      "prefix": "securityhub",
+      "signing": "securityhub",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "securitylake",
+      "prefix": "securitylake",
+      "signing": "securitylake",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "serverlessrepo",
+      "prefix": "serverlessrepo",
+      "signing": "serverlessrepo",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "service-quotas",
+      "prefix": "servicequotas",
+      "signing": "servicequotas",
+      "protocols": ["json"],
+      "target": "ServiceQuotasV20190624"
+    },
+    {
+      "id": "servicecatalog",
+      "prefix": "servicecatalog",
+      "signing": "servicecatalog",
+      "protocols": ["json"],
+      "target": "AWS242ServiceCatalogService"
+    },
+    {
+      "id": "servicecatalog-appregistry",
+      "prefix": "servicecatalog-appregistry",
+      "signing": "servicecatalog",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "servicediscovery",
+      "prefix": "servicediscovery",
+      "signing": "servicediscovery",
+      "protocols": ["json"],
+      "target": "Route53AutoNaming_v20170314"
+    },
+    {
+      "id": "ses",
+      "prefix": "email",
+      "signing": "ses",
+      "protocols": ["query"]
+    },
+    {
+      "id": "sesv2",
+      "prefix": "email",
+      "signing": "ses",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "shield",
+      "prefix": "shield",
+      "signing": "shield",
+      "protocols": ["json"],
+      "target": "AWSShield_20160616"
+    },
+    {
+      "id": "signer",
+      "prefix": "signer",
+      "signing": "signer",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "signin",
+      "prefix": "signin",
+      "signing": "signin",
+      "protocols": ["rest-json"],
+      "routes": [["POST", "/v1/token", "CreateOAuth2Token"]]
+    },
+    {
+      "id": "simspaceweaver",
+      "prefix": "simspaceweaver",
+      "signing": "simspaceweaver",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "sms-voice",
+      "prefix": "sms-voice.pinpoint",
+      "signing": "sms-voice",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "snow-device-management",
+      "prefix": "snow-device-management",
+      "signing": "snow-device-management",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "snowball",
+      "prefix": "snowball",
+      "signing": "snowball",
+      "protocols": ["json"],
+      "target": "AWSIESnowballJobManagementService"
+    },
+    {
+      "id": "sns",
+      "prefix": "sns",
+      "signing": "sns",
+      "protocols": ["query"]
+    },
+    {
+      "id": "socialmessaging",
+      "prefix": "social-messaging",
+      "signing": "social-messaging",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "sqs",
+      "prefix": "sqs",
+      "signing": "sqs",
+      "protocols": ["json"],
+      "target": "AmazonSQS"
+    },
+    {
+      "id": "ssm",
+      "prefix": "ssm",
+      "signing": "ssm",
+      "protocols": ["json"],
+      "target": "AmazonSSM"
+    },
+    {
+      "id": "ssm-contacts",
+      "prefix": "ssm-contacts",
+      "signing": "ssm-contacts",
+      "protocols": ["json"],
+      "target": "SSMContacts"
+    },
+    {
+      "id": "ssm-guiconnect",
+      "prefix": "ssm-guiconnect",
+      "signing": "ssm-guiconnect",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "ssm-incidents",
+      "prefix": "ssm-incidents",
+      "signing": "ssm-incidents",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "ssm-quicksetup",
+      "prefix": "ssm-quicksetup",
+      "signing": "ssm-quicksetup",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "ssm-sap",
+      "prefix": "ssm-sap",
+      "signing": "ssm-sap",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "sso",
+      "prefix": "portal.sso",
+      "signing": "awsssoportal",
+      "protocols": ["rest-json"],
+      "routes": [["GET", "/federation/credentials", "GetRoleCredentials"]]
+    },
+    {
+      "id": "sso-admin",
+      "prefix": "sso",
+      "signing": "sso",
+      "protocols": ["json"],
+      "target": "SWBExternalService"
+    },
+    {
+      "id": "sso-oidc",
+      "prefix": "oidc",
+      "signing": "sso-oauth",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/token", "CreateToken"],
+        ["POST", "/token?aws_iam=t", "CreateTokenWithIAM"]
+      ]
+    },
+    {
+      "id": "stepfunctions",
+      "prefix": "states",
+      "signing": "states",
+      "protocols": ["json"],
+      "target": "AWSStepFunctions"
+    },
+    {
+      "id": "storagegateway",
+      "prefix": "storagegateway",
+      "signing": "storagegateway",
+      "protocols": ["json"],
+      "target": "StorageGateway_20130630"
+    },
+    {
+      "id": "sts",
+      "prefix": "sts",
+      "signing": "sts",
+      "protocols": ["query"]
+    },
+    {
+      "id": "supplychain",
+      "prefix": "scn",
+      "signing": "scn",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "support",
+      "prefix": "support",
+      "signing": "support",
+      "protocols": ["json"],
+      "target": "AWSSupport_20130415"
+    },
+    {
+      "id": "support-app",
+      "prefix": "supportapp",
+      "signing": "supportapp",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "swf",
+      "prefix": "swf",
+      "signing": "swf",
+      "protocols": ["json"],
+      "target": "SimpleWorkflowService"
+    },
+    {
+      "id": "synthetics",
+      "prefix": "synthetics",
+      "signing": "synthetics",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "taxsettings",
+      "prefix": "tax",
+      "signing": "tax",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "textract",
+      "prefix": "textract",
+      "signing": "textract",
+      "protocols": ["json"],
+      "target": "Textract"
+    },
+    {
+      "id": "timestream-influxdb",
+      "prefix": "timestream-influxdb",
+      "signing": "timestream-influxdb",
+      "protocols": ["json"],
+      "target": "AmazonTimestreamInfluxDB"
+    },
+    {
+      "id": "timestream-query",
+      "prefix": "query.timestream",
+      "signing": "timestream",
+      "protocols": ["json"],
+      "target": "Timestream_20181101"
+    },
+    {
+      "id": "timestream-write",
+      "prefix": "ingest.timestream",
+      "signing": "timestream",
+      "protocols": ["json"],
+      "target": "Timestream_20181101"
+    },
+    {
+      "id": "tnb",
+      "prefix": "tnb",
+      "signing": "tnb",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "transcribe",
+      "prefix": "transcribe",
+      "signing": "transcribe",
+      "protocols": ["json"],
+      "target": "Transcribe"
+    },
+    {
+      "id": "transfer",
+      "prefix": "transfer",
+      "signing": "transfer",
+      "protocols": ["json"],
+      "target": "TransferService"
+    },
+    {
+      "id": "translate",
+      "prefix": "translate",
+      "signing": "translate",
+      "protocols": ["json"],
+      "target": "AWSShineFrontendService_20170701"
+    },
+    {
+      "id": "trustedadvisor",
+      "prefix": "trustedadvisor",
+      "signing": "trustedadvisor",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "verifiedpermissions",
+      "prefix": "verifiedpermissions",
+      "signing": "verifiedpermissions",
+      "protocols": ["json"],
+      "target": "VerifiedPermissions"
+    },
+    {
+      "id": "voice-id",
+      "prefix": "voiceid",
+      "signing": "voiceid",
+      "protocols": ["json"],
+      "target": "VoiceID"
+    },
+    {
+      "id": "vpc-lattice",
+      "prefix": "vpc-lattice",
+      "signing": "vpc-lattice",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["POST", "/accesslogsubscriptions", "CreateAccessLogSubscription"],
+        [
+          "DELETE",
+          "/accesslogsubscriptions/{accessLogSubscriptionIdentifier}",
+          "DeleteAccessLogSubscription"
+        ],
+        [
+          "GET",
+          "/accesslogsubscriptions/{accessLogSubscriptionIdentifier}",
+          "GetAccessLogSubscription"
+        ],
+        ["GET", "/accesslogsubscriptions", "ListAccessLogSubscriptions"],
+        [
+          "PATCH",
+          "/accesslogsubscriptions/{accessLogSubscriptionIdentifier}",
+          "UpdateAccessLogSubscription"
+        ]
+      ]
+    },
+    {
+      "id": "waf",
+      "prefix": "waf",
+      "signing": "waf",
+      "protocols": ["json"],
+      "target": "AWSWAF_20150824"
+    },
+    {
+      "id": "waf-regional",
+      "prefix": "waf-regional",
+      "signing": "waf-regional",
+      "protocols": ["json"],
+      "target": "AWSWAF_Regional_20161128"
+    },
+    {
+      "id": "wafv2",
+      "prefix": "wafv2",
+      "signing": "wafv2",
+      "protocols": ["json"],
+      "target": "AWSWAF_20190729"
+    },
+    {
+      "id": "wellarchitected",
+      "prefix": "wellarchitected",
+      "signing": "wellarchitected",
+      "protocols": ["rest-json"],
+      "routes": [["GET", "/lenses/{LensAlias}/export", "ExportLens"]]
+    },
+    {
+      "id": "wickr",
+      "prefix": "admin.wickr",
+      "signing": "wickr",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "wisdom",
+      "prefix": "wisdom",
+      "signing": "wisdom",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "workdocs",
+      "prefix": "workdocs",
+      "signing": "workdocs",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "workmail",
+      "prefix": "workmail",
+      "signing": "workmail",
+      "protocols": ["json"],
+      "target": "WorkMailService"
+    },
+    {
+      "id": "workmailmessageflow",
+      "prefix": "workmailmessageflow",
+      "signing": "workmailmessageflow",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "workspaces",
+      "prefix": "workspaces",
+      "signing": "workspaces",
+      "protocols": ["json"],
+      "target": "WorkspacesService"
+    },
+    {
+      "id": "workspaces-instances",
+      "prefix": "workspaces-instances",
+      "signing": "workspaces-instances",
+      "protocols": ["json"],
+      "target": "EUCMIFrontendAPIService"
+    },
+    {
+      "id": "workspaces-thin-client",
+      "prefix": "thinclient",
+      "signing": "thinclient",
+      "protocols": ["rest-json"]
+    },
+    {
+      "id": "workspaces-web",
+      "prefix": "workspaces-web",
+      "signing": "workspaces-web",
+      "protocols": ["rest-json"],
+      "routes": [
+        ["PUT", "/portals/{portalArn+}/ipAccessSettings", "AssociateIpAccessSettings"],
+        [
+          "PUT",
+          "/portals/{portalArn+}/userAccessLoggingSettings",
+          "AssociateUserAccessLoggingSettings"
+        ],
+        ["POST", "/ipAccessSettings", "CreateIpAccessSettings"],
+        ["POST", "/userAccessLoggingSettings", "CreateUserAccessLoggingSettings"],
+        ["DELETE", "/ipAccessSettings/{ipAccessSettingsArn+}", "DeleteIpAccessSettings"],
+        [
+          "DELETE",
+          "/userAccessLoggingSettings/{userAccessLoggingSettingsArn+}",
+          "DeleteUserAccessLoggingSettings"
+        ],
+        ["DELETE", "/portals/{portalArn+}/ipAccessSettings", "DisassociateIpAccessSettings"],
+        [
+          "DELETE",
+          "/portals/{portalArn+}/userAccessLoggingSettings",
+          "DisassociateUserAccessLoggingSettings"
+        ],
+        ["GET", "/ipAccessSettings/{ipAccessSettingsArn+}", "GetIpAccessSettings"],
+        [
+          "GET",
+          "/userAccessLoggingSettings/{userAccessLoggingSettingsArn+}",
+          "GetUserAccessLoggingSettings"
+        ],
+        ["GET", "/ipAccessSettings", "ListIpAccessSettings"],
+        ["GET", "/userAccessLoggingSettings", "ListUserAccessLoggingSettings"],
+        ["PATCH", "/ipAccessSettings/{ipAccessSettingsArn+}", "UpdateIpAccessSettings"],
+        [
+          "PATCH",
+          "/userAccessLoggingSettings/{userAccessLoggingSettingsArn+}",
+          "UpdateUserAccessLoggingSettings"
+        ]
+      ]
+    },
+    {
+      "id": "xray",
+      "prefix": "xray",
+      "signing": "xray",
+      "protocols": ["rest-json"]
+    }
+  ]
+}

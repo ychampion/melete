@@ -7,6 +7,8 @@
  *   MELETE_DOCKER_SOCKET          the engine (default /var/run/docker.sock)
  *   MELETE_SANDBOX_LIVE_DESKTOP=0 an image without the desktop: the shell checks only
  *   DATABASE_URL                  also runs the workspace conformance suite
+ *   MELETE_LIVE_MOTO              a moto server (with INITIAL_NO_AUTH_ACTION_COUNT=6) the AWS
+ *                                 check runs against, inside the open-egress checks
  *
  * Open egress needs this process to be a container on the same engine, as the
  * service is in the Compose deployment: run it in one with the socket mounted
@@ -24,8 +26,17 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import type { EgressWriteInput } from '../../broker/egress-admission.ts';
 import { resolveHost } from '../../connectors/web.ts';
+import { createAwsAdapter } from '../../egress/adapters/aws.ts';
 import { githubAdapter } from '../../egress/adapters/github.ts';
 import type { CredentialAdapter } from '../../egress/adapters/types.ts';
+import {
+  awsFronts,
+  bootstrapMoto,
+  MOTO_BUCKET,
+  MOTO_REGION,
+  motoCall,
+} from '../../egress/aws-fixture.ts';
+import { awsSecret } from '../../egress/aws-session.ts';
 import { fixtureUpstream, memoryCredentialPort } from '../../egress/fixtures.ts';
 import { type GitRequestSeen, gitSmartHttp } from '../../egress/git-fixture.ts';
 import type { EgressRecordOpen } from '../../egress/records.ts';
@@ -1000,5 +1011,150 @@ if (!live) {
         await rm(root, { recursive: true, force: true });
       }
     }, 240_000);
+
+    // AWS through the relay: the computer's own aws command line against moto,
+    // which checks every signature against the keys it issued. The relay signs
+    // each request again with a session of the role it assumes for the
+    // command; the first change is held and the same command run again lands.
+    const motoUrl = process.env.MELETE_LIVE_MOTO;
+    test.skipIf(!motoUrl)(
+      'aws in a real computer reads, asks before a change and makes it once after approval, and the computer never holds the key',
+      async () => {
+        const moto = new URL(motoUrl ?? 'http://127.0.0.1:1');
+        const { key, roleArn } = await bootstrapMoto(moto);
+        // moto checks signatures from here on: a key it did not issue is turned away.
+        const stranger = await motoCall(moto, {
+          host: `s3.${MOTO_REGION}.amazonaws.com`,
+          service: 's3',
+          method: 'GET',
+          path: `/${MOTO_BUCKET}`,
+          key: {
+            access_key_id: 'AKIANOTISSUED0000000',
+            secret_access_key: 'not-issued-secret-0000',
+          },
+        });
+        expect(stranger.status).toBe(403);
+        const fronts = await awsFronts(moto, [
+          `sts.${MOTO_REGION}.amazonaws.com`,
+          `s3.${MOTO_REGION}.amazonaws.com`,
+          `${MOTO_BUCKET}.s3.${MOTO_REGION}.amazonaws.com`,
+        ]);
+        const adapter = createAwsAdapter({
+          sts: { ca: fronts.ca, route: fronts.route },
+        }) as CredentialAdapter;
+        const writes: EgressWriteInput[] = [];
+        const port = memoryCredentialPort({
+          secret: awsSecret(key),
+          account: { adapter, config: { region: MOTO_REGION, role_arn: roleArn } },
+          admitWrite: async (input) => {
+            writes.push(input);
+            const same = writes.filter(
+              (each) => JSON.stringify(each.write.payload) === JSON.stringify(input.write.payload),
+            );
+            // A change waits for the person the first time; run again, it is approved.
+            if (same.length === 1)
+              return {
+                kind: 'waiting',
+                actionId: `act_LIVE_held_${writes.length}`,
+                message: `Waiting for your approval in Melete: ${input.write.summary.title}. Run the same command again once it is approved.`,
+              };
+            return {
+              kind: 'sent',
+              actionId: `act_LIVE_aws_${writes.length}`,
+              result: await input.forward(),
+            };
+          },
+        });
+        const guard = new SandboxEgressGuard({
+          resolve: async (name) =>
+            name.endsWith('.amazonaws.com')
+              ? [{ address: '52.94.0.10', family: 4 }]
+              : resolveHost(name),
+          credentials: port,
+          intercept: {
+            upstream: (host) => {
+              const route = fronts.route(host);
+              if (!route) throw new Error(`no stand-in for ${host}`);
+              return route;
+            },
+            upstreamCa: fronts.ca,
+          },
+        });
+        const credentialed = new DockerSandboxHost(
+          settings({ egressPort: 18_795, egressCredentials: port }),
+          new DockerSandboxSocket(socket),
+          { guard },
+        );
+        try {
+          const handle = await open({ kind: 'open' }, credentialed);
+          const command = await credentialed.attributeCommand(
+            handle,
+            attribution('act_LIVE_aws', handle.providerSandboxId),
+          );
+          const secret = key.secret_access_key;
+          const half = Math.floor(secret.length / 2);
+          const bucket = MOTO_BUCKET;
+          const put = `aws s3api put-object --bucket ${bucket} --key reports/2026.csv --body report.csv`;
+          const outcome = await credentialed.exec(
+            handle,
+            {
+              marker: `act_${Date.now()}`,
+              argv: [
+                '/bin/sh',
+                '-c',
+                [
+                  'cd /work',
+                  'printf "month,total\\n2026-09,42\\n" > report.csv',
+                  'echo who=$(aws sts get-caller-identity --query Arn --output text 2>&1)',
+                  `${put} 2>&1 | sed "s/^/first: /"`,
+                  `${put} 2>&1 | sed "s/^/second: /"`,
+                  `echo listed=$(aws s3api list-objects-v2 --bucket ${bucket} --query "Contents[].Key" --output text 2>&1)`,
+                  `echo got=$(aws s3 cp s3://${bucket}/reports/2026.csv - 2>&1 | tail -1)`,
+                  `echo minted=$(aws sts assume-role --role-arn ${roleArn} --role-session-name try-it 2>&1)`,
+                  'echo aws=$(aws --version 2>&1)',
+                  `A='${secret.slice(0, half)}'; B='${secret.slice(half)}'`,
+                  'env | grep -cF "$A$B" | sed "s/^/env=/"',
+                  'grep -rlF "$A$B" /home /work /tmp /etc 2>/dev/null | wc -l | sed "s/^/files=/"',
+                ].join('\n'),
+              ],
+              cwd: '/work',
+              timeoutMs: 180_000,
+              maxOutputBytes: 64 * 1024,
+              env: command.env,
+            },
+            signal(),
+          );
+          command.settle();
+          const printed = text(outcome.output);
+          process.stdout.write(`docker live, aws: ${printed}\n`);
+          // Reads went out signed with the command's own role session.
+          expect(printed).toContain(
+            'who=arn:aws:sts::123456789012:assumed-role/deploy/melete-act_LIVE_aws',
+          );
+          // Held: aws itself says why, and nothing was written.
+          expect(printed).toContain('ApprovalRequired');
+          expect(printed).toContain(
+            `Waiting for your approval in Melete: s3:PutObject on ${bucket}/reports/2026.csv`,
+          );
+          // Run again: sent once, and the object is there with what the computer uploaded.
+          expect(printed).toMatch(/second: .*"ETag"/s);
+          expect(printed).toContain('listed=reports/2026.csv');
+          expect(printed).toContain('got=2026-09,42');
+          expect(writes).toHaveLength(2);
+          const [held, sent] = writes;
+          expect(JSON.stringify(sent?.write.payload)).toBe(JSON.stringify(held?.write.payload));
+          // A call that would hand out credentials is refused; the computer never holds the key.
+          expect(printed).toContain('hands out credentials');
+          expect(printed).toContain('aws=aws-cli/2.');
+          expect(printed).toContain('env=0');
+          expect(printed).toContain('files=0');
+          expect(printed).not.toContain(secret);
+        } finally {
+          await guard.close();
+          await fronts.close();
+        }
+      },
+      300_000,
+    );
   });
 }

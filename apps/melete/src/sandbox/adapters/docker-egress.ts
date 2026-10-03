@@ -519,6 +519,8 @@ export class SandboxEgressGuard {
           reads += 1;
           if (counters) counters.reads = (counters.reads ?? 0) + 1;
         },
+        onWithheld: () =>
+          this.recordRefusal(grant, token, input.host, EGRESS_PORT, 'answer_withheld'),
         onWrite: (actionId) => {
           writes += 1;
           if (counters) counters.writes = (counters.writes ?? 0) + 1;

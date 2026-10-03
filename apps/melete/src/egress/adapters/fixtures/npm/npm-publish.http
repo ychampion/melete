@@ -1,0 +1,34 @@
+# npm publish
+
+### read
+GET https://registry.npmjs.org/melete-demo
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+pacote-version: 21.1.0
+pacote-req-type: packument
+pacote-pkg-id: registry:melete-demo
+accept: application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*
+npm-auth-type: web
+npm-command: publish
+authorization: Bearer melete-proxy-adds-this
+
+### read
+GET https://registry.npmjs.org/melete-demo
+accept: application/json
+authorization: Bearer melete-proxy-adds-this
+npm-auth-type: web
+npm-command: publish
+pacote-pkg-id: registry:melete-demo
+pacote-req-type: packument
+pacote-version: 21.1.0
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+
+### write
+PUT https://registry.npmjs.org/melete-demo
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+npm-auth-type: web
+npm-command: publish
+authorization: Bearer melete-proxy-adds-this
+content-type: application/json
+accept: */*
+
+{"_id":"melete-demo","name":"melete-demo","description":"A demo","dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{"name":"melete-demo","version":"1.0.0","description":"A demo","main":"index.js","license":"MIT","readme":"ERROR: No README data found!","_id":"melete-demo@1.0.0","_nodeVersion":"24.14.0","_npmVersion":"11.9.0","dist":{"integrity":"sha512-l2b9cXPOvcub/1CdxeL5Zm01Z8Mbc1T9tdJoDmpnr11sN6Ye28tGsEqg9PuEwqzYmTes+nLXtTKyb6h66ygJCw==","shasum":"8642a4aecff29d52d09d3a78502b1141c4dd53f2","tarball":"http://127.0.0.1:18802/melete-demo/-/melete-demo-1.0.0.tgz"}}},"access":null,"_attachments":{"melete-demo-1.0.0.tgz":{"content_type":"application/octet-stream","data":"H4sIAAAAAAAC/+3VsQrCMBAG4Mw+Rbi5xkuNFRQHRwc3XyC0h0SbpDRVBPHdRa0O4qhFMd9y5DgOMvxJpfOtXtPAuIIOYhPYByBiphR/1b9KFWfDUYZSZhkqzlDiOJWcIevALjS6ZohvuCQi8kf9EdYXu5IEHSpfN4HPuJz2WPQ3qjb/bRWb4F3H+Zcqfc6/HKlhzH8XjuC0JZiApZIa6hdkPSSwpzoY72ACUqBASKCgkNemam7dOW8HrTaX8/37gARKk5MLl5XLxQpO8TWJoij6Smfv11BPAAwAAA==","length":220}}}

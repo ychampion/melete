@@ -35,6 +35,9 @@ const TYPED: Record<string, string> = {
   'sandbox.image': 'base',
   'credentials.api_key': 'sandbox-key-value',
   'credentials.token': 'github_pat_example_value',
+  'credentials.access_key_id': 'AKIAEXAMPLEKEY000001',
+  'credentials.secret_access_key': 'example/Secret+value0000000',
+  'command_line.region': 'us-east-1',
 };
 const TOOL_ROWS = [
   { name: 'search', alias: 'search', required_scopes: 'mcp_notes.search', effect_class: 'read' },

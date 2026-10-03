@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer as createHttpsServer } from 'node:https';
 import { type AddressInfo, createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -17,6 +18,7 @@ import {
 } from '../../src/connectors/configured.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
+import { selfSignedPair } from '../../src/gateway/fixtures/self-signed.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
@@ -171,6 +173,54 @@ const FEED = [
   '',
 ].join('\r\n');
 
+/**
+ * AWS STS for the AWS account's check: it knows one key, lets it assume one
+ * role, and answers whose the credentials are. `accepted` turns the key away.
+ */
+const STS_HOST = 'sts.eu-west-1.amazonaws.com';
+const AWS_KEY = {
+  access_key_id: 'AKIAKINDSTESTKEY0001',
+  secret_access_key: 'kinds/Test+Secret0123456789abcdef',
+};
+const sts = { accepted: false, calls: [] as Array<Record<string, string>> };
+const stsPair = selfSignedPair(STS_HOST);
+const stsServer = createHttpsServer(
+  { key: stsPair.key, cert: stsPair.cert },
+  (request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      const form = Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString('utf8')));
+      sts.calls.push({
+        ...form,
+        key: /Credential=([^/]+)\//.exec(String(request.headers.authorization))?.[1] ?? '',
+      });
+      response.writeHead(sts.accepted ? 200 : 403, { 'content-type': 'text/xml' });
+      if (!sts.accepted)
+        return response.end(
+          '<ErrorResponse><Error><Code>InvalidClientTokenId</Code></Error></ErrorResponse>',
+        );
+      response.end(
+        form.Action === 'AssumeRole'
+          ? `<AssumeRoleResponse><AssumeRoleResult><Credentials><AccessKeyId>ASIAKINDSSESSION0001</AccessKeyId><SecretAccessKey>kindsSessionSecret0123456789</SecretAccessKey><SessionToken>kindsSessionToken</SessionToken><Expiration>${new Date(Date.now() + 900_000).toISOString()}</Expiration></Credentials></AssumeRoleResult></AssumeRoleResponse>`
+          : '<GetCallerIdentityResponse><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:sts::123456789012:assumed-role/agent/melete-check</Arn></GetCallerIdentityResult></GetCallerIdentityResponse>',
+      );
+    });
+  },
+);
+await new Promise<void>((resolve) => stsServer.listen(0, '127.0.0.1', resolve));
+closers.push(() => stsServer.close());
+const awsSts = {
+  ca: stsPair.cert.toString(),
+  route: (host: string) =>
+    host === STS_HOST
+      ? {
+          address: { address: '127.0.0.1', family: 4 as const },
+          port: (stsServer.address() as AddressInfo).port,
+        }
+      : null,
+};
+
 async function harness() {
   if (!fixture || !queue) throw new Error('Postgres unavailable');
   const env = loadEnv({ NODE_ENV: 'test', MELETE_MASTER_KEY: MASTER_KEY });
@@ -183,6 +233,7 @@ async function harness() {
       spacesRoot: 'unused',
       masterKey: MASTER_KEY,
       insecureLocalFixtures: true,
+      commandLine: { awsSts },
     }),
   );
   const jobs = new JobService(fixture.db, queue.boss);
@@ -404,7 +455,8 @@ withDb('installing each kind of connection through the API', () => {
         { ...body, credentials: undefined },
         { ...body, credentials: { token: 'has a space' } },
         { ...body, scopes: ['email.send'] },
-        { ...body, command_line: { adapter: 'gitlab' } },
+        { ...body, command_line: { adapter: 'bitbucket' } },
+        { ...body, scopes: ['egress.gitlab_read'] },
         { ...body, provider: 'sandbox' },
       ]) {
         const refused = await h.install(invalid);
@@ -458,6 +510,169 @@ withDb('installing each kind of connection through the API', () => {
       globalThis.fetch = original;
     }
   });
+
+  test('AWS for the agent’s computer: AWS is asked whose the key is, through the role, before it is kept', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const body = {
+      provider: 'command_line',
+      label: 'AWS',
+      credentials: AWS_KEY,
+      command_line: {
+        adapter: 'aws',
+        region: 'eu-west-1',
+        role_arn: 'arn:aws:iam::123456789012:role/agent',
+      },
+    };
+    for (const invalid of [
+      { ...body, credentials: { token: 'github_pat_x' } },
+      { ...body, command_line: { adapter: 'aws' } },
+      { ...body, command_line: { ...body.command_line, role_arn: 'agent' } },
+      { ...body, scopes: ['egress.github_read'] },
+    ]) {
+      const refused = await h.install(invalid);
+      expect(refused.status).toBe(400);
+      expect(refused.text).not.toContain(AWS_KEY.secret_access_key);
+    }
+    expect(sts.calls).toEqual([]);
+    // AWS turns the key away: nothing is kept.
+    sts.accepted = false;
+    const refused = await h.install(body);
+    expect(refused.status).toBe(400);
+    expect(JSON.parse(refused.text).error.message).toBe(
+      'AWS did not accept this key, or did not let it assume the role. Check both, then try again.',
+    );
+    expect(
+      await h.sql`select id from connection where configuration->>'adapter' = 'aws'`,
+    ).toHaveLength(0);
+    sts.accepted = true;
+    sts.calls.length = 0;
+    const created = await h.install(body);
+    expect(created.status).toBe(201);
+    expect(created.text).not.toContain(AWS_KEY.secret_access_key);
+    const installed = connectionResponse.parse(created.json);
+    expect(installed.connection).toMatchObject({
+      provider: 'command_line',
+      account: 'arn:aws:sts::123456789012:assumed-role/agent/melete-check',
+      status: 'active',
+      scopes: ['egress.aws_read', 'egress.aws_write'],
+    });
+    // The role was assumed with the stored key, and the identity asked with the session.
+    expect(sts.calls.slice(0, 2)).toEqual([
+      expect.objectContaining({
+        Action: 'AssumeRole',
+        RoleArn: 'arn:aws:iam::123456789012:role/agent',
+        RoleSessionName: 'melete-check',
+        key: AWS_KEY.access_key_id,
+      }),
+      expect.objectContaining({ Action: 'GetCallerIdentity', key: 'ASIAKINDSSESSION0001' }),
+    ]);
+    const [row] = await h.sql`select configuration, secret_ref from connection
+      where id = ${installed.connection.id}`;
+    expect(row?.configuration).toEqual({
+      kind: 'command_line',
+      adapter: 'aws',
+      config: { region: 'eu-west-1', role_arn: 'arn:aws:iam::123456789012:role/agent' },
+      account: 'arn:aws:sts::123456789012:assumed-role/agent/melete-check',
+    });
+    expect(JSON.stringify(row)).not.toContain(AWS_KEY.secret_access_key);
+    // A key AWS stops accepting shows as refused on the next check.
+    sts.accepted = false;
+    const checked = connectionCheckResponse.parse(
+      await (
+        await h.app.request(`/connections/${installed.connection.id}/health`, h.as(h.cookie, {}))
+      ).json(),
+    );
+    expect(checked.check).toMatchObject({ status: 'failing', code: 'credential_refused' });
+  });
+  for (const service of [
+    {
+      adapter: 'gitlab',
+      name: 'GitLab',
+      url: 'https://gitlab.com/api/v4/user',
+      header: 'private-token',
+      sent: (token: string) => token,
+      answer: { username: 'alice' },
+    },
+    {
+      adapter: 'npm',
+      name: 'npm',
+      url: 'https://registry.npmjs.org/-/whoami',
+      header: 'authorization',
+      sent: (token: string) => `Bearer ${token}`,
+      answer: { username: 'alice' },
+    },
+  ])
+    test(`${service.name} for the agent’s computer: ${service.name} is asked whose the token is before it is kept, and the account is shown`, async () => {
+      if (!h) throw new Error('Postgres unavailable');
+      const token = `${service.adapter}_kinds_${newId('rule').toLowerCase()}`;
+      const original = globalThis.fetch;
+      const asked: string[] = [];
+      let accepted = false;
+      // Only the service's own answer about the token is stood in for.
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url !== service.url) return original(input, init);
+        asked.push(new Headers(init?.headers).get(service.header) ?? '');
+        return accepted
+          ? Response.json(service.answer)
+          : Response.json({ message: '401 Unauthorized' }, { status: 401 });
+      }) as typeof fetch;
+      try {
+        const body = {
+          provider: 'command_line',
+          label: service.name,
+          credentials: { token },
+          command_line: { adapter: service.adapter },
+        };
+        // Another service's grants are refused before anything is asked.
+        const crossed = await h.install({ ...body, scopes: ['egress.github_write'] });
+        expect(crossed.status).toBe(400);
+        expect(asked).toEqual([]);
+        const refused = await h.install(body);
+        expect(refused.status).toBe(400);
+        expect(JSON.parse(refused.text).error.message).toBe(
+          `${service.name} did not accept this token. Check that it has not expired, then paste it again.`,
+        );
+        expect(refused.text).not.toContain(token);
+        expect(
+          await h.sql`select id from connection where provider = 'command_line'
+            and configuration->>'adapter' = ${service.adapter}`,
+        ).toHaveLength(0);
+        accepted = true;
+        const created = await h.install(body);
+        expect(created.status).toBe(201);
+        expect(created.text).not.toContain(token);
+        const installed = connectionResponse.parse(created.json);
+        expect(installed.connection).toMatchObject({
+          provider: 'command_line',
+          account: 'alice',
+          status: 'active',
+          scopes: [`egress.${service.adapter}_read`, `egress.${service.adapter}_write`],
+        });
+        expect(installed.check).toMatchObject({ status: 'ok', code: 'ok' });
+        expect(asked.slice(1)).toEqual([service.sent(token), service.sent(token)]);
+        const [row] = await h.sql`select configuration from connection
+          where id = ${installed.connection.id}`;
+        expect(row?.configuration).toEqual({
+          kind: 'command_line',
+          adapter: service.adapter,
+          config: {},
+          account: 'alice',
+        });
+        accepted = false;
+        const checked = connectionCheckResponse.parse(
+          await (
+            await h.app.request(
+              `/connections/${installed.connection.id}/health`,
+              h.as(h.cookie, {}),
+            )
+          ).json(),
+        );
+        expect(checked.check).toMatchObject({ status: 'failing', code: 'credential_refused' });
+      } finally {
+        globalThis.fetch = original;
+      }
+    });
 
   test('mail: validated, sealed, tested, offered to a new attempt, and gone after revocation', async () => {
     if (!h) throw new Error('Postgres unavailable');

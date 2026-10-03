@@ -1,0 +1,25 @@
+# glab mr create -R alice/site --source-branch melete/fix-login --target-branch main --title Fix --description B --yes
+
+### read
+GET https://gitlab.com/api/v4/projects/alice%2Fsite?license=true&with_custom_attributes=true
+user-agent: glab/v1.120.0 (windows, amd64)
+accept: application/json
+private-token: melete-proxy-adds-this
+
+### write
+POST https://gitlab.com/api/v4/projects/alice%2Fsite/merge_requests
+user-agent: glab/v1.120.0 (windows, amd64)
+accept: application/json
+content-type: application/json
+private-token: melete-proxy-adds-this
+
+{"title":"Fix","description":"B","source_branch":"melete/fix-login","target_branch":"main","labels":"","target_project_id":42}
+
+### refuse
+POST https://gitlab.com/api/v4/usage_data/track_event
+user-agent: glab/v1.120.0 (windows, amd64)
+accept: application/json
+content-type: application/json
+private-token: melete-proxy-adds-this
+
+{"event":"gitlab_cli_command_used","send_to_snowplow":true,"project_path":"alice/site","additional_properties":{"architecture":"amd64","cli_version":"v1.120.0","command_and_subcommand":"mr create","label":"mr","platform":"windows","property":"create"}}

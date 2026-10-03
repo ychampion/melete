@@ -65,7 +65,9 @@ import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
 import { connection, owner, secret, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
-import { githubAccount } from '../egress/adapters/github.ts';
+import { COMMAND_LINE_SERVICE, commandLineAccount } from '../egress/adapters/accounts.ts';
+import { awsAccount, awsAdapterConfig } from '../egress/adapters/aws.ts';
+import { awsSecret } from '../egress/aws-session.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
 import { ownedSpace, spaceAuthority } from '../principals/authority.ts';
@@ -1340,27 +1342,67 @@ async function requestedShape(
       configuration: { kind: 'sandbox', sandbox: installation.config },
     };
   }
+  if (installation.kind === 'command_line' && 'access_key_id' in installation.credentials) {
+    // The key is asked whose it is (and the role assumed with it) while it is
+    // still only in memory: one AWS refuses never becomes a row or a secret.
+    const key = installation.credentials;
+    const config = {
+      region: installation.config.region ?? '',
+      ...(installation.config.role_arn ? { role_arn: installation.config.role_arn } : {}),
+      ...(installation.config.external_id ? { external_id: installation.config.external_id } : {}),
+    };
+    const checked = await awsAccount(key, awsAdapterConfig.parse(config), {
+      ...(factory.options.commandLine?.awsSts ?? {}),
+    });
+    if (!checked.ok)
+      throw new ServiceError(
+        'invalid_request',
+        checked.code === 'credential_refused'
+          ? installation.config.role_arn
+            ? 'AWS did not accept this key, or did not let it assume the role. Check both, then try again.'
+            : 'AWS did not accept this key. Check that it is active, then paste it again.'
+          : CONNECTION_CHECK_DETAIL.unavailable,
+        400,
+      );
+    return {
+      scopes: installation.scopes,
+      secret: awsSecret(key),
+      configuration: {
+        kind: 'command_line',
+        adapter: 'aws',
+        config,
+        account: checked.arn,
+      },
+    };
+  }
   if (installation.kind === 'command_line') {
+    if (!('token' in installation.credentials))
+      throw new ServiceError('invalid_request', 'A GitHub account needs credentials.token.', 400);
+    const { token } = installation.credentials;
     // The token is asked whose it is while it is still only in memory: one
-    // GitHub refuses never becomes a row or a sealed secret.
-    const checked = await githubAccount(installation.credentials.token, {
-      ...(factory.options.commandLine?.fetch ? { fetch: factory.options.commandLine.fetch } : {}),
-      ...(factory.options.commandLine?.githubApi
-        ? { api: factory.options.commandLine.githubApi }
-        : {}),
+    // the service refuses never becomes a row or a sealed secret.
+    const service = installation.config.adapter;
+    if (service === 'aws')
+      throw new ServiceError(
+        'invalid_request',
+        'An AWS account needs credentials.access_key_id and credentials.secret_access_key.',
+        400,
+      );
+    const checked = await commandLineAccount(service, installation.credentials.token, {
+      ...factory.options.commandLine,
       signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
     });
     if (!checked.ok)
       throw new ServiceError(
         'invalid_request',
         checked.code === 'credential_refused'
-          ? 'GitHub did not accept this token. Check that it has not expired, then paste it again.'
+          ? `${COMMAND_LINE_SERVICE[service]} did not accept this token. Check that it has not expired, then paste it again.`
           : CONNECTION_CHECK_DETAIL.unavailable,
         400,
       );
     return {
       scopes: installation.scopes,
-      secret: installation.credentials.token,
+      secret: token,
       configuration: {
         kind: 'command_line',
         adapter: installation.config.adapter,

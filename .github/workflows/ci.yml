@@ -395,16 +395,57 @@ jobs:
       # Open egress needs the caller in a container on the same engine, as the service is in
       # the Compose deployment, so it can join each sandbox's network as its only way out.
       # git serves the GitHub test repository the computer clones and pushes through the relay.
+      # moto stands in for AWS (S3, STS and IAM) and checks every signature once the test has
+      # made its user, key, role and bucket with the six calls it lets through unsigned.
       - name: Reach the internet only through the service
         run: |
+          docker run -d --name melete-moto -e INITIAL_NO_AUTH_ACTION_COUNT=6 \
+            motoserver/moto:5.2.3@sha256:91fd602a21f49cf9eb82fdf474015a3c131d40104c8297ea6a2ca920708ae32c
+          moto_ip=$(docker inspect -f '{{.NetworkSettings.IPAddress}}' melete-moto)
+          for i in $(seq 1 60); do curl -sf -o /dev/null "http://$moto_ip:5000/moto-api/" && break; sleep 1; done
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD":/repo -w /repo \
             -e MELETE_SANDBOX_LIVE=docker \
             -e MELETE_SANDBOX_LIVE_OUT=/repo/sandbox-shots \
+            -e MELETE_LIVE_MOTO="http://$moto_ip:5000" \
             "oven/bun:$(cat .bun-version)" \
             sh -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null \
               && bun test apps/melete/src/sandbox/adapters/docker.live.test.ts --timeout=300000 --test-name-pattern 'open egress'"
+      # GitLab and npm accounts through the relay, from a computer's own git, glab and npm:
+      # the test serves the GitLab git repository and API, and a Verdaccio registry pinned by
+      # digest stands in for registry.npmjs.org. Its account's token stays in the service.
+      - name: Use GitLab and npm accounts only through the service
+        run: |
+          cat > "$RUNNER_TEMP/verdaccio.yaml" <<'EOF'
+          storage: /verdaccio/storage/data
+          auth:
+            htpasswd:
+              file: /verdaccio/storage/htpasswd
+          packages:
+            '**':
+              access: $all
+              publish: $authenticated
+              unpublish: $authenticated
+          log: { type: stdout, format: pretty, level: warn }
+          EOF
+          docker run -d --name melete-verdaccio -p 4873:4873 \
+            -e VERDACCIO_PUBLIC_URL=https://registry.npmjs.org/ \
+            -v "$RUNNER_TEMP/verdaccio.yaml":/verdaccio/conf/config.yaml:ro \
+            verdaccio/verdaccio:6.10.4@sha256:43c4067288b050422265407ea2fe747e511fcd0c407a85ec90ab9a326d9400cd
+          for attempt in $(seq 1 60); do
+            curl -sf http://127.0.0.1:4873/-/ping >/dev/null && break
+            sleep 1
+          done
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/repo -w /repo \
+            --add-host=host.docker.internal:host-gateway \
+            -e MELETE_SANDBOX_LIVE=docker \
+            -e MELETE_LIVE_NPM_REGISTRY=http://host.docker.internal:4873 \
+            "oven/bun:$(cat .bun-version)" \
+            sh -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null \
+              && bun test apps/melete/src/sandbox/adapters/docker-command-line.live.test.ts --timeout=400000"
       # What the sandbox desktop showed: the test page after the agent's input, and a public
       # page reached through the service.
       - name: Keep the desktop screenshots
