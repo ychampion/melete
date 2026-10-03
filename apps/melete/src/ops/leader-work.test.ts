@@ -26,8 +26,9 @@ function countingSql() {
 function countingStore() {
   let listed = 0;
   const store = {
-    async *list() {
+    list() {
       listed += 1;
+      return (async function* () {})();
     },
   } as unknown as BlobStore;
   return { store, listed: () => listed };
