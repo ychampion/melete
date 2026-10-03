@@ -190,7 +190,10 @@ describe('encrypted backups', () => {
     const restore = testContext(r.deployDir, [], { run: r.context.run });
     expect(await runRestore(restore, [set, '--plan'], true)).toBe(0);
     const steps = (JSON.parse(restore.printed()) as { steps: string[] }).steps.join('\n');
-    expect(steps).toContain(`age -d -i "$MELETE_BACKUP_IDENTITY" '${set}/database.dump.age' | `);
+    // The path is quoted only where it needs it (Windows paths do, POSIX temp paths do not).
+    expect(steps).toMatch(
+      /age -d -i "\$MELETE_BACKUP_IDENTITY" '?[^\s']*database\.dump\.age'? \| /,
+    );
     expect(steps).not.toContain("database.dump.age' <");
     expect(steps).not.toMatch(/< \S*database\.dump/);
   });
