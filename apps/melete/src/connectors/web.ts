@@ -558,7 +558,21 @@ const shareableAddress = (url: URL) =>
   !url.password &&
   [...url.searchParams].every(
     ([name, value]) => !SECRET_PARAMETER.test(name) && !TOKEN_VALUE.test(value),
-  );
+  ) &&
+  // A link that is its own key (a share, reset or sign-in link) carries it in the path.
+  url.pathname.split(/[/;]/).every((segment) => {
+    let part = segment;
+    try {
+      part = decodeURIComponent(segment);
+    } catch {
+      return false;
+    }
+    return !TOKEN_VALUE.test(part) && !CAPABILITY_SEGMENT.test(part);
+  });
+
+/** Path words that mark an address as a key rather than a page. */
+const CAPABILITY_SEGMENT =
+  /^(?:reset|reset-password|password-reset|verify|confirm|magic|magic-link|invite|invitation|unsubscribe|signin|sign-in|login|auth|oauth|token|share|s)$/i;
 
 const refused = (reason: string): DispatchResult => ({
   outcome: 'failed',
@@ -676,10 +690,10 @@ export function createWebConnector(
     if (remaining < MIN_EXTRACT_MS) return null;
     const address = new URL(url.href);
     address.hash = '';
-    const privacy = await searchPrivacy({ jobId: ctx.job_id, query: address.href }).catch(
-      () => SEARCH_PRIVATE,
-    );
-    if (privacy !== null) return null;
+    // The reader is an outside service, so the page goes out only on the terms
+    // a search query does: a read the job's own domain list allowed is not
+    // enough, the public-read rule must allow it too, and then the privacy check.
+    if ((await searchRefusal(address.href, ctx)) !== null) return null;
     try {
       return await extractor.read(address.href, {
         signal: ctx.signal,

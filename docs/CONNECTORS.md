@@ -457,8 +457,11 @@ over 1 MB are not read.
   page with `extract_depth: advanced`, which renders it first. This happens
   only after the direct read has passed every rule for that address: the
   Public web reads setting, a public address for the host and for every
-  redirect. The address is sent only when nothing in it looks like a
-  credential and the same privacy check a search query passes allows it. The
+  redirect. The address is sent only when nothing in its path or query looks
+  like a credential or a link that is its own key (a share, reset or sign-in
+  link), and only on the terms a search query leaves on: the Public web reads
+  rule must allow it, even for a site the work's own list let it read, and so
+  must the privacy check. The
   read stays within `web.fetch`'s total time and its 60,000-character limit,
   and the receipt marks it with `read_through: "tavily"` and a note. When
   Extract fails or finds less, the direct read's result is returned as it was.

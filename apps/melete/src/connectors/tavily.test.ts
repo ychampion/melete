@@ -10,6 +10,7 @@ import type { AddressInfo } from 'node:net';
 import type { DispatchResult } from '@melete/contracts';
 import type { BrokerFault } from '../broker/errors.ts';
 import { connectorAction, connectorContext } from './test-fixtures.ts';
+import type { ConnectorContext } from './types.ts';
 import { createWebConnector, type ResolvedAddress, type WebTransport } from './web.ts';
 import {
   createWebSearch,
@@ -402,6 +403,7 @@ async function fetchPage(
   url: string,
   options: Parameters<typeof createWebConnector>[0],
   payload: Record<string, unknown> = {},
+  constraints: Partial<ConnectorContext['constraints']> = {},
 ): Promise<DispatchResult> {
   const connector = createWebConnector({
     publicReads: async () => null,
@@ -410,7 +412,8 @@ async function fetchPage(
     ...options,
   });
   const action = connectorAction('web.fetch', { url, ...payload });
-  return connector.execute(action, connectorContext(action));
+  const ctx = connectorContext(action);
+  return connector.execute(action, { ...ctx, constraints: { ...ctx.constraints, ...constraints } });
 }
 
 const detail = (result: DispatchResult) => {
@@ -526,6 +529,74 @@ test('an address with a credential in it, or one the privacy check keeps in, is 
     },
   });
   expect(broken.asked).toEqual([]);
+});
+
+test('a page read only because the job lists its site is never sent to Extract when public reads are refused', async () => {
+  // A private agent may read the sites its work was given, but nothing it
+  // reads may go to an outside service: the public-read rule is asked for the
+  // reader even when the job's own list allowed the direct read.
+  const { asked, extractor } = recordingExtractor();
+  const policy: { jobId: string }[] = [];
+  const page = detail(
+    await fetchPage(
+      'https://tools.example.org/dashboard',
+      {
+        transport: site(() => html(SHELL)).transport,
+        extract: extractor,
+        publicReads: async (_query, scope) => {
+          policy.push(scope);
+          return 'This space or agent is private, so it does not read the web.';
+        },
+      },
+      {},
+      { allowed_domains: ['tools.example.org'] },
+    ),
+  );
+  expect(page.final_url).toBe('https://tools.example.org/dashboard');
+  expect(page.read_through).toBeUndefined();
+  expect(asked).toEqual([]);
+  expect(policy).toHaveLength(1);
+  // Public research reads any public page, and so may use the reader.
+  const research = recordingExtractor();
+  const open = detail(
+    await fetchPage(
+      'https://tools.example.org/dashboard',
+      {
+        transport: site(() => html(SHELL)).transport,
+        extract: research.extractor,
+        publicReads: async () => 'refused',
+      },
+      {},
+      { public_compartment: true },
+    ),
+  );
+  expect(open.read_through).toBe('tavily');
+});
+
+test('a link that is its own key, in its path, is never sent to Extract', async () => {
+  for (const url of [
+    'https://files.example/s/k3j4h5g6f7d8s9a0q1w2e3r4/report.pdf.html',
+    'https://app.example/reset/abc',
+    'https://app.example/invite/team',
+    'https://app.example/a/eyJhbGciOiJIUzI1NiJ9.payload',
+    'https://app.example/d/550e8400-e29b-41d4-a716-446655440000/edit',
+    'https://app.example/x;jsessionid=A1B2C3D4E5F6G7H8I9J0K1L2',
+    'https://app.example/%E0%A4%A',
+  ]) {
+    const { asked, extractor } = recordingExtractor();
+    const page = detail(
+      await fetchPage(url, { transport: site(() => html(SHELL)).transport, extract: extractor }),
+    );
+    expect({ url, asked }).toEqual({ url, asked: [] });
+    expect(page.read_through).toBeUndefined();
+  }
+  // An ordinary address still goes.
+  const { asked, extractor } = recordingExtractor();
+  await fetchPage('https://news.example/2026/10/bun-ships-a-new-release', {
+    transport: site(() => html(SHELL)).transport,
+    extract: extractor,
+  });
+  expect(asked).toHaveLength(1);
 });
 
 test('a private address, a refused read or a redirect to a private address never reaches Extract', async () => {
