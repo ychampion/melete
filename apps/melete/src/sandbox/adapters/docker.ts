@@ -19,7 +19,9 @@
  *
  * A workspace is the container itself. Suspending it records it idle; a
  * container nobody has used for the idle period is stopped, and anything that
- * uses it again starts it: files persist on the volumes, processes do not.
+ * uses it again starts it: files persist on the volumes, processes do not. A
+ * container with background processes running is in use while they run, as
+ * the service's process records say, so it is not stopped for idleness.
  *
  * Commands follow the service's marker protocol like every other adapter: the
  * adapter runs the wrapped argv under `timeout -s KILL`, and anything it cannot
@@ -121,6 +123,12 @@ export type DockerSandboxSettings = {
   egressCredentials?: EgressCredentialPort;
   /** Limits for requests held inside a terminated tunnel. */
   egressIntercept?: InterceptOptions;
+  /**
+   * The containers background processes keep awake, read from the service's
+   * process records. The idle stop never stops one of these; without an
+   * answer it stops nothing for idleness that pass.
+   */
+  awake?: (signal: AbortSignal) => Promise<ReadonlySet<string>>;
 };
 
 /** Where a computer with a connected account finds the egress CA and its trust bundle. */
@@ -178,6 +186,7 @@ export function dockerCapabilities(): SandboxCapabilities {
     billing: 'per_second',
     regions: [],
     maxUploadBytes: 8 * MiB,
+    keepAwake: true,
   };
 }
 
@@ -1316,8 +1325,25 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
 
   // ---- idle stop and lifetime ----------------------------------------------
 
-  /** Stop what nobody has used for the idle period, or what ran past its lifetime. */
+  /**
+   * Stop what nobody has used for the idle period, or what ran past its
+   * lifetime. A container its background processes keep awake is in use for
+   * as long as they run, whoever execs into it, so its idle clock starts only
+   * once they have ended; its lifetime still ends it.
+   */
   async reap(signal: AbortSignal = AbortSignal.timeout(60_000)): Promise<string[]> {
+    let awake: ReadonlySet<string> | null = new Set();
+    if (this.settings.awake) {
+      try {
+        awake = await this.settings.awake(signal);
+      } catch (error) {
+        // Not knowing which are awake, none is taken for idle.
+        awake = null;
+        process.stderr.write(
+          `docker sandbox idle stop skipped: the running processes could not be read: ${describe(error)}\n`,
+        );
+      }
+    }
     const filters = encodeURIComponent(
       JSON.stringify({
         label: [`${OWNER}=v1`, `${LABEL_PROJECT}=${this.settings.project}`],
@@ -1334,6 +1360,8 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       signal.throwIfAborted();
       const name = (container.Names?.[0] ?? '').replace(/^\//, '');
       if (!NAME.test(name)) continue;
+      // Kept awake by its processes, it counts as used now.
+      if (awake?.has(name)) this.activity.set(name, now);
       // A container this process has not seen used starts its idle clock now.
       const last = this.activity.get(name) ?? now;
       if (!this.activity.has(name)) this.activity.set(name, now);
@@ -1342,7 +1370,7 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       const lifetime =
         this.lifetimes.get(name) ??
         Number(container.Labels?.[LIFETIME] ?? Number.POSITIVE_INFINITY);
-      const idle = now - last >= this.settings.idleSeconds * 1000;
+      const idle = awake !== null && now - last >= this.settings.idleSeconds * 1000;
       const expired = now - since >= lifetime * 1000;
       if (!idle && !expired) continue;
       this.guard.revoke(name);

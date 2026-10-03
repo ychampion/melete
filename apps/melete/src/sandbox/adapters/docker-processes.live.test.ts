@@ -1,7 +1,9 @@
 /**
  * Background processes in a real Docker sandbox, through the whole service
  * path: the process tools on the sandbox connection, the session table, the
- * process table and `melete-proc` in the sandbox image.
+ * process table, `melete-proc` in the sandbox image, and the service's own
+ * handling of an attempt's end, which keeps a computer with live processes
+ * running and hands it to the next attempt.
  *
  * Runs only with `MELETE_SANDBOX_LIVE=docker`, an engine, the image built from
  * `deploy/Dockerfile.sandbox` and a Postgres in `DATABASE_URL`; the CI
@@ -15,10 +17,12 @@ import { type Action, canonicalizePayload, PROCESS_LIMITS } from '@melete/contra
 import { createSandboxExecConnector } from '../../connectors/sandbox-exec.ts';
 import type { ConnectorContext } from '../../connectors/types.ts';
 import { serviceContainerId } from '../docker-default.ts';
+import { sandboxLabels } from '../manifest.ts';
 import { SandboxProcesses } from '../processes.ts';
 import { seedSessionScope } from '../session-fixtures.ts';
 import { SandboxSessions } from '../sessions.ts';
 import type { SandboxProvider } from '../types.ts';
+import { startSandboxes } from '../wiring.ts';
 import { DOCKER_SANDBOX_DEFAULTS, DockerSandboxHost, DockerSandboxSocket } from './docker.ts';
 
 const live = process.env.MELETE_SANDBOX_LIVE === 'docker' && Boolean(process.env.DATABASE_URL);
@@ -93,6 +97,16 @@ if (!live) {
   });
   const providers = () =>
     new Map([[scope.connectionId, { adapter: 'docker', provider: provider as SandboxProvider }]]);
+  /** What the service does when an attempt ends, and on its sweep. */
+  const wiring = startSandboxes({
+    sql,
+    sessions,
+    providers,
+    project: PROJECT,
+    sweepMs: 60_000,
+    processes,
+    log: (line) => process.stdout.write(`${line}\n`),
+  });
 
   /** A job of the agent and one attempt of it, as one conversation turn would be. */
   const turn = async (jobId?: string) => {
@@ -151,15 +165,14 @@ if (!live) {
       if (result.outcome !== 'succeeded') throw new Error(`${kind}: ${JSON.stringify(result)}`);
       return result.receipt.detail as Record<string, unknown>;
     };
-    /** The attempt ends: its workspace is suspended, as the service does. */
-    const end = async () => {
-      const [row] = await sql`select id from sandbox_session
-        where attempt_id = ${attempt} and status = 'ready'`;
-      if (row)
-        await sessions.suspendWorkspace(String(row.id), provider, AbortSignal.timeout(60_000));
-    };
-    return { run, end };
+    /** The attempt ends, and the service settles its computer. */
+    const end = () => wiring.settleAttempt(attempt, AbortSignal.timeout(120_000));
+    return { run, end, attempt };
   };
+  /** The agent's live session rows, oldest first. */
+  const computerRows = () => sql`select id, status, attempt_id, held_by, provider_sandbox_id
+    from sandbox_session where space_id = ${scope.spaceId} and agent_id = ${scope.agentId}
+      and status in ('ready', 'paused') order by opened_at`;
 
   afterAll(async () => {
     const left = await host.reconcile(PROJECT, new Set(), AbortSignal.timeout(120_000), null);
@@ -182,6 +195,10 @@ if (!live) {
         expect(String(started.first_output)).toContain('tick 1');
         const id = String(started.process_id);
         await first.end();
+        // The process holds the computer: running, with no attempt, not suspended.
+        expect([...(await computerRows())]).toEqual([
+          expect.objectContaining({ status: 'ready', attempt_id: null, held_by: 'processes' }),
+        ]);
 
         // A minute later another conversation with the same agent finds it running.
         await Bun.sleep(60_000);
@@ -221,6 +238,10 @@ if (!live) {
           last_line: 'finished',
         });
         await third.end();
+        // Nothing runs in it any more, so the attempt's end suspended it.
+        expect([...(await computerRows())]).toEqual([
+          expect.objectContaining({ status: 'paused', held_by: null }),
+        ]);
       },
       (RUN_SECONDS + 600) * 1000,
     );
@@ -245,6 +266,81 @@ if (!live) {
       await end();
       // Nothing is left to sweep.
       expect((await processes.sweep(providers, AbortSignal.timeout(60_000))).ended).toEqual([]);
+    }, 300_000);
+
+    test('a computer with a live process is neither suspended at attempt end nor idle-stopped', async () => {
+      const signal = () => AbortSignal.timeout(120_000);
+      const { run, end } = await turn();
+      const server = await run('process.start', { command: 'exec sleep 900', name: 'server' });
+      await end();
+      const [held] = await computerRows();
+      expect(held).toMatchObject({ status: 'ready', attempt_id: null, held_by: 'processes' });
+      const kept = String(held?.provider_sandbox_id);
+      // The idle stop as the service runs it, with a short idle period, asking the
+      // process records which containers are in use.
+      const reaper = new DockerSandboxHost(
+        {
+          socket,
+          project: PROJECT,
+          ...DOCKER_SANDBOX_DEFAULTS,
+          idleSeconds: 15,
+          egressPort: 18_793,
+          awake: () => sessions.awakeSandboxes('docker'),
+        },
+        api,
+      );
+      // Beside it, a computer of this installation with nothing running in it.
+      const quiet = await reaper.create(
+        {
+          image,
+          egress: { kind: 'deny_all' },
+          region: null,
+          lifetimeSeconds: 3_600,
+          idleSeconds: null,
+          workdir: '/work',
+          labels: sandboxLabels({
+            project: PROJECT,
+            space: scope.spaceId,
+            session: `sbx_quiet${Date.now().toString(36)}`,
+          }),
+          env: {},
+        },
+        signal(),
+      );
+      expect(await reaper.reap(signal())).toEqual([]);
+      await Bun.sleep(20_000);
+      // Nobody ran a command in either for longer than the idle period.
+      const stopped = await reaper.reap(signal());
+      process.stdout.write(`docker processes, idle stop: ${JSON.stringify(stopped)}\n`);
+      expect(stopped).toEqual([quiet.providerSandboxId]);
+      expect(await provider.running({ ...quiet, providerSandboxId: kept }, signal())).toBe(true);
+
+      // The next attempt takes it over, with the process still running in it.
+      const next = await turn();
+      const listed = await next.run('process.list', {});
+      // The earlier cases' ended processes are listed after it.
+      const running = (listed.processes as Record<string, unknown>[]).filter(
+        (each) => each.state === 'running',
+      );
+      expect(running).toEqual([
+        expect.objectContaining({ process_id: server.process_id, state: 'running' }),
+      ]);
+      expect([...(await computerRows())]).toEqual([
+        expect.objectContaining({
+          attempt_id: next.attempt,
+          held_by: 'attempt',
+          provider_sandbox_id: kept,
+        }),
+      ]);
+      // Once nothing runs in it, its attempt's end suspends it and the idle stop may take it.
+      await next.run('process.stop', { process_id: server.process_id });
+      await next.end();
+      expect([...(await computerRows())]).toEqual([
+        expect.objectContaining({ status: 'paused', held_by: null }),
+      ]);
+      await Bun.sleep(20_000);
+      expect(await reaper.reap(signal())).toEqual([kept]);
+      await reaper.destroy(quiet, signal());
     }, 300_000);
   });
 }

@@ -779,6 +779,35 @@ function dockerWithEgress(sql: Sql, env: Env): DockerSandboxSettings {
   };
 }
 
+function sandboxOptions(sql: Sql, env: Env): NonNullable<ConnectorOptions['sandbox']> {
+  const sessions = new SandboxSessions(sql, {
+    leaseSeconds: env.MELETE_SANDBOX_LEASE_SECONDS,
+    workspaceRetentionSeconds: env.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS,
+  });
+  return {
+    sessions,
+    processes: new SandboxProcesses(sql, {
+      limits: {
+        maxPerComputer: env.MELETE_PROCESS_MAX_PER_COMPUTER,
+        maxPerSpace: env.MELETE_PROCESS_MAX_PER_SPACE,
+        defaultTtlMinutes: env.MELETE_PROCESS_DEFAULT_TTL_MINUTES,
+        maxTtlMinutes: env.MELETE_PROCESS_MAX_TTL_MINUTES,
+        outputMaxBytes: env.MELETE_PROCESS_OUTPUT_MAX_BYTES,
+        awakeSecondsPerDay: env.MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY,
+      },
+    }),
+    project: env.MELETE_SANDBOX_PROJECT ?? '',
+    e2bPlan: env.MELETE_E2B_PLAN,
+    snapshotTtlSeconds: env.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS,
+    maxConcurrent: env.MELETE_SANDBOX_MAX_CONCURRENT,
+    maxPerConnection:
+      env.MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION ?? env.MELETE_SANDBOX_MAX_CONCURRENT,
+    modalRefusal: modalEnvironmentRefusal(process.env, env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT),
+    // The idle stop asks the process records which containers are in use.
+    docker: { ...dockerWithEgress(sql, env), awake: () => sessions.awakeSandboxes('docker') },
+  };
+}
+
 export function connectorOptionsFromEnv(
   sql: Sql,
   env: Env,
@@ -817,37 +846,7 @@ export function connectorOptionsFromEnv(
           },
         }
       : {}),
-    ...(env.MELETE_SANDBOX_PROJECT
-      ? {
-          sandbox: {
-            sessions: new SandboxSessions(sql, {
-              leaseSeconds: env.MELETE_SANDBOX_LEASE_SECONDS,
-              workspaceRetentionSeconds: env.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS,
-            }),
-            processes: new SandboxProcesses(sql, {
-              limits: {
-                maxPerComputer: env.MELETE_PROCESS_MAX_PER_COMPUTER,
-                maxPerSpace: env.MELETE_PROCESS_MAX_PER_SPACE,
-                defaultTtlMinutes: env.MELETE_PROCESS_DEFAULT_TTL_MINUTES,
-                maxTtlMinutes: env.MELETE_PROCESS_MAX_TTL_MINUTES,
-                outputMaxBytes: env.MELETE_PROCESS_OUTPUT_MAX_BYTES,
-                awakeSecondsPerDay: env.MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY,
-              },
-            }),
-            project: env.MELETE_SANDBOX_PROJECT,
-            e2bPlan: env.MELETE_E2B_PLAN,
-            snapshotTtlSeconds: env.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS,
-            maxConcurrent: env.MELETE_SANDBOX_MAX_CONCURRENT,
-            maxPerConnection:
-              env.MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION ?? env.MELETE_SANDBOX_MAX_CONCURRENT,
-            modalRefusal: modalEnvironmentRefusal(
-              process.env,
-              env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT,
-            ),
-            docker: dockerWithEgress(sql, env),
-          },
-        }
-      : {}),
+    ...(env.MELETE_SANDBOX_PROJECT ? { sandbox: sandboxOptions(sql, env) } : {}),
     env: {
       OPENAI_API_KEY: env.OPENAI_API_KEY,
       OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,

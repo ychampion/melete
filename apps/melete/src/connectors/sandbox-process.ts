@@ -430,6 +430,13 @@ export function createProcessTools(options: ProcessToolOptions) {
         first_output_dropped: dropped,
         digest_verified: true,
         ...sessionFacts(session),
+        // Said on every start where it applies, so the agent can tell the person.
+        ...(provider.capabilities.keepAwake
+          ? {}
+          : {
+              keeps_running_after_this_turn: false,
+              note: `On ${session.adapter} computers, background processes stop when this turn ends, because the computer is suspended then. Wait for it in this turn with process.read, or use a computer that keeps processes running`,
+            }),
       });
     };
     if (admitted.repeated && row.state !== 'starting')

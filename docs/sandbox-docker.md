@@ -157,7 +157,12 @@ A container nobody has used for `MELETE_SANDBOX_DOCKER_IDLE_SECONDS` (15 minutes
 by default) is stopped. The next command, file operation, desktop action or
 live view starts it again. Files on its volumes persist; running processes and
 the open browser do not. Watching the desktop counts as use, and so does a
-background process that is still running (see "Long-running work" below).
+background process that is still running (see "Long-running work" below): the
+idle stop reads which containers have running processes from the service's
+records, so such a container is never stopped for idleness, and its idle clock
+starts when its last process ends. The container's own lifetime still applies;
+when it runs out, the container stops with its processes, and the conversations
+see them ended with that reason.
 
 Each command's record (its output and exit status) is kept under
 `/home/agent/.melete/exec`, on the home volume, so a command whose answer was
@@ -232,12 +237,26 @@ Limits, each set in the service's environment:
 | `MELETE_PROCESS_OUTPUT_MAX_BYTES` | 8388608 | the output ring of one process |
 | `MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY` | 21600 | how long a space's processes may keep its computers running each day (UTC) |
 
+When a conversation's turn ends with processes still running in the agent's
+computer, the computer is not suspended: the processes keep it running, and
+the next conversation with that agent takes it over as it is, with them still
+in it. Once the last one ends, the computer is suspended as usual. A computer
+kept running this way counts toward `MELETE_SANDBOX_MAX_CONCURRENT`, like one a
+conversation is using.
+
+The awake allowance counts only that time: how long a space's computers were
+kept running by their processes alone, after the turns that used them ended,
+added up over its computers for the day (UTC). Time a conversation is using
+the computer does not count.
+
 Every minute the service checks each computer with running processes. It
 stops a process past its time limit, stops a space's processes once the day's
-allowance is used, and records a process as lost when its container restarted,
-since a restart ends every process in it. A start over a limit is refused with
-the reason, which the agent passes on: "This computer is already running 4
-processes. Stop one first."
+allowance is used, and records a process as lost when its container restarted
+or stopped, since that ends every process in it. When the allowance stops
+processes, the conversation that started them says so: "Your computer's awake
+time for today is used up (6 of 6 hours). Processes stopped at 14:02 UTC." A
+start over a limit is refused with the reason, which the agent passes on: "This
+computer is already running 4 processes. Stop one first."
 
 ## Watching and taking over
 
