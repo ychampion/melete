@@ -122,6 +122,8 @@ export const connection = z.object({
    * connections serve its owner whatever this says.
    */
   shared_use: z.enum(['owner', 'room']).optional(),
+  /** The account a command-line connection acts as, as the service it reaches names it. */
+  account: z.string().max(200).optional(),
   last_checked_at: timestamp.nullable(),
   created_at: timestamp,
 });

@@ -92,9 +92,97 @@ ends.
   adapters' names change, or when the master key can no longer open it. A
   computer receives the new certificate with its next command.
 
+## GitHub
+
+Connect it in Settings, under Connections, as **GitHub for the agent's
+computer**, with a fine-grained token: choose only the repositories the work
+needs, and give read and write on Contents and Pull requests. Melete asks
+GitHub whose token it is (`GET /user`) before keeping it, and the connection
+shows that account. It has two grants: reading the repositories, and pushing
+and making changes, which asks each time. The connection's own check asks
+GitHub the same question again.
+
+The computer has `git` and `gh` (2.83.2, pinned by checksum in the image).
+Each command gets `GH_TOKEN` set to a placeholder, `GH_PROMPT_DISABLED=1` and
+`GIT_TERMINAL_PROMPT=0`. git's requests carry the token as `x-access-token`
+basic credentials and the API's as a bearer token.
+
+| Host | What goes through it |
+| --- | --- |
+| `github.com` | git over smart HTTP, and Git LFS |
+| `api.github.com` | the REST and GraphQL APIs: everything `gh` does |
+| `codeload.github.com`, `uploads.github.com`, `raw.githubusercontent.com` | downloads; a change sent to one of them is refused |
+
+What reads: cloning and fetching (`info/refs` and `git-upload-pack`), every
+`GET` and `HEAD`, rendering Markdown (`POST /markdown`), GraphQL documents with
+only queries in them, Git LFS downloads and lock checks, and git's empty probe
+before a large push. Everything else is a change and asks:
+
+- **A push** (`git-receive-pack`) is read up to its pack. The card shows the
+  repository and each ref update, old and new commit, as a new branch, an
+  update or a **delete**, with any push options and whether the push is all or
+  nothing. The approval is bound to the repository, each update, the push
+  options and the exact bytes of the command list. The commits name their own
+  content by hash, so the pack that carries them is left out: git may pack the
+  same commits differently when the command runs again. A push whose commands
+  cannot be read exactly, such as a signed push or a compressed body, is asked
+  for as the request itself and bound to every byte.
+- **A REST call** with any method other than `GET` or `HEAD` is bound to its
+  method, path, query and body. Pull requests (open, merge, review, comment),
+  issues (open, comment, close, reopen), releases, branches and tags, workflow
+  runs and dispatches, file contents, Actions secrets and deleting a repository
+  have their own summaries; any other call is summarised by its method, path
+  and size, with the whole body under Details.
+- **A GraphQL document** with a mutation or subscription anywhere in it, or one
+  that does not parse, is bound to its exact text and variables. The mutations
+  `gh` uses (opening, editing, merging, closing and reviewing pull requests,
+  comments, issues, branches and tags) have their own summaries, and the card
+  shows the document and its variables.
+- **A Git LFS upload** shows how many files it sends and their size.
+
+If the person answers while a push is held, it completes inside the command.
+If not, git prints the reason beside each ref:
+
+```
+ ! [remote rejected] melete/fix-login -> melete/fix-login (Waiting for your approval in Melete: Push to alice/site (melete/fix-login). Run the same command again once it is approved.)
+```
+
+and `gh` prints the same sentence as the API's error message. After approval,
+the same command sends the change once.
+
+A push keeps on its receipt the status GitHub reported for each ref; a push
+whose refs were all rejected, or a GraphQL answer that holds only errors, is
+recorded as failed. A REST change keeps the address of what it made, and a
+GraphQL change the ids and addresses it returned.
+
+**Standing permission.** Answering "Always" on a push card makes a rule for
+that repository that covers later pushes creating or moving branches under
+`melete/`, within the rule's count, expiry and re-consent window. A push to any
+other branch, a tag, a delete, and every REST or GraphQL change still ask. The
+rule reads the ref updates, not the history between them, so it also covers a
+push that rewrites a `melete/` branch. It is offered when the repository's name
+came from the person or a connected app, and it follows the repository through
+a rename or a transfer, as GitHub's own redirects do.
+
+A push the rule covers also starts the repository's workflows that run on
+push. They run the pushed code with the repository's secrets and its workflow
+token, and a workflow token allowed to write can push to any unprotected
+branch, the default branch included. The rule's own text says so. Before
+saying "Always", use a token without the Workflows permission, set the
+repository's default workflow permissions to read, and protect the default
+branch.
+
+Signed links GitHub hands out, for release assets, archives and raw files of
+private repositories, reach the computer as GitHub sends them. Each opens one
+object for a few minutes, an object the computer could already read with the
+account.
+
 ## Limits
 
 - Docker computers only, as above.
+- A standing rule for pushes lets those pushes run the repository's workflows
+  without asking, with its secrets; see [GitHub](#github) for the settings that
+  keep them from reaching the default branch.
 - An account can read whatever its own permissions allow, and a computer with
   `open` egress can send what it read anywhere public. Give an account only the
   access the work needs, and choose `connected_hosts_only` for a computer that

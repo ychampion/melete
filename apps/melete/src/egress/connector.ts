@@ -11,7 +11,12 @@
  * before anything is recorded, or fails without sending.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { ConnectorManifest, DispatchResult, JsonObject } from '@melete/contracts';
+import type {
+  ConnectorHealth,
+  ConnectorManifest,
+  DispatchResult,
+  JsonObject,
+} from '@melete/contracts';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Connector } from '../connectors/types.ts';
 import {
@@ -22,7 +27,15 @@ import {
 
 /** What happened to one forwarded request. */
 export type ForwardResult =
-  | { outcome: 'answered'; response: UpstreamResponse; detail: JsonObject }
+  | {
+      outcome: 'answered';
+      response: UpstreamResponse;
+      detail: JsonObject;
+      /** Why the change did not take effect although the service answered below 400. */
+      rejected?: string | null;
+      /** Why it cannot be told whether the change took effect, although the service answered. */
+      uncertain?: string | null;
+    }
   /** The request left and its answer was lost: it may have landed. */
   | { outcome: 'lost'; reason: string }
   /** Nothing left: the upstream could not be reached. */
@@ -55,7 +68,13 @@ export async function relaying<T>(
 export const COMMAND_LINE_RELAY_ONLY =
   'Commands in the agent’s computer make these requests themselves. Run the command; it asks for approval when it needs one.';
 
-export function createCommandLineConnector(adapter: CredentialAdapterId): Connector {
+export function createCommandLineConnector(
+  adapter: CredentialAdapterId,
+  options: {
+    /** Asks the service whether the account still answers; left out, nothing is asked. */
+    health?: () => Promise<ConnectorHealth>;
+  } = {},
+): Connector {
   const name = egressWriteTool(adapter);
   const manifest: ConnectorManifest = {
     name: `command_line_${adapter}`,
@@ -115,12 +134,20 @@ export function createCommandLineConnector(adapter: CredentialAdapterId): Connec
           retryable: false,
         };
       const { status } = result.response;
+      // A server error can follow a change that already landed: it is never recorded as nothing.
+      if (status >= 500)
+        return {
+          outcome: 'unknown',
+          reason: `The service answered ${status} after this change was sent, so it may have taken effect. Check before asking for it again.`,
+        };
+      if (result.uncertain) return { outcome: 'unknown', reason: result.uncertain };
       if (status >= 400)
         return {
           outcome: 'failed',
           reason: `The service answered ${status}; nothing was changed by this request.`,
           retryable: false,
         };
+      if (result.rejected) return { outcome: 'failed', reason: result.rejected, retryable: false };
       return {
         outcome: 'succeeded',
         receipt: {
@@ -140,6 +167,7 @@ export function createCommandLineConnector(adapter: CredentialAdapterId): Connec
       };
     },
     async health() {
+      if (options.health) return options.health();
       return {
         status: 'ok',
         detail: 'Used by commands in the agent’s computer.',

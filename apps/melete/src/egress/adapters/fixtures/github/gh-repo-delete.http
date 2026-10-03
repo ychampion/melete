@@ -1,0 +1,7 @@
+# gh repo delete alice/site --yes
+### write
+DELETE https://api.github.com/repos/alice/site
+accept: application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview
+content-type: application/json; charset=utf-8
+user-agent: GitHub CLI 2.83.2
+

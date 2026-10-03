@@ -27,6 +27,7 @@ import { createServer as createHttpsServer, request as httpsRequest } from 'node
 import { connect, type Socket } from 'node:net';
 import type { TLSSocket } from 'node:tls';
 import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
+import type { JsonObject } from '@melete/contracts';
 import type { EgressWriteOutcome } from '../broker/egress-admission.ts';
 import type { ResolvedAddress } from '../connectors/web.ts';
 import { requestWrite } from './adapters/generic.ts';
@@ -228,17 +229,22 @@ export const VOLATILE_HEADERS: ReadonlySet<string> = new Set([
 
 /**
  * What a write's approval is bound to besides the adapter's own payload: the
- * exact body bytes, and every header that will be forwarded, by lower-case
- * name and value in name order.
+ * exact body bytes (or, where the adapter's payload already names what the
+ * body does by content, the part of the body it names as `bound`), and every
+ * header that will be forwarded, by lower-case name and value in name order.
  */
-export function requestBinding(headers: Record<string, string>, body: Buffer) {
+export function requestBinding(headers: Record<string, string>, body: Buffer, bound?: JsonObject) {
   return {
     headers: Object.entries(headers)
       .filter(([name]) => !VOLATILE_HEADERS.has(name))
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([name, value]) => [name, value]),
-    body_sha256: createHash('sha256').update(body).digest('hex'),
-    body_bytes: body.length,
+    ...(bound
+      ? { body: bound }
+      : {
+          body_sha256: createHash('sha256').update(body).digest('hex'),
+          body_bytes: body.length,
+        }),
   };
 }
 
@@ -477,6 +483,8 @@ function forwarder(
                   resolve({
                     outcome: 'answered',
                     response,
+                    rejected: use.adapter.rejected?.(write, response) ?? null,
+                    uncertain: use.adapter.uncertain?.(write, response) ?? null,
                     detail: {
                       host: context.host,
                       method: base.method,
@@ -509,7 +517,11 @@ function forwarder(
     );
 }
 
-function answer(response: ServerResponse, outcome: EgressWriteOutcome) {
+function answer(
+  response: ServerResponse,
+  outcome: EgressWriteOutcome,
+  held?: (message: string, status: number) => UpstreamResponse | null,
+) {
   if (outcome.kind === 'sent') {
     const result = outcome.result;
     if (result.outcome === 'answered') {
@@ -533,9 +545,22 @@ function answer(response: ServerResponse, outcome: EgressWriteOutcome) {
     });
   }
   const reason = outcome.kind === 'waiting' ? 'approval_pending' : 'write_refused';
+  const status = outcome.kind === 'waiting' ? 403 : outcome.status;
+  // In the words the service's own clients print, where the adapter knows them.
+  const shaped = held?.(outcome.message, status);
+  if (shaped && !response.headersSent) {
+    response.writeHead(shaped.status, {
+      ...shaped.headers,
+      'content-length': String(shaped.body.length),
+      'x-melete-egress': reason,
+      ...(outcome.actionId ? { 'x-melete-approval': outcome.actionId } : {}),
+    });
+    response.end(shaped.body);
+    return;
+  }
   return plain(
     response,
-    outcome.kind === 'waiting' ? 403 : outcome.status,
+    status,
     reason,
     outcome.message,
     outcome.actionId ? { 'x-melete-approval': outcome.actionId } : {},
@@ -646,7 +671,8 @@ async function handleBody(
       'account_unavailable',
       'This account is no longer available to this command.',
     );
-  const placeholders = Object.values(use.adapter.placeholders(use.config));
+  const placeholders =
+    use.adapter.standIns?.(use.config) ?? Object.values(use.adapter.placeholders(use.config));
   const intercepted: InterceptedRequest = {
     host,
     method,
@@ -656,6 +682,7 @@ async function handleBody(
     body,
   };
   const base: OutboundRequest = {
+    host,
     method,
     target: `${target.path}${target.query ? `?${target.query}` : ''}`,
     headers: intercepted.headers,
@@ -666,7 +693,7 @@ async function handleBody(
   if (verdict.kind === 'read') return read(context, use, base, response, max);
   // The approval binds the exact bytes and every header that will be sent;
   // the write forwards exactly those, plus headers that say nothing about it.
-  const binding = requestBinding(intercepted.headers, body);
+  const binding = requestBinding(intercepted.headers, body, verdict.boundBody);
   const write: ClassifiedWrite = {
     ...verdict,
     payload: { ...verdict.payload, request: binding },
@@ -717,7 +744,13 @@ async function handleBody(
       live: () => context.tokens.isLive(context.token),
     });
     if (outcome.kind === 'sent') context.onWrite(outcome.actionId);
-    answer(response, outcome);
+    answer(response, outcome, (message, status) => {
+      try {
+        return use.adapter.heldAnswer?.(intercepted, write, message, status) ?? null;
+      } catch {
+        return null;
+      }
+    });
   } finally {
     response.off('close', hungUp);
   }

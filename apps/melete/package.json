@@ -21,6 +21,7 @@
     "chrono-node": "2.10.1",
     "drizzle-orm": "0.45.2",
     "fast-xml-parser": "5.11.1",
+    "graphql": "17.0.2",
     "hono": "4.13.7",
     "ical.js": "2.2.1",
     "imapflow": "2.0.2",
