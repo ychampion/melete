@@ -202,7 +202,8 @@ test('move verifies by content hash and refuses to clobber a destination', async
   await expect(
     execute('files.move', { from: 'again.txt', to: 'to.txt', to_area: 'artifacts' }),
   ).rejects.toThrow('already exists');
-  await execute('files.write', { path: 'to.txt', area: 'artifacts', content: 'changed' });
+  // The file in the person's Files changes after the move.
+  await writeFile(path.join(root, 'spaces', 'sp_01', 'artifacts', 'to.txt'), 'changed');
   expect((await connector().verify(action, connectorContext(action))).decision).toBe('undecided');
 });
 

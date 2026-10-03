@@ -205,6 +205,21 @@ const journey = late ? await database() : null;
         ['files.move', { from: 'note.txt', to: 'renamed.txt', area: 'artifacts' }],
       ] as const)
         expect((await propose(kind, payload)).status).toBe('needs_approval');
+      // A standing permission to save files covers saving over one of theirs.
+      const ruled = new BrokerService({
+        sql: fixture.sql,
+        connectors: running.registry,
+        resolveStandingGrant: async () => true,
+      });
+      const replaced = await ruled.propose(claimed.claims, {
+        connection_id: files.id,
+        kind: 'files.write',
+        payload: { path: 'imgtest.png', area: 'artifacts', content: 'replaced by rule' },
+      });
+      expect(replaced.status).toBe('succeeded');
+      const reread = await propose('files.read', { path: 'imgtest.png', area: 'artifacts' });
+      const [row] = await fixture.sql`select receipt from action where id = ${reread.action_id}`;
+      expect(row?.receipt?.detail?.content).toBe('replaced by rule');
     } finally {
       await running.close();
     }

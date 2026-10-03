@@ -22,7 +22,7 @@
  */
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, realpath } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import {
   type Action,
   ARTIFACT_MIME,
@@ -35,7 +35,7 @@ import {
   type Receipt,
 } from '@melete/contracts';
 import { validateArtifact } from '../artifact/validate.ts';
-import { noLinks, segmentsFor } from './files.ts';
+import { noLinks, openBeneath, segmentsFor } from './files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 export type ExecOptions = {
@@ -127,10 +127,13 @@ export function createExecConnector(options: ExecOptions): Connector {
     return noLinks(base, [ctx.job_id, ...segmentsFor(relative)], false);
   };
 
-  const readStored = async (target: string): Promise<Buffer> => {
-    const file = await open(
-      target,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  /** Opened by walking the names, so a folder swapped for a link since the check opens nothing. */
+  const readStored = async (ctx: ConnectorContext, relative: string): Promise<Buffer> => {
+    const base = await realpath(options.workRoot);
+    const file = await openBeneath(
+      base,
+      [ctx.job_id, ...segmentsFor(relative)],
+      constants.O_RDONLY,
     );
     try {
       const stat = await file.stat();
@@ -179,13 +182,12 @@ export function createExecConnector(options: ExecOptions): Connector {
     let storedBytes: number | null = null;
     let stored: Buffer | null = null;
     if (record.output_path) {
-      const target = await resolveInWorkspace(ctx, record.output_path).catch(() => {
+      await resolveInWorkspace(ctx, record.output_path).catch(() => {
         throw new Error(
           `the recorded output file is outside this job workspace: ${record.output_path}`,
         );
       });
-      await lstat(target);
-      stored = await readStored(target);
+      stored = await readStored(ctx, record.output_path);
       storedBytes = stored.byteLength;
       if (storedBytes !== record.output_bytes)
         throw new Error('stored output size does not match the captured bytes');
