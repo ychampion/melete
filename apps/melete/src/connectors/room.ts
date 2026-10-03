@@ -44,6 +44,7 @@ import {
 } from '../rooms/handoffs.ts';
 import { roomHandoff, roomMessage, roomThread } from '../rooms/schema.ts';
 import { namesOf } from '../rooms/transcript.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { noLinks, segmentsFor } from './files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
@@ -158,6 +159,7 @@ const notInRoom = () =>
 export function createRoomConnector(options: RoomConnectorOptions): Connector {
   const db = drizzle(options.sql, { schema });
   const limit = options.maxBytes ?? 8 * 1024 * 1024;
+  const workspace = new LocalWorkspaceFs(options.workRoot);
   const ttl = options.handoffTtlMs ?? HANDOFF_TTL_MS;
 
   const facts = async (tx: Query, jobId: string): Promise<JobFacts> => {
@@ -290,9 +292,11 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
   const sourceBytes = async (ctx: ConnectorContext, area: string, relative: string) => {
     if (!/^job_[A-Za-z0-9]+$/.test(ctx.job_id) || !/^sp_[A-Za-z0-9]+$/.test(ctx.space_id))
       throw new Error('invalid trusted file scope');
-    const base = await realpath(area === 'work' ? options.workRoot : options.spacesRoot);
-    const scope = area === 'work' ? [ctx.job_id] : [ctx.space_id, 'artifacts'];
-    return readFile(await noLinks(base, [...scope, ...segmentsFor(relative)], false));
+    if (area === 'work') return workspace.read(ctx.job_id, relative, limit);
+    const base = await realpath(options.spacesRoot);
+    return readFile(
+      await noLinks(base, [ctx.space_id, 'artifacts', ...segmentsFor(relative)], false),
+    );
   };
 
   const roomFile = async (roomId: string, name: string, create: boolean) => {
