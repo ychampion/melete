@@ -27,6 +27,11 @@ export const OVERLAY_FILES = {
 export type Overlay = keyof typeof OVERLAY_FILES;
 const OVERLAYS = Object.keys(OVERLAY_FILES) as [Overlay, ...Overlay[]];
 
+/** Read after the overlays when `database.external` is true: the service uses DATABASE_URL, and the bundled postgres stays off. */
+export const EXTERNAL_DB_FILE = 'docker-compose.external-db.yml';
+/** Read last when `blobs.store` is `s3`: the service keeps its blobs in the bucket deploy/.env names. */
+export const BLOBS_S3_FILE = 'docker-compose.blobs-s3.yml';
+
 export const PROFILES = ['sandbox'] as const;
 
 /** The default registry, the one deploy/docker-compose.yml names when MELETE_IMAGE_REGISTRY is empty. */
@@ -66,11 +71,32 @@ const blobs = z.discriminatedUnion('store', [
   z.strictObject({ store: z.literal('local') }),
   z.strictObject({
     store: z.literal('s3'),
-    endpoint: z.url(),
+    /** The S3-compatible service's address; left out for AWS S3, which the region selects. */
+    endpoint: z.url().optional(),
     bucket: z.string().min(1),
     region: z.string().min(1).optional(),
   }),
 ]);
+
+/**
+ * Letters, digits and `. _ - / ~` only, because a remote path or command is
+ * used in the remote shell. `~` at the start is that account's home.
+ */
+const remoteWord = z
+  .string()
+  .regex(/^[A-Za-z0-9._/~:=-]+$/, 'letters, digits and . _ - / ~ : = only')
+  .refine((value) => !value.split('/').includes('..'), 'no .. in a path');
+
+/** Where `melete remote` finds this installation on the machine it reaches over SSH. */
+const remote = z.strictObject({
+  /** The remote checkout, absolute or under ~/. */
+  path: remoteWord.refine(
+    (value) => /^(\/|~\/|~$)/.test(value),
+    'an absolute path or one under ~/',
+  ),
+  /** The command that runs the melete command there, from the checkout. */
+  cli: z.array(remoteWord).min(1).default(['bun', 'run', 'melete']),
+});
 
 export const deployConfigSchema = z
   .strictObject({
@@ -94,6 +120,7 @@ export const deployConfigSchema = z
         hosts: z.array(z.string().regex(/^tcp\+tls:\/\/[^\s/]+$/, 'tcp+tls://host:port')),
       })
       .default({ hosts: [] }),
+    remote: remote.optional(),
   })
   .superRefine((value, context) => {
     if (value.overlays.includes('tailscale-kernel') && !value.overlays.includes('tailscale'))
@@ -171,12 +198,17 @@ export async function createDeployConfig(deployDir: string, config: DeployConfig
 export const channelOf = (tag: string): DeployConfig['images']['channel'] =>
   tag === 'local' ? 'local' : /^v\d/.test(tag) ? 'release' : 'main';
 
-/** `-f` arguments for the base file and each overlay, in Compose's reading order. */
+/**
+ * The base file, each overlay, then the external database and the S3 blob store
+ * files when the contract asks for them, in Compose's reading order.
+ */
 export function composeFiles(deployDir: string, config: DeployConfig): string[] {
   const overlays = OVERLAYS.filter((overlay) => config.overlays.includes(overlay));
   return [
     join(deployDir, 'docker-compose.yml'),
     ...overlays.map((overlay) => join(deployDir, OVERLAY_FILES[overlay])),
+    ...(config.database.external ? [join(deployDir, EXTERNAL_DB_FILE)] : []),
+    ...(config.blobs.store === 's3' ? [join(deployDir, BLOBS_S3_FILE)] : []),
   ];
 }
 

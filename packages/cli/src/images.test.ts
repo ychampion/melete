@@ -32,7 +32,11 @@ describe('the registry reader', () => {
         return ok({
           'linux/arm64': { rootfs: { diff_ids: ['x'] } },
           'linux/amd64': {
-            config: { Labels: { 'org.opencontainers.image.revision': 'abc' } },
+            config: {
+              Labels: {
+                'org.opencontainers.image.revision': '0123456789abcdef0123456789abcdef01234567',
+              },
+            },
             rootfs: { diff_ids: ['sha256:one', 'sha256:two'] },
           },
         });
@@ -43,7 +47,7 @@ describe('the registry reader', () => {
     expect(inspectRemote(run, 'ghcr.io/o/melete-web:main', 'amd64')).toEqual({
       ref: 'ghcr.io/o/melete-web:main',
       digest: 'sha256:index',
-      revision: 'abc',
+      revision: '0123456789abcdef0123456789abcdef01234567',
       layers: [
         { diffId: 'sha256:one', size: 10 },
         { diffId: 'sha256:two', size: 20 },

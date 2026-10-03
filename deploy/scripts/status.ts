@@ -77,7 +77,15 @@ export const webPort = (env: Record<string, string> | null) => env?.WEB_PORT?.tr
 export const sandboxOn = (env: Record<string, string> | null) =>
   env?.MELETE_SANDBOX_PROVIDER?.trim() === 'docker';
 
-export function judgeStatus(facts: StatusFacts, floors: DiskFloors = DEFAULT_DISK_FLOORS): Check[] {
+/**
+ * `services` are the ones the installation runs; an installation whose database
+ * is elsewhere passes the list without postgres.
+ */
+export function judgeStatus(
+  facts: StatusFacts,
+  floors: DiskFloors = DEFAULT_DISK_FLOORS,
+  services: readonly string[] = SERVICES,
+): Check[] {
   const checks: Check[] = [];
   const { env } = facts;
   const prebuilt = Boolean(env?.MELETE_IMAGE_TAG?.trim());
@@ -174,8 +182,8 @@ export function judgeStatus(facts: StatusFacts, floors: DiskFloors = DEFAULT_DIS
     });
   else {
     const byName = new Map(facts.services.map((service) => [service.service, service]));
-    const notStarted = SERVICES.filter((name) => !byName.has(name));
-    const states = SERVICES.flatMap((name) => {
+    const notStarted = services.filter((name) => !byName.has(name));
+    const states = services.flatMap((name) => {
       const service = byName.get(name);
       return service ? [service] : [];
     });
@@ -185,7 +193,7 @@ export function judgeStatus(facts: StatusFacts, floors: DiskFloors = DEFAULT_DIS
     const starting = states.filter(
       (service) => service.state === 'running' && service.health === 'starting',
     );
-    if (notStarted.length === SERVICES.length)
+    if (notStarted.length === services.length)
       checks.push({ level: 'fail', name: 'Services', detail: 'Not started.', fix: `Run ${start}` });
     else if (notStarted.length > 0 || broken.length > 0)
       checks.push({
@@ -207,7 +215,7 @@ export function judgeStatus(facts: StatusFacts, floors: DiskFloors = DEFAULT_DIS
         detail: `Still starting: ${starting.map((service) => service.service).join(', ')}`,
         fix: 'Wait a minute and run this again.',
       });
-    else checks.push({ level: 'ok', name: 'Services', detail: `${SERVICES.join(', ')} healthy` });
+    else checks.push({ level: 'ok', name: 'Services', detail: `${services.join(', ')} healthy` });
   }
 
   const address = `http://localhost:${webPort(env)}`;

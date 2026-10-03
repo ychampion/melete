@@ -1,6 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose substitutions, not templates.
 import { describe, expect, test } from 'bun:test';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { judgeCheck, runCheck } from './commands/check.ts';
 import { readInstallation } from './installation.ts';
@@ -9,6 +9,8 @@ import { temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
 const contract = (deployDir: string, value: object) =>
   writeFileSync(join(deployDir, 'melete.deploy.json'), JSON.stringify({ contract: 1, ...value }));
+
+const EXTERNAL_URL = `postgres://melete:${'e'.repeat(32)}@db.example.net:5432/melete?sslmode=require`;
 
 const judge = (deployDir: string) => judgeCheck(readInstallation(deployDir, 'linux'));
 const find = (deployDir: string, id: string) => judge(deployDir).find((result) => result.id === id);
@@ -148,12 +150,14 @@ describe('melete check', () => {
 
   test('a contract asking for what this checkout cannot run fails closed', () => {
     const deployDir = temporaryDeployDir();
-    writeEnv(deployDir);
+    // An older checkout, from before the external database file.
+    rmSync(join(deployDir, 'docker-compose.external-db.yml'));
+    writeEnv(deployDir, { DATABASE_URL: EXTERNAL_URL });
     contract(deployDir, {
       database: { external: true },
       cells: { hosts: ['tcp+tls://cells-1:2376'] },
     });
-    expect(failed(deployDir)).toEqual(['database.supported', 'cells.supported']);
+    expect(failed(deployDir)).toEqual(['compose.files', 'database.supported', 'cells.supported']);
   });
 
   test('an invalid contract fails, and no contract only warns', () => {

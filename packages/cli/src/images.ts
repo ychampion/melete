@@ -10,6 +10,14 @@ import type { Run } from './context.ts';
 
 export const REVISION_LABEL = 'org.opencontainers.image.revision';
 
+/**
+ * A full commit hash, the only revision the command passes to git. A label is
+ * the image publisher's text: anything else in it could be read by git as an
+ * option or a ref to move to.
+ */
+export const isCommit = (value: string | null | undefined): boolean =>
+  typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
+
 export type RemoteImage = {
   ref: string;
   /** The digest `docker pull` fetches: the index's, or the manifest's when there is no index. */
@@ -127,10 +135,15 @@ export function inspectRemote(
   const diffIds = config.rootfs.diff_ids;
   if (diffIds.length !== layers.length)
     return { error: `${ref}'s layer list and configuration disagree.` };
+  const label = config.config?.Labels?.[REVISION_LABEL] ?? null;
+  if (label !== null && !isCommit(label))
+    return {
+      error: `${ref} names the commit it was built from as ${JSON.stringify(label.slice(0, 80))}, which is not a 40-character commit hash, so it is not used.`,
+    };
   return {
     ref,
     digest: manifest.digest,
-    revision: config.config?.Labels?.[REVISION_LABEL] ?? null,
+    revision: label,
     layers: layers.map((layer, index) => ({ diffId: diffIds[index] ?? '', size: layer.size ?? 0 })),
   };
 }
@@ -146,7 +159,10 @@ const toLocal = (row: InspectRow): LocalImage => ({
   id: row.Id ?? '',
   repoDigests: row.RepoDigests ?? [],
   layers: row.RootFS?.Layers ?? [],
-  revision: row.Config?.Labels?.[REVISION_LABEL] ?? null,
+  // A label that is not a commit hash is no revision this command can use.
+  revision: isCommit(row.Config?.Labels?.[REVISION_LABEL])
+    ? (row.Config?.Labels?.[REVISION_LABEL] ?? null)
+    : null,
 });
 
 /** The engine's facts about images by reference or id; a missing one is left out. */

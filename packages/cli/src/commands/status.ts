@@ -9,6 +9,7 @@ import {
   gatherStatus,
   judgeStatus,
   MIN_FREE_BYTES,
+  SERVICES,
 } from '../../../../deploy/scripts/status.ts';
 import type { Context } from '../context.ts';
 import { composeFiles, type DeployConfig } from '../deploy-config.ts';
@@ -22,6 +23,10 @@ export const diskFloors = (config: DeployConfig): DiskFloors => ({
   failBelowBytes: config.disk.min_free_mb * MB,
   warnBelowBytes: MIN_FREE_BYTES,
 });
+
+/** The long-running services the installation runs: postgres only when its database is the bundled one. */
+export const statusServices = (config: DeployConfig): string[] =>
+  SERVICES.filter((service) => !(config.database.external && service === 'postgres'));
 
 /** The Compose options status.ts adds to its own `-f deploy/docker-compose.yml`. */
 export function statusComposeArgs(deployDir: string, config: DeployConfig): string[] {
@@ -50,7 +55,9 @@ export async function runStatus(context: Context, json: boolean): Promise<ExitCo
   );
   const results = [
     judgeContract(installation),
-    ...judgeStatus(facts, diskFloors(installation.config)).map(asResult),
+    ...judgeStatus(facts, diskFloors(installation.config), statusServices(installation.config)).map(
+      asResult,
+    ),
   ];
   const value = report('status', results);
   context.out(

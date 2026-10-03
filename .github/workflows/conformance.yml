@@ -256,3 +256,154 @@ jobs:
       - name: Stop the stack
         if: always()
         run: docker compose -f deploy/docker-compose.yml down -v --remove-orphans
+
+  # A cloud VM's stack: the database and the bucket are services elsewhere, reached over the
+  # network as a managed Postgres and an S3-compatible store are. Two containers on the runner's
+  # own address stand in for them, outside every network of the stack. Then the replacement
+  # runbook: back up, lose the host and the database, restore from the steps restore prints.
+  cloud-vm:
+    name: A stack on an external database and bucket, restored onto a new host (${{ matrix.tls }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # require: encrypted, the certificate unchecked. verify-full: checked against an authority this
+    # job creates, handed to the stack as an operator would hand it a provider's own.
+    strategy:
+      fail-fast: false
+      matrix:
+        tls: [require, verify-full]
+    env:
+      TLS_MODE: ${{ matrix.tls }}
+      COMPOSE: docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.external-db.yml -f deploy/docker-compose.blobs-s3.yml
+      # Keys of a throwaway store on this runner; they guard nothing else.
+      MELETE_BLOB_S3_ACCESS_KEY_ID: melete_ci
+      MELETE_BLOB_S3_SECRET_ACCESS_KEY: melete_ci_bucket_key
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Report and judge the host's Docker
+        run: |
+          docker version
+          docker compose version
+          bun run deploy/scripts/docker-preflight.ts
+      # The database accepts only TLS connections from outside its container, so a stack that
+      # reached it unencrypted would fail here rather than pass quietly.
+      - name: Start an external database and bucket
+        run: |
+          set -euo pipefail
+          host=$(hostname -I | awk '{print $1}')
+          certs="$RUNNER_TEMP/db-tls"
+          mkdir -p "$certs"
+          if [ "$TLS_MODE" = verify-full ]; then
+            # An authority of the job's own signs the server's certificate for the runner's address.
+            openssl req -new -x509 -days 1 -nodes -subj "/CN=melete ci authority" -keyout "$certs/ca.key" -out "$certs/ca.crt"
+            openssl req -new -nodes -subj "/CN=$host" -keyout "$certs/server.key" -out "$certs/server.csr"
+            printf 'subjectAltName=IP:%s\n' "$host" > "$certs/san.ext"
+            openssl x509 -req -days 1 -in "$certs/server.csr" -CA "$certs/ca.crt" -CAkey "$certs/ca.key" -CAcreateserial -extfile "$certs/san.ext" -out "$certs/server.crt"
+            cp "$certs/ca.crt" deploy/config/database-ca.pem
+            echo "MELETE_DATABASE_CA_FILE=/etc/melete/database-ca.pem" >> "$GITHUB_ENV"
+          else
+            openssl req -new -x509 -days 1 -nodes -subj "/CN=$host" -keyout "$certs/server.key" -out "$certs/server.crt"
+          fi
+          sudo chown 70:70 "$certs/server.key" "$certs/server.crt"
+          sudo chmod 600 "$certs/server.key"
+          password=$(openssl rand -hex 24)
+          echo "::add-mask::$password"
+          docker run -d --name cloud-db -e POSTGRES_USER=melete -e POSTGRES_PASSWORD="$password" -e POSTGRES_DB=melete \
+            -v "$certs:/tls:ro" -p "$host:55432:5432" \
+            postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73 \
+            -c ssl=on -c ssl_cert_file=/tls/server.crt -c ssl_key_file=/tls/server.key
+          docker run -d --name cloud-bucket -e MINIO_ROOT_USER="$MELETE_BLOB_S3_ACCESS_KEY_ID" \
+            -e MINIO_ROOT_PASSWORD="$MELETE_BLOB_S3_SECRET_ACCESS_KEY" -e MINIO_DEFAULT_BUCKETS=melete-blobs \
+            -p "$host:59000:9000" \
+            bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+          for _ in $(seq 60); do docker exec cloud-db pg_isready -U melete -d melete && break; sleep 2; done
+          docker exec cloud-db sh -c 'printf "local all all trust\nhostssl all all all scram-sha-256\n" > "$PGDATA/pg_hba.conf"'
+          docker exec cloud-db psql -U melete -d melete -c 'select pg_reload_conf()'
+          for _ in $(seq 60); do curl -fsS "http://$host:59000/minio/health/ready" && break; sleep 2; done
+          echo "BUCKET_HOST=$host" >> "$GITHUB_ENV"
+          echo "DATABASE_URL=postgres://melete:$password@$host:55432/melete?sslmode=$TLS_MODE" >> "$GITHUB_ENV"
+      - name: Configure the installation for them
+        run: |
+          set -euo pipefail
+          bun run deploy/scripts/configure.ts --fake
+          chmod 600 deploy/.env
+          bun run melete set --from-env DATABASE_URL MELETE_BLOB_S3_ACCESS_KEY_ID MELETE_BLOB_S3_SECRET_ACCESS_KEY
+          bun run melete set MELETE_BLOB_S3_BUCKET=melete-blobs "MELETE_BLOB_S3_ENDPOINT=http://$BUCKET_HOST:59000"
+          if [ -n "${MELETE_DATABASE_CA_FILE:-}" ]; then bun run melete set "MELETE_DATABASE_CA_FILE=$MELETE_DATABASE_CA_FILE"; fi
+          printf '{"contract":1,"images":{"registry":null,"tag":"local","channel":"local"},"database":{"external":true},"blobs":{"store":"s3","bucket":"melete-blobs","endpoint":"http://%s:59000"}}\n' "$BUCKET_HOST" > deploy/melete.deploy.json
+          bun run melete check | tee cloud-report.txt
+      - name: Build and start the stack
+        run: |
+          docker compose -f deploy/docker-compose.yml build
+          $COMPOSE up -d --no-build --wait --wait-timeout 300
+          $COMPOSE ps --all
+      - name: The stack runs on the external database and reaches the bucket
+        run: |
+          set -euo pipefail
+          # The bundled postgres stays off.
+          test -z "$($COMPOSE ps -q postgres)"
+          bun run melete doctor --json > doctor.json || true
+          jq -e '[.results[] | select(.id | startswith("database."))] | length == 3 and all(.level == "ok")' doctor.json | tee -a cloud-report.txt
+          bun run melete status --json > status.json || true
+          jq -e '[.results[] | select(.id == "status.services" or .id == "status.api") | .level] == ["ok", "ok"]' status.json | tee -a cloud-report.txt
+          curl -fsS http://127.0.0.1:3101/api/health | jq -e '.database == "ok"'
+          # Every migration ran on the external server, over TLS.
+          journal=$(jq '.entries | length' apps/melete/drizzle/meta/_journal.json)
+          test "$(docker exec cloud-db psql -U melete -d melete -Atc 'select count(*) from drizzle.__drizzle_migrations')" = "$journal"
+          test "$(docker exec cloud-db psql -U melete -d melete -Atc "select count(*) from pg_stat_ssl s join pg_stat_activity a using (pid) where a.datname = 'melete' and s.ssl")" -gt 0
+          if [ "$TLS_MODE" = verify-full ]; then
+            # libpq in the client checked the certificate against the authority (a wrong one is refused).
+            if $COMPOSE run --rm --no-deps -T database-client sh -c 'PGSSLROOTCERT=/etc/ssl/cert.pem exec psql --dbname="$DATABASE_URL" -Atc "select 1"'; then
+              echo "::error::the client reached the database with the public authorities, so the server certificate was not checked"
+              exit 1
+            fi
+            test "$($COMPOSE exec -T melete printenv NODE_EXTRA_CA_CERTS)" = /etc/melete/database-ca.pem
+          fi
+          # The service is handed the bucket and reaches it.
+          test "$($COMPOSE exec -T melete printenv MELETE_BLOB_STORE)" = s3
+          $COMPOSE exec -T melete bun -e 'const r = await fetch(`${process.env.MELETE_BLOB_S3_ENDPOINT}/minio/health/ready`); process.exit(r.ok ? 0 : 1)'
+      - name: Back up, lose the host and the database, and restore from the printed steps
+        run: |
+          set -euo pipefail
+          docker exec cloud-db psql -U melete -d melete -c "create table ci_restore_marker (note text); insert into ci_restore_marker values ('before the backup')"
+          mkdir -p -m 700 "$RUNNER_TEMP/backups"
+          bun run melete backup --dir "$RUNNER_TEMP/backups" | tee -a cloud-report.txt
+          backup=$(ls -d "$RUNNER_TEMP"/backups/melete-* | tail -1)
+          # A new host: the stack and every volume go. A new, empty database at the provider.
+          $COMPOSE down --volumes
+          docker exec cloud-db psql -U melete -d postgres -c 'drop database melete' -c 'create database melete'
+          bun run melete restore "$backup" --plan --json > restore.json
+          jq -e '[.results[] | .level] | all(. == "ok")' restore.json
+          # The steps an operator runs, as printed; the closing status is judged below instead.
+          jq -r '.steps[]' restore.json | grep -v '^bun run melete status$' > restore.sh
+          tee -a cloud-report.txt < restore.sh
+          bash -euo pipefail restore.sh
+          test "$(docker exec cloud-db psql -U melete -d melete -Atc 'select note from ci_restore_marker')" = 'before the backup'
+          curl -fsS http://127.0.0.1:3101/api/health | jq -e '.database == "ok"'
+          # The journal came back writable by the service, so forgetting still works there.
+          $COMPOSE exec -T melete sh -c 'test -w /data/restrictions'
+      - name: Collect the stack logs
+        if: failure()
+        run: |
+          $COMPOSE logs --no-color --tail=2000 > compose-logs.txt
+          $COMPOSE ps --all >> compose-logs.txt
+          docker logs cloud-db >> compose-logs.txt 2>&1 || true
+      - name: Keep the report and the logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cloud-vm-${{ matrix.tls }}-${{ github.run_id }}
+          path: |
+            cloud-report.txt
+            compose-logs.txt
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Stop the stack
+        if: always()
+        run: |
+          $COMPOSE down -v --remove-orphans
+          docker rm -f cloud-db cloud-bucket

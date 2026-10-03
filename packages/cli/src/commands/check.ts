@@ -3,11 +3,20 @@
  * start safely, judged from the files alone. It reads deploy/melete.deploy.json,
  * deploy/.env and the Compose files, and asks neither Docker nor the network.
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { readEnv } from '../../../../apps/melete/src/env.ts';
 import { type ComposeFile, checkCompose } from '../../../../deploy/scripts/compose-check.ts';
 import { judgeModel } from '../../../../deploy/scripts/status.ts';
 import type { Context } from '../context.ts';
-import { DEFAULT_REGISTRY, DEPLOY_FILE, OVERLAY_FILES } from '../deploy-config.ts';
+import {
+  BLOBS_S3_FILE,
+  DEFAULT_REGISTRY,
+  DEPLOY_FILE,
+  type DeployConfig,
+  EXTERNAL_DB_FILE,
+  OVERLAY_FILES,
+} from '../deploy-config.ts';
 import {
   deployFilePresent,
   envImageTag,
@@ -224,8 +233,10 @@ function judgeContractAgainstEnv(installation: Installation): Result[] {
             fix: `Update the checkout to a release that has it, or turn it off in ${DEPLOY_FILE}.`,
           },
     );
-  if (config.database.external)
-    overlay('an external database', 'docker-compose.external-db.yml', 'database');
+  if (config.database.external) overlay('an external database', EXTERNAL_DB_FILE, 'database');
+  results.push(...judgeDatabaseUrl(config, env, installation.deployDir));
+  if (config.blobs.store === 's3') overlay('an S3-compatible blob store', BLOBS_S3_FILE, 'blobs');
+  results.push(...judgeBlobs(config, env));
   if (config.cells.hosts.length > 0)
     overlay('remote cell hosts', 'docker-compose.cells.yml', 'cells');
   for (const name of config.overlays)
@@ -235,6 +246,151 @@ function judgeContractAgainstEnv(installation: Installation): Result[] {
         level: 'fail',
         detail: `The ${name} overlay needs deploy/${OVERLAY_FILES[name]}, which is missing.`,
       });
+  return results;
+}
+
+/** The TLS modes that refuse a connection the server will not encrypt. */
+const TLS_MODES = new Set(['require', 'verify-ca', 'verify-full']);
+
+/**
+ * Where DATABASE_URL points, judged against `database.external`. Only the host
+ * is ever named: the URL holds the password.
+ */
+export function judgeDatabaseUrl(
+  config: DeployConfig,
+  env: Record<string, string>,
+  deployDir: string | null = null,
+): Result[] {
+  let url: URL;
+  try {
+    url = new URL(env.DATABASE_URL?.trim() ?? '');
+  } catch {
+    return config.database.external
+      ? [
+          {
+            id: 'database.external_url',
+            level: 'fail',
+            detail: 'DATABASE_URL is not a postgres:// URL.',
+            fix: 'Export the URL your provider gives in this terminal and run bun run melete set --from-env DATABASE_URL.',
+          },
+        ]
+      : [];
+  }
+  const bundled = url.hostname === 'postgres';
+  if (!config.database.external)
+    return bundled
+      ? []
+      : [
+          {
+            id: 'database.external_url',
+            level: 'warn',
+            detail: `DATABASE_URL names ${url.hostname}, but ${DEPLOY_FILE} has database.external false, so the bundled postgres runs beside it unused, and backups read the bundled one.`,
+            fix: `Set "database": { "external": true } in ${DEPLOY_FILE}.`,
+          },
+        ];
+  if (bundled)
+    return [
+      {
+        id: 'database.external_url',
+        level: 'fail',
+        detail: `${DEPLOY_FILE} asks for an external database, but DATABASE_URL still names the bundled postgres, which then stays off.`,
+        fix: 'Export the URL your provider gives in this terminal and run bun run melete set --from-env DATABASE_URL.',
+      },
+    ];
+  const mode = url.searchParams.get('sslmode') ?? '';
+  const VERIFY_FULL =
+    'End DATABASE_URL with ?sslmode=verify-full, then set it again with bun run melete set --from-env DATABASE_URL. For a provider authority of its own, put its certificate in deploy/config/ and set MELETE_DATABASE_CA_FILE to /etc/melete/<file>.';
+  const results: Result[] = [
+    { id: 'database.external_url', level: 'ok', detail: `The database is at ${url.hostname}.` },
+    !TLS_MODES.has(mode)
+      ? {
+          id: 'database.tls',
+          level: 'fail',
+          detail: `DATABASE_URL ${mode ? `has sslmode=${mode}, which` : 'sets no sslmode, so it'} would let the connection to ${url.hostname} go unencrypted.`,
+          fix: VERIFY_FULL,
+        }
+      : mode === 'require'
+        ? {
+            id: 'database.tls',
+            level: 'warn',
+            detail: `DATABASE_URL has sslmode=require: the connection to ${url.hostname} is encrypted, and the server's certificate is accepted without a check, so a machine in between could pose as the database.`,
+            fix: VERIFY_FULL,
+          }
+        : {
+            id: 'database.tls',
+            level: 'ok',
+            detail: `DATABASE_URL asks for TLS and checks the server (sslmode=${mode}).`,
+          },
+  ];
+  const caFile = env.MELETE_DATABASE_CA_FILE?.trim() ?? '';
+  if (caFile) {
+    const inConfig = /^\/etc\/melete\/[A-Za-z0-9._/-]+$/.test(caFile) && !caFile.includes('..');
+    const present =
+      inConfig && deployDir !== null
+        ? existsSync(join(deployDir, 'config', caFile.slice('/etc/melete/'.length)))
+        : inConfig;
+    results.push(
+      present
+        ? {
+            id: 'database.ca_file',
+            level: 'ok',
+            detail: `The server's certificate is checked against ${caFile}.`,
+          }
+        : {
+            id: 'database.ca_file',
+            level: 'fail',
+            detail: inConfig
+              ? `MELETE_DATABASE_CA_FILE names ${caFile}, and deploy/config/ has no such file.`
+              : `MELETE_DATABASE_CA_FILE names ${caFile}; the containers see deploy/config/ at /etc/melete, so it must be a path there.`,
+            fix: 'Put the provider certificate in deploy/config/, and set MELETE_DATABASE_CA_FILE=/etc/melete/<file>.',
+          },
+    );
+  }
+  return results;
+}
+
+/** The bucket settings deploy/.env holds, judged against the contract's `blobs`. */
+export function judgeBlobs(config: DeployConfig, env: Record<string, string>): Result[] {
+  const value = (name: string) => env[name]?.trim() ?? '';
+  const store = value('MELETE_BLOB_STORE') || 'local';
+  if (config.blobs.store === 'local')
+    return store === 'local'
+      ? []
+      : [
+          {
+            id: 'blobs.matches_env',
+            level: 'fail',
+            detail: `deploy/.env sets MELETE_BLOB_STORE=${store}, but ${DEPLOY_FILE} keeps blobs on the artifacts volume.`,
+            fix: `Describe the bucket under "blobs" in ${DEPLOY_FILE}, or run bun run melete set MELETE_BLOB_STORE=local.`,
+          },
+        ];
+  const { bucket, endpoint, region } = config.blobs;
+  const differs = [
+    ['MELETE_BLOB_S3_BUCKET', bucket],
+    ['MELETE_BLOB_S3_ENDPOINT', endpoint ?? ''],
+    ...(region ? [['MELETE_BLOB_S3_REGION', region] as const] : []),
+  ].filter(([name, wanted]) => value(name as string) !== wanted);
+  const results: Result[] = [
+    differs.length === 0
+      ? {
+          id: 'blobs.matches_env',
+          level: 'ok',
+          detail: `Blobs go to the bucket ${bucket}${endpoint ? ` at ${endpoint}` : ''}.`,
+        }
+      : {
+          id: 'blobs.matches_env',
+          level: 'fail',
+          detail: `${DEPLOY_FILE} and deploy/.env name different buckets: ${differs.map(([name]) => name).join(', ')} differ.`,
+          fix: `Run ${differs.map(([name, wanted]) => `bun run melete set ${name}=${wanted}`).join(' and ')}.`,
+        },
+  ];
+  if (endpoint?.startsWith('http://'))
+    results.push({
+      id: 'blobs.tls',
+      level: 'warn',
+      detail: `${endpoint} is plain HTTP, so the blobs cross the network unencrypted.`,
+      fix: 'Use the https:// address, unless the store runs on this machine or a private network.',
+    });
   return results;
 }
 

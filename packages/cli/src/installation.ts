@@ -5,7 +5,7 @@
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { parse } from 'yaml';
+import { parse, type Tags } from 'yaml';
 import { parseEnvFile } from '../../../deploy/scripts/provider-settings.ts';
 import {
   channelOf,
@@ -54,6 +54,21 @@ export type Installation = {
   missing: Missing[];
 };
 
+/**
+ * Compose's merge tags: `!override` replaces what the files before it say, and
+ * `!reset` removes it. They are read as the value they tag, so a file that uses
+ * them parses without a warning.
+ */
+const MERGE_TAGS: Tags = ['!override', '!reset'].flatMap((tag) => [
+  { tag, collection: 'map' as const, identify: () => false, resolve: (value: unknown) => value },
+  { tag, collection: 'seq' as const, identify: () => false, resolve: (value: unknown) => value },
+  { tag, identify: () => false, resolve: (value: string) => value },
+]) as Tags;
+
+/** A Compose file's text as a document. */
+export const parseCompose = (text: string): ComposeDocument =>
+  parse(text, { customTags: MERGE_TAGS }) as ComposeDocument;
+
 /** The tag Compose runs: MELETE_IMAGE_TAG, or `local` when it is empty. */
 export const envImageTag = (env: Record<string, string>): string =>
   env.MELETE_IMAGE_TAG?.trim() || 'local';
@@ -101,7 +116,7 @@ export function readInstallation(
   const missing: Missing[] = [];
   const compose = composeFiles(deployDir, config).map((file): ComposeRead => {
     try {
-      const raw = parse(readFileSync(file, 'utf8')) as ComposeDocument;
+      const raw = parseCompose(readFileSync(file, 'utf8'));
       return { file, raw, resolved: interpolateDocument(raw, env ?? {}, missing) };
     } catch (error) {
       return {

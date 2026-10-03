@@ -1,5 +1,6 @@
 /**
- * `melete backup [--estimate] [--with-volumes] [--dir <path>] [--to ssh://host:/path]`
+ * `melete backup [--estimate] [--with-volumes] [--dir <path>] [--to ssh://host:/path]
+ *                [--encrypt | --encrypt-to <age recipient>]`
  *
  * By default the backup is online and small: the database as a custom-format
  * dump, checked with `pg_restore --list` while it is written, the restriction
@@ -16,21 +17,44 @@
  *
  * The restriction journal is kept per backup, so a restore never pairs an old
  * journal with a newer database: restore keeps the newest journal there is.
+ *
+ * deploy/.env is stored without MELETE_MASTER_KEY, which seals every credential
+ * the database holds: a set carries only the key's fingerprint
+ * (master-key.fingerprint), and a restore asks for the key, which the operator
+ * keeps apart from the backups. The rest of deploy/.env still holds service
+ * keys; unencrypted, a set is protected by its file modes alone, and the
+ * command says so each time. `--encrypt-to <age
+ * recipient>` encrypts every part with age to that public key; `--encrypt`
+ * encrypts every part with gpg (AES-256) under the passphrase in
+ * MELETE_BACKUP_PASSPHRASE. Each part is encrypted before it is written, and
+ * SHA256SUMS lists the encrypted files, so a backup is checked without opening it.
  */
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Context, Endpoint, Source } from '../context.ts';
+import { clientCommand, databaseShell, psqlLine } from '../database.ts';
 import { composeCommand, DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
 import { lastSwitched, readHistory } from '../history.ts';
 import { readInstallation, shellOverrideMessage, shellOverrides } from '../installation.ts';
 import { LockRefusal, withLock } from '../lock.ts';
+import { FINGERPRINT_FILE, masterKeyFingerprint, withoutMasterKey } from '../master-key.ts';
+import { installationSecrets, redact } from '../redact.ts';
 import { EXIT, type ExitCode, type Result, renderReport, report } from '../schema.ts';
 
 const MB = 1024 ** 2;
 
 export const BACKUP_USAGE =
-  'Usage: bun run melete backup [--estimate] [--with-volumes] [--dir <path>] [--to ssh://host:/path]';
+  'Usage: bun run melete backup [--estimate] [--with-volumes] [--dir <path>] [--to ssh://host:/path] [--encrypt | --encrypt-to <age recipient>]';
 
 export class BackupRefusal extends Error {}
 
@@ -41,7 +65,56 @@ export type BackupOptions = {
   estimate: boolean;
   withVolumes: boolean;
   destination: Destination | null;
+  /** `passphrase` for --encrypt, a recipient for --encrypt-to; null for none. */
+  encrypt: 'passphrase' | { recipient: string } | null;
 };
+
+/** How each part is encrypted: age to a recipient, or gpg under a passphrase file. */
+export type Encryption =
+  | { kind: 'age'; recipient: string }
+  | { kind: 'gpg'; passphraseFile: string };
+
+/** The file name ending each encrypted part carries. */
+export const encryptedSuffix = (encryption: Encryption | null) =>
+  encryption === null ? '' : encryption.kind === 'age' ? '.age' : '.gpg';
+
+/** An age public key, or an SSH public key age accepts. */
+const AGE_RECIPIENT = /^(age1[0-9a-z]{20,}|ssh-(ed25519|rsa) [A-Za-z0-9+/]+=*)$/;
+
+/** The encrypting command, reading the plaintext on stdin; `$1` is the recipient or the passphrase file. */
+const encryptor = (encryption: Encryption) =>
+  encryption.kind === 'age'
+    ? 'age -r "$1"'
+    : 'gpg --batch --quiet --pinentry-mode loopback --passphrase-file "$1" --symmetric --cipher-algo AES256';
+
+/**
+ * A sink that encrypts before the destination: into a new private file
+ * (noclobber, umask 077), or into the command that writes it elsewhere.
+ */
+export function encryptingSink(encryption: Encryption, sink: Endpoint): Endpoint {
+  const argument = encryption.kind === 'age' ? encryption.recipient : encryption.passphraseFile;
+  if ('file' in sink)
+    return {
+      command: [
+        'bash',
+        '-c',
+        `set -o pipefail -o noclobber; umask 077; ${encryptor(encryption)} > "$2"`,
+        'bash',
+        argument,
+        sink.file,
+      ],
+    };
+  return {
+    command: [
+      'bash',
+      '-c',
+      `set -o pipefail; ${encryptor(encryption)} | "$\{@:2}"`,
+      'bash',
+      argument,
+      ...sink.command,
+    ],
+  };
+}
 
 /**
  * `ssh://host:/path` or `ssh://user@host:~/path`. Both halves are limited to
@@ -57,7 +130,12 @@ export function parseSshTarget(value: string): SshTarget {
 }
 
 export function backupOptions(args: readonly string[]): BackupOptions {
-  const options: BackupOptions = { estimate: false, withVolumes: false, destination: null };
+  const options: BackupOptions = {
+    estimate: false,
+    withVolumes: false,
+    destination: null,
+    encrypt: null,
+  };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? '';
     const value = () => {
@@ -71,7 +149,15 @@ export function backupOptions(args: readonly string[]): BackupOptions {
     else if (arg === '--with-volumes') options.withVolumes = true;
     else if (arg === '--dir') options.destination = { kind: 'dir', dir: value() };
     else if (arg === '--to') options.destination = { kind: 'ssh', target: parseSshTarget(value()) };
-    else throw new BackupRefusal(`${arg} is not a backup option. ${BACKUP_USAGE}`);
+    else if (arg === '--encrypt') options.encrypt = 'passphrase';
+    else if (arg === '--encrypt-to') {
+      const recipient = value();
+      if (!AGE_RECIPIENT.test(recipient))
+        throw new BackupRefusal(
+          `${recipient.slice(0, 24)}... is not an age recipient: use an age1... public key, or an ssh-ed25519 or ssh-rsa public key.`,
+        );
+      options.encrypt = { recipient };
+    } else throw new BackupRefusal(`${arg} is not a backup option. ${BACKUP_USAGE}`);
   }
   return options;
 }
@@ -94,15 +180,6 @@ const sshCommand = (target: SshTarget, script: string) => [
   'BatchMode=yes',
   target.host,
   script,
-];
-
-const psql = (sql: string) => [
-  'exec',
-  '-T',
-  'postgres',
-  'sh',
-  '-c',
-  `exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "${sql}"`,
 ];
 
 /** The services that write to the database or the volumes. */
@@ -137,12 +214,13 @@ export type Estimate = {
 export function measureBackup(
   context: Context,
   compose: readonly string[],
+  config: DeployConfig,
   withVolumes: boolean,
 ): Estimate {
   const run = context.run;
   return {
     databaseBytes: number(
-      run([...compose, ...psql('select pg_database_size(current_database())')]),
+      run(psqlLine(compose, config, 'select pg_database_size(current_database())')),
     ),
     journalBytes: duBytes(
       run([...compose, 'exec', '-T', 'melete', 'du', '-sk', '/data/restrictions']),
@@ -184,14 +262,18 @@ export async function takeBackup(
   config: DeployConfig,
   destination: Destination,
   withVolumes: boolean,
+  encryption: Encryption | null = null,
 ): Promise<BackupRun> {
   const compose = composeCommand(context.deployDir, config);
+  const suffix = encryptedSuffix(encryption);
   const name = `melete-${stamp(context.now())}`;
   const results: Result[] = [];
   const sums: string[] = [];
   let location: string;
   let sink: (file: string) => Endpoint;
   let remove: () => void;
+  /** The sha256 of a part as stored, read back where it was written. */
+  let storedHash: (file: string) => Promise<string | null>;
 
   if (destination.kind === 'dir') {
     const base = destination.dir;
@@ -201,6 +283,10 @@ export async function takeBackup(
     const created = location;
     sink = (file) => ({ file: join(created, file) });
     remove = () => rmSync(created, { recursive: true, force: true });
+    storedHash = async (file) => {
+      const hashed = await context.stream({ file: join(created, file) }, []);
+      return hashed.ok ? hashed.sha256 : null;
+    };
   } else {
     const { target } = destination;
     location = `ssh://${target.host}:${target.path}/${name}`;
@@ -228,15 +314,39 @@ export async function takeBackup(
     remove = () => {
       context.run(sshCommand(target, `rm -rf ${target.path}/${name}`));
     };
+    storedHash = async (file) => {
+      const output = context.run(sshCommand(target, `sha256sum ${target.path}/${name}/${file}`));
+      const hash = output.stdout.trim().split(/\s+/)[0] ?? '';
+      return output.code === 0 && /^[a-f0-9]{64}$/.test(hash) ? hash : null;
+    };
   }
 
-  const part = async (id: string, file: string, source: Source, extra: Endpoint[] = []) => {
-    const outcome = await context.stream(source, [sink(file), ...extra]);
+  const secrets = installationSecrets(context.deployDir);
+  // The master key never enters the set: deploy.env is stored without it.
+  const stripped = withoutMasterKey(readFileSync(join(context.deployDir, '.env'), 'utf8'));
+  const part = async (id: string, plainFile: string, source: Source, extra: Endpoint[] = []) => {
+    // SHA256SUMS itself stays readable, so a backup is checked without its key.
+    const encrypt =
+      encryption !== null && plainFile !== 'SHA256SUMS' && plainFile !== FINGERPRINT_FILE;
+    const file = encrypt ? `${plainFile}${suffix}` : plainFile;
+    const destination = encrypt && encryption ? encryptingSink(encryption, sink(file)) : sink(file);
+    const outcome = await context.stream(source, [destination, ...extra]);
     if (!outcome.ok) {
-      results.push({ id, level: 'fail', detail: `${file}: ${outcome.detail}` });
+      // A database error can repeat the URL or part of it; it never reaches output.
+      results.push({ id, level: 'fail', detail: redact(`${file}: ${outcome.detail}`, secrets) });
       return false;
     }
-    sums.push(`${outcome.sha256}  ${file}`);
+    // Encrypted, the stream saw the plaintext: the sum is of what was stored.
+    const stored = encrypt ? await storedHash(file) : outcome.sha256;
+    if (stored === null) {
+      results.push({
+        id,
+        level: 'fail',
+        detail: `${file} could not be read back after it was written.`,
+      });
+      return false;
+    }
+    sums.push(`${stored}  ${file}`);
     results.push({
       id,
       level: 'ok',
@@ -249,24 +359,18 @@ export async function takeBackup(
     (await part(
       'backup.database',
       'database.dump',
-      {
-        command: [
-          ...compose,
-          'exec',
-          '-T',
-          'postgres',
-          'sh',
-          '-c',
-          'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom',
-        ],
-      },
+      { command: databaseShell(compose, config, (db) => `exec pg_dump ${db} --format=custom`) },
       // Read back as it is written: a dump pg_restore cannot list is no backup.
-      [{ command: [...compose, 'exec', '-T', 'postgres', 'pg_restore', '--list'] }],
+      [{ command: [...compose, ...clientCommand(config), 'pg_restore', '--list'] }],
     )) &&
     (await part('backup.journal', `restrictions-${name.slice('melete-'.length)}.tar`, {
       command: [...compose, 'cp', 'melete:/data/restrictions', '-'],
     })) &&
-    (await part('backup.env', 'deploy.env', { file: join(context.deployDir, '.env') }));
+    (await part('backup.env', 'deploy.env', { bytes: new TextEncoder().encode(stripped.text) })) &&
+    (stripped.key === null ||
+      (await part('backup.master_key', FINGERPRINT_FILE, {
+        bytes: new TextEncoder().encode(`${masterKeyFingerprint(stripped.key)}\n`),
+      })));
   if (ok && existsSync(join(context.deployDir, 'config')))
     ok = await part('backup.config', 'config.tar', {
       command: ['tar', '-C', context.deployDir, '-cf', '-', 'config'],
@@ -322,6 +426,39 @@ export async function takeBackup(
     remove();
     return { ok: false, location, results };
   }
+  results.push(
+    stripped.key === null
+      ? {
+          id: 'backup.master_key',
+          level: 'warn',
+          detail:
+            'deploy/.env sets no MELETE_MASTER_KEY, so the backup records no fingerprint to check a key against.',
+        }
+      : {
+          id: 'backup.master_key_apart',
+          level: 'warn',
+          detail:
+            'MELETE_MASTER_KEY is not in this backup; it holds only its fingerprint. Restoring needs the key itself, so keep a copy of it apart from the backups (a password manager, for example).',
+        },
+  );
+  results.push(
+    encryption === null
+      ? {
+          id: 'backup.plaintext',
+          level: 'warn',
+          detail:
+            "This backup holds the database and deploy/.env's service keys unencrypted. Only its file modes (0700, 0600) protect it: anyone who can read it, or a copy of it, can read the conversations and memory in the database.",
+          fix: 'Keep it on storage only you can read, or back up with --encrypt-to <age recipient> or --encrypt (with MELETE_BACKUP_PASSPHRASE set).',
+        }
+      : {
+          id: 'backup.encrypted',
+          level: 'ok',
+          detail:
+            encryption.kind === 'age'
+              ? 'Every part is encrypted with age to the recipient given; the matching identity opens it.'
+              : 'Every part is encrypted with gpg (AES-256) under the passphrase given.',
+        },
+  );
 
   if (destination.kind === 'dir') {
     // The backup the last deploy took is the one rollback restores from: it is never pruned.
@@ -343,6 +480,38 @@ export async function takeBackup(
       });
   }
   return { ok: true, location, results };
+}
+
+/**
+ * Runs `take` with the encryption the options ask for, after checking its tool
+ * is here. A passphrase goes into a private file only for the run, so it is
+ * never on a command line, and the file is removed afterwards.
+ */
+export async function withEncryption<T>(
+  context: Context,
+  encrypt: BackupOptions['encrypt'],
+  take: (encryption: Encryption | null) => Promise<T>,
+): Promise<T> {
+  if (encrypt === null) return await take(null);
+  const tool = encrypt === 'passphrase' ? 'gpg' : 'age';
+  if (context.run([tool, '--version']).code !== 0)
+    throw new BackupRefusal(
+      `${tool} is not installed here, so the backup cannot be encrypted with it. Install ${tool}${tool === 'age' ? ' (https://age-encryption.org)' : ''}, then run this again. Nothing was changed.`,
+    );
+  if (encrypt !== 'passphrase') return await take({ kind: 'age', recipient: encrypt.recipient });
+  const passphrase = context.environment.MELETE_BACKUP_PASSPHRASE ?? '';
+  if (passphrase.length < 12)
+    throw new BackupRefusal(
+      'MELETE_BACKUP_PASSPHRASE holds no passphrase of 12 characters or more. Set it with read -rs MELETE_BACKUP_PASSPHRASE && export MELETE_BACKUP_PASSPHRASE, then run this again. Nothing was changed.',
+    );
+  const dir = mkdtempSync(join(tmpdir(), 'melete-backup-'));
+  try {
+    const passphraseFile = join(dir, 'passphrase');
+    writeFileSync(passphraseFile, passphrase, { mode: 0o600, flag: 'wx' });
+    return await take({ kind: 'gpg', passphraseFile });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 export async function runBackup(
@@ -382,7 +551,7 @@ export async function runBackup(
   };
 
   if (options.estimate) {
-    const estimate = measureBackup(context, compose, options.withVolumes);
+    const estimate = measureBackup(context, compose, config, options.withVolumes);
     const free = destinationFree(context, destination);
     const results: Result[] = [];
     const size = (bytes: number) => `${Math.ceil(bytes / MB)} MB`;
@@ -391,7 +560,9 @@ export async function runBackup(
         ? {
             id: 'backup.database_mb',
             level: 'fail',
-            detail: 'The database did not answer; is postgres running?',
+            detail: config.database.external
+              ? 'The database did not answer; run bun run melete doctor to see why.'
+              : 'The database did not answer; is postgres running?',
           }
         : {
             id: 'backup.database_mb',
@@ -455,7 +626,9 @@ export async function runBackup(
 
   try {
     return await withLock(context.deployDir, 'backup', async () => {
-      const outcome = await takeBackup(context, config, destination, options.withVolumes);
+      const outcome = await withEncryption(context, options.encrypt, (encryption) =>
+        takeBackup(context, config, destination, options.withVolumes, encryption),
+      );
       const results: Result[] = [
         ...outcome.results,
         outcome.ok
