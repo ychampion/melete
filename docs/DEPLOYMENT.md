@@ -163,7 +163,7 @@ bun run melete history
 | `logs [service ...]` | `docker compose logs` with the deploy file's overlay files; takes `--since`, `--tail`, `--follow` and `--timestamps`. |
 | `deploy [--tag <tag>]` | Updates an installation that runs the published images, in the order [Update](#update) describes. `--dry-run` prints the plan, `--checkout` checks out the commit the images were built from, `--allow-compose-mismatch` runs them with the checkout as it is, and `--skip-backup` or `--backup-to ssh://host:/path` change the backup taken before new migrations. |
 | `rollback [--dry-run]` | Goes back to the images the stack ran before the last deploy. When that deploy ran migrations, it prints the database restore instead and exits 3. |
-| `backup` | Backs up the database, the restriction journal and the settings into a new private directory under `backup.dir`, as [Backup and restore](#backup-and-restore) describes. `--estimate`, `--with-volumes`, `--dir <path>` and `--to ssh://host:/path` change what and where. |
+| `backup` | Backs up the database, the restriction journal and the settings into a new private directory under `backup.dir`, as [Backup and restore](#backup-and-restore) describes. `--estimate`, `--with-volumes`, `--dir <path>` and `--to ssh://host:/path` change what and where; `--encrypt-to <age recipient>` or `--encrypt` encrypt every part. The master key is never stored in a backup. |
 | `restore <backup> [--plan]` | Checks a backup against its `SHA256SUMS` and prints the steps that restore it. |
 | `upgrade <version>` | For an installation that builds its images: runs `deploy/scripts/upgrade.ts` ([Upgrading between releases](UPGRADING.md)) with the deploy file's overlay files. |
 | `history [--json]` | The deploys, rollbacks and upgrades recorded in `deploy/.melete/history.jsonl`. |
@@ -1490,15 +1490,50 @@ bun run melete backup --estimate     # sizes, against the free space where the b
 bun run melete backup                # database, journal and settings, online
 bun run melete backup --with-volumes # also /data and /work, with the writers stopped
 bun run melete backup --to ssh://backup-host:/srv/melete-backups
+bun run melete backup --encrypt-to age1...  # every part encrypted with age to that public key
 bun run melete restore ~/melete-backups/melete-20261002T101500Z
 ```
+
+**Keep the master key apart from the backups.** `MELETE_MASTER_KEY` in
+`deploy/.env` seals every credential the database holds: connected accounts,
+provider keys added in the app, and the rest. A backup stores `deploy/.env`
+without it and records only its fingerprint, so a backup alone, or the machine
+it is streamed to, cannot open those credentials. Store a copy of the key
+somewhere else you control, such as a password manager. Restoring needs it:
+`restore` accepts the key in the installation's `deploy/.env`, or exported as
+`MELETE_MASTER_KEY` in the terminal (`read -rs MELETE_MASTER_KEY && export
+MELETE_MASTER_KEY`), checks it against the fingerprint, and refuses one that
+differs. Without that key, the restored database's credentials cannot be
+opened, and each account has to be connected again.
+
+**Encryption.** Unencrypted, a backup holds the database (conversations and
+memory) and the other keys in `deploy/.env`, protected by its file modes
+(0700 directory, 0600 files); every backup says so when it is made.
+`--encrypt-to <recipient>` encrypts each part with [age](https://age-encryption.org)
+to an `age1...` public key, or an `ssh-ed25519` or `ssh-rsa` one, before it is
+written, here or over SSH. `--encrypt` encrypts each part with gpg (AES-256)
+under the passphrase exported as `MELETE_BACKUP_PASSPHRASE`. The tool must be
+installed on the machine taking the backup. `SHA256SUMS` lists the encrypted
+files, so `restore` checks a set without opening it, and its steps decrypt
+each part as it is loaded: for age, export `MELETE_BACKUP_IDENTITY` as the path
+of the identity file that opens it; gpg asks for the passphrase.
+
+**The S3 bucket is outside the backup.** With `"blobs": { "store": "s3" }`, the
+files the service keeps by their content live in the bucket, and a backup holds
+only the database's references to them. Protect the bucket at the provider:
+turn on versioning (with a lifecycle rule that expires old versions after the
+time you keep backups), or copy it on the same schedule as the backups, for
+example with `rclone sync` or `aws s3 sync` to a second bucket. A restored
+database expects the files as they were when it was backed up, so keep the
+bucket's history at least as long as the oldest backup you would restore.
 
 Each backup is a new directory, `melete-<time>`, under `backup.dir` from the
 deploy file (`~/melete-backups` by default), readable only by the account that made it. It
 holds the database as a custom-format dump, read back with `pg_restore --list`
 while it is written; the restriction journal on its own, under a timestamped
-name; `deploy/.env`, `deploy/config/` and `deploy/melete.deploy.json`; and a
-`SHA256SUMS` list. The newest `backup.keep` backups are kept. The default is
+name; `deploy/.env` without the master key, the key's fingerprint
+(`master-key.fingerprint`), `deploy/config/` and `deploy/melete.deploy.json`;
+and a `SHA256SUMS` list. The newest `backup.keep` backups are kept. The default is
 online and small, so the stack keeps running; `--with-volumes` stops the
 writers to archive the volumes and starts them again. `--to` streams every part
 to another machine over SSH and keeps nothing on this disk, for a host short on

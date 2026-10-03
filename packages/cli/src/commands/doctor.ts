@@ -25,6 +25,7 @@ import type { Context, PortProbe } from '../context.ts';
 import { databaseShell } from '../database.ts';
 import { composeCommand, type DeployConfig } from '../deploy-config.ts';
 import { type Installation, publishedPorts, readInstallation } from '../installation.ts';
+import { databaseSecrets, redact } from '../redact.ts';
 import { EXIT, type ExitCode, type Result, renderReport, report } from '../schema.ts';
 import { judgeContract } from './check.ts';
 
@@ -394,7 +395,11 @@ export async function gatherDoctor(
           ? parseDatabaseAnswer(answer.stdout)
           : {
               answered: false,
-              detail: answer.stderr.trim().split('\n').at(-1)?.trim() || `exit ${answer.code}`,
+              // libpq can repeat part of the URL in its error; it never reaches output.
+              detail: redact(
+                answer.stderr.trim().split('\n').at(-1)?.trim() || `exit ${answer.code}`,
+                databaseSecrets(installation.env),
+              ),
             };
     } else
       facts.database = {

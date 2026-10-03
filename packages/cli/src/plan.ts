@@ -375,7 +375,18 @@ export type RestoreContext = {
   journalArchive: string | null;
   /** The database is DATABASE_URL's server rather than the bundled postgres volume. */
   externalDatabase?: boolean;
+  /** How the backup set was encrypted; null or left out for a plain one. */
+  encryption?: 'age' | 'gpg' | null;
 };
+
+export const encryptedSuffixOf = (encryption: 'age' | 'gpg' | null | undefined) =>
+  encryption === 'age' ? '.age' : encryption === 'gpg' ? '.gpg' : '';
+
+/** The command that prints a backup part's plaintext; age reads the identity file MELETE_BACKUP_IDENTITY names. */
+export const decryptCommand = (encryption: 'age' | 'gpg', file: string) =>
+  encryption === 'age'
+    ? `age -d -i "$MELETE_BACKUP_IDENTITY" ${quote(file)}`
+    : `gpg --quiet --decrypt ${quote(file)}`;
 
 /**
  * The commands that put the database back to a backup, as shell lines. Only the
@@ -385,9 +396,23 @@ export type RestoreContext = {
  */
 export function restoreSteps(context: RestoreContext): string[] {
   const compose = shellLine(context.compose);
-  const dump = context.backupDir ? `${context.backupDir}/database.dump` : '<backup>/database.dump';
+  const encryption = context.encryption ?? null;
+  const suffix = encryptedSuffixOf(encryption);
+  const dump = context.backupDir
+    ? `${context.backupDir}/database.dump${suffix}`
+    : `<backup>/database.dump${suffix}`;
+  // A plain part is read from its file; an encrypted one is decrypted into the command.
+  const from = (file: string) => (encryption ? '' : ` < ${quote(file)}`);
+  const via = (file: string) => (encryption ? `${decryptCommand(encryption, file)} | ` : '');
   return [
     `cd ${quote(context.root)}`,
+    ...(encryption === 'age'
+      ? [
+          '# The backup is encrypted with age: export MELETE_BACKUP_IDENTITY=<the identity file that opens it>.',
+        ]
+      : encryption === 'gpg'
+        ? ['# The backup is encrypted with gpg: each decrypt asks for its passphrase.']
+        : []),
     '# Stop everything that writes. Never add --volumes: the volumes are the installation.',
     `${compose} stop ${context.writers.join(' ')}`,
     ...(context.previous
@@ -406,20 +431,20 @@ export function restoreSteps(context: RestoreContext): string[] {
           "# (create it at the provider, or use the provider's restore to a time before the backup),",
           '# point DATABASE_URL at it with bun run melete set --from-env DATABASE_URL, then load the dump.',
           '# Keep the restriction journal volume: the newer journal is replayed at startup.',
-          `${compose} run --rm --no-deps -T ${DATABASE_CLIENT} sh -c '${CLIENT_TLS}exec pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error' < ${quote(dump)}`,
+          `${via(dump)}${compose} run --rm --no-deps -T ${DATABASE_CLIENT} sh -c '${CLIENT_TLS}exec pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error'${from(dump)}`,
         ]
       : [
           `# Replace only the database volume. Keep ${context.project}_restrictions and every other volume:`,
           '# the newer journal is replayed at startup, so nothing forgotten since the backup comes back.',
           `docker volume rm ${context.project}_pgdata`,
           `${compose} up -d --no-build --wait postgres`,
-          `${compose} exec -T postgres sh -c 'exec pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges --exit-on-error' < ${quote(dump)}`,
+          `${via(dump)}${compose} exec -T postgres sh -c 'exec pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges --exit-on-error'${from(dump)}`,
         ]),
     ...(context.freshHost && context.journalArchive
       ? [
           '# A new machine has no journal yet: put back the newest one before the service starts.',
           `${compose} create melete`,
-          `${compose} cp -a - melete:/data < ${quote(context.journalArchive)}`,
+          `${via(context.journalArchive)}${compose} cp -a - melete:/data${from(context.journalArchive)}`,
         ]
       : []),
     '# Start only after the restore has finished.',

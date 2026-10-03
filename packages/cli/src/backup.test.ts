@@ -6,6 +6,7 @@ import { parseSshTarget, runBackup } from './commands/backup.ts';
 import { runRestore } from './commands/restore.ts';
 import { DEPLOY_FILE } from './deploy-config.ts';
 import { appendHistory } from './history.ts';
+import { masterKeyFingerprint } from './master-key.ts';
 import { temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
 const MB = 1024 ** 2;
@@ -59,10 +60,20 @@ describe('melete backup', () => {
       'config.tar',
       'database.dump',
       'deploy.env',
+      'master-key.fingerprint',
       DEPLOY_FILE,
       'restrictions-20261002T100000Z.tar',
     ]);
-    expect(readFileSync(join(dir, 'deploy.env'), 'utf8')).toBe(rig.envText);
+    // deploy.env is kept without the master key; the set holds only its fingerprint.
+    const kept = masterKey(rig.envText);
+    expect(readFileSync(join(dir, 'deploy.env'), 'utf8')).toBe(
+      rig.envText.replace(`MELETE_MASTER_KEY=${kept}`, 'MELETE_MASTER_KEY='),
+    );
+    for (const file of readdirSync(dir))
+      expect([file, readFileSync(join(dir, file), 'latin1').includes(kept)]).toEqual([file, false]);
+    expect(readFileSync(join(dir, 'master-key.fingerprint'), 'utf8').trim()).toBe(
+      masterKeyFingerprint(kept),
+    );
     if (posix) {
       expect(statSync(dir).mode & 0o777).toBe(0o700);
       for (const file of readdirSync(dir))
@@ -188,7 +199,7 @@ describe('melete restore', () => {
     });
     expect(await runRestore(context, [set, '--plan'], false)).toBe(0);
     const printed = context.printed();
-    expect(printed).toMatch(/ok\s+restore\.checksums\s+5 file\(s\) match/);
+    expect(printed).toMatch(/ok\s+restore\.checksums\s+6 file\(s\) match/);
     expect(printed).toContain('melete_restrictions stays as it is');
     expect(printed).toContain('docker volume rm melete_pgdata');
     expect(printed).toContain('melete-20261002T100000Z/database.dump');

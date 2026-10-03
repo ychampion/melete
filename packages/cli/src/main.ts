@@ -37,6 +37,7 @@ export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [opt
   rollback [--dry-run]       Back to the images before the last deploy, or the restore steps if migrations ran
   backup [--estimate]        Back up the database, journal and settings to backup.dir, a new private directory
          [--with-volumes] [--dir <path>] [--to ssh://host:/path]
+         [--encrypt | --encrypt-to <age recipient>]
   restore <backup> [--plan]  Check a backup's checksums and print the steps that restore it
   upgrade <version>          Upgrade an installation that builds its images (deploy/scripts/upgrade.ts)
   history [--json]           The deploys, rollbacks and upgrades this installation has run

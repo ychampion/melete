@@ -30,7 +30,7 @@ import {
   recordedMigrations,
   runDeploy,
 } from './deploy.ts';
-import { verifyBackup } from './restore.ts';
+import { backupEncryption, verifyBackup } from './restore.ts';
 
 export const ROLLBACK_USAGE =
   'Usage: bun run melete rollback [--dry-run] [--wait-timeout <seconds>]';
@@ -117,6 +117,8 @@ export async function runRollback(
       freshHost: false,
       journalArchive: null,
       externalDatabase: installation.config.database.external,
+      encryption:
+        last.backup && !last.backup.startsWith('ssh://') ? backupEncryption(last.backup) : null,
     });
     const reason = !delta.known
       ? `The database's migrations could not be compared with ${tag}'s`

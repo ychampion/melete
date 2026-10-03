@@ -14,11 +14,66 @@ import { basename, dirname, join, resolve } from 'node:path';
 import type { Context } from '../context.ts';
 import { composeCommand } from '../deploy-config.ts';
 import { readInstallation, shellOverrideMessage, shellOverrides } from '../installation.ts';
-import { restoreSteps } from '../plan.ts';
+import { FINGERPRINT_FILE, MASTER_KEY, masterKeyFingerprint } from '../master-key.ts';
+import { decryptCommand, encryptedSuffixOf, restoreSteps } from '../plan.ts';
 import { EXIT, type ExitCode, type Result, renderReport, report } from '../schema.ts';
 import { BACKUP_NAME, expandHome, writersOf } from './backup.ts';
 
 export const RESTORE_USAGE = 'Usage: bun run melete restore <backup directory> [--plan]';
+
+/**
+ * Whether the operator has supplied the master key this backup was made with:
+ * deploy/.env's, or MELETE_MASTER_KEY in this terminal, each judged by its
+ * fingerprint. A set made before keys were kept apart carries no fingerprint
+ * and no check applies.
+ */
+export function judgeMasterKey(
+  backup: string,
+  env: Record<string, string> | null,
+  environment: Readonly<Record<string, string | undefined>>,
+): { result: Result | null; setFromEnvironment: boolean } {
+  const path = join(backup, FINGERPRINT_FILE);
+  if (!existsSync(path)) return { result: null, setFromEnvironment: false };
+  const recorded = readFileSync(path, 'utf8').trim();
+  const here = env?.[MASTER_KEY]?.trim();
+  if (here && masterKeyFingerprint(here) === recorded)
+    return {
+      result: {
+        id: 'restore.master_key',
+        level: 'ok',
+        detail: 'deploy/.env holds the master key this backup was made with.',
+      },
+      setFromEnvironment: false,
+    };
+  const supplied = environment[MASTER_KEY]?.trim();
+  if (supplied && masterKeyFingerprint(supplied) === recorded)
+    return {
+      result: {
+        id: 'restore.master_key',
+        level: 'ok',
+        detail: 'MELETE_MASTER_KEY in this terminal is the key this backup was made with.',
+      },
+      setFromEnvironment: true,
+    };
+  return {
+    result: {
+      id: 'restore.master_key',
+      level: 'fail',
+      detail: supplied
+        ? 'MELETE_MASTER_KEY in this terminal is not the key this backup was made with, so the credentials in its database could not be opened. Nothing was changed.'
+        : 'This backup holds no master key, and neither deploy/.env nor this terminal has the one it was made with. Nothing was changed.',
+      fix: 'Export the master key you kept apart from the backups (read -rs MELETE_MASTER_KEY && export MELETE_MASTER_KEY), then run this again.',
+    },
+    setFromEnvironment: false,
+  };
+}
+
+/** How a backup set was encrypted, from its dump's name; null for a plain one. */
+export function backupEncryption(backup: string): 'age' | 'gpg' | null {
+  if (existsSync(join(backup, 'database.dump.age'))) return 'age';
+  if (existsSync(join(backup, 'database.dump.gpg'))) return 'gpg';
+  return null;
+}
 
 /** The newest restriction journal archive in this backup and the backups beside it. */
 export function newestJournal(backup: string): string | null {
@@ -34,7 +89,7 @@ export function newestJournal(backup: string): string | null {
   const archives = [...new Set(sets)].flatMap((set) => {
     try {
       return readdirSync(set)
-        .filter((file) => /^restrictions-\d{8}T\d{6}Z\.tar$/.test(file))
+        .filter((file) => /^restrictions-\d{8}T\d{6}Z\.tar(\.age|\.gpg)?$/.test(file))
         .map((file) => join(set, file));
     } catch {
       return [];
@@ -59,7 +114,8 @@ export async function verifyBackup(context: Context, backup: string): Promise<st
       problems.push(`SHA256SUMS has a line it cannot read`);
     else listed.set(file, sum);
   }
-  if (!listed.has('database.dump')) problems.push('SHA256SUMS does not list database.dump');
+  const dump = `database.dump${encryptedSuffixOf(backupEncryption(backup))}`;
+  if (!listed.has(dump)) problems.push(`SHA256SUMS does not list ${dump}`);
   for (const file of readdirSync(backup))
     if (file !== 'SHA256SUMS' && !listed.has(file))
       problems.push(`SHA256SUMS does not list ${file}`);
@@ -83,7 +139,11 @@ export async function runRestore(
     return EXIT.refused;
   }
   const backup = resolve(expandHome(paths[0] ?? ''));
-  if (!existsSync(join(backup, 'database.dump')) || !statSync(backup).isDirectory()) {
+  const encryption = backupEncryption(backup);
+  if (
+    !existsSync(join(backup, `database.dump${encryptedSuffixOf(encryption)}`)) ||
+    !statSync(backup).isDirectory()
+  ) {
     context.err(
       `${backup} is not a backup made by bun run melete backup: it has no database.dump.\n`,
     );
@@ -137,6 +197,14 @@ export async function runRestore(
           detail: `${config.project}_restrictions stays as it is: it is newer than the backup.`,
         },
   );
+  // The master key is supplied apart from the set; it must be the one the database was sealed with.
+  const keyCheck = judgeMasterKey(backup, installation.env, context.environment);
+  if (keyCheck.result) results.push(keyCheck.result);
+  if (keyCheck.result?.level === 'fail') {
+    const refused = report('restore', results);
+    context.out(json ? `${JSON.stringify(refused, null, 2)}\n` : renderReport(refused));
+    return EXIT.refused;
+  }
   const steps = restoreSteps({
     root: context.root,
     project: config.project,
@@ -147,10 +215,18 @@ export async function runRestore(
     freshHost,
     journalArchive: journal,
     externalDatabase: config.database.external,
+    encryption,
   });
+  if (keyCheck.setFromEnvironment)
+    steps.unshift(
+      '# The master key is kept apart from backups: with MELETE_MASTER_KEY still exported in this terminal,',
+      `bun run melete set --from-env ${MASTER_KEY}`,
+    );
   if (!installation.env)
     steps.unshift(
-      `cp -p ${join(backup, 'deploy.env')} deploy/.env  # its keys open the sealed credentials in the database`,
+      encryption === null
+        ? `cp -p ${join(backup, 'deploy.env')} deploy/.env  # its keys open the sealed credentials in the database`
+        : `(umask 077 && ${decryptCommand(encryption, join(backup, `deploy.env${encryptedSuffixOf(encryption)}`))} > deploy/.env)  # its keys open the sealed credentials in the database`,
     );
   const value = report('restore', results);
   if (json) context.out(`${JSON.stringify({ ...value, steps }, null, 2)}\n`);
