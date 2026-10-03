@@ -135,8 +135,9 @@ export function listedVisionByModel(body: unknown): Map<string, boolean> {
 export const MAX_CONTEXT_IMAGES = 3;
 
 /**
- * The most pictures one request may carry. What a person attaches reaches the
- * engine as text, so the only pictures are the screenshots it keeps.
+ * The most pictures one request may carry: the screenshots the engine keeps,
+ * and the pictures a person attached, which the gateway shows in their place
+ * only while the request has room for them.
  */
 export const MAX_REQUEST_IMAGES = MAX_CONTEXT_IMAGES;
 

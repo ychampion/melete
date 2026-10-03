@@ -24,6 +24,10 @@
     "./mention": {
       "types": "./src/mention.ts",
       "default": "./src/mention.ts"
+    },
+    "./attachments": {
+      "types": "./src/attachments.ts",
+      "default": "./src/attachments.ts"
     }
   },
   "scripts": {

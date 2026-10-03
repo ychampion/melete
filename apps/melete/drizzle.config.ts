@@ -24,6 +24,7 @@ export default defineConfig({
     './src/storage/schema.ts',
     './src/apps/schema.ts',
     './src/ops/schema.ts',
+    './src/attachments/schema.ts',
   ],
   out: './drizzle',
   strict: true,
