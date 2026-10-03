@@ -184,7 +184,7 @@ const GUEST_ROUTES = [
  * routes, and an app's or a preview's files, each authorised by its own token.
  */
 const SIGNED_OUT_ROUTES = [
-  /^GET \/(health|setup)$/,
+  /^GET \/(health|health\/detail|setup)$/,
   /^POST \/(setup|login|password-reset|password-reset\/consume)$/,
   /^POST \/signin\/[a-z-]+(\/consume)?$/,
   /^POST \/invites\/(view|accept)$/,
