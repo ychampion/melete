@@ -545,6 +545,44 @@ holds only placeholders, the egress CA's certificate and per-command tokens.
   GraphQL answer of errors with no data, are recorded as possibly landed, never
   as nothing changed. Signed download links GitHub returns reach the computer
   as sent; each opens one object for minutes.
+- **AWS.** AWS signs requests with the key itself, so the relay signs each one
+  again: the computer signs with a placeholder key, the relay reads that
+  signature only for its service and region, and signs with the stored key or
+  with a session of the role the service assumes for that command (named
+  after it). A request signed with any other key, carrying its own session
+  token or presigned is refused; unsigned requests go out without the account.
+  A request's operation is believed only where its service reads it, from a
+  table generated from the AWS SDK's service definitions: `Action` for query
+  services, the service's own `X-Amz-Target` for JSON services, method and path
+  for REST services; a name in the wrong place, or two names, is refused, and
+  an unknown service asks for everything. Operations whose answer is a
+  credential (STS sessions, new IAM access keys, registry and database tokens,
+  GameLift access, S3 Express sessions, and any operation named as assuming a
+  role or getting, creating or generating credentials, a token or a presigned
+  sign-in link) are refused; other names that speak of a credential, token, key
+  pair, password or private key ask, and reading a stored secret asks. Every
+  answer to a signed request, but an S3 object's, is checked whole before the
+  computer sees it: one holding an AWS secret key or session token, an access,
+  refresh, identity or authorization token, a password, a client secret, a
+  private key or a `Secret` field is withheld and recorded (`the relay keeps an answer
+  holding a credential from the computer, and records it`). S3 is read by
+  method, bucket, key and subresource (`list and describe calls are reads, and
+  delete and run calls ask` runs the classifier over the requests the AWS SDK
+  builds for each operation). The approval binds the request as sent but for
+  the signing date, the SDK's request id and retry count and an idempotency
+  token the SDK makes up (blanked, with its name kept). Multipart parts pass
+  unasked only into an upload the same job started with an approval, within
+  10,000 parts and 64 GiB; its start and completion both ask. A signed request
+  to an EC2 instance's public name or a load balancer is refused. **Limits:**
+  chunk-signed uploads are refused; links AWS returns in an answer (Lambda's
+  code location) reach the computer as sent; other reads return what the
+  account may read, such as a Lambda function's environment variables; with
+  `connected_hosts_only`, the computer can reach resources others own under
+  `amazonaws.com`, sending them the account's key id and a short-lived session
+  token but never its secret. `aws in a real computer reads, asks before a change and
+  makes it once after approval, and the computer never holds the key` runs the
+  real `aws` command line in CI against a local stand-in that checks every
+  signature.
 
 ## Credentials, host and storage
 

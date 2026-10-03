@@ -55,7 +55,8 @@ Removing a space, or the connection, removes its containers and their volumes.
 ## What is in the container
 
 - Bash, coreutils, curl, git, jq, procps, unzip and xz; Python 3.12 with pip; GitHub's `gh`
-  2.83.2, pinned by checksum ([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github)).
+  2.83.2 and AWS's `aws` 2.37.8, each pinned by checksum
+  ([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github), [AWS](COMMAND-LINE-ACCESS.md#aws)).
   `pip install` falls back to the user's own directory, which persists.
 - A 1024x768 virtual display with a light window manager and Chromium, the same
   size as the live view.

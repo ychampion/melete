@@ -35,6 +35,14 @@ export type InterceptedRequest = {
   /** Lower-case names. Hop-by-hop, proxy, cookie and authorization headers are removed. */
   headers: Record<string, string>;
   body: Buffer;
+  /**
+   * The client's own `Authorization` header, which never travels upstream.
+   * An adapter that signs requests again reads it to tell what signed this
+   * one: the placeholder, or something else.
+   */
+  authorization?: string;
+  /** The job the command that sent it belongs to, when there is one. */
+  job?: string | null;
 };
 
 /** What a person reads on the approval card for one write. */
@@ -65,6 +73,11 @@ export type Classification =
        * runs of the same push). Left out, the body's exact bytes are bound.
        */
       boundBody?: JsonObject;
+      /**
+       * The adapter's own notes about the write, handed back to `receipt`
+       * and never part of what is approved.
+       */
+      memo?: JsonObject;
     }
   | { kind: 'refuse'; reason: string };
 
@@ -77,6 +90,26 @@ export type OutboundRequest = {
   target: string;
   headers: Record<string, string>;
   body: Buffer;
+  /**
+   * Further values the answer is redacted for, beside the account's own:
+   * credentials `authorize` derived from it for this request (a role
+   * session's keys).
+   */
+  redactions?: string[];
+};
+
+/**
+ * Why `authorize` could not add the account, in words the computer may read:
+ * never a secret, an account number or anything the service answered.
+ */
+export class AccountUnusable extends Error {}
+
+/** What `authorize` knows about the request beyond the request itself. */
+export type AuthorizeContext = {
+  /** The command the request belongs to (its action id), when there is one. */
+  command: string | null;
+  /** The client's own `Authorization` header, as in `InterceptedRequest`. */
+  authorization?: string;
 };
 
 export type UpstreamResponse = {
@@ -111,10 +144,31 @@ export interface CredentialAdapter<Config = unknown> {
    */
   standIns?(config: Config): string[];
   classify(request: InterceptedRequest, config: Config): Classification;
+  /**
+   * Headers that say nothing about what a request does and change on every
+   * run of the same command (a client's own request id, a signing date):
+   * forwarded without being bound into a write's approval, like the relay's
+   * own volatile set.
+   */
+  volatileHeaders?: readonly string[];
   /** The request with the account added: a header, or a signature. */
-  authorize(request: OutboundRequest, secret: string, config: Config): OutboundRequest;
+  authorize(
+    request: OutboundRequest,
+    secret: string,
+    config: Config,
+    context: AuthorizeContext,
+  ): OutboundRequest | Promise<OutboundRequest>;
   /** Every form of the secret that must never reach the computer. */
   redactions(secret: string): string[];
+  /**
+   * A check of the whole answer before the computer sees any of it: why it
+   * must be kept from the computer (it holds a credential), or null. Left
+   * out, or null for a request, answers pass as they come.
+   */
+  answerCheck?(
+    request: InterceptedRequest,
+    config: Config,
+  ): ((answer: UpstreamResponse) => string | null) | null;
   /** What the action's receipt keeps about a write, from the upstream answer. */
   receipt(write: ClassifiedWrite, upstream: UpstreamResponse): JsonObject;
   /**

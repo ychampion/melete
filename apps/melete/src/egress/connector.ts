@@ -35,6 +35,8 @@ export type ForwardResult =
       rejected?: string | null;
       /** Why it cannot be told whether the change took effect, although the service answered. */
       uncertain?: string | null;
+      /** The credential the answer held, so it was kept from the computer; the change still took effect. */
+      withheld?: string | null;
     }
   /** The request left and its answer was lost: it may have landed. */
   | { outcome: 'lost'; reason: string }

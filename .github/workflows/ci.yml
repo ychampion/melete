@@ -356,13 +356,20 @@ jobs:
       # Open egress needs the caller in a container on the same engine, as the service is in
       # the Compose deployment, so it can join each sandbox's network as its only way out.
       # git serves the GitHub test repository the computer clones and pushes through the relay.
+      # moto stands in for AWS (S3, STS and IAM) and checks every signature once the test has
+      # made its user, key, role and bucket with the six calls it lets through unsigned.
       - name: Reach the internet only through the service
         run: |
+          docker run -d --name melete-moto -e INITIAL_NO_AUTH_ACTION_COUNT=6 \
+            motoserver/moto:5.2.3@sha256:91fd602a21f49cf9eb82fdf474015a3c131d40104c8297ea6a2ca920708ae32c
+          moto_ip=$(docker inspect -f '{{.NetworkSettings.IPAddress}}' melete-moto)
+          for i in $(seq 1 60); do curl -sf -o /dev/null "http://$moto_ip:5000/moto-api/" && break; sleep 1; done
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD":/repo -w /repo \
             -e MELETE_SANDBOX_LIVE=docker \
             -e MELETE_SANDBOX_LIVE_OUT=/repo/sandbox-shots \
+            -e MELETE_LIVE_MOTO="http://$moto_ip:5000" \
             "oven/bun:$(cat .bun-version)" \
             sh -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null \
               && bun test apps/melete/src/sandbox/adapters/docker.live.test.ts --timeout=300000 --test-name-pattern 'open egress'"

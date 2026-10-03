@@ -9,8 +9,10 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { createDeviceConnector } from '../devices/connector.ts';
 import type { DeviceHub } from '../devices/hub.ts';
+import { awsAccount, awsAdapterConfig } from '../egress/adapters/aws.ts';
 import { githubAccount } from '../egress/adapters/github.ts';
 import { credentialAdapters } from '../egress/adapters/index.ts';
+import { parseAwsSecret, type StsOptions } from '../egress/aws-session.ts';
 import { createCommandLineConnector } from '../egress/connector.ts';
 import { egressRecorder } from '../egress/records.ts';
 import { egressCredentialsFromEnv } from '../egress/wiring.ts';
@@ -218,7 +220,7 @@ export type ConnectorOptions = {
   /** The operator's Microsoft client, as for Google; `tenant` is `common` unless named. */
   microsoft?: { client: AccountClient; tenant?: string; endpoints?: MicrosoftEndpoints };
   /** Where a command-line account's own check goes. Only a test replaces it. */
-  commandLine?: { fetch?: typeof fetch; githubApi?: string };
+  commandLine?: { fetch?: typeof fetch; githubApi?: string; awsSts?: StsOptions };
 };
 
 /**
@@ -484,7 +486,32 @@ export class ConnectorFactory {
                       : {}),
                   };
             }
-          : undefined;
+          : adapter === 'aws' && secretRef
+            ? async (): Promise<ConnectorHealth> => {
+                const checked = await this.secrets
+                  .withSecret(secretRef, row.spaceId, async (secret) =>
+                    awsAccount(
+                      parseAwsSecret(secret),
+                      awsAdapterConfig.parse(
+                        (row.configuration as { config?: unknown } | null)?.config,
+                      ),
+                      options.commandLine?.awsSts ?? {},
+                    ),
+                  )
+                  .catch(() => ({ ok: false as const, code: 'unavailable' as const }));
+                const checkedAt = new Date().toISOString();
+                return checked.ok
+                  ? { status: 'ok', detail: 'AWS answered.', checked_at: checkedAt }
+                  : {
+                      status: 'failing',
+                      detail: 'AWS did not answer for this account.',
+                      checked_at: checkedAt,
+                      ...(checked.code === 'credential_refused'
+                        ? { reason: 'credential_refused' as const }
+                        : {}),
+                    };
+              }
+            : undefined;
       return ownerOnly(createCommandLineConnector(adapter as never, health ? { health } : {}));
     }
     if (

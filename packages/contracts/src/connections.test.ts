@@ -281,6 +281,11 @@ function filled(descriptor: ConnectionKindDescriptor): Record<string, unknown> {
     if (field.input === 'string_list') return ['mcp_notes.search'];
     if (field.path.endsWith('source')) return '@example/notes-server';
     if (field.path === 'name') return 'NOTES_TOKEN';
+    // An AWS account's key, region and role, in the shapes IAM issues them.
+    if (field.path === 'credentials.access_key_id') return 'AKIAEXAMPLEKEY000001';
+    if (field.path === 'credentials.secret_access_key') return 'example/Secret+value0000000';
+    if (field.path.endsWith('.region')) return 'us-east-1';
+    if (field.path.endsWith('.role_arn')) return 'arn:aws:iam::123456789012:role/agent';
     return field.path.endsWith('id') || field.path === 'alias' ? 'notes' : 'value';
   };
   for (const item of descriptor.fixed) put(body, item.path, item.value);
@@ -345,11 +350,58 @@ describe('connection kind descriptors', () => {
     for (const descriptor of CONNECTION_KIND_DESCRIPTORS) {
       if (descriptor.kind === 'mcp' || descriptor.kind === 'mcp_stdio')
         expect(descriptor.scopes).toEqual([]);
-      else
+      else if (descriptor.kind === 'command_line') {
+        // Each command-line service offers its own read and write, out of the kind's.
+        const adapter = descriptor.fixed.find((item) => item.path === 'command_line.adapter');
+        expect(descriptor.scopes.map((scope) => scope.scope)).toEqual(
+          CONNECTION_KIND_SCOPES.command_line.filter((scope) =>
+            scope.startsWith(`egress.${String(adapter?.value)}_`),
+          ),
+        );
+      } else
         expect(descriptor.scopes.map((scope) => scope.scope)).toEqual([
           ...CONNECTION_KIND_SCOPES[descriptor.kind],
         ]);
     }
+  });
+});
+
+describe('an AWS account for the agent’s computer', () => {
+  const aws = (extra: Record<string, unknown> = {}, credentials?: unknown) => ({
+    label: 'AWS',
+    provider: 'command_line',
+    command_line: { adapter: 'aws', region: 'eu-west-1', ...extra },
+    credentials: credentials ?? {
+      access_key_id: 'AKIAEXAMPLEKEY000001',
+      secret_access_key: 'example/Secret+value0000000',
+    },
+  });
+
+  test('needs its key and a region, and takes a role only as an ARN', () => {
+    const installed = resolve(aws({ role_arn: 'arn:aws:iam::123456789012:role/agent' }));
+    expect(installed.ok ? installed.value : installed).toMatchObject({
+      kind: 'command_line',
+      config: {
+        adapter: 'aws',
+        region: 'eu-west-1',
+        role_arn: 'arn:aws:iam::123456789012:role/agent',
+      },
+      scopes: ['egress.aws_read', 'egress.aws_write'],
+    });
+    expect(resolve(aws({ region: undefined }))).toMatchObject({ ok: false });
+    expect(resolve(aws({}, { token: 'github_pat_x' }))).toMatchObject({ ok: false });
+    expect(resolve(aws({ external_id: 'ext-1' }))).toMatchObject({ ok: false });
+    expect(createConnectionRequest.safeParse(aws({ role_arn: 'admin' })).success).toBe(false);
+    expect(createConnectionRequest.safeParse(aws({ region: 'Earth' })).success).toBe(false);
+    // A GitHub account takes none of AWS's settings, and grants only GitHub's.
+    expect(
+      resolve({
+        ...aws(),
+        command_line: { adapter: 'github', region: 'eu-west-1' },
+        credentials: { token: 't' },
+      }),
+    ).toMatchObject({ ok: false });
+    expect(resolve({ ...aws(), scopes: ['egress.github_read'] })).toMatchObject({ ok: false });
   });
 });
 
@@ -510,7 +562,10 @@ describe('a CalDAV calendar', () => {
 });
 
 describe('providers whose servers are known', () => {
-  const providers = CONNECTION_KIND_DESCRIPTORS.filter((kind) => kind.id !== kind.kind);
+  // Mail and calendar providers; a second command-line service is its own form, not a provider.
+  const providers = CONNECTION_KIND_DESCRIPTORS.filter(
+    (kind) => kind.id !== kind.kind && kind.kind !== 'command_line',
+  );
 
   test('ask only for an address and an app password, or a feed address', () => {
     expect(providers.map((kind) => kind.id)).toEqual([
