@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SecureContextOptions } from 'node:tls';
 import { loadSkills } from '@melete/skills';
+import { gatewayAttachments } from '../attachments/model.ts';
 import {
   type ConfiguredConnection,
   configuredBrowserSessions,
@@ -9,6 +10,7 @@ import {
   readConnectionConfig,
 } from '../connectors/configured.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
+import { webSearchFromEnv } from '../connectors/web-search.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import { bindEgressAdmission } from '../egress/credentials.ts';
 import { type Env, parseBrokerBind } from '../env.ts';
@@ -22,16 +24,20 @@ import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
 import type { GatewayOptions } from '../gateway/index.ts';
 import { ModelSettingsService } from '../gateway/model-settings.ts';
+import { routingFromEnv } from '../gateway/routing.ts';
+import { type SpendingGuard, spendingFromEnv } from '../gateway/spending.ts';
 import { startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
+import type { BlobStore } from '../storage/blob.ts';
 import type { BrowserSessionService } from '../workers/browser/routes.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
 import type { ComposeExecutor } from './compose.ts';
 import { egressAdmission } from './egress-admission.ts';
 import { createInternalServer } from './internal-server.ts';
 import { configuredReviewGateway } from './review-gateway.ts';
+import { configuredSearchGateway } from './search-gateway.ts';
 import type { BrokerOptions, BrokerService } from './service.ts';
 import type { TrustResolver } from './trust.ts';
 
@@ -59,6 +65,10 @@ export async function startEffectBoundary(
     modelSettings?: ModelSettingsService;
     /** Long work's tools. */
     runs?: BrokerOptions['runs'];
+    /** The installation's spending caps, shared by every gateway of the service. */
+    spending?: SpendingGuard;
+    /** Where the files people send in chat are kept, for the gateway to show the model. */
+    blobs?: BlobStore;
   },
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -79,6 +89,15 @@ export async function startEffectBoundary(
   const browser = dependencies.browserSessions
     ? undefined
     : await configuredBrowserSessions({ sql: handle.sql, env, connections });
+  const spending = dependencies.spending ?? spendingFromEnv(handle.sql, env);
+  // The model's own web search, metered on the job, for a registry built here.
+  const search = dependencies.registry
+    ? undefined
+    : await configuredSearchGateway(handle.sql, env, dependencies.privacy, {
+        signIn,
+        settings: modelSettings,
+        spending,
+      });
   const registry =
     dependencies.registry ??
     (await connectorsFromEnv(handle.sql, env, {
@@ -86,16 +105,19 @@ export async function startEffectBoundary(
       browserSessions: dependencies.browserSessions ?? browser?.sessions,
       privateContext: ({ spaceId, agentId }, query) =>
         dependencies.privacy.marksPrivate(spaceId, agentId, query),
+      webSearch: webSearchFromEnv(env, { native: search?.backend }),
+      searchPrivacy: ({ jobId, query }) => dependencies.privacy.outsideSearchRefusal(jobId, query),
     }));
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
   let review: Awaited<ReturnType<typeof configuredReviewGateway>> | undefined;
+  const routing = routingFromEnv(env);
   try {
     review = await configuredReviewGateway(
       env,
       dependencies.privacy,
       dependencies.signIn ?? providerSignIn(handle.sql, env),
       env.MELETE_ENABLE_FAKE_PROVIDER ? dependencies.fakeProvider : undefined,
-      { settings: modelSettings },
+      { settings: modelSettings, spending },
     );
     const certificates = new Map<string, Pick<SecureContextOptions, 'key' | 'cert'>>();
     if (env.MELETE_GATEWAY_TLS_DIR) {
@@ -133,6 +155,16 @@ export async function startEffectBoundary(
       fake: env.MELETE_ENABLE_FAKE_PROVIDER ? dependencies.fakeProvider : undefined,
       connectTls: (host) => certificates.get(host),
       privacy: dependencies.privacy,
+      spending,
+      routes: (attempt) => modelSettings.attemptRoutes(routing, attempt),
+      reasoningEffort: env.MELETE_REASONING_EFFORT_AGENT,
+      ...(dependencies.blobs
+        ? {
+            attachments: gatewayAttachments(handle.sql, dependencies.blobs, (provider, model) =>
+              modelSettings.visionFor(provider, model),
+            ),
+          }
+        : {}),
       resolveAuthority: dependencies.resolveAuthority,
       resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
       resolveStandingGrant: resolvePersonGrant,
@@ -189,7 +221,11 @@ export async function startEffectBoundary(
             try {
               await browser?.pool.close();
             } finally {
-              await review?.close();
+              try {
+                await review?.close();
+              } finally {
+                await search?.close();
+              }
             }
           }
         }
@@ -205,7 +241,11 @@ export async function startEffectBoundary(
         try {
           await browser?.pool.close();
         } finally {
-          await review?.close();
+          try {
+            await review?.close();
+          } finally {
+            await search?.close();
+          }
         }
       }
     }

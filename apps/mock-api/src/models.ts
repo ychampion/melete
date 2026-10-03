@@ -20,6 +20,7 @@ import {
   startSignInResponse,
   testModelConnectionRequest,
   testModelConnectionResponse,
+  usageResponse,
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import type { z } from 'zod';
@@ -32,6 +33,8 @@ const LABELS: Record<ModelProvider, string> = {
   'openai-compatible': 'OpenAI-compatible endpoint',
   chatgpt: 'ChatGPT',
 };
+
+const round2 = (value: number) => Math.round(value * 100) / 100;
 
 const FIXTURE_MODELS: Record<string, string[]> = {
   anthropic: ['claude-fixture-large', 'claude-fixture-small'],
@@ -119,6 +122,72 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
   const body = async <T extends z.ZodType>(c: Context, schema: T) =>
     schema.safeParse(await c.req.json().catch(() => ({})));
   const now = () => new Date().toISOString();
+
+  // Model spending. `MELETE_MOCK_USAGE=warning` puts the person at 84% of this
+  // month's limit, `reached` past it; anything else is a quiet month.
+  app.get('/usage', (c) => {
+    const level = process.env.MELETE_MOCK_USAGE;
+    const today = new Date();
+    const monthStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+    const nextMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1));
+    const nextDay = new Date(
+      Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 1),
+    );
+    const spent = level === 'reached' ? 10.02 : level === 'warning' ? 8.4 : 2.15;
+    const month = { usd: spent, tokens: Math.round(spent * 310_000) };
+    const day = { usd: 0.62, tokens: 190_000 };
+    const resetDay = nextMonth.toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      timeZone: 'UTC',
+    });
+    const notice =
+      level === 'reached'
+        ? {
+            level: 'reached' as const,
+            period: 'month' as const,
+            scope: 'person' as const,
+            message: `This month's limit is reached; it resets on ${resetDay}.`,
+            resets_at: nextMonth.toISOString(),
+          }
+        : level === 'warning'
+          ? {
+              level: 'warning' as const,
+              period: 'month' as const,
+              scope: 'person' as const,
+              message: "You have used 84% of this month's model allowance.",
+              resets_at: nextMonth.toISOString(),
+            }
+          : null;
+    return send(c, usageResponse, {
+      month_start: monthStart.toISOString(),
+      month_resets_at: nextMonth.toISOString(),
+      day_resets_at: nextDay.toISOString(),
+      person: { month, day },
+      installation: { month, day },
+      limits: {
+        person: { month: { usd: 10, tokens: null }, day: { usd: null, tokens: null } },
+        installation: { month: { usd: 50, tokens: null }, day: { usd: null, tokens: null } },
+      },
+      notice,
+      models: [
+        {
+          provider: 'fireworks',
+          model: 'accounts/fireworks/models/deepseek-v4p1-flash',
+          calls: 412,
+          usd: round2(spent * 0.8),
+          tokens: Math.round(spent * 250_000),
+        },
+        {
+          provider: 'fireworks',
+          model: 'accounts/fireworks/models/llama-v3p1-8b-instruct',
+          calls: 1280,
+          usd: round2(spent * 0.2),
+          tokens: Math.round(spent * 60_000),
+        },
+      ],
+    });
+  });
 
   app.get('/model-settings', (c) => send(c, modelSettingsResponse, view()));
 

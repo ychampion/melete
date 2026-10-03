@@ -37,7 +37,24 @@ import {
   serviceModelSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
-import { type GatewayBudget, GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
+import {
+  type ModelRouting,
+  NO_ROUTING,
+  routingFromEnv,
+  serviceFallback,
+} from '../gateway/routing.ts';
+import {
+  replyOf,
+  type StructuredFormat,
+  strictObject,
+  withStructuredOutput,
+} from '../gateway/structured.ts';
+import {
+  type GatewayBudget,
+  GatewayError,
+  type GatewayPrincipal,
+  type GatewayProtocol,
+} from '../gateway/types.ts';
 
 export const COMPANION_LIMITS = {
   /** One aside is one call: a short answer, never a second opinion. */
@@ -80,6 +97,8 @@ export function pointToQuestion(
 export type CompanionCall = {
   spaceId: string;
   conversationId: string;
+  /** Who is talking; the aside counts against their spending limits. */
+  principalId?: string;
   request: VoiceAsideRequest;
   context: CompanionContext;
   signal?: AbortSignal;
@@ -90,7 +109,11 @@ export type CompanionCall = {
  * the provider answered with a refusal (nothing was generated), `unanswered`
  * when the call never came back (it may have been served).
  */
-export type CompanionResult = { answer: VoiceAside } | { failed: 'refused' | 'unanswered' };
+export type CompanionResult =
+  | { answer: VoiceAside }
+  | { failed: 'refused' | 'unanswered' }
+  /** A spending limit is reached; `message` says when it resets. */
+  | { failed: 'limit'; message: string };
 
 export interface VoiceCompanion {
   answer(call: CompanionCall): Promise<CompanionResult>;
@@ -140,23 +163,41 @@ export function companionInput(request: VoiceAsideRequest, context: CompanionCon
   });
 }
 
-/** The request body for the target's protocol. There is no tool in it, and no way to add one. */
+/**
+ * The aside's schema, for providers that hold an answer to one: the intent and
+ * the words to say. A provider without structured outputs is asked in prose,
+ * and `parseCompanionReply` reads whatever comes back.
+ */
+export const COMPANION_FORMAT: StructuredFormat = {
+  name: 'voice_aside',
+  schema: strictObject({
+    intent: { type: 'string', enum: ['talk', 'steer', 'stop', 'quiet'] },
+    say: { type: 'string' },
+  }),
+};
+
+/**
+ * The request body for the target's protocol, with the aside's schema where the
+ * provider reads one. There is no tool in it, and no way to add one.
+ */
 export function companionBody(target: ServiceModel, system: string, input: string) {
   const messages = [
     { role: 'system', content: system },
     { role: 'user', content: input },
   ];
   const protocol = protocolForApiMode(modelApiMode(target.provider, target.model));
-  return protocol === 'responses'
-    ? { model: target.model, input: messages, max_output_tokens: COMPANION_LIMITS.output_tokens }
-    : protocol === 'messages'
-      ? {
-          model: target.model,
-          system,
-          messages: [messages[1]],
-          max_tokens: COMPANION_LIMITS.output_tokens,
-        }
-      : { model: target.model, messages, max_tokens: COMPANION_LIMITS.output_tokens };
+  const plain: Record<string, unknown> =
+    protocol === 'responses'
+      ? { model: target.model, input: messages, max_output_tokens: COMPANION_LIMITS.output_tokens }
+      : protocol === 'messages'
+        ? {
+            model: target.model,
+            system,
+            messages: [messages[1]],
+            max_tokens: COMPANION_LIMITS.output_tokens,
+          }
+        : { model: target.model, messages, max_tokens: COMPANION_LIMITS.output_tokens };
+  return withStructuredOutput(plain, target, protocol, COMPANION_FORMAT);
 }
 
 const reply = z.object({
@@ -254,39 +295,19 @@ export function withoutClaims(text: string): string {
   return kept.filter(Boolean).join(' ');
 }
 
-const responsesReply = z.object({
-  output: z.array(
-    z.object({
-      type: z.string(),
-      content: z.array(z.object({ type: z.string(), text: z.string().optional() })).optional(),
-    }),
-  ),
-});
-const messagesReply = z.object({
-  content: z.array(z.object({ type: z.string(), text: z.string().optional() })),
-});
-const chatReply = z.object({
-  choices: z
-    .array(z.object({ message: z.object({ content: z.string().nullable().optional() }) }))
-    .min(1),
-});
-
 /** Only the text of a reply is read. A tool call in it, if a model made one, is ignored. */
-export function replyText(protocol: string, result: unknown): string {
-  if (protocol === 'responses')
-    return responsesReply
-      .parse(result)
-      .output.flatMap((item) => item.content ?? [])
-      .filter((item) => item.type === 'output_text')
-      .map((item) => item.text ?? '')
-      .join('');
-  if (protocol === 'messages')
-    return messagesReply
-      .parse(result)
-      .content.filter((item) => item.type === 'text')
-      .map((item) => item.text ?? '')
-      .join('');
-  return chatReply.parse(result).choices[0]?.message.content ?? '';
+export function replyText(protocol: GatewayProtocol, result: unknown): string {
+  return replyOf(protocol, result).text;
+}
+
+/**
+ * What a provider's reply means. One cut off at the output limit is never read
+ * out, even when what arrived parses: what it meant to say cannot be told.
+ */
+export function readCompanionReply(protocol: GatewayProtocol, result: unknown): VoiceAside {
+  const reply = replyOf(protocol, result);
+  if (reply.end === 'cut_off') return { intent: 'talk', say: CUT_OFF_LINE };
+  return parseCompanionReply(reply.text);
 }
 
 export type CompanionGatewayOptions = {
@@ -299,6 +320,12 @@ export type CompanionGatewayOptions = {
   fetch?: GatewayOptions['fetch'];
   /** The service's privacy router. Required: the companion carries the conversation's words. */
   privacy: GatewayOptions['privacy'];
+  /** The installation's spending caps. */
+  spending?: GatewayOptions['spending'];
+  /** The operator's fallbacks for a provider that limits or fails. */
+  routing?: ModelRouting;
+  /** How hard a reasoning model thinks on an aside. */
+  reasoningEffort?: GatewayOptions['reasoningEffort'];
 };
 
 /**
@@ -306,13 +333,18 @@ export type CompanionGatewayOptions = {
  * The caller closes it when the service stops.
  */
 export async function openVoiceCompanion(options: CompanionGatewayOptions) {
-  type Call = { spaceId: string; conversationId: string } & ServiceModel;
+  type Call = { spaceId: string; conversationId: string; principalId?: string } & ServiceModel;
   const tokens = new Map<string, Call>();
   const principals = new WeakMap<GatewayPrincipal, Call>();
   const budget: GatewayBudget = {
     async reserve(request) {
       const call = principals.get(request.principal);
-      if (!call || request.provider !== call.provider || request.model !== call.model)
+      if (
+        !call ||
+        !request.principal.allowedModels.some(
+          (allowed) => allowed.provider === request.provider && allowed.model === request.model,
+        )
+      )
         throw new GatewayError(403, 'voice_principal_denied');
       if (
         request.estimatedTokens > COMPANION_LIMITS.total_tokens ||
@@ -330,6 +362,8 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
     fake: options.fake,
     fetch: options.fetch,
     privacy: options.privacy,
+    spending: options.spending,
+    reasoningEffort: options.reasoningEffort,
     defaultProvider: options.provider,
     timeoutMs: COMPANION_LIMITS.timeout_ms,
     maxRequestBytes: 64 * 1024,
@@ -337,7 +371,9 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
     async authenticate(token) {
       const call = tokens.get(token);
       if (!call) throw new GatewayError(401, 'voice_principal_denied');
+      const fallback = serviceFallback(options.routing ?? NO_ROUTING, call);
       const principal: GatewayPrincipal = {
+        ...(call.principalId ? { actor: call.principalId } : {}),
         jobId: call.conversationId,
         attemptId: `voice:${token.slice(0, 8)}`,
         // The conversation's own privacy decides where its words may go.
@@ -351,7 +387,8 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
         revision: 0,
         maxRequests: 1,
         maxTokens: COMPANION_LIMITS.total_tokens,
-        allowedModels: [{ provider: call.provider, model: call.model }],
+        allowedModels: [{ provider: call.provider, model: call.model }, ...fallback],
+        ...(fallback.length ? { routes: { fallback } } : {}),
       };
       principals.set(principal, call);
       return principal;
@@ -375,7 +412,12 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
         companionInput(call.request, call.context),
       );
       const token = randomUUID();
-      tokens.set(token, { spaceId: call.spaceId, conversationId: call.conversationId, ...target });
+      tokens.set(token, {
+        spaceId: call.spaceId,
+        conversationId: call.conversationId,
+        ...(call.principalId ? { principalId: call.principalId } : {}),
+        ...target,
+      });
       try {
         const timeout = AbortSignal.timeout(COMPANION_LIMITS.timeout_ms + 1000);
         const response = await fetch(`${base}/providers/${target.provider}/v1/${protocol}`, {
@@ -391,8 +433,15 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
           redirect: 'error',
           signal: call.signal ? AbortSignal.any([call.signal, timeout]) : timeout,
         });
+        if (response.status === 402) {
+          const refused = (await response.json().catch(() => null)) as {
+            error?: { code?: string; message?: string };
+          } | null;
+          if (refused?.error?.code === 'spending_limit_reached' && refused.error.message)
+            return { failed: 'limit', message: refused.error.message };
+        }
         if (!response.ok) return { failed: 'refused' };
-        return { answer: parseCompanionReply(replyText(protocol, await response.json())) };
+        return { answer: readCompanionReply(protocol, await response.json()) };
       } catch {
         return { failed: 'unanswered' };
       } finally {
@@ -425,15 +474,21 @@ export function configuredVoiceCompanion(
     settings?: ModelSettingsService;
     signIn?: ProviderSignIn;
     fetch?: GatewayOptions['fetch'];
+    spending?: GatewayOptions['spending'];
   } = {},
 ) {
+  const routing = routingFromEnv(env);
   return openVoiceCompanion({
     provider: env.MELETE_DEFAULT_PROVIDER,
     model: env.MELETE_DEFAULT_MODEL,
     providers: configuredProviders(env, () => {}, connected.signIn),
-    source: serviceModelSource({ env, settings: connected.settings }),
+    // An aside is short and must come back quickly: the fast model when there is one.
+    source: serviceModelSource({ env, settings: connected.settings, fast: routing.fast }),
     fake,
     privacy,
+    spending: connected.spending,
+    routing,
+    reasoningEffort: env.MELETE_REASONING_EFFORT_SIDE,
     ...(connected.fetch ? { fetch: connected.fetch } : {}),
   });
 }

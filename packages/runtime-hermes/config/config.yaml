@@ -30,9 +30,14 @@ plugins:
 tools:
   tool_search:
     # Plugin tools are "deferrable" and are collapsed behind a
-    # tool_search/tool_describe/tool_call bridge by default. Discovery is
+    # tool_search/tool_describe/tool_call bridge by default. At this pin the
+    # bridge defers every plugin tool, the first catalog included, with no way
+    # to keep one offered directly, so `say`, `ask_person` and the job's own
+    # tools would each cost a search and a describe before a call. Discovery is
     # supplied by Melete's own scoped search_tools/load_tool pair, under the same
-    # broker authority.
+    # broker authority, and a tool it loads joins the running agent through the
+    # engine's own live tool refresh (the live-tools seam in
+    # patches/observer_bridge.py), so loading one does not restart the run.
     enabled: "off"
 
 memory:

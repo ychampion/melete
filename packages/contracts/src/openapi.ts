@@ -40,6 +40,7 @@ import {
   triggerResponse,
 } from './api.ts';
 import { appsPaths } from './apps-openapi.ts';
+import { attachmentContentQuery, attachmentResponse } from './attachments.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
 import {
@@ -91,6 +92,12 @@ import {
   feedbackResponse,
   updateFeedbackRequest,
 } from './feedback.ts';
+import {
+  handoffDecision,
+  handoffList,
+  handoffResponse,
+  handoffResultDecision,
+} from './handoffs.ts';
 import { hookObservation } from './hooks.ts';
 import {
   engineSkillApprovalRequest,
@@ -228,6 +235,49 @@ import {
   submissionId,
   submissionResponse,
 } from './responsibility.ts';
+import {
+  acceptInviteRequest,
+  acceptInviteResponse,
+  addRoomMemberRequest,
+  createRoomInviteRequest,
+  createRoomRequest,
+  createRoomThreadRequest,
+  inviteView,
+  inviteViewRequest,
+  linkedAccountList,
+  linkedAccountRemoval,
+  meResponse,
+  peopleList,
+  peopleQuery,
+  postRoomMessageRequest,
+  roomConnectionList,
+  roomConnectionResponse,
+  roomConnectionUpdate,
+  roomDetail,
+  roomInviteCreated,
+  roomInviteList,
+  roomInviteResponse,
+  roomLeaveResponse,
+  roomList,
+  roomMembershipResponse,
+  roomMemoryForgotten,
+  roomMemoryView,
+  roomMessageDeleted,
+  roomMessageResponse,
+  roomPermissionDecision,
+  roomPermissionOutcome,
+  roomPolicyResponse,
+  roomPolicyUpdate,
+  roomPresenceResponse,
+  roomShareResponse,
+  roomShareWithdrawn,
+  roomStopResponse,
+  roomStreamFrame,
+  roomThreadList,
+  roomThreadView,
+  shareToRoomRequest,
+  updateMeRequest,
+} from './rooms.ts';
 import { runtimeEvent } from './runtime.ts';
 import {
   sandboxComputerList,
@@ -241,6 +291,7 @@ import {
   spaceRemovalPreview,
   spaceRemovalReport,
 } from './spaces.ts';
+import { healthDetailResponse, usageResponse } from './usage.ts';
 import {
   voiceAside,
   voiceAsideRequest,
@@ -702,6 +753,491 @@ const admission = <T extends z.ZodType>(
   },
 });
 
+/** The rooms routes. Each names its room in the path and checks the caller's membership itself. */
+function roomsPaths() {
+  const room = idParam('id', 'Room id');
+  const thread = { path: z.object({ id: z.string(), threadId: z.string() }) };
+  const notIn = problem('Not in this room, or no such room');
+  return {
+    '/rooms': {
+      get: {
+        tags: ['rooms'],
+        summary: 'The rooms the signed-in person is in',
+        responses: { '200': jsonResponse('Rooms', roomList) },
+      },
+      post: {
+        tags: ['rooms'],
+        summary: 'Make a room; its maker owns it',
+        description:
+          'A room is a shared space where several people talk to one agent. The agent acts as ' +
+          'the room, never as any one person, and reads only what the room has.',
+        requestBody: json(createRoomRequest),
+        responses: {
+          '201': jsonResponse('The new room', roomDetail),
+          '403': problem('Only a person can make a room'),
+        },
+      },
+    },
+    '/rooms/{id}': {
+      get: {
+        tags: ['rooms'],
+        summary: 'A room, its people and how it works',
+        requestParams: room,
+        responses: { '200': jsonResponse('The room', roomDetail), '404': notIn },
+      },
+    },
+    '/rooms/{id}/members': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Add a person to a room',
+        description:
+          'Who can read the room changes, so work under way in it starts again with the new people.',
+        requestParams: room,
+        requestBody: json(addRoomMemberRequest),
+        responses: {
+          '201': jsonResponse('The new member', roomMembershipResponse),
+          '403': problem('Only an owner of the room adds people'),
+          '404': notIn,
+        },
+      },
+    },
+    '/rooms/{id}/members/{principalId}': {
+      delete: {
+        tags: ['rooms'],
+        summary: 'Remove someone from a room, or leave it',
+        description:
+          'Their access ends at once, including any thread they have open. What they said stays in the room.',
+        requestParams: { path: z.object({ id: z.string(), principalId: z.string() }) },
+        responses: {
+          '200': jsonResponse('Removed', roomLeaveResponse),
+          '403': problem('Only an owner removes someone else; the owner cannot be removed'),
+          '404': notIn,
+        },
+      },
+    },
+    '/rooms/{id}/invites': {
+      get: {
+        tags: ['rooms'],
+        summary: "A room's guest invites, open and used",
+        requestParams: room,
+        responses: {
+          '200': jsonResponse('Invites', roomInviteList),
+          '403': problem('Only an owner of the room'),
+          '404': notIn,
+        },
+      },
+      post: {
+        tags: ['rooms'],
+        summary: 'Invite a guest into a room',
+        description:
+          'Makes a link that works once, for the number of days given (30 by default), which is ' +
+          "also how long the guest stays. The owner sends it themselves. It uses the installation's " +
+          'public address (`MELETE_PUBLIC_URL`) when one is set; the path works on its sign-in page ' +
+          'either way. A guest reads and posts only in the rooms they were invited to, asks the ' +
+          'agent where the room allows it, never answers a permission, and has no people list and ' +
+          'no work of their own.',
+        requestParams: room,
+        requestBody: json(createRoomInviteRequest),
+        responses: {
+          '201': jsonResponse('The invite, with its link shown once', roomInviteCreated),
+          '403': problem('Only an owner of the room'),
+          '404': notIn,
+          '409': problem('That email belongs to someone with a full account, or is in the room'),
+        },
+      },
+    },
+    '/rooms/{id}/invites/{inviteId}': {
+      delete: {
+        tags: ['rooms'],
+        summary: 'Withdraw an invite before it is used',
+        requestParams: { path: z.object({ id: z.string(), inviteId: z.string() }) },
+        responses: {
+          '200': jsonResponse('Withdrawn', roomInviteResponse),
+          '403': problem('Only an owner of the room'),
+          '404': problem('No such invite in this room'),
+          '409': problem('The invite was already used'),
+        },
+      },
+    },
+    '/invites/view': {
+      post: {
+        tags: ['rooms'],
+        summary: 'What an invite link is for',
+        description: "Public. It names the room and nothing about the room's people.",
+        security: [],
+        requestBody: json(inviteViewRequest),
+        responses: {
+          '200': jsonResponse('The invite', inviteView),
+          '404': problem('The link is wrong, used, withdrawn or out of date'),
+        },
+      },
+    },
+    '/invites/accept': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Accept an invite',
+        description:
+          'For someone not signed in it makes the guest account with the password given and signs it in. ' +
+          'When the email already has a guest account, sign in as it first. The link works once.',
+        security: [],
+        requestBody: json(acceptInviteRequest),
+        responses: {
+          '200': jsonResponse('In the room, signed in', acceptInviteResponse),
+          '400': problem('A new account needs a password'),
+          '404': problem('The link is wrong, used, withdrawn or out of date'),
+          '409': problem(
+            'The email has an account: sign in as it first, or it is a full account an owner adds',
+          ),
+        },
+      },
+    },
+    '/people': {
+      get: {
+        tags: ['rooms'],
+        summary: 'People on this installation who can be added to a room',
+        requestParams: { query: peopleQuery },
+        responses: {
+          '200': jsonResponse('People', peopleList),
+          '403': problem('Only a person can look up people'),
+        },
+      },
+    },
+    '/rooms/{id}/threads': {
+      get: {
+        tags: ['rooms'],
+        summary: "A room's threads, most recently active first",
+        requestParams: room,
+        responses: { '200': jsonResponse('Threads', roomThreadList), '404': notIn },
+      },
+      post: {
+        tags: ['rooms'],
+        summary: 'Start a thread with its first message',
+        description:
+          'With `ask_agent`, or a message that names the agent, the first message asks the agent.',
+        requestParams: room,
+        requestBody: json(createRoomThreadRequest),
+        responses: {
+          '201': jsonResponse('The thread and its first message', roomMessageResponse),
+          '404': notIn,
+          '409': problem('The submission ID belongs to a different message'),
+        },
+      },
+    },
+    '/rooms/{id}/threads/{threadId}': {
+      get: {
+        tags: ['rooms'],
+        summary: 'A thread: every message with its author, and each request the agent was asked',
+        requestParams: thread,
+        responses: { '200': jsonResponse('The thread', roomThreadView), '404': notIn },
+      },
+    },
+    '/rooms/{id}/threads/{threadId}/messages': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Post a message in a thread',
+        description:
+          'A message asks the agent when it names the agent, or follows straight on from the ' +
+          "agent's answer to its author. An ask reaches the asker's own request, never anyone " +
+          "else's; while another request in the thread is under way, it waits its turn. A message " +
+          'that does not ask starts nothing.',
+        requestParams: thread,
+        requestBody: json(postRoomMessageRequest),
+        responses: {
+          '200': jsonResponse('The message', roomMessageResponse),
+          '404': notIn,
+          '409': problem(
+            'The thread is closed, or the submission ID belongs to a different message',
+          ),
+        },
+      },
+    },
+    '/rooms/{id}/threads/{threadId}/events': {
+      get: {
+        tags: ['rooms'],
+        summary: "A thread's live frames: messages and the agent's work, in order",
+        description:
+          'With `Accept: text/event-stream`, a stream of frames; otherwise one page. Each frame ' +
+          'carries `seq`; resume with `Last-Event-ID`. The stream closes once the reader is no ' +
+          'longer in the room.',
+        requestParams: {
+          path: z.object({ id: z.string(), threadId: z.string() }),
+          query: z.object({ after: z.string().optional() }),
+          header: z.object({ 'Last-Event-ID': z.string().optional() }),
+        },
+        responses: {
+          '200': {
+            description: 'Frames',
+            content: {
+              'application/json': {
+                schema: z.object({
+                  frames: z.array(roomStreamFrame),
+                  next_cursor: z.number().int().nonnegative(),
+                }),
+              },
+              'text/event-stream': {
+                schema: z.string(),
+                example: 'id: 42\nevent: message\ndata: {"seq":42,"kind":"message"}\n\n',
+              },
+            },
+          },
+          '404': notIn,
+        },
+      },
+    },
+    '/rooms/{id}/requests/{jobId}/stop': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Stop what the agent is doing for one request',
+        requestParams: { path: z.object({ id: z.string(), jobId: z.string() }) },
+        responses: {
+          '200': jsonResponse('The request', roomStopResponse),
+          '403': problem('Only the person who asked, or an owner of the room'),
+          '404': notIn,
+        },
+      },
+    },
+    '/rooms/{id}/requests/{jobId}/computers': {
+      get: {
+        tags: ['rooms'],
+        summary: "The computers one of the room's requests is using",
+        description:
+          'Everyone in the room may watch them through `/sandbox/sessions/{id}/live`; only the ' +
+          "room's owners take one over.",
+        requestParams: { path: z.object({ id: z.string(), jobId: z.string() }) },
+        responses: {
+          '200': jsonResponse('Computers', sandboxComputerList),
+          '404': notIn,
+        },
+      },
+    },
+    '/rooms/{id}/policy': {
+      get: {
+        tags: ['rooms'],
+        summary: 'How a room works',
+        description:
+          "Who decides the permissions its requests ask for, when its agent answers, whether guests may ask, and the room's hourly limits.",
+        requestParams: room,
+        responses: { '200': jsonResponse('The settings', roomPolicyResponse), '404': notIn },
+      },
+      put: {
+        tags: ['rooms'],
+        summary: 'Change how a room works',
+        description:
+          'Owners only. Settings left out stay as they are. Who may answer a permission is checked when the answer is given, so a new rule covers the permissions already waiting.',
+        requestParams: room,
+        requestBody: json(roomPolicyUpdate),
+        responses: {
+          '200': jsonResponse('The settings', roomPolicyResponse),
+          '400': problem('A person cannot ask more often than the whole room'),
+          '403': problem('Only an owner of the room changes how it works'),
+          '404': notIn,
+        },
+      },
+    },
+    '/rooms/{id}/approvals/{approvalId}': {
+      post: {
+        tags: ['rooms'],
+        summary: "Answer one of a room's permissions",
+        description:
+          "Only the people the room's rule names may answer: the person who asked (the default), any member who is not a guest, or the room's owners. The answer names the exact content and the card it answers; if either changed, it is refused. The answer is recorded as the person's.",
+        requestParams: { path: z.object({ id: z.string(), approvalId: z.string() }) },
+        requestBody: json(roomPermissionDecision),
+        responses: {
+          '200': jsonResponse('Answered', roomPermissionOutcome),
+          '403': problem("The room's rule does not name this person"),
+          '404': notIn,
+          '409': problem(
+            'What it asks for changed, it was withdrawn, or someone already answered it (the message says who, and how)',
+          ),
+        },
+      },
+    },
+    '/rooms/{id}/connections': {
+      get: {
+        tags: ['rooms'],
+        summary: "The connections in a room's space",
+        description:
+          "A connection marked `room` serves the room's requests; one marked `owner` serves only the owner's own work there.",
+        requestParams: room,
+        responses: { '200': jsonResponse('Connections', roomConnectionList), '404': notIn },
+      },
+    },
+    '/rooms/{id}/connections/{connectionId}': {
+      put: {
+        tags: ['rooms'],
+        summary: "Let a connection serve the room's requests, or keep it to the owner",
+        description:
+          'Owners only. Work under way in the room starts again, and permissions waiting in it are withdrawn.',
+        requestParams: { path: z.object({ id: z.string(), connectionId: z.string() }) },
+        requestBody: json(roomConnectionUpdate),
+        responses: {
+          '200': jsonResponse('The connection', roomConnectionResponse),
+          '403': problem('Only an owner of the room changes this'),
+          '404': notIn,
+        },
+      },
+    },
+    '/handoffs': {
+      get: {
+        tags: ['rooms'],
+        summary: 'Work rooms asked the signed-in person to run with their own setup',
+        description:
+          "Each handoff carries the whole task, exactly as it would run, and, once it has run, the exact result. Nothing from the person's own space reaches the room until they share that result.",
+        responses: { '200': jsonResponse('Handoffs, newest first', handoffList) },
+      },
+    },
+    '/handoffs/{id}': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Run a handoff with my setup, or decline it',
+        description:
+          "Accepting names the task's hash, so only the task the person read runs. It runs in the person's own space with their own connections, and anything it sends asks them as usual. Declining tells the room.",
+        requestParams: idParam('id', 'Handoff id'),
+        requestBody: json(handoffDecision),
+        responses: {
+          '200': jsonResponse('The handoff', handoffResponse),
+          '404': problem('No such handoff for this person'),
+          '409': problem(
+            'Already answered or expired, the task changed, or the person is no longer in the room',
+          ),
+        },
+      },
+    },
+    '/handoffs/{id}/result': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Share the result with the room, or keep it',
+        description:
+          "Sharing names the result's hash and posts that exact text to the thread as the person, through their agent. Keeping tells the room only that the person kept it.",
+        requestParams: idParam('id', 'Handoff id'),
+        requestBody: json(handoffResultDecision),
+        responses: {
+          '200': jsonResponse('The handoff', handoffResponse),
+          '404': problem('No such handoff for this person'),
+          '409': problem(
+            'No result yet, already shared or kept, the result changed, or the person is no longer in the room',
+          ),
+        },
+      },
+    },
+    '/me/linked-accounts': {
+      get: {
+        tags: ['rooms'],
+        summary: 'The chat platform accounts linked to the signed-in person',
+        description:
+          'A linked account speaks, answers permissions and hears threads in the rooms the ' +
+          'person is in, as them. A chat platform links an account after its own sign-in proves ' +
+          'who holds it.',
+        responses: { '200': jsonResponse('Linked accounts', linkedAccountList) },
+      },
+    },
+    '/me/linked-accounts/{provider}/{externalId}': {
+      delete: {
+        tags: ['rooms'],
+        summary: "Unlink one of the signed-in person's chat platform accounts",
+        description:
+          'From then on the account can no longer post, answer or hear anything as the person. ' +
+          'Changing or resetting the password unlinks every account too.',
+        requestParams: { path: z.object({ provider: z.string(), externalId: z.string() }) },
+        responses: {
+          '200': jsonResponse('Whether a link of this person was removed', linkedAccountRemoval),
+        },
+      },
+    },
+    '/rooms/{id}/presence': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Say the signed-in person is looking at the room',
+        description: 'Display only: who may read a room is decided by membership, not presence.',
+        requestParams: room,
+        responses: { '200': jsonResponse('Who is here now', roomPresenceResponse), '404': notIn },
+      },
+    },
+    '/rooms/{id}/memory': {
+      get: {
+        tags: ['rooms'],
+        summary: "What the room's agent remembers, with whose words each detail rests on",
+        description:
+          'Details people said in the room, and details people shared into it from their own ' +
+          "memory. The agent reads nothing else of anyone's memory.",
+        requestParams: room,
+        responses: {
+          '200': jsonResponse('Room memory', roomMemoryView),
+          '404': notIn,
+          '503': problem('Memory is not running on this installation'),
+        },
+      },
+    },
+    '/rooms/{id}/memory/{claimId}/forget': {
+      post: {
+        tags: ['rooms'],
+        summary: "Forget a detail from the room's memory",
+        description:
+          'An owner of the room forgets any detail; anyone else only a detail from their own ' +
+          'words. Forgetting holds across a restore from an older backup.',
+        requestParams: { path: z.object({ id: z.string(), claimId: z.string() }) },
+        responses: {
+          '200': jsonResponse('Forgotten', roomMemoryForgotten),
+          '403': problem('Only an owner of the room, or the person whose words it rests on'),
+          '404': notIn,
+          '503': problem('Memory is not running on this installation'),
+        },
+      },
+    },
+    '/rooms/{id}/shares': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Share a detail from your own memory into a room',
+        description:
+          'A reference, not a copy: the room reads the current value, and forgetting it in your ' +
+          'own memory takes it out of the room at once. Members-only shares stay out of the ' +
+          "agent's work while a guest is in the room.",
+        requestParams: room,
+        requestBody: json(shareToRoomRequest),
+        responses: {
+          '200': jsonResponse('Already shared', roomShareResponse),
+          '201': jsonResponse('Shared', roomShareResponse),
+          '403': problem('Guests share nothing into a room'),
+          '404': problem('Not in this room, or no such detail in your own memory'),
+          '409': problem('The detail came from a private conversation and stays yours'),
+          '503': problem('Memory is not running on this installation'),
+        },
+      },
+    },
+    '/rooms/{id}/shares/{shareId}': {
+      delete: {
+        tags: ['rooms'],
+        summary: 'Withdraw a shared detail from a room',
+        description: 'The person who shared it, or an owner of the room.',
+        requestParams: { path: z.object({ id: z.string(), shareId: z.string() }) },
+        responses: {
+          '200': jsonResponse('Withdrawn', roomShareWithdrawn),
+          '403': problem('Only the person who shared it, or an owner of the room'),
+          '404': notIn,
+          '503': problem('Memory is not running on this installation'),
+        },
+      },
+    },
+    '/rooms/{id}/messages/{messageId}': {
+      delete: {
+        tags: ['rooms'],
+        summary: 'Delete your own message',
+        description:
+          "Its words leave the thread, the request it asked, and the room's memory, and stay " +
+          'gone after a restore from an older backup. Work under way in the thread starts again ' +
+          'without them.',
+        requestParams: { path: z.object({ id: z.string(), messageId: z.string() }) },
+        responses: {
+          '200': jsonResponse('The message, with no words', roomMessageDeleted),
+          '403': problem('Only the person who wrote it'),
+          '404': notIn,
+          '503': problem('Memory is not running on this installation'),
+        },
+      },
+    },
+  };
+}
+
 export const OPENAPI_VERSION = '0.1.0-pre';
 
 export function buildOpenApiDocument() {
@@ -723,6 +1259,11 @@ export function buildOpenApiDocument() {
         securitySchemes: {
           session: { type: 'apiKey', in: 'cookie', name: 'melete_session' },
           device: { type: 'http', scheme: 'bearer' },
+          operator: {
+            type: 'http',
+            scheme: 'bearer',
+            description: 'MELETE_OPERATOR_TOKEN, for the operator’s health detail only.',
+          },
           assistant: {
             type: 'http',
             scheme: 'bearer',
@@ -1208,6 +1749,7 @@ export function buildOpenApiDocument() {
           },
         },
         ...experiencePaths(),
+        ...roomsPaths(),
         '/responsibilities': {
           post: {
             tags: ['jobs'],
@@ -1610,6 +2152,25 @@ export function buildOpenApiDocument() {
           },
         },
 
+        '/health/detail': {
+          get: {
+            tags: ['health'],
+            summary: 'Each health check the operator alerts on, with what it found',
+            description:
+              'The database, the runtime that runs attempts, the job queue (work due more than ' +
+              'ten minutes ago that has not started) and the error rate over the last fifteen ' +
+              'minutes. Takes MELETE_OPERATOR_TOKEN as a bearer token; without that setting the ' +
+              'route answers 404. Answers 503 while any check fails, so an uptime monitor can watch it.',
+            security: [{ operator: [] }],
+            responses: {
+              '200': jsonResponse('Every check passed', healthDetailResponse),
+              '401': problem('The operator token is missing or wrong'),
+              '404': problem('MELETE_OPERATOR_TOKEN is not set'),
+              '503': jsonResponse('At least one check failed', healthDetailResponse),
+            },
+          },
+        },
+
         '/setup': {
           get: {
             tags: ['account'],
@@ -1668,6 +2229,16 @@ export function buildOpenApiDocument() {
             security: [{ session: [] }],
             responses: {
               '200': jsonResponse('The signed-in account', ownerResponse),
+              '401': problem('No session, or the session has expired'),
+            },
+          },
+          patch: {
+            tags: ['account'],
+            summary: 'Change the name other people in a room see',
+            security: [{ session: [] }],
+            requestBody: json(updateMeRequest),
+            responses: {
+              '200': jsonResponse('The signed-in account', meResponse),
               '401': problem('No session, or the session has expired'),
             },
           },
@@ -2290,6 +2861,75 @@ export function buildOpenApiDocument() {
             },
           },
         },
+        '/attachments': {
+          post: {
+            tags: ['experience'],
+            summary: 'Upload a file to send with a message',
+            description:
+              'Multipart form data: the file in `file`, and for a picture optionally a small copy ' +
+              'in `preview` (at most 1280 pixels on its longest side, small enough for a model ' +
+              'request). Pictures, PDFs, Word documents, spreadsheets and text files up to 20 MB ' +
+              'are taken. The file waits, visible only to whoever uploaded it, until a message ' +
+              'names it in `attachments`; one never sent is deleted after a day. A sent file ' +
+              'belongs to its chat and is deleted with it.',
+            security: [{ session: [] }],
+            requestBody: {
+              required: true,
+              content: {
+                'multipart/form-data': {
+                  schema: z.object({
+                    file: z.string().meta({ format: 'binary' }),
+                    preview: z.string().meta({ format: 'binary' }).optional(),
+                  }),
+                },
+              },
+            },
+            responses: {
+              '201': jsonResponse('The file, ready to send', attachmentResponse),
+              '400': problem('Empty, unreadable, or not the kind of file it says it is'),
+              '401': problem('A session is required'),
+              '413': problem('Larger than the limit'),
+              '415': problem('A kind of file Melete does not read'),
+            },
+          },
+        },
+        '/attachments/{id}/content': {
+          get: {
+            tags: ['experience'],
+            summary: 'Read back a file sent, or about to be sent, in chat',
+            description:
+              'For whoever uploaded it before it is sent, and for the person whose chat it is ' +
+              'after. `variant=preview` reads the small copy a picture has.',
+            security: [{ session: [] }],
+            requestParams: {
+              ...idParam('id', 'Attachment id'),
+              query: attachmentContentQuery,
+            },
+            responses: {
+              '200': {
+                description: 'The bytes',
+                content: {
+                  'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+                },
+              },
+              '401': problem('A session is required'),
+              '404': problem('No such file for this person'),
+            },
+          },
+        },
+        '/attachments/{id}': {
+          delete: {
+            tags: ['experience'],
+            summary: 'Take back a file not sent yet',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'Attachment id'),
+            responses: {
+              '200': jsonResponse('Deleted', z.object({ ok: z.literal(true) })),
+              '404': problem('No such file for this person'),
+              '409': problem('Already sent; it is deleted with its chat'),
+            },
+          },
+        },
         '/browser/sessions/{id}/takeover': {
           post: {
             tags: ['browser'],
@@ -2877,6 +3517,22 @@ export function buildOpenApiDocument() {
               '400': problem('Invalid request'),
               '403': problem('Only the person who runs the installation changes a status'),
               '404': problem('No such report'),
+            },
+          },
+        },
+
+        '/usage': {
+          get: {
+            tags: ['model-providers'],
+            summary: 'Model spending today and this month, the limits, and any notice',
+            description:
+              'Every model call counts: agent turns, routines and background work, memory reads, ' +
+              'voice asides and reviews. Dollars are estimates from the price table. Past a ' +
+              '`reached` notice, new model calls are refused until the period resets. Days and ' +
+              'months are UTC.',
+            responses: {
+              '200': jsonResponse('Usage', usageResponse),
+              '401': problem('Not signed in'),
             },
           },
         },

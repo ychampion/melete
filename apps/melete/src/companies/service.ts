@@ -25,6 +25,7 @@ import {
   serviceModelSource,
 } from '../gateway/model-settings.ts';
 import { providerKeyVariables } from '../gateway/providers.ts';
+import { routingFromEnv } from '../gateway/routing.ts';
 import type { GatewayProvider } from '../gateway/types.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
@@ -52,6 +53,8 @@ export function gatewayExtractor(options: {
   currentProviders?: GatewayOptions['currentProviders'];
   fetch?: GatewayOptions['fetch'];
   privacy: GatewayOptions['privacy'];
+  spending?: GatewayOptions['spending'];
+  reasoningEffort?: GatewayOptions['reasoningEffort'];
 }): CompanyExtractor {
   const open = async (): Promise<ScanExtractor> => {
     const gateway = await openExtractionGateway({
@@ -62,6 +65,8 @@ export function gatewayExtractor(options: {
       ...(options.fetch ? { fetch: options.fetch } : {}),
       privacy: options.privacy,
       maxCalls: SCAN_CALL_CEILING,
+      spending: options.spending,
+      reasoningEffort: options.reasoningEffort,
     });
     return {
       extract: (request) => gateway.extractor.extract(request),
@@ -145,7 +150,9 @@ export function configuredExtractor(
   sql?: Sql,
   settings?: ModelSettingsService,
   fetch?: GatewayOptions['fetch'],
+  spending?: GatewayOptions['spending'],
 ): CompanyExtractor {
+  const metered = { spending, reasoningEffort: env.MELETE_REASONING_EFFORT_SIDE };
   const providers = () =>
     configuredProviders(env, () => {}, sql ? providerSignIn(sql, env) : undefined);
   const named = process.env.MELETE_COMPANIES_MODEL?.trim();
@@ -154,13 +161,15 @@ export function configuredExtractor(
     if (!extraction) return scriptedExtractor();
     return gatewayExtractor({
       ...extraction,
+      ...metered,
       privacy,
       providers: providers(),
       ...(settings ? { currentProviders: (configured) => settings.providers(configured) } : {}),
       ...(fetch ? { fetch } : {}),
     });
   }
-  const source = serviceModelSource({ env, settings });
+  // Reading a message for companies is a short extraction: the fast model when there is one.
+  const source = serviceModelSource({ env, settings, fast: routingFromEnv(env).fast });
   const scripted = scriptedExtractor();
   const configured = providers();
   const live = async (): Promise<ServiceModel | null> => {
@@ -171,6 +180,7 @@ export function configuredExtractor(
   const extractorFor = (choice: ServiceModel) =>
     gatewayExtractor({
       ...choice,
+      ...metered,
       privacy,
       providers: configured,
       currentProviders: source.providers,
@@ -241,6 +251,8 @@ export function companiesDeps(options: {
   triggers?: TriggerService;
   /** The model and keys connected in the app. */
   modelSettings?: ModelSettingsService;
+  /** The installation's spending caps. */
+  spending?: GatewayOptions['spending'];
 }): CompaniesDeps {
   const { jobs, triggers } = options;
   // A model connected in the app may read any scan, so its allowance applies
@@ -262,6 +274,8 @@ export function companiesDeps(options: {
       options.privacy,
       options.sql,
       options.modelSettings,
+      undefined,
+      options.spending,
     ),
     ...(dailyCalls === undefined ? {} : { dailyCalls }),
     // Without a job service there is nothing to create a job on, and the route's

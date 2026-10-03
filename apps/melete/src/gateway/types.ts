@@ -49,8 +49,57 @@ export interface GatewayPrincipal {
    * Each request is further held to its model's window less the output it asks for.
    */
   maxInputTokens?: number;
-  /** Include the explicitly authorized fallback here; the proxy never chooses one. */
+  /**
+   * Every model this principal may be served with: the one it asks for, and
+   * each model in `routes`. The proxy never chooses a model outside this list.
+   */
   allowedModels: { provider: string; model: string }[];
+  /** Models the gateway may serve a call with instead of the one it names. */
+  routes?: GatewayRoutes;
+  /**
+   * The person who caused this call, when the caller knows it: the one whose
+   * message is being read, who asked aloud, or who started the scan. Spending
+   * caps charge them. Left out, an agent call charges the person who spoke last
+   * in its conversation.
+   */
+  actor?: string;
+}
+
+/**
+ * The operator's alternatives for one principal's calls. Each speaks the same
+ * protocol as the model the principal runs on, so a request goes as written.
+ */
+export interface GatewayRoutes {
+  /** Serves a request that carries a picture, for a model that reads none. */
+  vision?: { provider: string; model: string };
+  /** Tried in order when the provider limits, fails or cannot be reached. */
+  fallback?: { provider: string; model: string }[];
+}
+
+/** A call about to be made, as the spending caps see it. */
+export interface GatewaySpendingCall {
+  provider: string;
+  model: string;
+  inputTokens: number;
+  maxOutputTokens: number;
+  /** On the person's own model. */
+  local: boolean;
+}
+
+/**
+ * Spending caps across every model call this service makes. `admit` is asked
+ * before a call is reserved and refuses it once a limit is reached; `record`
+ * is told what each settled call used.
+ */
+export interface GatewaySpending {
+  /**
+   * Throws a GatewayError (402 `spending_limit_reached`) when a limit is
+   * reached. `call` is what is about to be sent, held against the limit while
+   * it runs.
+   */
+  admit(principal: GatewayPrincipal, call?: GatewaySpendingCall): Promise<void>;
+  /** Records one settled call's usage and cost. Never throws. */
+  record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void>;
 }
 
 export interface GatewayReservationRequest {
@@ -67,10 +116,20 @@ export interface GatewayReservation {
 }
 
 export interface GatewayUsage {
+  /** Every input token the request carried, cached or not. */
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** The part of the input the provider read from its prompt cache. */
   cachedInputTokens: number;
+  /** The part of the input the provider wrote to its prompt cache, where it says so. */
+  cacheWriteInputTokens?: number;
+  /**
+   * The input at full-price-equivalent tokens: cached input at the provider's
+   * cached price, a cache write at its write price. What allowance and spending
+   * accounting should charge for input; `inputTokens` stays the raw count.
+   */
+  chargedInputTokens?: number;
 }
 
 export interface GatewaySettlement {
@@ -87,6 +146,27 @@ export interface GatewaySettlement {
   stopped?: boolean;
   /** `usage` is the gateway's estimate of a call cut off part way, not the provider's count. */
   usageEstimated?: boolean;
+  /** Why the call went to this model instead of the one the request named. */
+  route?: 'vision' | 'fallback';
+  /** The model the request named, when `route` sent it elsewhere. */
+  routedFrom?: { provider: string; model: string };
+  /**
+   * What a call that ended without its usage is estimated to have used, for
+   * the spending caps alone; the job's ledger keeps its reservation instead.
+   */
+  spendEstimate?: GatewayUsage;
+  /** A flat fee on top of the tokens, such as a provider's charge per web search. */
+  feeUsd?: number;
+  /** Served on the person's own model, which costs nothing unless the operator prices it. */
+  servedLocally?: boolean;
+  /** The model that actually answered, when the privacy router sent the call to the local model. */
+  servedBy?: { provider: string; model: string };
+  /**
+   * What became of the request's answer schema: sent, left out (the model
+   * cannot take one, or refused one before), or refused by the provider on
+   * this call, which is then asked again without it.
+   */
+  structured?: 'sent' | 'stripped' | 'refused';
 }
 
 export interface GatewayBudget {
@@ -100,6 +180,8 @@ export class GatewayError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
+    /** A sentence for the person, sent as the error's message in place of the code. */
+    readonly detail?: string,
   ) {
     super(code);
   }

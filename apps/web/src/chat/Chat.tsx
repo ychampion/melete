@@ -6,6 +6,7 @@
  * gap marker says where streamed text may be missing.
  */
 
+import type { AttachmentView } from '@melete/contracts/attachments';
 import { mentionedAgent } from '@melete/contracts/mention';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { amountWords } from '../companies/format.ts';
@@ -58,6 +59,7 @@ import type {
 import { navigate, useRoute } from '../router.ts';
 import { RunChatCards } from '../runs/RunCards.tsx';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { useAttachments } from './attachments.ts';
 import { shownBlocks } from './blocks.ts';
 import { CasePanel, useCase } from './CasePanel.tsx';
 import { ChatActions } from './ChatActions.tsx';
@@ -560,6 +562,9 @@ export function ChatScreen({ id }: { id: string | null }) {
   const flight = useInFlight();
   // A message that failed to send keeps its request, so Retry resends that message once.
   const outbox = useRef<Outbox | null>(null);
+  // Files in the message box, uploaded as they are added and sent with the words.
+  const files = useAttachments();
+  const { clear: clearFiles, restore: restoreFiles } = files;
   if (outbox.current === null) outbox.current = new Outbox();
   // A quick edit is sent once: its chips stay disabled until the conversation moves on.
   const quick = useTapOnce<string>();
@@ -689,15 +694,17 @@ export function ChatScreen({ id }: { id: string | null }) {
 
   const send = useCallback(
     /** Resolves true once the service has the message (or will, when back online). */
-    async (body: string): Promise<boolean> => {
+    async (body: string, attached: readonly AttachmentView[] = []): Promise<boolean> => {
       const clean = body.trim();
-      if (!clean) return false;
+      if (!clean && !attached.length) return false;
+      const fileIds = attached.map((file) => file.id);
       setText('');
+      if (attached.length) clearFiles();
       // With no agent chosen the service hands the chat to Melete.
       const agent = agentId ?? fallback?.id;
       if (!conversationId) {
         const created = await adapter.createConversation({
-          title: titleFor(clean),
+          title: titleFor(clean || (attached[0]?.name ?? 'Files')),
           ...(agent ? { agent_id: agent } : {}),
         });
         if (created.data === null) {
@@ -707,9 +714,15 @@ export function ChatScreen({ id }: { id: string | null }) {
             sub: created.error ?? created.unavailable ?? '',
           });
           setText(clean);
+          restoreFiles(attached);
           return false;
         }
-        const accepted = await adapter.send(created.data.conversation.id, clean, messageKey());
+        const accepted = await adapter.send(
+          created.data.conversation.id,
+          clean,
+          messageKey(),
+          fileIds,
+        );
         if (accepted.data === null)
           toast({
             kind: 'err',
@@ -727,14 +740,16 @@ export function ChatScreen({ id }: { id: string | null }) {
       }
       // "@Scout …" is answered by Scout; the drawn message says so before the service does.
       const speaker = mentionedAgent(clean, agents)?.id ?? agent ?? '';
-      const localId = state.local(clean, speaker, navigator.onLine ? 'sending' : 'queued_offline');
+      const localId = state.local(clean, speaker, navigator.onLine ? 'sending' : 'queued_offline', [
+        ...attached,
+      ]);
       // Every try of this message carries this key, so the service keeps one copy.
       const key = messageKey();
       const box = outbox.current;
       if (!box) return false;
       const post = async (): Promise<boolean> => {
         state.settle(localId, 'sending');
-        const accepted = await adapter.send(conversationId, clean, key);
+        const accepted = await adapter.send(conversationId, clean, key, fileIds);
         if (accepted.data === null) {
           state.settle(localId, 'failed_retry');
           toast({
@@ -760,7 +775,17 @@ export function ChatScreen({ id }: { id: string | null }) {
       }
       return box.send(localId, post);
     },
-    [conversationId, agentId, fallback, agents, state, refreshConversations, welcome],
+    [
+      conversationId,
+      agentId,
+      fallback,
+      agents,
+      state,
+      refreshConversations,
+      welcome,
+      clearFiles,
+      restoreFiles,
+    ],
   );
 
   const retry = (localId: string) => void outbox.current?.retry(localId);
@@ -1235,7 +1260,8 @@ ${words}`
                 <Composer
                   value={text}
                   onChange={setText}
-                  onSend={() => void send(text)}
+                  onSend={() => void send(text, files.ready)}
+                  attachments={files}
                   agentName={
                     // A turn handed to another agent with @Name is that agent's while it works.
                     (working ? agentById(agents, last?.turn.agent_id) : null)?.name ??

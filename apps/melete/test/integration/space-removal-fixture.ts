@@ -222,6 +222,9 @@ export async function seedSpace(
   await sql`insert into activity_record (id, space_id, action_id, kind, effect_class, connection_label, provider, outcome, source, happened_at)
     values (${newId('act')}, ${spaceId}, ${newId('act')}, 'email.send', 'write_external', 'Mail', 'imap',
       'succeeded', 'A deleted chat', now())`;
+  // What one of the space's model calls cost; its amounts outlive the space.
+  await sql`insert into model_usage (id, space_id, principal_id, job_id, purpose, provider, model, status, input_tokens, output_tokens, cost_usd)
+    values (${newId('mu')}, ${spaceId}, ${principalId}, ${jobId}, 'agent', 'fake', 'scripted', 'succeeded', 10, 5, 0.01)`;
   await sql`insert into question (id, source, space_id, key, text, because, if_ignored)
     values (${newId('qst')}, 'memory', ${spaceId}, 'home.address', 'Which address is current?',
       ${json(['two revisions disagree'])}::text::jsonb, 'The key stays disputed.')`;
@@ -309,6 +312,24 @@ export async function seedSpace(
     values (${newId('rune')}, ${jobId}, 'note', 'Started')`;
 
   await seedMemory(sql, { spaceId, ownerId, jobId, attemptId });
+  // A room's thread, a message in it, who was looking, and what memory did with the message.
+  const threadId = newId('rth');
+  const messageId = newId('rmg');
+  await sql`insert into room_thread (id, space_id, title, created_by)
+    values (${threadId}, ${spaceId}, 'Plans', ${principalId})`;
+  await sql`insert into room_message (id, space_id, thread_id, author_principal_id, text, submission_id)
+    values (${messageId}, ${spaceId}, ${threadId}, ${principalId}, 'Thursday works.', ${newId('rmg')})`;
+  await sql`insert into room_presence (space_id, principal_id) values (${spaceId}, ${principalId})`;
+  await sql`insert into room_invite (id, space_id, email, token_hash, expires_at, created_by)
+    values (${newId('rin')}, ${spaceId}, 'guest@example.test', ${newId('rin')}, now() + interval '30 days', ${principalId})`;
+  // How the room works, and a task its agent handed one of its people.
+  await sql`insert into room_policy (space_id) values (${spaceId})`;
+  await sql`insert into room_handoff
+    (id, space_id, room_job_id, thread_id, action_id, target_principal_id, task_text, task_hash, expires_at)
+    values (${newId('rho')}, ${spaceId}, ${jobId}, ${threadId}, ${newId('act')}, ${principalId},
+      'Send the notes', ${'0'.repeat(64)}, now() + interval '7 days')`;
+  await sql`insert into memory_room_capture (message_id, space_id, outcome)
+    values (${messageId}, ${spaceId}, 'skipped:asked')`;
   const claim = await sql<
     { id: string }[]
   >`select id from memory_claims where space_id = ${spaceId}`;

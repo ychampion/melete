@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CapabilityClaims } from '@melete/contracts';
-import { and, eq, isNull, type SQL, type SQLWrapper, sql } from 'drizzle-orm';
+import { and, eq, gt, isNull, or, type SQL, type SQLWrapper, sql } from 'drizzle-orm';
 import type { Sql, TransactionSql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
@@ -90,7 +90,7 @@ export async function spaceRole(
   query: Sql | TransactionSql,
   spaceId: string,
   principalId: string | null,
-): Promise<'owner' | 'member' | null> {
+): Promise<MembershipRole | null> {
   const [parent] = await query`select kind, removed_at,
     coalesce(owner_principal_id, (select id from owner limit 1)) as owner_id
     from space where id = ${spaceId}`;
@@ -99,9 +99,16 @@ export async function spaceRole(
   if (parent.kind === 'personal') return actor === parent.owner_id ? 'owner' : null;
   if (!actor) return null;
   const [membership] = await query`select role from space_membership
-    where space_id = ${spaceId} and principal_id = ${actor} and revoked_at is null`;
-  return membership ? (membership.role as 'owner' | 'member') : null;
+    where space_id = ${spaceId} and principal_id = ${actor} and revoked_at is null
+      and (expires_at is null or expires_at > now())`;
+  return membership ? (membership.role as MembershipRole) : null;
 }
+
+/**
+ * A membership's role. `agent` is a room's own principal, the identity its agent
+ * acts as: it reads what the room shares with its members and owns nothing.
+ */
+export type MembershipRole = 'owner' | 'member' | 'guest' | 'agent';
 
 /** What anyone asking a space under removal for anything is told. */
 export const SPACE_BEING_CLEARED = 'This space is being cleared.';
@@ -149,6 +156,9 @@ export async function spaceAuthority(
         eq(spaceMembership.spaceId, spaceId),
         eq(spaceMembership.principalId, actor),
         isNull(spaceMembership.revokedAt),
+        // A guest whose time is up reads nothing from that moment; the expiry
+        // sweep then ends the membership as a removal does.
+        or(isNull(spaceMembership.expiresAt), gt(spaceMembership.expiresAt, sql`now()`)),
       ),
     );
   const [membership] = lock ? await memberships.for('share') : await memberships;
@@ -157,7 +167,7 @@ export async function spaceAuthority(
     space: parent,
     principalId: actor,
     ownerId,
-    role: membership.role as 'owner' | 'member',
+    role: membership.role as MembershipRole,
     generation: membership.generation,
   };
 }

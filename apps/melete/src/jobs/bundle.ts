@@ -4,12 +4,15 @@ import {
   type AttemptOutcome,
   attemptBundle,
   attemptOutcome,
+  BASELINE_CONTEXT_BUDGET,
   type CanonicalMessage,
-  CONTEXT_LIMITS,
+  CONTEXT_CHARS_PER_TOKEN,
+  type ContextBudget,
   type ContextGenerations,
   canonicalTimeZone,
   type Deliverable,
   describeTrigger,
+  GATEWAY_MAX_REQUEST_BYTES,
   inputTokenCeiling,
   isRunKind,
   jobBudget,
@@ -31,6 +34,8 @@ import { and, asc, desc, eq, gt, inArray, isNotNull, isNull } from 'drizzle-orm'
 import { z } from 'zod';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { artifactGate } from '../artifact/gate.ts';
+import { messageFiles, withFiles } from '../attachments/render.ts';
+import { attachmentTexts } from '../attachments/store.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
   action,
@@ -46,25 +51,64 @@ import {
   knowledgeRecord,
   planMilestone,
   question,
+  space,
   task,
   trigger,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
-import { agentIdentity, agentView } from '../experience/agents.ts';
+import { agentIdentity, agentView, roomIdentity } from '../experience/agents.ts';
+import { estimateInputTokens } from '../gateway/metering.ts';
 import { procedureReach, selectProcedureSkills } from '../learning/selection.ts';
 import type { MemoryScope, MemorySql } from '../memory/db.ts';
 import { pendingRepairBriefs } from '../memory/outputs.ts';
-import { asKnowledge, attemptRecallQuery, recall } from '../memory/recall.ts';
+import { attemptRecallQuery, recall } from '../memory/recall.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { selectedContext } from '../principals/context.ts';
+import { withSharedItems } from '../rooms/shares.ts';
+import { roomTranscript } from '../rooms/transcript.ts';
 import { runBrief } from '../runs/record.ts';
 import { closedComputerStepColumn } from '../sandbox/closed-step.ts';
+import { attemptContextBudget } from './context-budget.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { PRIVACY_DECISION, pickedForAgent, questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
 
-export const TRANSCRIPT_MAX_MESSAGES = 100;
-export const TRANSCRIPT_MAX_CHARACTERS = 32_000;
+/**
+ * The transcript bound at the baseline window. A model with a larger window
+ * carries proportionally more (`transcriptLimits`), and the engine compacts in
+ * place past that; these are the numbers a 128,000-token model, or one the
+ * catalog does not name, gets.
+ */
+export const TRANSCRIPT_MAX_MESSAGES = BASELINE_CONTEXT_BUDGET.transcript_messages;
+export const TRANSCRIPT_MAX_CHARACTERS =
+  BASELINE_CONTEXT_BUDGET.transcript_tokens * CONTEXT_CHARS_PER_TOKEN;
+
+/**
+ * The most the serialized transcript may take of a request body, in UTF-8 bytes
+ * as it travels: embedded as text in the attempt's input and escaped again in
+ * the request. Four tenths of the largest body the gateway reads, so the rest
+ * of the request always has room.
+ */
+export const TRANSCRIPT_MAX_WIRE_BYTES = Math.floor(0.4 * GATEWAY_MAX_REQUEST_BYTES);
+
+/**
+ * A transcript bound: messages, tokens by the engine's own estimate (a token per
+ * character in the scripts a tokenizer charges by the character, four UTF-8
+ * bytes to the token elsewhere), and bytes on the wire.
+ */
+export type TranscriptLimits = { maxMessages: number; maxTokens: number; maxBytes: number };
+
+/** The transcript bound a context budget sets. */
+export const transcriptLimits = (budget: ContextBudget): TranscriptLimits => ({
+  maxMessages: budget.transcript_messages,
+  maxTokens: budget.transcript_tokens,
+  maxBytes: TRANSCRIPT_MAX_WIRE_BYTES,
+});
+
+const BASELINE_TRANSCRIPT: TranscriptLimits = transcriptLimits(BASELINE_CONTEXT_BUDGET);
+
+/** The transcript as the request carries it: text inside the input, escaped again. */
+const wireBytes = (serialized: string): number => Buffer.byteLength(JSON.stringify(serialized));
 const omitted = '[Content omitted from bounded context; the durable record remains stored.]';
 const toolResult = z.object({ call_id: z.string().min(1), ok: z.boolean(), result: jsonObject });
 
@@ -78,23 +122,47 @@ export class BundleContextLimitError extends Error {
  * abbreviated, but their call IDs remain exact. If identities alone do not fit,
  * refuse the attempt instead of silently discarding its replay protection.
  */
-export function boundTranscript(messages: readonly CanonicalMessage[]): CanonicalMessage[] {
+export function boundTranscript(
+  messages: readonly CanonicalMessage[],
+  limits: TranscriptLimits = BASELINE_TRANSCRIPT,
+): CanonicalMessage[] {
+  const { maxMessages, maxTokens, maxBytes } = limits;
+  // Bound by characters at four to the token, then check the result against
+  // the engine's own estimate and the bytes it takes on the wire. Text in a
+  // script a tokenizer charges by the character, or that takes three bytes to
+  // the character, comes out over; the character bound is narrowed in
+  // proportion until both hold. Latin text fits on the first pass.
+  let characters = maxTokens * CONTEXT_CHARS_PER_TOKEN;
+  for (let pass = 0; ; pass++) {
+    const bounded = boundByCharacters(messages, maxMessages, characters);
+    const serialized = JSON.stringify(bounded);
+    const tokens = estimateInputTokens(serialized);
+    const bytes = wireBytes(serialized);
+    if (tokens <= maxTokens && bytes <= maxBytes) return bounded;
+    if (pass >= 8)
+      throw new BundleContextLimitError('the transcript does not fit its token and byte bounds');
+    characters = Math.floor(characters * Math.min(maxTokens / tokens, maxBytes / bytes) * 0.95);
+  }
+}
+
+/** The bound in serialized characters, keeping every completed tool identity. */
+function boundByCharacters(
+  messages: readonly CanonicalMessage[],
+  maxMessages: number,
+  maxCharacters: number,
+): CanonicalMessage[] {
   const tools = new Map<string, number>();
   for (const [index, message] of messages.entries()) {
     if (message.role === 'tool' && message.tool_call_id) tools.set(message.tool_call_id, index);
   }
-  if (tools.size > TRANSCRIPT_MAX_MESSAGES) {
+  if (tools.size > maxMessages) {
     throw new BundleContextLimitError(
       'completed tool identities exceed the transcript message limit',
     );
   }
   const required = new Set(tools.values());
   const selected = new Set(required);
-  for (
-    let index = messages.length - 1;
-    index >= 0 && selected.size < TRANSCRIPT_MAX_MESSAGES;
-    index--
-  ) {
+  for (let index = messages.length - 1; index >= 0 && selected.size < maxMessages; index--) {
     const message = messages[index];
     if (!message || (message.role === 'tool' && message.tool_call_id)) continue;
     selected.add(index);
@@ -105,7 +173,7 @@ export function boundTranscript(messages: readonly CanonicalMessage[]): Canonica
     if (!message) throw new Error('transcript index disappeared');
     return { ...message, content: omitted };
   });
-  while (JSON.stringify(bounded).length > TRANSCRIPT_MAX_CHARACTERS) {
+  while (JSON.stringify(bounded).length > maxCharacters) {
     const removable = indices.findIndex((index) => !required.has(index));
     if (removable < 0) {
       throw new BundleContextLimitError(
@@ -123,7 +191,7 @@ export function boundTranscript(messages: readonly CanonicalMessage[]): Canonica
     const original = sourceIndex === undefined ? undefined : messages[sourceIndex];
     if (!message || !original) throw new Error('transcript index disappeared');
     const previousLength = JSON.stringify(message.content).length;
-    const available = TRANSCRIPT_MAX_CHARACTERS - JSON.stringify(bounded).length + previousLength;
+    const available = maxCharacters - JSON.stringify(bounded).length + previousLength;
     if (JSON.stringify(original.content).length <= available) {
       message.content = original.content;
       continue;
@@ -186,6 +254,21 @@ function earlierStep({ kind, payload, receipt }: EarlierAction): {
       return {
         line: `- Read the web page ${address}`,
         text: [title && `Title: ${title}.`, body].filter(Boolean).join(' '),
+      };
+    }
+    case 'web.search': {
+      const query = clip(detail.query ?? input.query, 300);
+      const results = Array.isArray(detail.results) ? detail.results : [];
+      const listed = results
+        .slice(0, 8)
+        .map((item) => {
+          const entry = (item ?? {}) as Record<string, unknown>;
+          return `${clip(entry.title, 120)} (${clip(entry.url, 200)})`;
+        })
+        .join('; ');
+      return {
+        line: `- Searched the web for "${query}"`,
+        text: [clip(detail.answer, 600), listed].filter(Boolean).join(' '),
       };
     }
     case 'terminal.run':
@@ -267,12 +350,43 @@ export function renderEarlierWork(actions: readonly EarlierAction[]): string {
   ].join('\n');
 }
 
+/**
+ * A room's thread and the request's own history as one conversation, in the
+ * order things were said. Each list is already in order; where two entries
+ * share a time the thread's comes first, and the history's own order (a tool
+ * call before its result) is never changed.
+ */
+export function inTimeOrder(
+  thread: readonly CanonicalMessage[],
+  history: readonly CanonicalMessage[],
+): CanonicalMessage[] {
+  const merged: CanonicalMessage[] = [];
+  let next = 0;
+  for (const entry of history) {
+    while (next < thread.length && (thread[next]?.at ?? '') <= entry.at) {
+      const said = thread[next++];
+      if (said) merged.push(said);
+    }
+    merged.push(entry);
+  }
+  return [...merged, ...thread.slice(next)];
+}
+
 /** Pure assembly is shared by the database reader and focused replay tests. */
 export function assembleHistory(
   events: readonly HistoryEvent[],
   attempts: readonly HistoryAttempt[],
   afterSeq: number,
+  context: {
+    /** In a room, the name of each person who spoke, by principal; each message carries its speaker's. */
+    names?: ReadonlyMap<string, string>;
+    /** The text of each file the person sent, by id: what their messages' file blocks hold. */
+    fileTexts?: ReadonlyMap<string, string | null>;
+    /** How much transcript this attempt's model has room for. */
+    limits?: TranscriptLimits;
+  } = {},
 ): Pick<AttemptBundle, 'inputs' | 'transcript'> & { progressSummary: string } {
+  const { names, fileTexts = new Map(), limits = BASELINE_TRANSCRIPT } = context;
   const inputs: AttemptBundle['inputs'] = {
     new_user_messages: [],
     approval_results: [],
@@ -302,9 +416,19 @@ export function assembleHistory(
       payload.kind === 'user_message' &&
       typeof payload.text === 'string'
     ) {
+      const speaker =
+        names && typeof payload.principal_id === 'string'
+          ? names.get(payload.principal_id)
+          : undefined;
       const message: CanonicalMessage = {
         role: 'user',
-        content: pickedForAgent(payload.text, payload.chosen),
+        // The person's words, then the files they sent with them, fenced as untrusted data.
+        content: withFiles(
+          pickedForAgent(payload.text, payload.chosen),
+          messageFiles(payload.attachments),
+          fileTexts,
+        ),
+        ...(speaker ? { name: speaker } : {}),
         at: row.createdAt.toISOString(),
       };
       transcript.push(message);
@@ -344,7 +468,44 @@ export function assembleHistory(
     }
   }
   transcript.sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
-  return { inputs, transcript: boundTranscript(transcript), progressSummary };
+  return {
+    inputs,
+    transcript: boundAroundNewMessages(transcript, inputs.new_user_messages, limits),
+    progressSummary,
+  };
+}
+
+/**
+ * The transcript bound with this turn's new messages taken out of its room
+ * first. A new message is shown whole under "From the person", with the text of
+ * any file it carries, so its size comes out of the transcript's budget and an
+ * attached document cannot carry the first request past the bound. The new
+ * messages keep their places in the transcript, whole. When what is left cannot
+ * hold the completed tool identities, the whole bound is used as before rather
+ * than refuse an attempt that ran before.
+ */
+function boundAroundNewMessages(
+  transcript: readonly CanonicalMessage[],
+  fresh: readonly CanonicalMessage[],
+  limits: TranscriptLimits,
+): CanonicalMessage[] {
+  if (fresh.length === 0) return boundTranscript(transcript, limits);
+  const isFresh = new Set(fresh);
+  const serialized = JSON.stringify(fresh);
+  const remaining: TranscriptLimits = {
+    maxMessages: Math.max(1, limits.maxMessages - fresh.length),
+    maxTokens: Math.max(0, limits.maxTokens - estimateInputTokens(serialized)),
+    maxBytes: Math.max(0, limits.maxBytes - wireBytes(serialized)),
+  };
+  const prior = transcript.filter((message) => !isFresh.has(message));
+  let bounded: CanonicalMessage[];
+  try {
+    bounded = boundTranscript(prior, remaining);
+  } catch (error) {
+    if (!(error instanceof BundleContextLimitError)) throw error;
+    return boundTranscript(transcript, limits);
+  }
+  return [...bounded, ...fresh].sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
 }
 
 /**
@@ -598,7 +759,18 @@ export async function buildAttemptSkeleton(
     }
     return [entry];
   });
-  const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq);
+  // A room's request reads its thread, with each person's name on what they said.
+  const room = row.audience === 'room' ? await roomTranscript(tx, row) : null;
+  // A job running under a conversation reads that conversation's files too.
+  const files = await attachmentTexts(
+    tx,
+    row.experienceParentId ? [row.id, row.experienceParentId] : [row.id],
+  );
+  const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq, {
+    ...(room?.names ? { names: room.names } : {}),
+    fileTexts: new Map([...files].map(([id, file]) => [id, file.text])),
+    limits: transcriptLimits(attemptContextBudget(model.model, jobBudget.parse(row.budget))),
+  });
   // A decision names an action id; the attempt needs to know what that action
   // is. The row is this job's own, and the payload is the one the owner read.
   const decided = history.inputs.approval_results.map((entry) => entry.action_id);
@@ -649,13 +821,25 @@ export async function buildAttemptSkeleton(
   const [activeTurn] = row.currentTurnId
     ? await tx.select().from(experienceTurn).where(eq(experienceTurn.id, row.currentTurnId))
     : [];
+  // The turn's agent, else the job's. One deleted since answers no more: its
+  // work goes to the space's own agent, Melete, as deleting it moves its chats.
+  // A room's request always has an agent: the room's.
   const personaId = activeTurn?.agentId ?? row.agentId;
-  const [persona] = personaId
+  const [bound] = personaId
     ? await tx
         .select()
         .from(agent)
         .where(and(eq(agent.id, personaId), eq(agent.spaceId, row.spaceId)))
     : [];
+  const [persona] =
+    bound?.deletedAt || (!bound && room)
+      ? await tx
+          .select()
+          .from(agent)
+          .where(and(eq(agent.spaceId, row.spaceId), eq(agent.isDefault, true)))
+      : bound
+        ? [bound]
+        : [];
   const procedures = await selectProcedureSkills(tx, row, model, runtimeVersion);
   const context = await selectedContext(
     tx,
@@ -667,6 +851,7 @@ export async function buildAttemptSkeleton(
     await procedureReach(tx, procedures),
     // An agent that keeps no memory is not offered a skill that promises to.
     persona?.writesMemory !== false,
+    attemptContextBudget(model.model, jobBudget.parse(row.budget)).max_skills,
   );
   const wait = waitSpec.parse(row.wait);
   // A transition into queued clears the wait. A queued job that still holds an
@@ -722,12 +907,21 @@ export async function buildAttemptSkeleton(
     previous ? { id: previous.id, endedAt: previous.endedAt } : null,
     readDeferred(row),
   );
+  const [parentSpace] = room
+    ? await tx.select({ name: space.name }).from(space).where(eq(space.id, row.spaceId))
+    : [];
   const [profile] = await tx
     .select({ timeZone: experienceProfile.timeZone })
     .from(experienceProfile)
     .where(eq(experienceProfile.spaceId, row.spaceId));
   return responsibilityAttemptBundle.parse({
-    ...(persona ? { identity: agentIdentity(agentView(persona)) } : {}),
+    ...(persona
+      ? {
+          identity: room
+            ? roomIdentity(agentView(persona), parentSpace?.name ?? 'this room')
+            : agentIdentity(agentView(persona)),
+        }
+      : {}),
     ...(profile?.timeZone ? { time_zone: canonicalTimeZone(profile.timeZone) } : {}),
     ...(access.principalId
       ? { principal_id: access.principalId, membership_generation: access.generation }
@@ -736,7 +930,15 @@ export async function buildAttemptSkeleton(
     attempt: { ...attemptIdentity, job_id: row.id },
     job: {
       title: row.title,
-      objective: [row.objective, await situation(tx, row)].filter(Boolean).join('\n\n'),
+      objective: [
+        row.objective,
+        await situation(tx, row),
+        room
+          ? `Asked by ${JSON.stringify(room.requester)}. Only ${JSON.stringify(room.requester)} can answer this request's questions. ${room.approvers}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
       constraints,
       progress_summary: [history.progressSummary, earlierWork].filter(Boolean).join('\n\n'),
       unresolved_questions: wait.kind === 'user_input' ? [wait.question] : [],
@@ -745,9 +947,15 @@ export async function buildAttemptSkeleton(
     },
     inputs: { ...history.inputs, ...(cancelledWait ? { cancelled_wait: cancelledWait } : {}) },
     since_last: delta,
-    transcript: history.transcript,
+    transcript: room
+      ? boundTranscript(inTimeOrder(room.thread, history.transcript))
+      : history.transcript,
     tools: [],
-    skills: mergeSkills(procedures, context.skills),
+    skills: mergeSkills(
+      procedures,
+      context.skills,
+      attemptContextBudget(model.model, jobBudget.parse(row.budget)).max_skills,
+    ),
     knowledge: context.knowledge,
     workspace: { mount: '/work', files: [] },
     // The budget is one question per wake, stated rather than implied.
@@ -782,6 +990,7 @@ export async function buildBundle(
 ): Promise<{ bundle: AttemptBundle; recall: RecallResult }> {
   const { sql, scope } = options;
   const jobId = skeleton.attempt.job_id;
+  const budget = attemptContextBudget(skeleton.model.model, skeleton.budget);
   const result = await recall(
     sql,
     scope,
@@ -789,7 +998,12 @@ export async function buildBundle(
       job_id: jobId,
       query: attemptRecallQuery(skeleton),
       mode: 'current',
-      max_tokens: CONTEXT_LIMITS.knowledge_tokens,
+      max_tokens: budget.knowledge_tokens,
+      // Ten records per baseline budget, as many more as the budget is larger.
+      limit: Math.min(
+        50,
+        Math.ceil((10 * budget.knowledge_tokens) / BASELINE_CONTEXT_BUDGET.knowledge_tokens),
+      ),
     },
     {
       includeProfile: true,
@@ -797,7 +1011,9 @@ export async function buildBundle(
       withheld: options.withheld === true,
     },
   );
-  const tools = (await options.catalog(skeleton)).slice(0, CONTEXT_LIMITS.max_tools);
+  // A room's request is also handed what people shared into the room from their own memory.
+  const recalled = await withSharedItems(sql, scope, jobId, result);
+  const tools = (await options.catalog(skeleton)).slice(0, budget.max_tools);
   const repairBriefs = await pendingRepairBriefs(sql, scope, jobId);
   // The delta was built once, in the lease transaction, from the job's own
   // rows. Memory sources are the one kind of evidence only readable here, under
@@ -813,11 +1029,11 @@ export async function buildBundle(
       and (${since}::timestamptz is null or s.ingested_at > ${since}::timestamptz)
     order by s.ingested_at, s.id limit 50`;
   return {
-    recall: result,
+    recall: recalled.recall,
     bundle: {
       ...skeleton,
       tools,
-      knowledge: result.items.map(asKnowledge),
+      knowledge: recalled.knowledge,
       inputs: { ...skeleton.inputs, repair_briefs: repairBriefs },
       since_last: {
         ...skeleton.since_last,
@@ -1039,6 +1255,7 @@ export async function completionFacts(
 function mergeSkills(
   procedures: AttemptBundle['skills'],
   selected: AttemptBundle['skills'],
+  maxSkills: number,
 ): AttemptBundle['skills'] {
   // A catalog skill keeps its name: a learned skill that takes it is left out
   // rather than replacing Melete's own or the owner's added skill.
@@ -1052,5 +1269,5 @@ function mergeSkills(
   for (const skill of selected) {
     merged.push(skill);
   }
-  return merged.slice(0, CONTEXT_LIMITS.max_skills);
+  return merged.slice(0, maxSkills);
 }

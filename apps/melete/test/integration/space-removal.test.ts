@@ -307,6 +307,7 @@ const MEMORY: readonly string[] = [
   'memory_rejections',
   'memory_repair_briefs',
   'memory_rewinds',
+  'memory_room_capture',
   'memory_sources',
   'memory_spaces',
   'memory_streams',
@@ -328,10 +329,14 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   // Jobs and everything below them, the rows that outlive a job, and what the
   // space holds apart from its jobs.
   job: 'operational',
+  // Kept, with its space and job cleared, so a spending limit is not reset.
+  model_usage: 'operational',
   artifact: 'operational',
   app: 'operational',
   // The bytes are files: they go in the files phase, and their references after them.
   blob_ref: 'files',
+  // A file uploaded for a message and never sent has no chat to go with.
+  attachment: 'operational',
   browser_recipe_candidate: 'operational',
   // With a browser worker, the browser phase takes these with the profile;
   // this test runs without one, so they go with the space's other rows.
@@ -370,6 +375,12 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   privacy_vault: 'operational',
   skill: 'operational',
   task: 'operational',
+  room_presence: 'operational',
+  room_handoff: 'operational',
+  room_invite: 'operational',
+  room_policy: 'operational',
+  room_message: 'operational',
+  room_thread: 'operational',
   // After the jobs and actions that `restrict` them.
   agent: 'principals',
   connection: 'principals',
@@ -684,6 +695,10 @@ describe.if(handle !== null)('removing a space', () => {
       values (${conversation}, ${seeded.spaceId}, 'finance')`;
     await sql`insert into privacy_request (space_id, conversation_id, job_id, attempt_id, route)
       values (${seeded.spaceId}, ${conversation}, ${conversation}, 'att_privacy', 'cloud')`;
+    // A file uploaded for a message that was never sent.
+    await sql`insert into attachment (id, space_id, principal_id, name, media_type, kind, size, blob_key)
+      values (${`file_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId}, 'notes.txt',
+        'text/plain', 'text', 5, ${`sha256/${'0'.repeat(64)}`})`;
     const sandboxes = sandboxRemovalTeardown(
       new SandboxSessions(sql, { leaseSeconds: 300, workspaceRetentionSeconds: 3_600 }),
       () => new FakeSandboxProvider(),

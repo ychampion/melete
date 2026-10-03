@@ -34,6 +34,7 @@ import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountScreenshots } from './api/screenshots.ts';
 import { mountTriggers } from './api/triggers.ts';
+import { mountHealthDetail, mountUsage } from './api/usage.ts';
 import {
   mountVoice,
   PostgresVoiceAllowance,
@@ -45,8 +46,11 @@ import {
 import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-companion.ts';
 import { mountApps } from './apps/routes.ts';
 import { mountAppViews } from './apps/serve.ts';
+import { mountAttachments } from './attachments/routes.ts';
+import { AttachmentService } from './attachments/store.ts';
 import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
+import { configuredSearchGateway } from './broker/search-gateway.ts';
 import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
 import { CompanyReplyPoller, connectorReplyMailbox } from './companies/replies.ts';
@@ -65,8 +69,10 @@ import {
 } from './connectors/configured.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
+import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
+import { owner } from './db/schema.ts';
 import { mountDevices } from './devices/routes.ts';
 import { moveWorkspaceScreensUntilDone } from './devices/screens.ts';
 import { DeviceService } from './devices/service.ts';
@@ -81,6 +87,14 @@ import { providerSignIn } from './gateway/configured.ts';
 import type { ProviderSignIn } from './gateway/credentials.ts';
 import type { GatewayOptions } from './gateway/index.ts';
 import { ModelSettingsService } from './gateway/model-settings.ts';
+import { routingFromEnv, routingWarnings } from './gateway/routing.ts';
+import { type SpendingGuard, spendingFromEnv } from './gateway/spending.ts';
+import {
+  alertSendersFromEnv,
+  type HealthDetail,
+  HealthMonitor,
+  healthDetail,
+} from './health/monitor.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
@@ -129,13 +143,17 @@ import {
   SPACE_BEING_CLEARED,
   spaceAuthority,
 } from './principals/authority.ts';
+import { startGuestExpiry } from './principals/expiry.ts';
 import { mountPrincipals } from './principals/routes.ts';
+import { PrincipalService } from './principals/service.ts';
 import { withPrivacyGate } from './privacy/gate.ts';
 import { defaultPrivacyRouter, PostgresPrivacyStore, PrivacyRouter } from './privacy/index.ts';
 import { mountPrivacy } from './privacy/routes.ts';
 import { engineProtocol, providerAddress, servicePrivacyRouter } from './privacy/service.ts';
 import { mountPush } from './push/routes.ts';
 import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
+import { mountRooms } from './rooms/routes.ts';
+import type { RoomSurface } from './rooms/surface.ts';
 import { attachRuns, RunService } from './runs/service.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
@@ -236,10 +254,18 @@ export type AppDeps = {
   modelSettings?: ModelSettingsService;
   /** How many problem reports one person may send in a short time; a test supplies its clock. */
   feedbackLimiter?: FeedbackLimiter;
+  /** The installation's spending caps; Settings shows usage from them. */
+  spending?: SpendingGuard;
+  /** The operator's health detail. Left out, the database and queue checks alone. */
+  healthDetail?: () => Promise<HealthDetail>;
   /** Where published apps' files are kept. Left out, an app's files are not served. */
   blobs?: BlobStore;
   /** Signs app views. Left out, keyed from the master key. */
   viewTokens?: ViewTokens;
+  /** Chat platforms people can talk to rooms from, besides the web. Left out, none. */
+  roomSurfaces?: RoomSurface[];
+  /** The files people send in chat. Left out, nothing can be attached. */
+  attachments?: AttachmentService;
 };
 
 export function createApp(deps: AppDeps) {
@@ -305,6 +331,7 @@ export function createApp(deps: AppDeps) {
       tokens: deps.viewTokens ?? new ViewTokens(deps.env.MELETE_MASTER_KEY),
     });
   if (deps.db) mountScreenshots(app, deps.db, deps.env.MELETE_WORK_DIR, personalSpace);
+  if (deps.attachments) mountAttachments(app, deps.attachments, personalSpace, limits);
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   // After mountPrincipals, so the owner-only guard it installs on every
   // non-GET under /spaces/:id runs before the handler that removes one.
@@ -330,6 +357,15 @@ export function createApp(deps: AppDeps) {
     mountProviderSignIn(app, { db: deps.db, signIn });
     mountModelSettings(app, { db: deps.db, settings: modelSettings });
   }
+  if (deps.spending)
+    mountUsage(app, {
+      spending: deps.spending,
+      isOwner: async (actor) => {
+        if (!actor || !deps.db) return false;
+        const [installation] = await deps.db.select({ id: owner.id }).from(owner).limit(1);
+        return installation?.id === actor;
+      },
+    });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -385,7 +421,8 @@ export function createApp(deps: AppDeps) {
       companion: deps.voiceCompanion ?? null,
     });
   if (deps.db) mountPush(app, deps.push ?? new PushService(deps.db, pushConfig(deps.env)));
-  if (deps.db)
+  const experience =
+    deps.db &&
     mountExperience(app, {
       db: deps.db,
       jobs: deps.jobs,
@@ -402,6 +439,24 @@ export function createApp(deps: AppDeps) {
       browser: Boolean(deps.browserSessions),
       privacy,
       runs: deps.runs ?? deps.runner?.runs ?? (deps.jobs ? new RunService(deps.jobs) : undefined),
+      attachments: deps.attachments,
+    });
+  // Rooms: shared spaces where several people talk to one agent.
+  if (deps.db && deps.jobs && submissions)
+    mountRooms(app, {
+      db: deps.db,
+      jobs: deps.jobs,
+      submissions,
+      principals: new PrincipalService(deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs),
+      runner: deps.runner,
+      events: experience ? experience.events : undefined,
+      permissions: experience ? experience.permissions : undefined,
+      changes: deps.events,
+      computers: deps.sandboxComputers,
+      memory: deps.memory,
+      env: deps.env,
+      triggers: deps.triggers,
+      surfaces: deps.roomSurfaces,
     });
   if (deps.db)
     mountCompanies(app, {
@@ -414,6 +469,7 @@ export function createApp(deps: AppDeps) {
         jobs: deps.jobs,
         triggers: deps.triggers,
         modelSettings,
+        spending: deps.spending,
       }),
       ...deps.companies,
     });
@@ -454,6 +510,13 @@ export function createApp(deps: AppDeps) {
   if (deps.browserSessions) mountBrowserSites(app, deps.browserSessions.sites);
   if (deps.sandboxComputers) mountSandboxComputers(app, deps.sandboxComputers);
   if (deps.sandboxPreviews) mountSandboxPreviews(app, deps.sandboxPreviews);
+
+  mountHealthDetail(app, {
+    token: deps.env.MELETE_OPERATOR_TOKEN,
+    detail:
+      deps.healthDetail ??
+      (() => healthDetail({ version: VERSION, database: deps.checkDatabase, sql: deps.sql })),
+  });
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
@@ -543,6 +606,11 @@ export async function bootstrap(
       "WARNING: Hermes process attempts are not sandboxed and run with the service user's OS access. Use the Docker supervisor for container isolation.\n",
     );
   for (const warning of demonstrationWarnings(env)) process.stderr.write(`WARNING: ${warning}\n`);
+  for (const warning of routingWarnings(
+    env as unknown as Record<string, string | undefined>,
+    routingFromEnv(env),
+  ))
+    process.stderr.write(`WARNING: ${warning}\n`);
   // An engine the supervisor cannot drive is named here, before the database is
   // opened or migrated, instead of as a Docker 400 on the first attempt.
   if (!options.runtime && env.MELETE_RUNTIME_ADAPTER === 'docker')
@@ -576,15 +644,18 @@ export async function bootstrap(
   let connections: ConfiguredConnection[] = [];
   let stopEpisodeRetention: (() => void) | undefined;
   let stopEgressRetention: (() => void) | undefined;
+  let stopGuestExpiry: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
   let removals: SpaceRemovalService | undefined;
   let blobs: ReturnType<typeof startBlobs> | undefined;
+  let attachments: AttachmentService | undefined;
   let memoryGateway: Awaited<ReturnType<typeof configuredMemoryGateway>> | undefined;
   let voiceCompanion: Awaited<ReturnType<typeof configuredVoiceCompanion>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
+  let searchGateway: Awaited<ReturnType<typeof configuredSearchGateway>> | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
   let pushDispatcher: PushDispatcher | undefined;
@@ -599,6 +670,10 @@ export async function bootstrap(
   let processSweep: { stop(): void } | undefined;
   let processMonitor: { stop(): void } | undefined;
   let processFactory: Parameters<typeof startProcessMonitor>[0] | undefined;
+  let spending: SpendingGuard | undefined;
+  let runtimeProbe: (() => Promise<unknown>) | undefined;
+  let healthMonitor: HealthMonitor | undefined;
+  const routing = routingFromEnv(env);
   /** This instance among any others on the database, and the singleton work it leads. */
   let instances: InstanceRegistry | undefined;
   let leases: Leases | undefined;
@@ -610,9 +685,11 @@ export async function bootstrap(
     stopEpisodeRetention?.();
     stopEgressRetention?.();
     clearInterval(leftovers);
+    stopGuestExpiry?.();
     sandboxes?.stop();
     processSweep?.stop();
     processMonitor?.stop();
+    await healthMonitor?.stop();
     let failure: unknown;
     for (const stop of [
       () =>
@@ -635,6 +712,7 @@ export async function bootstrap(
       () => blobs?.collector.stop(),
       () => memory?.stop(),
       () => memoryGateway?.close(),
+      () => searchGateway?.close(),
       () => voiceCompanion?.close(),
       () => deploymentMemory?.close(),
       () => effectBoundary?.close(),
@@ -668,12 +746,19 @@ export async function bootstrap(
         const id = instances.id;
         leases = new Leases(() => leaseConnection(url, id));
       }
+      // The blob store first: the connectors, the gateway and the routes keep files in it.
+      blobs = startBlobs(handle.sql, env, options.workers !== false, () =>
+        leading(leases, 'blob-collector'),
+      );
+      attachments = new AttachmentService(handle.sql, blobs.store);
       await closeInterruptedScans(handle.db);
       await expireEpisodes(handle.sql);
       // One sign-in service, so the API and the gateway share one refresh per provider.
       signIn = providerSignIn(handle.sql, env);
       // One reader of the model chosen in the app, for the API, the runner and the gateway.
       modelSettings = new ModelSettingsService({ db: handle.db, env, signIn });
+      // One record of what every model call cost, shared by every gateway.
+      spending = spendingFromEnv(handle.sql, env);
       stopEpisodeRetention = startEpisodeRetention(handle.sql, () =>
         leading(leases, 'episode-retention'),
       );
@@ -711,13 +796,27 @@ export async function bootstrap(
       }
       // One connector registry serves the API catalog, the effect boundary and
       // the experience routes; the boundary builds the one configured broker.
+      // Searches may fall to DuckDuckGo's page from this address; the operator is told once.
+      const keyless = keylessSearchNotice(env);
+      if (keyless) process.stderr.write(`${keyless}\n`);
+      // The model's own web search goes through a gateway of its own, metered on the job.
+      searchGateway = await configuredSearchGateway(handle.sql, env, privacy, {
+        signIn,
+        settings: modelSettings,
+        spending,
+      });
       registry = await connectorsFromEnv(handle.sql, env, {
         connections,
         browserSessions: browser?.sessions,
         stdioLauncher,
+        // A file the person sent can be saved into the agent's workspace.
+        attachments,
         // A space or agent the person marked private reads no public web pages.
         privateContext: ({ spaceId, agentId }, query) =>
           privacy.marksPrivate(spaceId, agentId, query),
+        webSearch: webSearchFromEnv(env, { native: searchGateway.backend }),
+        // A private or sensitive conversation's words never go to an outside search.
+        searchPrivacy: ({ jobId, query }) => privacy.outsideSearchRefusal(jobId, query),
       });
       catalog = new RuntimeCatalog(handle.db, registry);
       // Sandboxes are the service's own: their providers come from the same
@@ -793,7 +892,7 @@ export async function bootstrap(
         env,
         options.fakeProvider,
         privacy,
-        { settings: modelSettings, signIn },
+        { settings: modelSettings, signIn, spending },
       );
     // Voice mode's companion: a short model call through the gateway, so the
     // privacy router reads it like any other. Only where voice mode exists.
@@ -801,6 +900,7 @@ export async function bootstrap(
       voiceCompanion = await configuredVoiceCompanion(env, options.fakeProvider, privacy, {
         settings: modelSettings,
         signIn,
+        spending,
       });
     if (handle && queue && env.MELETE_RUNTIME_ADAPTER === 'docker') {
       deploymentMemory = await startDeploymentMemory({
@@ -812,6 +912,7 @@ export async function bootstrap(
         onJobRecompute: wakeRecomputedJob,
         gateway: memoryGateway?.gateway,
         privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
+        roomPrivacyOrigin: (spaceId, text) => privacy.captureOriginInSpace(spaceId, text),
       });
     }
     if (jobs) {
@@ -883,6 +984,7 @@ export async function bootstrap(
                 gateway: memoryGateway?.gateway,
                 captureChat: true,
                 privacyOrigin: (jobId, text) => privacy.captureOrigin(jobId, text),
+                roomPrivacyOrigin: (spaceId, text) => privacy.captureOriginInSpace(spaceId, text),
               }
             : { gateway: memoryGateway?.gateway },
         );
@@ -902,6 +1004,8 @@ export async function bootstrap(
           registry,
           signIn,
           modelSettings,
+          spending,
+          blobs: blobs?.store,
         });
         const Supervisor =
           env.MELETE_RUNTIME_SUPERVISOR === 'docker'
@@ -939,6 +1043,9 @@ export async function bootstrap(
         supervisedRuntime ??
         hermesRuntime ??
         (env.MELETE_RUNTIME_ADAPTER === 'stub' ? new StubRuntimeAdapter() : undefined);
+      const probed = runtime;
+      if (probed && env.MELETE_RUNTIME_ADAPTER !== 'stub')
+        runtimeProbe = () => probed.capabilities();
       if (!runtime || !env.MELETE_CAPABILITY_KEY)
         throw new Error(
           'Configure MELETE_CAPABILITY_KEY and provide a RuntimeAdapter (or MELETE_RUNTIME_ADAPTER=stub for scripted local runs).',
@@ -989,9 +1096,17 @@ export async function bootstrap(
         artifactRoots: { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
-        // A model chosen in the app applies from the next attempt.
+        // A model chosen in the app applies from the next attempt. On the
+        // server's default, a configured vision model reads its pictures.
         ...(env.MELETE_RUNTIME_ADAPTER !== 'stub' && modelSettings
-          ? { resolveModel: modelSettings.activeChoice.bind(modelSettings) }
+          ? {
+              resolveModel: (tx: Parameters<ModelSettingsService['routedChoice']>[1]) =>
+                (modelSettings as ModelSettingsService).routedChoice(routing, tx),
+            }
+          : {}),
+        // Past a spending limit no attempt starts, and one cut short ends on it.
+        ...(spending
+          ? { spendingLimit: (jobId: string) => (spending as SpendingGuard).reachedForJob(jobId) }
           : {}),
         loadCatalog: catalog?.forAttempt,
         liveConnectionScopes: !env.MELETE_ENABLE_TEST_CONNECTOR,
@@ -1013,6 +1128,14 @@ export async function bootstrap(
       // cut short by shutdown, and never inside the outcome transaction: both
       // are provider calls, and that transaction holds the event order lock.
       if (runs) attachRuns(runner, runs);
+      // A call refused at a spending limit ends its attempt at once.
+      if (spending) {
+        const stopping = runner;
+        spending.onRefused = (_scope, principal, message) => {
+          if (principal.privacy.kind === 'job')
+            stopping.stopForSpending(principal.jobId, principal.attemptId, message);
+        };
+      }
       if (sandboxes) runner.onSettled.push((attemptId) => sandboxes?.afterAttempt(attemptId));
       // Where the broker runs here, what a finished attempt left dispatched with
       // nobody waiting on it is settled before the attempt commits.
@@ -1035,6 +1158,7 @@ export async function bootstrap(
         privacy,
         modelSettings,
         () => leading(leases, 'learning-drain'),
+        spending,
       );
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
@@ -1081,14 +1205,12 @@ export async function bootstrap(
           privacy,
           modelSettings,
           runs,
+          spending,
+          blobs: blobs?.store,
         });
       // A removal outlives the request that asked for it and the process that
       // was running it, so it is resumed at startup and every minute after.
       const journal = (deploymentMemory?.routes ?? memory)?.journal;
-      if (handle)
-        blobs = startBlobs(handle.sql, env, options.workers !== false, () =>
-          leading(leases, 'blob-collector'),
-        );
       if (handle && journal) {
         removals = new SpaceRemovalService({
           db: handle.db,
@@ -1148,6 +1270,12 @@ export async function bootstrap(
           processMonitor = startProcessMonitor(processFactory, handle.sql, triggers, () =>
             leading(leases, 'process-monitor'),
           );
+        if (handle)
+          stopGuestExpiry = startGuestExpiry(
+            new PrincipalService(handle.db, env.MELETE_SPACES_DIR, jobs),
+            undefined,
+            () => leading(leases, 'guest-expiry'),
+          );
         // A chase spends most of its life waiting on a reply, and the wait it
         // holds is an event wait on a `mail.new` trigger. Without something
         // putting that event there, only the deadline ever wakes the job, and a
@@ -1183,9 +1311,39 @@ export async function bootstrap(
     throw error;
   }
 
+  const sqlForHealth = handle?.sql;
+  const checkDatabase = async () => {
+    if (!handle) return 'not_configured' as const;
+    return (await pingDatabase(handle)) ? ('ok' as const) : ('unreachable' as const);
+  };
+  const detail = () =>
+    healthDetail({
+      version: VERSION,
+      database: checkDatabase,
+      ...(runtimeProbe ? { runtime: runtimeProbe } : {}),
+      ...(sqlForHealth ? { sql: sqlForHealth } : {}),
+    });
+  // The operator is told when the service turns unhealthy, where alerts are configured.
+  if (options.workers !== false) {
+    const senders = alertSendersFromEnv(env);
+    if (senders.length) {
+      healthMonitor = new HealthMonitor({
+        check: detail,
+        senders,
+        intervalMs: env.MELETE_ALERT_INTERVAL_SECONDS * 1000,
+        repeatMs: env.MELETE_ALERT_REPEAT_MINUTES * 60_000,
+        onError: (error) => process.stderr.write(`alert not sent: ${error.message}\n`),
+        leads: () => leading(leases, 'health-alerts'),
+      });
+      healthMonitor.start();
+    }
+  }
+
   const app = createApp({
     env,
     privacy,
+    spending,
+    healthDetail: detail,
     ...(blobs ? { blobs: blobs.store } : {}),
     db: handle?.db ?? null,
     jobs,
@@ -1222,10 +1380,8 @@ export async function bootstrap(
     providerSignIn: signIn,
     modelSettings,
     voiceCompanion: voiceCompanion?.companion ?? null,
-    checkDatabase: async () => {
-      if (!handle) return 'not_configured';
-      return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
-    },
+    checkDatabase,
+    attachments,
     ...(handle ? { checkMemory: () => memoryHealth(handle.sql) } : {}),
   });
 

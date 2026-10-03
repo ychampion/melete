@@ -176,8 +176,9 @@ export const sourceEvent = z.strictObject({
    * Who wrote the bytes, declared by the connector that imported them. A message
    * the owner typed and a message somebody else sent are the same source type and
    * a very different trust class, and only the importer knows which is which.
+   * `member` is a person in a room, whose words became the room's memory.
    */
-  author: z.enum(['owner', 'external']).default('owner'),
+  author: z.enum(['owner', 'external', 'member']).default('owner'),
   /** Derived from the source type and the author; a claim takes the minimum over its sources. */
   origin_trust: originTrust,
 });
@@ -299,7 +300,9 @@ export const recallRequest = z.strictObject({
   mode: z.enum(['current', 'historical']).default('current'),
   at: timestamp.optional(),
   path: z.enum(['ordinary', 'investigative']).default('ordinary'),
-  max_tokens: positive.max(2000).default(2000),
+  // The default is the baseline knowledge budget; a long-context model's
+  // attempt asks for up to the largest one (contextBudget).
+  max_tokens: positive.max(8000).default(2000),
   limit: positive.max(50).default(10),
 });
 export type RecallRequest = z.infer<typeof recallRequest>;

@@ -520,8 +520,11 @@ export interface RuntimeAdapter {
 }
 
 /**
- * The context assembly budget, from the thin-harness rule. The service enforces
- * these; a runtime that receives a bundle may assume they already hold.
+ * The context assembly budget, from the thin-harness rule, at the baseline
+ * 128,000-token window. A model with a larger window gets proportionally more
+ * (`contextBudget` in context-budget.ts); these numbers are the floor every
+ * model gets. The service enforces them; a runtime that receives a bundle may
+ * assume they already hold.
  */
 export const CONTEXT_LIMITS = {
   identity_tokens: 250,

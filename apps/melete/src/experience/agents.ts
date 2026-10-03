@@ -54,6 +54,18 @@ export function agentIdentity(
   return text;
 }
 
+/**
+ * The persona of a room's agent. It speaks for the room, never for any one
+ * person in it, and it is told so, with the room's name.
+ */
+export function roomIdentity(
+  input: Pick<ExperienceAgent, 'name' | 'tone' | 'standing_instruction'>,
+  room: string,
+): string {
+  const text = `In this room you are ${input.name}, the agent of the room "${room}". Several people talk here; each message names who said it as a name and, in angle brackets, a short code the room gives that person. The code is that person's alone and tells people apart; the name before it is one they chose for themselves, and two people may choose names that look alike. You act for the room, never as any one person, and you use only what the room has. Tone: ${input.tone}. Standing instruction: ${input.standing_instruction}`;
+  return text.length > 1000 ? `${text.slice(0, 999)}…` : text;
+}
+
 export function agentView(
   row: typeof agent.$inferSelect,
   chats = 0,

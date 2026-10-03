@@ -22,3 +22,66 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+
+/* Files in the box: a tile each, above the words. */
+.composer-tiles {
+  margin: 0;
+  list-style: none;
+}
+.attach-tile[data-doc="true"] {
+  max-width: 220px;
+}
+.attach-tile[data-state="failed"] {
+  border-color: var(--danger);
+}
+.attach-tile[data-state="failed"] .attach-meta,
+.attach-tile[data-state="failed"] > svg {
+  color: var(--danger);
+}
+.attach-busy {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  color: var(--text);
+}
+.attach-tile[data-doc="true"] .attach-busy {
+  background: color-mix(in srgb, var(--surface) 35%, transparent);
+}
+.attach-busy[data-failed="true"] {
+  color: var(--danger);
+}
+.attach-x:focus-visible > span {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+.attach-btn {
+  align-self: flex-end;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.composer-card[data-dropping="true"] {
+  border-color: var(--primary);
+  border-style: dashed;
+}
+.composer-drop {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  color: var(--primary);
+  font-size: 14px;
+  font-weight: 500;
+  pointer-events: none;
+}
+.composer-problem {
+  color: var(--danger);
+}

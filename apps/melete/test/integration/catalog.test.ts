@@ -850,3 +850,61 @@ dbTest('a search with no match names what can be loaded instead of returning not
   expect(hit).not.toHaveProperty('index');
   expect(hit).not.toHaveProperty('hint');
 });
+
+dbTest("the first catalog's room follows the attempt's model window", async () => {
+  if (!db) throw new Error('Postgres unavailable');
+  const verbs = Array.from({ length: 30 }, (_, index) => `test.verb_${index}`);
+  const seed = await seedJob(db.sql, { scopes: verbs });
+  const connector: Connector = {
+    manifest: {
+      name: 'test',
+      provider: 'test',
+      version: '1',
+      description: 'Window fixture',
+      credentials: [],
+      health: true,
+      tools: verbs.map((name) => ({
+        name,
+        description: `Read one kind of record from the service, the ${name} kind.`,
+        input_schema: {
+          type: 'object',
+          properties: { id: { type: 'string' }, note: { type: 'string' } },
+          additionalProperties: false,
+        },
+        effect_class: 'read',
+        required_scopes: [name],
+        requires_approval: false,
+        verify: false,
+      })),
+    },
+    async execute() {
+      throw new Error('not dispatched here');
+    },
+    async verify() {
+      return { decision: 'unsupported', reason: 'fixture' };
+    },
+    async health() {
+      return { status: 'ok', detail: 'fixture', checked_at: new Date().toISOString() };
+    },
+  };
+  const broker = new BrokerService({
+    sql: db.sql,
+    connectors: new ConnectorRegistry().register(seed.connectionId, connector),
+  });
+  // A model the catalog does not name keeps the baseline: most verbs wait behind discovery.
+  const small = await broker.catalog(seed.claims);
+  const smallVerbs = small.filter((tool) => tool.name.startsWith('test.verb_'));
+  expect(smallVerbs.length).toBeLessThan(verbs.length);
+  expect(toolTokens(small)).toBeLessThanOrEqual(750 + 250 + toolTokens([ASK_PERSON_TOOL]));
+  // A million-token model's next attempt is offered every verb it was granted.
+  const next = recordId('att');
+  await db.sql`update attempt set outcome = 'completed', ended_at = now() where id = ${seed.claims.attempt_id}`;
+  await db.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+    values (${next}, ${seed.claims.job_id}, 2, 'fake', 'fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash')`;
+  await db.sql`update job set lease_epoch = 2 where id = ${seed.claims.job_id}`;
+  const large = await broker.catalog({ ...seed.claims, attempt_id: next, epoch: 2 });
+  expect(large.filter((tool) => tool.name.startsWith('test.verb_'))).toHaveLength(verbs.length);
+  expect(large.find((tool) => tool.name === 'load_tool')?.description).not.toContain(
+    'Not loaded yet',
+  );
+});

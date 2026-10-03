@@ -49,7 +49,14 @@ const bundle: AttemptBundle = {
 };
 
 function discoveryHarness(
-  options: { terminal?: string; loaded?: boolean; parked?: boolean; output?: number } = {},
+  options: {
+    terminal?: string;
+    loaded?: boolean;
+    parked?: boolean;
+    output?: number;
+    /** The running agent took the loaded tool, so the model calls it in the same run. */
+    live?: boolean;
+  } = {},
 ) {
   const calls: { path: string; init?: RequestInit }[] = [];
   const events: RuntimeEvent[] = [];
@@ -61,21 +68,10 @@ function discoveryHarness(
     if (path === '/v1/runs') return Response.json({ run_id: `run_${++runs}`, status: 'started' });
     if (path.endsWith('/events')) {
       const first = path.includes('run_1/');
-      const frames = first
+      const frames = options.live
         ? [
             { event: 'tool.started', tool: 'load_tool', preview: 'test.read' },
-            { event: 'tool.completed', tool: 'load_tool' },
-            ...(options.terminal === 'missing'
-              ? []
-              : [
-                  {
-                    event: options.terminal ?? 'run.cancelled',
-                    output: 'tools_loaded',
-                    usage: { output_tokens: options.output ?? 20 },
-                  },
-                ]),
-          ]
-        : [
+            { event: 'tool.completed', tool: 'load_tool', error: false },
             { event: 'tool.started', tool: 'test.read' },
             { event: 'tool.completed', tool: 'test.read' },
             {
@@ -83,7 +79,31 @@ function discoveryHarness(
               output: 'Read verified.',
               usage: { output_tokens: options.output ?? 20 },
             },
-          ];
+          ]
+        : first
+          ? [
+              { event: 'tool.started', tool: 'load_tool', preview: 'test.read' },
+              // The plugin could not add the tool to the running agent.
+              { event: 'tool.completed', tool: 'load_tool', error: true },
+              ...(options.terminal === 'missing'
+                ? []
+                : [
+                    {
+                      event: options.terminal ?? 'run.cancelled',
+                      output: 'tools_loaded',
+                      usage: { output_tokens: options.output ?? 20 },
+                    },
+                  ]),
+            ]
+          : [
+              { event: 'tool.started', tool: 'test.read' },
+              { event: 'tool.completed', tool: 'test.read' },
+              {
+                event: 'run.completed',
+                output: 'Read verified.',
+                usage: { output_tokens: options.output ?? 20 },
+              },
+            ];
       return new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(''));
     }
     return Response.json({ ok: true });
@@ -127,6 +147,23 @@ async function withStoppedClock<T>(body: () => Promise<T>): Promise<T> {
     setSystemTime();
   }
 }
+
+describe('a tool loaded part way through a run', () => {
+  test('joins the running agent: the run goes on with no stop and no second run', async () => {
+    const h = discoveryHarness({ live: true });
+    expect(await h.run()).toMatchObject({ kind: 'completed', summary: 'Read verified.' });
+    expect(h.calls.filter((call) => call.path === '/v1/runs')).toHaveLength(1);
+    expect(h.calls.some((call) => call.path.endsWith('/stop'))).toBe(false);
+    expect(h.events.filter((event) => event.type === 'attempt_outcome')).toHaveLength(1);
+  });
+
+  test('a load marked as an error that the broker never recorded starts nothing', async () => {
+    const h = discoveryHarness({ loaded: false });
+    await h.run();
+    expect(h.calls.filter((call) => call.path === '/v1/runs')).toHaveLength(1);
+    expect(h.calls.some((call) => call.path.endsWith('/stop'))).toBe(false);
+  });
+});
 
 describe('broker-verified tool continuation', () => {
   test('loads, stops, waits for termination and resumes with one public outcome', async () => {

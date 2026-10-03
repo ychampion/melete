@@ -8,7 +8,6 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import { z } from 'zod';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
@@ -20,27 +19,19 @@ import {
   serviceModelSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
+import {
+  type ModelRouting,
+  NO_ROUTING,
+  routingFromEnv,
+  serviceFallback,
+} from '../gateway/routing.ts';
+import { replyOf, StructuredAnswerError, withStructuredOutput } from '../gateway/structured.ts';
 import { type GatewayBudget, GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
 import { MemoryError, type MemorySql } from './db.ts';
 import type { ExtractionCall, ExtractionGateway } from './extract.ts';
 import { EXTRACTION_LIMITS } from './work.ts';
 
 const INPUT_TOKENS = 12_000;
-
-const responsesReply = z.object({
-  output: z.array(
-    z.object({
-      type: z.string(),
-      content: z.array(z.object({ type: z.string(), text: z.string() })).optional(),
-    }),
-  ),
-});
-const messagesReply = z.object({
-  content: z.array(z.object({ type: z.string(), text: z.string().optional() })),
-});
-const chatReply = z.object({
-  choices: z.array(z.object({ message: z.object({ content: z.string() }) })).min(1),
-});
 
 /**
  * What asks a provider's chat models to answer without reasoning first.
@@ -69,6 +60,12 @@ export type MemoryGatewayOptions = {
   timeoutMs?: number;
   /** The service's privacy router; what the person wrote is redacted before it is read. */
   privacy: GatewayOptions['privacy'];
+  /** The installation's spending caps. */
+  spending?: GatewayOptions['spending'];
+  /** The operator's fallbacks for a provider that limits or fails. */
+  routing?: ModelRouting;
+  /** How hard a reasoning model thinks on a memory read. */
+  reasoningEffort?: GatewayOptions['reasoningEffort'];
 };
 
 export async function openMemoryGateway(options: MemoryGatewayOptions) {
@@ -81,7 +78,12 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
   const budget: GatewayBudget = {
     async reserve(request) {
       const call = principals.get(request.principal);
-      if (!call || request.provider !== call.provider || request.model !== call.model)
+      if (
+        !call ||
+        !request.principal.allowedModels.some(
+          (allowed) => allowed.provider === request.provider && allowed.model === request.model,
+        )
+      )
         throw new GatewayError(403, 'memory_principal_denied');
       if (
         request.estimatedTokens > INPUT_TOKENS + EXTRACTION_LIMITS.output_tokens ||
@@ -102,7 +104,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
           throw new GatewayError(429, 'memory_daily_budget');
         const id = randomUUID();
         await tx`insert into memory_model_calls (id, owner_id, space_id, work_id, provider, model, reserved_tokens)
-          values (${id}, ${call.ownerId}, ${call.spaceId}, ${call.workId}, ${call.provider}, ${call.model}, ${request.estimatedTokens})`;
+          values (${id}, ${call.ownerId}, ${call.spaceId}, ${call.workId}, ${request.provider}, ${request.model}, ${request.estimatedTokens})`;
         reservations.set(id, call.token);
         return { id };
       });
@@ -122,6 +124,8 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
     fake: options.fake,
     fetch: options.fetch,
     privacy: options.privacy,
+    spending: options.spending,
+    reasoningEffort: options.reasoningEffort,
     defaultProvider: options.provider,
     timeoutMs: options.timeoutMs ?? EXTRACTION_LIMITS.timeout_ms,
     maxRequestBytes: 256 * 1024,
@@ -129,7 +133,10 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
     async authenticate(token) {
       const call = tokens.get(token);
       if (!call) throw new GatewayError(401, 'memory_principal_denied');
+      const fallback = serviceFallback(options.routing ?? NO_ROUTING, call);
       const principal: GatewayPrincipal = {
+        // The person whose words are read: the reads count against their limits.
+        actor: call.ownerId,
         jobId: `memory:${call.spaceId}`,
         attemptId: `memory:${call.workId}`,
         // The message's own conversation decides where it may be read: a
@@ -144,7 +151,8 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
         revision: 0,
         maxRequests: 1,
         maxTokens: INPUT_TOKENS + EXTRACTION_LIMITS.output_tokens,
-        allowedModels: [{ provider: call.provider, model: call.model }],
+        allowedModels: [{ provider: call.provider, model: call.model }, ...fallback],
+        ...(fallback.length ? { routes: { fallback } } : {}),
       };
       principals.set(principal, { ...call, token });
       return principal;
@@ -157,7 +165,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   const gateway: ExtractionGateway = {
-    async chat({ messages, max_tokens, signal }, call) {
+    async chat({ messages, max_tokens, signal, format }, call) {
       if (!call) throw new MemoryError('extraction_call_unattributed');
       // The model is read for each call, so one connected in the app applies at once.
       const target = options.source
@@ -165,7 +173,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
         : { provider: options.provider, model: options.model };
       const protocol = protocolForApiMode(modelApiMode(target.provider, target.model));
       const system = messages.find((message) => message.role === 'system')?.content ?? '';
-      const body =
+      const plain: Record<string, unknown> =
         protocol === 'responses'
           ? { model: target.model, input: messages, max_output_tokens: max_tokens }
           : protocol === 'messages'
@@ -176,6 +184,8 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
                 max_tokens,
               }
             : { model: target.model, messages, max_tokens };
+      // The schema goes where the provider reads one; elsewhere the prompt asks.
+      const body = format ? withStructuredOutput(plain, target, protocol, format) : plain;
       const direct = protocol === 'chat/completions' ? ANSWER_DIRECTLY[target.provider] : undefined;
       // Each request is its own capability, so a second ask is a second read.
       const ask = async (extra: Record<string, unknown> | undefined) => {
@@ -210,21 +220,18 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
       let reply = await ask(direct);
       if (!reply.ok && direct && reply.provider === 400) reply = await ask(undefined);
       if (!reply.ok) throw new MemoryError(failureCode(reply.status, reply.text, reply.provider));
-      const result = reply.result;
-      return protocol === 'responses'
-        ? responsesReply
-            .parse(result)
-            .output.flatMap((item) => item.content ?? [])
-            .filter((item) => item.type === 'output_text')
-            .map((item) => item.text)
-            .join('')
-        : protocol === 'messages'
-          ? messagesReply
-              .parse(result)
-              .content.filter((item) => item.type === 'text')
-              .map((item) => item.text ?? '')
-              .join('')
-          : (chatReply.parse(result).choices[0]?.message.content ?? '');
+      let answer: ReturnType<typeof replyOf>;
+      try {
+        answer = replyOf(protocol, reply.result);
+      } catch (error) {
+        if (error instanceof StructuredAnswerError) throw new MemoryError('extraction_unreadable');
+        throw error;
+      }
+      // A document cut off at the output limit can still parse as a shorter
+      // one, so it is never read; a refusal is not an answer to read either.
+      if (answer.end === 'cut_off') throw new MemoryError('extraction_cut_off');
+      if (answer.end === 'refused') throw new MemoryError('extraction_answer_refused');
+      return answer.text;
     },
   };
   return {
@@ -241,6 +248,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
 /**
  * Why a call failed, in the three kinds the worker treats differently:
  * - `memory_daily_budget`: the person's reads are spent; wait for tomorrow's;
+ * - `spending_limit_reached`: a spending limit is reached; wait for it to reset;
  * - `extraction_call_refused` / `extraction_provider_refused`: asking again
  *   cannot succeed (the call is too large for the gateway or the model, or the
  *   provider rejected the request itself, a wrong model name for one); stop;
@@ -254,6 +262,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
  */
 export function failureCode(status: number, body: string, provider: number | null | undefined) {
   if (body.includes('memory_daily_budget')) return 'memory_daily_budget';
+  if (body.includes('spending_limit_reached')) return 'spending_limit_reached';
   if (/privacy_confirmation_required|privacy_scope_/.test(body)) return 'extraction_kept_private';
   if (status === 504 && body.includes('request_aborted')) return 'extraction_gateway_timeout';
   if (status === 413 || /memory_call_too_large|input_context_exceeded/.test(body))
@@ -288,20 +297,26 @@ export async function configuredMemoryGateway(
     signIn?: ProviderSignIn;
     /** The upstream transport; tests pass a stand-in provider. */
     fetch?: GatewayOptions['fetch'];
+    spending?: GatewayOptions['spending'];
   } = {},
 ) {
   const setting = env.MELETE_MEMORY_MODEL?.trim();
   if (setting === 'off') return null;
   const pinned = { provider: env.MELETE_MEMORY_PROVIDER?.trim(), model: setting };
+  const routing = routingFromEnv(env);
   return openMemoryGateway({
     sql,
     provider: pinned.provider || env.MELETE_DEFAULT_PROVIDER,
     model: pinned.model || env.MELETE_DEFAULT_MODEL,
     providers: configuredProviders(env, () => {}, connected.signIn),
-    source: serviceModelSource({ env, settings: connected.settings, pinned }),
+    // Reading a message into memory is a short call: the fast model, unless one is pinned.
+    source: serviceModelSource({ env, settings: connected.settings, pinned, fast: routing.fast }),
     dailyCalls: env.MELETE_MEMORY_DAILY_CALLS,
     fake,
     privacy,
+    spending: connected.spending,
+    routing,
+    reasoningEffort: env.MELETE_REASONING_EFFORT_SIDE,
     ...(connected.fetch ? { fetch: connected.fetch } : {}),
   });
 }

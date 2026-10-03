@@ -114,7 +114,9 @@ const LABELS: Record<string, string> = {
   'files.write': 'Saved a file',
   'files.move': 'Moved a file',
   'files.restore': 'Restored a file',
+  'files.save_attachment': 'Saved your file to its workspace',
   'web.fetch': 'Read a web page',
+  'web.search': 'Searched the web',
   'test.read': 'Checked the connected app',
   'test.send': 'Sent a message',
   'computer.open': 'Opened a page in its computer',
@@ -149,7 +151,12 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'files.write': ['Saving a file', 'Saved a file'],
   'files.move': ['Moving a file', 'Moved a file'],
   'files.restore': ['Restoring a file', 'Restored a file'],
+  'files.save_attachment': [
+    'Saving your file to its workspace',
+    'Saved your file to its workspace',
+  ],
   'web.fetch': ['Reading a web page', 'Read a web page'],
+  'web.search': ['Searching the web', 'Searched the web'],
   'exec.run': ['Running a command', 'Ran a command'],
   'exec.python': ['Running code', 'Ran code'],
   'terminal.run': ['Running a command', 'Ran a command'],
@@ -735,6 +742,16 @@ export function actionSources(row: ActionRow, connection: ConnectionRow): Experi
           detail.final_url ?? detail.url,
         ),
       ];
+    case 'web.search':
+      // Every page the search returned is a source the answer can cite.
+      return array(detail.results).map((item) =>
+        source(
+          'page',
+          object(item).title ?? hostname(safeUrl(object(item).url)),
+          'Web page',
+          object(item).url,
+        ),
+      );
     default:
       return [];
   }

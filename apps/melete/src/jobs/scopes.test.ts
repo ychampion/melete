@@ -27,3 +27,23 @@ describe('which connections a job may use', () => {
       ).toBe(false);
   });
 });
+
+describe("a room's requests", () => {
+  const request = { kind: 'shared', spaceOwnerId: 'owner', principalId: 'room', audience: 'room' };
+
+  test('a request made of the room is served by the connections marked for the room and no others', () => {
+    expect(connectionServesJob(request, 'room')).toBe(true);
+    expect(connectionServesJob(request, 'owner')).toBe(false);
+  });
+
+  test("an owner's own job in the room is still served only by the owner's connections", () => {
+    const own = {
+      kind: 'shared',
+      spaceOwnerId: 'owner',
+      principalId: 'owner',
+      audience: 'principal',
+    };
+    expect(connectionServesJob(own, 'owner')).toBe(true);
+    expect(connectionServesJob(own, 'room')).toBe(false);
+  });
+});

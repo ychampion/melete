@@ -86,6 +86,11 @@ export type PreparedRequest = {
   local: LocalModel | null;
   rehydrator: Rehydrator | null;
   receipt: PrivacyReceipt;
+  /**
+   * The conversation must stay private. A cloud request that is still sent
+   * went with the person's consent, redacted, and carries no picture or file.
+   */
+  private?: boolean;
 };
 
 export type GateDecision =
@@ -113,6 +118,14 @@ type ConversationState = {
   settingsVersion: string;
   saving: Promise<void>;
 };
+
+/** Why a web search stayed in, in words the model passes on. */
+export const SEARCH_KEPT_PRIVATE =
+  'This conversation is private, so nothing is searched on the web. Answer from what you already have.';
+export const SEARCH_KEPT_TOPIC =
+  'This search is about a topic kept private here, so it was not sent to an outside search.';
+export const SEARCH_KEPT_DETAILS =
+  'This search carries personal details the privacy settings keep from outside services, so it was not sent. Search without them.';
 
 /** Labels of the quick answers; the recorded answer is the label. */
 export const SEND_REDACTED = 'Send a redacted version';
@@ -176,6 +189,46 @@ export class PrivacyRouter {
   ): Promise<boolean> {
     const settings = await this.settingsFor(spaceId, query);
     return settings.privateSpace || (agentId !== null && settings.privateAgents.has(agentId));
+  }
+
+  /**
+   * Why a web search for this job may not go to an outside search service, or
+   * null when it may. A search query leaves Melete as written, with no
+   * placeholders, so it is held to more than a model request is: nothing from
+   * a private space or agent or a sensitive conversation, nothing about a
+   * sensitive topic, and nothing carrying a detail the privacy settings detect.
+   */
+  async outsideSearchRefusal(jobId: string, query: string): Promise<string | null> {
+    const scope = await this.store.scope(jobId, '');
+    if (!scope.spaceId) return SEARCH_KEPT_PRIVATE;
+    const settings = await this.settingsFor(scope.spaceId);
+    if (
+      settings.privateSpace ||
+      (scope.agentId !== null && settings.privateAgents.has(scope.agentId))
+    )
+      return SEARCH_KEPT_PRIVATE;
+    const conversation = scope.conversationId
+      ? await this.store.conversation(scope.conversationId)
+      : null;
+    if (conversation?.sensitive) return SEARCH_KEPT_PRIVATE;
+    // The person said this conversation is not sensitive; the query is not read for a topic.
+    if (!conversation?.cleared && classifyParts([query], settings.topics, this.topics))
+      return SEARCH_KEPT_TOPIC;
+    // The same redactor the gateway runs on a cloud request, over the query as
+    // it would leave: this conversation's vault (every detail it has already
+    // swapped, local-detector names included, in any spelling), the listed
+    // values, what memory learned in private conversations, and the detectors.
+    // Anything it would swap means the query carries what no cloud model sees.
+    if (/[⟦⟧]/.test(query)) return SEARCH_KEPT_DETAILS;
+    const remembered = await this.store.privateMemory(scope.spaceId);
+    const state = await this.state(scope, settings, `${settings.version}:${digest(remembered)}`);
+    const redactor = new Redactor(state.vault, {
+      enabled: settings.enabled,
+      known: [...settings.known, ...memoryValues(remembered)],
+      extra: (text) => state.ner.get(text),
+    });
+    if (redactor.spans(query).length > 0) return SEARCH_KEPT_DETAILS;
+    return null;
   }
 
   /** A settings change applies to the next request, not after the cache expires. */
@@ -382,6 +435,7 @@ export class PrivacyRouter {
       local: null,
       rehydrator: new Rehydrator(state.vault, protocol),
       receipt,
+      private: decision.private,
     };
   }
 
@@ -471,6 +525,17 @@ export class PrivacyRouter {
       (scope.agentId !== null && settings.privateAgents.has(scope.agentId)) ||
       !!conversation?.sensitive;
     return isPrivate && (await this.readyLocal(settings, engine.protocol)) !== null;
+  }
+
+  /**
+   * Why a message said in a room is private, or null: the room is marked
+   * private, or the message is about a sensitive topic. A room message may
+   * reach no request at all, so it is read by its room rather than a job.
+   */
+  async captureOriginInSpace(spaceId: string, text: string): Promise<PrivateOrigin | null> {
+    const settings = await this.settingsFor(spaceId);
+    if (settings.privateSpace) return 'space';
+    return classify(text, settings.topics);
   }
 
   /**

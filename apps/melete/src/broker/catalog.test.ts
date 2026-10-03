@@ -284,3 +284,41 @@ test('a skill is readable only within scope, and a space skill only by its audie
   expect(read(true)).toEqual(['built-in', 'owners-own', 'for-members']);
   expect(read(false)).toEqual(['built-in', 'for-members']);
 });
+
+test('web search and web fetch are always in the core, never pushed out by the budget', () => {
+  const web = (name: string) => {
+    const entry = item(name);
+    entry.tool.connection_id = 'conn_web';
+    entry.entry.connection_id = 'conn_web';
+    return entry;
+  };
+  // Many granted, relevant, much-used tools that would fill the budget on their own.
+  const crowd = Array.from({ length: 40 }, (_, i) => {
+    const entry = item(`mail.verb${String(i).padStart(2, '0')}`, { core: true, uses: 1_000 });
+    entry.tool.connection_id = 'conn_mail';
+    entry.entry.connection_id = 'conn_mail';
+    entry.tool.description = 'Search and read the person’s mail about invoices';
+    return entry;
+  });
+  const items = [...crowd, web('web.search'), web('web.fetch')];
+  const budget = toolTokens(META_TOOLS) + 200;
+  const names = selectCore(items, budget, { text: 'find my invoices in mail' }).map(
+    (tool) => tool.name,
+  );
+  expect(names).toContain('web.search');
+  expect(names).toContain('web.fetch');
+  // They ride beside the budget: the room the job's own tools had is unchanged.
+  const without = selectCore(crowd, budget, { text: 'find my invoices in mail' }).map(
+    (tool) => tool.name,
+  );
+  expect(names.filter((name) => !name.startsWith('web.'))).toEqual(without);
+  // An account alias of a second web connection is still recognised.
+  const alias = web('web.search__0123456789ab');
+  expect(selectCore([...crowd, alias], budget).map((tool) => tool.name)).toContain(
+    'web.search__0123456789ab',
+  );
+  // A failing connection is not offered, and an ungranted one is not there to offer.
+  const failing = web('web.search');
+  failing.entry.health = 'failing';
+  expect(selectCore([failing], budget).map((tool) => tool.name)).not.toContain('web.search');
+});

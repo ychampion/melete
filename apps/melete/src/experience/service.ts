@@ -20,6 +20,8 @@ import {
 } from '@melete/contracts';
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import { messageFiles } from '../attachments/render.ts';
+import { type AttachmentService, attachTurn } from '../attachments/store.ts';
 import type { Database } from '../db/client.ts';
 import {
   agent,
@@ -38,8 +40,11 @@ import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { inConversation, withdrawPermissions } from '../jobs/withdraw.ts';
 import { ownJob, requestPrincipal, spaceAuthority } from '../principals/authority.ts';
+import { mentionedRoomAgent } from '../rooms/mentions.ts';
 import { AGENT_TEMPLATES, agentValues, agentView, MELETE_AGENT, mentionedAgent } from './agents.ts';
 import { answerStream } from './answer-filter.ts';
+import type { ExperienceEvents } from './events.ts';
+import type { ExperiencePermissions } from './permissions.ts';
 import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
 
 /** Turn statuses of work not yet over: an agent is not deleted under one. */
@@ -96,6 +101,12 @@ export async function withdrawPendingPermissions(
 }
 
 export class ExperienceService {
+  /** The conversation projector the routes mounted beside this service, for the rooms routes. */
+  events?: ExperienceEvents;
+  /** The permission cards and answers mounted beside this service, for the rooms routes. */
+  permissions?: ExperiencePermissions;
+  /** Where the files people send are kept, when the blob store is mounted beside this service. */
+  attachments?: AttachmentService;
   constructor(
     readonly db: Database,
     readonly jobs?: JobService,
@@ -117,7 +128,9 @@ export class ExperienceService {
         const dedupKey = `${row.id}:input:${row.stateVersion}`;
         const [input] = await tx.select().from(event).where(eq(event.dedupKey, dedupKey));
         const text = (input?.payload as { text?: string })?.text;
-        if (!text) throw new Error('Accepted conversation message is missing.');
+        const files = messageFiles((input?.payload as { attachments?: unknown })?.attachments);
+        if (text === undefined || (!text && !files.length))
+          throw new Error('Accepted conversation message is missing.');
         // "@Scout find …" hands this one message to Scout; the chat keeps its agent.
         // In a shared space only its owner hands a message on this way: a
         // member's message stays with the chat's agent and its reach.
@@ -126,23 +139,35 @@ export class ExperienceService {
           .select({ kind: space.kind, owner: space.ownerPrincipalId })
           .from(space)
           .where(eq(space.id, row.spaceId));
-        const mayHandOn = place?.kind !== 'shared' || (speaker !== null && speaker === place.owner);
-        const mentioned = mayHandOn
-          ? mentionedAgent(
-              text,
-              await tx
-                .select({ id: agent.id, name: agent.name })
-                .from(agent)
-                .where(and(eq(agent.spaceId, row.spaceId), isNull(agent.deletedAt))),
-            )
-          : null;
+        // A room's request is the room's: whoever asked it hands a message to
+        // any agent the room can use, which reaches only what the room marks.
+        const room = row.audience === 'room';
+        const mayHandOn =
+          room || place?.kind !== 'shared' || (speaker !== null && speaker === place.owner);
+        const usable = mayHandOn
+          ? await tx
+              .select({ id: agent.id, name: agent.name, isDefault: agent.isDefault })
+              .from(agent)
+              .where(and(eq(agent.spaceId, row.spaceId), isNull(agent.deletedAt)))
+          : [];
+        const mentioned = !mayHandOn
+          ? null
+          : room
+            ? mentionedRoomAgent(
+                text,
+                usable,
+                usable.find((candidate) => candidate.isDefault) ?? null,
+              )
+            : mentionedAgent(text, usable);
         const agentId = mentioned?.id ?? row.agentId;
         const turnId = newId('turn');
+        const author = requestPrincipal() ?? row.principalId;
         await tx.insert(experienceTurn).values({
           id: turnId,
           jobId: row.id,
           agentId,
           submissionId: receipt.submission_id,
+          authorPrincipalId: author,
           text,
         });
         // The message records who it was said to, so memory follows that agent's permission.
@@ -150,8 +175,17 @@ export class ExperienceService {
           .update(event)
           .set({ payload: { ...(input?.payload as object), agent_id: agentId } })
           .where(eq(event.dedupKey, dedupKey));
+        await attachTurn(
+          tx,
+          row.id,
+          files.map((file) => file.id),
+          turnId,
+        );
         await tx.update(job).set({ currentTurnId: turnId }).where(eq(job.id, row.id));
-        await withdrawPendingPermissions(tx, row.id, SUPERSEDED_NOTE);
+        // A new message replaces what its own author asked for. In a room only the
+        // person who asked a request supersedes it; nobody else's words reach it.
+        if (row.audience !== 'room' || author === row.requestedByPrincipalId)
+          await withdrawPendingPermissions(tx, row.id, SUPERSEDED_NOTE);
       };
     }
   }
@@ -606,6 +640,7 @@ export class ExperienceService {
       .from(experienceTurn)
       .where(eq(experienceTurn.jobId, id))
       .orderBy(experienceTurn.createdAt, experienceTurn.id);
+    const files = this.attachments ? await this.attachments.forTurns(id) : new Map();
     return {
       turns: rows.map((row) =>
         conversationTurn.parse({
@@ -622,6 +657,7 @@ export class ExperienceService {
           status: row.status,
           delivery: row.status === 'queued' ? 'sending' : null,
           created_at: row.createdAt.toISOString(),
+          attachments: files.get(row.id) ?? [],
         }),
       ),
     };
@@ -642,6 +678,9 @@ export class ExperienceService {
       ? `chat:${createHash('sha256').update(`${spaceId}:${id}:${key}`).digest('hex')}`
       : undefined;
     const result = await this.submissions.input(id, value, scopedKey);
+    // A file the message named that it may not carry is said as itself.
+    if (result.receipt.state !== 'accepted' && result.error?.code.startsWith('attachment'))
+      throw new ServiceError(result.error.code, result.error.message, result.status);
     if (result.receipt.state !== 'accepted')
       throw new ServiceError(
         'message_not_accepted',

@@ -98,7 +98,16 @@ export async function sweepOperational(
     // One statement takes attempts, actions, approvals, events, triggers, the
     // ledger, background operations, repair candidates, tool contexts, turns,
     // milestones, browser bindings and the learning rows below a job.
+    // A room keeps its handoffs, but no result of this space's work: one not
+    // yet shared is cleared, and the room is told it is no longer there.
+    await tx`update room_handoff set result_text = null, result_hash = null,
+        state = case when state in ('running', 'settled') then 'settled' else state end
+      where personal_job_id in (select id from job where space_id = ${spaceId})`;
     await tx`delete from job where space_id = ${spaceId}`;
+    // What the space's model calls cost stays counted against its person, so
+    // removing a space does not reset a spending limit; which space and job
+    // they came from goes with the space.
+    await tx`update model_usage set space_id = null, job_id = null where space_id = ${spaceId}`;
     // Artifacts outlive their job by design: `job_id` is nulled, not cascaded.
     // They belong to the space, and they go with it, taking their validation
     // and publication rows.
@@ -164,6 +173,19 @@ const SPACE_KEYED_OPERATIONAL = [
   // configuration left go here, since an emptied space keeps its row and the
   // cascade from it never fires.
   'browser_site_profile',
+  // A room's threads, the messages said in them and who was looking. An
+  // emptied room keeps its space row, so the cascade from it never fires.
+  'room_presence',
+  // What a room handed one of its people, its guest invites, used or not, and
+  // how the room works. The handoffs point at the room's own rows, which go next.
+  'room_handoff',
+  'room_invite',
+  'room_policy',
+  'room_message',
+  'room_thread',
+  // Files people sent in chat went with their chats; one uploaded and never
+  // sent has no chat. Their bytes go in the blobs phase, by reference.
+  'attachment',
 ] as const;
 
 /**
@@ -200,6 +222,10 @@ export async function sweepMemory(raw: Sql, spaceId: string, hold?: LeaseHold): 
       (select id from memory_claims where space_id = ${spaceId})`;
     await tx`delete from memory_source_content where source_id in
       (select id from memory_sources where space_id = ${spaceId})`;
+    // A share names two spaces: the room it was shared into and the personal
+    // space the detail lives in. Either one going takes the share with it.
+    await tx`delete from memory_room_grant
+      where room_space_id = ${spaceId} or source_space_id = ${spaceId}`;
     for (const table of MEMORY_TABLES)
       await tx`delete from ${tx(table)} where space_id = ${spaceId}`;
     // The one pointer from another space's rows into this one, with no
@@ -235,6 +261,7 @@ const MEMORY_TABLES = [
   'memory_questions',
   'memory_rejections',
   'memory_capture',
+  'memory_room_capture',
   'memory_model_calls',
   'memory_action_basis',
   'memory_blocks',

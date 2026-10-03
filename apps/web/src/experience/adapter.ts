@@ -94,6 +94,7 @@ import type {
   ResultCard,
   RewindPreview,
   RewindTarget,
+  RoomHandoff,
   Rule,
   RuleBounds,
   Run,
@@ -254,12 +255,13 @@ export const adapter = {
     guard<{ conversation: Conversation }>(() => api.POST('/conversations', { body })),
   turns: (id: string) =>
     guard<{ turns: Turn[] }>(() => api.GET('/conversations/{id}/messages', path(id))),
-  send: (id: string, text: string, key: string) =>
+  /** `attachments` names files uploaded for this message, in the order they show. */
+  send: (id: string, text: string, key: string, attachments: readonly string[] = []) =>
     guard<MessageAcceptance>(() =>
       api.POST('/conversations/{id}/messages', {
         ...path(id),
         headers: { 'Idempotency-Key': key },
-        body: { text },
+        body: { text, ...(attachments.length ? { attachments: [...attachments] } : {}) },
       }),
     ),
   pause: (id: string) =>
@@ -305,7 +307,8 @@ export const adapter = {
     guard<PermissionOutcome>(() =>
       api.POST('/permissions/{id}', { ...path(id), body: { option: 'always', version, bounds } }),
     ).then(worthHearing),
-  permissions: () => guard<{ permissions: Permission[] }>(() => api.GET('/permissions')),
+  permissions: () =>
+    guard<{ permissions: Permission[]; handoffs?: RoomHandoff[] }>(() => api.GET('/permissions')),
   undo: (id: string) =>
     guard<{ receipt: Receipt }>(() => api.POST('/receipts/{id}/undo', path(id))),
   sendDraft: (id: string) => guard<SendOutcome>(() => api.POST('/drafts/{id}/send', path(id))),

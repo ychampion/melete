@@ -11,7 +11,6 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import { z } from 'zod';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
@@ -23,6 +22,13 @@ import {
   serviceModelSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
+import {
+  type ModelRouting,
+  NO_ROUTING,
+  routingFromEnv,
+  serviceFallback,
+} from '../gateway/routing.ts';
+import { replyOf, withStructuredOutput } from '../gateway/structured.ts';
 import { GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
 import {
   createModelReviewer,
@@ -34,21 +40,6 @@ import {
 
 const INPUT_TOKENS = 8_000;
 const OUTPUT_TOKENS = 300;
-
-const responsesReply = z.object({
-  output: z.array(
-    z.object({
-      type: z.string(),
-      content: z.array(z.object({ type: z.string(), text: z.string() })).optional(),
-    }),
-  ),
-});
-const messagesReply = z.object({
-  content: z.array(z.object({ type: z.string(), text: z.string().optional() })),
-});
-const chatReply = z.object({
-  choices: z.array(z.object({ message: z.object({ content: z.string().nullable() }) })).min(1),
-});
 
 export type ReviewGatewayOptions = {
   /** The model every review uses when no `source` is given. */
@@ -62,6 +53,12 @@ export type ReviewGatewayOptions = {
   fake?: GatewayOptions['fake'];
   fetch?: GatewayOptions['fetch'];
   timeoutMs: number;
+  /** The installation's spending caps. */
+  spending?: GatewayOptions['spending'];
+  /** The operator's fallbacks for a provider that limits or fails. */
+  routing?: ModelRouting;
+  /** How hard a reasoning model thinks on a review. */
+  reasoningEffort?: GatewayOptions['reasoningEffort'];
 };
 
 /**
@@ -82,7 +79,9 @@ export function reviewPrincipal(
   token: string,
   scope: ReviewScope,
   target: ServiceModel,
+  routing: ModelRouting = NO_ROUTING,
 ): ReviewPrincipal {
+  const fallback = serviceFallback(routing, target);
   return {
     jobId: `review:${scope.spaceId}`,
     attemptId: `review:${token}`,
@@ -96,7 +95,8 @@ export function reviewPrincipal(
     revision: 0,
     maxRequests: 1,
     maxTokens: INPUT_TOKENS + OUTPUT_TOKENS,
-    allowedModels: [{ provider: target.provider, model: target.model }],
+    allowedModels: [{ provider: target.provider, model: target.model }, ...fallback],
+    ...(fallback.length ? { routes: { fallback } } : {}),
   };
 }
 
@@ -106,12 +106,10 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
   const server = createModelGateway({
     budget: {
       async reserve(request) {
-        const [allowed] = request.principal.allowedModels;
         if (
-          !allowed ||
-          request.principal.allowedModels.length !== 1 ||
-          request.provider !== allowed.provider ||
-          request.model !== allowed.model
+          !request.principal.allowedModels.some(
+            (allowed) => request.provider === allowed.provider && request.model === allowed.model,
+          )
         )
           throw new GatewayError(403, 'review_principal_denied');
         if (
@@ -130,6 +128,8 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
     privacy: options.privacy,
     defaultProvider: options.provider,
     timeoutMs: options.timeoutMs,
+    spending: options.spending,
+    reasoningEffort: options.reasoningEffort,
     maxRequestBytes: 128 * 1024,
     maxResponseBytes: 32 * 1024,
     async authenticate(token) {
@@ -137,7 +137,7 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
       const call = live.get(token);
       live.delete(token);
       if (!call) throw new GatewayError(401, 'review_principal_denied');
-      return reviewPrincipal(token, call.scope, call.target);
+      return reviewPrincipal(token, call.scope, call.target, options.routing);
     },
   });
   await new Promise<void>((resolve, reject) => {
@@ -146,7 +146,7 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
-  const chat: ReviewChat = async (messages, signal, scope) => {
+  const chat: ReviewChat = async (messages, signal, scope, format) => {
     // The model is read for each review, so one connected in the app applies at once.
     const target = options.source
       ? await options.source.current()
@@ -156,7 +156,7 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
     const token = randomUUID();
     live.set(token, { scope, target });
     const system = messages.find((message) => message.role === 'system')?.content ?? '';
-    const body =
+    const plain: Record<string, unknown> =
       protocol === 'responses'
         ? { model: target.model, input: messages, max_output_tokens: OUTPUT_TOKENS }
         : protocol === 'messages'
@@ -167,6 +167,7 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
               max_tokens: OUTPUT_TOKENS,
             }
           : { model: target.model, messages, max_tokens: OUTPUT_TOKENS };
+    const body = format ? withStructuredOutput(plain, target, protocol, format) : plain;
     try {
       const response = await fetch(`${base}/providers/${target.provider}/v1/${protocol}`, {
         method: 'POST',
@@ -182,23 +183,8 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
         signal,
       });
       if (!response.ok) throw new Error(`review gateway ${response.status}`);
-      const result = await response.json();
-      const text =
-        protocol === 'responses'
-          ? responsesReply
-              .parse(result)
-              .output.flatMap((item) => item.content ?? [])
-              .filter((item) => item.type === 'output_text')
-              .map((item) => item.text)
-              .join('')
-          : protocol === 'messages'
-            ? messagesReply
-                .parse(result)
-                .content.filter((item) => item.type === 'text')
-                .map((item) => item.text ?? '')
-                .join('')
-            : (chatReply.parse(result).choices[0]?.message.content ?? '');
-      return { text, model };
+      const { text, end } = replyOf(protocol, await response.json());
+      return { text, model, end };
     } catch (error) {
       throw new ReviewCallFailed(model, { cause: error });
     } finally {
@@ -233,6 +219,7 @@ export async function configuredReviewGateway(
     settings?: ModelSettingsService;
     /** The upstream transport; tests pass a stand-in provider. */
     fetch?: GatewayOptions['fetch'];
+    spending?: GatewayOptions['spending'];
   } = {},
 ): Promise<Awaited<ReturnType<typeof openReviewGateway>> | null> {
   const setting = env.MELETE_REVIEW_MODEL?.trim();
@@ -243,10 +230,19 @@ export async function configuredReviewGateway(
     model: pinned.model || env.MELETE_DEFAULT_MODEL,
     providers: configuredProviders(env, () => {}, signIn),
     privacy,
-    source: serviceModelSource({ env, settings: connected.settings, pinned }),
+    // A review is a short classification: the fast model, unless one is pinned.
+    source: serviceModelSource({
+      env,
+      settings: connected.settings,
+      pinned,
+      fast: routingFromEnv(env).fast,
+    }),
     fake,
     ...(connected.fetch ? { fetch: connected.fetch } : {}),
     timeoutMs: env.MELETE_REVIEW_TIMEOUT_MS,
+    spending: connected.spending,
+    routing: routingFromEnv(env),
+    reasoningEffort: env.MELETE_REASONING_EFFORT_SIDE,
   });
 }
 
