@@ -14,6 +14,7 @@ import {
 import type { Context, Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
+import type { LimitStore } from '../ops/limiter.ts';
 import { FeedbackLimiter } from './rate-limit.ts';
 import { type FeedbackScope, FeedbackStore } from './service.ts';
 
@@ -21,10 +22,16 @@ const NOT_FOUND = () => new ServiceError('not_found', 'No such report.', 404);
 
 export function mountFeedback(
   app: Hono,
-  deps: { db: Database; version: string; limiter?: FeedbackLimiter },
+  deps: {
+    db: Database;
+    version: string;
+    limiter?: FeedbackLimiter;
+    /** Where reports are counted; left out, in this process. */
+    limits?: LimitStore;
+  },
 ): void {
   const store = new FeedbackStore(deps.db);
-  const limiter = deps.limiter ?? new FeedbackLimiter();
+  const limiter = deps.limiter ?? new FeedbackLimiter(undefined, undefined, undefined, deps.limits);
 
   /** The installation, the caller, and whether the caller runs the installation. */
   async function scopeOf(c: Context): Promise<FeedbackScope & { manager: boolean; actor: string }> {
@@ -38,7 +45,7 @@ export function mountFeedback(
   app.post('/feedback', async (c) => {
     const input = createFeedbackRequest.parse(await c.req.json());
     const scope = await scopeOf(c);
-    const retryAfter = limiter.admit(scope.actor);
+    const retryAfter = await limiter.admit(scope.actor);
     if (retryAfter > 0) {
       c.header('Retry-After', String(retryAfter));
       return c.json(
@@ -61,7 +68,7 @@ export function mountFeedback(
       });
       return c.json(feedbackResponse.parse({ report }), 201);
     } catch (error) {
-      limiter.refund(scope.actor);
+      await limiter.refund(scope.actor);
       throw error;
     }
   });
