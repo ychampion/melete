@@ -38,7 +38,7 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
-import { action, agent, attempt, connection, job, space } from '../db/schema.ts';
+import { action, agent, attempt, connection, job, principal, space } from '../db/schema.ts';
 import type { SessionPersistence } from './manifest.ts';
 import type { EgressPolicy } from './types.ts';
 
@@ -191,4 +191,30 @@ export const sandboxAwakeDay = pgTable(
     seconds: doublePrecision('seconds').notNull().default(0),
   },
   (t) => [primaryKey({ columns: [t.spaceId, t.day] })],
+);
+
+/**
+ * Who drives each sandbox computer: the agent, or the person who took it
+ * over. Keyed by the computer rather than a session, because a workspace
+ * resumed by the next attempt is the same computer on a new row. Every change
+ * moves `epoch` on and is made only from the epoch it was read at, so two
+ * service instances never both take a computer over, and an action planned
+ * under an older epoch can be told apart. Kept across restarts: a computer a
+ * person holds stays theirs until they hand it back. No row means the agent,
+ * at epoch 0.
+ */
+export const sandboxControl = pgTable(
+  'sandbox_control',
+  {
+    providerSandboxId: text('provider_sandbox_id').primaryKey(),
+    control: text('control').$type<'agent' | 'human'>().notNull(),
+    epoch: integer('epoch').notNull(),
+    /** The person holding it, while `control` is `human`. */
+    principalId: text('principal_id').references(() => principal.id, { onDelete: 'set null' }),
+    changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('sandbox_control_control_check', sql`${t.control} in ('agent', 'human')`),
+    index('sandbox_control_human_idx').on(t.providerSandboxId).where(sql`${t.control} = 'human'`),
+  ],
 );

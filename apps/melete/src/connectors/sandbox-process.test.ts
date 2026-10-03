@@ -13,7 +13,7 @@ import path from 'node:path';
 import { type Action, canonicalizePayload, type SandboxConnectionConfig } from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { awakeAllowanceNote } from '../experience/events.ts';
-import { computerControls } from '../sandbox/computer-control.ts';
+import { PostgresComputerControls } from '../sandbox/computer-control.ts';
 import { type FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
 import { FakeComputers } from '../sandbox/process-fixtures.ts';
 import { ProcessHelperLost } from '../sandbox/process-helper.ts';
@@ -888,7 +888,7 @@ withDb('background processes in the agent computer', () => {
     await wiring.settleAttempt(s.firstAttempt, AbortSignal.timeout(10_000));
     const [held] = await sessionRows(s.scope.agentId);
     const sandbox = String(held?.provider_sandbox_id);
-    computerControls.change(sandbox, 'human');
+    await new PostgresComputerControls(db()).change(sandbox, 'human');
     try {
       const later = await s.job();
       const on = { jobId: later, attemptId: await s.attempt(later) };
@@ -911,7 +911,7 @@ withDb('background processes in the agent computer', () => {
       ]);
       expect(s.provider.calls.pause).toBe(0);
     } finally {
-      computerControls.forget(sandbox);
+      await db()`delete from sandbox_control where provider_sandbox_id = ${sandbox}`;
     }
     // Handed back, it is suspended as usual.
     await wiring.sweep(AbortSignal.timeout(10_000));

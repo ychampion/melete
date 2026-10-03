@@ -10,7 +10,7 @@ import { ServiceError } from '../api/errors.ts';
 import { recordId } from '../broker/records.ts';
 import type { DesktopCommand, DockerSandboxProvider } from './adapters/docker.ts';
 import { mountSandboxComputers, SandboxComputerService } from './computer.ts';
-import { ComputerControls } from './computer-control.ts';
+import { PostgresComputerControls } from './computer-control.ts';
 import { seedSessionScope } from './session-fixtures.ts';
 
 const database = await testDatabase();
@@ -61,7 +61,7 @@ async function scene() {
       ${scope.agentId}, 'docker', ${sandbox}, 'melete-sandbox:local', '{"kind":"deny_all"}'::jsonb,
       'pause', 'ready', now() + interval '1 hour')`;
   const { provider, inputs } = desktop();
-  const controls = new ComputerControls();
+  const controls = new PostgresComputerControls(sql);
   const service = new SandboxComputerService(
     sql,
     () => new Map([[scope.connectionId, { adapter: 'docker' as const, provider }]]),
@@ -139,7 +139,7 @@ withDb('the computer a person steers', () => {
     s.as(recordId('own'));
     expect((await s.call('GET', `/sandbox/computers?job_id=${s.scope.jobId}`)).status).toBe(404);
     expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`)).status).toBe(404);
-    expect(s.controls.state(s.sandbox).control).toBe('agent');
+    expect((await s.controls.state(s.sandbox)).control).toBe('agent');
   });
 
   test('taking over parks the job and fences its attempt; handing back leaves it for the person to answer', async () => {
@@ -234,7 +234,7 @@ withDb('the computer a person steers', () => {
       events: flood,
     });
     expect([over.status, await codeOf(over)]).toEqual([429, 'slow_down']);
-    expect(s.controls.state(s.sandbox).control).toBe('human');
+    expect((await s.controls.state(s.sandbox)).control).toBe('human');
   });
 
   test('a cross-site request cannot take the computer or open its view', async () => {
@@ -257,7 +257,7 @@ withDb('the computer a person steers', () => {
           'origin_refused',
         ]);
       }
-    expect(s.controls.state(s.sandbox)).toEqual({ control: 'agent', epoch: 0 });
+    expect(await s.controls.state(s.sandbox)).toEqual({ control: 'agent', epoch: 0 });
     expect(s.parked).toEqual([]);
   });
 });

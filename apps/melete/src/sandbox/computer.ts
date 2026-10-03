@@ -43,7 +43,11 @@ import { appendEvent } from '../broker/records.ts';
 import { lockEventOrderIn } from '../db/transaction.ts';
 import { liveFrame, requestPeer } from '../workers/browser/live-service.ts';
 import { type DockerSandboxProvider, isDesktopProvider } from './adapters/docker.ts';
-import { type ComputerControls, computerControls } from './computer-control.ts';
+import {
+  type ComputerControlState,
+  type ComputerControls,
+  PostgresComputerControls,
+} from './computer-control.ts';
 import type { SandboxProviders } from './wiring.ts';
 
 /** Frames a second from the desktop: enough to follow a pointer, within the live byte budget. */
@@ -142,7 +146,7 @@ export class SandboxComputerService {
     options: SandboxComputerOptions = {},
   ) {
     this.now = options.now ?? Date.now;
-    this.controls = options.controls ?? computerControls;
+    this.controls = options.controls ?? new PostgresComputerControls(sql);
     this.presence = { ...LIVE_PRESENCE, ...options.presence };
     this.fps = options.fps ?? LIVE_FPS;
     // Any change of hands ends the view opened under the epoch before it.
@@ -213,7 +217,7 @@ export class SandboxComputerService {
           AbortSignal.timeout(10_000),
         )
         .catch(() => false);
-      const held = this.controls.state(binding.sandbox);
+      const held = await this.controls.state(binding.sandbox);
       computers.push({
         session_id: binding.sessionId,
         job_id: binding.jobId,
@@ -231,10 +235,15 @@ export class SandboxComputerService {
 
   async control(sessionId: string, operation: 'takeover' | 'handback', principalId: string) {
     const binding = await this.steerable(sessionId, principalId);
-    const next = this.controls.change(
+    const current = await this.controls.state(binding.sandbox);
+    // Only from the epoch just read: of two takeovers or hand-backs at once,
+    // on any instance, one lands and the other is told the computer moved on.
+    const next = await this.controls.change(
       binding.sandbox,
       operation === 'takeover' ? 'human' : 'agent',
+      { from: current.epoch, principalId },
     );
+    if (!next) throw new ComputerFault('epoch_changed');
     if (operation === 'takeover') await this.park(binding);
     else
       await this.sql.begin(async (tx) => {
@@ -306,7 +315,7 @@ export class SandboxComputerService {
 
   async open(sessionId: string, principalId: string, peer: string): Promise<LiveOpen> {
     const binding = await this.steerable(sessionId, principalId);
-    const held = this.controls.state(binding.sandbox);
+    const held = await this.controls.state(binding.sandbox);
     const current = this.bySandbox.get(binding.sandbox);
     if (current && !current.ended) {
       const recent =
@@ -333,7 +342,7 @@ export class SandboxComputerService {
     };
     this.byId.set(channel.id, channel);
     this.bySandbox.set(binding.sandbox, channel);
-    channel.timer = setInterval(() => this.tick(channel), 1000);
+    channel.timer = setInterval(() => void this.tick(channel), 1000);
     channel.timer.unref?.();
     return {
       live_id: channel.id,
@@ -353,7 +362,7 @@ export class SandboxComputerService {
       throw new ComputerFault('live_closed');
     if (channel.principalId !== principalId || channel.peer !== requestPeer(c))
       throw new ComputerFault('not_you');
-    if (this.controls.state(binding.sandbox).epoch !== channel.epoch) {
+    if ((await this.controls.state(binding.sandbox)).epoch !== channel.epoch) {
       this.finish(channel, 'epoch_changed');
       throw new ComputerFault('epoch_changed');
     }
@@ -448,7 +457,7 @@ export class SandboxComputerService {
     const { channel, binding } = await this.bound(c, sessionId, request.live_id);
     channel.ack = Math.max(channel.ack, request.ack_through);
     if (!request.events.length) return { accepted: 0 };
-    if (this.controls.state(binding.sandbox).control !== 'human')
+    if ((await this.controls.state(binding.sandbox)).control !== 'human')
       throw new ComputerFault('agent_control');
     const now = this.now();
     channel.inputs = channel.inputs.filter((at) => now - at < 1000);
@@ -475,13 +484,22 @@ export class SandboxComputerService {
   }
 
   /** Ends the view that has run its course; called every second while it is open. */
-  tick(channel: Channel): void {
-    const ending = this.ending(channel);
+  async tick(channel: Channel): Promise<void> {
+    if (channel.ended) return;
+    // Read from the database each second, so a change made on another
+    // instance ends this view as one made here does.
+    const held = await this.controls.state(channel.sandbox).catch(() => null);
+    if (!held || channel.ended) return;
+    if (held.epoch !== channel.epoch) {
+      this.finish(channel, 'epoch_changed');
+      return;
+    }
+    const ending = this.ending(channel, held);
     if (ending) {
       this.finish(channel, ending);
       return;
     }
-    if (channel.ended || this.controls.state(channel.sandbox).control !== 'human') return;
+    if (channel.ended || held.control !== 'human') return;
     const idle = this.now() - channel.lastInputAt;
     if (idle >= this.presence.still_there_ms && !channel.askedStillThere) {
       channel.askedStillThere = true;
@@ -489,13 +507,13 @@ export class SandboxComputerService {
     }
   }
 
-  private ending(channel: Channel): LiveEndCode | null {
+  private ending(channel: Channel, held: ComputerControlState): LiveEndCode | null {
     if (channel.ended) return null;
     const now = this.now();
     if (now - channel.openedAt >= LIVE_LIMITS.takeover_ms) return 'live_timeout';
     if (!channel.stream && now - channel.detachedAt >= this.presence.reconnect_ms) return 'closed';
     // A watcher is not expected to type; a person holding control is.
-    if (this.controls.state(channel.sandbox).control !== 'human') return null;
+    if (held.control !== 'human') return null;
     return now - channel.lastInputAt >= this.presence.idle_close_ms ? 'live_idle' : null;
   }
 

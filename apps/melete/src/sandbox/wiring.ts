@@ -20,6 +20,7 @@
  * other's sandboxes.
  */
 import type { Sql } from 'postgres';
+import { notHeldByPerson } from './computer-control.ts';
 import { END_REASONS, LIVE_STATES, type SandboxProcesses } from './processes.ts';
 import { reconcileSandboxes } from './reconcile.ts';
 import { type SandboxSessions, sessionHandle } from './sessions.ts';
@@ -142,12 +143,13 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
       const rows = await sql`select id, agent_id, persistence, connection_id, adapter,
           provider_sandbox_id, space_id, image_digest, region, status
         from sandbox_session
-        where attempt_id = ${attemptId} and status in ('opening', 'ready')`;
+        where attempt_id = ${attemptId} and status in ('opening', 'ready')
+          and ${notHeldByPerson(sql)}`;
       for (const row of rows) {
         const id = String(row.id);
         // Taking over the computer is what ended this attempt; the person keeps
-        // it, and the sweep settles it once they hand it back.
-        if (sessions.heldByPerson(String(row.provider_sandbox_id))) continue;
+        // it (on whichever instance they took it), and the sweep settles it
+        // once they hand it back. Their sessions are not selected above.
         const workspace = row.agent_id !== null && row.persistence !== 'ephemeral';
         try {
           const provider = providerFor(String(row.adapter), String(row.connection_id));

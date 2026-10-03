@@ -33,7 +33,11 @@
  */
 import type { Sql, TransactionSql } from 'postgres';
 import { recordId } from '../broker/records.ts';
-import { type ComputerControls, computerControls } from './computer-control.ts';
+import {
+  type ComputerControls,
+  notHeldByPerson,
+  PostgresComputerControls,
+} from './computer-control.ts';
 import { checkSpec, LABEL_SESSION, SandboxRefusal, type SessionPersistence } from './manifest.ts';
 import type { SessionHolder, SessionStatus } from './schema.ts';
 import {
@@ -297,7 +301,8 @@ async function usedSeconds(tx: Query, jobId: string): Promise<number> {
 
 export class SandboxSessions {
   private readonly ids: () => string;
-  private readonly controls: ComputerControls;
+  /** Who drives each computer, read from the database every time it matters. */
+  readonly controls: ComputerControls;
 
   /** How long a lease runs, in seconds. */
   get leaseSeconds(): number {
@@ -316,7 +321,7 @@ export class SandboxSessions {
     )
       throw new Error('workspace retention needs a positive whole number of seconds');
     this.ids = options.ids ?? (() => recordId('sbx'));
-    this.controls = options.controls ?? computerControls;
+    this.controls = options.controls ?? new PostgresComputerControls(sql);
   }
 
   /**
@@ -324,8 +329,8 @@ export class SandboxSessions {
    * agent's attempt, and the computer is the person's until they hand it
    * back: it is not settled with that attempt, nor handed to another one.
    */
-  heldByPerson(providerSandboxId: string): boolean {
-    return this.controls.state(providerSandboxId).control === 'human';
+  async heldByPerson(providerSandboxId: string): Promise<boolean> {
+    return (await this.controls.state(providerSandboxId)).control === 'human';
   }
 
   async get(id: string): Promise<SessionRow | null> {
@@ -578,8 +583,12 @@ export class SandboxSessions {
         if (held) {
           // A person who took the computer over keeps it until they hand it
           // back: no attempt is given it meanwhile.
-          if (this.heldByPerson(held.providerSandboxId))
-            throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
+          // The control row is held while the computer changes hands, so a
+          // takeover on any instance waits for this, then fences what it began.
+          const [person] = await tx`select 1 from sandbox_control
+            where provider_sandbox_id = ${held.providerSandboxId} and control = 'human'
+            for share`;
+          if (person) throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
           // Running, with its processes in it: taken over as it is, on a new
           // row, so nothing is paused or resumed under them.
           adopted = await this.takeOver(tx, held, id, input);
@@ -713,7 +722,7 @@ export class SandboxSessions {
       // A person driving it keeps it, as they would any computer they took
       // over: its lease is kept and it is not suspended under them, and the
       // time is theirs rather than the processes'.
-      if (this.heldByPerson(row.providerSandboxId)) {
+      if (await this.heldByPerson(row.providerSandboxId)) {
         await this.sql`update sandbox_session
           set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds}),
             seconds_charged = extract(epoch from now() - opened_at)
@@ -772,13 +781,14 @@ export class SandboxSessions {
 
   /**
    * The sandboxes of one adapter that live background processes keep awake,
-   * read from the process records: a provider that stops idle sandboxes
-   * itself must not stop these.
+   * read from the process records, and those a person has taken over, on any
+   * instance: a provider that stops idle sandboxes itself must not stop these.
    */
   async awakeSandboxes(adapter: string): Promise<Set<string>> {
     const rows = await this.sql`select provider_sandbox_id from sandbox_session
       where adapter = ${adapter} and status in ('opening', 'ready', 'paused')
-        and agent_id is not null and ${liveProcesses(this.sql)}`;
+        and ((agent_id is not null and ${liveProcesses(this.sql)})
+          or not ${notHeldByPerson(this.sql)})`;
     return new Set(rows.map((row) => String(row.provider_sandbox_id)));
   }
 
@@ -1157,7 +1167,7 @@ export class SandboxSessions {
       where status in ('opening', 'ready') and attempt_id is not null
         and lease_expires_at >= now()
         and ${attemptGone(this.sql)}
-        and not (provider_sandbox_id = any(${this.controls.heldByPerson()}::text[]))
+        and ${notHeldByPerson(this.sql)}
         ${scope ? this.sql`and space_id = ${scope.spaceId} and agent_id = ${scope.agentId}` : this.sql``}
       returning id`;
     return rows.map((row) => row.id as string);
