@@ -22,6 +22,12 @@ describe('the answer guard', () => {
     expect(found('{"client_secret":"c"}')).toBe('a client secret');
     expect(found('access_token=abc&token_type=bearer')).toBe('an access token');
     expect(found('<SessionToken>t</SessionToken>')).toBe('a session token');
+    // Systems Manager's StartSession: the session's token sits beside its stream address.
+    expect(
+      found(
+        '{"SessionId":"alice-0a1b","StreamUrl":"wss://ssmmessages.eu-west-1.amazonaws.com/v1/data-channel/alice-0a1b?role=publish_subscribe","TokenValue":"AAEAA"}',
+      ),
+    ).toBe('a session token');
     expect(found('-----BEGIN OPENSSH PRIVATE KEY-----\nb3Bl')).toBe('a private key');
     // Paging and retry tokens, empty values and password rules are not credentials.
     for (const ordinary of [

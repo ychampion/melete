@@ -200,6 +200,9 @@ describe('the GitLab classifier on recorded glab and git requests', () => {
       api('POST', '/api/v4/projects/alice%2Fsite/runners/reset_registration_token'),
       api('POST', '/api/v4/projects/alice%2Fsite/triggers', '{"description":"x"}'),
       api('POST', '/api/v4/user/keys', '{"key":"ssh-ed25519 AAAA"}'),
+      api('POST', '/api/v4/projects/42/cluster_agents/7/tokens', '{"name":"t"}'),
+      api('POST', '/api/v4/projects/alice%2Fsite/cluster_agents/7/%74okens', '{"name":"t"}'),
+      api('POST', '/api/v4/projects/42/cluster_agents', '{"name":"agent"}'),
       api('POST', '/api/v4/projects/alice%2Fsite/deploy_keys', '{"can_push":true}'),
       api('POST', '/oauth/token', 'grant_type=password'),
       api(
@@ -233,6 +236,9 @@ describe('the GitLab classifier on recorded glab and git requests', () => {
       'gitlab_deploy',
       'gitlab_runner',
       'gitlab_trigger',
+      'gitlab_agent',
+      'gitlab_feed',
+      'gitlab_incoming_mail',
     ]);
   });
 

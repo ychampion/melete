@@ -419,6 +419,12 @@ describe('what each request the AWS SDK builds does', () => {
     );
     expect(answer('{"Credentials":{"UserName":"gl-user","Secret":"s3cr3t"}}')).toBe('a secret');
     expect(answer('{"FleetAttributes":[]}')).toBeNull();
+    // A started Systems Manager session answers with a token that opens it.
+    expect(
+      answer(
+        '{"SessionId":"s-1","StreamUrl":"wss://ssmmessages.eu-west-1.amazonaws.com/v1/data-channel/s-1","TokenValue":"AAEAAx"}',
+      ),
+    ).toBe('a session token');
     // The person's own S3 objects, and an unsigned request that carried no account, are not checked.
     const object = await probe({
       method: 'GET',
