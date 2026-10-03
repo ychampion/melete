@@ -26,7 +26,7 @@ import { calendarManifest } from '../../src/connectors/calendar.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { loadEnv } from '../../src/env.ts';
-import { agentAccess } from '../../src/experience/access.ts';
+import { agentAccess, connectionOffered } from '../../src/experience/access.ts';
 import { ExperienceService } from '../../src/experience/service.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
@@ -235,6 +235,37 @@ async function turnAgent(jobId: string) {
   const [row] = await database().sql`select agent_id from experience_turn where job_id = ${jobId}
     order by created_at desc, id desc limit 1`;
   return String(row?.agent_id ?? '');
+}
+/** Give a room's request a computer with a desktop, as a sandbox connection would. */
+async function roomComputer(roomId: string, request: string, attemptId: string) {
+  const { sql } = database();
+  const connectionId = recordId('conn');
+  await sql`insert into connection (id, space_id, provider, label, shared_use)
+    values (${connectionId}, ${roomId}, 'sandbox', 'Computer', 'room')`;
+  const [persona] = await sql`select id from agent where space_id = ${roomId} and is_default`;
+  const sessionId = recordId('sbx');
+  const sandbox = `melete-sbx-test-${sessionId.toLowerCase()}`;
+  await sql`insert into sandbox_session (id, connection_id, space_id, job_id, attempt_id, agent_id,
+      adapter, provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at)
+    values (${sessionId}, ${connectionId}, ${roomId}, ${request}, ${attemptId},
+      ${persona?.id}, 'docker', ${sandbox}, 'melete-sandbox:local', '{"kind":"deny_all"}'::jsonb,
+      'pause', 'ready', now() + interval '1 hour')`;
+  desktops.set(connectionId, {
+    adapter: 'docker',
+    provider: {
+      desktop: true,
+      capabilities: { adapter: 'docker' },
+      async running() {
+        return true;
+      },
+      async computer() {
+        return new TextEncoder().encode('{"accepted":1}');
+      },
+      async *frames() {},
+      touch() {},
+    } as unknown as DockerSandboxProvider,
+  });
+  return sessionId;
 }
 /** Read a live stream until it ends, or give up after `ms`. */
 async function readUntilClosed(response: Response, ms: number) {
@@ -942,6 +973,45 @@ withDb('rooms', () => {
     expect((await at(world.alice, `/sandbox/computers?job_id=${request}`)).status).toBe(403);
   }, 60_000);
 
+  test("an open view of the room's computer closes once the viewer's place in the room ends", async () => {
+    const { sql, app } = database();
+    const roomId = await makeRoom('Watched', [world.bob, world.carol]);
+    const opened = await startThread(world.bob, roomId, '@Melete open the slides', true);
+    const request = opened.request_job_id ?? '';
+    const { claims } = await claim(request);
+    const sessionId = await roomComputer(roomId, request, claims.attempt_id);
+    const at = (person: Person, path: string, method = 'GET') =>
+      app.request(
+        path,
+        { method, headers: { Cookie: person.cookie } },
+        { clientAddress: '10.9.0.1' },
+      );
+    const watch = async (person: Person) => {
+      const live = await ok<{ live_id: string }>(
+        at(person, `/sandbox/sessions/${sessionId}/live`, 'POST'),
+      );
+      const frames = await at(
+        person,
+        `/sandbox/sessions/${sessionId}/live/frames?live_id=${live.live_id}`,
+      );
+      expect(frames.status).toBe(200);
+      return frames;
+    };
+    // Bob is removed while he watches: the view ends within its check interval.
+    const bobs = await watch(world.bob);
+    await ok(send(world.alice.cookie, `/rooms/${roomId}/members/${world.bob.id}`, 'DELETE'));
+    const removed = await readUntilClosed(bobs, 9_000);
+    expect(removed.closed).toBe(true);
+    expect(removed.text).toContain('"code":"session_not_found"');
+    // Carol's place runs out while she watches: the same.
+    const carols = await watch(world.carol);
+    await sql`update space_membership set expires_at = now() - interval '1 second'
+      where space_id = ${roomId} and principal_id = ${world.carol.id}`;
+    const expired = await readUntilClosed(carols, 9_000);
+    expect(expired.closed).toBe(true);
+    expect(expired.text).toContain('"code":"session_not_found"');
+  }, 60_000);
+
   test('a live thread resumes after the last frame it saw, in order', async () => {
     const roomId = await makeRoom('Stream');
     const opened = await startThread(world.alice, roomId, 'First');
@@ -1122,6 +1192,21 @@ withDb('rooms', () => {
     await sql`insert into connection (id, space_id, provider, label, scopes, configuration)
       values (${files}, ${legacy}, 'files', 'Files', '["files.read"]'::jsonb,
         '{"builtin":"files"}'::jsonb)`;
+    // The Melete every space was given before rooms, which in a shared space reached nothing.
+    const melete = newId('agent');
+    await sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone,
+        standing_instruction, allowed_connection_ids, is_default)
+      values (${melete}, ${legacy}, 'Melete', 'Your assistant', '#2F5FD6', 'rounded', '#14275C',
+        'Warm and clear', '', '[]'::jsonb, true)`;
+    // Another such space whose owner already chose what its Melete reaches.
+    const chosen = recordId('sp');
+    await sql`insert into space (id, name, kind, audience, owner_principal_id, git_path)
+      values (${chosen}, 'Studio', 'shared', 'space', ${world.alice.id}, ${`/spaces/${chosen}`})`;
+    const narrowed = newId('agent');
+    await sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone,
+        standing_instruction, allowed_connection_ids, is_default)
+      values (${narrowed}, ${chosen}, 'Melete', 'Your assistant', '#2F5FD6', 'rounded', '#14275C',
+        'Warm and clear', '', ${JSON.stringify([files])}::jsonb, true)`;
     const migration = await readFile(
       new URL('../../drizzle/0089_rooms.sql', import.meta.url),
       'utf8',
@@ -1145,5 +1230,22 @@ withDb('rooms', () => {
     expect(listed.rooms.map((room) => room.id)).toContain(legacy);
     const asked = await startThread(world.alice, legacy, '@Melete hello', false);
     expect(asked.request_job_id).not.toBeNull();
+    // Its agent is that Melete, now reaching what the room marks: its own tools
+    // and the space's connections marked for the room.
+    const calendar = await installCalendar(legacy, 'room');
+    const access = await agentAccess(sql, asked.request_job_id ?? '');
+    expect(access.agentId).toBe(melete);
+    expect([connectionOffered(access, files), connectionOffered(access, calendar)]).toEqual([
+      true,
+      true,
+    ]);
+    // A Melete whose reach someone chose keeps it.
+    const [kept] = await sql`select allowed_connection_ids from agent where id = ${narrowed}`;
+    expect(kept?.allowed_connection_ids).toEqual([files]);
+    // The room's principal goes by the room's name, as a new room's does.
+    const names = await sql`select p.display_name from space_membership m
+      join principal p on p.id = m.principal_id
+      where m.space_id in (${legacy}, ${chosen}) and m.role = 'agent' order by p.display_name`;
+    expect(names.map((row) => row.display_name)).toEqual(['Household', 'Studio']);
   }, 60_000);
 });

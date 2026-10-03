@@ -78,3 +78,16 @@ WHERE s."kind" = 'shared'
 UPDATE "connection" c SET "shared_use" = 'room'
 FROM "space" s
 WHERE s."id" = c."space_id" AND s."kind" = 'shared' AND c."configuration" ? 'builtin';
+--> statement-breakpoint
+-- A room's principal goes by the room's name, as a new room's does.
+UPDATE "principal" p SET "display_name" = s."name"
+FROM "space" s
+WHERE s."kind" = 'shared' AND p."kind" = 'room' AND p."email" = lower(s."id") || '@room.invalid'
+  AND p."display_name" IS NULL;--> statement-breakpoint
+-- The Melete a shared space was given before rooms reached nothing. As the
+-- room's agent it reaches what the room marks, as a new room's does; a list
+-- someone chose is kept.
+UPDATE "agent" a SET "allowed_connection_ids" = NULL
+FROM "space" s
+WHERE s."id" = a."space_id" AND s."kind" = 'shared' AND a."is_default" AND a."deleted_at" IS NULL
+  AND a."allowed_connection_ids" = '[]'::jsonb;

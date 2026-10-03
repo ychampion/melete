@@ -110,6 +110,9 @@ type Channel = {
   pump?: AbortController;
   ended: boolean;
   timer?: ReturnType<typeof setInterval>;
+  /** When the viewer's place was last checked, and whether a check is under way. */
+  checkedAt: number;
+  checking: boolean;
 };
 
 /** Browser reads of the stream must come from this API, as its writes already must. */
@@ -124,7 +127,12 @@ export type SandboxComputerOptions = {
   controls?: ComputerControls;
   presence?: Partial<typeof LIVE_PRESENCE>;
   fps?: number;
+  /** How often an open view asks again whether its viewer may still see the computer. */
+  recheckMs?: number;
 };
+
+/** An open view is checked against its viewer's place this often. */
+export const LIVE_RECHECK_MS = 5_000;
 
 /** `steer`: take over, hand back and send input. `watch`: see the screen. */
 type Reach = 'steer' | 'watch';
@@ -137,6 +145,7 @@ export class SandboxComputerService {
   private readonly controls: ComputerControls;
   private readonly presence: typeof LIVE_PRESENCE;
   private readonly fps: number;
+  private readonly recheckMs: number;
 
   constructor(
     private readonly sql: Sql,
@@ -147,6 +156,7 @@ export class SandboxComputerService {
     this.controls = options.controls ?? computerControls;
     this.presence = { ...LIVE_PRESENCE, ...options.presence };
     this.fps = options.fps ?? LIVE_FPS;
+    this.recheckMs = options.recheckMs ?? LIVE_RECHECK_MS;
     // Any change of hands ends the view opened under the epoch before it.
     this.controls.onChange((sandbox) => {
       const channel = this.bySandbox.get(sandbox);
@@ -350,6 +360,8 @@ export class SandboxComputerService {
       inputs: [],
       detachedAt: this.now(),
       ended: false,
+      checkedAt: this.now(),
+      checking: false,
     };
     this.byId.set(channel.id, channel);
     this.bySandbox.set(binding.sandbox, channel);
@@ -501,12 +513,35 @@ export class SandboxComputerService {
       this.finish(channel, ending);
       return;
     }
+    this.recheck(channel);
     if (channel.ended || this.controls.state(channel.sandbox).control !== 'human') return;
     const idle = this.now() - channel.lastInputAt;
     if (idle >= this.presence.still_there_ms && !channel.askedStillThere) {
       channel.askedStillThere = true;
       channel.stream?.write({ type: 'notice', code: 'still_there' });
     }
+  }
+
+  /**
+   * Whether the viewer may still see this computer. A room's member who is
+   * removed or leaves, or a guest whose time is up, loses the view within one
+   * interval, as they lose every other room route at once.
+   */
+  private recheck(channel: Channel): void {
+    if (channel.ended || channel.checking || this.now() - channel.checkedAt < this.recheckMs)
+      return;
+    channel.checking = true;
+    this.steerable(channel.sessionId, channel.principalId, 'watch')
+      .then(
+        () => undefined,
+        (error: unknown) => {
+          if (error instanceof ComputerFault) this.finish(channel, 'session_not_found');
+        },
+      )
+      .finally(() => {
+        channel.checking = false;
+        channel.checkedAt = this.now();
+      });
   }
 
   private ending(channel: Channel): LiveEndCode | null {
