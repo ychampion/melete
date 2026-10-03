@@ -1574,6 +1574,10 @@ own.
   instance that serves them. Which ones background processes keep awake is read
   from the database on every pass, so a container with running processes is
   never stopped for idleness, whichever instance started them.
+- Taking over the agent's computer is kept in the memory of the instance that
+  serves it. Run one instance, or send every request for a computer to the same
+  instance, when people take over the agent's computer; otherwise another
+  instance's sweep can suspend a computer while someone is using it.
 
 ## Upgrading
 
