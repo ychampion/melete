@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  hasStructuredOutput,
+  namesSchema,
   nullable,
   replyOf,
   StructuredAnswerError,
   strictObject,
+  stripStructuredOutput,
   supportsStructuredOutput,
   withoutNulls,
   withoutStructuredOutput,
@@ -169,11 +172,55 @@ describe('a fallback without structured outputs', () => {
     ).toEqual({ model: 'x', reasoning_effort: 'low' });
     expect(
       withoutStructuredOutput(
-        { model: 'x', text: { format: {}, verbosity: 'low' }, reasoning: { effort: 'low' } },
+        {
+          model: 'x',
+          text: { format: { type: 'json_schema' }, verbosity: 'low' },
+          reasoning: { effort: 'low' },
+        },
         target,
       ),
     ).toEqual({ model: 'x', text: { verbosity: 'low' }, reasoning: { effort: 'low' } });
     const kept = { model: 'x', response_format: { type: 'json_schema' } };
     expect(withoutStructuredOutput(kept, { provider: 'openai', model: 'gpt-6-astra' })).toBe(kept);
+  });
+});
+
+describe('stop reasons that are not a whole answer', () => {
+  test('a context window exhausted mid-answer is cut off; a failed response has no answer', () => {
+    expect(
+      replyOf('messages', {
+        content: [{ type: 'text', text: '{"a":' }],
+        stop_reason: 'model_context_window_exceeded',
+      }).end,
+    ).toBe('cut_off');
+    for (const status of ['failed', 'cancelled'])
+      expect(() => replyOf('responses', { status, output: [] })).toThrow('answer_envelope_invalid');
+  });
+
+  test('the schema joins whatever text settings the request already has', () => {
+    expect(
+      withStructuredOutput(
+        { model: 'm', text: { verbosity: 'low' } },
+        { provider: 'openai', model: 'gpt-6-astra' },
+        'responses',
+        format,
+      ).text,
+    ).toEqual({
+      verbosity: 'low',
+      format: { type: 'json_schema', name: 'answer', schema: format.schema, strict: true },
+    });
+  });
+
+  test('stripping leaves plain JSON mode alone, and recognises schema 400s by their text', () => {
+    const jsonMode = { model: 'x', response_format: { type: 'json_object' } };
+    expect(stripStructuredOutput(jsonMode)).toEqual(jsonMode);
+    expect(hasStructuredOutput(jsonMode)).toBe(false);
+    for (const text of [
+      "Invalid value at 'response_format.json_schema.schema'",
+      'text.format: strict mode requires additionalProperties false',
+      'output_config.format is not supported for this model',
+    ])
+      expect(namesSchema(text)).toBe(true);
+    expect(namesSchema('Unrecognized request argument supplied: reasoning_effort')).toBe(false);
   });
 });

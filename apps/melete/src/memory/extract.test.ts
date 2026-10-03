@@ -355,3 +355,65 @@ describe('a list the person adds to', () => {
     ).toEqual([answer]);
   });
 });
+
+describe('a structured extraction full of filler', () => {
+  const said = 'Thanks! My sister Maya lives in Lisbon now.';
+  const evidence = {
+    source_id: 'src_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    source_version: '1',
+    start: 0,
+    text: said,
+  };
+
+  test('fields an operation does not use are dropped, "" and 0 included', () => {
+    // Recorded shape: the unused fields filled with "" and 0 instead of null.
+    const reply = JSON.stringify({
+      proposals: [
+        {
+          op: 'add',
+          claim_id: '',
+          expected_revision: 0,
+          domain_key: 'person.maya.city',
+          content: 'Maya lives in Lisbon',
+          kind: 'user_statement',
+          factual_status: 'attributed',
+          valid_from: '2026-10-01T09:00:00Z',
+          valid_until: '',
+          sources: [{ quote: 'My sister Maya lives in Lisbon' }],
+        },
+        {
+          op: 'no-op',
+          claim_id: '',
+          expected_revision: 0,
+          domain_key: '',
+          content: '',
+          kind: 'user_statement',
+          factual_status: 'attributed',
+          valid_from: '',
+          valid_until: '',
+          sources: [{ quote: 'Thanks!' }],
+        },
+      ],
+    });
+    const { proposals, dropped } = readExtractionReply(reply, evidence);
+    expect(dropped).toEqual([]);
+    expect(proposals[0]).toMatchObject({ op: 'add', expected_revision: null, valid_until: null });
+    expect(proposals[0]).not.toHaveProperty('claim_id');
+    expect(Object.keys(proposals[1] ?? {}).sort()).toEqual(['op', 'sources']);
+  });
+
+  test('one quote that is not there drops that proposal only', () => {
+    const reply = JSON.stringify({
+      proposals: [
+        {
+          op: 'no-op',
+          sources: [{ quote: 'I never said this' }],
+        },
+        { op: 'no-op', sources: [{ quote: 'Thanks!' }] },
+      ],
+    });
+    const { proposals, dropped } = readExtractionReply(reply, evidence);
+    expect(dropped.map((item) => item.index)).toEqual([0]);
+    expect(proposals).toHaveLength(1);
+  });
+});

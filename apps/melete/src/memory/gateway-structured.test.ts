@@ -1,15 +1,22 @@
 import { expect, test } from 'bun:test';
+import { effortRefused } from '../gateway/effort.ts';
 import { openAiCompatibleProvider } from '../gateway/providers.ts';
+import { structuredRefused } from '../gateway/structured.ts';
 import type { GatewayProvider } from '../gateway/types.ts';
 import { MemoryError, type MemorySql } from './db.ts';
 import { EXTRACTION_FORMAT } from './extract.ts';
 import { openMemoryGateway } from './gateway.ts';
 
 /** Just enough of the database for the gateway's call ledger: nothing spent, nothing kept. */
+/** Every settlement the gateway recorded, newest last. */
+const settlements: Record<string, unknown>[] = [];
 function ledger(): MemorySql {
   const sql = Object.assign(
-    async (strings: TemplateStringsArray) =>
-      strings.join('?').includes('count(*)') ? [{ calls: 0 }] : [],
+    async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join('?').includes('set settlement'))
+        settlements.push(JSON.parse(String(values[0])) as Record<string, unknown>);
+      return strings.join('?').includes('count(*)') ? [{ calls: 0 }] : [];
+    },
     { begin: async (work: (tx: unknown) => Promise<unknown>) => work(sql) },
   );
   return sql as unknown as MemorySql;
@@ -52,6 +59,7 @@ const message = (text: string, stop: string) =>
 async function read(
   target: { provider: GatewayProvider; model: string },
   upstream: (body: Record<string, unknown>) => Response,
+  options: { reasoningEffort?: 'low'; withSchema?: boolean } = {},
 ) {
   const sent: Record<string, unknown>[] = [];
   const memory = await openMemoryGateway({
@@ -61,6 +69,7 @@ async function read(
     providers: [target.provider],
     dailyCalls: 10,
     privacy: false,
+    ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     fetch: async (request) => {
       const body = (await request.json()) as Record<string, unknown>;
       sent.push(body);
@@ -77,7 +86,7 @@ async function read(
           ],
           max_tokens: 2000,
           signal: AbortSignal.timeout(10_000),
-          format: EXTRACTION_FORMAT,
+          ...(options.withSchema === false ? {} : { format: EXTRACTION_FORMAT }),
         },
         { ownerId: 'own_test', spaceId: 'sp_test', workId: 'work_test', sourceJobId: null },
       )
@@ -139,4 +148,75 @@ test('a refused answer is named as one', async () => {
     message('', 'refusal'),
   );
   expect(codeOf(reply)).toBe('extraction_answer_refused');
+});
+
+const GOOGLE: GatewayProvider = {
+  name: 'google',
+  baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+  apiKey: 'test-key',
+  protocols: ['chat/completions'],
+};
+
+test('a provider that refuses the schema is asked again without it, and keeps its effort', async () => {
+  const model = 'gemini-3-flash-schema-refusal';
+  // Recorded shape of a provider 400 for a schema it does not accept.
+  const refuseSchema = (body: Record<string, unknown>) =>
+    body.response_format
+      ? Response.json(
+          {
+            error: {
+              code: 400,
+              message:
+                'Invalid JSON payload received. Unknown name "additionalProperties" at \'response_format.json_schema.schema\'',
+            },
+          },
+          { status: 400 },
+        )
+      : completion(ANSWER, 'stop');
+  const first = await read({ provider: GOOGLE, model }, refuseSchema, { reasoningEffort: 'low' });
+  expect(first.reply).toBe(ANSWER);
+  expect(first.sent).toHaveLength(2);
+  expect(first.sent[0]).toHaveProperty('response_format');
+  // The retry drops only the schema: the effort the gateway added stays.
+  expect(first.sent[1]).not.toHaveProperty('response_format');
+  expect(first.sent[1]?.reasoning_effort).toBe('low');
+  expect(first.sent[1]?.messages).toEqual(first.sent[0]?.messages);
+  // The 400 was the schema's: the model is remembered as refusing schemas, not effort.
+  expect(structuredRefused('google', model)).toBe(true);
+  expect(effortRefused('google', model)).toBe(false);
+  // Each call's settlement says what became of the schema.
+  expect(settlements.slice(-2).map((settlement) => settlement.structured)).toEqual([
+    'refused',
+    'stripped',
+  ]);
+  // Later calls skip the schema at once, and the agent's own turns, which
+  // carry no schema, still get effort.
+  const later = await read({ provider: GOOGLE, model }, refuseSchema, { reasoningEffort: 'low' });
+  expect(later.sent).toHaveLength(1);
+  expect(later.sent[0]).not.toHaveProperty('response_format');
+  expect(settlements.at(-1)?.structured).toBe('stripped');
+  const turn = await read({ provider: GOOGLE, model }, refuseSchema, {
+    reasoningEffort: 'low',
+    withSchema: false,
+  });
+  expect(turn.sent[0]?.reasoning_effort).toBe('low');
+});
+
+test('a 400 about the effort is still blamed on the effort, not the schema', async () => {
+  const model = 'gemini-3-flash-effort-refusal';
+  const refuseEffortField = (body: Record<string, unknown>) =>
+    body.reasoning_effort
+      ? Response.json(
+          { error: { message: 'Unrecognized request argument supplied: reasoning_effort' } },
+          { status: 400 },
+        )
+      : completion(ANSWER, 'stop');
+  const { reply, sent } = await read({ provider: GOOGLE, model }, refuseEffortField, {
+    reasoningEffort: 'low',
+  });
+  expect(reply).toBe(ANSWER);
+  expect(sent[1]).toHaveProperty('response_format');
+  expect(sent[1]).not.toHaveProperty('reasoning_effort');
+  expect(effortRefused('google', model)).toBe(true);
+  expect(structuredRefused('google', model)).toBe(false);
 });

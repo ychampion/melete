@@ -1,7 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { PROCEDURE_CHECK_KINDS } from '@melete/contracts';
 import { admitProposal, type ProposalSource } from './admit.ts';
-import { GENERAL_PROPOSAL_FORMAT, unfenced, withoutUnusedCheckFields } from './proposal-gateway.ts';
+import {
+  GENERAL_PROPOSAL_FORMAT,
+  generalProposalFormat,
+  unfenced,
+  withoutUnusedCheckFields,
+} from './proposal-gateway.ts';
 
 const body = '{"target":"skill_body"}';
 
@@ -96,5 +101,73 @@ describe('a structured proposal, as a schema-held model returns it', () => {
       }
     ).properties.checks.items.properties.kind.enum;
     expect(kinds).toEqual([...PROCEDURE_CHECK_KINDS]);
+  });
+});
+
+describe('a structured proposal full of filler', () => {
+  const objective = 'Summarise the weekly project status report';
+  const intervention =
+    'Far too long. Keep summaries to five bullet points at most, and put the risks first.';
+  const sources: ProposalSource[] = [
+    { id: 'intervention', offset: 0, text: intervention },
+    { id: 'objective', offset: 0, text: objective },
+  ];
+  // Recorded shape: strict mode makes the model write every check field, and it
+  // fills the unused ones with "", 0, [] and false instead of null.
+  const filler = {
+    min: 0,
+    max: 0,
+    phrase: '',
+    form: null,
+    headings: [],
+    ordered: false,
+    key: '',
+    type: null,
+    direction: null,
+    preserve_rows: false,
+    action_kind: '',
+  };
+  const reply = {
+    target: 'skill_body',
+    steps: [
+      {
+        text: 'Write the summary as five bullet points at most.',
+        evidence: { source: 'intervention', quote: 'Keep summaries to five bullet points at most' },
+      },
+    ],
+    triggers: [
+      { phrase: 'status report', evidence: { source: 'objective', quote: 'status report' } },
+    ],
+    checks: [
+      { ...filler, kind: 'output_format', form: 'bullets' },
+      { ...filler, kind: 'line_count', max: 5 },
+      {
+        ...filler,
+        kind: 'records_sorted',
+        key: 'date',
+        type: 'date',
+        direction: 'ascending',
+        preserve_rows: false,
+      },
+    ],
+    variant_objectives: [],
+  };
+
+  test('is admitted: each check keeps only its kind’s own fields', () => {
+    const admitted = admitProposal(withoutUnusedCheckFields(reply), { sources, objective });
+    expect(admitted.checks[0]).toEqual({ kind: 'output_format', form: 'bullets' });
+    expect(admitted.checks[1]).toMatchObject({ kind: 'line_count', max: 5 });
+    // A choice the kind uses is kept even when it looks like filler.
+    expect(admitted.checks[2]).toMatchObject({ kind: 'records_sorted', preserve_rows: false });
+  });
+
+  test('without the projection, the same reply is refused, as it was before', () => {
+    expect(() => admitProposal(reply, { sources, objective })).toThrow();
+  });
+
+  test('the schema offers only the sources that were sent', () => {
+    const only = JSON.stringify(generalProposalFormat(['intervention']).schema);
+    expect(only).toContain('"enum":["intervention"]');
+    expect(only).not.toContain('"objective"');
   });
 });

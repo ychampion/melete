@@ -127,14 +127,29 @@ export const EXTRACTION_FORMAT: StructuredFormat = {
       type: 'array',
       items: strictObject({
         op: { type: 'string', enum: ['add', 'supersede', 'retract', 'no-op'] },
-        claim_id: nullable({ type: 'string' }),
-        expected_revision: nullable({ type: 'integer' }),
-        domain_key: nullable({ type: 'string' }),
-        content: nullable({ type: 'string' }),
-        kind: nullable({ type: 'string', enum: [...claimKind.options] }),
-        factual_status: nullable({ type: 'string', enum: [...factualStatus.options] }),
-        valid_from: nullable({ type: 'string' }),
-        valid_until: nullable({ type: 'string' }),
+        claim_id: nullable({
+          type: 'string',
+          description: 'null unless op is supersede or retract',
+        }),
+        expected_revision: nullable({
+          type: 'integer',
+          description: 'null unless op is supersede or retract',
+        }),
+        domain_key: nullable({ type: 'string', description: 'null unless op is add or supersede' }),
+        content: nullable({ type: 'string', description: 'null unless op is add or supersede' }),
+        kind: nullable({
+          type: 'string',
+          enum: [...claimKind.options],
+          description: 'null unless op is add or supersede',
+        }),
+        factual_status: nullable({
+          type: 'string',
+          enum: [...factualStatus.options],
+          description: 'null unless op is add or supersede',
+        }),
+        valid_from: nullable({ type: 'string', description: 'null unless op is add or supersede' }),
+        valid_until: nullable({ type: 'string', description: 'null when open-ended or unused' }),
+
         sources: { type: 'array', items: strictObject({ quote: { type: 'string' } }) },
       }),
     },
@@ -413,7 +428,29 @@ export type ExtractionEvidence = {
 /** Marks a span whose quote is not in the segment, so its proposal is refused as that. */
 const UNPLACED = '__unplaced';
 
+/** The fields each operation uses; the rest of a structured answer's fields are filler. */
+const CLAIM_FIELDS = [
+  'op',
+  'expected_revision',
+  'domain_key',
+  'key',
+  'content',
+  'kind',
+  'factual_status',
+  'confidence',
+  'valid_from',
+  'valid_until',
+  'sources',
+];
+const OP_FIELDS: Record<string, ReadonlySet<string>> = {
+  add: new Set(CLAIM_FIELDS),
+  supersede: new Set([...CLAIM_FIELDS, 'claim_id']),
+  retract: new Set(['op', 'claim_id', 'expected_revision', 'sources']),
+  'no-op': new Set(['op', 'sources']),
+};
+
 /** Nulls that mean something; every other null is a field a structured answer left unused. */
+
 const MEANINGFUL_NULLS: Record<string, ReadonlySet<string>> = {
   add: new Set(['expected_revision', 'valid_until']),
   supersede: new Set(['valid_until']),
@@ -433,8 +470,14 @@ function normalizeProposal(entry: unknown, evidence?: ExtractionEvidence): unkno
   if (proposal.op === undefined && typeof proposal.content === 'string')
     proposal.op = typeof proposal.claim_id === 'string' ? 'supersede' : 'add';
   if (proposal.op === 'noop' || proposal.op === 'no_op') proposal.op = 'no-op';
-  if (proposal.op === 'add' && proposal.expected_revision === undefined)
-    proposal.expected_revision = null;
+  // A schema-held answer fills every field, and a model may fill the ones its
+  // operation does not use with "" or 0 rather than null. Only the
+  // operation's own fields are kept, so filler never refuses a proposal.
+  const own = typeof proposal.op === 'string' ? OP_FIELDS[proposal.op] : undefined;
+  if (own) for (const field of Object.keys(proposal)) if (!own.has(field)) delete proposal[field];
+  if (proposal.key === '') delete proposal.key;
+  // An add has no revision to expect, whatever filler stands there.
+  if (proposal.op === 'add') proposal.expected_revision = null;
   if (proposal.op === 'add' || proposal.op === 'supersede') {
     if (proposal.valid_until === undefined || proposal.valid_until === '')
       proposal.valid_until = null;

@@ -26,7 +26,14 @@ import {
   resolveRoute,
 } from './providers.ts';
 import { providerIsLocal } from './routing.ts';
-import { withoutStructuredOutput } from './structured.ts';
+import {
+  hasStructuredOutput,
+  namesSchema,
+  refuseStructured,
+  stripStructuredOutput,
+  structuredRefused,
+  supportsStructuredOutput,
+} from './structured.ts';
 import {
   type GatewayBudget,
   GatewayError,
@@ -170,6 +177,25 @@ export const DEFAULT_MAX_TOKENS = 4096;
 
 function positiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+/** At most `limit` bytes of a response's text; the rest is not read. */
+async function cappedText(response: Response, limit: number): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < limit) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.byteLength;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, limit));
 }
 
 export function createModelGateway(options: GatewayOptions): Server {
@@ -344,7 +370,13 @@ export function createModelGateway(options: GatewayOptions): Server {
       // A model on the person's own machine or network keeps its calls: nothing
       // is rerouted or sent to a cloud fallback from it.
       const primaryLocal = providerIsLocal(provider);
-      const candidates: { provider: string; model: string; plain?: boolean }[] = primaryLocal
+      const candidates: {
+        provider: string;
+        model: string;
+        plain?: boolean;
+        /** Sent without its answer schema, after the model refused one. */
+        schemaless?: boolean;
+      }[] = primaryLocal
         ? [{ provider: provider.name, model }]
         : routeCandidates(principal, provider.name, model, carriesPictures);
       const router = options.privacy === false ? null : options.privacy;
@@ -362,16 +394,19 @@ export function createModelGateway(options: GatewayOptions): Server {
         const callProvider = target.provider;
         const callModel = candidate.model;
         const rerouted = callModel !== model || callProvider.name !== provider.name;
-        // A fallback without structured outputs is sent the request without its schema.
-        const callBody: Record<string, unknown> = rerouted
-          ? withoutStructuredOutput(
-              { ...body, model: callModel },
-              {
-                provider: callProvider.name,
-                model: callModel,
-              },
-            )
-          : { ...body, model: callModel };
+        // An answer schema goes only to a model that takes one. It is left out
+        // for a model that refused one, and for a fallback without structured
+        // outputs; the request is then the prose request it also is.
+        const named: Record<string, unknown> = { ...body, model: callModel };
+        const schemaCarried = hasStructuredOutput(named);
+        let schemaStripped =
+          schemaCarried &&
+          (candidate.schemaless === true ||
+            structuredRefused(callProvider.name, callModel) ||
+            (rerouted && !supportsStructuredOutput(callProvider.name, callModel)));
+        const callBody: Record<string, unknown> = schemaStripped
+          ? stripStructuredOutput(named)
+          : named;
         for (const key of ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
           delete callBody[key];
         callBody[
@@ -407,8 +442,13 @@ export function createModelGateway(options: GatewayOptions): Server {
             ? await router.prepare({ principal, provider: callProvider, protocol, body: callBody })
             : null;
           // The runtime's mark on a screenshot is for the router; it never leaves.
-          const outbound = withoutMarks(prepared?.body ?? callBody);
           local = prepared?.local ?? null;
+          // The person's own model is an OpenAI-compatible server that may not
+          // take a schema; a private conversation's call goes to it without one.
+          const routed = prepared?.body ?? callBody;
+          const localSchema = Boolean(local) && hasStructuredOutput(routed);
+          if (localSchema) schemaStripped = true;
+          const outbound = withoutMarks(localSchema ? stripStructuredOutput(routed) : routed);
           encoded = JSON.stringify(outbound);
           // A picture is charged as the flat count the engine compacts by, not as
           // the base64 text it travels in.
@@ -471,6 +511,7 @@ export function createModelGateway(options: GatewayOptions): Server {
           httpStatus: null,
           ...(prepared ? { privacy: prepared.receipt } : {}),
           ...(stopped ? { stopped } : {}),
+          ...(schemaCarried ? { structured: schemaStripped ? 'stripped' : 'sent' } : {}),
           ...(route ? { route, routedFrom: { provider: provider.name, model } } : {}),
           ...(servedLocally
             ? {
@@ -528,8 +569,13 @@ export function createModelGateway(options: GatewayOptions): Server {
         settlement.httpStatus = answer.status;
         heard();
         if (!answer.ok || !answer.body) {
-          // Provider errors may contain injected keys or internal request diagnostics.
-          await answer.body?.cancel();
+          // Provider errors may contain injected keys or internal request
+          // diagnostics. A 400's text is read here only to tell a refused
+          // schema from anything else; it is never passed on.
+          let errorText = '';
+          if (answer.status === 400 && schemaCarried && !schemaStripped)
+            errorText = await cappedText(answer, 16 * 1024);
+          else await answer.body?.cancel();
           settlement.status = 'failed';
           if (signedIn && answer.status === 401)
             callProvider.signedIn?.rejected(signedIn.generation);
@@ -537,6 +583,25 @@ export function createModelGateway(options: GatewayOptions): Server {
             answer.status === 429 ? 429 : 502,
             'provider_rejected_request',
           );
+          // A model that refuses the answer schema is asked once more without
+          // it, every other field kept, and is not sent one again in this
+          // process. That 400 is the schema's, so the effort stays.
+          if (errorText && namesSchema(errorText)) {
+            refuseStructured(callProvider.name, callModel);
+            options.onError?.(
+              new Error(
+                `structured_refused: ${callProvider.name}/${callModel} refused an answer schema`,
+              ),
+            );
+            settlement.structured = 'refused';
+            settlement.latencyMs = Math.round(performance.now() - started);
+            await settle(principal, reservation, settlement);
+            firstFailure ??= failure;
+            reservation = undefined;
+            settlement = undefined;
+            candidates.splice(index + 1, 0, { ...candidate, schemaless: true });
+            continue;
+          }
           // A model that refuses the reasoning control the gateway added is
           // asked once more without it, before anything else is tried.
           if (effortAdded && answer.status === 400 && !local) {

@@ -48,16 +48,39 @@ export function findQuote(
     }
   }
   const wanted = loose(quote).replace(/\s+/g, ' ').trim();
+  // The hint in the loose copy's own positions.
+  const looseHint = Math.max(
+    0,
+    map.findIndex((position) => position >= hint),
+  );
   for (const candidate of [wanted, wanted.replace(/[.!?,;:]+$/, '')]) {
     if (!candidate) continue;
-    const at = nearest(normalized, candidate);
-    if (at < 0) continue;
-    const start = map[at] ?? 0;
-    const end = (map[at + candidate.length - 1] ?? start) + 1;
-    return { start, end };
+    let best: { start: number; end: number } | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (
+      let at = normalized.indexOf(candidate);
+      at >= 0;
+      at = normalized.indexOf(candidate, at + 1)
+    ) {
+      const start = map[at] ?? 0;
+      const end = (map[at + candidate.length - 1] ?? start) + 1;
+      // A long run of spaces is where forgotten words were blanked out; a
+      // loose match never bridges one, so two separate phrases are never
+      // joined into words the person did not write.
+      if (BLANKED.test(text.slice(start, end))) continue;
+      const distance = Math.abs(at - looseHint);
+      if (distance < bestDistance) {
+        best = { start, end };
+        bestDistance = distance;
+      }
+    }
+    if (best) return best;
   }
   return null;
 }
+
+/** Four or more spaces in a row: a blanked-out span, not a typed gap. */
+const BLANKED = / {4,}/;
 
 /**
  * A quote placed in its source: the offsets the model gave when they hold
@@ -72,14 +95,22 @@ export function placeQuote(
 ): { start: number; end: number; quote: string } | null {
   const start = typeof span.start === 'number' ? span.start : undefined;
   const end = typeof span.end === 'number' ? span.end : undefined;
-  if (
+  // Offsets a model gave are used only when they are whole numbers inside the
+  // text and span exactly the quote; anything else is found from the quote.
+  const usable =
     start !== undefined &&
     end !== undefined &&
-    text.slice(start - offset, end - offset) === span.quote &&
-    span.quote
-  )
+    Number.isInteger(start) &&
+    Number.isInteger(end) &&
+    start >= offset &&
+    end - start === span.quote.length &&
+    end - offset <= text.length;
+  if (usable && span.quote && text.slice(start - offset, end - offset) === span.quote)
     return { start, end, quote: span.quote };
-  const found = findQuote(text, span.quote, start === undefined ? 0 : start - offset);
+  const hint =
+    start !== undefined && Number.isInteger(start) && start >= offset ? start - offset : 0;
+  const found = findQuote(text, span.quote, hint);
+
   if (!found) return null;
   return {
     start: offset + found.start,

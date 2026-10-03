@@ -76,13 +76,16 @@ export function withStructuredOutput(
   format: StructuredFormat,
 ): Record<string, unknown> {
   if (!supportsStructuredOutput(target.provider, target.model)) return body;
-  if (protocol === 'responses')
+  if (protocol === 'responses') {
+    const text = (body.text as Record<string, unknown> | undefined) ?? {};
     return {
       ...body,
       text: {
+        ...text,
         format: { type: 'json_schema', name: format.name, schema: format.schema, strict: true },
       },
     };
+  }
   if (protocol === 'messages') {
     const config = (body.output_config as Record<string, unknown> | undefined) ?? {};
     return {
@@ -99,31 +102,75 @@ export function withStructuredOutput(
   };
 }
 
+/** Whether a field holds a JSON-schema answer format, as opposed to plain JSON mode or text. */
+const isSchemaFormat = (value: unknown): boolean =>
+  typeof value === 'object' &&
+  value !== null &&
+  (value as Record<string, unknown>).type === 'json_schema';
+
+/** Whether the request carries an answer schema in any protocol's field. */
+export function hasStructuredOutput(body: Record<string, unknown>): boolean {
+  const text = body.text as Record<string, unknown> | undefined;
+  const config = body.output_config as Record<string, unknown> | undefined;
+  return (
+    isSchemaFormat(body.response_format) ||
+    isSchemaFormat(text?.format) ||
+    isSchemaFormat(config?.format)
+  );
+}
+
 /**
- * The request without its schema, for a model that cannot take one: a call
- * the gateway reroutes to a fallback that has no structured outputs goes as
- * the prose request it also is. Only the schema leaves; `output_config`
- * keeps whatever else it carries.
+ * The request without its answer schema, every other field kept: `text` and
+ * `output_config` keep what else they carry (verbosity, effort), and a plain
+ * JSON mode (`json_object`) is not a schema and stays.
+ */
+export function stripStructuredOutput(body: Record<string, unknown>): Record<string, unknown> {
+  const rest: Record<string, unknown> = { ...body };
+  if (isSchemaFormat(rest.response_format)) delete rest.response_format;
+  for (const field of ['text', 'output_config'] as const) {
+    const holder = rest[field] as Record<string, unknown> | undefined;
+    if (!holder || typeof holder !== 'object' || !isSchemaFormat(holder.format)) continue;
+    const { format: _schema, ...others } = holder;
+    if (Object.keys(others).length) rest[field] = others;
+    else delete rest[field];
+  }
+  return rest;
+}
+
+/**
+ * The request without its schema when the model cannot take one, by the
+ * capability table or because it refused one in this process.
  */
 export function withoutStructuredOutput(
   body: Record<string, unknown>,
   target: { provider: string; model: string },
 ): Record<string, unknown> {
-  if (supportsStructuredOutput(target.provider, target.model)) return body;
-  const { response_format: _format, ...rest } = body;
-  const text = rest.text as Record<string, unknown> | undefined;
-  if (text && typeof text === 'object' && 'format' in text) {
-    const { format: _schema, ...others } = text;
-    if (Object.keys(others).length) rest.text = others;
-    else delete rest.text;
-  }
-  const config = rest.output_config as Record<string, unknown> | undefined;
-  if (config && typeof config === 'object' && 'format' in config) {
-    const { format: _schema, ...others } = config;
-    if (Object.keys(others).length) rest.output_config = others;
-    else delete rest.output_config;
-  }
-  return rest;
+  if (
+    supportsStructuredOutput(target.provider, target.model) &&
+    !structuredRefused(target.provider, target.model)
+  )
+    return body;
+  return stripStructuredOutput(body);
+}
+
+/** Models that refused an answer schema in this process, so they are not sent one again. */
+const refusedSchema = new Set<string>();
+export const structuredRefused = (provider: string, model: string) =>
+  refusedSchema.has(`${provider}/${model}`);
+export function refuseStructured(provider: string, model: string): void {
+  if (refusedSchema.size > 1000) refusedSchema.clear();
+  refusedSchema.add(`${provider}/${model}`);
+}
+
+/**
+ * Whether a provider's 400 is about the answer schema rather than anything
+ * else in the request (the reasoning control, say). Read from the error text,
+ * which never leaves the gateway.
+ */
+export function namesSchema(errorText: string): boolean {
+  return /response_format|text\.format|output_config|json_schema|\bschema\b|structured.output|additionalProperties|\bstrict\b/i.test(
+    errorText,
+  );
 }
 
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -143,7 +190,13 @@ export function replyOf(
 ): { text: string; end: ReplyEnd } {
   if (!record(result)) throw new StructuredAnswerError('envelope_invalid');
   if (protocol === 'responses') {
-    if (!Array.isArray(result.output)) throw new StructuredAnswerError('envelope_invalid');
+    // A response that failed or was cancelled holds no answer to read.
+    if (
+      !Array.isArray(result.output) ||
+      result.status === 'failed' ||
+      result.status === 'cancelled'
+    )
+      throw new StructuredAnswerError('envelope_invalid');
     let refused = false;
     const parts: string[] = [];
     for (const item of result.output) {
@@ -171,7 +224,7 @@ export function replyOf(
       .map((part) => (part as { text: string }).text)
       .join('');
     const end: ReplyEnd =
-      result.stop_reason === 'max_tokens'
+      result.stop_reason === 'max_tokens' || result.stop_reason === 'model_context_window_exceeded'
         ? 'cut_off'
         : result.stop_reason === 'refusal'
           ? 'refused'
