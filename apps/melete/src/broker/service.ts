@@ -384,8 +384,25 @@ export class BrokerService implements BrokerOperations {
       kind: action.kind,
       effect_class: action.effect_class,
       canonical_payload: action.canonical_payload,
-      fields: collectOriginFields(action.canonical_payload),
+      fields: this.originFields(action),
     });
+  }
+
+  /**
+   * The fields whose origin decides admission: every one `collectOriginFields`
+   * finds, less the resource fields the action's connector proved itself.
+   */
+  private originFields(
+    action: Pick<Action, 'connection_id' | 'kind' | 'canonical_payload'>,
+    kind?: string,
+  ) {
+    const fields = collectOriginFields(action.canonical_payload, kind);
+    const verified = new Set(
+      this.options.connectors.get(action.connection_id)?.verifiedFields?.(action) ?? [],
+    );
+    return verified.size
+      ? fields.filter((field) => field.category !== 'resource' || !verified.has(field.path))
+      : fields;
   }
 
   private async tool(
@@ -615,7 +632,7 @@ export class BrokerService implements BrokerOperations {
         reviewTier({ tool, provider, payload: action.canonical_payload, doubts: [] }).tier ===
           'sandbox');
     const gated = isTrustGatedEffect(tool.effect_class);
-    const fields = gated ? collectOriginFields(action.canonical_payload, action.kind) : [];
+    const fields = gated ? this.originFields(action, action.kind) : [];
     const warnings = await resolveOriginWarnings(
       tx,
       gated

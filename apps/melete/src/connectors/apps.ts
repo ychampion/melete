@@ -127,7 +127,7 @@ const audienceSchema = {
 /** Bound by the service: why the person is asked (see `risksOf`). */
 const RISKS_SCHEMA = {
   type: 'array',
-  maxItems: 3,
+  maxItems: 4,
   items: { type: 'string', maxLength: 2000 },
 };
 
@@ -514,12 +514,15 @@ const shownBefore = (binding: Binding, before: AppManifest['data']) =>
       old.review !== true,
   );
 
-/** The data of the version people see now, or none for an app that has no version yet. */
-async function currentData(tx: Query, appId: string | null): Promise<AppManifest['data']> {
-  if (!appId) return {};
+/** The data and collections of the version people see now; none for an app with no version yet. */
+async function currentVersion(
+  tx: Query,
+  appId: string | null,
+): Promise<Pick<AppManifest, 'data' | 'collections'>> {
+  if (!appId) return { data: {}, collections: {} };
   const [row] = await tx<{ manifest: AppManifest }[]>`select v.manifest from app a
     join app_version v on v.id = a.current_version_id where a.id = ${appId}`;
-  return row?.manifest.data ?? {};
+  return { data: row?.manifest.data ?? {}, collections: row?.manifest.collections ?? {} };
 }
 
 /**
@@ -584,20 +587,31 @@ async function risksOf(
     appId: string | null;
     audience: JsonObject | null;
     data: AppManifest['data'];
+    collections: AppManifest['collections'];
     /** Files whose code opens direct connections; null when they could not be read. */
     connecting: readonly string[] | null;
     publisher: string;
   },
 ): Promise<string[]> {
   const widening = input.audience ? await wideningLine(tx, input.appId, input.audience) : null;
-  const before = await currentData(tx, input.appId);
+  const before = await currentVersion(tx, input.appId);
   const added = Object.entries(input.data)
-    .filter(([, binding]) => !shownBefore(binding, before))
+    .filter(([, binding]) => !shownBefore(binding, before.data))
     .map(([name, binding]) => `${name} (${binding.path})`)
     .sort();
+  const collecting = Object.keys(input.collections)
+    .filter((name) => !Object.hasOwn(before.collections, name))
+    .sort();
+  const shared =
+    (added.length || collecting.length) &&
+    (await sharedAfter(tx, ctx, input.appId, input.audience, input.publisher));
   const newData =
-    added.length && (await sharedAfter(tx, ctx, input.appId, input.audience, input.publisher))
+    added.length && shared
       ? `It would show its viewers data they do not see now: ${added.join(', ')}.`
+      : null;
+  const newCollections =
+    collecting.length && shared
+      ? `It would collect responses from its viewers it does not collect now: ${collecting.join(', ')}.`
       : null;
   const connecting =
     input.connecting === null
@@ -605,7 +619,9 @@ async function risksOf(
       : input.connecting.length
         ? 'Its code can open direct connections to other servers (WebRTC).'
         : null;
-  return [widening, connecting, newData].filter((line): line is string => line !== null);
+  return [widening, connecting, newData, newCollections].filter(
+    (line): line is string => line !== null,
+  );
 }
 
 /**
@@ -810,6 +826,7 @@ export function createAppsConnector(options: AppsOptions): Connector {
           appId,
           audience: null,
           data: manifest.data,
+          collections: manifest.collections,
           connecting,
           publisher,
         });
@@ -869,10 +886,22 @@ export function createAppsConnector(options: AppsOptions): Connector {
           appId: existing,
           audience,
           data: bindings,
+          collections: collectionsOf(payload.collections),
           connecting,
           publisher,
         }),
       };
+    },
+    /**
+     * A publish's data paths: `prepare` resolved each to a recorded file of the
+     * publisher's own conversation or routine in this space, and
+     * `validateBinding` proves it again. Who will see them is a risk of its own.
+     */
+    verifiedFields(action) {
+      if (action.kind !== 'apps.publish') return [];
+      const data = action.canonical_payload.data;
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
+      return Object.keys(data).map((name) => `data.${name}.path`);
     },
     async validateBinding(action, ctx, tx) {
       if (READ_TOOLS.has(action.kind)) return;
@@ -897,10 +926,16 @@ export function createAppsConnector(options: AppsOptions): Connector {
             where id = ${String(payload.version_id)} and app_id = ${appId}`
         : [];
       if (isRollback && !target) throw refused('That version is not one of this app.');
+      // Each file a publish shows is proved again to be the publisher's own
+      // recorded file in this space: origin checking leaves these paths to it
+      // (see verifiedFields), so the proof has to hold now, not only at prepare.
+      if (!isRollback) await resolveData(tx, ctx, payload.data, publisher);
       const now = await risksOf(tx, ctx, {
         appId,
         audience: isRollback ? null : ((payload.audience ?? { kind: 'only_me' }) as JsonObject),
         data: (target?.manifest.data ?? payload.data ?? {}) as AppManifest['data'],
+        collections: (target?.manifest.collections ??
+          collectionsOf(payload.collections)) as AppManifest['collections'],
         connecting: isRollback
           ? []
           : Array.isArray(payload.opens_connections)

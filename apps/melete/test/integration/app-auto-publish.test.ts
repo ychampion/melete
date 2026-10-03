@@ -21,6 +21,7 @@ import { BrokerService } from '../../src/broker/service.ts';
 import { createAppsConnector } from '../../src/connectors/apps.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
+import { createMemoryTrustResolver } from '../../src/memory/broker-trust.ts';
 import { LocalBlobStore } from '../../src/storage/local.ts';
 import { recordFile } from '../helpers/artifacts.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
@@ -109,8 +110,15 @@ async function setup() {
   const registry = new ConnectorRegistry()
     .register(seed.connectionId, createAppsConnector({ sql, workRoot, blobs }))
     .register(otherId, other);
-  // As the service runs it: auto-review on, with no reviewer configured.
-  const broker = new BrokerService({ sql, connectors: registry, autoReview: { reviewer: null } });
+  // As the service runs it (broker/start.ts): auto-review on with no reviewer
+  // configured, and origins answered by memory, which knows nothing of a path
+  // the agent chose.
+  const broker = new BrokerService({
+    sql,
+    connectors: registry,
+    autoReview: { reviewer: null },
+    resolveTrust: createMemoryTrustResolver(),
+  });
   const write = (name: string, content: string) =>
     Bun.write(path.join(workRoot, seed.claims.job_id, 'app', name), content);
   const record = (relative: string, content: string) =>
@@ -333,6 +341,18 @@ databaseTest(
       'It would show its viewers data they do not see now: deals (data/deals.json).',
     ]);
 
+    // Collecting responses from viewers who could not send any before asks too.
+    const collecting = await ctx.propose('apps.publish', {
+      dir: 'app',
+      name: 'Shared',
+      app_id: id,
+      collections: { feedback: {} },
+    });
+    expect(collecting.status).toBe('needs_approval');
+    expect(collecting.canonical_payload.risks).toEqual([
+      'It would collect responses from its viewers it does not collect now: feedback.',
+    ]);
+
     // Each version waits for the publisher's review, so nothing new reaches viewers unseen.
     const reviewed = await ctx.propose('apps.publish', {
       dir: 'app',
@@ -409,6 +429,77 @@ databaseTest(
     const ctx = await setup();
     const elsewhere = await ctx.propose('apps.publish', { risks: [] }, ctx.otherId);
     expect(elsewhere.status).toBe('needs_approval');
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a data path only the Apps connection proved is left out of origin checking; any other still asks',
+  async () => {
+    const ctx = await setup();
+    await ctx.write('index.html', 'mine');
+    await ctx.record('data/deals.json', '[1]');
+    const data = { deals: { artifact: 'data/deals.json' } };
+    const proved = await ctx.propose('apps.publish', { dir: 'app', name: 'Mine', data });
+    expect(proved.status).toBe('succeeded');
+    expect(proved.origin_warnings).toEqual([]);
+
+    // The same path on a connection that proved nothing is a value nobody vouched for.
+    const unproved = await ctx.propose(
+      'apps.publish',
+      { data: { deals: { path: 'data/deals.json' } }, risks: [] },
+      ctx.otherId,
+    );
+    expect(unproved.status).toBe('needs_approval');
+    expect(unproved.origin_warnings.map((warning) => warning.field)).toEqual(['data.deals.path']);
+
+    // A path the Apps connection cannot prove is refused before anyone is asked.
+    const unknown = await rejectionOf(
+      ctx.propose('apps.publish', {
+        dir: 'app',
+        name: 'Mine',
+        data: { notes: { artifact: 'data/notes.json' } },
+      }),
+    );
+    expect(String((unknown as Error).message)).toContain('has not saved as a checked file');
+  },
+  SLOW,
+);
+
+databaseTest(
+  'a data file that is no longer a recorded file of the publisher is refused at admission',
+  async () => {
+    const ctx = await setup();
+    await ctx.write('index.html', 'board');
+    await ctx.record('data/deals.json', '[1]');
+    await ctx.settings({ apps: false });
+    const asked = await ctx.propose('apps.publish', {
+      dir: 'app',
+      name: 'Board',
+      data: { deals: { artifact: 'data/deals.json' } },
+    });
+    expect(asked.status).toBe('needs_approval');
+    // Its record is gone before it runs, so the path is no longer one the connector can vouch for.
+    await ctx.sql`delete from artifact where job_id = ${ctx.claims.job_id}`;
+    const refusal = await rejectionOf(ctx.approveAndRun(asked));
+    expect(String((refusal as Error).message)).toContain('has not saved as a checked file');
+    expect(await ctx.app()).toBeUndefined();
+  },
+  SLOW,
+);
+
+databaseTest(
+  'collecting responses in an app only its publisher can open goes ahead',
+  async () => {
+    const ctx = await setup();
+    await ctx.write('index.html', 'form');
+    const own = await ctx.propose('apps.publish', {
+      dir: 'app',
+      name: 'Form',
+      collections: { feedback: {} },
+    });
+    expect(own.status).toBe('succeeded');
+    expect(own.canonical_payload.risks).toEqual([]);
   },
   SLOW,
 );
