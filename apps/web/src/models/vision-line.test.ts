@@ -5,6 +5,7 @@ import { canSetVision, visionLine } from './ModelConnect.tsx';
 const active = (
   vision: boolean,
   vision_source: 'catalog' | 'app' | 'operator',
+  provider_vision: boolean | null = null,
 ): ModelSettings['active'] => ({
   provider: 'fireworks',
   model: 'accounts/fireworks/models/deepseek-v4p1-flash',
@@ -12,6 +13,7 @@ const active = (
   connected: true,
   vision,
   vision_source,
+  provider_vision,
   updated_at: null,
 });
 
@@ -47,6 +49,11 @@ test('the models screen says what the model does with screenshots, and where tha
   expect(visionLine(active(true, 'catalog')).hint).toBe(
     'This model reads images, by Melete’s list.',
   );
+  // The provider's answer informs; the switch stays the owner's.
+  expect(visionLine(active(false, 'catalog', true))).toEqual({
+    text: 'Gets screenshots as text: where each was saved and its size',
+    hint: 'Your provider says this model can read images. Turn this on to send it screenshots as pictures.',
+  });
   expect(visionLine(active(true, 'app')).hint).toBe('You set this for this model.');
   expect(visionLine(active(false, 'operator')).hint).toBe('Set in the server’s configuration.');
 });
