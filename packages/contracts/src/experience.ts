@@ -516,6 +516,12 @@ export const experienceEvent = z.strictObject({
     z.strictObject({ type: z.literal('decision'), decision: experienceDecision }),
     z.strictObject({ type: z.literal('status'), status: turnStatus, composer: composerState }),
     z.strictObject({ type: z.literal('tool'), tool: toolCall }),
+    /**
+     * The agent's working copy of the conversation before this point was
+     * summarised to make room. Every message is still saved and shown; the
+     * agent now works from the summary. It carries no words of the summary.
+     */
+    z.strictObject({ type: z.literal('compacted') }),
   ]),
 });
 export type ExperienceEvent = z.infer<typeof experienceEvent>;

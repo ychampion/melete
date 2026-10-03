@@ -180,6 +180,11 @@ export const scenarioStep = z.discriminatedUnion('step', [
     detail: z.record(z.string(), z.unknown()).default({}),
     auto_review: autoReview.optional(),
   }),
+  /** The engine summarises the conversation so far to make room; the page marks where. */
+  z.object({
+    step: z.literal('compact'),
+    delay_ms: z.number().int().nonnegative().default(200),
+  }),
   /** A plain notice in the feed, for the inbox. */
   z.object({
     step: z.literal('notice'),
