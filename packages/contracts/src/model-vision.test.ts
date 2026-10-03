@@ -2,6 +2,8 @@ import { expect, test } from 'bun:test';
 import { GATEWAY_MAX_REQUEST_BYTES } from './model-budget.ts';
 import {
   effectiveVision,
+  listedVision,
+  listedVisionByModel,
   MAX_CONTEXT_IMAGES,
   MAX_IMAGE_ENCODED_BYTES,
   MAX_REQUEST_IMAGES,
@@ -59,6 +61,38 @@ test("the owner's answer beats the catalog", () => {
   expect(effectiveVision('anthropic', 'claude-opus-4-1', false)).toBe(false);
   expect(effectiveVision('anthropic', 'claude-opus-4-1', null)).toBe(true);
   expect(effectiveVision('anthropic', 'claude-opus-4-1', undefined)).toBe(true);
+});
+
+test('what a provider’s model list says about images', () => {
+  expect(listedVision({ id: 'a', supports_image_input: true })).toBe(true);
+  expect(listedVision({ id: 'a', supports_image_input: false })).toBe(false);
+  expect(listedVision({ id: 'a', architecture: { input_modalities: ['text', 'image'] } })).toBe(
+    true,
+  );
+  expect(listedVision({ id: 'a', architecture: { input_modalities: ['text'] } })).toBe(false);
+  expect(listedVision({ id: 'a', capabilities: { image_input: { supported: true } } })).toBe(true);
+  expect(listedVision({ id: 'a', capabilities: ['completion', 'vision'] })).toBe(true);
+  // Lists that say nothing leave the answer to the catalog.
+  expect(listedVision({ id: 'gpt-4o', object: 'model', owned_by: 'openai' })).toBeUndefined();
+  expect(listedVision({ id: 'a', supports_image_input: 'yes' })).toBeUndefined();
+  expect(listedVision(null)).toBeUndefined();
+
+  const answers = listedVisionByModel({
+    data: [
+      { id: 'accounts/fireworks/models/deepseek-v4p1-flash', supports_image_input: true },
+      { id: 'accounts/fireworks/models/deepseek-v3p2', supports_image_input: false },
+      { id: 'accounts/fireworks/models/silent' },
+      { id: 42, supports_image_input: true },
+    ],
+  });
+  expect([...answers]).toEqual([
+    ['accounts/fireworks/models/deepseek-v4p1-flash', true],
+    ['accounts/fireworks/models/deepseek-v3p2', false],
+  ]);
+  expect([
+    ...listedVisionByModel({ models: [{ name: 'models/m', input_modalities: ['image'] }] }),
+  ]).toEqual([['m', true]]);
+  expect(listedVisionByModel('not a list').size).toBe(0);
 });
 
 test('the pictures a request may carry leave room for its text', () => {
