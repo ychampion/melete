@@ -1565,7 +1565,8 @@ MELETE_MODEL_PRICES='{"fireworks/accounts/fireworks/models/deepseek-v4p1-flash":
 `cached_input` is the price of input read from the provider's cache, and
 `cache_write_input` the price of input written to it. Left out, each is the
 provider's published share of `input`: a cache read at a tenth for Anthropic,
-OpenAI and a ChatGPT plan, half for Fireworks and a quarter for Google, and an
+OpenAI, a ChatGPT plan and Google, a fifth for Fireworks (the highest share it
+lists for any model), and an
 Anthropic cache write at a quarter more. Any other provider, an endpoint you
 add yourself included, is priced as though nothing was cached. A call answered on the person's own model (the local
 model a private conversation uses, an endpoint the owner confirmed is on their

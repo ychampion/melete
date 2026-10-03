@@ -46,7 +46,7 @@ import { builtinEnvironment } from './builtin.ts';
 import { CalendarConnector } from './calendar.ts';
 import { EmailConnector } from './email.ts';
 import { createExecConnector } from './exec.ts';
-import { createFilesConnector } from './files.ts';
+import { createFilesConnector, type SentFiles } from './files.ts';
 import { GmailApiTransport } from './gmail.ts';
 import { GOOGLE_ENDPOINTS, type GoogleEndpoints, googleIssuer } from './google.ts';
 import { GoogleCalendarConnector } from './google-calendar.ts';
@@ -218,6 +218,8 @@ export type ConnectorOptions = {
   webSearch?: WebSearch;
   /** Whether a query may go to an outside search; without one, none does. */
   searchPrivacy?: SearchPrivacy;
+  /** The files people sent in chat, which the agent may save into its workspace. */
+  attachments?: SentFiles;
   /** Plaintext mail and CalDAV to a loopback protocol fixture. Never set from a request. */
   insecureLocalFixtures?: boolean;
   /** Starts stdio MCP servers in isolation; without one, a stdio installation offers nothing. */
@@ -824,6 +826,7 @@ type ConnectorExtras = {
   privateContext?: PrivateContext;
   webSearch?: WebSearch;
   searchPrivacy?: SearchPrivacy;
+  attachments?: SentFiles;
 };
 
 /** The docker settings, with egress records and, where offered, command-line accounts. */
@@ -886,6 +889,7 @@ export function connectorOptionsFromEnv(
     // Configured search keys apply even where no model gateway searches.
     webSearch: extra.webSearch ?? webSearchFromEnv(env),
     ...(extra.searchPrivacy ? { searchPrivacy: extra.searchPrivacy } : {}),
+    attachments: extra.attachments,
     cellIsolated: builtinEnvironment(env).cellIsolated,
     // Nothing is created until the first write.
     blobs: configuredBlobStore(env),

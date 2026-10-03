@@ -217,15 +217,23 @@ describe('cached input is charged at its cached price, from the one price table'
         outputTokens: 0,
       }),
     ).toBe(2_800);
-    // Fireworks names no cached price, so its provider's share applies: half.
+    // The default Fireworks model has its own listed cached price: a fiftieth.
     expect(
       prices.chargedInputTokens('fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash', {
         inputTokens: 10_000,
         cachedInputTokens: 8_000,
         outputTokens: 0,
       }),
-    ).toBe(6_000);
-    expect(CACHE_PRICE_SHARE.google?.read).toBe(0.25);
+    ).toBe(2_000 + 160);
+    // Another Fireworks model takes the provider's share: a fifth.
+    expect(
+      prices.chargedInputTokens('fireworks', 'accounts/fireworks/models/glm-fixture', {
+        inputTokens: 10_000,
+        cachedInputTokens: 8_000,
+        outputTokens: 0,
+      }),
+    ).toBe(2_000 + 1_600);
+    expect(CACHE_PRICE_SHARE.google?.read).toBe(0.1);
   });
 
   test('the dollar cost counts the same cached and written input the same way', () => {
@@ -238,14 +246,14 @@ describe('cached input is charged at its cached price, from the one price table'
         outputTokens: 0,
       }),
     ).toBeCloseTo(0.3 + 0.3 * 1.25 + 0.3, 6);
-    // Fireworks: half of the input price for a cache read.
+    // Fireworks: a fifth of the input price for a cache read.
     expect(
       prices.cost('fireworks', 'accounts/fireworks/models/llama-fixture', {
         inputTokens: 1_000_000,
         cachedInputTokens: 1_000_000,
         outputTokens: 0,
       }),
-    ).toBeCloseTo(0.1, 6);
+    ).toBeCloseTo(0.04, 6);
     // An operator's own price for cached input wins over the share.
     const priced = new PriceTable({ 'fireworks/x': { input: 1, output: 1, cached_input: 0.2 } });
     expect(

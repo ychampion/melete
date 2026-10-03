@@ -60,6 +60,8 @@ export function createInternalServer(options: {
   routes?: ConstructorParameters<typeof PostgresGatewayBudget>[0]['routes'];
   /** How hard a reasoning model thinks on an agent turn. */
   reasoningEffort?: GatewayOptions['reasoningEffort'];
+  /** The files people sent in chat, for the model to see as files where allowed. */
+  attachments?: GatewayOptions['attachments'];
 }) {
   const broker =
     options.broker ??
@@ -140,6 +142,7 @@ export function createInternalServer(options: {
     // The install's capability key, so a conversation's cache key is the same
     // across service restarts and computable by nobody outside it.
     promptCacheSecret: options.capabilityKey,
+    attachments: options.attachments,
     // A placeholder still in a runtime payload is resolved before the broker reads it.
     brokerFetch: withPlaceholderResolution(
       learningRuntimeFetch({

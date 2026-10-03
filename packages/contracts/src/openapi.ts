@@ -40,6 +40,7 @@ import {
   triggerResponse,
 } from './api.ts';
 import { appsPaths } from './apps-openapi.ts';
+import { attachmentContentQuery, attachmentResponse } from './attachments.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
 import {
@@ -2311,6 +2312,75 @@ export function buildOpenApiDocument() {
               },
               '401': problem('A session is required'),
               '404': problem('No such screenshot for this person'),
+            },
+          },
+        },
+        '/attachments': {
+          post: {
+            tags: ['experience'],
+            summary: 'Upload a file to send with a message',
+            description:
+              'Multipart form data: the file in `file`, and for a picture optionally a small copy ' +
+              'in `preview` (at most 1280 pixels on its longest side, small enough for a model ' +
+              'request). Pictures, PDFs, Word documents, spreadsheets and text files up to 20 MB ' +
+              'are taken. The file waits, visible only to whoever uploaded it, until a message ' +
+              'names it in `attachments`; one never sent is deleted after a day. A sent file ' +
+              'belongs to its chat and is deleted with it.',
+            security: [{ session: [] }],
+            requestBody: {
+              required: true,
+              content: {
+                'multipart/form-data': {
+                  schema: z.object({
+                    file: z.string().meta({ format: 'binary' }),
+                    preview: z.string().meta({ format: 'binary' }).optional(),
+                  }),
+                },
+              },
+            },
+            responses: {
+              '201': jsonResponse('The file, ready to send', attachmentResponse),
+              '400': problem('Empty, unreadable, or not the kind of file it says it is'),
+              '401': problem('A session is required'),
+              '413': problem('Larger than the limit'),
+              '415': problem('A kind of file Melete does not read'),
+            },
+          },
+        },
+        '/attachments/{id}/content': {
+          get: {
+            tags: ['experience'],
+            summary: 'Read back a file sent, or about to be sent, in chat',
+            description:
+              'For whoever uploaded it before it is sent, and for the person whose chat it is ' +
+              'after. `variant=preview` reads the small copy a picture has.',
+            security: [{ session: [] }],
+            requestParams: {
+              ...idParam('id', 'Attachment id'),
+              query: attachmentContentQuery,
+            },
+            responses: {
+              '200': {
+                description: 'The bytes',
+                content: {
+                  'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+                },
+              },
+              '401': problem('A session is required'),
+              '404': problem('No such file for this person'),
+            },
+          },
+        },
+        '/attachments/{id}': {
+          delete: {
+            tags: ['experience'],
+            summary: 'Take back a file not sent yet',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'Attachment id'),
+            responses: {
+              '200': jsonResponse('Deleted', z.object({ ok: z.literal(true) })),
+              '404': problem('No such file for this person'),
+              '409': problem('Already sent; it is deleted with its chat'),
             },
           },
         },

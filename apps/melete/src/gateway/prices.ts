@@ -34,15 +34,17 @@ export type ModelPrice = {
  * What a provider charges for input read from, or written to, its prompt cache,
  * as a share of its ordinary input price: Anthropic a tenth for a read and a
  * quarter more for a five-minute write; OpenAI's current models, and the
- * ChatGPT plan served the same way, a tenth; Fireworks half; Gemini's implicit
- * cache a quarter.
+ * ChatGPT plan served the same way, a tenth; Gemini a tenth. Fireworks prices
+ * each model's cached input on its own, from a fiftieth to a fifth of its input
+ * price; its share is the highest of those, so a model priced by share is never
+ * undercharged, and the default model carries its own listed price below.
  */
 export const CACHE_PRICE_SHARE: Readonly<Record<string, { read: number; write: number }>> = {
   anthropic: { read: 0.1, write: 1.25 },
   openai: { read: 0.1, write: 1 },
   chatgpt: { read: 0.1, write: 1 },
-  fireworks: { read: 0.5, write: 1 },
-  google: { read: 0.25, write: 1 },
+  fireworks: { read: 0.2, write: 1 },
+  google: { read: 0.1, write: 1 },
 };
 
 const NO_DISCOUNT = { read: 1, write: 1 } as const;
@@ -77,6 +79,8 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   'chatgpt/*': { input: 0, output: 0 },
   'fireworks/*': { input: 0.9, output: 0.9 },
   'fireworks/*flash*': { input: 0.3, output: 1.2 },
+  // The default model, at its listed price: cached input at a fiftieth.
+  'fireworks/*deepseek-v4p1-flash*': { input: 0.3, output: 1.2, cached_input: 0.006 },
   'fireworks/*deepseek*': { input: 0.6, output: 2.2 },
   'fireworks/*qwen*': { input: 0.5, output: 1.5 },
   'fireworks/*llama*': { input: 0.2, output: 0.6 },
@@ -87,9 +91,9 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   'openai/*': { input: 2.5, output: 10, cached_input: 0.25 },
   'openai/*mini*': { input: 0.4, output: 1.6, cached_input: 0.1 },
   'openai/*nano*': { input: 0.1, output: 0.4, cached_input: 0.025 },
-  'google/*': { input: 1.25, output: 10, cached_input: 0.3 },
-  'google/*flash*': { input: 0.3, output: 2.5, cached_input: 0.075 },
-  'google/*flash-lite*': { input: 0.1, output: 0.4, cached_input: 0.025 },
+  'google/*': { input: 1.25, output: 10, cached_input: 0.125 },
+  'google/*flash*': { input: 0.3, output: 2.5, cached_input: 0.03 },
+  'google/*flash-lite*': { input: 0.1, output: 0.4, cached_input: 0.01 },
 };
 
 const priceSchema = z

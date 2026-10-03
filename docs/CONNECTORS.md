@@ -86,7 +86,7 @@ does not depend on isolation the running deployment lacks.
 
 | Default | Tools | Condition |
 | --- | --- | --- |
-| Files | `files.list`, `files.read`, `files.write`, `files.move` | always |
+| Files | `files.list`, `files.read` (text, and the words in PDFs, Word documents and spreadsheets), `files.write`, `files.move`, `files.save_attachment` (a file the person sent in chat, into the workspace) | always |
 | Web | `web.search`, `web.fetch` | always; the address and compartment checks below still apply, and the space's Public web reads setting turns both off |
 | Finished work | `artifact.publish` | always; a new file saved to the space needs no approval, replacing one or emailing it does |
 | Speech | `audio.synthesize` | only while a speech-capable provider is configured; a `spend`, so every call needs approval and a budget reservation |

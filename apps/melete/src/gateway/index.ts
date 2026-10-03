@@ -12,10 +12,16 @@ import {
 } from '@melete/contracts';
 import { localEndpoint, PrivacyRouter } from '../privacy/index.ts';
 import type { PreparedRequest } from '../privacy/router.ts';
+import {
+  carriesAttachedPicture,
+  type GatewayAttachments,
+  mediaTokens,
+  withAttachedFiles,
+} from './attachments.ts';
 import { applyPromptCaching, promptCacheScope } from './caching.ts';
 import { effortRefused, type ReasoningEffort, refuseEffort, withEffort } from './effort.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
-import { countImages, imageTokens, isInlineImage, withoutMarks } from './images.ts';
+import { countImages, isInlineImage, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import { PriceTable } from './prices.ts';
@@ -105,6 +111,8 @@ export interface GatewayOptions {
    * Left out, the spending guard's own table is used, or the defaults.
    */
   prices?: PriceTable;
+  /** The files people sent in chat, swapped into a job's requests as files where allowed. */
+  attachments?: GatewayAttachments;
 }
 
 /** A provider's own web search tool: `web_search` (Responses) or `web_search_YYYYMMDD` (Messages). */
@@ -353,7 +361,11 @@ export function createModelGateway(options: GatewayOptions): Server {
       // within the limits countImages holds it to.
       if (containsRemoteInput(options.providerSearch ? withoutSearchTools(body) : body))
         throw new GatewayError(400, 'unmetered_input_denied');
-      const carriesPictures = countImages(body) > 0;
+      // A picture the person attached counts too: it is routed as a screenshot
+      // is, and shown only where the model that serves the call reads pictures.
+      const carriesPictures =
+        countImages(body) > 0 ||
+        (options.attachments !== undefined && carriesAttachedPicture(body));
       // The models this call may be served by, in order: the one it names (or
       // the vision model, for a picture its own model cannot read), then the
       // operator's fallbacks. Each speaks this request's protocol.
@@ -415,11 +427,27 @@ export function createModelGateway(options: GatewayOptions): Server {
             ? await router.prepare({ principal, provider: callProvider, protocol, body: callBody })
             : null;
           // The runtime's mark on a screenshot is for the router; it never leaves.
-          const outbound = withoutMarks(prepared?.body ?? callBody);
           local = prepared?.local ?? null;
-          // The provider's prompt-caching controls, for a request that leaves
-          // for one. A model on the person's own machine, device or network is
-          // sent the body as written.
+          // The runtime's mark on a screenshot is for the router; it never leaves.
+          // The person's files go as files where the route and this model allow it.
+          const outbound = await withAttachedFiles({
+            body: withoutMarks(prepared?.body ?? callBody),
+            protocol,
+            provider: callProvider.name,
+            model: callModel,
+            principal,
+            route: local
+              ? { kind: 'local', model: local.model }
+              : prepared?.route === 'on_device'
+                ? { kind: 'on_device' }
+                : { kind: 'cloud', private: prepared?.private === true },
+            source: options.attachments,
+            maxRequestBytes,
+          });
+          // The provider's prompt-caching controls, placed on the request as it
+          // will leave, after the person's files are swapped in, so a breakpoint
+          // never lands ahead of a block that is still to change. A model on the
+          // person's own machine, device or network is sent the body as written.
           cachingHeaders =
             local ||
             prepared?.route === 'on_device' ||
@@ -433,9 +461,9 @@ export function createModelGateway(options: GatewayOptions): Server {
                   ...(options.promptCacheSecret ? { secret: options.promptCacheSecret } : {}),
                 }).headers;
           encoded = JSON.stringify(outbound);
-          // A picture is charged as the flat count the engine compacts by, not as
-          // the base64 text it travels in.
-          const pictures = imageTokens(outbound);
+          // A picture is charged as the flat count the engine compacts by, and a
+          // document by its pages, not as the base64 text either travels in.
+          const pictures = mediaTokens(outbound);
           inputTokens =
             estimateInputTokens(
               pictures.text === outbound ? encoded : JSON.stringify(pictures.text),

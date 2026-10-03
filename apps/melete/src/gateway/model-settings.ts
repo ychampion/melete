@@ -303,6 +303,17 @@ export class ModelSettingsService {
     return agentRoutes(routing, primary, { ownerChose: false, primaryReadsImages: readsImages });
   }
 
+  /**
+   * Whether this model is shown pictures, for the model a request names: what
+   * the app says for the model in use, else the owner's word on this model,
+   * else Melete's list.
+   */
+  async visionFor(provider: string, model: string): Promise<boolean> {
+    const active = await this.active(await this.chosen());
+    if (active.provider === provider && active.model === model) return active.vision;
+    return effectiveVision(provider, model, await this.visionSaid(provider, model));
+  }
+
   /** The owner's word on this model reading images, given apart from choosing it. */
   private async visionSaid(
     provider: string,

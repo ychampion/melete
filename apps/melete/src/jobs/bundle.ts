@@ -34,6 +34,8 @@ import { and, asc, desc, eq, gt, inArray, isNotNull, isNull } from 'drizzle-orm'
 import { z } from 'zod';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { artifactGate } from '../artifact/gate.ts';
+import { messageFiles, withFiles } from '../attachments/render.ts';
+import { attachmentTexts } from '../attachments/store.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
   action,
@@ -350,6 +352,8 @@ export function assembleHistory(
   events: readonly HistoryEvent[],
   attempts: readonly HistoryAttempt[],
   afterSeq: number,
+  /** The text of each file the person sent, by id: what their messages' file blocks hold. */
+  fileTexts: ReadonlyMap<string, string | null> = new Map(),
   limits: TranscriptLimits = BASELINE_TRANSCRIPT,
 ): Pick<AttemptBundle, 'inputs' | 'transcript'> & { progressSummary: string } {
   const inputs: AttemptBundle['inputs'] = {
@@ -383,7 +387,12 @@ export function assembleHistory(
     ) {
       const message: CanonicalMessage = {
         role: 'user',
-        content: pickedForAgent(payload.text, payload.chosen),
+        // The person's words, then the files they sent with them, fenced as untrusted data.
+        content: withFiles(
+          pickedForAgent(payload.text, payload.chosen),
+          messageFiles(payload.attachments),
+          fileTexts,
+        ),
         at: row.createdAt.toISOString(),
       };
       transcript.push(message);
@@ -423,7 +432,44 @@ export function assembleHistory(
     }
   }
   transcript.sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
-  return { inputs, transcript: boundTranscript(transcript, limits), progressSummary };
+  return {
+    inputs,
+    transcript: boundAroundNewMessages(transcript, inputs.new_user_messages, limits),
+    progressSummary,
+  };
+}
+
+/**
+ * The transcript bound with this turn's new messages taken out of its room
+ * first. A new message is shown whole under "From the person", with the text of
+ * any file it carries, so its size comes out of the transcript's budget and an
+ * attached document cannot carry the first request past the bound. The new
+ * messages keep their places in the transcript, whole. When what is left cannot
+ * hold the completed tool identities, the whole bound is used as before rather
+ * than refuse an attempt that ran before.
+ */
+function boundAroundNewMessages(
+  transcript: readonly CanonicalMessage[],
+  fresh: readonly CanonicalMessage[],
+  limits: TranscriptLimits,
+): CanonicalMessage[] {
+  if (fresh.length === 0) return boundTranscript(transcript, limits);
+  const isFresh = new Set(fresh);
+  const serialized = JSON.stringify(fresh);
+  const remaining: TranscriptLimits = {
+    maxMessages: Math.max(1, limits.maxMessages - fresh.length),
+    maxTokens: Math.max(0, limits.maxTokens - estimateInputTokens(serialized)),
+    maxBytes: Math.max(0, limits.maxBytes - wireBytes(serialized)),
+  };
+  const prior = transcript.filter((message) => !isFresh.has(message));
+  let bounded: CanonicalMessage[];
+  try {
+    bounded = boundTranscript(prior, remaining);
+  } catch (error) {
+    if (!(error instanceof BundleContextLimitError)) throw error;
+    return boundTranscript(transcript, limits);
+  }
+  return [...bounded, ...fresh].sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
 }
 
 /**
@@ -677,10 +723,16 @@ export async function buildAttemptSkeleton(
     }
     return [entry];
   });
+  // A job running under a conversation reads that conversation's files too.
+  const files = await attachmentTexts(
+    tx,
+    row.experienceParentId ? [row.id, row.experienceParentId] : [row.id],
+  );
   const history = assembleHistory(
     usableEvents,
     attempts.filter(contextMatches),
     afterSeq,
+    new Map([...files].map(([id, file]) => [id, file.text])),
     transcriptLimits(attemptContextBudget(model.model, jobBudget.parse(row.budget))),
   );
   // A decision names an action id; the attempt needs to know what that action

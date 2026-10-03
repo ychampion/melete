@@ -20,16 +20,20 @@ import { isTerminal, type JobState } from '@melete/contracts';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { Sql, TransactionSql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
+import { purgeUnreferenced, releaseJobAttachments } from '../attachments/store.ts';
 import { action, attempt, job, trigger } from '../db/schema.ts';
 import { newId } from '../ids.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import { ENDED_NOTE, withdrawPermissions } from '../jobs/withdraw.ts';
+import type { BlobKey, BlobStore } from '../storage/blob.ts';
 
 export type JobRemovalDeps = {
   jobs: JobService;
   sql: Sql;
   runner?: AttemptRunner;
+  /** Where the files sent in the chats are kept; their bytes go with them. */
+  blobs?: BlobStore;
 };
 
 export type JobRemoval = {
@@ -221,6 +225,7 @@ export async function removeJobs(
   // The fence is committed; now the runtime lets go before the rows go.
   for (const id of ended.cancelled) jobs.onCancelled?.(id);
   await deps.runner?.stopJobs(list);
+  let fileKeys: BlobKey[] = [];
   await deps.sql.begin(async (tx) => {
     await tx`select id from job where id = any(${list}) order by id for update`;
     await refuseInFlight(tx, list);
@@ -261,10 +266,16 @@ export async function removeJobs(
     await tx`delete from memory_outputs where job_id = any(${list})`;
     await tx`delete from memory_repair_briefs where job_id = any(${list})`;
     await tx`delete from memory_invalidations where job_id = any(${list})`;
+    // The files sent in these chats, and the store's record that they need
+    // their bytes; the bytes themselves go once this commits.
+    fileKeys = await releaseJobAttachments(tx, list);
     const gone = await tx`delete from job where id = any(${list}) returning id`;
     if (!gone.some((row) => row.id === list[0]))
       throw new ServiceError('not_found', 'That item is not here.', 404);
   });
+  // Bytes nothing else refers to go now. Without the store here, the collector
+  // takes them once their grace period passes.
+  if (deps.blobs && fileKeys.length) await purgeUnreferenced(deps.sql, deps.blobs, fileKeys);
   // Forgotten only now, after the jobs are gone, so nothing captured from them
   // in between is left behind. Then the capture log stops naming them.
   let forgotten = 0;

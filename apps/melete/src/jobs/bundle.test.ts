@@ -665,3 +665,71 @@ describe('the transcript bound holds for text in any script', () => {
     expect(JSON.stringify(boundTranscript(messages)).length).toBeGreaterThan(31_000);
   });
 });
+
+describe("a new message's size comes out of the transcript's room", () => {
+  test('an attached document leaves less room for earlier turns, and the total stays inside the bound', () => {
+    const events = Array.from({ length: 60 }, (_, index) => ({
+      seq: index + 1,
+      type: 'notice' as const,
+      payload: { kind: 'user_message', text: `Earlier ${index}: ${'words '.repeat(60)}` },
+      createdAt: new Date(Date.parse(at) + index * 1000),
+    }));
+    const document = 'A long attached document line. '.repeat(700);
+    const withDocument = [
+      ...events,
+      {
+        seq: 61,
+        type: 'notice' as const,
+        payload: { kind: 'user_message', text: `Please read this.\n${document}` },
+        createdAt: new Date(Date.parse(at) + 61_000),
+      },
+    ];
+    const result = assembleHistory(withDocument, [], 60);
+    const fresh = result.inputs.new_user_messages[0];
+    expect(fresh?.content).toContain(document);
+    // The new message is kept whole in the transcript, and with it the whole
+    // serialized transcript still fits the baseline bound.
+    expect(result.transcript.at(-1)).toEqual(fresh);
+    const serialized = JSON.stringify(result.transcript);
+    expect(estimateInputTokens(serialized)).toBeLessThanOrEqual(
+      BASELINE_CONTEXT_BUDGET.transcript_tokens,
+    );
+    // Without the document, more earlier turns fit.
+    const without = assembleHistory(
+      [
+        ...events,
+        { ...withDocument[60], payload: { kind: 'user_message', text: 'Hi.' } },
+      ] as typeof withDocument,
+      [],
+      60,
+    );
+    // Older turns past the room are kept only as abbreviated placeholders.
+    const kept = (transcript: CanonicalMessage[]) =>
+      transcript.filter((message) => message.content.startsWith('Earlier')).length;
+    expect(kept(without.transcript)).toBeGreaterThan(kept(result.transcript));
+  });
+
+  test('a new message larger than the bound still runs, with the earlier bound as before', () => {
+    const huge = 'x'.repeat(40_000);
+    const result = assembleHistory(
+      [
+        {
+          seq: 1,
+          type: 'tool_result',
+          payload: { call_id: 'call-1', ok: true, result: {} },
+          createdAt: new Date(at),
+        },
+        {
+          seq: 2,
+          type: 'notice',
+          payload: { kind: 'user_message', text: huge },
+          createdAt: new Date(later),
+        },
+      ],
+      [],
+      1,
+    );
+    expect(result.inputs.new_user_messages[0]?.content).toBe(huge);
+    expect(result.transcript.some((message) => message.tool_call_id === 'call-1')).toBe(true);
+  });
+});

@@ -349,14 +349,14 @@ describe('the price table', () => {
     expect(table.priceFor('anthropic', 'claude-haiku-5').entry).toBe('anthropic/*haiku*');
     expect(table.priceFor('somewhere', 'mystery').entry).toBe('*');
     // A million fresh input tokens at $1, half a million cached at Fireworks'
-    // share of the input price (half), and a million output at $2.
+    // share of the input price (a fifth), and a million output at $2.
     expect(
       table.cost('fireworks', 'accounts/fireworks/models/deepseek-v4', {
         inputTokens: 1_500_000,
         cachedInputTokens: 500_000,
         outputTokens: 1_000_000,
       }),
-    ).toBeCloseTo(3.25, 6);
+    ).toBeCloseTo(3.1, 6);
     expect(() => parseModelPrices('{"x": {"input": "cheap"}}')).toThrow('MELETE_MODEL_PRICES');
   });
 });
