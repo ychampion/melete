@@ -679,7 +679,12 @@ export async function bootstrap(
         );
       }, 60_000);
       episodeRetention.unref();
-      stopEgressRetention = startEgressRetention(handle.sql, env.MELETE_EGRESS_RECORD_DAYS);
+      stopEgressRetention = startEgressRetention(
+        handle.sql,
+        env.MELETE_EGRESS_RECORD_DAYS,
+        undefined,
+        () => leading(leases, 'egress-retention'),
+      );
     }
     if (handle) {
       // Before the registry is built, so an upgraded database gains its default connectors now.
@@ -1082,7 +1087,10 @@ export async function bootstrap(
       // A removal outlives the request that asked for it and the process that
       // was running it, so it is resumed at startup and every minute after.
       const journal = (deploymentMemory?.routes ?? memory)?.journal;
-      if (handle) blobs = startBlobs(handle.sql, env, options.workers !== false);
+      if (handle)
+        blobs = startBlobs(handle.sql, env, options.workers !== false, () =>
+          leading(leases, 'blob-collector'),
+        );
       if (handle && journal) {
         removals = new SpaceRemovalService({
           db: handle.db,
@@ -1139,7 +1147,9 @@ export async function bootstrap(
           });
         }
         if (handle && processFactory)
-          processMonitor = startProcessMonitor(processFactory, handle.sql, triggers);
+          processMonitor = startProcessMonitor(processFactory, handle.sql, triggers, () =>
+            leading(leases, 'process-monitor'),
+          );
         // A chase spends most of its life waiting on a reply, and the wait it
         // holds is an event wait on a `mail.new` trigger. Without something
         // putting that event there, only the deadline ever wakes the job, and a
@@ -1256,9 +1266,10 @@ export async function bootstrap(
  * The blob store this installation is configured for, and its collector, which
  * runs once a day where this process runs workers.
  */
-function startBlobs(sql: Sql, env: Env, workers: boolean) {
+function startBlobs(sql: Sql, env: Env, workers: boolean, leads: () => boolean | Promise<boolean>) {
   const store = configuredBlobStore(env);
-  const collector = new BlobCollector({ sql, store });
+  // Every instance may run workers; only the one holding the lease collects.
+  const collector = new BlobCollector({ sql, store, leads });
   if (workers) collector.start();
   return { store, collector };
 }

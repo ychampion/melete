@@ -29,6 +29,8 @@ export type CollectorOptions = {
   now?: () => Date;
   /** Left out, a random time within the first hour. */
   firstPassDelayMs?: number;
+  /** Whether this instance leads collection; another instance's passes are skipped here. */
+  leads?: () => boolean | Promise<boolean>;
 };
 
 export type Collection = { examined: number; deleted: number; abandonedUploads: number };
@@ -96,7 +98,8 @@ export class BlobCollector {
     if (this.timer || this.first) return;
     const pass = () => {
       if (this.running) return;
-      this.running = this.collect()
+      this.running = Promise.resolve(this.options.leads?.() ?? true)
+        .then((leading) => (leading ? this.collect() : undefined))
         .catch((error) =>
           process.stderr.write(
             `blob collection failed: ${error instanceof Error ? error.message : String(error)}\n`,
