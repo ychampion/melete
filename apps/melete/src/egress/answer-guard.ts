@@ -15,6 +15,8 @@
 const FIELDS: Record<string, string> = {
   secretaccesskey: 'an AWS secret access key',
   sessiontoken: 'a session token',
+  // Systems Manager's StartSession answers with the session's own token beside its StreamUrl.
+  tokenvalue: 'a session token',
   securitytoken: 'a session token',
   accesstoken: 'an access token',
   refreshtoken: 'a refresh token',

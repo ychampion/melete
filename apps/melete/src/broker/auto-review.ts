@@ -66,8 +66,9 @@ const SANDBOX_PROVIDERS = new Set(['exec', 'sandbox', 'files']);
  * A file saved into, moved into or moved out of the person's own Files (the
  * space's `artifacts` area). The files tools also reach the agent's own
  * workspace (`work`, the default), which is sandbox work; the person's Files
- * are not, so a change there is theirs to agree to, like a change in a
- * connected app.
+ * are not. A new file there stays in their space and is not asked about (the
+ * files connector says so through `staysInSpace`); anything else that changes
+ * them is theirs to agree to, like a change in a connected app.
  */
 export function changesPersonFiles(name: string, payload: JsonObject): boolean {
   if (name === 'files.write') return payload.area === 'artifacts';

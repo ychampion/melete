@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, lstatSync } from 'node:fs';
 import {
   type FileHandle,
   lstat,
@@ -530,8 +530,40 @@ export function createFilesConnector(options: FilesOptions): Connector {
     return { entry, content };
   };
 
+  /**
+   * A new file in the person's own Files: something they can open and delete,
+   * like a new file saved to the space (`artifact.publish`), so it is not asked
+   * about. Saving over one of theirs, taking a file out of their Files or
+   * renaming one there, and a path that is not a plain name inside them, are.
+   */
+  const newInPersonFiles = (
+    action: Pick<Action, 'kind' | 'canonical_payload'>,
+    spaceId: string,
+  ) => {
+    const payload = action.canonical_payload;
+    const into =
+      action.kind === 'files.write'
+        ? payload.area === 'artifacts'
+        : action.kind === 'files.move' &&
+          payload.area !== 'artifacts' &&
+          (payload.to_area ?? payload.area) === 'artifacts';
+    const target = action.kind === 'files.write' ? payload.path : payload.to;
+    if (!into || typeof target !== 'string' || !/^sp_[A-Za-z0-9]+$/.test(spaceId)) return false;
+    try {
+      // A link counts as something already there, wherever it points.
+      return (
+        lstatSync(path.join(options.spacesRoot, spaceId, 'artifacts', ...segmentsFor(target)), {
+          throwIfNoEntry: false,
+        }) === undefined
+      );
+    } catch {
+      return false;
+    }
+  };
+
   return {
     manifest: filesManifest,
+    staysInSpace: newInPersonFiles,
     async prepare(payload) {
       if (payload.expect !== undefined) {
         const declaration = artifactExpectation.safeParse(payload.expect);

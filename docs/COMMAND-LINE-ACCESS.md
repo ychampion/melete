@@ -37,7 +37,8 @@ For each request inside a terminated connection:
   uncompressed, without `Alt-Svc` or `Set-Cookie`, and with every form of the
   secret replaced by `[redacted]`, even if the service echoes it.
 - An answer that holds a new credential the service handed out (a GitLab
-  personal, deploy, runner or trigger token, an npm token) is not passed on:
+  personal, deploy, runner, trigger, cluster agent, feed or incoming mail
+  token, an npm token) is not passed on:
   one seen before the answer starts is replaced by a plain refusal, and one
   seen later cuts the answer off before any of it is sent. A change whose
   answer is withheld this way is recorded as possibly landed.
@@ -340,7 +341,8 @@ Three kinds of request are refused and never sent with the account:
   parameter in the query or any kind of body);
 - one that would make a credential the computer then holds: a personal,
   project, group, impersonation or deploy token, a token rotation, a pipeline
-  trigger token, a runner, an SSH or deploy key, or an OAuth token, through
+  trigger token, a runner, a cluster agent or its tokens, an SSH or deploy key,
+  or an OAuth token, through
   REST or GraphQL. Make one on GitLab yourself if the work needs it;
 - the usage reports `glab` sends after each command. `glab` carries on without
   them.

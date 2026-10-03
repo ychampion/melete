@@ -167,9 +167,11 @@ A person asks "Book dinner with Sam at seven and let him know." These are the `t
 
 The activity for the same turn has a row for the recall, the skill, the page, the email and the memory write, in that order; the model entries mark where each step began. While the email waits for approval, `progress` reads `{ "steps_done": 3, "current": "Proposed sending an email to sam@example.com — waiting for you" }`.
 
-## Saving into the person's space versus their Files
+## Saving into the person's space and their Files
 
-Two tools put a file where the person keeps things, and they are asked about differently.
+`artifact.publish` to the space and `files.write` / `files.move` into the person's own Files (`area` or `to_area` set to `artifacts`) follow one rule: a useful change the person can delete or undo goes through, and a risky one asks.
 
-- `artifact.publish` to the space saves a finished file into Melete's own space. A new file there goes ahead without a question, because the person can open and delete it; replacing a file they already keep there asks first.
-- `files.write` and `files.move` with `area` or `to_area` set to `artifacts` change the person's own Files. That is not the agent's workspace, so it is treated like a reversible change in a connected app: it asks first, or goes to the independent reviewer when the person has switched on "Reversible changes in connected apps". The permission card names where the file goes ("Save imgtest.png to your Files", "Move “a.png” into your Files"), and approving it is one tap. Work in the agent's own workspace (`area: work`, the default) does not ask.
+- A **new** file goes through without a question, with a receipt in the conversation's trail: a file published to an unused name in the space, written to an unused path in their Files, or moved from the agent's workspace to an unused name there.
+- These still ask: saving over a file the person already keeps, moving a file out of their Files or renaming one there, a path that is not a plain name inside them, and sending a file by email. The permission card names where the file goes ("Save imgtest.png to your Files", "Move “a.png” out of your Files").
+- The person's stricter settings still apply: "Ask me for everything", an agent set to ask before acting, and the switch for work in the agent's own workspace.
+- Work in the agent's own workspace (`area: work`, the default) does not ask.

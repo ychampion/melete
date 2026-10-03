@@ -8,11 +8,12 @@ import type { AddressInfo } from 'node:net';
 import { connect } from 'node:net';
 import { selfSignedPair } from '../gateway/fixtures/self-signed.ts';
 import { SandboxEgressGuard } from '../sandbox/adapters/docker-egress.ts';
+import { gitlabAdapter } from './adapters/gitlab.ts';
 import { testAdapter } from './adapters/test.ts';
 import type { CredentialAdapter } from './adapters/types.ts';
 import type { ForwardResult } from './connector.ts';
 import { CredentialInAnswer, CredentialStreamGuard, credentialIn } from './credential-guard.ts';
-import { memoryCredentialPort, rawRequest, throughRelay } from './fixtures.ts';
+import { fixtureUpstream, memoryCredentialPort, rawRequest, throughRelay } from './fixtures.ts';
 
 const GITLAB_TOKEN = `glpat-${'Ab1_'.repeat(6)}`;
 const NPM_TOKEN = `npm_${'a1B2c3D4e5'.repeat(3)}xyz123`;
@@ -31,6 +32,10 @@ describe('the credential guard', () => {
     expect(credentialIn(`glrt-${'x'.repeat(20)}`, kinds)).toBe('gitlab_runner');
     expect(credentialIn(`glptt-${'0'.repeat(40)}`, kinds)).toBe('gitlab_trigger');
     expect(credentialIn(`{"token":"${NPM_TOKEN}"}`, kinds)).toBe('npm');
+    const gitlab = ['gitlab_agent', 'gitlab_feed', 'gitlab_incoming_mail'] as const;
+    expect(credentialIn(`{"token":"glagent-${'y'.repeat(50)}"}`, gitlab)).toBe('gitlab_agent');
+    expect(credentialIn(`glft-${'y'.repeat(20)}`, gitlab)).toBe('gitlab_feed');
+    expect(credentialIn(`glimt-${'y'.repeat(25)}`, gitlab)).toBe('gitlab_incoming_mail');
     // A prefix alone, or one the kinds do not name, passes.
     expect(credentialIn('set npm_config_registry and glpat- in your CI', kinds)).toBeNull();
     expect(credentialIn(GITLAB_TOKEN, ['npm'])).toBeNull();
@@ -182,5 +187,88 @@ describe('an answer holding a new credential', () => {
     ]);
     expect(answer?.status).toBe(502);
     expect(JSON.stringify(answer)).not.toContain('glpat-');
+  });
+});
+
+describe('a Git LFS answer that hands back the account', () => {
+  test('an LFS batch answer echoing the Authorization it was sent never gives the computer the token', async () => {
+    const secret = `glpat-${'Zz9_'.repeat(6)}`;
+    // GitLab's LFS batch answer repeats the request's own Authorization for each download.
+    const gitlab = await fixtureUpstream('gitlab.com', (request) =>
+      request.path.endsWith('/info/lfs/objects/batch')
+        ? {
+            headers: { 'content-type': 'application/vnd.git-lfs+json' },
+            body: JSON.stringify({
+              transfer: 'basic',
+              objects: [
+                {
+                  oid: 'a'.repeat(64),
+                  size: 12,
+                  actions: {
+                    download: {
+                      href: 'https://gitlab.com/alice/site.git/gitlab-lfs/objects/aaaa',
+                      header: { Authorization: String(request.headers.authorization) },
+                    },
+                  },
+                },
+              ],
+            }),
+          }
+        : undefined,
+    );
+    const port = memoryCredentialPort({
+      secret,
+      account: { adapter: gitlabAdapter as CredentialAdapter, config: {} },
+    });
+    const relay = new SandboxEgressGuard({
+      resolve: async () => [{ address: '172.65.251.78', family: 4 }],
+      credentials: port,
+      intercept: {
+        upstream: () => ({ address: { address: '127.0.0.1', family: 4 }, port: gitlab.port }),
+        upstreamCa: gitlab.ca,
+      },
+    });
+    guard = relay;
+    try {
+      const relayPort = await relay.listen(0, '127.0.0.1');
+      relay.allow('127.0.0.1', 'melete-sbx-one', {
+        mode: 'open',
+        session: 'sbx_one',
+        space: 'sp_one',
+      });
+      const token = relay.mint('melete-sbx-one', {
+        kind: 'command',
+        sessionId: 'sbx_one',
+        jobId: 'job_one',
+        attemptId: 'att_one',
+        actionId: 'act_one',
+        deadlineAt: Date.now() + 120_000,
+      });
+      const answers = await throughRelay({
+        relayPort,
+        host: 'gitlab.com',
+        ca: (await port.ca.certificate()).pem,
+        token,
+        requests: [
+          rawRequest('POST', 'gitlab.com', '/alice/site.git/info/lfs/objects/batch', {
+            headers: { 'content-type': 'application/vnd.git-lfs+json' },
+            body: JSON.stringify({
+              operation: 'download',
+              objects: [{ oid: 'a'.repeat(64), size: 12 }],
+            }),
+          }),
+        ],
+      });
+      // GitLab got the account; the computer got its answer without it.
+      const sent = Buffer.from(`oauth2:${secret}`).toString('base64');
+      expect(gitlab.seen[0]?.headers.authorization).toBe(`Basic ${sent}`);
+      const shown = JSON.stringify(answers);
+      expect(answers[0]?.status).toBe(200);
+      expect(shown).toContain('[redacted]');
+      for (const form of [secret, sent, Buffer.from(secret).toString('base64')])
+        expect(shown).not.toContain(form);
+    } finally {
+      await gitlab.close();
+    }
   });
 });
