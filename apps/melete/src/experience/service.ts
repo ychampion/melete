@@ -40,8 +40,11 @@ import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { inConversation, withdrawPermissions } from '../jobs/withdraw.ts';
 import { ownJob, requestPrincipal, spaceAuthority } from '../principals/authority.ts';
+import { mentionedRoomAgent } from '../rooms/mentions.ts';
 import { AGENT_TEMPLATES, agentValues, agentView, MELETE_AGENT, mentionedAgent } from './agents.ts';
 import { answerStream } from './answer-filter.ts';
+import type { ExperienceEvents } from './events.ts';
+import type { ExperiencePermissions } from './permissions.ts';
 import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
 
 /** Turn statuses of work not yet over: an agent is not deleted under one. */
@@ -98,6 +101,10 @@ export async function withdrawPendingPermissions(
 }
 
 export class ExperienceService {
+  /** The conversation projector the routes mounted beside this service, for the rooms routes. */
+  events?: ExperienceEvents;
+  /** The permission cards and answers mounted beside this service, for the rooms routes. */
+  permissions?: ExperiencePermissions;
   /** Where the files people send are kept, when the blob store is mounted beside this service. */
   attachments?: AttachmentService;
   constructor(
@@ -132,23 +139,35 @@ export class ExperienceService {
           .select({ kind: space.kind, owner: space.ownerPrincipalId })
           .from(space)
           .where(eq(space.id, row.spaceId));
-        const mayHandOn = place?.kind !== 'shared' || (speaker !== null && speaker === place.owner);
-        const mentioned = mayHandOn
-          ? mentionedAgent(
-              text,
-              await tx
-                .select({ id: agent.id, name: agent.name })
-                .from(agent)
-                .where(and(eq(agent.spaceId, row.spaceId), isNull(agent.deletedAt))),
-            )
-          : null;
+        // A room's request is the room's: whoever asked it hands a message to
+        // any agent the room can use, which reaches only what the room marks.
+        const room = row.audience === 'room';
+        const mayHandOn =
+          room || place?.kind !== 'shared' || (speaker !== null && speaker === place.owner);
+        const usable = mayHandOn
+          ? await tx
+              .select({ id: agent.id, name: agent.name, isDefault: agent.isDefault })
+              .from(agent)
+              .where(and(eq(agent.spaceId, row.spaceId), isNull(agent.deletedAt)))
+          : [];
+        const mentioned = !mayHandOn
+          ? null
+          : room
+            ? mentionedRoomAgent(
+                text,
+                usable,
+                usable.find((candidate) => candidate.isDefault) ?? null,
+              )
+            : mentionedAgent(text, usable);
         const agentId = mentioned?.id ?? row.agentId;
         const turnId = newId('turn');
+        const author = requestPrincipal() ?? row.principalId;
         await tx.insert(experienceTurn).values({
           id: turnId,
           jobId: row.id,
           agentId,
           submissionId: receipt.submission_id,
+          authorPrincipalId: author,
           text,
         });
         // The message records who it was said to, so memory follows that agent's permission.
@@ -163,7 +182,10 @@ export class ExperienceService {
           turnId,
         );
         await tx.update(job).set({ currentTurnId: turnId }).where(eq(job.id, row.id));
-        await withdrawPendingPermissions(tx, row.id, SUPERSEDED_NOTE);
+        // A new message replaces what its own author asked for. In a room only the
+        // person who asked a request supersedes it; nobody else's words reach it.
+        if (row.audience !== 'room' || author === row.requestedByPrincipalId)
+          await withdrawPendingPermissions(tx, row.id, SUPERSEDED_NOTE);
       };
     }
   }

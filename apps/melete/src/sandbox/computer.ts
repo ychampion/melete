@@ -110,6 +110,9 @@ type Channel = {
   pump?: AbortController;
   ended: boolean;
   timer?: ReturnType<typeof setInterval>;
+  /** When the viewer's place was last checked, and whether a check is under way. */
+  checkedAt: number;
+  checking: boolean;
 };
 
 /** Browser reads of the stream must come from this API, as its writes already must. */
@@ -124,8 +127,15 @@ export type SandboxComputerOptions = {
   controls?: ComputerControls;
   presence?: Partial<typeof LIVE_PRESENCE>;
   fps?: number;
+  /** How often an open view asks again whether its viewer may still see the computer. */
+  recheckMs?: number;
 };
 
+/** An open view is checked against its viewer's place this often. */
+export const LIVE_RECHECK_MS = 5_000;
+
+/** `steer`: take over, hand back and send input. `watch`: see the screen. */
+type Reach = 'steer' | 'watch';
 export class SandboxComputerService {
   /** Attempts fenced by a takeover, for the runner to interrupt. */
   onPark?: (jobId: string, attemptIds: string[]) => void;
@@ -135,6 +145,7 @@ export class SandboxComputerService {
   private readonly controls: ComputerControls;
   private readonly presence: typeof LIVE_PRESENCE;
   private readonly fps: number;
+  private readonly recheckMs: number;
 
   constructor(
     private readonly sql: Sql,
@@ -145,6 +156,7 @@ export class SandboxComputerService {
     this.controls = options.controls ?? computerControls;
     this.presence = { ...LIVE_PRESENCE, ...options.presence };
     this.fps = options.fps ?? LIVE_FPS;
+    this.recheckMs = options.recheckMs ?? LIVE_RECHECK_MS;
     // Any change of hands ends the view opened under the epoch before it.
     this.controls.onChange((sandbox) => {
       const channel = this.bySandbox.get(sandbox);
@@ -185,19 +197,37 @@ export class SandboxComputerService {
     };
   }
 
-  /** The computer a person may steer, or a refusal that reads as an absent session. */
-  async steerable(sessionId: string, principalId: string): Promise<Binding> {
+  /**
+   * What a principal may do with a job's computer. Their own job's they steer.
+   * A room's request belongs to the room: its members may watch the computer,
+   * and only the room's owners take it over. Anything else is nothing.
+   */
+  private async reach(jobId: string, principalId: string): Promise<Reach | null> {
+    if (await this.owns(jobId, principalId)) return 'steer';
+    const [room] = await this.sql`select m.role from job j
+      join space s on s.id = j.space_id
+      join space_membership m on m.space_id = s.id
+        and m.principal_id = ${principalId} and m.revoked_at is null
+        and (m.expires_at is null or m.expires_at > now())
+      where j.id = ${jobId} and j.audience = 'room' and s.kind = 'shared' and s.removed_at is null`;
+    if (room?.role === 'owner') return 'steer';
+    return room?.role === 'member' || room?.role === 'guest' ? 'watch' : null;
+  }
+
+  /** The computer a person may steer (or, with `watch`, look at), or a refusal that reads as an absent session. */
+  async steerable(sessionId: string, principalId: string, need: Reach = 'steer'): Promise<Binding> {
     const [row] = await this.sql`select id, connection_id, space_id, job_id, agent_id, status,
         provider_sandbox_id, egress_policy
       from sandbox_session where id = ${sessionId} and status in ('ready', 'paused')`;
     const binding = row ? this.bindingOf(row) : null;
-    if (!binding || !(await this.owns(binding.jobId, principalId)))
+    const reach = binding ? await this.reach(binding.jobId, principalId) : null;
+    if (!binding || !reach || (need === 'steer' && reach !== 'steer'))
       throw new ComputerFault('session_not_found');
     return binding;
   }
 
   async list(jobId: string, principalId: string): Promise<SandboxComputer[]> {
-    if (!(await this.owns(jobId, principalId))) throw new ComputerFault('session_not_found');
+    if (!(await this.reach(jobId, principalId))) throw new ComputerFault('session_not_found');
     const rows = await this.sql`select id, connection_id, space_id, job_id, agent_id, status,
         provider_sandbox_id, egress_policy
       from sandbox_session
@@ -305,7 +335,7 @@ export class SandboxComputerService {
   // ---- live view ------------------------------------------------------------
 
   async open(sessionId: string, principalId: string, peer: string): Promise<LiveOpen> {
-    const binding = await this.steerable(sessionId, principalId);
+    const binding = await this.steerable(sessionId, principalId, 'watch');
     const held = this.controls.state(binding.sandbox);
     const current = this.bySandbox.get(binding.sandbox);
     if (current && !current.ended) {
@@ -330,6 +360,8 @@ export class SandboxComputerService {
       inputs: [],
       detachedAt: this.now(),
       ended: false,
+      checkedAt: this.now(),
+      checking: false,
     };
     this.byId.set(channel.id, channel);
     this.bySandbox.set(binding.sandbox, channel);
@@ -344,10 +376,10 @@ export class SandboxComputerService {
     };
   }
 
-  private async bound(c: Context, sessionId: string, id: string) {
+  private async bound(c: Context, sessionId: string, id: string, need: Reach = 'steer') {
     if (!sameOrigin(c)) throw new ComputerFault('origin_refused');
     const principalId = c.get('owner').id as string;
-    const binding = await this.steerable(sessionId, principalId);
+    const binding = await this.steerable(sessionId, principalId, need);
     const channel = this.byId.get(id);
     if (!channel || channel.ended || channel.sessionId !== sessionId)
       throw new ComputerFault('live_closed');
@@ -361,7 +393,7 @@ export class SandboxComputerService {
   }
 
   async frames(c: Context, sessionId: string, id: string, lastEventId: number): Promise<Response> {
-    const { channel, binding } = await this.bound(c, sessionId, id);
+    const { channel, binding } = await this.bound(c, sessionId, id, 'watch');
     this.detach(channel);
     channel.ack = Math.max(channel.ack, lastEventId);
     const encoder = new TextEncoder();
@@ -469,7 +501,7 @@ export class SandboxComputerService {
 
   async close(c: Context, sessionId: string, body: unknown): Promise<{ closed: true }> {
     const request = liveClose.parse(body);
-    const { channel } = await this.bound(c, sessionId, request.live_id);
+    const { channel } = await this.bound(c, sessionId, request.live_id, 'watch');
     this.finish(channel, 'closed');
     return { closed: true };
   }
@@ -481,12 +513,35 @@ export class SandboxComputerService {
       this.finish(channel, ending);
       return;
     }
+    this.recheck(channel);
     if (channel.ended || this.controls.state(channel.sandbox).control !== 'human') return;
     const idle = this.now() - channel.lastInputAt;
     if (idle >= this.presence.still_there_ms && !channel.askedStillThere) {
       channel.askedStillThere = true;
       channel.stream?.write({ type: 'notice', code: 'still_there' });
     }
+  }
+
+  /**
+   * Whether the viewer may still see this computer. A room's member who is
+   * removed or leaves, or a guest whose time is up, loses the view within one
+   * interval, as they lose every other room route at once.
+   */
+  private recheck(channel: Channel): void {
+    if (channel.ended || channel.checking || this.now() - channel.checkedAt < this.recheckMs)
+      return;
+    channel.checking = true;
+    this.steerable(channel.sessionId, channel.principalId, 'watch')
+      .then(
+        () => undefined,
+        (error: unknown) => {
+          if (error instanceof ComputerFault) this.finish(channel, 'session_not_found');
+        },
+      )
+      .finally(() => {
+        channel.checking = false;
+        channel.checkedAt = this.now();
+      });
   }
 
   private ending(channel: Channel): LiveEndCode | null {

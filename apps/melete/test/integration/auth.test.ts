@@ -113,7 +113,8 @@ describeWithDb('single-owner authentication against Postgres', () => {
     expect(me.status).toBe(200);
     const body = (await me.json()) as { owner: Record<string, unknown> };
     expect(body.owner.email).toBe(email);
-    expect(Object.keys(body.owner).sort()).toEqual(['created_at', 'email', 'id']);
+    expect(Object.keys(body.owner).sort()).toEqual(['created_at', 'email', 'id', 'kind']);
+    expect(body.owner.kind).toBe('person');
   });
 
   test('setup says it is needed until the owner exists, with no session either way', async () => {

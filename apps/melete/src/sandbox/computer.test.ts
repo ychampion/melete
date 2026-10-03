@@ -260,4 +260,57 @@ withDb('the computer a person steers', () => {
     expect(s.controls.state(s.sandbox)).toEqual({ control: 'agent', epoch: 0 });
     expect(s.parked).toEqual([]);
   });
+
+  test('the room computer can be watched by members and taken over only by owners', async () => {
+    const s = await scene();
+    // The job becomes a room's request: the room's principal's job, asked by a member.
+    const [space] = await s.sql`select owner_principal_id from space where id = ${s.scope.spaceId}`;
+    const ownerId = String(space?.owner_principal_id);
+    const memberId = recordId('own');
+    const roomId = recordId('own');
+    const outsiderId = recordId('own');
+    for (const [id, kind] of [
+      [memberId, 'person'],
+      [roomId, 'room'],
+      [outsiderId, 'person'],
+    ] as const)
+      await s.sql`insert into principal (id, email, kind) values (${id}, ${`${id.toLowerCase()}@example.test`}, ${kind})`;
+    await s.sql`update space set kind = 'shared', audience = 'space' where id = ${s.scope.spaceId}`;
+    await s.sql`insert into space_membership (principal_id, space_id, role) values
+      (${ownerId}, ${s.scope.spaceId}, 'owner'), (${memberId}, ${s.scope.spaceId}, 'member'),
+      (${roomId}, ${s.scope.spaceId}, 'agent')`;
+    await s.sql`update job set principal_id = ${roomId}, audience = 'room',
+      requested_by_principal_id = ${memberId} where id = ${s.scope.jobId}`;
+    const takeover = `/sandbox/sessions/${s.sessionId}/takeover`;
+    // A member, even the one who asked, sees the computer and its screen, and cannot take it.
+    s.as(memberId);
+    expect((await s.call('GET', `/sandbox/computers?job_id=${s.scope.jobId}`)).status).toBe(200);
+    const watching = await s.call('POST', `/sandbox/sessions/${s.sessionId}/live`);
+    expect(watching.status).toBe(200);
+    const { live_id: liveId } = (await watching.json()) as { live_id: string };
+    expect((await s.call('POST', takeover)).status).toBe(404);
+    expect(s.controls.state(s.sandbox).control).toBe('agent');
+    // Someone outside the room finds nothing at all.
+    s.as(outsiderId);
+    expect((await s.call('GET', `/sandbox/computers?job_id=${s.scope.jobId}`)).status).toBe(404);
+    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/live`)).status).toBe(404);
+    // The room's owner takes it over; the member still cannot type into it.
+    s.as(ownerId);
+    expect((await s.call('POST', takeover)).status).toBe(200);
+    expect(s.controls.state(s.sandbox).control).toBe('human');
+    s.as(memberId);
+    const reopened = await s.call('POST', `/sandbox/sessions/${s.sessionId}/live`);
+    const watched = (await reopened.json()) as { live_id: string };
+    const typed = await s.call('POST', `/sandbox/sessions/${s.sessionId}/live/input`, {
+      live_id: watched.live_id ?? liveId,
+      ack_through: 0,
+      events: [{ k: 'text', text: 'hi' }],
+    });
+    expect(typed.status).toBe(404);
+    expect(s.inputs).toEqual([]);
+    // Once the member leaves the room, they cannot even watch.
+    await s.sql`update space_membership set revoked_at = now()
+      where space_id = ${s.scope.spaceId} and principal_id = ${memberId}`;
+    expect((await s.call('GET', `/sandbox/computers?job_id=${s.scope.jobId}`)).status).toBe(404);
+  });
 });

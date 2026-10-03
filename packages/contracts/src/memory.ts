@@ -176,8 +176,9 @@ export const sourceEvent = z.strictObject({
    * Who wrote the bytes, declared by the connector that imported them. A message
    * the owner typed and a message somebody else sent are the same source type and
    * a very different trust class, and only the importer knows which is which.
+   * `member` is a person in a room, whose words became the room's memory.
    */
-  author: z.enum(['owner', 'external']).default('owner'),
+  author: z.enum(['owner', 'external', 'member']).default('owner'),
   /** Derived from the source type and the author; a claim takes the minimum over its sources. */
   origin_trust: originTrust,
 });

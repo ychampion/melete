@@ -214,156 +214,177 @@ export class SubmissionService {
   ): Promise<SubmissionResult> {
     const id = submissionId.parse(suppliedId ?? newId('job').slice(4));
     const digest = submissionDigest(kind, raw, jobId);
-    const result = await this.jobs.transaction(async (tx): Promise<SubmissionResult> => {
-      const previous = await this.read(tx, id);
-      if (previous.saved || previous.history || previous.marker) {
-        const knownDigest = previous.knownDigest;
-        if (knownDigest !== null && knownDigest !== digest) {
-          const key = `submission:${id}:conflict:${digest}`;
-          let rejected = await appendEvent(tx, {
-            type: 'notice',
-            payload: {
-              kind: 'submission_rejected',
-              submission_id: id,
-              input_digest: digest,
-              reason: 'submission_conflict',
-            },
-            dedupKey: key,
-          });
-          if (!rejected) [rejected] = await tx.select().from(event).where(eq(event.dedupKey, key));
-          return {
-            receipt: {
-              ...unknown(id, digest),
-              state: 'rejected',
-              event_cursor: rejected?.seq ?? null,
-            },
-            job: null,
-            status: 409,
-            error: {
-              code: 'submission_conflict',
-              message: 'This submission ID belongs to a different input.',
-            },
-            replayed: true,
-          };
-        }
-        if (previous.receipt.state === 'unknown_durability') {
-          await this.storeUncertainty(tx, id, digest, previous.principalId);
-          return {
-            receipt: { ...previous.receipt, input_digest: digest },
-            job: null,
-            status: 503,
-            error: {
-              code: 'unknown_durability',
-              message:
-                'The acceptance history cannot be verified. Reusing this ID will not admit new work.',
-            },
-            replayed: true,
-          };
-        }
-        return {
-          receipt: previous.receipt,
-          job: previous.job,
-          status: (previous.saved?.httpStatus ?? 200) as ContentfulStatusCode,
-          ...(previous.saved?.errorCode
-            ? {
-                error: {
-                  code: previous.saved.errorCode,
-                  message: previous.saved.errorMessage ?? 'Submission rejected.',
-                },
-              }
-            : {}),
-          replayed: true,
-        };
-      }
-
-      let current: JobRow | null = null;
-      let rejection: ServiceError | undefined;
-      const parsed =
-        kind === 'create'
-          ? createResponsibilityRequest.safeParse(raw)
-          : postMessageRequest.safeParse(raw);
-      if (!parsed.success)
-        rejection = new ServiceError('invalid_request', 'Submission data is invalid.', 400);
-      else {
-        try {
-          // The savepoint keeps a rejected admission from leaving partial job writes.
-          current = await tx.transaction((admission) =>
-            kind === 'create'
-              ? this.jobs.createInTransaction(
-                  admission,
-                  createResponsibilityRequest.parse(parsed.data),
-                  undefined,
-                  // The person typed this objective into the request.
-                  'owner_request',
-                )
-              : this.jobs.inputInTransaction(
-                  admission,
-                  jobId ?? '',
-                  postMessageRequest.parse(parsed.data).text,
-                  postMessageRequest.parse(parsed.data).corrects,
-                  postMessageRequest.parse(parsed.data).attachments,
-                ),
-          );
-        } catch (error) {
-          if (!(error instanceof ServiceError)) throw error;
-          rejection = error;
-        }
-      }
-      const accepted = current !== null && rejection === undefined;
-      const recorded = await appendEvent(tx, {
-        jobId: current?.id,
-        type: 'notice',
-        payload: {
-          kind: accepted ? 'submission_accepted' : 'submission_rejected',
-          principal_id: requestPrincipal() ?? current?.principalId ?? null,
-          submission_id: id,
-          input_digest: digest,
-          job_revision: current?.revision ?? null,
-          reason: rejection?.code ?? null,
-        },
-        dedupKey: `submission:${id}`,
-      });
-      if (!recorded)
-        throw new Error('An admission marker already exists without its receipt history');
-      const receipt: SubmissionReceipt = {
-        submission_id: id,
-        input_digest: digest,
-        job_id: current?.id ?? null,
-        job_revision: current?.revision ?? null,
-        event_cursor: recorded.seq,
-        state: accepted ? 'accepted' : 'rejected',
-      };
-      const status = rejection?.status ?? (kind === 'create' ? 201 : 200);
-      await tx.insert(submission).values({
-        submissionId: id,
-        principalId: requestPrincipal() ?? current?.principalId,
-        inputDigest: digest,
-        jobId: receipt.job_id,
-        jobRevision: receipt.job_revision,
-        eventCursor: receipt.event_cursor,
-        state: receipt.state,
-        httpStatus: status,
-        errorCode: rejection?.code,
-        errorMessage: rejection?.message,
-      });
-      await tx.insert(acceptanceJournal).values({
-        submissionId: id,
-        principalId: requestPrincipal() ?? current?.principalId,
-        jobId: receipt.job_id,
-        receipt,
-        receiptHash: hash(receipt),
-      });
-      if (accepted && current) await this.onAccepted?.(tx, receipt, current, kind);
-      return {
-        receipt,
-        job: current,
-        status,
-        ...(rejection ? { error: { code: rejection.code, message: rejection.message } } : {}),
-        replayed: false,
-      };
-    });
+    const result = await this.jobs.transaction((tx) =>
+      this.admit(tx, kind, raw, id, digest, jobId),
+    );
     if (!result.replayed && result.receipt.state === 'accepted')
       await this.faults.afterAdmissionBeforeResponse?.(result.receipt);
     return result;
+  }
+
+  /**
+   * An input admitted inside a transaction the caller already holds, so it
+   * commits or rolls back with the caller's own writes: a room message and the
+   * request it reaches are one change.
+   */
+  inputWithin(tx: Transaction, jobId: string, raw: unknown, suppliedId: string) {
+    const id = submissionId.parse(suppliedId);
+    return this.admit(tx, 'input', raw, id, submissionDigest('input', raw, jobId), jobId);
+  }
+
+  private async admit(
+    tx: Transaction,
+    kind: 'create' | 'input',
+    raw: unknown,
+    id: string,
+    digest: string,
+    jobId?: string,
+  ): Promise<SubmissionResult> {
+    const previous = await this.read(tx, id);
+    if (previous.saved || previous.history || previous.marker) {
+      const knownDigest = previous.knownDigest;
+      if (knownDigest !== null && knownDigest !== digest) {
+        const key = `submission:${id}:conflict:${digest}`;
+        let rejected = await appendEvent(tx, {
+          type: 'notice',
+          payload: {
+            kind: 'submission_rejected',
+            submission_id: id,
+            input_digest: digest,
+            reason: 'submission_conflict',
+          },
+          dedupKey: key,
+        });
+        if (!rejected) [rejected] = await tx.select().from(event).where(eq(event.dedupKey, key));
+        return {
+          receipt: {
+            ...unknown(id, digest),
+            state: 'rejected',
+            event_cursor: rejected?.seq ?? null,
+          },
+          job: null,
+          status: 409,
+          error: {
+            code: 'submission_conflict',
+            message: 'This submission ID belongs to a different input.',
+          },
+          replayed: true,
+        };
+      }
+      if (previous.receipt.state === 'unknown_durability') {
+        await this.storeUncertainty(tx, id, digest, previous.principalId);
+        return {
+          receipt: { ...previous.receipt, input_digest: digest },
+          job: null,
+          status: 503,
+          error: {
+            code: 'unknown_durability',
+            message:
+              'The acceptance history cannot be verified. Reusing this ID will not admit new work.',
+          },
+          replayed: true,
+        };
+      }
+      return {
+        receipt: previous.receipt,
+        job: previous.job,
+        status: (previous.saved?.httpStatus ?? 200) as ContentfulStatusCode,
+        ...(previous.saved?.errorCode
+          ? {
+              error: {
+                code: previous.saved.errorCode,
+                message: previous.saved.errorMessage ?? 'Submission rejected.',
+              },
+            }
+          : {}),
+        replayed: true,
+      };
+    }
+
+    let current: JobRow | null = null;
+    let rejection: ServiceError | undefined;
+    const parsed =
+      kind === 'create'
+        ? createResponsibilityRequest.safeParse(raw)
+        : postMessageRequest.safeParse(raw);
+    if (!parsed.success)
+      rejection = new ServiceError('invalid_request', 'Submission data is invalid.', 400);
+    else {
+      try {
+        // The savepoint keeps a rejected admission from leaving partial job writes.
+        current = await tx.transaction((admission) =>
+          kind === 'create'
+            ? this.jobs.createInTransaction(
+                admission,
+                createResponsibilityRequest.parse(parsed.data),
+                undefined,
+                // The person typed this objective into the request.
+                'owner_request',
+              )
+            : this.jobs.inputInTransaction(
+                admission,
+                jobId ?? '',
+                postMessageRequest.parse(parsed.data).text,
+                postMessageRequest.parse(parsed.data).corrects,
+                postMessageRequest.parse(parsed.data).attachments,
+              ),
+        );
+      } catch (error) {
+        if (!(error instanceof ServiceError)) throw error;
+        rejection = error;
+      }
+    }
+    const accepted = current !== null && rejection === undefined;
+    const recorded = await appendEvent(tx, {
+      jobId: current?.id,
+      type: 'notice',
+      payload: {
+        kind: accepted ? 'submission_accepted' : 'submission_rejected',
+        principal_id: requestPrincipal() ?? current?.principalId ?? null,
+        submission_id: id,
+        input_digest: digest,
+        job_revision: current?.revision ?? null,
+        reason: rejection?.code ?? null,
+      },
+      dedupKey: `submission:${id}`,
+    });
+    if (!recorded)
+      throw new Error('An admission marker already exists without its receipt history');
+    const receipt: SubmissionReceipt = {
+      submission_id: id,
+      input_digest: digest,
+      job_id: current?.id ?? null,
+      job_revision: current?.revision ?? null,
+      event_cursor: recorded.seq,
+      state: accepted ? 'accepted' : 'rejected',
+    };
+    const status = rejection?.status ?? (kind === 'create' ? 201 : 200);
+    await tx.insert(submission).values({
+      submissionId: id,
+      principalId: requestPrincipal() ?? current?.principalId,
+      inputDigest: digest,
+      jobId: receipt.job_id,
+      jobRevision: receipt.job_revision,
+      eventCursor: receipt.event_cursor,
+      state: receipt.state,
+      httpStatus: status,
+      errorCode: rejection?.code,
+      errorMessage: rejection?.message,
+    });
+    await tx.insert(acceptanceJournal).values({
+      submissionId: id,
+      principalId: requestPrincipal() ?? current?.principalId,
+      jobId: receipt.job_id,
+      receipt,
+      receiptHash: hash(receipt),
+    });
+    if (accepted && current) await this.onAccepted?.(tx, receipt, current, kind);
+    return {
+      receipt,
+      job: current,
+      status,
+      ...(rejection ? { error: { code: rejection.code, message: rejection.message } } : {}),
+      replayed: false,
+    };
   }
 }
