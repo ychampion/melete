@@ -1,0 +1,9 @@
+# npm ping
+
+### read
+GET https://registry.npmjs.org/-/ping
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+npm-auth-type: web
+npm-command: ping
+authorization: Bearer melete-proxy-adds-this
+accept: */*

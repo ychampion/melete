@@ -455,7 +455,8 @@ withDb('installing each kind of connection through the API', () => {
         { ...body, credentials: undefined },
         { ...body, credentials: { token: 'has a space' } },
         { ...body, scopes: ['email.send'] },
-        { ...body, command_line: { adapter: 'gitlab' } },
+        { ...body, command_line: { adapter: 'bitbucket' } },
+        { ...body, scopes: ['egress.gitlab_read'] },
         { ...body, provider: 'sandbox' },
       ]) {
         const refused = await h.install(invalid);
@@ -583,6 +584,95 @@ withDb('installing each kind of connection through the API', () => {
     );
     expect(checked.check).toMatchObject({ status: 'failing', code: 'credential_refused' });
   });
+  for (const service of [
+    {
+      adapter: 'gitlab',
+      name: 'GitLab',
+      url: 'https://gitlab.com/api/v4/user',
+      header: 'private-token',
+      sent: (token: string) => token,
+      answer: { username: 'alice' },
+    },
+    {
+      adapter: 'npm',
+      name: 'npm',
+      url: 'https://registry.npmjs.org/-/whoami',
+      header: 'authorization',
+      sent: (token: string) => `Bearer ${token}`,
+      answer: { username: 'alice' },
+    },
+  ])
+    test(`${service.name} for the agent’s computer: ${service.name} is asked whose the token is before it is kept, and the account is shown`, async () => {
+      if (!h) throw new Error('Postgres unavailable');
+      const token = `${service.adapter}_kinds_${newId('rule').toLowerCase()}`;
+      const original = globalThis.fetch;
+      const asked: string[] = [];
+      let accepted = false;
+      // Only the service's own answer about the token is stood in for.
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url !== service.url) return original(input, init);
+        asked.push(new Headers(init?.headers).get(service.header) ?? '');
+        return accepted
+          ? Response.json(service.answer)
+          : Response.json({ message: '401 Unauthorized' }, { status: 401 });
+      }) as typeof fetch;
+      try {
+        const body = {
+          provider: 'command_line',
+          label: service.name,
+          credentials: { token },
+          command_line: { adapter: service.adapter },
+        };
+        // Another service's grants are refused before anything is asked.
+        const crossed = await h.install({ ...body, scopes: ['egress.github_write'] });
+        expect(crossed.status).toBe(400);
+        expect(asked).toEqual([]);
+        const refused = await h.install(body);
+        expect(refused.status).toBe(400);
+        expect(JSON.parse(refused.text).error.message).toBe(
+          `${service.name} did not accept this token. Check that it has not expired, then paste it again.`,
+        );
+        expect(refused.text).not.toContain(token);
+        expect(
+          await h.sql`select id from connection where provider = 'command_line'
+            and configuration->>'adapter' = ${service.adapter}`,
+        ).toHaveLength(0);
+        accepted = true;
+        const created = await h.install(body);
+        expect(created.status).toBe(201);
+        expect(created.text).not.toContain(token);
+        const installed = connectionResponse.parse(created.json);
+        expect(installed.connection).toMatchObject({
+          provider: 'command_line',
+          account: 'alice',
+          status: 'active',
+          scopes: [`egress.${service.adapter}_read`, `egress.${service.adapter}_write`],
+        });
+        expect(installed.check).toMatchObject({ status: 'ok', code: 'ok' });
+        expect(asked.slice(1)).toEqual([service.sent(token), service.sent(token)]);
+        const [row] = await h.sql`select configuration from connection
+          where id = ${installed.connection.id}`;
+        expect(row?.configuration).toEqual({
+          kind: 'command_line',
+          adapter: service.adapter,
+          config: {},
+          account: 'alice',
+        });
+        accepted = false;
+        const checked = connectionCheckResponse.parse(
+          await (
+            await h.app.request(
+              `/connections/${installed.connection.id}/health`,
+              h.as(h.cookie, {}),
+            )
+          ).json(),
+        );
+        expect(checked.check).toMatchObject({ status: 'failing', code: 'credential_refused' });
+      } finally {
+        globalThis.fetch = original;
+      }
+    });
 
   test('mail: validated, sealed, tested, offered to a new attempt, and gone after revocation', async () => {
     if (!h) throw new Error('Postgres unavailable');

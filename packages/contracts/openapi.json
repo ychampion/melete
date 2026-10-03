@@ -24015,7 +24015,9 @@
         "type": "string",
         "enum": [
           "github",
-          "aws"
+          "aws",
+          "gitlab",
+          "npm"
         ]
       },
       "__schema90": {

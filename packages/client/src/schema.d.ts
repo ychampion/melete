@@ -17185,7 +17185,7 @@ export interface components {
         };
         __schema88: string;
         /** @enum {string} */
-        __schema89: "github" | "aws";
+        __schema89: "github" | "aws" | "gitlab" | "npm";
         __schema90: string;
         __schema91: string;
         __schema92: string;

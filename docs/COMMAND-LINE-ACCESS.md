@@ -36,6 +36,11 @@ For each request inside a terminated connection:
 - **A read** goes out with the account added. The answer comes back
   uncompressed, without `Alt-Svc` or `Set-Cookie`, and with every form of the
   secret replaced by `[redacted]`, even if the service echoes it.
+- An answer that holds a new credential the service handed out (a GitLab
+  personal, deploy, runner or trigger token, an npm token) is not passed on:
+  one seen before the answer starts is replaced by a plain refusal, and one
+  seen later cuts the answer off before any of it is sent. A change whose
+  answer is withheld this way is recorded as possibly landed.
 - **A change** is held while Melete asks. The approval is bound to the request
   as it will be sent: its method, address, the digest of its exact body bytes,
   and every header that goes with it (only `User-Agent`, `Date`, `Traceparent`,
@@ -158,7 +163,8 @@ GraphQL change the ids and addresses it returned.
 **Standing permission.** Answering "Always" on a push card makes a rule for
 that repository that covers later pushes creating or moving branches under
 `melete/`, within the rule's count, expiry and re-consent window. A push to any
-other branch, a tag, a delete, and every REST or GraphQL change still ask. The
+other branch, a tag, a delete, a push that carries push options, and every
+REST or GraphQL change still ask. The
 rule reads the ref updates, not the history between them, so it also covers a
 push that rewrites a `melete/` branch. It is offered when the repository's name
 came from the person or a connected app, and it follows the repository through
@@ -286,6 +292,123 @@ service, region, bucket and key, AWS's request id and, for S3, the object's
 ETag and version. S3 can answer a copy or the completion of an upload with
 `200` and an error in the body; that is recorded as possibly landed.
 
+## GitLab
+
+Connect it in Settings, under Connections, as **GitLab for the agent's
+computer**, with a personal access token from GitLab.com that has the `api`,
+`read_repository` and `write_repository` scopes and an expiry date; a project
+access token keeps it to one project. Melete asks GitLab whose token it is
+(`GET /api/v4/user`) before keeping it, and the connection shows that account.
+It has two grants: reading the projects, and pushing and making changes, which
+asks each time.
+
+The computer has `git` and `glab` (1.120.0, pinned by checksum in the image).
+Each command gets `GITLAB_TOKEN` set to a placeholder and
+`GIT_TERMINAL_PROMPT=0`. git's requests carry the token as `oauth2` basic
+credentials, and the API's as a `PRIVATE-TOKEN` header.
+
+| Host | What goes through it |
+| --- | --- |
+| `gitlab.com` | git over smart HTTP, Git LFS, the REST API under `/api/v4` and the GraphQL API at `/api/graphql`: everything `glab` does |
+
+What reads: cloning and fetching, every `GET` and `HEAD`, rendering Markdown
+(`POST /api/v4/markdown`), GraphQL documents with only queries in them, Git
+LFS downloads and lock checks, and git's empty probe before a large push.
+Everything else is a change and asks:
+
+- **A push** is read and bound the same way as on GitHub: the project (its
+  whole path, subgroups included), each ref update, the push options and the
+  exact bytes of the command list. Push options matter more here: GitLab reads
+  them to open or merge a merge request (`merge_request.create`,
+  `merge_request.merge_when_pipeline_succeeds`) or to skip or vary a pipeline
+  (`ci.skip`, `ci.variable`), so the card says in plain words what GitLab will
+  also do, for example "open a merge request into main, merge it when its
+  pipeline passes", and lists each option.
+- **A REST call** with any method other than `GET` or `HEAD` is bound to its
+  method, path, query and body. Merge requests (open, merge, approve, comment,
+  close, reopen), issues, releases, pipelines and jobs (run, retry, cancel),
+  CI/CD variables, branches, tags, protected branches, commits and files made
+  through the API, labels and deleting a project have their own summaries; any
+  other call is summarised by its method, path and size, with the whole body
+  under Details. A project the path names by number is shown by its number.
+- **A GraphQL document** with a mutation anywhere in it, or one that does not
+  parse, is bound to its exact text and variables.
+
+Three kinds of request are refused and never sent with the account:
+
+- one that asks to act as another user (`Sudo`, as a header, or as a
+  parameter in the query or any kind of body);
+- one that would make a credential the computer then holds: a personal,
+  project, group, impersonation or deploy token, a token rotation, a pipeline
+  trigger token, a runner, an SSH or deploy key, or an OAuth token, through
+  REST or GraphQL. Make one on GitLab yourself if the work needs it;
+- the usage reports `glab` sends after each command. `glab` carries on without
+  them.
+
+Reads return what the account can read, secrets included: reading a project's
+CI/CD variables (`glab variable list`, `GET .../variables`) returns their
+values to the computer. Give the token only the projects the work needs, or a
+role that cannot read variables.
+
+A held push prints its reason beside each ref, as on GitHub, and `glab` prints
+the same sentence as the API's error message. A push keeps on its receipt the
+status GitLab reported for each ref, and a REST change the address of what it
+made.
+
+Every GitLab change asks; no standing rule covers one.
+
+## npm
+
+Connect it in Settings, under Connections, as **npm for the agent's
+computer**, with a granular access token: choose only the packages it needs,
+read and write, and an expiry date. Melete asks the registry whose token it is
+(`GET /-/whoami`) before keeping it, and the connection shows that account. It
+has two grants: installing and looking up packages, and publishing and
+changing packages, which asks each time.
+
+The computer has Node.js 24 with npm (pinned by checksum in the image). Each
+command gets `NPM_TOKEN` set to a placeholder, which the computer's global npm
+settings name as the registry's token, and the relay sends the token as a
+bearer token.
+
+| Host | What goes through it |
+| --- | --- |
+| `registry.npmjs.org` | everything `npm` asks the public registry: installs, views, searches, audits, publishes and package settings |
+
+What reads: every `GET` and `HEAD` (installs, `npm view`, `npm search`, tarball
+downloads), and the audit lookups `npm install` and `npm audit` send as POSTs.
+Everything else is a change and asks:
+
+- **A publish** shows the package, each version it adds, its tags, its access,
+  the tarball's name and size, and its integrity. The scripts that run when
+  someone installs it are read from the tarball's own `package.json`, which is
+  what an install uses; the card says when that file disagrees with what the
+  publish declares, and when a `binding.gyp` builds native code on install. A
+  tarball that cannot be read is shown with the declared scripts, marked as
+  unchecked. The approval is bound to the exact bytes of the request, so a
+  different tarball is a new approval.
+- **An unpublish** of the whole package or of one version, a **deprecation**,
+  a **maintainer** change, and any other change to a package's record show each
+  field the change sets as it will be afterwards (the versions kept, the
+  deprecation messages, the maintainers, the tags). One that removes versions,
+  maintainers or tags is marked as such.
+- **A dist-tag** change shows the tag and the version it will name; **access**,
+  **team** and **organisation** changes say what they grant or take away.
+
+Logging in (`npm login`, `npm adduser`, the end of a web login), making a
+token and a trusted-publishing token exchange are refused: each would put a
+credential in the computer. Make a token on npmjs.com yourself if the work
+needs one.
+
+A held change fails the npm command with the reason in npm's own error line:
+
+```
+npm error 403 403 Forbidden - PUT https://registry.npmjs.org/melete-demo - Waiting for your approval in Melete: Publish melete-demo@1.0.0 to npm (tag latest). Run the same command again once it is approved.
+```
+
+After approval, the same command sends the change once. Every npm change asks;
+no standing rule covers one.
+
 ## Limits
 
 - Docker computers only, as above.
@@ -317,3 +440,10 @@ ETag and version. S3 can answer a copy or the completion of an upload with
   buckets, their APIs on API Gateway). A request signed there carries the
   account's key id and a short-lived session token, never its secret, and a
   change there asks like any other.
+- GitLab is GitLab.com. A self-managed GitLab server is reached as any other
+  host, without the account.
+- npm is the public registry, `registry.npmjs.org`. Another registry is reached
+  as any other host, without the account.
+- npm asks for a one-time password on publish when the account requires one
+  for writes, and a command in the computer cannot answer it: use a granular
+  token that publishes without one.

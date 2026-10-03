@@ -41,6 +41,12 @@ import {
   type UpstreamResponse,
 } from './adapters/types.ts';
 import type { ForwardResult } from './connector.ts';
+import {
+  CredentialInAnswer,
+  CredentialStreamGuard,
+  credentialIn,
+  type MintedCredential,
+} from './credential-guard.ts';
 import type { CredentialUse, EgressCredentialPort } from './credentials.ts';
 import { ByteRedactor } from './redact.ts';
 import type { EgressHostCounters, EgressTokenEntry, EgressTokens } from './tokens.ts';
@@ -370,6 +376,7 @@ function collect(
   upstream: IncomingMessage,
   redactor: ByteRedactor,
   max: number,
+  minted: readonly MintedCredential[] = [],
 ): Promise<UpstreamResponse> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -391,11 +398,13 @@ function collect(
           if (!decode) throw new Error(`an answer encoded as ${encoding} cannot be checked`);
           body = decode(body, { maxOutputLength: max });
         }
-        resolve({
-          status: upstream.statusCode ?? 502,
-          headers: downstreamHeaders(upstream.headers, redactor),
-          body: Buffer.concat([redactor.feed(body), redactor.end()]),
-        });
+        const headers = downstreamHeaders(upstream.headers, redactor);
+        const redacted = Buffer.concat([redactor.feed(body), redactor.end()]);
+        // A new credential in the answer never reaches the computer.
+        const found =
+          credentialIn(Object.values(headers).join('\n'), minted) ?? credentialIn(redacted, minted);
+        if (found) throw new CredentialInAnswer(found);
+        resolve({ status: upstream.statusCode ?? 502, headers, body: redacted });
       } catch (error) {
         reject(error);
       }
@@ -430,6 +439,14 @@ async function read(
       ...use.adapter.redactions(secret),
       ...(outbound.redactions ?? []),
     ]);
+    const minted = use.adapter.mintedCredentials ?? [];
+    const credentialWithheld = () =>
+      plain(
+        response,
+        502,
+        'credential_in_answer',
+        'The answer held a new credential, so it was not passed on.',
+      );
     await new Promise<void>((resolve) => {
       send(
         context,
@@ -439,7 +456,7 @@ async function read(
           // Compressed despite being asked not to, or to be checked whole: held, so the
           // redactor and the check see all of it before the computer sees any.
           if (check || encodingOf(upstream.headers).length) {
-            void collect(upstream, redactor, max).then(
+            void collect(upstream, redactor, max, minted).then(
               (whole) => {
                 const withheld = check?.(whole) ?? null;
                 if (withheld) {
@@ -456,28 +473,66 @@ async function read(
                 }
                 resolve();
               },
-              () => {
-                plain(
-                  response,
-                  502,
-                  'unreadable_answer',
-                  'The answer could not be checked for the account secret, so it was not passed on.',
-                );
+              (error: unknown) => {
+                if (error instanceof CredentialInAnswer) credentialWithheld();
+                else
+                  plain(
+                    response,
+                    502,
+                    'unreadable_answer',
+                    'The answer could not be checked for the account secret, so it was not passed on.',
+                  );
                 resolve();
               },
             );
             return;
           }
-          response.writeHead(
-            upstream.statusCode ?? 502,
-            downstreamHeaders(upstream.headers, redactor),
-          );
+          const headers = downstreamHeaders(upstream.headers, redactor);
+          if (credentialIn(Object.values(headers).join('\n'), minted)) {
+            upstream.destroy();
+            credentialWithheld();
+            resolve();
+            return;
+          }
+          // Held back a little at a time, so a credential split across chunks is seen whole.
+          const guard = new CredentialStreamGuard(minted);
+          let stopped = false;
+          const stop = () => {
+            stopped = true;
+            upstream.destroy();
+            // Before anything was sent the answer is replaced; after, the connection is cut.
+            if (response.headersSent) response.destroy();
+            else credentialWithheld();
+            resolve();
+          };
+          let started = false;
+          const pass = (bytes: Buffer) => {
+            if (!started) {
+              started = true;
+              response.writeHead(upstream.statusCode ?? 502, headers);
+            }
+            if (bytes.length) response.write(bytes);
+          };
+          // With nothing to look for, the head goes at once, as it always has.
+          if (!minted.length) pass(Buffer.alloc(0));
           upstream.on('data', (chunk: Buffer) => {
-            const safe = redactor.feed(chunk);
-            if (safe.length) response.write(safe);
+            if (stopped) return;
+            try {
+              pass(guard.feed(redactor.feed(chunk)));
+            } catch {
+              stop();
+            }
           });
           upstream.once('end', () => {
-            response.end(redactor.end());
+            if (stopped) return;
+            try {
+              const last = Buffer.concat([guard.feed(redactor.end()), guard.end()]);
+              pass(last);
+              response.end();
+            } catch {
+              stop();
+              return;
+            }
             resolve();
           });
           upstream.once('error', () => {
@@ -527,7 +582,7 @@ function forwarder(
           context,
           outbound,
           (upstream) => {
-            void collect(upstream, redactor, max).then(
+            void collect(upstream, redactor, max, use.adapter.mintedCredentials ?? []).then(
               (response) => {
                 const withheld = check?.(response) ?? null;
                 if (withheld) context.onWithheld?.(withheld);

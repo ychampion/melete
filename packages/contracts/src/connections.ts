@@ -239,7 +239,7 @@ export function sandboxCredentialRefusal(adapter: SandboxAdapter, key: string): 
  * egress relay holds the account and adds it on the wire; the computer only
  * ever holds a placeholder.
  */
-export const COMMAND_LINE_ADAPTERS = ['github', 'aws'] as const;
+export const COMMAND_LINE_ADAPTERS = ['github', 'aws', 'gitlab', 'npm'] as const;
 export const commandLineConnectionConfig = z
   .object({
     adapter: z.enum(COMMAND_LINE_ADAPTERS),
@@ -309,6 +309,10 @@ export const CONNECTION_KIND_SCOPES = {
     'egress.github_write',
     'egress.aws_read',
     'egress.aws_write',
+    'egress.gitlab_read',
+    'egress.gitlab_write',
+    'egress.npm_read',
+    'egress.npm_write',
   ],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
@@ -1385,6 +1389,74 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
       {
         scope: 'egress.aws_write',
         label: 'Make changes (asks you each time)',
+        effect_class: 'write_external',
+        asks_first: true,
+        default: true,
+      },
+    ],
+  },
+  {
+    id: 'command_line_gitlab',
+    kind: 'command_line',
+    title: 'GitLab for the agent’s computer',
+    description:
+      'Lets git and glab in the agent’s computer use your GitLab.com account. The token stays on this server and the computer never holds it. Reads just work; every push, merge request, comment and other change asks you first. Works with the computer on this server (Docker).',
+    fixed: [
+      { path: 'provider', value: 'command_line' },
+      { path: 'command_line.adapter', value: 'gitlab' },
+    ],
+    fields: [
+      text('credentials.token', 'Personal access token', {
+        input: 'password',
+        secret: true,
+        help: 'Create one at gitlab.com/-/user_settings/personal_access_tokens with the api, read_repository and write_repository scopes, and an expiry date. A project access token keeps it to one project.',
+      }),
+    ],
+    scopes: [
+      {
+        scope: 'egress.gitlab_read',
+        label: 'Read your projects',
+        effect_class: 'read',
+        asks_first: false,
+        default: true,
+      },
+      {
+        scope: 'egress.gitlab_write',
+        label: 'Push and make changes (asks you each time)',
+        effect_class: 'write_external',
+        asks_first: true,
+        default: true,
+      },
+    ],
+  },
+  {
+    id: 'command_line_npm',
+    kind: 'command_line',
+    title: 'npm for the agent’s computer',
+    description:
+      'Lets npm in the agent’s computer use your npm account. The token stays on this server and the computer never holds it. Installs and lookups just work; every publish, unpublish, deprecation, tag, owner and access change asks you first. Works with the computer on this server (Docker).',
+    fixed: [
+      { path: 'provider', value: 'command_line' },
+      { path: 'command_line.adapter', value: 'npm' },
+    ],
+    fields: [
+      text('credentials.token', 'Granular access token', {
+        input: 'password',
+        secret: true,
+        help: 'Create one at npmjs.com under Access Tokens. Choose only the packages it needs, read and write, and an expiry date.',
+      }),
+    ],
+    scopes: [
+      {
+        scope: 'egress.npm_read',
+        label: 'Install and look up packages',
+        effect_class: 'read',
+        asks_first: false,
+        default: true,
+      },
+      {
+        scope: 'egress.npm_write',
+        label: 'Publish and change packages (asks you each time)',
         effect_class: 'write_external',
         asks_first: true,
         default: true,

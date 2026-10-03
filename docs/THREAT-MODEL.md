@@ -583,6 +583,28 @@ holds only placeholders, the egress CA's certificate and per-command tokens.
   makes it once after approval, and the computer never holds the key` runs the
   real `aws` command line in CI against a local stand-in that checks every
   signature.
+- **GitLab and npm.** A GitLab push is bound like a GitHub one, push options
+  included; GitLab reads those to open or merge a merge request or to skip a
+  pipeline, so a push that carries any is never covered by a standing rule, on
+  either service, and no GitLab or npm change is covered by one at all; the
+  card says in plain words what the options make GitLab do. A request that asks
+  to act as another GitLab user (`Sudo`, in any part of the request) and glab's
+  usage reports are refused. So is every request that would hand the computer
+  a credential of its own: GitLab token creation and rotation, runners, trigger
+  tokens, SSH and deploy keys and OAuth tokens, and npm logins, tokens and
+  token exchanges. Behind those refusals, the relay withholds any answer that
+  holds a GitLab or npm token (`a read whose answer holds a token is withheld,
+  in its body or its headers`). **Limit:** reads return what the account can
+  read, CI/CD variable values included. The publish card reads install scripts
+  from the tarball's own `package.json` and flags a mismatch with the declared
+  manifest. An npm publish is bound to its exact bytes, tarball
+  included, and its card shows the scripts that run on install; unpublishing,
+  deprecating, maintainer, tag, access, team and organisation changes ask, and the
+  audit lookups npm sends as POSTs are the only POSTs that read.
+  `every change in the glab and git corpus is classified as a write` and
+  `every change in the npm corpus is classified as a write, and installs and
+  audits read` run the classifiers over requests recorded from glab 1.120, git
+  and npm 11, and over shapes written from the protocols.
 
 ## Credentials, host and storage
 

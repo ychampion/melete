@@ -1,0 +1,47 @@
+# npm unpublish melete-demo@1.0.0
+
+### read
+GET https://registry.npmjs.org/melete-demo?write=true
+accept: application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*
+authorization: Bearer melete-proxy-adds-this
+npm-auth-type: web
+npm-command: unpublish
+pacote-pkg-id: registry:melete-demo
+pacote-req-type: packument
+pacote-version: 21.1.0
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+
+### read
+GET https://registry.npmjs.org/melete-demo?write=true
+authorization: Bearer melete-proxy-adds-this
+npm-auth-type: web
+npm-command: unpublish
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+accept: */*
+
+### write
+PUT https://registry.npmjs.org/melete-demo/-rev/3-abc
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+npm-auth-type: web
+npm-command: unpublish
+authorization: Bearer melete-proxy-adds-this
+content-type: application/json
+accept: */*
+
+{"_id":"melete-demo","_rev":"3-abc","name":"melete-demo","dist-tags":{"latest":"1.1.0"},"maintainers":[{"name":"alice","email":"a@example.com"},{"name":"bob","email":"b@example.com"}],"versions":{"1.1.0":{"name":"melete-demo","version":"1.1.0","dist":{"tarball":"https://registry.npmjs.org/melete-demo/-/x-1.1.0.tgz","shasum":"bb","integrity":"sha512-bb"}}},"time":{"1.0.0":"2026-01-01T00:00:00.000Z"}}
+
+### read
+GET https://registry.npmjs.org/melete-demo?write=true
+authorization: Bearer melete-proxy-adds-this
+npm-auth-type: web
+npm-command: unpublish
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+accept: */*
+
+### write
+DELETE https://registry.npmjs.org/melete-demo/-/x-1.0.0.tgz/-rev/3-abc
+user-agent: npm/11.9.0 node/v24.14.0 win32 x64 workspaces/false
+npm-auth-type: web
+npm-command: unpublish
+authorization: Bearer melete-proxy-adds-this
+accept: */*

@@ -1,7 +1,7 @@
 # The computer an agent works in: one container per agent, started by the
 # service's docker sandbox provider on the host's own engine. A shell with the
-# usual tools, Python, git, gh and aws, and a desktop the size of the live view
-# with a browser on it. It holds no Melete configuration, credential or client.
+# usual tools, Python, Node.js with npm, git, gh, aws and glab, and a desktop the
+# size of the live view with a browser on it. It holds no Melete configuration, credential or client.
 #
 # The base is the runtime image's own, by digest, so an engine that already
 # runs attempts has it and pulls only what the desktop adds.
@@ -67,18 +67,59 @@ RUN arch="${TARGETARCH:-amd64}" \
     && rm -rf /tmp/awscli.zip /tmp/aws \
     && aws --version
 
+# GitLab's command line, pinned the same way. A connected GitLab account
+# reaches it as a placeholder too.
+ARG GLAB_VERSION=1.120.0
+RUN arch="${TARGETARCH:-amd64}" \
+    && case "$arch" in \
+        amd64) sum=4e6c59de9f7ed2f304bf93aad01ea8f8a69584f0450ce90ad696ef81f69c69aa ;; \
+        arm64) sum=c60ebb4cb36f276714847a118845b9b4e69f46a8080c68b21ca63f158722cdea ;; \
+        *) echo "glab is pinned for amd64 and arm64 only, not $arch" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/glab.tar.gz \
+        "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${arch}.tar.gz" \
+    && echo "${sum}  /tmp/glab.tar.gz" | sha256sum -c - \
+    && mkdir /tmp/glab && tar -xzf /tmp/glab.tar.gz -C /tmp/glab \
+    && install -m 0755 /tmp/glab/bin/glab /usr/local/bin/glab \
+    && rm -rf /tmp/glab.tar.gz /tmp/glab \
+    && glab --version
+
+# Node.js with npm, the long-term-support release, pinned by version and
+# checksum. A connected npm account reaches npm as a placeholder: the global
+# settings read the registry's token from NPM_TOKEN, which only such a
+# command's environment sets.
+ARG NODE_VERSION=24.21.0
+RUN arch="${TARGETARCH:-amd64}" \
+    && case "$arch" in \
+        amd64) narch=x64; sum=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 ;; \
+        arm64) narch=arm64; sum=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2 ;; \
+        *) echo "Node.js is pinned for amd64 and arm64 only, not $arch" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/node.tar.xz \
+        "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${narch}.tar.xz" \
+    && echo "${sum}  /tmp/node.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
+        --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/include' --exclude='*/share' \
+    && rm /tmp/node.tar.xz \
+    && printf '%s\n' '//registry.npmjs.org/:_authToken=${NPM_TOKEN?}' > /usr/local/etc/npmrc \
+    && node --version && npm --version
+
 # melete-proc keeps the agent's background processes: their output ring, input
 # and exit status, on the home volume.
 COPY deploy/sandbox/melete-desktop deploy/sandbox/melete-sandbox-init deploy/sandbox/melete-proc /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/melete-desktop /usr/local/bin/melete-sandbox-init /usr/local/bin/melete-proc
 
 # The root filesystem is read-only at run time. pip falls back to installing
-# for the user, into the home volume, which keeps them across restarts.
+# for the user, and npm installs global packages, into the home volume, which
+# keeps them across restarts.
 ENV HOME=/home/agent \
     USER=agent \
     DISPLAY=:0 \
     PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    NPM_CONFIG_PREFIX=/home/agent/.local \
+    NPM_CONFIG_GLOBALCONFIG=/usr/local/etc/npmrc \
+    NPM_CONFIG_UPDATE_NOTIFIER=false \
     PYTHONUNBUFFERED=1
 
 USER 10004:10004

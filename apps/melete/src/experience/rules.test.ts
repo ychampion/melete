@@ -11,18 +11,21 @@ const B = '73cd911b5626ddbf8abd727ac93642f1825cc3e2';
 const pkt = (text: string) => `${(text.length + 4).toString(16).padStart(4, '0')}${text}`;
 
 /** The payload the broker would hold for a push of these updates, through the real classifier. */
-function push(updates: Array<[string, string, string]>): JsonObject {
+function push(updates: Array<[string, string, string]>, options: string[] = []): JsonObject {
   const lines = updates.map(([old, next, ref], index) =>
-    pkt(`${old} ${next} ${ref}${index === 0 ? '\0 report-status side-band-64k' : ''}`),
+    pkt(
+      `${old} ${next} ${ref}${index === 0 ? `\0 report-status side-band-64k${options.length ? ' push-options' : ''}` : ''}`,
+    ),
   );
   const deletesOnly = updates.every(([, next]) => next === ZERO);
+  const sent = options.length ? `0000${options.map((option) => pkt(`${option}\n`)).join('')}` : '';
   const request: InterceptedRequest = {
     host: 'github.com',
     method: 'POST',
     path: '/alice/site.git/git-receive-pack',
     query: '',
     headers: { 'content-type': 'application/x-git-receive-pack-request' },
-    body: Buffer.from(`${lines.join('')}0000${deletesOnly ? '' : 'PACK'}`),
+    body: Buffer.from(`${lines.join('')}${sent}0000${deletesOnly ? '' : 'PACK'}`),
   };
   const verdict = githubAdapter.classify(request, {});
   if (verdict.kind !== 'write') throw new Error('expected a write');
@@ -85,6 +88,21 @@ describe('which pushes a standing rule may cover', () => {
     // A look-alike prefix is not the prefix.
     expect(covered(push([[A, B, 'refs/heads/melete-x']]))).toBe(false);
     expect(covered(push([[A, B, 'refs/heads/melete/']]))).toBe(false);
+  });
+
+  test('a push with push options always asks, even to a melete branch', () => {
+    // GitLab reads these to open or merge a merge request, or to skip or vary its pipeline.
+    const withOptions = push([[ZERO, B, 'refs/heads/melete/fix-login']], ['merge_request.create']);
+    expect(withOptions.push_options).toEqual(['merge_request.create']);
+    expect(covered(withOptions)).toBe(false);
+    expect(covered(push([[A, B, 'refs/heads/melete/fix-login']], ['ci.skip']))).toBe(false);
+    // A payload that names no options at all is not taken to have none.
+    const { push_options: _left, ...unnamed } = push([[ZERO, B, 'refs/heads/melete/x']]);
+    expect(covered(unnamed)).toBe(false);
+  });
+
+  test('a GitLab push is never covered by a rule', () => {
+    expect(covered(push([[ZERO, B, 'refs/heads/melete/x']]), 'egress.gitlab_write')).toBe(false);
   });
 
   test('no other change from the computer is covered, whatever repository it names', () => {

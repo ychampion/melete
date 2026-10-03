@@ -1,0 +1,120 @@
+# Written by hand from the npm registry and CLI documentation: request shapes the recorded corpus
+# does not cover. A label is what the request does, not what is convenient.
+### read
+GET https://registry.npmjs.org/melete-demo?write=true
+accept: application/json
+
+### read
+HEAD https://registry.npmjs.org/melete-demo/-/melete-demo-1.0.0.tgz
+
+### read
+POST https://registry.npmjs.org/-/npm/v1/security/audits/quick
+content-type: application/json
+
+{"name":"app","version":"1.0.0","requires":{"melete-demo":"1.0.0"},"dependencies":{}}
+
+### write
+POST https://registry.npmjs.org/-/npm/v1/security/advisories/bulk?publish=1
+content-type: application/json
+
+{"melete-demo":["1.0.0"]}
+
+### refuse
+POST https://registry.npmjs.org/-/v1/login
+content-type: application/json
+
+{"hostname":"computer"}
+
+### refuse
+PUT https://registry.npmjs.org/-/user/org.couchdb.user:alice
+content-type: application/json
+
+{"_id":"org.couchdb.user:alice","name":"alice","password":"x","type":"user","roles":[]}
+
+### refuse
+POST https://registry.npmjs.org/-/npm/v1/tokens
+content-type: application/json
+
+{"password":"x","readonly":false,"cidr_whitelist":[]}
+
+### write
+DELETE https://registry.npmjs.org/-/npm/v1/tokens/token/abc123
+
+### write
+POST https://registry.npmjs.org/-/npm/v1/hooks/hook
+content-type: application/json
+
+{"type":"package","name":"melete-demo","endpoint":"https://example.com/hook","secret":"s"}
+
+### write
+PUT https://registry.npmjs.org/melete-demo
+content-type: application/json
+content-encoding: gzip
+
+H4sI
+
+### write
+PUT https://registry.npmjs.org/other-name
+content-type: application/json
+
+{"_id":"melete-demo","name":"melete-demo","dist-tags":{"latest":"9.0.0"},"versions":{"9.0.0":{"name":"melete-demo","version":"9.0.0"}},"_attachments":{"melete-demo-9.0.0.tgz":{"content_type":"application/octet-stream","data":"AAAA","length":3}}}
+
+### write
+PUT https://registry.npmjs.org/%2e%2e/melete-demo
+content-type: application/json
+
+{"name":"melete-demo"}
+
+### write
+PUT https://registry.npmjs.org/@alice/tool
+content-type: application/json
+
+{"_id":"@alice/tool","name":"@alice/tool","dist-tags":{"latest":"0.3.0"},"versions":{"0.3.0":{"name":"@alice/tool","version":"0.3.0","scripts":{"postinstall":"node setup.js"}}},"access":"public","_attachments":{"@alice/tool-0.3.0.tgz":{"content_type":"application/octet-stream","data":"AAAA","length":3}}}
+
+### write
+PUT https://registry.npmjs.org/melete-demo/-rev/3-abc
+content-type: application/json
+
+{"_id":"melete-demo","_rev":"3-abc","name":"melete-demo","versions":{},"maintainers":[{"name":"mallory"}]}
+
+### write
+DELETE https://registry.npmjs.org/-/package/melete-demo/dist-tags/latest
+
+### write
+PUT https://registry.npmjs.org/-/package/melete-demo/dist-tags/latest
+content-type: application/json
+
+{"version":"1.0.0"}
+
+### write
+POST https://registry.npmjs.org/-/package/melete-demo/access
+content-type: application/json
+
+{"publish_requires_tfa":false}
+
+### write
+DELETE https://registry.npmjs.org/-/org/alice/user
+content-type: application/json
+
+{"user":"bob"}
+
+### write
+PATCH https://registry.npmjs.org/melete-demo
+content-type: application/json
+
+{"deprecated":"x"}
+
+### refuse
+GET https://registry.npmjs.org/-/v1/done?sessionId=abc123
+
+### refuse
+POST https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/melete-demo
+
+### refuse
+POST https://registry.npmjs.org/-/npm/v1/%74okens
+content-type: application/json
+
+{"password":"x","readonly":false}
+
+### read
+GET https://registry.npmjs.org/-/npm/v1/tokens

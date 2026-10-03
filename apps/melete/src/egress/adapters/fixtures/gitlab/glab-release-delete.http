@@ -1,0 +1,22 @@
+# glab release delete v1.0.0 -R alice/site --yes
+
+### read
+GET https://gitlab.com/api/v4/projects/alice%2Fsite/releases/v1%2E0%2E0
+user-agent: glab/v1.120.0 (windows, amd64)
+accept: application/json
+private-token: melete-proxy-adds-this
+
+### write
+DELETE https://gitlab.com/api/v4/projects/alice%2Fsite/releases/v1%2E0%2E0
+user-agent: glab/v1.120.0 (windows, amd64)
+accept: application/json
+private-token: melete-proxy-adds-this
+
+### refuse
+POST https://gitlab.com/api/v4/usage_data/track_event
+user-agent: glab/v1.120.0 (windows, amd64)
+accept: application/json
+content-type: application/json
+private-token: melete-proxy-adds-this
+
+{"event":"gitlab_cli_command_used","send_to_snowplow":true,"project_path":"alice/site","additional_properties":{"architecture":"amd64","cli_version":"v1.120.0","command_and_subcommand":"release delete","label":"release","platform":"windows","property":"delete"}}

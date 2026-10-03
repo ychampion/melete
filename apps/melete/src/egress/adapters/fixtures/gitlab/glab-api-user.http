@@ -1,0 +1,15 @@
+# glab api user
+
+### read
+GET https://gitlab.com/api/v4/user
+user-agent: glab/v1.120.0 (windows, amd64)
+private-token: melete-proxy-adds-this
+
+### refuse
+POST https://gitlab.com/api/v4/usage_data/track_event
+user-agent: glab/v1.120.0 (windows, amd64)
+accept: application/json
+content-type: application/json
+private-token: melete-proxy-adds-this
+
+{"event":"gitlab_cli_command_used","send_to_snowplow":true,"additional_properties":{"api_endpoint":"/user","architecture":"amd64","cli_version":"v1.120.0","command_and_subcommand":"api","http_method":"GET","label":"api","platform":"windows","property":""}}

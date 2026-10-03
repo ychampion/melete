@@ -9,8 +9,12 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { createDeviceConnector } from '../devices/connector.ts';
 import type { DeviceHub } from '../devices/hub.ts';
+import {
+  COMMAND_LINE_SERVICE,
+  type CommandLineCheckOptions,
+  commandLineAccount,
+} from '../egress/adapters/accounts.ts';
 import { awsAccount, awsAdapterConfig } from '../egress/adapters/aws.ts';
-import { githubAccount } from '../egress/adapters/github.ts';
 import { credentialAdapters } from '../egress/adapters/index.ts';
 import { parseAwsSecret, type StsOptions } from '../egress/aws-session.ts';
 import { createCommandLineConnector } from '../egress/connector.ts';
@@ -220,7 +224,7 @@ export type ConnectorOptions = {
   /** The operator's Microsoft client, as for Google; `tenant` is `common` unless named. */
   microsoft?: { client: AccountClient; tenant?: string; endpoints?: MicrosoftEndpoints };
   /** Where a command-line account's own check goes. Only a test replaces it. */
-  commandLine?: { fetch?: typeof fetch; githubApi?: string; awsSts?: StsOptions };
+  commandLine?: CommandLineCheckOptions & { awsSts?: StsOptions };
 };
 
 /**
@@ -463,23 +467,25 @@ export class ConnectorFactory {
       const offered = credentialAdapters({ test: options.enableTestConnector === true });
       if (typeof adapter !== 'string' || !offered.has(adapter as never)) return undefined;
       const secretRef = row.secretRef;
-      // A GitHub account is checked by asking GitHub whose token it is.
+      // An account is checked by asking its service whose token it is.
+      const service =
+        adapter in COMMAND_LINE_SERVICE ? (adapter as keyof typeof COMMAND_LINE_SERVICE) : null;
       const health =
-        adapter === 'github' && secretRef
+        service && secretRef
           ? async (): Promise<ConnectorHealth> => {
               const checked = await this.secrets.withSecret(secretRef, row.spaceId, (token) =>
-                githubAccount(token, {
-                  ...(options.commandLine?.fetch ? { fetch: options.commandLine.fetch } : {}),
-                  ...(options.commandLine?.githubApi ? { api: options.commandLine.githubApi } : {}),
+                commandLineAccount(service, token, {
+                  ...options.commandLine,
                   signal: AbortSignal.timeout(20_000),
                 }),
               );
               const checkedAt = new Date().toISOString();
+              const name = COMMAND_LINE_SERVICE[service];
               return checked.ok
-                ? { status: 'ok', detail: 'GitHub answered.', checked_at: checkedAt }
+                ? { status: 'ok', detail: `${name} answered.`, checked_at: checkedAt }
                 : {
                     status: 'failing',
-                    detail: 'GitHub did not answer for this account.',
+                    detail: `${name} did not answer for this account.`,
                     checked_at: checkedAt,
                     ...(checked.code === 'credential_refused'
                       ? { reason: 'credential_refused' as const }

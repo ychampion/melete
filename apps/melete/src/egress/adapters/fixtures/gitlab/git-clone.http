@@ -1,0 +1,25 @@
+# git clone https://gitlab.com/alice/site.git
+
+### read
+GET https://gitlab.com/alice/site.git/info/refs?service=git-upload-pack
+user-agent: git/2.53.0
+accept: */*
+git-protocol: version=2
+
+### read base64
+POST https://gitlab.com/alice/site.git/git-upload-pack
+user-agent: git/2.53.0
+accept: application/x-git-upload-pack-result
+content-type: application/x-git-upload-pack-request
+git-protocol: version=2
+
+MDAxNGNvbW1hbmQ9bHMtcmVmcwowMDI2YWdlbnQ9Z2l0LzIuNTMuMC53aW5kb3dzLjItV2luZG93czAwMTZvYmplY3QtZm9ybWF0PXNoYTEwMDAxMDAwOXBlZWwKMDAwY3N5bXJlZnMKMDAwYnVuYm9ybgowMDFicmVmLXByZWZpeCByZWZzL2hlYWRzLwowMDFhcmVmLXByZWZpeCByZWZzL3RhZ3MvCjAwMTRyZWYtcHJlZml4IEhFQUQKMDAwMA==
+
+### read base64
+POST https://gitlab.com/alice/site.git/git-upload-pack
+user-agent: git/2.53.0
+accept: application/x-git-upload-pack-result
+content-type: application/x-git-upload-pack-request
+git-protocol: version=2
+
+MDAxMWNvbW1hbmQ9ZmV0Y2gwMDI2YWdlbnQ9Z2l0LzIuNTMuMC53aW5kb3dzLjItV2luZG93czAwMTZvYmplY3QtZm9ybWF0PXNoYTEwMDAxMDAwZHRoaW4tcGFjazAwMGZuby1wcm9ncmVzczAwMGRvZnMtZGVsdGEwMDMyd2FudCA5Mzk4MTc3YzcyMzhiZTE3NzE2YmY5NDUwZDgyYWNlNDgxYzYxZDM0CjAwMzJ3YW50IDkzOTgxNzdjNzIzOGJlMTc3MTZiZjk0NTBkODJhY2U0ODFjNjFkMzQKMDAwOWRvbmUKMDAwMA==
