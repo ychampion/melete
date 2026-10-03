@@ -16,6 +16,7 @@ import {
 } from './experience/hooks.ts';
 import { onboardedProfile } from './experience/profile.ts';
 import type { Agent, Capabilities, Conversation } from './experience/types.ts';
+import { RoomsRoute } from './rooms/RoomsScreen.tsx';
 import { navigate, useRoute } from './router.ts';
 import { AgentsScreen } from './screens/Agents.tsx';
 import { AutomationsScreen } from './screens/Automations.tsx';
@@ -318,6 +319,8 @@ export function App() {
     screen = <AgentsScreen selected={second ?? null} />;
   } else if (head === 'plans') {
     screen = <PlansScreen selected={second ?? null} />;
+  } else if (head === 'rooms') {
+    screen = <RoomsRoute parts={route.parts} />;
   } else if (head === 'companies') {
     screen = <CompaniesScreen />;
   } else if (head === 'runs') {

@@ -114,6 +114,7 @@ const NAV: { icon: IconName; label: string; path: string; match: (path: string) 
   },
   { icon: 'plans', label: 'Plans', path: '/plans', match: (p) => p.startsWith('/plans') },
   { icon: 'progress', label: 'Work', path: '/runs', match: (p) => p.startsWith('/runs') },
+  { icon: 'users', label: 'Rooms', path: '/rooms', match: (p) => p.startsWith('/rooms') },
   { icon: 'smile', label: 'Agents', path: '/agents', match: (p) => p.startsWith('/agents') },
   {
     icon: 'bookmark',

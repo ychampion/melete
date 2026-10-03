@@ -78,6 +78,7 @@ import { mountLearnedMock } from './learned.ts';
 import { mountModelsMock } from './models.ts';
 import { mountPrivacyMock } from './privacy.ts';
 import { mountPushMock } from './push.ts';
+import { mountRoomsMock } from './rooms.ts';
 import type { Runner } from './runner.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { MockConflict, newId, type Store } from './store.ts';
@@ -276,6 +277,12 @@ export function createMockApp(deps: AppDeps) {
   });
 
   mountFeedbackMock(app, deps, () => account?.email ?? null);
+  const roomsMock = mountRoomsMock(app, deps, {
+    account: () => account,
+    signedOut: () => experience.signedOut,
+    profileName: () => experience.profile.name,
+  });
+  if (deps.seedExperience) roomsMock.seed();
 
   // ------------------------------------------------------------------
   // health, spaces
