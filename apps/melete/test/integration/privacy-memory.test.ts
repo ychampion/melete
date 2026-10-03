@@ -461,6 +461,19 @@ withDb('the agent is told when a private message will not be kept', () => {
       await router.store.updateConversation(finances, scope.spaceId, { consent: 'allowed' });
       expect(await objectiveFor(finances)).toContain(NOT_REMEMBERED_NOTE);
 
+      // 3b. The live order: the person writes, agrees to a redacted version, and
+      //     the turn starts before memory has read the message. Memory then reads
+      //     it under that agreement and keeps it, so the turn is not told otherwise.
+      const budget = await conversation(scope);
+      await router.store.updateConversation(budget, scope.spaceId, { sensitive: 'finance' });
+      await say(db, budget, 'Remember that I prefer an aisle seat on long flights.');
+      await router.store.updateConversation(budget, scope.spaceId, { consent: 'allowed' });
+      expect(await objectiveFor(budget)).not.toContain(NOT_REMEMBERED_NOTE);
+      await readByMemory();
+      expect(await workFor('Remember that I prefer an aisle seat on long flights.')).toMatchObject({
+        status: 'done',
+      });
+
       // 4. An ordinary conversation is never told.
       const ordinary = await conversation(scope);
       await say(db, ordinary, 'Remember that I like a window seat on trains.');
