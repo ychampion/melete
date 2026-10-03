@@ -239,9 +239,9 @@ has two grants: installing and looking up packages, and publishing and
 changing packages, which asks each time.
 
 The computer has Node.js 24 with npm (pinned by checksum in the image). Each
-command gets npm's own setting for the registry's token,
-`npm_config_//registry.npmjs.org/:_authToken`, set to a placeholder, and the
-relay sends the token as a bearer token.
+command gets `NPM_TOKEN` set to a placeholder, which the computer's global npm
+settings name as the registry's token, and the relay sends the token as a
+bearer token.
 
 | Host | What goes through it |
 | --- | --- |

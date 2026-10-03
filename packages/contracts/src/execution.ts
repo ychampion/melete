@@ -63,8 +63,7 @@ export const EXEC_ENV_NAMES = [
   'GIT_TERMINAL_PROMPT',
   'GIT_HTTP_PROXY_AUTHMETHOD',
   'GITLAB_TOKEN',
-  // npm reads a registry's token from this setting; the name is npm's own.
-  'npm_config_//registry.npmjs.org/:_authToken',
+  'NPM_TOKEN',
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
   'AWS_REGION',

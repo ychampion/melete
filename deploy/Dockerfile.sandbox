@@ -67,7 +67,9 @@ RUN arch="${TARGETARCH:-amd64}" \
     && glab --version
 
 # Node.js with npm, the long-term-support release, pinned by version and
-# checksum. A connected npm account reaches npm as a placeholder.
+# checksum. A connected npm account reaches npm as a placeholder: the global
+# settings read the registry's token from NPM_TOKEN, which only such a
+# command's environment sets.
 ARG NODE_VERSION=24.21.0
 RUN arch="${TARGETARCH:-amd64}" \
     && case "$arch" in \
@@ -81,6 +83,7 @@ RUN arch="${TARGETARCH:-amd64}" \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
         --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/include' --exclude='*/share' \
     && rm /tmp/node.tar.xz \
+    && printf '%s\n' '//registry.npmjs.org/:_authToken=${NPM_TOKEN?}' > /usr/local/etc/npmrc \
     && node --version && npm --version
 
 COPY deploy/sandbox/melete-desktop deploy/sandbox/melete-sandbox-init /usr/local/bin/
@@ -95,6 +98,7 @@ ENV HOME=/home/agent \
     PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     NPM_CONFIG_PREFIX=/home/agent/.local \
+    NPM_CONFIG_GLOBALCONFIG=/usr/local/etc/npmrc \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
     PYTHONUNBUFFERED=1
 

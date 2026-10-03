@@ -22,7 +22,7 @@ import { SandboxEgressGuard } from '../../sandbox/adapters/docker-egress.ts';
 import { memoryCredentialPort } from '../fixtures.ts';
 import { type GitRequestSeen, gitSmartHttp } from '../git-fixture.ts';
 import { gitlabAdapter } from './gitlab.ts';
-import { NPM_TOKEN_ENV, NPM_TOKEN_PLACEHOLDER, npmAdapter } from './npm.ts';
+import { NPM_RC_LINE, NPM_TOKEN_ENV, NPM_TOKEN_PLACEHOLDER, npmAdapter } from './npm.ts';
 import type { CredentialAdapter } from './types.ts';
 
 const run = promisify(execFile);
@@ -285,6 +285,8 @@ describe.skipIf(!npm)('npm through the relay to the registry', () => {
       await mkdir(pkg, { recursive: true });
       await mkdir(app, { recursive: true });
       await writeFile(path.join(dir, 'npmrc'), '');
+      // The computer's global settings, as the image has them.
+      await writeFile(path.join(dir, 'global-npmrc'), `${NPM_RC_LINE}\n`);
       await writeFile(
         path.join(pkg, 'package.json'),
         JSON.stringify({ name: 'melete-demo', version: '1.0.0', main: 'index.js', license: 'MIT' }),
@@ -309,6 +311,7 @@ describe.skipIf(!npm)('npm through the relay to the registry', () => {
         NODE_EXTRA_CA_CERTS: caFile,
         [NPM_TOKEN_ENV]: NPM_TOKEN_PLACEHOLDER,
         npm_config_userconfig: path.join(dir, 'npmrc'),
+        npm_config_globalconfig: path.join(dir, 'global-npmrc'),
         npm_config_cache: path.join(dir, 'cache'),
         npm_config_update_notifier: 'false',
         npm_config_fund: 'false',

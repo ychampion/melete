@@ -115,7 +115,10 @@ describe('the npm classifier on recorded npm requests', () => {
     expect(
       writes('npm-unpublish-version.http').map((w) => [w.summary.title, w.destructive]),
     ).toEqual([
-      ['Change melete-demo on npm (versions kept: 1.1.0; maintainers: alice, bob; tags; time)', true],
+      [
+        'Change melete-demo on npm (versions kept: 1.1.0; maintainers: alice, bob; tags; time)',
+        true,
+      ],
       ['Delete the tarball x-1.0.0.tgz of melete-demo from npm', true],
     ]);
     expect(writes('npm-unpublish-all.http').map((w) => w.summary.title)).toEqual([

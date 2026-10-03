@@ -35,11 +35,16 @@ export const NPM_REGISTRY_HOST = 'registry.npmjs.org';
 /** What the computer's commands see in place of the token. */
 export const NPM_TOKEN_PLACEHOLDER = 'melete-proxy-adds-this';
 /**
- * The setting npm reads its token for the public registry from, as an
- * environment variable: npm takes `npm_config_` settings from the
- * environment, and keeps a registry-scoped name exactly as written.
+ * Where the placeholder reaches npm: the computer's global npm settings name
+ * the public registry's token as this variable (`NPM_RC_LINE`), so npm sends
+ * it, and the relay puts the account in its place. A registry-scoped setting
+ * cannot travel as an environment variable itself: its name is not one a
+ * shell passes on.
  */
-export const NPM_TOKEN_ENV = 'npm_config_//registry.npmjs.org/:_authToken';
+export const NPM_TOKEN_ENV = 'NPM_TOKEN';
+/** The line of the computer's global npmrc that reads the token from `NPM_TOKEN`, when set. */
+// biome-ignore lint/suspicious/noTemplateCurlyInString: npm expands it when it reads the file.
+export const NPM_RC_LINE = '//registry.npmjs.org/:_authToken=${NPM_TOKEN?}';
 
 /** The configuration an npm account keeps beside its sealed token: nothing yet. */
 export const npmAdapterConfig = z.strictObject({});
