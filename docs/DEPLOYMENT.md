@@ -130,6 +130,90 @@ Outlook.com accepts only its own sign-in: with your own Microsoft app set in
 calendar connect by signing in with Microsoft
 ([setup](mail-calendar.md#setting-up-your-microsoft-app)).
 
+## The melete command
+
+`bun run melete` looks after an installation from its checkout. Each command
+that judges something prints one line per rule, keyed by a stable id such as
+`disk.free_mb` or `env.master_key`, with what to do next under any rule that is
+not met. `--json` prints the same results as one JSON object for a program
+driving the command; `packages/cli/src/schema.ts` describes its shape.
+
+```bash
+bun run melete init            # configure.ts, then deploy/melete.deploy.json
+bun run melete init --adopt    # describe an installation that is already running
+bun run melete check           # the files alone: no Docker, no network
+bun run melete doctor          # this machine: Docker, disk in MB, memory, ports, images, registry
+bun run melete status          # the running installation, as status.ts reports it
+bun run melete set MELETE_PUBLIC_URL=https://melete.example.net
+bun run melete logs melete --since 1h
+```
+
+| Command | What it does |
+|---|---|
+| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. |
+| `init --adopt` | Reads the project's containers from the engine (the image the service runs, the overlay files Compose was given, the sandbox profile) and writes `deploy/melete.deploy.json` from them. Only that file is written. |
+| `check` | Validates `deploy/melete.deploy.json`, `deploy/.env` against the service's own settings schema with the values Compose would pass it, every variable a Compose file requires, the published ports, the image tag and registry, and the Compose boundary checks. |
+| `doctor [--offline]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. `--offline` skips the registry. |
+| `status` | The report `deploy/scripts/status.ts` prints, run with the deploy file's overlay files and profiles, with `disk.min_free_mb` as its disk floor. |
+| `set NAME=value ...` | Changes settings in `deploy/.env` in place. A key is taken only from the environment, with `--from-env NAME`, and is never printed. Setting `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY` or `COMPOSE_PROJECT_NAME` updates `deploy/melete.deploy.json` to match. |
+| `logs [service ...]` | `docker compose logs` with the deploy file's overlay files; takes `--since`, `--tail`, `--follow` and `--timestamps`. |
+
+`--deploy-dir <checkout>/deploy` runs a command against another checkout's
+deployment directory. The exit code says what happened: 0 done or every check
+passed, 1 a check failed, 2 refused with nothing changed, 3 acted but did not
+finish, with the next step printed. `init` and `set` hold a lock,
+`deploy/.melete/lock`, so two of them never write at once; a lock left by a
+process that has ended is taken over.
+
+### The deploy file
+
+`deploy/melete.deploy.json` records what an installation is beyond what
+`deploy/.env` says. It holds no secret, so it can be kept in a repository; the
+keys stay in `deploy/.env`. Every key has a default, so `{"contract": 1}` is a
+complete file, and `init` writes each one out:
+
+```json
+{
+  "contract": 1,
+  "project": "melete",
+  "images": { "registry": "ghcr.io/ychampion", "tag": "main", "channel": "main" },
+  "profiles": [],
+  "overlays": [],
+  "disk": { "min_free_mb": 4096, "pull_margin_mb": 512 },
+  "backup": { "dir": "~/melete-backups", "keep": 3 },
+  "public_ports": false,
+  "database": { "external": false },
+  "blobs": { "store": "local" },
+  "cells": { "hosts": [] }
+}
+```
+
+- `project` is `COMPOSE_PROJECT_NAME`. `images.tag` is `MELETE_IMAGE_TAG`, and
+  `images.registry` is `MELETE_IMAGE_REGISTRY` or its default. Images built on
+  the machine are `"registry": null, "tag": "local", "channel": "local"`;
+  `channel` is `main` for `main` or a commit's short sha and `release` for a
+  release tag. `check` fails when `deploy/.env` runs something else, or names
+  the `local` tag while a registry is set.
+- `profiles` takes `sandbox`; `overlays` takes `browser`, `tailscale` and
+  `tailscale-kernel` (with `tailscale`), which add their `docker-compose.*.yml`
+  files to every Compose command in that order.
+- `disk.min_free_mb` is the free space, in MB, below which `doctor` and
+  `status` report the machine short of disk. A small host sets its own, below
+  1 GB if it must. `pull_margin_mb` is the room an update keeps beyond the
+  images it pulls.
+- `backup.dir` is where backups are written, and `backup.keep` how many are
+  kept there.
+- `blobs.store` is `local`, or `s3` with a non-secret `endpoint`, `bucket` and
+  optional `region`; the storage keys stay in `deploy/.env`.
+- `public_ports: false` keeps every published port on `127.0.0.1`; `check`
+  fails on any other address unless it is `true`.
+- `database.external` and `cells.hosts` describe a database and container
+  hosts on other machines; `check` fails while the checkout has no
+  `deploy/docker-compose.external-db.yml` or `deploy/docker-compose.cells.yml`
+  to run them with.
+- A contract number the command does not know, or a key it does not know, is
+  refused rather than guessed at.
+
 ## Using prebuilt images
 
 Every push to `main` builds the four Melete images in GitHub Actions and
