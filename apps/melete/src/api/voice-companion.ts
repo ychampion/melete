@@ -37,7 +37,18 @@ import {
   serviceModelSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
-import { type GatewayBudget, GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
+import {
+  replyOf,
+  type StructuredFormat,
+  strictObject,
+  withStructuredOutput,
+} from '../gateway/structured.ts';
+import {
+  type GatewayBudget,
+  GatewayError,
+  type GatewayPrincipal,
+  type GatewayProtocol,
+} from '../gateway/types.ts';
 
 export const COMPANION_LIMITS = {
   /** One aside is one call: a short answer, never a second opinion. */
@@ -140,23 +151,41 @@ export function companionInput(request: VoiceAsideRequest, context: CompanionCon
   });
 }
 
-/** The request body for the target's protocol. There is no tool in it, and no way to add one. */
+/**
+ * The aside's schema, for providers that hold an answer to one: the intent and
+ * the words to say. A provider without structured outputs is asked in prose,
+ * and `parseCompanionReply` reads whatever comes back.
+ */
+export const COMPANION_FORMAT: StructuredFormat = {
+  name: 'voice_aside',
+  schema: strictObject({
+    intent: { type: 'string', enum: ['talk', 'steer', 'stop', 'quiet'] },
+    say: { type: 'string' },
+  }),
+};
+
+/**
+ * The request body for the target's protocol, with the aside's schema where the
+ * provider reads one. There is no tool in it, and no way to add one.
+ */
 export function companionBody(target: ServiceModel, system: string, input: string) {
   const messages = [
     { role: 'system', content: system },
     { role: 'user', content: input },
   ];
   const protocol = protocolForApiMode(modelApiMode(target.provider, target.model));
-  return protocol === 'responses'
-    ? { model: target.model, input: messages, max_output_tokens: COMPANION_LIMITS.output_tokens }
-    : protocol === 'messages'
-      ? {
-          model: target.model,
-          system,
-          messages: [messages[1]],
-          max_tokens: COMPANION_LIMITS.output_tokens,
-        }
-      : { model: target.model, messages, max_tokens: COMPANION_LIMITS.output_tokens };
+  const plain: Record<string, unknown> =
+    protocol === 'responses'
+      ? { model: target.model, input: messages, max_output_tokens: COMPANION_LIMITS.output_tokens }
+      : protocol === 'messages'
+        ? {
+            model: target.model,
+            system,
+            messages: [messages[1]],
+            max_tokens: COMPANION_LIMITS.output_tokens,
+          }
+        : { model: target.model, messages, max_tokens: COMPANION_LIMITS.output_tokens };
+  return withStructuredOutput(plain, target, protocol, COMPANION_FORMAT);
 }
 
 const reply = z.object({
@@ -254,39 +283,19 @@ export function withoutClaims(text: string): string {
   return kept.filter(Boolean).join(' ');
 }
 
-const responsesReply = z.object({
-  output: z.array(
-    z.object({
-      type: z.string(),
-      content: z.array(z.object({ type: z.string(), text: z.string().optional() })).optional(),
-    }),
-  ),
-});
-const messagesReply = z.object({
-  content: z.array(z.object({ type: z.string(), text: z.string().optional() })),
-});
-const chatReply = z.object({
-  choices: z
-    .array(z.object({ message: z.object({ content: z.string().nullable().optional() }) }))
-    .min(1),
-});
-
 /** Only the text of a reply is read. A tool call in it, if a model made one, is ignored. */
-export function replyText(protocol: string, result: unknown): string {
-  if (protocol === 'responses')
-    return responsesReply
-      .parse(result)
-      .output.flatMap((item) => item.content ?? [])
-      .filter((item) => item.type === 'output_text')
-      .map((item) => item.text ?? '')
-      .join('');
-  if (protocol === 'messages')
-    return messagesReply
-      .parse(result)
-      .content.filter((item) => item.type === 'text')
-      .map((item) => item.text ?? '')
-      .join('');
-  return chatReply.parse(result).choices[0]?.message.content ?? '';
+export function replyText(protocol: GatewayProtocol, result: unknown): string {
+  return replyOf(protocol, result).text;
+}
+
+/**
+ * What a provider's reply means. One cut off at the output limit is never read
+ * out, even when what arrived parses: what it meant to say cannot be told.
+ */
+export function readCompanionReply(protocol: GatewayProtocol, result: unknown): VoiceAside {
+  const reply = replyOf(protocol, result);
+  if (reply.end === 'cut_off') return { intent: 'talk', say: CUT_OFF_LINE };
+  return parseCompanionReply(reply.text);
 }
 
 export type CompanionGatewayOptions = {
@@ -392,7 +401,7 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
           signal: call.signal ? AbortSignal.any([call.signal, timeout]) : timeout,
         });
         if (!response.ok) return { failed: 'refused' };
-        return { answer: parseCompanionReply(replyText(protocol, await response.json())) };
+        return { answer: readCompanionReply(protocol, await response.json()) };
       } catch {
         return { failed: 'unanswered' };
       } finally {

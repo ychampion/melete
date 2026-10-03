@@ -6346,7 +6346,7 @@ export interface paths {
                             database: "ok" | "unreachable" | "not_configured";
                             memory?: {
                                 failed: number;
-                                failed_reason: ("provider_auth" | "provider_refused" | "provider_unavailable" | "provider_slow" | "daily_budget" | "unreadable_answer" | "too_large" | "no_memory_model" | "other") | null;
+                                failed_reason: ("provider_auth" | "provider_refused" | "provider_unavailable" | "provider_slow" | "daily_budget" | "unreadable_answer" | "answer_cut_off" | "answer_refused" | "too_large" | "no_memory_model" | "other") | null;
                                 reason: ("provider_unavailable" | "provider_slow" | "daily_budget") | null;
                                 /** @enum {string} */
                                 status: "ok" | "waiting";

@@ -28,6 +28,10 @@ const STRUCTURAL = new Set([
   'signature',
   'encrypted_content',
   'stream',
+  // The answer's schema is the service's own, never the person's words.
+  'response_format',
+  'output_config',
+  'format',
   'stream_options',
   'tool_choice',
   'parallel_tool_calls',

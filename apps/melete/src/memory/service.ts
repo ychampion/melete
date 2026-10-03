@@ -117,8 +117,9 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
         'extraction_provider_refused',
         'extraction_provider_auth',
         'extraction_kept_private',
+        'extraction_answer_refused',
       ].includes(code) ||
-      (code === 'extraction_unreadable' && batch.work.fence >= 2)
+      (['extraction_unreadable', 'extraction_cut_off'].includes(code) && batch.work.fence >= 2)
     ) {
       await options.sql.begin(async (tx) => {
         await lockSpace(tx, scope);

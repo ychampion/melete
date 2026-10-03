@@ -8,7 +8,6 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import { z } from 'zod';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
@@ -20,27 +19,13 @@ import {
   serviceModelSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
+import { replyOf, StructuredAnswerError, withStructuredOutput } from '../gateway/structured.ts';
 import { type GatewayBudget, GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
 import { MemoryError, type MemorySql } from './db.ts';
 import type { ExtractionCall, ExtractionGateway } from './extract.ts';
 import { EXTRACTION_LIMITS } from './work.ts';
 
 const INPUT_TOKENS = 12_000;
-
-const responsesReply = z.object({
-  output: z.array(
-    z.object({
-      type: z.string(),
-      content: z.array(z.object({ type: z.string(), text: z.string() })).optional(),
-    }),
-  ),
-});
-const messagesReply = z.object({
-  content: z.array(z.object({ type: z.string(), text: z.string().optional() })),
-});
-const chatReply = z.object({
-  choices: z.array(z.object({ message: z.object({ content: z.string() }) })).min(1),
-});
 
 /**
  * What asks a provider's chat models to answer without reasoning first.
@@ -157,7 +142,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   const gateway: ExtractionGateway = {
-    async chat({ messages, max_tokens, signal }, call) {
+    async chat({ messages, max_tokens, signal, format }, call) {
       if (!call) throw new MemoryError('extraction_call_unattributed');
       // The model is read for each call, so one connected in the app applies at once.
       const target = options.source
@@ -165,7 +150,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
         : { provider: options.provider, model: options.model };
       const protocol = protocolForApiMode(modelApiMode(target.provider, target.model));
       const system = messages.find((message) => message.role === 'system')?.content ?? '';
-      const body =
+      const plain: Record<string, unknown> =
         protocol === 'responses'
           ? { model: target.model, input: messages, max_output_tokens: max_tokens }
           : protocol === 'messages'
@@ -176,6 +161,8 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
                 max_tokens,
               }
             : { model: target.model, messages, max_tokens };
+      // The schema goes where the provider reads one; elsewhere the prompt asks.
+      const body = format ? withStructuredOutput(plain, target, protocol, format) : plain;
       const direct = protocol === 'chat/completions' ? ANSWER_DIRECTLY[target.provider] : undefined;
       // Each request is its own capability, so a second ask is a second read.
       const ask = async (extra: Record<string, unknown> | undefined) => {
@@ -210,21 +197,18 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
       let reply = await ask(direct);
       if (!reply.ok && direct && reply.provider === 400) reply = await ask(undefined);
       if (!reply.ok) throw new MemoryError(failureCode(reply.status, reply.text, reply.provider));
-      const result = reply.result;
-      return protocol === 'responses'
-        ? responsesReply
-            .parse(result)
-            .output.flatMap((item) => item.content ?? [])
-            .filter((item) => item.type === 'output_text')
-            .map((item) => item.text)
-            .join('')
-        : protocol === 'messages'
-          ? messagesReply
-              .parse(result)
-              .content.filter((item) => item.type === 'text')
-              .map((item) => item.text ?? '')
-              .join('')
-          : (chatReply.parse(result).choices[0]?.message.content ?? '');
+      let answer: ReturnType<typeof replyOf>;
+      try {
+        answer = replyOf(protocol, reply.result);
+      } catch (error) {
+        if (error instanceof StructuredAnswerError) throw new MemoryError('extraction_unreadable');
+        throw error;
+      }
+      // A document cut off at the output limit can still parse as a shorter
+      // one, so it is never read; a refusal is not an answer to read either.
+      if (answer.end === 'cut_off') throw new MemoryError('extraction_cut_off');
+      if (answer.end === 'refused') throw new MemoryError('extraction_answer_refused');
+      return answer.text;
     },
   };
   return {
