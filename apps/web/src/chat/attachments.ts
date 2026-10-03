@@ -1,7 +1,8 @@
 /**
  * Files in the message box: chosen with the paperclip, dropped on the box or
  * pasted into it. Each is checked here first (what kind it is, how large) so a
- * refusal is a plain sentence at once, then uploaded on its own; the message
+ * refusal is a plain sentence at once, then uploaded on its own, no more at
+ * once than the service takes (the rest wait their turn); the message
  * names the uploaded files when it is sent. A picture also gets a small copy,
  * made here, which is what a model that reads pictures is shown.
  */
@@ -135,6 +136,37 @@ export async function removeAttachment(id: string): Promise<void> {
   }
 }
 
+/**
+ * Runs the tasks given to it, at most `limit` at a time, in the order given;
+ * the rest wait for a place. Shared by every box on the page, since the
+ * service counts one person's uploads, not one box's.
+ */
+export function queueOf(limit: number) {
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  const next = () => {
+    if (running >= limit) return;
+    const start = waiting.shift();
+    if (!start) return;
+    running++;
+    start();
+  };
+  return <T>(task: () => Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      waiting.push(() => {
+        task()
+          .then(resolve, reject)
+          .finally(() => {
+            running--;
+            next();
+          });
+      });
+      next();
+    });
+}
+
+const queued = queueOf(ATTACHMENT_LIMITS.uploads_at_once);
+
 let counter = 0;
 
 /** The files in one message box, as they upload. */
@@ -143,6 +175,8 @@ export function useAttachments() {
   const [problem, setProblem] = useState<string | null>(null);
   const live = useRef(files);
   live.current = files;
+  /** Files taken out of the box; one still waiting or uploading is then let go. */
+  const gone = useRef(new Set<string>());
 
   // Local pictures are let go when the box goes.
   useEffect(
@@ -190,11 +224,16 @@ export function useAttachments() {
       setProblem(problems[0] ?? null);
       if (!accepted.length) return;
       setFiles((current) => [...current, ...accepted.map((entry) => entry.pending)]);
+      const kept = (key: string) => !gone.current.has(key);
       for (const { file, pending } of accepted)
         void (async () => {
           const preview = pending.kind === 'image' ? await modelCopy(file) : null;
-          const result = await uploadAttachment(file, preview);
-          if (!live.current.some((entry) => entry.key === pending.key)) {
+          // A file taken out while it waited is never sent.
+          const result = await queued(async () =>
+            kept(pending.key) ? uploadAttachment(file, preview) : null,
+          );
+          if (!result) return;
+          if (!kept(pending.key)) {
             // Removed while it uploaded.
             if (result.data) void removeAttachment(result.data.id);
             return;
@@ -209,6 +248,7 @@ export function useAttachments() {
   const remove = useCallback((key: string) => {
     const file = live.current.find((entry) => entry.key === key);
     if (!file) return;
+    gone.current.add(key);
     if (file.thumb) URL.revokeObjectURL(file.thumb);
     if (file.view) void removeAttachment(file.view.id);
     setFiles((current) => current.filter((entry) => entry.key !== key));

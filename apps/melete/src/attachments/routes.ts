@@ -16,8 +16,8 @@ import { type LimitStore, MemoryLimitStore } from '../ops/limiter.ts';
 import { requestPrincipal } from '../principals/authority.ts';
 import type { AttachmentScope, AttachmentService } from './store.ts';
 
-/** Uploads one person may have under way at once. */
-export const UPLOADS_AT_ONCE = 3;
+/** Uploads one person may have under way at once; the message box queues to the same number. */
+export const UPLOADS_AT_ONCE = ATTACHMENT_LIMITS.uploads_at_once;
 /** Uploads one person may start in a window, and the window. */
 export const UPLOAD_RATE = { count: 60, windowMs: 10 * 60 * 1000 };
 

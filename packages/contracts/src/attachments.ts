@@ -25,6 +25,11 @@ export const ATTACHMENT_LIMITS = {
   /** The most files one message may carry. */
   per_message: 10,
   /**
+   * The uploads one person may have under way at once. The service refuses
+   * more; the message box queues the rest so a person never sees that refusal.
+   */
+  uploads_at_once: 3,
+  /**
    * The largest copy of a picture the model is shown: its base64 text fits the
    * gateway's per-picture limit exactly. The browser makes this copy (at most
    * `VISION_IMAGE_MAX_EDGE` on its longest side); the service checks it.
