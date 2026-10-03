@@ -26,6 +26,7 @@ import {
   toolOffered,
 } from '../experience/access.ts';
 import { appendToolTrace } from '../experience/tools.ts';
+import { attemptContextBudget } from '../jobs/context-budget.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
 import { spaceRole } from '../principals/authority.ts';
@@ -73,7 +74,11 @@ export type CatalogSearch = {
   hint?: string;
 };
 
-// Reserve the rest of the 4,000-token tripwire for the pinned engine's scaffolding.
+/**
+ * The first catalog's budget at the baseline window. An attempt on a model with
+ * a larger window is given its model's share (`contextBudget`), so a long-context
+ * model sees most of what it is granted without searching for it.
+ */
 export const CORE_CATALOG_TOKENS: number = CONTEXT_LIMITS.core_catalog_tokens;
 export const SEARCH_RESULT_TOKENS = 1_000;
 const SEARCH_TERMS = 24;
@@ -685,10 +690,16 @@ export class ToolCatalog {
     const [row] =
       await tx`select core, loaded from attempt_tool_context where attempt_id = ${claims.attempt_id}`;
     if (row) return { core: row.core, loaded: row.loaded };
+    const [attempt] = await tx`select model from attempt where id = ${claims.attempt_id}`;
+    const budget = attemptContextBudget(
+      typeof attempt?.model === 'string' ? attempt.model : '',
+      job.budget,
+    );
     const core = selectCore(
       items,
-      this.options.coreTokenBudget,
+      this.options.coreTokenBudget ?? budget.core_catalog_tokens,
       await this.turn(tx, job, claims, access),
+      budget.catalog_index_tokens,
     );
     await tx`insert into attempt_tool_context (attempt_id, job_id, core, loaded)
       values (${claims.attempt_id}, ${claims.job_id}, ${JSON.stringify(core)}::jsonb, '[]'::jsonb)`;

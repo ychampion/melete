@@ -14,6 +14,7 @@ import math
 import re
 import sys
 import threading
+import weakref
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -224,3 +225,54 @@ def restore_pictures(history: list) -> list:
         except Exception:  # noqa: BLE001 - a picture that cannot come back leaves the receipt
             continue
     return history
+
+
+# The live-tools seam (patches/observer_bridge.py). The engine builds a run's
+# tool list once, when the run starts. A tool the broker loads part way through
+# a run is registered then, and the engine's own live refresh (the one it uses
+# for a tool server that connects late) adds it to the running agent's list, at
+# the end so the cached prefix of earlier tools does not move. The model can
+# call it on its very next request, in the same run. The engine serves one run
+# at a time here; the reference is weak so a finished run's agent is not kept.
+_live_agent: list[Callable[[], Any]] = []
+# One refresh at a time: two loads finishing together must not both append.
+_live_lock = threading.Lock()
+
+
+def bind_agent(agent: Any) -> None:
+    """Called by the HTTP bridge with the agent of the run it is about to serve."""
+    try:
+        _live_agent[:] = [weakref.ref(agent)]
+    except TypeError:
+        # An object that takes no weak reference is held until the next run.
+        _live_agent[:] = [lambda: agent]
+
+
+def _fallback(name: str, reason: str) -> bool:
+    # One line per tool that has to wait for a fresh run, so losing the live
+    # path to an engine change shows up in the runtime's log, not only as latency.
+    sys.stderr.write(f"melete: {name} continues in a new run: {reason}\n")
+    return False
+
+
+def refresh_live_tools(name: str) -> bool:
+    """Put a tool registered during a run in front of the running agent.
+
+    True only when the agent's list now offers ``name``. False when no run is
+    being served, the engine's refresh is not available or failed, or the tool
+    is still missing; the caller then falls back to starting a fresh run, and
+    the reason is written to the log.
+    """
+    agent = _live_agent[0]() if _live_agent else None
+    if agent is None:
+        return _fallback(name, "no run is being served")
+    with _live_lock:
+        try:
+            from tools.mcp_tool_agent import refresh_agent_mcp_tools
+
+            refresh_agent_mcp_tools(agent, quiet_mode=True, preserve_prefix=True)
+        except Exception as error:  # noqa: BLE001 - a refresh that fails falls back to a fresh run
+            return _fallback(name, f"the engine refresh failed ({type(error).__name__})")
+        if name in (getattr(agent, "valid_tool_names", None) or ()):
+            return True
+    return _fallback(name, "the refreshed tool list does not offer it")
