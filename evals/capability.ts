@@ -69,6 +69,8 @@ export async function unmetRequirement(scenario: Scenario): Promise<string | nul
         return `The product has no ${requirement.tool} tool on this commit.`;
     } else if (requirement.feature === 'attachments') {
       if (!attachmentsInContract()) return 'Chat attachments are not on this commit.';
+      const store = await import('../apps/melete/src/attachments/store.ts').catch(() => null);
+      if (!store) return 'Chat attachments are not on this commit.';
     } else if (requirement.feature === 'browser') {
       const browser = await chromium();
       if (!browser.available) return `The agent's browser cannot start here: ${browser.reason}.`;

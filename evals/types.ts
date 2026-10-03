@@ -104,6 +104,8 @@ export type Scenario = {
   steps?: ScriptedStep[];
   /** Earlier messages from the person, posted before the first turn. */
   history?: string[];
+  /** A PDF, page by page, sent with the last message of `history`. */
+  attach?: { name: string; pages: string[] };
   /** Approve the first parked proposal of this kind, checking these payload fields. */
   approve?: { kind: string; fields?: Record<string, string> };
   checks?: {

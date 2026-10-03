@@ -415,15 +415,19 @@ export async function openLab(
       },
     };
   }
+  /** A PDF uploaded through the service's own attachment store, as the person's, for a message. */
+  async function attachFile(spaceId: string, file: NonNullable<Scenario['attach']>) {
+    if (!core.blobs) throw new Error('The service has no blob store for attachments');
+    const { AttachmentService } = await import('../apps/melete/src/attachments/store.ts');
+    const { pdfWith } = await import('../apps/melete/src/attachments/fixtures.ts');
+    const service = new AttachmentService(sql, core.blobs);
+    const view = await service.upload(
+      { spaceId, principalId: ownerId },
+      { name: file.name, mediaType: 'application/pdf', bytes: pdfWith(file.pages) },
+    );
+    return view.id;
+  }
   async function run(scenario: Scenario, cellKey: string): Promise<GradeContext> {
-    if (
-      (scenario.requires ?? []).some(
-        (entry) => 'feature' in entry && entry.feature === 'attachments',
-      )
-    )
-      throw new Error(
-        'Chat attachments are on this commit, but the lab cannot attach a file yet; wire the upload in evals/lab.ts',
-      );
     scripted.scenario = scenario;
     let cell = state.get(cellKey);
     const spaceId = cell.space_id ?? newId(ID_PREFIXES.space);
@@ -541,7 +545,12 @@ export async function openLab(
       const posted = await api(
         `/jobs/${jobId}/input`,
         'POST',
-        { text: withFixtureAddress(text, formUrl) },
+        {
+          text: withFixtureAddress(text, formUrl),
+          ...(scenario.attach && index === (scenario.history?.length ?? 0) - 1
+            ? { attachments: [await attachFile(spaceId, scenario.attach)] }
+            : {}),
+        },
         `${cellKey}:history:${index}`,
       );
       if (posted.status !== 200 && posted.status !== 201 && posted.status !== 202)
