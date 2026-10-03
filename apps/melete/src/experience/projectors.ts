@@ -617,6 +617,25 @@ function appFacts(kind: string, payload: Record<string, unknown>) {
     { label: 'Viewers', value: plainText(viewers, 'Only you') },
     dataFact(payload.data_shown),
     ...collectionsFact(Object.keys(object(payload.collections))),
+    ...connectionsFact(payload.opens_connections),
+  ];
+}
+
+/**
+ * A warning, never a refusal: the app's code uses WebRTC, which can send what
+ * it shows, or what a viewer types into it, to another server.
+ */
+function connectionsFact(files: unknown) {
+  const named = Array.isArray(files) ? files.map(String).filter(Boolean) : [];
+  if (!named.length) return [];
+  return [
+    {
+      label: 'Warning',
+      value: plainText(
+        `Its code can open direct connections to other servers (WebRTC, in ${named.join(', ')}), which can send what the app shows, or what a viewer types into it, anywhere. Publish it only if you trust that code with that data.`,
+        'Its code can open direct connections to other servers.',
+      ),
+    },
   ];
 }
 

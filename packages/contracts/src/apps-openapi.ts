@@ -10,6 +10,7 @@ import {
   appDetail,
   appGrantsRequest,
   appListResponse,
+  appView,
 } from './apps.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
@@ -73,6 +74,55 @@ export const appsPaths = () => ({
         '400': problem('Invalid request'),
         '403': problem('Not a manager of this app'),
         '404': problem('No such app, or that version is not one of its own'),
+      },
+    },
+  },
+  '/apps/{id}/views': {
+    post: {
+      tags: ['apps'],
+      summary: 'Open a view of an app for the person asking',
+      description:
+        "Returns where the app's current version loads for this person. The view belongs to " +
+        'the browser session that asked, and lasts until it signs out, or twelve hours at most. ' +
+        'The page is meant to be framed by Melete with ' +
+        '`sandbox="allow-scripts allow-forms allow-downloads"`. A change to who may open the ' +
+        'app, or to its version, ends the view on its next file request. Only a browser ' +
+        'session can open one.',
+      requestParams: appParam,
+      responses: {
+        '200': jsonResponse('A view', appView),
+        '403': problem('Asked with an assistant token rather than a browser session'),
+        '404': problem('No such app, or this person cannot open it'),
+      },
+    },
+  },
+  '/apps/view/{token}/{path}': {
+    get: {
+      tags: ['apps'],
+      summary: 'One file of an app, as its view loads it',
+      description:
+        "Raw bytes, typed from the version's manifest. No session is read: the token in the " +
+        'path is the whole authorisation, and it is checked again on every request against ' +
+        "the app's viewers and current version. Every response carries " +
+        '`Content-Security-Policy: sandbox ...`, so the file runs with an opaque origin and ' +
+        'can load only its own files. A browser asking for one as a page of its own, rather ' +
+        'than in a frame, is refused.',
+      security: [],
+      requestParams: {
+        path: z.object({
+          token: z.string().meta({ description: 'The view token' }),
+          path: z.string().meta({ description: "A file path in the version's manifest" }),
+        }),
+      },
+      responses: {
+        '200': {
+          description: 'The file',
+          content: {
+            'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+          },
+        },
+        '403': problem('Opened as a page of its own rather than framed'),
+        '404': problem('An unknown, expired or ended view, or a path the version does not hold'),
       },
     },
   },

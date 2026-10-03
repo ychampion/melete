@@ -53,13 +53,94 @@ The person who published an app manages it while they belong to the space it was
 from. The owner of that space manages it too. Either of them can make other people managers.
 
 - Managers see every version and what changed between them, and the list of who can open the app.
-- Managers can change who can open the app. People removed from the list lose the app straight
-  away. Who manages it is changed only by its publisher or the space's owner.
+- Managers can change who can open the app. People removed from the list lose the app on its
+  next file request, and its open page closes within a minute. Who manages it is changed only
+  by its publisher or the space's owner.
 - A new version that sets who can open the app changes the viewers and keeps the managers.
 - The publisher or the space's owner can delete an app. Its files are kept for a grace period while
   nothing else uses them, and then removed.
 
 Removing a space removes its apps, with their versions, grants and files.
+
+## Opening an app
+
+Apps are listed on the Apps screen. Opening one shows it inside Melete, under a
+header that names it, who published it, its version and when it changed.
+Managers also see Versions, with "Use this version" for each earlier one,
+Share, for who can open it, and Delete. The address of an app, `#/apps/<id>`,
+stays the same across versions, so it can be shared with the people who can
+open it.
+
+### How an app is kept apart
+
+An app runs in a frame with a separate, opaque origin. It cannot read Melete's
+cookies, storage or API. Its scripts, styles, images and fonts load only from
+its own files; its requests, forms, popups and frames to other sites are
+blocked, and it cannot move the page it is shown in, or its own frame, to
+another site.
+
+**An app's code can still send data elsewhere over WebRTC.** Browsers today
+let any page, sandboxed or not, open WebRTC connections to a server it names,
+and no header stops them. A hostile app can use that to send what it shows, or
+what a viewer types into it, to another server. Publish only apps whose code
+you trust with the data they show. When the code uses WebRTC by name, the
+question to publish says so; code that hides it is not found.
+
+- Its files are served with `Content-Security-Policy: sandbox allow-scripts
+  allow-forms allow-downloads` and a policy that allows only its own files. A
+  response without that policy is never served.
+- A view belongs to the browser session that opened it. It ends when that
+  session signs out, after twelve hours at most, and whenever who can open the
+  app, or the version it shows, changes. Each of these is checked on every file
+  the app loads.
+- The Apps screen checks the view every minute, and whenever the app asks
+  Melete for something that fails. A person removed from an app loses it on its
+  next file request, and the open page closes within a minute. What that page
+  already loaded stays on their screen until then.
+- A file opened on its own, outside Melete's frame, is refused.
+- Apps open over https, or on this computer through `localhost`. Over plain
+  http to another address, browsers do not say how a file is being loaded, so
+  every app file is refused.
+
+### What an app can ask Melete for
+
+An app asks the page around it with `postMessage`, and Melete answers with
+only what it fetched for the person viewing:
+
+| Message | What happens |
+|---|---|
+| `{type:'melete.data', id, name}` | The data named `name`, as the publish approval listed it |
+| `{type:'melete.link', url}` | Asks the person, then opens an https link in a new tab |
+| `{type:'melete.size', height}` | Sets the frame's height, within limits |
+
+Answers come back as `{type:'melete.reply', id, ok, value}` or
+`{type:'melete.reply', id, ok:false, error}`. A small client an app can
+include:
+
+```js
+const melete = (() => {
+  let next = 0;
+  const waiting = new Map();
+  addEventListener('message', (event) => {
+    const reply = event.data;
+    if (event.source !== parent || !reply || reply.type !== 'melete.reply') return;
+    const settle = waiting.get(reply.id);
+    if (!settle) return;
+    waiting.delete(reply.id);
+    reply.ok ? settle[0](reply.value) : settle[1](new Error(reply.error));
+  });
+  const ask = (message) => new Promise((resolve, reject) => {
+    const id = ++next;
+    waiting.set(id, [resolve, reject]);
+    parent.postMessage({ ...message, id }, '*');
+  });
+  return {
+    data: (name) => ask({ type: 'melete.data', name }),
+    link: (url) => parent.postMessage({ type: 'melete.link', url }, '*'),
+    size: (height) => parent.postMessage({ type: 'melete.size', height }, '*'),
+  };
+})();
+```
 
 ## API
 
@@ -70,6 +151,8 @@ Removing a space removes its apps, with their versions, grants and files.
 | `POST /apps/{id}/current` | Choose the version people see (managers) |
 | `PUT /apps/{id}/grants` | Replace who can open the app (managers) |
 | `DELETE /apps/{id}` | Delete the app (its publisher or the space's owner) |
+| `POST /apps/{id}/views` | A view of the app's current version for the person asking |
+| `GET /apps/view/{token}/{path}` | One file of a view, isolated; no session is read |
 
 The agent's tools are `apps.publish` and `apps.rollback` on the built-in Apps connection, which
 every space has. Both are `write_external` and always ask.

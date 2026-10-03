@@ -12,17 +12,19 @@ tools:
 max_tokens: 400
 ---
 
-Write the app in its own folder, such as `app/`, with `index.html` at its top.
+Write the app in its own folder, such as `app/`, with `index.html` on top.
 
 Bundle everything: scripts, styles, fonts and images are files in the folder.
-The app cannot load from another site, call an API or open windows. Allowed
-files: html, js, mjs, css, json, svg, png, jpg, jpeg, gif, webp, ico, woff2,
-txt, map, wasm; at most 200 files and 25 MiB.
+It cannot load from other sites, call APIs or open windows. Use web file
+types (html, js, css, json, images, woff2); at most 200 files and 25 MiB.
 
 Data it shows is a workspace file, such as `data/deals.json`, named under
-`data` when you publish; the app reads its newest version. A routine that
-rewrites the file keeps the app current without a new version.
+`data` when you publish; the app reads its newest version, so a routine that
+rewrites the file keeps the app current.
+
+To read it, `parent.postMessage({type:'melete.data',id,name:'deals'},'*')`; the
+answer is a `message` from `parent`: `{type:'melete.reply',id,ok,value}`.
 
 Publish with `apps.publish`: the folder, a short name, and who may open it
-(`only_me` unless the person named people or asked for everyone here). The
-person is asked first, and every new version asks again.
+(`only_me` unless the person named people or everyone here). The person is
+asked first, and every new version asks again.

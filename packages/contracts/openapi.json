@@ -22783,6 +22783,141 @@
         }
       }
     },
+    "/apps/{id}/views": {
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Open a view of an app for the person asking",
+        "description": "Returns where the app's current version loads for this person. The view belongs to the browser session that asked, and lasts until it signs out, or twelve hours at most. The page is meant to be framed by Melete with `sandbox=\"allow-scripts allow-forms allow-downloads\"`. A change to who may open the app, or to its version, ends the view on its next file request. Only a browser session can open one.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "$ref": "#/components/schemas/__schema141"
+            },
+            "required": true,
+            "description": "App id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A view",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "view_path": {
+                      "type": "string",
+                      "pattern": "^\\/apps\\/view\\/[A-Za-z0-9._-]+\\/index\\.html$"
+                    },
+                    "version_id": {
+                      "$ref": "#/components/schemas/__schema592"
+                    },
+                    "expires_at": {
+                      "$ref": "#/components/schemas/__schema155"
+                    }
+                  },
+                  "required": [
+                    "view_path",
+                    "version_id",
+                    "expires_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Asked with an assistant token rather than a browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema157"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such app, or this person cannot open it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema157"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/apps/view/{token}/{path}": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "One file of an app, as its view loads it",
+        "description": "Raw bytes, typed from the version's manifest. No session is read: the token in the path is the whole authorisation, and it is checked again on every request against the app's viewers and current version. Every response carries `Content-Security-Policy: sandbox ...`, so the file runs with an opaque origin and can load only its own files. A browser asking for one as a page of its own, rather than in a frame, is refused.",
+        "security": [],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "schema": {
+              "type": "string",
+              "description": "The view token"
+            },
+            "required": true,
+            "description": "The view token"
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "schema": {
+              "type": "string",
+              "description": "A file path in the version's manifest"
+            },
+            "required": true,
+            "description": "A file path in the version's manifest"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Opened as a page of its own rather than framed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema157"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "An unknown, expired or ended view, or a path the version does not hold",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema157"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/apps/{id}/grants": {
       "put": {
         "tags": [
