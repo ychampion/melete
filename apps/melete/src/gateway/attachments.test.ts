@@ -264,6 +264,27 @@ describe('files the person sent, as the model is given them', () => {
     });
   });
 
+  test('cache breakpoints are placed after the files are swapped in, at the end of the newest message', async () => {
+    const { post, sent } = await start({ attachments: source(true) });
+    await post('/providers/anthropic/v1/messages', {
+      system: 'You are Melete.',
+      messages: [
+        { role: 'user', content: 'An earlier turn.' },
+        { role: 'assistant', content: [{ type: 'text', text: 'Earlier reply.' }] },
+        { role: 'user', content: MESSAGE },
+      ],
+    });
+    const body = JSON.parse(sent[0]?.body ?? '{}');
+    const blocks = body.messages[2].content as Record<string, unknown>[];
+    expect(blocks.map((block) => block.type)).toEqual(['text', 'document', 'text', 'image']);
+    // Only the last block of the request as it leaves carries the breakpoint:
+    // never a block ahead of a swapped file, never inside earlier history.
+    expect(blocks.map((block) => 'cache_control' in block)).toEqual([false, false, false, true]);
+    expect(body.messages[0]).toEqual({ role: 'user', content: 'An earlier turn.' });
+    expect(body.messages[1].content[0]).not.toHaveProperty('cache_control');
+    expect(body.system[0]).toMatchObject({ cache_control: { type: 'ephemeral' } });
+  });
+
   test('a PDF too large for the request limit keeps its extracted text', async () => {
     const { post, sent } = await start({
       attachments: source(true),
