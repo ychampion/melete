@@ -129,6 +129,7 @@ import {
   SPACE_BEING_CLEARED,
   spaceAuthority,
 } from './principals/authority.ts';
+import { startGuestExpiry } from './principals/expiry.ts';
 import { mountPrincipals } from './principals/routes.ts';
 import { PrincipalService } from './principals/service.ts';
 import { withPrivacyGate } from './privacy/gate.ts';
@@ -419,6 +420,7 @@ export function createApp(deps: AppDeps) {
       changes: deps.events,
       computers: deps.sandboxComputers,
       memory: deps.memory,
+      env: deps.env,
     });
   if (deps.db)
     mountCompanies(app, {
@@ -592,6 +594,7 @@ export async function bootstrap(
   let connections: ConfiguredConnection[] = [];
   let stopEpisodeRetention: (() => void) | undefined;
   let stopEgressRetention: (() => void) | undefined;
+  let stopGuestExpiry: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
@@ -626,6 +629,7 @@ export async function bootstrap(
     stopEpisodeRetention?.();
     stopEgressRetention?.();
     clearInterval(leftovers);
+    stopGuestExpiry?.();
     sandboxes?.stop();
     processSweep?.stop();
     processMonitor?.stop();
@@ -1165,6 +1169,10 @@ export async function bootstrap(
         if (handle && processFactory)
           processMonitor = startProcessMonitor(processFactory, handle.sql, triggers, () =>
             leading(leases, 'process-monitor'),
+          );
+        if (handle)
+          stopGuestExpiry = startGuestExpiry(
+            new PrincipalService(handle.db, env.MELETE_SPACES_DIR, jobs),
           );
         // A chase spends most of its life waiting on a reply, and the wait it
         // holds is an event wait on a `mail.new` trigger. Without something

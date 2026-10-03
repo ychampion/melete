@@ -374,6 +374,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   room_presence: 'operational',
   room_message: 'operational',
   room_thread: 'operational',
+  room_invite: 'operational',
+  room_policy: 'operational',
   // After the jobs and actions that `restrict` them.
   agent: 'principals',
   connection: 'principals',

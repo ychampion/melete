@@ -132,3 +132,36 @@ export const roomPresence = pgTable(
   },
   (t) => [primaryKey({ columns: [t.spaceId, t.principalId] })],
 );
+
+/**
+ * An invitation for a guest to join one room. Only the SHA-256 of its token is
+ * kept; the token itself is shown once, to the owner who made it. It works
+ * once, until `expires_at`, which is also when the guest's place in the room
+ * ends.
+ */
+export const roomInvite = pgTable(
+  'room_invite',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    email: text('email').notNull(),
+    role: text('role').notNull().default('guest'),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdBy: text('created_by')
+      .notNull()
+      .references(() => principal.id),
+    createdAt: created(),
+    redeemedAt: timestamp('redeemed_at', { withTimezone: true }),
+    /** The account that accepted it. */
+    principalId: text('principal_id').references(() => principal.id),
+    /** An owner took it back before it was used. */
+    withdrawnAt: timestamp('withdrawn_at', { withTimezone: true }),
+  },
+  (t) => [
+    check('room_invite_role', sql`${t.role} in ('guest')`),
+    index('room_invite_space_idx').on(t.spaceId, t.createdAt),
+  ],
+);

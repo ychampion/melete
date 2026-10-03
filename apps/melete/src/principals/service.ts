@@ -5,7 +5,7 @@ import {
   type JobState,
   spaceMembership as membershipContract,
 } from '@melete/contracts';
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import {
@@ -170,111 +170,248 @@ export class PrincipalService {
         access.ownerId === memberId
       )
         throw new ServiceError('scope_denied', 'A shared-space owner may revoke a member.', 403);
-      const [existing] = await tx
-        .select()
-        .from(spaceMembership)
-        .where(and(eq(spaceMembership.spaceId, spaceId), eq(spaceMembership.principalId, memberId)))
-        .for('update');
-      if (!existing || existing.role === 'agent')
-        throw new ServiceError('not_found', 'Membership not found.', 404);
-      if (existing.revokedAt)
-        return {
-          membership: membershipView(existing),
-          controls: [] as ContextInvalidated[],
-          cancelled: [] as string[],
-          policy_generation: access.space.policyGeneration,
-        };
-      const [updated] = await tx
-        .update(spaceMembership)
-        .set({ revokedAt: new Date(), generation: existing.generation + 1 })
-        .where(and(eq(spaceMembership.spaceId, spaceId), eq(spaceMembership.principalId, memberId)))
-        .returning();
-      // An assistant the member connected from this space loses it with them.
-      await tx.execute(
-        sql`delete from mcp_authorization where space_id = ${spaceId} and principal_id = ${memberId}`,
-      );
-      await tx.execute(
-        sql`delete from mcp_token where space_id = ${spaceId} and principal_id = ${memberId}`,
-      );
-      const generation = access.space.policyGeneration + 1;
-      // The copies of what memory handed the member's own actions, kept to say
-      // why each was taken, go with the access.
-      await tx.execute(
-        sql`update memory_action_basis b set items = '[]'::jsonb from job j
-          where b.space_id = ${spaceId} and j.id = b.job_id and j.principal_id = ${memberId}`,
-      );
-      // The fence is the service's own work, already authorized above: someone
-      // leaving is no longer in the space whose work it fences.
-      const controls = await principalContext.exit(() =>
-        fenceRoster(tx, spaceId, generation, jobs),
-      );
-      // The member's own jobs end with their access, and so do the requests
-      // they asked of the room: only the person who asked a request answers it,
-      // so one whose asker has gone would wait for ever.
-      const affected = await tx
-        .select()
-        .from(job)
-        .where(
-          and(
-            eq(job.spaceId, spaceId),
-            or(
-              eq(job.principalId, memberId),
-              and(eq(job.audience, 'room'), eq(job.requestedByPrincipalId, memberId)),
-            ),
-          ),
-        )
-        .orderBy(job.id);
-      const cancelled: string[] = [];
-      for (const listed of affected) {
-        // A turn under way ends as Stop ends it, so the chat does not go on
-        // showing it as working; then the job is cancelled and its attempts end.
-        if (listed.kind === 'chat') await jobs.stopTurn?.(tx, listed);
-        const [row] = await tx.select().from(job).where(eq(job.id, listed.id));
-        if (!row || isTerminal(row.state as JobState)) continue;
-        await jobs.move(
-          tx,
-          row,
-          { kind: 'cancelled' },
-          { payload: { reason: 'membership_revoked' } },
-        );
-        await tx.update(trigger).set({ enabled: false }).where(eq(trigger.jobId, row.id));
-        await tx
-          .update(attempt)
-          .set({
-            outcome: 'fenced',
-            outcomeDetail: { kind: 'cancelled', reason: 'membership_revoked' },
-            endedAt: new Date(),
-            leaseExpiresAt: null,
-            leaseStatus: 'ended',
-          })
-          .where(and(eq(attempt.jobId, row.id), isNull(attempt.endedAt)));
-        // A conversation's turn in flight ends with it, rather than reading as
-        // still working once nobody can carry it on.
-        if (row.currentTurnId)
-          await tx
-            .update(experienceTurn)
-            .set({ status: 'stopped', finishedAt: new Date() })
-            .where(
-              and(
-                eq(experienceTurn.id, row.currentTurnId),
-                inArray(experienceTurn.status, ['queued', 'working', 'streaming']),
-              ),
-            );
-        cancelled.push(row.id);
-      }
-      if (!updated) throw new Error('Locked membership disappeared');
-      return {
-        membership: membershipView(updated),
-        controls,
-        cancelled,
-        policy_generation: generation,
-      };
+      return this.endMembership(tx, jobs, spaceId, memberId, access.space.policyGeneration);
     });
-    // Database fencing is authoritative even when no local runner is attached.
-    for (const id of result.cancelled) jobs.onCancelled?.(id);
-    for (const control of result.controls) jobs.onCancelled?.(control.job_id);
+    settled(jobs, result);
     return { membership: result.membership, policy_generation: result.policy_generation };
   }
+
+  /**
+   * End one membership, already authorized by the caller, inside its
+   * transaction, with the space row locked: the membership is revoked, the
+   * roster is fenced, and the work the person started there, or asked of the
+   * room, ends with their access.
+   */
+  private async endMembership(
+    tx: Transaction,
+    jobs: JobService,
+    spaceId: string,
+    memberId: string,
+    policyGeneration: number,
+  ) {
+    const [existing] = await tx
+      .select()
+      .from(spaceMembership)
+      .where(and(eq(spaceMembership.spaceId, spaceId), eq(spaceMembership.principalId, memberId)))
+      .for('update');
+    if (!existing || existing.role === 'agent')
+      throw new ServiceError('not_found', 'Membership not found.', 404);
+    if (existing.revokedAt)
+      return {
+        membership: membershipView(existing),
+        controls: [] as ContextInvalidated[],
+        cancelled: [] as string[],
+        policy_generation: policyGeneration,
+      };
+    const [updated] = await tx
+      .update(spaceMembership)
+      .set({ revokedAt: new Date(), generation: existing.generation + 1 })
+      .where(and(eq(spaceMembership.spaceId, spaceId), eq(spaceMembership.principalId, memberId)))
+      .returning();
+    // An assistant the member connected from this space loses it with them.
+    await tx.execute(
+      sql`delete from mcp_authorization where space_id = ${spaceId} and principal_id = ${memberId}`,
+    );
+    await tx.execute(
+      sql`delete from mcp_token where space_id = ${spaceId} and principal_id = ${memberId}`,
+    );
+    // A guest never holds an assistant grant; should one exist anywhere, it
+    // goes with their place in the room.
+    await tx.execute(
+      sql`delete from mcp_authorization where principal_id = ${memberId}
+        and exists (select 1 from principal p where p.id = ${memberId} and p.kind = 'guest')`,
+    );
+    await tx.execute(
+      sql`delete from mcp_token where principal_id = ${memberId}
+        and exists (select 1 from principal p where p.id = ${memberId} and p.kind = 'guest')`,
+    );
+    const generation = policyGeneration + 1;
+    // The copies of what memory handed the member's own actions, kept to say
+    // why each was taken, go with the access.
+    await tx.execute(
+      sql`update memory_action_basis b set items = '[]'::jsonb from job j
+        where b.space_id = ${spaceId} and j.id = b.job_id and j.principal_id = ${memberId}`,
+    );
+    // The fence is the service's own work, already authorized above: someone
+    // leaving is no longer in the space whose work it fences.
+    const controls = await principalContext.exit(() => fenceRoster(tx, spaceId, generation, jobs));
+    // The member's own jobs end with their access, and so do the requests
+    // they asked of the room: only the person who asked a request answers it,
+    // so one whose asker has gone would wait for ever.
+    const affected = await tx
+      .select()
+      .from(job)
+      .where(
+        and(
+          eq(job.spaceId, spaceId),
+          or(
+            eq(job.principalId, memberId),
+            and(eq(job.audience, 'room'), eq(job.requestedByPrincipalId, memberId)),
+          ),
+        ),
+      )
+      .orderBy(job.id);
+    const cancelled: string[] = [];
+    for (const listed of affected) {
+      // A turn under way ends as Stop ends it, so the chat does not go on
+      // showing it as working; then the job is cancelled and its attempts end.
+      if (listed.kind === 'chat') await jobs.stopTurn?.(tx, listed);
+      const [row] = await tx.select().from(job).where(eq(job.id, listed.id));
+      if (!row || isTerminal(row.state as JobState)) continue;
+      await jobs.move(
+        tx,
+        row,
+        { kind: 'cancelled' },
+        { payload: { reason: 'membership_revoked' } },
+      );
+      await tx.update(trigger).set({ enabled: false }).where(eq(trigger.jobId, row.id));
+      await tx
+        .update(attempt)
+        .set({
+          outcome: 'fenced',
+          outcomeDetail: { kind: 'cancelled', reason: 'membership_revoked' },
+          endedAt: new Date(),
+          leaseExpiresAt: null,
+          leaseStatus: 'ended',
+        })
+        .where(and(eq(attempt.jobId, row.id), isNull(attempt.endedAt)));
+      // A conversation's turn in flight ends with it, rather than reading as
+      // still working once nobody can carry it on.
+      if (row.currentTurnId)
+        await tx
+          .update(experienceTurn)
+          .set({ status: 'stopped', finishedAt: new Date() })
+          .where(
+            and(
+              eq(experienceTurn.id, row.currentTurnId),
+              inArray(experienceTurn.status, ['queued', 'working', 'streaming']),
+            ),
+          );
+      cancelled.push(row.id);
+    }
+    if (!updated) throw new Error('Locked membership disappeared');
+    return {
+      membership: membershipView(updated),
+      controls,
+      cancelled,
+      policy_generation: generation,
+    };
+  }
+
+  /**
+   * Give a guest their place in a room, until `expiresAt`, inside the caller's
+   * transaction. Adding a guest changes who reads the room, so the roster is
+   * fenced as for any other change: work in flight starts again, and details
+   * shared for members only leave the agent's next attempt. Someone already in
+   * the room as a member or owner stays as they are.
+   */
+  async admitGuest(
+    tx: Transaction,
+    spaceId: string,
+    guestId: string,
+    expiresAt: Date,
+  ): Promise<ContextInvalidated[]> {
+    const [parent] = await tx.select().from(space).where(eq(space.id, spaceId)).for('update');
+    if (parent?.kind !== 'shared' || parent.removedAt)
+      throw new ServiceError('not_found', 'That room is not here.', 404);
+    const [guest] = await tx.select().from(principal).where(eq(principal.id, guestId));
+    if (guest?.kind !== 'guest') throw new ServiceError('not_found', 'Principal not found.', 404);
+    const [existing] = await tx
+      .select()
+      .from(spaceMembership)
+      .where(and(eq(spaceMembership.spaceId, spaceId), eq(spaceMembership.principalId, guestId)))
+      .for('update');
+    if (existing && !existing.revokedAt && existing.role !== 'guest')
+      throw new ServiceError('already_in_room', 'They are already in this room.', 409);
+    await tx
+      .insert(spaceMembership)
+      .values({ spaceId, principalId: guestId, role: 'guest', expiresAt })
+      .onConflictDoUpdate({
+        target: [spaceMembership.principalId, spaceMembership.spaceId],
+        set: {
+          role: 'guest',
+          expiresAt,
+          revokedAt: null,
+          generation: sql`${spaceMembership.generation} + 1`,
+        },
+      });
+    return fenceRoster(tx, spaceId, parent.policyGeneration + 1, this.jobs);
+  }
+
+  /**
+   * End every guest's place whose time is up, through the same path as a
+   * removal. Each one is read again under the room's lock, so a guest whose
+   * place was renewed a moment ago stays. Returns how many ended.
+   */
+  async expireGuests(now = new Date()): Promise<number> {
+    const jobs = this.jobs;
+    if (!jobs) return 0;
+    const due = await this.db
+      .select({ spaceId: spaceMembership.spaceId, principalId: spaceMembership.principalId })
+      .from(spaceMembership)
+      .where(
+        and(
+          eq(spaceMembership.role, 'guest'),
+          isNull(spaceMembership.revokedAt),
+          lte(spaceMembership.expiresAt, now),
+        ),
+      )
+      .orderBy(spaceMembership.expiresAt);
+    let ended = 0;
+    for (const entry of due) {
+      const result = await jobs
+        .transaction(async (tx) => {
+          const [parent] = await tx
+            .select()
+            .from(space)
+            .where(eq(space.id, entry.spaceId))
+            .for('update');
+          // A room being removed ends everyone's place with it.
+          if (!parent || parent.removedAt) return null;
+          const [still] = await tx
+            .select({ principalId: spaceMembership.principalId })
+            .from(spaceMembership)
+            .where(
+              and(
+                eq(spaceMembership.spaceId, entry.spaceId),
+                eq(spaceMembership.principalId, entry.principalId),
+                eq(spaceMembership.role, 'guest'),
+                isNull(spaceMembership.revokedAt),
+                lte(spaceMembership.expiresAt, now),
+              ),
+            );
+          if (!still) return null;
+          return this.endMembership(
+            tx,
+            jobs,
+            entry.spaceId,
+            entry.principalId,
+            parent.policyGeneration,
+          );
+        })
+        // One place that cannot be ended now is said, and tried again on the
+        // next sweep; it never holds up the guests after it.
+        .catch((error: unknown) => {
+          process.stderr.write(
+            `guest expiry: ${entry.principalId} in ${entry.spaceId} failed: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+          return null;
+        });
+      if (!result) continue;
+      settled(jobs, result);
+      ended += 1;
+    }
+    return ended;
+  }
+}
+
+/** Database fencing is authoritative even when no local runner is attached. */
+function settled(
+  jobs: JobService,
+  result: { cancelled: string[]; controls: ContextInvalidated[] },
+) {
+  for (const id of result.cancelled) jobs.onCancelled?.(id);
+  for (const control of result.controls) jobs.onCancelled?.(control.job_id);
 }
 
 /** The address a room principal is created with: `.invalid` is never routable (RFC 2606). */

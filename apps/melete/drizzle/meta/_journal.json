@@ -638,6 +638,13 @@
       "when": 1789232400070,
       "tag": "0090_room_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1789232400071,
+      "tag": "0091_room_guests",
+      "breakpoints": true
     }
   ]
 }

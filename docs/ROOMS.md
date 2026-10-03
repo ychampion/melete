@@ -20,11 +20,50 @@ open. What they said stays in the room; each person can delete their own
 messages first (`DELETE /rooms/{id}/messages/{message}`). The room's owner
 cannot be removed.
 
-In a room every person is shown as the name they chose followed by their email,
-as in `Alice <alice@example.com>`, to the people in the room and to its agent.
-The email is what tells people apart. Each person sets their name with
-`PATCH /me`: one line of plain text, without `<`, `>` or `@`, and not a name
-someone else already goes by.
+In a room every person is shown as the name they chose followed by the handle
+the room gives them, as in `Alice <k7q2mx3a>`, to the people in the room and
+to its agent. The handle is what tells people apart: nobody chooses it, nobody
+can take someone else's, and it differs from room to room. No label in a room
+carries any part of an email: someone who has not chosen a name is shown as
+`Someone` with their handle. People who are not guests also see each other's email in the
+room's list of people (`GET /rooms/{id}`). Each person sets their name with
+`PATCH /me`: one line of plain text, without `<`, `>` or `@` or anything that
+reads as one, and not a name someone else already goes by.
+
+## Guests
+
+An owner can invite someone from outside the installation as a guest: an email
+and a number of days, 30 unless the owner says otherwise
+(`POST /rooms/{id}/invites`). Melete shows the invite link once, and the owner
+sends it themselves. The link uses the installation's public address
+(`MELETE_PUBLIC_URL`) when one is set; the path that comes with it opens the
+same page on any address the installation answers at.
+
+Opening the link shows the room's name and nothing about its people. The guest
+chooses a password and lands in that room. A link works once, and stops working
+when its days are up or an owner withdraws it
+(`DELETE /rooms/{id}/invites/{invite}`); owners see every invite and its state
+at `GET /rooms/{id}/invites`. Someone who is already a guest here accepts a new
+room's invite while signed in, so a link never sets an existing account's
+password. Someone with a full account here is added from People instead.
+
+A guest:
+
+- reads and posts in the rooms they were invited to, and asks the agent where
+  the room allows guests to ask (`guests_may_ask`);
+- never answers a permission: a guest's own request is answered by the room's
+  owners;
+- has no people list, no space of their own, makes no rooms, starts no work
+  and connects no assistant; every route outside their rooms, their own account
+  and a room's files is refused with `guests_use_rooms`;
+- sees no one's email.
+
+A guest's place in a room ends when the invite's days are up. From that moment
+they read nothing in it, and within a minute their membership ends the way a
+removal does: work under way starts again, and the requests they asked end.
+While a guest is in a room, details shared there as members-only stay out of
+the agent's work (see Memory in a room). Adding a guest changes who reads the
+room, so work under way starts again with the new roster.
 
 ## Threads and asking the agent
 
@@ -162,7 +201,8 @@ details.
 ## Who sees what
 
 Only the people in a room read it, the installation's owner included: someone
-who is not in a room finds no room at all. A room's requests belong to the
+who is not in a room finds no room at all. A guest reads only the rooms they
+were invited to, while their invite lasts. A room's requests belong to the
 room, so they never appear in anyone's own chats, plans, approvals or job
 lists; they are read through the room's routes only. Files a request makes are
 read by the people in the room. Everyone in the room can watch the room's

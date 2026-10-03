@@ -28,6 +28,7 @@ import { actionBecause } from '../memory/basis.ts';
 import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
+import { ownsSessionSpace } from '../principals/session-space.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
 import type { RunService } from '../runs/service.ts';
 import { listActivity } from './activity.ts';
@@ -251,7 +252,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         ? removeMember(deps.db, deps.jobs, spaceId, c.get('owner').id, c.req.param('id') ?? '')
         : unavailable('People in this space are not connected yet.'),
     'GET /search': (spaceId, c) =>
-      home.search(spaceId, c.req.query('q') ?? '', c.get('sessionSpace')?.role !== 'member'),
+      home.search(spaceId, c.req.query('q') ?? '', ownsSessionSpace(c.get('sessionSpace'))),
     'GET /plans': (spaceId) => planning.plans(spaceId),
     'POST /plans': (spaceId, _c, input) => planning.create(spaceId, input),
     'GET /plans/{id}': async (spaceId, c) => ({
@@ -592,7 +593,8 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     app.on(method, path.replace(/\{([^}]+)\}/g, ':$1'), async (c) => {
       const spaceId = c.get('experienceSpaceId');
       if (!spaceId) throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
-      const member = c.get('sessionSpace')?.role === 'member';
+      // Anyone who is not the space's owner, whatever their role.
+      const member = !ownsSessionSpace(c.get('sessionSpace'));
       const ownerOnly = () =>
         new ServiceError('scope_denied', 'Only the owner of this space can do that.', 403);
       if (member && SPACE_OWNER_SURFACES.has(key)) throw ownerOnly();

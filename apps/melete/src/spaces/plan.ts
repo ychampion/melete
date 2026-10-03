@@ -169,6 +169,9 @@ const SPACE_KEYED_OPERATIONAL = [
   'room_presence',
   'room_message',
   'room_thread',
+  // Its guest invites, used or not, and how the room works.
+  'room_invite',
+  'room_policy',
 ] as const;
 
 /**

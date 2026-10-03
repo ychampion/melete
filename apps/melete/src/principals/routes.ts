@@ -6,6 +6,7 @@ import {
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import type { Hono } from 'hono';
+import { INVITE_PUBLIC_PATHS } from '../api/auth.ts';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import {
@@ -37,6 +38,8 @@ export function mountPrincipals(
   app.use('*', async (c, next) => {
     if (
       ['/health', '/setup', '/login', '/oauth/client-metadata.json'].includes(c.req.path) ||
+      // A room invite is opened and accepted before its guest has an account; it checks itself.
+      INVITE_PUBLIC_PATHS.includes(c.req.path) ||
       // An assistant's OAuth and MCP requests carry no session; their routes check for themselves.
       (!c.get('owner') && mcpPublicPath(c.req.method, c.req.path))
     )

@@ -129,6 +129,7 @@ export async function requestView(
   const answered = asked.filter(({ approval: question }) => question.decision !== null);
   const deciders = await namesOf(
     db,
+    row.spaceId,
     answered.flatMap(({ approval: question }) => (question.decidedBy ? [question.decidedBy] : [])),
   );
   const decisions = answered.map(({ approval: question }) => ({

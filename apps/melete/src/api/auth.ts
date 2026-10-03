@@ -61,7 +61,13 @@ export const credentials = z.object({
   password: z.string().min(8).max(1024),
 });
 
-export type SessionOwner = { id: string; email: string; created_at: string };
+export type SessionOwner = {
+  id: string;
+  email: string;
+  created_at: string;
+  /** `guest`: an invited account that uses only the rooms it was invited to. */
+  kind?: 'person' | 'guest';
+};
 
 /** The kinds of account that may hold a session. A room's own principal never does. */
 export const SIGN_IN_KINDS = ['person', 'guest'];
@@ -116,6 +122,40 @@ function sessionCookie(c: Context, token: string, env: Env) {
     path: '/',
     maxAge: SESSION_TTL_SECONDS,
   });
+}
+
+/**
+ * Sign a principal in on this response: a new session row and its cookie. For
+ * routes outside this module that make an account, such as accepting a room
+ * invite.
+ */
+export async function startSession(c: Context, db: Database, env: Env, principalId: string) {
+  const [installation] = await db.select({ id: owner.id }).from(owner).limit(1);
+  if (!installation) throw new Error('No installation to sign in to');
+  const authenticated = newSession(installation.id, principalId);
+  await db.insert(session).values(authenticated.row);
+  sessionCookie(c, authenticated.token, env);
+}
+
+/** The two room-invite routes anyone may call, with or without a session (rooms/invites.ts). */
+export const INVITE_PUBLIC_PATHS = ['/invites/view', '/invites/accept'];
+
+/**
+ * What a guest's session may reach: the rooms they were invited to (each room
+ * route checks their place in that room), their own account, and a room's
+ * files and computers, which check the room again. Everything else is refused
+ * before it runs, so a surface that was never taught about guests never
+ * serves one.
+ */
+export function guestMayUse(method: string, path: string): boolean {
+  if (path === '/rooms' || path.startsWith('/rooms/')) return true;
+  if (path === '/me') return method === 'GET' || method === 'PATCH';
+  if (method === 'POST' && ['/signout', '/account/password'].includes(path)) return true;
+  if (method === 'GET' && /^\/artifacts\/[^/]+\/content$/.test(path)) return true;
+  // Watching a room's computer; taking it over is for the room's owners.
+  if (/^\/sandbox\/sessions\/[^/]+\/live(\/close)?$/.test(path)) return method === 'POST';
+  if (/^\/sandbox\/sessions\/[^/]+\/live\/frames$/.test(path)) return method === 'GET';
+  return false;
 }
 
 /** Browser writes must originate from this API; scripts can omit Origin. */
@@ -256,7 +296,9 @@ export function mountAuth(
       const [person] = await db
         .select()
         .from(principal)
-        .where(and(eq(principal.id, actor.principalId), inArray(principal.kind, SIGN_IN_KINDS)))
+        // An assistant acts only for a person: a guest never holds a grant, and a
+        // grant somehow written for one is refused here.
+        .where(and(eq(principal.id, actor.principalId), eq(principal.kind, 'person')))
         .limit(1);
       if (!person) {
         return c.json({ error: { code: 'unauthorized', message: 'The access has ended.' } }, 401);
@@ -297,6 +339,8 @@ export function mountAuth(
           '/signin/chatgpt',
           '/password-reset',
           '/password-reset/consume',
+          // A room invite is opened and accepted before its guest has an account.
+          ...INVITE_PUBLIC_PATHS,
         ].includes(c.req.path));
     // A body is counted as it arrives, so one sent without a length, or with a
     // false one, is dropped at the limit rather than read and parsed whole.
@@ -327,7 +371,23 @@ export function mountAuth(
     if (!active) {
       return c.json({ error: { code: 'unauthorized', message: 'The session has expired.' } }, 401);
     }
-    c.set('owner', publicOwner(active.owner));
+    if (active.owner.kind === 'guest') {
+      // A guest has no space of their own and no work outside their rooms.
+      if (!guestMayUse(c.req.method, c.req.path))
+        return c.json(
+          {
+            error: {
+              code: 'guests_use_rooms',
+              message: 'A guest account uses only the rooms it was invited to.',
+            },
+          },
+          403,
+        );
+      c.set('owner', { ...publicOwner(active.owner), kind: 'guest' });
+      c.set('sessionDigest', tokenHash(token));
+      return principalContext.run(active.owner.id, () => sessionBody(c, next));
+    }
+    c.set('owner', { ...publicOwner(active.owner), kind: 'person' });
     c.set('sessionDigest', tokenHash(token));
     // The space follows the authenticated principal; no request or other account can supply it.
     const resolved = await resolveSessionSpace(

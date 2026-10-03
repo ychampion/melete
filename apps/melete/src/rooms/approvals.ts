@@ -153,18 +153,26 @@ export function waitingFor(authority: RoomAuthority, names: ReadonlyMap<string, 
   }
 }
 
-/** Each principal's label (name and email), read over a raw connection. */
-export async function labelsIn(tx: Query, ids: readonly string[]): Promise<Map<string, string>> {
+/** Each principal's label in a room (name and handle), read over a raw connection. */
+export async function labelsIn(
+  tx: Query,
+  spaceId: string,
+  ids: readonly string[],
+): Promise<Map<string, string>> {
   const unique = [...new Set(ids)].filter(Boolean);
   if (!unique.length) return new Map();
   const rows = await tx`select id, display_name, email from principal where id = any(${unique})`;
   return new Map(
     rows.map((row) => [
       String(row.id),
-      personLabel({
-        displayName: (row.display_name ?? null) as string | null,
-        email: String(row.email),
-      }),
+      personLabel(
+        {
+          id: String(row.id),
+          displayName: (row.display_name ?? null) as string | null,
+          email: String(row.email),
+        },
+        spaceId,
+      ),
     ]),
   );
 }
