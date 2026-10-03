@@ -378,7 +378,7 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
           label: chosen.label,
         };
         const jobId = await step.start({ ...published, itemId: found.item.id });
-        if (!(await store.setJob(found.owner, found.item.id, jobId))) {
+        if (!(await store.setJob(found.owner, found.item.id, jobId, true))) {
           await step.abandon(jobId, 'The item closed before the step was taken.');
           throw new ServiceError('already_terminal', 'This one is already finished.', 409);
         }

@@ -109,8 +109,11 @@ export interface CompanyStore {
   map(owner: Owner, now: Date, timeZone?: string): Promise<CompanyMap>;
   item(owner: Owner, id: string): Promise<LedgerDetail | null>;
   setStatus(owner: Owner, id: string, status: LedgerItemStatus): Promise<LedgerItem | null>;
-  /** A job has it now. Null when the item is not the owner's, or is settled or dropped. */
-  setJob(owner: Owner, id: string, jobId: string): Promise<LedgerItem | null>;
+  /**
+   * A job has it now. Null when the item is not the owner's, or, with
+   * `onlyOpen`, when it was settled or dropped meanwhile.
+   */
+  setJob(owner: Owner, id: string, jobId: string, onlyOpen?: boolean): Promise<LedgerItem | null>;
   /**
    * Run `work` as the only holder of `key` across every process that shares
    * this store, with a store bound to that exclusive section. A check followed
@@ -642,7 +645,12 @@ export class PostgresCompanyStore implements CompanyStore {
     return row ? itemView(row) : null;
   }
 
-  async setJob(owner: Owner, id: string, jobId: string): Promise<LedgerItem | null> {
+  async setJob(
+    owner: Owner,
+    id: string,
+    jobId: string,
+    onlyOpen = false,
+  ): Promise<LedgerItem | null> {
     const [row] = await this.db
       .update(ledgerItem)
       .set({ jobId, status: 'handling' })
@@ -651,7 +659,7 @@ export class PostgresCompanyStore implements CompanyStore {
           ownedItem(owner),
           eq(ledgerItem.id, id),
           // An item settled or dropped meanwhile, by its connection or the person, stays so.
-          notInArray(ledgerItem.status, ['settled', 'dropped']),
+          onlyOpen ? notInArray(ledgerItem.status, ['settled', 'dropped']) : undefined,
         ),
       )
       .returning();
@@ -986,9 +994,15 @@ export class MemoryCompanyStore implements CompanyStore {
     this.items.set(id, updated);
     return updated;
   }
-  async setJob(owner: Owner, id: string, jobId: string): Promise<LedgerItem | null> {
+  async setJob(
+    owner: Owner,
+    id: string,
+    jobId: string,
+    onlyOpen = false,
+  ): Promise<LedgerItem | null> {
     const item = this.own(owner, id);
-    if (!item || item.status === 'settled' || item.status === 'dropped') return null;
+    if (!item || (onlyOpen && (item.status === 'settled' || item.status === 'dropped')))
+      return null;
     const updated: LedgerItem = { ...item, job_id: jobId, status: 'handling' };
     this.items.set(id, updated);
     return updated;
