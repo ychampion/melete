@@ -16,9 +16,10 @@ export type DockerSandboxEnv = {
   MELETE_SANDBOX_DOCKER_MEMORY_MB?: number;
   MELETE_SANDBOX_DOCKER_PIDS?: number;
   MELETE_SANDBOX_DOCKER_DISK_MB?: number;
-  MELETE_SANDBOX_DOCKER_EGRESS?: 'open' | 'deny_all';
+  MELETE_SANDBOX_DOCKER_EGRESS?: 'open' | 'connected_hosts_only' | 'deny_all';
   MELETE_SANDBOX_DOCKER_IDLE_SECONDS?: number;
   MELETE_SANDBOX_EGRESS_PORT?: number;
+  MELETE_SANDBOX_EGRESS_EXTRA_HOSTS?: readonly string[];
 };
 
 /**
@@ -50,6 +51,9 @@ export function dockerSandboxSettings(
     idleSeconds: env.MELETE_SANDBOX_DOCKER_IDLE_SECONDS ?? DOCKER_SANDBOX_DEFAULTS.idleSeconds,
     egressPort: env.MELETE_SANDBOX_EGRESS_PORT ?? DOCKER_SANDBOX_DEFAULTS.egressPort,
     ...(selfId ? { selfId } : {}),
+    ...(env.MELETE_SANDBOX_EGRESS_EXTRA_HOSTS?.length
+      ? { egressExtraHosts: [...env.MELETE_SANDBOX_EGRESS_EXTRA_HOSTS] }
+      : {}),
   };
 }
 
@@ -68,7 +72,8 @@ export function defaultSandboxConfig(
 ): SandboxConnectionConfig | null {
   if (env.MELETE_SANDBOX_PROVIDER !== 'docker' || !env.MELETE_SANDBOX_PROJECT) return null;
   const wanted = env.MELETE_SANDBOX_DOCKER_EGRESS ?? 'open';
-  const egress = wanted === 'open' && !serviceContainerId(env, hostname) ? 'deny_all' : wanted;
+  // Both kinds with a network leave only through the guard in the service's container.
+  const egress = wanted !== 'deny_all' && !serviceContainerId(env, hostname) ? 'deny_all' : wanted;
   return {
     adapter: 'docker',
     image: env.MELETE_SANDBOX_DOCKER_IMAGE ?? 'melete-sandbox:local',

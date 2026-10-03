@@ -59,6 +59,7 @@ export function agentView(
   chats = 0,
   lastUsed: Date | null = null,
   sharedSpace = false,
+  routines = 0,
 ): ExperienceAgent {
   return experienceAgent.parse({
     id: row.id,
@@ -78,7 +79,7 @@ export function agentView(
     is_default: row.isDefault,
     fixed_reach: row.isDefault && !sharedSpace,
     ...(row.faceImage ? { face_image: row.faceImage } : {}),
-    usage: { conversations: chats, last_used: lastUsed?.toISOString() ?? null },
+    usage: { conversations: chats, last_used: lastUsed?.toISOString() ?? null, routines },
   });
 }
 

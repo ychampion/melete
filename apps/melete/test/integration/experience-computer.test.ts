@@ -165,6 +165,7 @@ withDb('the computer view from recorded work', () => {
     expect(empty).toEqual({
       browser: null,
       terminal: [],
+      processes: [],
       available: { browser: false, terminal: false },
     });
   });

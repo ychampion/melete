@@ -131,7 +131,17 @@ export const sandboxAdapterTakesKey = (adapter: SandboxAdapter): boolean => adap
 /** The adapters whose sandboxes have a desktop for the `computer.*` tools. */
 export const sandboxAdapterHasDesktop = (adapter: SandboxAdapter): boolean => adapter === 'docker';
 
-export const SANDBOX_EGRESS_KINDS = ['deny_all', 'cidr_allowlist', 'open'] as const;
+/**
+ * `connected_hosts_only` lets out the hosts the operator lists in
+ * `MELETE_SANDBOX_EGRESS_EXTRA_HOSTS`, and nothing else. It needs the service's
+ * egress guard, so only the docker adapter offers it.
+ */
+export const SANDBOX_EGRESS_KINDS = [
+  'deny_all',
+  'cidr_allowlist',
+  'connected_hosts_only',
+  'open',
+] as const;
 export const SANDBOX_PERSISTENCE = ['ephemeral', 'pause', 'snapshot'] as const;
 
 /**
@@ -229,6 +239,13 @@ export const CONNECTION_KIND_SCOPES = {
     'computer.type',
     'computer.key',
     'computer.scroll',
+    'process.start',
+    'process.list',
+    'process.read',
+    'process.write',
+    'process.signal',
+    'process.stop',
+    'process.extend',
   ],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
@@ -1104,6 +1121,10 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         options: [
           { value: 'deny_all', label: 'Nothing at all' },
           { value: 'cidr_allowlist', label: 'Only the ranges below' },
+          {
+            value: 'connected_hosts_only',
+            label: 'Only the sites this installation allows (Docker)',
+          },
           { value: 'open', label: 'Anything (not recommended)' },
         ],
         default: 'deny_all',
@@ -1160,6 +1181,23 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         scope,
         label,
         effect_class: 'write_reversible' as const,
+        asks_first: false,
+        default: true,
+      })),
+      ...(
+        [
+          ['process.start', 'Start long-running work in the sandbox', 'write_reversible'],
+          ['process.list', 'See the work running in the sandbox', 'read'],
+          ['process.read', 'Read what that work printed', 'read'],
+          ['process.write', 'Type into that work', 'write_reversible'],
+          ['process.signal', 'Send a signal to that work', 'write_reversible'],
+          ['process.stop', 'Stop that work', 'write_reversible'],
+          ['process.extend', 'Give that work more time', 'write_reversible'],
+        ] as const
+      ).map(([scope, label, effect_class]) => ({
+        scope,
+        label,
+        effect_class,
         asks_first: false,
         default: true,
       })),

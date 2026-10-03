@@ -33,6 +33,7 @@ export const WORKSPACE_TESTS = [
   'a workspace unused past retention is destroyed with its snapshot',
   'deleting a space destroys its sandboxes and snapshots',
   'a failed pause leaves the workspace running and recorded, never lost silently',
+  'a command marker written before a suspend is read after the resume',
 ] as const;
 
 export type WorkspaceTest = (typeof WORKSPACE_TESTS)[number];
@@ -162,6 +163,38 @@ export function workspaceConformance(
       expect(await context.read(second, '/work/notes.txt')).toBe('remembered');
       await context.sessions.destroyWorkspace(second.id, context.provider, signal());
     });
+
+    scenario(
+      'a command marker written before a suspend is read after the resume',
+      async (context) => {
+        const marker = 'act_01J0WORKSPACEMARKER0001';
+        const command = (row: SessionRow, dispatch: 'first' | 'again') =>
+          runCommand({
+            provider: context.provider,
+            handle: sessionHandle(row),
+            request: {
+              marker,
+              argv: ['printf', 'before the suspend'],
+              timeoutMs: 20_000,
+              dispatch,
+            },
+            workRoot: context.workRoot,
+            jobId: JOB,
+            signal: signal(),
+          });
+        const first = await context.open(AGENT_A);
+        expect((await command(first, 'first')).outcome).toBe('succeeded');
+        await context.sessions.suspendWorkspace(first.id, context.provider, signal());
+        const second = await context.open(AGENT_A);
+        expect(second).toMatchObject({ status: 'ready', resumed: true });
+        // Asked again after the resume, the action is read from its marker, never run.
+        const again = await command(second, 'again');
+        expect(again).toMatchObject({ outcome: 'succeeded', late: true, reattached: true });
+        if (again.outcome === 'succeeded')
+          expect(text(again.record.preview)).toBe('before the suspend');
+        await context.sessions.destroyWorkspace(second.id, context.provider, signal());
+      },
+    );
 
     scenario('a workspace is not shared between two agents in the same space', async (context) => {
       const a = await context.open(AGENT_A);
@@ -374,6 +407,7 @@ async function contextFor(sql: Sql, subject: WorkspaceSubject, workRoot: string)
   const context = {
     sql,
     subject,
+    workRoot,
     provider,
     sessions,
     specFor,

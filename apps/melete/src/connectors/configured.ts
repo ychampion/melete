@@ -8,6 +8,7 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { createDeviceConnector } from '../devices/connector.ts';
 import type { DeviceHub } from '../devices/hub.ts';
+import { egressRecorder } from '../egress/records.ts';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import type { DockerSandboxSettings } from '../sandbox/adapters/docker.ts';
@@ -19,6 +20,7 @@ import {
   storedSandboxConnection,
 } from '../sandbox/connection.ts';
 import { dockerSandboxSettings } from '../sandbox/docker-default.ts';
+import { SandboxProcesses } from '../sandbox/processes.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
 import type { SandboxProvider } from '../sandbox/types.ts';
 import { browserArtifactSink } from '../workers/browser/artifacts.ts';
@@ -219,6 +221,8 @@ export type ConnectorOptions = {
  */
 export type SandboxRuntimeOptions = {
   sessions: SandboxSessions;
+  /** Background processes in agents' computers, with their caps. */
+  processes?: SandboxProcesses;
   project: string;
   e2bPlan: 'hobby' | 'pro';
   snapshotTtlSeconds: number;
@@ -418,6 +422,7 @@ export class ConnectorFactory {
         e2bPlan: sandbox.e2bPlan,
         maxConcurrent: sandbox.maxConcurrent,
         maxPerConnection: sandbox.maxPerConnection,
+        ...(sandbox.processes ? { processes: sandbox.processes } : {}),
         close: opened.close,
       });
       // A sandbox runs whatever it is asked to, so it is never offered to a public compartment.
@@ -768,6 +773,16 @@ export function connectorOptionsFromEnv(
               leaseSeconds: env.MELETE_SANDBOX_LEASE_SECONDS,
               workspaceRetentionSeconds: env.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS,
             }),
+            processes: new SandboxProcesses(sql, {
+              limits: {
+                maxPerComputer: env.MELETE_PROCESS_MAX_PER_COMPUTER,
+                maxPerSpace: env.MELETE_PROCESS_MAX_PER_SPACE,
+                defaultTtlMinutes: env.MELETE_PROCESS_DEFAULT_TTL_MINUTES,
+                maxTtlMinutes: env.MELETE_PROCESS_MAX_TTL_MINUTES,
+                outputMaxBytes: env.MELETE_PROCESS_OUTPUT_MAX_BYTES,
+                awakeSecondsPerDay: env.MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY,
+              },
+            }),
             project: env.MELETE_SANDBOX_PROJECT,
             e2bPlan: env.MELETE_E2B_PLAN,
             snapshotTtlSeconds: env.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS,
@@ -778,7 +793,7 @@ export function connectorOptionsFromEnv(
               process.env,
               env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT,
             ),
-            docker: dockerSandboxSettings(env),
+            docker: { ...dockerSandboxSettings(env), egressRecords: egressRecorder(sql) },
           },
         }
       : {}),

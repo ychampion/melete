@@ -19,7 +19,7 @@
  * this release will send anywhere.
  */
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, lstatSync } from 'node:fs';
 import { mkdir, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -196,7 +196,10 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
   };
 
   const read = async (target: string): Promise<Buffer> => {
-    const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const file = await open(
+      target,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
     try {
       const stat = await file.stat();
       if (!stat.isFile() || stat.size > limit)
@@ -271,6 +274,36 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
 
   return {
     manifest: artifactsManifest,
+    // Saved to the space as a new file, the person can open and delete it.
+    // Emailed it is gone, and saved over a file they have it replaces theirs.
+    staysInSpace(action, spaceId) {
+      const destination = action.canonical_payload.destination;
+      if (
+        action.kind !== 'artifact.publish' ||
+        typeof destination !== 'object' ||
+        destination === null ||
+        Array.isArray(destination) ||
+        destination.kind !== 'space_artifacts'
+      )
+        return false;
+      const source = action.canonical_payload.path;
+      const target =
+        typeof destination.path === 'string'
+          ? destination.path
+          : typeof source === 'string'
+            ? path.posix.basename(source)
+            : '';
+      try {
+        // A link counts as something already there, wherever it points.
+        return (
+          lstatSync(path.join(options.spacesRoot, spaceId, 'artifacts', ...segmentsFor(target)), {
+            throwIfNoEntry: false,
+          }) === undefined
+        );
+      } catch {
+        return false;
+      }
+    },
     async prepare(payload, ctx, tx) {
       const relative = typeof payload.path === 'string' ? payload.path : '';
       const area = payload.area === 'artifacts' ? 'artifacts' : 'work';
@@ -318,20 +351,36 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
         const segments = [ctx.space_id, 'artifacts', ...segmentsFor(target)];
         await mkdir(path.join(base, ctx.space_id, 'artifacts'), { recursive: true });
         const resolved = await noLinks(base, segments, true);
+        // Nobody was asked because the file was new, so it must still be new:
+        // one that appeared since is someone's, and is not replaced unasked.
+        const unasked = !action.authorization_ref;
         const file = await open(
           resolved,
-          constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW,
+          constants.O_WRONLY |
+            constants.O_CREAT |
+            constants.O_NOFOLLOW |
+            constants.O_NONBLOCK |
+            (unasked ? constants.O_EXCL : 0),
           0o600,
-        );
-        try {
-          const stat = await file.stat();
-          if (!stat.isFile()) throw new Error('the publish target is not a regular file');
-          await file.truncate(0);
-          await file.writeFile(bytes);
-          await file.sync();
-        } finally {
-          await file.close();
-        }
+        ).catch(async (error: unknown) => {
+          if (!unasked || (error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          // A retry of this same save finds its own bytes there and is done.
+          const there = await read(resolved).catch(() => null);
+          if (there && digest(there) === hash) return null;
+          throw new Error(
+            'the space already has a file with that name; saving over it needs the person to approve',
+          );
+        });
+        if (file)
+          try {
+            const stat = await file.stat();
+            if (!stat.isFile()) throw new Error('the publish target is not a regular file');
+            await file.truncate(0);
+            await file.writeFile(bytes);
+            await file.sync();
+          } finally {
+            await file.close();
+          }
         externalRef = target;
         detail = { destination: 'space_artifacts', path: target, bytes: bytes.byteLength };
       } else {

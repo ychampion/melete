@@ -1,0 +1,470 @@
+{
+  "fixture": "e2b",
+  "source": "authored-from-documented-api",
+  "note": "Authored from the documented E2B API before an account was available, not recorded from E2B. Re-record with MELETE_SANDBOX_LIVE=e2b, E2B_API_KEY and MELETE_SANDBOX_RECORD=1.",
+  "api": {
+    "control": "E2B REST API, spec/openapi.yml, e2b-dev/E2B at 3e5a48b",
+    "envd": "envd process and filesystem Connect services and /files, spec/envd, e2b-dev/E2B at 3e5a48b",
+    "sdk": "e2b 2.50.0 (JavaScript SDK), read for request shapes"
+  },
+  "exchanges": [
+    {
+      "request": {
+        "atMs": 0,
+        "method": "POST",
+        "url": "https://api.e2b.app/sandboxes",
+        "path": "/sandboxes",
+        "bodySha256": "c437a12dbbf30f8552de10f7f9decfc9f4dd4e059c728d63d732359f20e0432a",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "templateID": "base",
+          "timeout": 600,
+          "autoPause": false,
+          "secure": true,
+          "allow_internet_access": false,
+          "network": {
+            "allowPublicTraffic": false
+          },
+          "metadata": {
+            "melete.owner": "v1",
+            "melete.project": "e2b-test",
+            "melete.space": "sp_E2B",
+            "melete.session": "sbx_E2B"
+          },
+          "envVars": {}
+        }
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "eyJ0ZW1wbGF0ZUlEIjoiYmFzZSIsInNhbmRib3hJRCI6ImZha2Utc2J4LTAwMDEiLCJjbGllbnRJRCI6IjAwMDAwMDAwIiwiZW52ZFZlcnNpb24iOiIwLjYuNCIsImVudmRBY2Nlc3NUb2tlbiI6InJlZGFjdGVkIiwidHJhZmZpY0FjY2Vzc1Rva2VuIjoicmVkYWN0ZWQiLCJkb21haW4iOiJlMmIuYXBwIn0="
+          }
+        ],
+        "end": "complete",
+        "atMs": 0,
+        "body": {
+          "templateID": "base",
+          "sandboxID": "fake-sbx-0001",
+          "clientID": "00000000",
+          "envdVersion": "0.6.4",
+          "envdAccessToken": "redacted",
+          "trafficAccessToken": "redacted",
+          "domain": "e2b.app"
+        }
+      }
+    },
+    {
+      "request": {
+        "atMs": 0,
+        "method": "POST",
+        "url": "https://sandbox.e2b.app/process.Process/Start",
+        "path": "/process.Process/Start",
+        "bodySha256": "d946b171129feedee467aaa5519be4a36f5c398ac3c81c304ac30ddbdc570156",
+        "headers": {
+          "content-type": "application/connect+json",
+          "connect-protocol-version": "1",
+          "connect-timeout-ms": "60000",
+          "keepalive-ping-interval": "50",
+          "e2b-sandbox-id": "fake-sbx-0001",
+          "e2b-sandbox-port": "49983"
+        },
+        "body": [
+          {
+            "process": {
+              "cmd": "/bin/sh",
+              "args": ["-c", "mkdir -p /work && chown user /work"],
+              "cwd": "/"
+            },
+            "stdin": false
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/connect+json"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "AAAAACB7ImV2ZW50Ijp7InN0YXJ0Ijp7InBpZCI6MTAwMX19fQ=="
+          },
+          {
+            "atMs": 0,
+            "base64": "AAAAADp7ImV2ZW50Ijp7ImVuZCI6eyJleGl0ZWQiOnRydWUsInN0YXR1cyI6ImV4aXQgc3RhdHVzIDAifX19"
+          },
+          {
+            "atMs": 0,
+            "base64": "AgAAAAJ7fQ=="
+          }
+        ],
+        "end": "complete",
+        "atMs": 1,
+        "body": [
+          {
+            "event": {
+              "start": {
+                "pid": 1001
+              }
+            }
+          },
+          {
+            "event": {
+              "end": {
+                "exited": true,
+                "status": "exit status 0"
+              }
+            }
+          },
+          {
+            "end": {}
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "atMs": 1,
+        "method": "POST",
+        "url": "https://sandbox.e2b.app/process.Process/Start",
+        "path": "/process.Process/Start",
+        "bodySha256": "4f531d3657a7f3be3937e9be0688f072848c012ae9aa0a8052227a0bd642fc66",
+        "headers": {
+          "content-type": "application/connect+json",
+          "connect-protocol-version": "1",
+          "connect-timeout-ms": "50000",
+          "keepalive-ping-interval": "50",
+          "e2b-sandbox-id": "fake-sbx-0001",
+          "e2b-sandbox-port": "49983"
+        },
+        "body": [
+          {
+            "process": {
+              "cmd": "setsid",
+              "args": [
+                "/bin/sh",
+                "-c",
+                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0E2BENV00000000000000\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ { ( 'sh' '-c' 'printf \"%s|%s\" \"$GH_PROMPT_DISABLED\" \"$TZ\"' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | setsid -w sh -c 'head -c \"$1\"; exec cat > /dev/null' melete-keep 4194305; } > \"$d/out\"\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+              ],
+              "cwd": "/work",
+              "envs": {
+                "GH_PROMPT_DISABLED": "1",
+                "TZ": "Europe/Paris"
+              }
+            },
+            "stdin": false
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/connect+json"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "AAAAACB7ImV2ZW50Ijp7InN0YXJ0Ijp7InBpZCI6MTAwMn19fQ=="
+          },
+          {
+            "atMs": 0,
+            "base64": "AAAAADp7ImV2ZW50Ijp7ImVuZCI6eyJleGl0ZWQiOnRydWUsInN0YXR1cyI6ImV4aXQgc3RhdHVzIDAifX19"
+          },
+          {
+            "atMs": 0,
+            "base64": "AgAAAAJ7fQ=="
+          }
+        ],
+        "end": "complete",
+        "atMs": 2,
+        "body": [
+          {
+            "event": {
+              "start": {
+                "pid": 1002
+              }
+            }
+          },
+          {
+            "event": {
+              "end": {
+                "exited": true,
+                "status": "exit status 0"
+              }
+            }
+          },
+          {
+            "end": {}
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "atMs": 2,
+        "method": "POST",
+        "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
+        "path": "/filesystem.Filesystem/ListDir",
+        "bodySha256": "0024606e13a384cb061567f40d5c12d73dc26159a9488397fb537efa188fa4d9",
+        "headers": {
+          "content-type": "application/json",
+          "connect-protocol-version": "1",
+          "e2b-sandbox-id": "fake-sbx-0001",
+          "e2b-sandbox-port": "49983"
+        },
+        "body": {
+          "path": "/var/tmp/.melete-exec/act_01J0E2BENV00000000000000",
+          "depth": 32
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "eyJlbnRyaWVzIjpbeyJuYW1lIjoiZXhpdCIsInR5cGUiOiJGSUxFX1RZUEVfRklMRSIsInBhdGgiOiIvdmFyL3RtcC8ubWVsZXRlLWV4ZWMvYWN0XzAxSjBFMkJFTlYwMDAwMDAwMDAwMDAwMC9leGl0Iiwic2l6ZSI6IjEiLCJtb2RlIjo0MjAsIm93bmVyIjoidXNlciIsImdyb3VwIjoidXNlciJ9LHsibmFtZSI6Im91dCIsInR5cGUiOiJGSUxFX1RZUEVfRklMRSIsInBhdGgiOiIvdmFyL3RtcC8ubWVsZXRlLWV4ZWMvYWN0XzAxSjBFMkJFTlYwMDAwMDAwMDAwMDAwMC9vdXQiLCJzaXplIjoiMTQiLCJtb2RlIjo0MjAsIm93bmVyIjoidXNlciIsImdyb3VwIjoidXNlciJ9XX0="
+          }
+        ],
+        "end": "complete",
+        "atMs": 2,
+        "body": {
+          "entries": [
+            {
+              "name": "exit",
+              "type": "FILE_TYPE_FILE",
+              "path": "/var/tmp/.melete-exec/act_01J0E2BENV00000000000000/exit",
+              "size": "1",
+              "mode": 420,
+              "owner": "user",
+              "group": "user"
+            },
+            {
+              "name": "out",
+              "type": "FILE_TYPE_FILE",
+              "path": "/var/tmp/.melete-exec/act_01J0E2BENV00000000000000/out",
+              "size": "14",
+              "mode": 420,
+              "owner": "user",
+              "group": "user"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "atMs": 2,
+        "method": "GET",
+        "url": "https://sandbox.e2b.app/files",
+        "path": "/files?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0E2BENV00000000000000%2Fout&username=user",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {
+          "e2b-sandbox-id": "fake-sbx-0001",
+          "e2b-sandbox-port": "49983"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/octet-stream"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "MXxFdXJvcGUvUGFyaXM="
+          }
+        ],
+        "end": "complete",
+        "atMs": 2,
+        "body": {
+          "bytes": 14
+        }
+      }
+    },
+    {
+      "request": {
+        "atMs": 4,
+        "method": "POST",
+        "url": "https://sandbox.e2b.app/process.Process/Start",
+        "path": "/process.Process/Start",
+        "bodySha256": "c879dc52572c6ad103273d3f6b39912a157c663a553bbcdb95340f86810a76a1",
+        "headers": {
+          "content-type": "application/connect+json",
+          "connect-protocol-version": "1",
+          "connect-timeout-ms": "50000",
+          "keepalive-ping-interval": "50",
+          "e2b-sandbox-id": "fake-sbx-0001",
+          "e2b-sandbox-port": "49983"
+        },
+        "body": [
+          {
+            "process": {
+              "cmd": "setsid",
+              "args": [
+                "/bin/sh",
+                "-c",
+                "r=/var/tmp/.melete-exec\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { rm -f \"$r\" 2>/dev/null; mkdir -p -m 0700 \"$r\" 2>/dev/null; chmod 0700 \"$r\" 2>/dev/null; }\n[ -d \"$r\" ] && [ -w \"$r\" ] && [ -x \"$r\" ] || { echo melete_exec_root_unusable >&2; exit 112; }\nfind \"$r\" -mindepth 1 -maxdepth 1 -type d -mtime +6 -exec rm -rf -- {} + 2>/dev/null\nd=\"$r/act_01J0E2BENV00000000000001\"\nmkdir \"$d\" 2>/dev/null || { [ -e \"$d\" ] && { echo melete_exec_reentered >&2; exit 111; }; echo melete_exec_root_unusable >&2; exit 112; }\n{ { ( 'sh' '-c' 'printf \"%s|%s\" \"$GH_PROMPT_DISABLED\" \"$TZ\"' ) 2>&1; printf '%s\\n' \"$?\" > \"$d/status\"; } | setsid -w sh -c 'head -c \"$1\"; exec cat > /dev/null' melete-keep 4194305; } > \"$d/out\"\nec=\nread ec < \"$d/status\" 2>/dev/null\nrm -f \"$d/status\"\n[ -n \"$ec\" ] || exit 113\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
+              ],
+              "cwd": "/work"
+            },
+            "stdin": false
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/connect+json"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "AAAAACB7ImV2ZW50Ijp7InN0YXJ0Ijp7InBpZCI6MTAwM319fQ=="
+          },
+          {
+            "atMs": 0,
+            "base64": "AAAAADp7ImV2ZW50Ijp7ImVuZCI6eyJleGl0ZWQiOnRydWUsInN0YXR1cyI6ImV4aXQgc3RhdHVzIDAifX19"
+          },
+          {
+            "atMs": 0,
+            "base64": "AgAAAAJ7fQ=="
+          }
+        ],
+        "end": "complete",
+        "atMs": 4,
+        "body": [
+          {
+            "event": {
+              "start": {
+                "pid": 1003
+              }
+            }
+          },
+          {
+            "event": {
+              "end": {
+                "exited": true,
+                "status": "exit status 0"
+              }
+            }
+          },
+          {
+            "end": {}
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "atMs": 4,
+        "method": "POST",
+        "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
+        "path": "/filesystem.Filesystem/ListDir",
+        "bodySha256": "2091a2c11d491890261c0366e9241341c70be52731e4eaf2ba2293ffd3ad9eb6",
+        "headers": {
+          "content-type": "application/json",
+          "connect-protocol-version": "1",
+          "e2b-sandbox-id": "fake-sbx-0001",
+          "e2b-sandbox-port": "49983"
+        },
+        "body": {
+          "path": "/var/tmp/.melete-exec/act_01J0E2BENV00000000000001",
+          "depth": 32
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "eyJlbnRyaWVzIjpbeyJuYW1lIjoiZXhpdCIsInR5cGUiOiJGSUxFX1RZUEVfRklMRSIsInBhdGgiOiIvdmFyL3RtcC8ubWVsZXRlLWV4ZWMvYWN0XzAxSjBFMkJFTlYwMDAwMDAwMDAwMDAwMS9leGl0Iiwic2l6ZSI6IjEiLCJtb2RlIjo0MjAsIm93bmVyIjoidXNlciIsImdyb3VwIjoidXNlciJ9LHsibmFtZSI6Im91dCIsInR5cGUiOiJGSUxFX1RZUEVfRklMRSIsInBhdGgiOiIvdmFyL3RtcC8ubWVsZXRlLWV4ZWMvYWN0XzAxSjBFMkJFTlYwMDAwMDAwMDAwMDAwMS9vdXQiLCJzaXplIjoiMSIsIm1vZGUiOjQyMCwib3duZXIiOiJ1c2VyIiwiZ3JvdXAiOiJ1c2VyIn1dfQ=="
+          }
+        ],
+        "end": "complete",
+        "atMs": 4,
+        "body": {
+          "entries": [
+            {
+              "name": "exit",
+              "type": "FILE_TYPE_FILE",
+              "path": "/var/tmp/.melete-exec/act_01J0E2BENV00000000000001/exit",
+              "size": "1",
+              "mode": 420,
+              "owner": "user",
+              "group": "user"
+            },
+            {
+              "name": "out",
+              "type": "FILE_TYPE_FILE",
+              "path": "/var/tmp/.melete-exec/act_01J0E2BENV00000000000001/out",
+              "size": "1",
+              "mode": 420,
+              "owner": "user",
+              "group": "user"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "atMs": 4,
+        "method": "GET",
+        "url": "https://sandbox.e2b.app/files",
+        "path": "/files?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0E2BENV00000000000001%2Fout&username=user",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {
+          "e2b-sandbox-id": "fake-sbx-0001",
+          "e2b-sandbox-port": "49983"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/octet-stream"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "fA=="
+          }
+        ],
+        "end": "complete",
+        "atMs": 5,
+        "body": {
+          "bytes": 1
+        }
+      }
+    },
+    {
+      "request": {
+        "atMs": 5,
+        "method": "DELETE",
+        "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
+        "path": "/sandboxes/fake-sbx-0001",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
+      },
+      "response": {
+        "status": 204,
+        "headers": {},
+        "chunks": [],
+        "end": "complete",
+        "atMs": 5
+      }
+    }
+  ]
+}

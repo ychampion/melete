@@ -57,8 +57,12 @@ import {
   type SandboxTeardown,
   SpaceRemovalService,
 } from '../../src/spaces/removal.ts';
+import type { BlobStore } from '../../src/storage/blob.ts';
+import { LocalBlobStore } from '../../src/storage/local.ts';
+import { storeReferenced } from '../../src/storage/refs.ts';
 import { BrowserSiteService } from '../../src/workers/browser/sites.ts';
 import { FakeStdioLauncher } from '../fixtures/stdio-launcher.ts';
+import { testOwner } from '../helpers/blob-owner.ts';
 import { testDatabase } from '../helpers/database.ts';
 import { type SeededSpace, seedFiles, seedSpace } from './space-removal-fixture.ts';
 
@@ -94,7 +98,12 @@ type Overrides = {
   leaseMs?: number;
   retryMs?: number;
   stopJobs?: (jobIds: readonly string[]) => Promise<void>;
+  /** Null runs the removal with no blob store at all. */
+  blobs?: BlobStore | null;
 };
+
+/** One blob store for every removal here, as an installation has. */
+const blobs = new LocalBlobStore(join(root, 'blobs'));
 
 async function service(overrides: Overrides = {}) {
   if (!handle) throw new Error('Postgres unavailable');
@@ -114,6 +123,7 @@ async function service(overrides: Overrides = {}) {
     ...(overrides.runtimeHomes ? { runtimeHomes: overrides.runtimeHomes } : {}),
     ...(overrides.onPhase ? { onPhase: overrides.onPhase } : {}),
     ...(overrides.connectors ? { connectors: overrides.connectors } : {}),
+    ...(overrides.blobs === null ? {} : { blobs: overrides.blobs ?? blobs }),
   });
 }
 
@@ -319,6 +329,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   // space holds apart from its jobs.
   job: 'operational',
   artifact: 'operational',
+  // The bytes are files: they go in the files phase, and their references after them.
+  blob_ref: 'files',
   browser_recipe_candidate: 'operational',
   // With a browser worker, the browser phase takes these with the profile;
   // this test runs without one, so they go with the space's other rows.
@@ -347,7 +359,9 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   paired_device: 'operational',
   device_pairing: 'operational',
   question: 'operational',
+  sandbox_process: 'operational',
   sandbox_session: 'operational',
+  egress_record: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
   privacy_settings: 'operational',
@@ -647,6 +661,15 @@ describe.if(handle !== null)('removing a space', () => {
       values (${`sbx_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'fake',
         ${`sbx_provider_${seeded.spaceId}`}, 'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'closed',
         now(), now())`;
+    // Where that computer connected.
+    await sql`insert into egress_record (id, session_id, space_id, host, port, verdict, opened_at)
+      values (${`egr_${seeded.spaceId}`}, ${`sbx_${seeded.spaceId}`}, ${seeded.spaceId},
+        'example.com', 443, 'unattributed', now())`;
+    // A background process that ran in the agent's computer and was stopped.
+    await sql`insert into sandbox_process (id, space_id, agent_id, connection_id, session_id,
+        command_redacted, command_digest, cwd, name, state, expires_at, ended_at)
+      values (${`prc_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.agentId}, ${seeded.connectionId},
+        ${`sbx_${seeded.spaceId}`}, 'npm test', 'digest', '.', 'tests', 'stopped', now(), now())`;
     // The privacy router's rows: settings, a sealed vault, a conversation's state, an audit row.
     const conversation = `job_privacy_${seeded.spaceId}`;
     await sql`insert into privacy_settings (space_id, settings) values (${seeded.spaceId}, '{}'::jsonb)`;
@@ -1121,6 +1144,46 @@ describe.if(handle !== null)('removing a space', () => {
     expect(finished.counts).toMatchObject({ omitted: { sandboxes: 'capability_absent' } });
     expect(finished.blockedReason).toContain('sandboxes');
     expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(1);
+  });
+
+  test('removing a space leaves no blob only it referenced — and keeps one another space still needs', async () => {
+    const seeded = await seed('shared');
+    const neighbour = await seed('shared', 'The Neighbour');
+    const only = await storeReferenced(
+      sql,
+      blobs,
+      new TextEncoder().encode(`only ${seeded.spaceId}`),
+      testOwner(seeded.spaceId, 'only'),
+    );
+    const sharedBytes = new TextEncoder().encode(`shared ${seeded.spaceId}`);
+    const shared = await storeReferenced(
+      sql,
+      blobs,
+      sharedBytes,
+      testOwner(seeded.spaceId, 'mine'),
+    );
+    await storeReferenced(sql, blobs, sharedBytes, testOwner(neighbour.spaceId, 'theirs'));
+
+    const { finished } = await removeCompletely(seeded);
+    expect(outcome(finished)).toBe('complete');
+    expect(await blobs.head(only.key)).toBeNull();
+    expect(await blobs.head(shared.key)).not.toBeNull();
+    expect(await countOf(sql, 'blob_ref', sql`space_id = ${seeded.spaceId}`)).toBe(0);
+    expect(await countOf(sql, 'blob_ref', sql`space_id = ${neighbour.spaceId}`)).toBe(2);
+    expect(finished?.counts).toMatchObject({
+      providers: { blobs: 0 },
+      cleared: { blobs_deleted: 1 },
+    });
+  });
+
+  test('a space with blob references does not finish without the blob store — its references stay', async () => {
+    const seeded = await seed('shared');
+    const removals = await service({ blobs: null });
+    const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    const finished = await removals.run(fenced.id);
+    expect(finished.state).toBe('blocked');
+    expect(finished.counts).toMatchObject({ omitted: { files: 'capability_absent' } });
+    expect(await countOf(sql, 'blob_ref', sql`space_id = ${seeded.spaceId}`)).toBe(1);
   });
 
   test('removal_destroys_sandboxes — a space with a sandbox session ends it at the provider and finishes', async () => {
@@ -1810,6 +1873,7 @@ describe.if(handle !== null)('removing a space', () => {
       journal: routeJournal,
       roots: { spacesRoot, workRoot },
       leaseMs: 5_000,
+      blobs,
     });
     const app = createApp({
       db,

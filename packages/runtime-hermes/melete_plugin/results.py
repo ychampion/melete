@@ -29,7 +29,7 @@ UNRESOLVED = "unresolved"
 #: attempt at the effect, and the question is kept beside the approval, so a
 #: turn that also needs an answer may still ask it before it ends.
 END_TURN_INSTRUCTION = (
-    "This action is waiting for the owner's decision and has NOT happened. "
+    "This action is waiting for the person's decision and has NOT happened. "
     "Stop now. Do not retry it, do not work around it, and do not say it is "
     "done. If this task also needs the person to answer a question, ask it with "
     "ask_person before you end; say a question is on their screen only when "
@@ -45,7 +45,7 @@ FAILURE_INSTRUCTION = (
 UNCERTAIN_INSTRUCTION = (
     "The broker cannot tell whether this action happened. Do NOT retry it and do "
     "NOT claim either outcome. End your turn and say that it is unconfirmed; the "
-    "owner will be asked."
+    "person will be asked."
 )
 
 #: For a step on the agent's own computer: the agent checks, the owner is not asked.
@@ -53,7 +53,7 @@ OWN_COMPUTER_INSTRUCTION = (
     "Whether this step happened on your own computer is not known. Do NOT repeat it "
     "yet and do NOT claim either outcome. Check first: take a screenshot, read the "
     "page, or look for the files or output it would have left, then carry on from "
-    "what you find. The owner is not asked about it."
+    "what you find. The person is not asked about it."
 )
 
 

@@ -641,7 +641,7 @@ describe('a sandbox on this service Docker engine', () => {
     expect(sandboxCredentialRefusal('docker', 'anything')).toContain('takes no key');
   });
 
-  test('an adapter without a desktop is granted the terminal alone', () => {
+  test('an adapter without a desktop is granted the terminal and background processes alone', () => {
     for (const [adapter, key] of [
       ['e2b', 'e2b_0123456789'],
       ['daytona', 'dtn_0123456789'],
@@ -651,7 +651,13 @@ describe('a sandbox on this service Docker engine', () => {
       expect([
         adapter,
         installed.ok && installed.value.kind === 'sandbox' ? installed.value.scopes : installed,
-      ]).toEqual([adapter, ['terminal.run']]);
+      ]).toEqual([
+        adapter,
+        CONNECTION_KIND_SCOPES.sandbox.filter((scope) => !scope.startsWith('computer.')),
+      ]);
+      expect(
+        installed.ok && installed.value.kind === 'sandbox' ? installed.value.scopes : [],
+      ).toContain('process.start');
       expect(sandboxAdapterHasDesktop(adapter)).toBe(false);
     }
   });

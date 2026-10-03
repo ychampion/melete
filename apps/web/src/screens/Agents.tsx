@@ -26,7 +26,10 @@ import {
   Field,
   IconButton,
   Input,
+  Menu,
+  MenuItem,
   Overline,
+  Popover,
   Segmented,
   Select,
   Toggle,
@@ -37,7 +40,7 @@ import { lookOf, useApp, useLoad } from '../experience/hooks.ts';
 import type { Agent, AgentInput, AgentTemplate, Connection } from '../experience/types.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
-import { LibraryShelf, TemplateSheet, WelcomeSheet } from './AgentLibrary.tsx';
+import { Library, LibraryDraft, TemplateSheet } from './AgentLibrary.tsx';
 import { draftKey, followSaved } from './agent-draft.ts';
 import {
   kindsOfApp,
@@ -83,19 +86,6 @@ export const blankAgent = (): AgentInput => ({
   reads_memory: true,
   writes_memory: true,
 });
-
-/** What an agent may use besides its connections, in a few words. */
-export function reachWords(agent: Pick<Agent, 'uses_computer' | 'reads_memory' | 'writes_memory'>) {
-  const memory =
-    agent.reads_memory && agent.writes_memory
-      ? 'remembers'
-      : agent.reads_memory
-        ? 'reads memory only'
-        : agent.writes_memory
-          ? 'keeps memory, reads none'
-          : 'no memory';
-  return `${agent.uses_computer ? 'uses the computer' : 'no computer'} · ${memory}`;
-}
 
 /** Null reaches every connection, including ones connected later. */
 export const reaches = (ids: string[] | null, id: string) => ids === null || ids.includes(id);
@@ -737,15 +727,132 @@ export const inputOf = (agent: Agent): AgentInput => ({
   ...(agent.face_image ? { face_image: agent.face_image } : {}),
 });
 
-const usedWhen = (agent: Agent): string => {
-  if (!agent.usage.last_used) return 'Not used yet';
+/** When an agent last answered a chat, in a few words. */
+export function lastActive(agent: Pick<Agent, 'usage'>, now = new Date()): string {
+  if (!agent.usage.last_used) return 'No chats yet';
   const date = new Date(agent.usage.last_used);
-  const day =
-    date.toDateString() === new Date().toDateString()
-      ? 'today'
-      : date.toLocaleDateString('en-US', { weekday: 'long' });
-  return `${agent.usage.conversations} chat${agent.usage.conversations === 1 ? '' : 's'} · used ${day}`;
-};
+  const days = Math.round(
+    (new Date(now.toDateString()).getTime() - new Date(date.toDateString()).getTime()) / 86_400_000,
+  );
+  if (days <= 0) return 'Active today';
+  if (days === 1) return 'Active yesterday';
+  if (days < 7) return `Active ${date.toLocaleDateString('en-US', { weekday: 'long' })}`;
+  return `Active ${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+}
+
+/** The agent's own menu: edit, and delete for any agent but Melete. */
+function AgentMenu({
+  agent,
+  onEdit,
+  onDelete,
+}: {
+  agent: Agent;
+  onEdit: () => void;
+  onDelete?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ position: 'relative', display: 'flex' }}>
+      <IconButton
+        name="more"
+        label={`More for ${agent.name}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      />
+      <Popover open={open} onClose={() => setOpen(false)} align="right">
+        <Menu label={`${agent.name} options`} width={180}>
+          <MenuItem
+            icon="pencil"
+            onSelect={() => {
+              setOpen(false);
+              onEdit();
+            }}
+          >
+            Edit
+          </MenuItem>
+          {onDelete ? (
+            <MenuItem
+              icon="trash"
+              danger
+              onSelect={() => {
+                setOpen(false);
+                onDelete();
+              }}
+            >
+              Delete
+            </MenuItem>
+          ) : null}
+        </Menu>
+      </Popover>
+    </div>
+  );
+}
+
+function AgentCard({
+  agent,
+  on,
+  reach,
+  onDelete,
+}: {
+  agent: Agent;
+  on: boolean;
+  /** How many connections it may use, or null for everything. */
+  reach: number | null;
+  onDelete?: () => void;
+}) {
+  const routines = agent.usage.routines;
+  return (
+    <div className="agent-card" data-on={on ? 'true' : undefined}>
+      <a
+        data-agent-card={agent.id}
+        className="agent-card-main"
+        href={href(`/agents/${agent.id}`)}
+        aria-label={`Edit ${agent.name}, ${agent.role}`}
+      >
+        <AgentAvatar agent={agent} size={44} />
+        <span className="agent-card-text">
+          <span className="agent-card-name">
+            {agent.name}
+            <span className="agent-card-role"> · {agent.role}</span>
+          </span>
+          <span className="agent-card-meta">
+            <span>{lastActive(agent)}</span>
+            <span aria-hidden="true">·</span>
+            <span>
+              {routines ? `${routines} routine${routines === 1 ? '' : 's'}` : 'No routines'}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>
+              {agent.fixed_reach || reach === null
+                ? 'Reaches everything'
+                : reach
+                  ? `Reaches ${reach} app${reach === 1 ? '' : 's'}`
+                  : 'Reaches nothing yet'}
+            </span>
+          </span>
+        </span>
+      </a>
+      <div className="agent-card-actions">
+        {agent.is_default ? <Badge>Always here</Badge> : null}
+        <Button
+          size="sm"
+          variant="outline"
+          icon="chat"
+          aria-label={`Chat with ${agent.name}`}
+          onClick={() => navigate(`/chat/new?agent=${agent.id}`)}
+        >
+          Chat
+        </Button>
+        <AgentMenu
+          agent={agent}
+          onEdit={() => navigate(`/agents/${agent.id}`)}
+          onDelete={onDelete}
+        />
+      </div>
+    </div>
+  );
+}
 
 export function AgentsScreen({ selected }: { selected: string | null }) {
   const { agents, refreshAgents } = useApp();
@@ -756,15 +863,15 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
     AgentInput,
     'colour' | 'surface' | 'eye_colour'
   > | null>(null);
-  // A template the person chose opens as a draft to name and review; nothing
-  // is made until they save it.
+  // A template the person chose opens as a short draft to name and review;
+  // nothing is made until they create it. "More settings" moves that draft
+  // into the full editor.
   const [seed, setSeed] = useState<AgentTemplate | null>(null);
+  const [more, setMore] = useState<AgentInput | null>(null);
   const [deleting, setDeleting] = useState<Agent | null>(null);
   const [removing, setRemoving] = useState(false);
-  // A library template being read before it is added, and an agent just made
-  // from one, whose routine and questions are offered next.
+  // A library template being read before it is added.
   const [viewing, setViewing] = useState<AgentTemplate | null>(null);
-  const [welcome, setWelcome] = useState<{ agent: Agent; template: AgentTemplate } | null>(null);
 
   const wall = useMemo(() => {
     const items = WALL.map(([colour, shape], i) => ({
@@ -781,7 +888,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
   const key = draftKey(
     selected,
     selected === 'new'
-      ? { ...blankAgent(), ...(seed?.agent ?? {}), ...(picked ?? {}) }
+      ? { ...blankAgent(), ...(seed?.agent ?? {}), ...(picked ?? {}), ...(more ?? {}) }
       : current
         ? inputOf(current)
         : null,
@@ -790,6 +897,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
     () => (key === null ? null : (JSON.parse(key) as [string, AgentInput])[1]),
     [key],
   );
+  const connected = connections.data?.connections.filter((c) => c.status === 'connected') ?? [];
 
   // Back to the card that opened the drawer, so the keyboard picks up where it was.
   const closeTo = (id: string | null) => {
@@ -830,28 +938,40 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
     });
   };
 
+  /** A new library agent goes straight to its first chat, where it says hello. */
+  const welcomeIn = (agent: Agent, template: AgentTemplate) => {
+    refreshAgents();
+    templates.reload();
+    setSeed(null);
+    setMore(null);
+    navigate(`/chat/new?agent=${agent.id}&welcome=${template.id}`);
+  };
+
   const editor = initial ? (
     <AgentEditor
-      key={current?.id ?? `new-${seed?.id ?? 'blank'}`}
+      key={current?.id ?? `new-${seed?.id ?? 'blank'}${more ? '-more' : ''}`}
       agentId={current?.id ?? null}
       isDefault={current?.is_default === true}
       fixedReach={current?.fixed_reach === true}
       initial={initial}
-      connections={connections.data?.connections.filter((c) => c.status === 'connected') ?? []}
+      connections={connected}
       connectionsError={connections.error}
       onRetryConnections={connections.reload}
       onSaved={(agent) => {
+        const from = !current && seed ? seed : null;
+        if (from) {
+          welcomeIn(agent, from);
+          return;
+        }
         refreshAgents();
         templates.reload();
-        // A new agent from the library goes on to its routine and questions.
-        const from = !current && seed ? seed : null;
-        setSeed(null);
-        if (from && (from.starter_routine || from.questions.length))
-          setWelcome({ agent, template: from });
-        else toast({ kind: 'ok', title: `${agent.name} is ready.` });
+        toast({ kind: 'ok', title: `${agent.name} is ready.` });
         navigate(`/agents/${agent.id}`);
       }}
-      onClose={() => closeTo(current?.id ?? null)}
+      onClose={() => {
+        setMore(null);
+        closeTo(current?.id ?? null);
+      }}
       onDelete={current && !current.is_default ? () => setDeleting(current) : undefined}
       worksWith={!current && seed ? seed.works_best_with : undefined}
       reliesOn={!current && seed ? seed.relies_on : undefined}
@@ -865,38 +985,11 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
     );
   };
 
-  const panel = welcome ? (
-    <WelcomeSheet
-      key={welcome.agent.id}
-      agent={welcome.agent}
-      template={welcome.template}
-      onOpenAgent={() => {
-        setWelcome(null);
-        navigate(`/agents/${welcome.agent.id}`);
-      }}
-      onClose={() => {
-        setWelcome(null);
-        closeTo(welcome.agent.id);
-      }}
-    />
-  ) : viewing && selected === null ? (
-    <TemplateSheet
-      key={viewing.id}
-      template={viewing}
-      onAdd={() => {
-        setViewing(null);
-        fromTemplate(viewing);
-      }}
-      onClose={() => closeSheet(viewing.id)}
-    />
-  ) : (
-    editor
-  );
-
   const fromTemplate = (template: AgentTemplate) => {
     // The suggested name is one no agent here has, so "@name" stays clear.
     const taken = agents.map((agent) => agent.name);
     setPicked(null);
+    setMore(null);
     // The connections it works best with start ticked, so the draft shows
     // exactly what it will reach; the person can untick any before creating it.
     setSeed({
@@ -913,123 +1006,94 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
     navigate('/agents/new');
   };
 
+  const panel =
+    viewing && selected === null ? (
+      <TemplateSheet
+        key={viewing.id}
+        template={viewing}
+        connections={connections.data?.connections ?? []}
+        onAdd={() => {
+          setViewing(null);
+          fromTemplate(viewing);
+        }}
+        onClose={() => closeSheet(viewing.id)}
+      />
+    ) : selected === 'new' && seed && !more && initial ? (
+      <LibraryDraft
+        key={seed.id}
+        template={seed}
+        initial={initial}
+        connections={connected}
+        onCreated={(agent) => welcomeIn(agent, seed)}
+        onMore={(draft) => setMore(draft)}
+        onClose={() => {
+          const id = seed.id;
+          setSeed(null);
+          navigate('/agents');
+          requestAnimationFrame(() =>
+            document.querySelector<HTMLElement>(`[data-library-card="${id}"]`)?.focus(),
+          );
+        }}
+      />
+    ) : (
+      editor
+    );
+
+  const newAgent = () => {
+    setPicked(null);
+    setSeed(null);
+    setMore(null);
+    setViewing(null);
+    navigate('/agents/new');
+  };
+
   return (
     <Shell title="Agents" rail={false} panel={panel}>
-      <div className="page" style={{ gap: 20 }}>
+      <div className="page agents-page">
         <div className="page-head">
           <div className="col" style={{ gap: 4 }}>
             <h1>Agents</h1>
-            <p style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 520 }}>
+            <p className="agents-lede">
               Melete handles everything by default. Give it a face for a particular job, with its
               own tone and only the tools it needs. Type @ and a name in any chat to ask one.
             </p>
           </div>
-          <Button
-            icon="plus"
-            data-new-agent=""
-            onClick={() => {
-              setPicked(null);
-              setSeed(null);
-              setViewing(null);
-              navigate('/agents/new');
-            }}
-          >
+          <Button icon="plus" data-new-agent="" onClick={newAgent}>
             New agent
           </Button>
         </div>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-            gap: 12,
-          }}
-        >
-          {agents.map((agent) => {
-            const on = agent.id === selected;
-            const allowed = (connections.data?.connections ?? []).filter((c) =>
-              reaches(agent.allowed_connection_ids, c.id),
-            );
-            return (
-              <a
+        <section className="your-agents" aria-labelledby="your-agents-title">
+          <div className="lib-block-head">
+            <h2 id="your-agents-title" className="lib-title">
+              Your agents
+            </h2>
+          </div>
+          <div className="agent-grid">
+            {agents.map((agent) => (
+              <AgentCard
                 key={agent.id}
-                data-agent-card={agent.id}
-                className="card hoverable col"
-                href={href(`/agents/${agent.id}`)}
-                style={{
-                  borderRadius: 14,
-                  gap: 12,
-                  padding: 16,
-                  textDecoration: 'none',
-                  color: 'inherit',
-                  border: `1px solid ${on ? 'var(--primary)' : 'var(--line)'}`,
-                  boxShadow: on ? 'inset 0 0 0 1px var(--primary)' : 'none',
-                }}
-              >
-                <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
-                  <AgentAvatar agent={agent} size={48} />
-                  <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
-                    <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--heading)' }}>
-                      {agent.name}{' '}
-                      <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· {agent.role}</span>
-                    </span>
-                    <span style={{ fontSize: 13, color: 'var(--secondary)', lineHeight: '18px' }}>
-                      {agent.is_default
-                        ? agent.standing_instruction ||
-                          'Takes every chat unless you choose another agent.'
-                        : agent.standing_instruction || agent.tone}
-                    </span>
-                  </div>
-                  {agent.is_default ? <Badge>Always here</Badge> : null}
-                </div>
-                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                  <span className="row" style={{ gap: 4 }}>
-                    {allowed.slice(0, 5).map((c) => {
-                      const logo = logoFor(c.app);
-                      return logo ? (
-                        <Logo key={c.id} name={logo} size={20} />
-                      ) : (
-                        <span
-                          key={c.id}
-                          className="row"
-                          style={{
-                            justifyContent: 'center',
-                            width: 24,
-                            height: 24,
-                            borderRadius: 6,
-                            background: 'var(--soft)',
-                            border: '1px solid var(--line)',
-                            color: 'var(--secondary)',
-                          }}
-                        >
-                          <Icon name="connectors" size={13} />
-                        </span>
-                      );
-                    })}
-                  </span>
-                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                    {agent.fixed_reach
-                      ? 'reaches everything you connect'
-                      : allowed.length
-                        ? `reaches ${allowed.map((c) => c.label).join(', ')}`
-                        : 'reaches nothing yet'}{' '}
-                    · {reachWords(agent)}
-                  </span>
-                  <div className="grow" />
-                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>{usedWhen(agent)}</span>
-                </div>
-              </a>
-            );
-          })}
-        </div>
+                agent={agent}
+                on={agent.id === selected}
+                reach={
+                  agent.allowed_connection_ids === null
+                    ? null
+                    : connected.filter((c) => reaches(agent.allowed_connection_ids, c.id)).length
+                }
+                onDelete={agent.is_default ? undefined : () => setDeleting(agent)}
+              />
+            ))}
+          </div>
+        </section>
         {templates.data?.templates.length ? (
-          <LibraryShelf
+          <Library
             templates={templates.data.templates}
+            connections={connections.data?.connections ?? (connections.error ? [] : null)}
             open={viewing && selected === null ? viewing.id : null}
             onOpen={(template) => {
-              setWelcome(null);
               setViewing(template);
               if (selected !== null) navigate('/agents');
             }}
+            onNewAgent={newAgent}
           />
         ) : null}
         <div
@@ -1093,6 +1157,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
                   onClick={() => {
                     setPicked(look);
                     setSeed(null);
+                    setMore(null);
                     setViewing(null);
                     navigate('/agents/new');
                   }}

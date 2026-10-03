@@ -147,21 +147,37 @@ function resolveOwnerScope(sql: MemorySql, journal: FileRestrictionJournal) {
   };
 }
 
-/** Job workers derive ownership from durable catalog rows, never bundle metadata. */
+/**
+ * Job workers derive ownership from durable catalog rows, never bundle metadata.
+ * The job's principal is the reader: the space's owner reads its private
+ * memory, and a member of a shared space reads what the space shares, fenced by
+ * their current membership generation. A job that names no principal
+ * predates principals and belongs to the setup owner.
+ */
 function resolveJobScope(sql: MemorySql, journal: FileRestrictionJournal) {
   return async (jobId: string): Promise<MemoryScope> => {
-    const [row] = await sql`select o.id as owner_id, s.id as space_id,
+    const [row] = await sql`select o.id as owner_id, s.id as space_id, s.kind,
+      coalesce(s.owner_principal_id, o.id) as space_owner_id,
+      coalesce(j.principal_id, o.id) as principal_id,
+      ms.role as membership_role, ms.generation as membership_generation,
       m.owner_id as memory_owner_id, m.revoked
       from job j join space s on s.id = j.space_id cross join owner o
+      left join space_membership ms on ms.space_id = s.id
+        and ms.principal_id = coalesce(j.principal_id, o.id) and ms.revoked_at is null
       left join memory_spaces m on m.space_id = s.id where j.id = ${jobId}`;
     if (!row || row.revoked || (row.memory_owner_id && row.memory_owner_id !== row.owner_id))
       throw new MemoryError('scope_denied');
+    const isOwner = row.space_owner_id === row.principal_id;
+    if (row.kind === 'personal' ? !isOwner : !row.membership_role)
+      throw new MemoryError('scope_denied');
     const scope: MemoryScope = {
       ownerId: row.owner_id,
+      principalId: row.principal_id,
+      membershipGeneration: Number(row.membership_generation ?? 0),
       spaceId: row.space_id,
       publisher: 'job-worker',
-      audience: 'private',
-      role: 'owner',
+      audience: isOwner ? 'private' : 'space',
+      role: isOwner ? 'owner' : 'reader',
     };
     if (!row.memory_owner_id) await provisionNewSpace(sql, journal, scope);
     return scope;

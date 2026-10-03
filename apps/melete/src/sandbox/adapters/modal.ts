@@ -33,7 +33,14 @@
  * stores the `melete.*` labels with `_` for `.` and reads them back the same way.
  */
 import { LABEL_SESSION, ownedLabels } from '../manifest.ts';
-import { reattachByMarker } from '../marker.ts';
+import {
+  ENV_FILE_ROOT,
+  envFileBody,
+  envFilePath,
+  reattachByMarker,
+  SOURCE_ENV_FILE,
+  VAR_TMP_MARKER_ROOT,
+} from '../marker.ts';
 import {
   type ExecOutcome,
   type ExecSpec,
@@ -60,7 +67,9 @@ const MiB = 1024 * 1024;
 const SANDBOX_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const PLAIN = /^[A-Za-z0-9._-]{1,128}$/;
 /** Enter the working directory or report, as the wrapper's setup failure does, that nothing ran. */
-const LAUNCHER = 'cd "$1" 2>/dev/null || exit 112; shift; exec env "$@"';
+const LAUNCHER = `cd "$1" 2>/dev/null || exit 112; shift; ${SOURCE_ENV_FILE}; exec env "$@"`;
+/** The command's environment, written where only the sandbox user can read it. */
+const ENV_WRITE = 'umask 077 && mkdir -p -- "$1" && cat > "$2"';
 const LIST = '[ -d "$1" ] || exit 3; cd "$1" && exec find . -mindepth 1 -printf "%y %s %m %P\\0"';
 const READ = '[ -f "$1" ] || exit 3; exec head -c "$2" -- "$1"';
 const WRITE = 'mkdir -p -- "$1" && cat > "$2" && chmod "$3" -- "$2"';
@@ -84,6 +93,8 @@ export function modalCapabilities(): SandboxCapabilities {
     maxIdleSeconds: 86_400,
     streaming: false,
     reattach: 'marker_only',
+    // `/var/tmp` is on the sandbox's filesystem, which a snapshot keeps.
+    markerRoot: VAR_TMP_MARKER_ROOT,
     ports: 'none',
     image: 'registry',
     billing: 'per_second',
@@ -324,8 +335,23 @@ export function createModalProvider(options: ModalOptions): ModalSandboxProvider
       if (!spec.cwd.startsWith('/'))
         throw new SandboxAdapterRefusal('a working directory must be absolute');
       let hide: string[];
+      let envFile = '-';
+      // Everything before the command is sent is provably not the command.
       try {
         hide = await hiddenVariables(id, handle, signal);
+        if (spec.env && Object.keys(spec.env).length > 0) {
+          envFile = envFilePath(spec.marker);
+          const written = await run(
+            handle,
+            ENV_WRITE,
+            [ENV_FILE_ROOT, envFile],
+            4096,
+            signal,
+            envFileBody(spec.env),
+          );
+          if (written.exitCode !== 0)
+            throw new Error(`the environment could not be written (exit ${written.exitCode})`);
+        }
       } catch (error) {
         if (error instanceof SandboxAdapterRefusal) throw error;
         throw new SandboxStartRefused(`the command was not sent: ${message(error)}`);
@@ -343,6 +369,7 @@ export function createModalProvider(options: ModalOptions): ModalSandboxProvider
               LAUNCHER,
               'melete-launch',
               spec.cwd,
+              envFile,
               ...hide.flatMap((name) => ['-u', name]),
               'timeout',
               '-s',

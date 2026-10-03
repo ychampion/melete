@@ -24,6 +24,7 @@ import {
   sandboxExecManifest,
   sandboxTerminalManifest,
 } from './sandbox-exec.ts';
+import { PROCESS_TOOL_NAMES } from './sandbox-process.ts';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -65,9 +66,13 @@ test('every computer tool is a sandbox tool the manifest offers, with the deskto
     expect(tool.required_scopes).toEqual([tool.name]);
     expect((tool.input_schema as { required: string[] }).required).toContain('step');
   }
-  expect(sandboxTerminalManifest.tools.map((tool) => tool.name)).toEqual(['terminal.run']);
+  expect(sandboxTerminalManifest.tools.map((tool) => tool.name)).toEqual([
+    'terminal.run',
+    ...PROCESS_TOOL_NAMES,
+  ]);
   expect(sandboxExecManifest.tools.map((tool) => tool.name)).toEqual([
     'terminal.run',
+    ...PROCESS_TOOL_NAMES,
     ...COMPUTER_TOOL_NAMES,
   ]);
   expect(

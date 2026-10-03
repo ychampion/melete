@@ -41,6 +41,7 @@ test('with neither a browser nor a sandbox, the panel says how to give the agent
   const html = render({
     browser: null,
     terminal: [],
+    processes: [],
     available: { browser: false, terminal: false },
   });
   expect(html).toContain('Nova has no computer yet');
@@ -81,6 +82,7 @@ test('the agent’s page, who holds it, and the commands it ran', () => {
         started_at: AT,
       },
     ],
+    processes: [],
     available: { browser: true, terminal: true },
   });
   expect(html).toContain('tables.example/venues/luna');
@@ -98,6 +100,7 @@ test('while the person holds the browser, the page is live and can be handed bac
   const html = render({
     browser: browser('you'),
     terminal: [],
+    processes: [],
     available: { browser: true, terminal: true },
   });
   expect(html).toContain('You have control');
@@ -112,6 +115,7 @@ test('a page with no picture says so rather than showing an old one', () => {
   const html = render({
     browser: { ...browser('agent'), screenshot: null },
     terminal: [],
+    processes: [],
     available: { browser: true, terminal: false },
   });
   expect(html).toContain('No picture of this page yet.');
@@ -170,7 +174,12 @@ const renderDesktop = (control: 'agent' | 'human', running = true) =>
   renderToStaticMarkup(
     <ComputerPanel
       agent={NOVA}
-      computer={{ browser: null, terminal: [], available: { browser: false, terminal: true } }}
+      computer={{
+        browser: null,
+        terminal: [],
+        processes: [],
+        available: { browser: false, terminal: true },
+      }}
       desktop={desktop(control, running)}
       error={null}
       onClose={() => {}}
@@ -201,7 +210,12 @@ test('while the agent is not at work, nothing says it has control', () => {
   const html = renderToStaticMarkup(
     <ComputerPanel
       agent={NOVA}
-      computer={{ browser: null, terminal: [], available: { browser: false, terminal: true } }}
+      computer={{
+        browser: null,
+        terminal: [],
+        processes: [],
+        available: { browser: false, terminal: true },
+      }}
       desktop={desktop('agent')}
       error={null}
       working={false}

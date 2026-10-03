@@ -48,6 +48,7 @@ test('a conversation shows the page its agent opened and the command it ran', as
   expect(empty).toEqual({
     browser: null,
     terminal: [],
+    processes: [],
     available: { browser: true, terminal: true },
   });
   const view = await computer();
@@ -114,7 +115,12 @@ test('a person takes the browser, watches it live, and hands it back', async () 
 
 test('without a browser or sandbox, the view is empty and says neither is available', async () => {
   const { empty, computer } = await booking({ computer: false });
-  const none = { browser: null, terminal: [], available: { browser: false, terminal: false } };
+  const none = {
+    browser: null,
+    terminal: [],
+    processes: [],
+    available: { browser: false, terminal: false },
+  };
   expect(empty).toEqual(none);
   expect(await computer()).toEqual(none);
 });

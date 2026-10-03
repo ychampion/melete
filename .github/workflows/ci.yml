@@ -75,8 +75,24 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 30
+      # The blob store suites run against this S3-compatible service as well as
+      # a local directory. Pinned by digest; its keys guard nothing but this
+      # job's own loopback port. The image is a frozen archive that gets no
+      # updates; move to a maintained MinIO image when one is published.
+      minio:
+        image: bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+        env:
+          MINIO_ROOT_USER: melete_test
+          MINIO_ROOT_PASSWORD: melete_test_minio
+          MINIO_DEFAULT_BUCKETS: melete-test
+        ports:
+          - 9000:9000
     env:
       DATABASE_URL: postgres://melete_test:melete_test@127.0.0.1:5432/postgres
+      MELETE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      MELETE_TEST_S3_BUCKET: melete-test
+      MELETE_TEST_S3_ACCESS_KEY_ID: melete_test
+      MELETE_TEST_S3_SECRET_ACCESS_KEY: melete_test_minio
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -118,6 +134,13 @@ jobs:
         run: |
           test "$(id -u)" -ne 0
           bun run doctor
+      - name: Wait for the S3-compatible store
+        run: |
+          for _ in $(seq 60); do
+            curl -fsS http://127.0.0.1:9000/minio/health/ready && exit 0
+            sleep 2
+          done
+          exit 1
       - name: Test suite
         run: bun run test
       - name: Runtime plugin suite
@@ -316,6 +339,13 @@ jobs:
         run: |
           mkdir -p sandbox-shots
           bun test apps/melete/src/sandbox/adapters/docker.live.test.ts --timeout=300000 --max-concurrency=1
+      # Background processes through the service's whole path: a three-minute process
+      # started in one attempt, read in a second and seen to finish in a third.
+      - name: Keep background processes across attempts
+        env:
+          MELETE_SANDBOX_LIVE: docker
+          DATABASE_URL: postgres://melete_test:melete_test@127.0.0.1:5432/postgres
+        run: bun test apps/melete/src/sandbox/adapters/docker-processes.live.test.ts --timeout=900000 --max-concurrency=1
       # Open egress needs the caller in a container on the same engine, as the service is in
       # the Compose deployment, so it can join each sandbox's network as its only way out.
       - name: Reach the internet only through the service

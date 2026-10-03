@@ -10,7 +10,6 @@
 
 import type { AttemptBundle, RuntimeAdapter } from '@melete/contracts';
 import { brokerCatalogState } from '@melete/runtime-hermes';
-import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ZodError } from 'zod';
@@ -65,9 +64,9 @@ import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
-import { connection } from './db/schema.ts';
 import { mountDevices } from './devices/routes.ts';
 import { DeviceService } from './devices/service.ts';
+import { startEgressRetention } from './egress/records.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { removeDeletedRoutineThreads } from './experience/removal.ts';
@@ -87,6 +86,7 @@ import { startQueue } from './jobs/queue.ts';
 import { ReactionService } from './jobs/reactions.ts';
 import { ReplyService } from './jobs/replies.ts';
 import { AttemptRunner } from './jobs/runner.ts';
+import { connectionScopesForJob } from './jobs/scopes.ts';
 import { JobService } from './jobs/service.ts';
 import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
@@ -142,6 +142,7 @@ import {
 } from './runtime/supervisor.ts';
 import { mountSandboxComputers, SandboxComputerService } from './sandbox/computer.ts';
 import { sandboxKeyCheck } from './sandbox/connection.ts';
+import { startProcesses } from './sandbox/processes.ts';
 import {
   type SandboxWiring,
   sandboxKeyChange,
@@ -150,6 +151,8 @@ import {
 } from './sandbox/wiring.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
+import { configuredBlobStore } from './storage/blob.ts';
+import { BlobCollector } from './storage/gc.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
 import { type BrowserSessionService, mountBrowserSessions } from './workers/browser/routes.ts';
 import { mountBrowserSites } from './workers/browser/sites.ts';
@@ -516,10 +519,12 @@ export async function bootstrap(
   let browser: Awaited<ReturnType<typeof configuredBrowserSessions>>;
   let connections: ConfiguredConnection[] = [];
   let episodeRetention: ReturnType<typeof setInterval> | undefined;
+  let stopEgressRetention: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
   let removals: SpaceRemovalService | undefined;
+  let blobs: ReturnType<typeof startBlobs> | undefined;
   let memoryGateway: Awaited<ReturnType<typeof configuredMemoryGateway>> | undefined;
   let voiceCompanion: Awaited<ReturnType<typeof configuredVoiceCompanion>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
@@ -534,12 +539,15 @@ export async function bootstrap(
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   let sandboxComputers: SandboxComputerService | undefined;
+  let processSweep: { stop(): void } | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
     supervisedRuntime?.beginShutdown();
     clearInterval(episodeRetention);
+    stopEgressRetention?.();
     sandboxes?.stop();
+    processSweep?.stop();
     let failure: unknown;
     for (const stop of [
       () =>
@@ -559,6 +567,7 @@ export async function bootstrap(
         removals?.stop();
         return removals?.drain();
       },
+      () => blobs?.collector.stop(),
       () => memory?.stop(),
       () => memoryGateway?.close(),
       () => voiceCompanion?.close(),
@@ -594,6 +603,7 @@ export async function bootstrap(
         );
       }, 60_000);
       episodeRetention.unref();
+      stopEgressRetention = startEgressRetention(handle.sql, env.MELETE_EGRESS_RECORD_DAYS);
     }
     if (handle) {
       // Before the registry is built, so an upgraded database gains its default connectors now.
@@ -650,6 +660,7 @@ export async function bootstrap(
           () => connectors.sandboxProviders,
         );
       }
+      processSweep = startProcesses(connectors);
       // Boot reconciliation, before any attempt can open a session of its own.
       if (sandboxes) {
         await sandboxes.reconcile(AbortSignal.timeout(120_000));
@@ -876,22 +887,17 @@ export async function bootstrap(
           : {}),
         loadCatalog: catalog?.forAttempt,
         liveConnectionScopes: !env.MELETE_ENABLE_TEST_CONNECTOR,
-        // The scopes the space's active connections grant, and the lifecycle
-        // wait. The test connector's scopes are added beside them when it is
-        // enabled, so a `--fake` installation keeps its default tools.
-        scopesForJob: async (tx, row) => {
-          const granted = await tx
-            .select({ scopes: connection.scopes })
-            .from(connection)
-            .where(and(eq(connection.spaceId, row.spaceId), eq(connection.status, 'active')));
-          return [
+        // The scopes the active connections the job may use grant, and the
+        // lifecycle wait. The test connector's scopes are added beside them when
+        // it is enabled, so a `--fake` installation keeps its default tools.
+        scopesForJob: async (tx, row) =>
+          [
             ...new Set([
-              ...granted.flatMap((entry) => entry.scopes),
+              ...(await connectionScopesForJob(tx, row)),
               'job.wait',
               ...(env.MELETE_ENABLE_TEST_CONNECTOR ? TEST_CONNECTOR_SCOPES : []),
             ]),
-          ].sort();
-        },
+          ].sort(),
       });
       // An attempt that ends leaves no sandbox running: its workspace is
       // suspended, and an ephemeral session is closed. Settled after the
@@ -970,6 +976,7 @@ export async function bootstrap(
       // A removal outlives the request that asked for it and the process that
       // was running it, so it is resumed at startup and every minute after.
       const journal = (deploymentMemory?.routes ?? memory)?.journal;
+      if (handle) blobs = startBlobs(handle.sql, env, options.workers !== false);
       if (handle && journal) {
         removals = new SpaceRemovalService({
           db: handle.db,
@@ -984,6 +991,8 @@ export async function bootstrap(
           // its connection rows, and the removal finishes only on what those
           // providers say they still hold.
           ...(removeSandboxes ? { sandboxes: removeSandboxes } : {}),
+          // Blobs only this space referred to go with it.
+          ...(blobs ? { blobs: blobs.store } : {}),
           // The worker stops, the profile goes, and the site rows with it.
           ...(browser ? { browser: browser.sessions } : {}),
           ...(env.MELETE_BROWSER_SPACE ? { browserSpace: env.MELETE_BROWSER_SPACE } : {}),
@@ -1115,6 +1124,7 @@ export async function bootstrap(
     effectBoundary,
     browserSessions: browser?.sessions,
     removals,
+    blobs: blobs?.store,
     connections,
     learning,
     memory,
@@ -1124,6 +1134,17 @@ export async function bootstrap(
     registry,
     close,
   };
+}
+
+/**
+ * The blob store this installation is configured for, and its collector, which
+ * runs once a day where this process runs workers.
+ */
+function startBlobs(sql: Sql, env: Env, workers: boolean) {
+  const store = configuredBlobStore(env);
+  const collector = new BlobCollector({ sql, store });
+  if (workers) collector.start();
+  return { store, collector };
 }
 
 if (import.meta.main) {

@@ -7,7 +7,7 @@
  */
 
 import { mentionedAgent } from '@melete/contracts/mention';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { amountWords } from '../companies/format.ts';
 import { Icon } from '../design/icons.tsx';
 import {
@@ -80,7 +80,9 @@ import {
 import { pauseOrStop } from './pause.ts';
 import { VoicePanel } from './VoiceMode.tsx';
 import { useVoiceStatus } from './voice.ts';
+import { WelcomeThread } from './Welcome.tsx';
 import { AgentLine, LogEntries, WorkLog } from './WorkLog.tsx';
+import type { WelcomeRef } from './welcome.ts';
 import { FINISHED, finalText, foldedTurns, layoutTurn } from './worklog.ts';
 import './chat.css';
 
@@ -531,6 +533,14 @@ export function ChatScreen({ id }: { id: string | null }) {
   const fallback = asked ?? defaultAgentOf(agents);
   const state = useConversation(conversationId);
   const { conversation, transcript, setTranscript } = state;
+  // A library agent's first chat opens with its welcome. Its link names the
+  // template, so the welcome stays once the chat starts and after a reload.
+  const welcomeId = route.query.get('welcome');
+  const welcomeAgent = conversationId ? (conversation?.agent_id ?? null) : (asked?.id ?? null);
+  const welcome: WelcomeRef | null = useMemo(
+    () => (welcomeAgent && welcomeId ? { agentId: welcomeAgent, templateId: welcomeId } : null),
+    [welcomeAgent, welcomeId],
+  );
   const chatActions = (size?: number) =>
     conversation ? (
       <ChatActions
@@ -715,7 +725,12 @@ export function ChatScreen({ id }: { id: string | null }) {
             sub: accepted.error ?? accepted.unavailable ?? '',
           });
         refreshConversations();
-        navigate(`/chat/${created.data.conversation.id}`);
+        // The welcome's link, with where the person got to, moves to the new chat.
+        const kept = new URLSearchParams(window.location.hash.split('?')[1] ?? '');
+        kept.delete('agent');
+        navigate(
+          `/chat/${created.data.conversation.id}${welcome && kept.size ? `?${kept.toString()}` : ''}`,
+        );
         return accepted.data !== null;
       }
       // "@Scout …" is answered by Scout; the drawn message says so before the service does.
@@ -753,7 +768,7 @@ export function ChatScreen({ id }: { id: string | null }) {
       }
       return box.send(localId, post);
     },
-    [conversationId, agentId, fallback, agents, state, refreshConversations],
+    [conversationId, agentId, fallback, agents, state, refreshConversations, welcome],
   );
 
   const retry = (localId: string) => void outbox.current?.retry(localId);
@@ -1034,7 +1049,8 @@ export function ChatScreen({ id }: { id: string | null }) {
                   <span className="overline">Today</span>
                 </div>
               ) : null}
-              {transcript.turns.length === 0 && !state.loading ? (
+              {welcome ? <WelcomeThread welcome={welcome} onTry={setText} /> : null}
+              {transcript.turns.length === 0 && !state.loading && !welcome ? (
                 <div
                   className="col"
                   style={{

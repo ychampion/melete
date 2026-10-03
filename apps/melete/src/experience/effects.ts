@@ -324,10 +324,12 @@ export class ExperienceEffects {
     if ('reason' in effect) return effect;
     if (effect.status === 'needs_approval') {
       // This route is the explicit owner decision for these exact reversal bytes.
-      await this.broker.decide(effect.id, {
-        decision: 'approved',
-        payload_hash: effect.payload_hash,
-      });
+      await this.broker.decide(
+        effect.id,
+        { decision: 'approved', payload_hash: effect.payload_hash },
+        undefined,
+        requestPrincipal(),
+      );
       await this.broker.admit(
         await this.claims(effect.job_id, effect.connection_id),
         effect.id,

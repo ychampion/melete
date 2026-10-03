@@ -16,6 +16,7 @@ import {
   rewindPreview,
   rewindTarget,
 } from './beliefs.ts';
+import { PROCESS_STATES } from './execution.ts';
 import { memoryKey } from './memory.ts';
 import { privacyOperations } from './privacy.ts';
 import { messageId } from './reactions.ts';
@@ -684,7 +685,8 @@ export const experienceAgent = agentInput.extend({
    * Melete starts with no connections and its owner chooses what it may use.
    */
   fixed_reach: z.boolean(),
-  usage: z.strictObject({ conversations: count, last_used: date.nullable() }),
+  /** Its chats, when it last answered one, and the routines that run as it. */
+  usage: z.strictObject({ conversations: count, last_used: date.nullable(), routines: count }),
 });
 export type ExperienceAgent = z.infer<typeof experienceAgent>;
 /** The shelves of the agent library, in the order a client shows them. */
@@ -739,6 +741,36 @@ export const templateQuestion = z.strictObject({
   placeholder: z.string().max(120),
   memory_key: memoryKey.refine((key) => key.startsWith('pref.'), 'Use a pref. key.'),
 });
+/** Where a piece of work in a template's example day reaches, drawn as a chat's work row. */
+export const TEMPLATE_DAY_REACH = [
+  'mail',
+  'calendar',
+  'files',
+  'web',
+  'browser',
+  'computer',
+  'memory',
+] as const;
+/**
+ * An example of one exchange with a library agent, shown before it is added so
+ * the person sees how it works in a chat: what they ask, its first message,
+ * the work it does, the one question it asks, and what it says at the end. It
+ * is an illustration, never something that ran.
+ */
+export const templateDay = z.strictObject({
+  ask: z.string().min(1).max(200),
+  opening: z.string().min(1).max(240),
+  work: z
+    .array(z.strictObject({ reach: z.enum(TEMPLATE_DAY_REACH), title: z.string().min(1).max(100) }))
+    .min(2)
+    .max(4),
+  question: z.strictObject({
+    text: z.string().min(1).max(160),
+    /** The first is the answer the example goes on with. */
+    options: z.array(z.string().min(1).max(60)).length(2),
+  }),
+  answer: z.string().min(1).max(480),
+});
 export const agentTemplate = z.strictObject({
   id,
   title: text,
@@ -763,6 +795,7 @@ export const agentTemplate = z.strictObject({
   skills: z.array(z.string().regex(/^[a-z0-9-]{1,64}$/)).max(4),
   /** Offered during setup as well as in the library. */
   featured: z.boolean(),
+  day: templateDay,
   agent: agentInput,
 });
 export type AgentTemplate = z.infer<typeof agentTemplate>;
@@ -1048,10 +1081,27 @@ export const computerBrowser = z.strictObject({
   seen_at: date.nullable(),
 });
 export type ComputerBrowser = z.infer<typeof computerBrowser>;
-/** What a conversation's agent is doing on its computer: its browser and its terminal. */
+/** How many processes a conversation's computer view carries: the live ones, then the latest ended. */
+export const COMPUTER_PROCESS_LIMIT = 8;
+/** One background process in the agent's computer, as the person may see it. */
+export const computerProcess = z.strictObject({
+  id,
+  name: z.string().max(120),
+  state: z.enum(PROCESS_STATES),
+  started_at: date,
+  /** The port the process said it serves, when it is a server. */
+  port: z.number().int().min(1).max(65_535).nullable(),
+  /** The last line it printed, scrubbed and clipped. */
+  last_line: z.string().max(240).nullable(),
+  /** Whether a preview of its port can be opened from here. */
+  can_preview: z.boolean(),
+});
+export type ComputerProcess = z.infer<typeof computerProcess>;
+/** What a conversation's agent is doing on its computer: its browser, its terminal and its processes. */
 export const agentComputer = z.strictObject({
   browser: computerBrowser.nullable(),
   terminal: z.array(computerCommand).max(COMPUTER_TERMINAL_LIMIT),
+  processes: z.array(computerProcess).max(COMPUTER_PROCESS_LIMIT).default([]),
   /** Which parts this service can run at all, so an empty view can say what to connect. */
   available: z.strictObject({ browser: z.boolean(), terminal: z.boolean() }),
 });

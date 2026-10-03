@@ -12,7 +12,7 @@ import type { Query } from './records.ts';
 export const RESUME_ACTION_TOOL: ToolSpec = {
   name: 'resume_action',
   description:
-    'Carry out an action the owner already approved, exactly as approved. Pass its action_id; the stored payload is sent, so do not propose the tool again.',
+    'Carry out an action the person already approved, exactly as approved. Pass its action_id; the stored payload is sent, so do not propose the tool again.',
   effect_class: 'write_external',
   connection_id: null,
   input_schema: {

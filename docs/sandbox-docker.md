@@ -107,14 +107,44 @@ instead.
   are refused, and there is no DNS inside the container. Commands and the
   browser are pointed at the guard. These are the same rules the browser worker
   follows.
+- `connected_hosts_only`: the same way out, through the same guard, to the
+  hosts listed in `MELETE_SANDBOX_EGRESS_EXTRA_HOSTS` (for example a package
+  registry or a code host), and nothing else. Entries are names, or
+  `.example.com` for every name below one; a suffix needs at least two labels.
+  With the list empty, the computer reaches nothing. The list is read at each
+  connection.
 - `deny_all`: no network at all.
 
 An allow-list of address ranges is not offered by this provider; asking for one
 is refused rather than widened.
 
-`open` needs the service to run in a container on the same engine, as it does
-in the Compose deployment, so that it can be the one way out. Where it does not,
-the default Computer connection is created with `deny_all` instead.
+`open` and `connected_hosts_only` need the service to run in a container on the
+same engine, as it does in the Compose deployment, so that it can be the one way
+out. Where it does not, the default Computer connection is created with
+`deny_all` instead.
+
+### Where each command reached
+
+Each command the agent runs gets its own proxy address, carrying a token that
+names that command. The guard accepts the token only from the computer it was
+made for, and only while the command runs. Every connection the computer opens,
+or tries to open, is recorded: the host and port, whether it was tunnelled or
+refused and why, the bytes each way, and the command it belonged to. Each
+command's result lists the hosts it reached.
+
+A connection that carries no live token, such as one from a background process
+a command left running, goes out under the same rules and is recorded as
+unattributed. Processes inside one computer run as the same user, so one can
+borrow another's token; that only changes which of that computer's commands a
+connection is recorded against.
+
+The same refusal repeated within a minute is one record with a count. One
+computer adds at most 120 records a minute; past that, its further connections
+are counted on a single record for that minute, so a computer that loops cannot
+fill the database. Each command's result still counts every connection.
+
+Records are kept for `MELETE_EGRESS_RECORD_DAYS` (30 by default) and are removed
+with their space.
 
 The sandbox browser starts with a clean profile and none of your sessions. If
 you take over and sign in to a site there, the agent can use that session after
@@ -125,7 +155,12 @@ you hand the computer back; sign in only where you would let it act.
 A container nobody has used for `MELETE_SANDBOX_DOCKER_IDLE_SECONDS` (15 minutes
 by default) is stopped. The next command, file operation, desktop action or
 live view starts it again. Files on its volumes persist; running processes and
-the open browser do not. Watching the desktop counts as use.
+the open browser do not. Watching the desktop counts as use, and so does a
+background process that is still running (see "Long-running work" below).
+
+Each command's record (its output and exit status) is kept under
+`/home/agent/.melete/exec`, on the home volume, so a command whose answer was
+lost is still reported from that record after an idle stop.
 
 A suspended workspace nobody resumes is removed after
 `MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS`, as with the other providers.
@@ -135,6 +170,9 @@ A suspended workspace nobody resumes is removed after
 - **Shell.** The engine's terminal runs every command in the container, one
   brokered action each, with a timeout of up to 120 seconds, the first 16 KiB of
   output in the conversation and up to 1 MiB stored with the job.
+- **Background processes.** `process.start`, `process.list`, `process.read`,
+  `process.write`, `process.signal`, `process.stop` and `process.extend`, for
+  work longer than a command (see "Long-running work" below).
 - **Files.** The file tools write the job's workspace, which the container
   sees as `/work`.
 - **Computer.** `computer.screenshot` captures the desktop and stores the PNG
@@ -156,6 +194,49 @@ download into a shell, and the like). Nothing runs and there is no approval to
 give. The conversation shows a short note that a command was blocked, and the
 agent is told plainly that it was refused by a safety rule, so it does not ask
 you to approve it.
+
+## Long-running work
+
+A shell command ends within two minutes. A test suite, a build or a dev server
+runs as a background process instead: the agent starts it with
+`process.start`, the turn ends, and the process keeps running in the
+container. A later conversation with the same agent finds it with
+`process.list`, reads its output with `process.read`, types into it with
+`process.write`, and ends it with `process.signal` or `process.stop` (TERM,
+then KILL ten seconds later). `process.extend` gives it more time. Each of
+these is one brokered action with a receipt, like a command, and a start runs
+once: starting the same command again starts a second process.
+
+A process belongs to the agent's computer, not to the conversation that
+started it, so every conversation with that agent can see and stop it. Another
+agent's conversations cannot. A process keeps running when the job that
+started it finishes, and is stopped when that job is cancelled or deleted.
+
+`melete-proc`, in the sandbox image, keeps each process under
+`/home/agent/.melete/proc`: its output in a ring of two files that together
+hold `MELETE_PROCESS_OUTPUT_MAX_BYTES` (8 MiB by default), so a chatty process
+never fills the disk, a pipe for its input and its exit status. Each read the
+agent makes is also kept in the job's workspace under `.melete/proc/` with its
+digest on the receipt. A computer whose image has no `melete-proc` is sent it
+on first use; it needs `python3`.
+
+Limits, each set in the service's environment:
+
+| Setting | Default | What it bounds |
+|---|---|---|
+| `MELETE_PROCESS_MAX_PER_COMPUTER` | 4 | processes one agent's computer runs at once |
+| `MELETE_PROCESS_MAX_PER_SPACE` | 8 | processes one space runs at once, over its computers |
+| `MELETE_PROCESS_DEFAULT_TTL_MINUTES` | 120 | a process's time limit when none is given |
+| `MELETE_PROCESS_MAX_TTL_MINUTES` | 720 | the longest time limit, at start or extended |
+| `MELETE_PROCESS_OUTPUT_MAX_BYTES` | 8388608 | the output ring of one process |
+| `MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY` | 21600 | how long a space's processes may keep its computers running each day (UTC) |
+
+Every minute the service checks each computer with running processes. It
+stops a process past its time limit, stops a space's processes once the day's
+allowance is used, and records a process as lost when its container restarted,
+since a restart ends every process in it. A start over a limit is refused with
+the reason, which the agent passes on: "This computer is already running 4
+processes. Stop one first."
 
 ## Watching and taking over
 

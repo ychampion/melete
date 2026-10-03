@@ -545,7 +545,35 @@
       "idx": 77,
       "version": "7",
       "when": 1789232400057,
-      "tag": "0077_model_vision_report",
+      "tag": "0077_shared_space_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1789232400058,
+      "tag": "0078_egress_records",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1789232400059,
+      "tag": "0079_sandbox_processes",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1789232400060,
+      "tag": "0080_blob_refs",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1789232400061,
+      "tag": "0081_model_vision_report",
       "breakpoints": true
     }
   ]

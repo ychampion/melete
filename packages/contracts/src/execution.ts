@@ -41,6 +41,109 @@ export const EXEC_LIMITS = {
   output_dir: '.melete/exec',
 } as const;
 
+/**
+ * Background processes in the agent's computer: work that outlives one
+ * command and one attempt, such as a test suite or a dev server. The caps and
+ * time limits are defaults an operator may change; the rest are fixed shapes.
+ */
+export const PROCESS_LIMITS = {
+  /** How long a process runs when the caller names no time limit. */
+  default_ttl_minutes: 120,
+  /** The longest time limit a process may be given, at start or later. */
+  max_ttl_minutes: 720,
+  /** How many processes one computer may run at once. */
+  max_per_computer: 4,
+  /** How many processes one space may run at once, over all its computers. */
+  max_per_space: 8,
+  /** The output ring inside the computer: two files of half this each. */
+  output_max_bytes: 8 * 1024 * 1024,
+  /** How long a space's processes may keep its computers running in one day. */
+  awake_seconds_per_day: 6 * 3600,
+  /** How long a start waits for the first output, and how much of it is returned. */
+  first_output_wait_ms: 5_000,
+  first_output_max_bytes: 4_096,
+  /** One read returns at most this much, and waits at most this long for new output. */
+  read_max_bytes: 65_536,
+  read_default_bytes: 16_384,
+  read_max_wait_seconds: 30,
+  /** The most text one write sends to a process's input. */
+  write_max_bytes: 16_384,
+  /** How long a stop waits after TERM before it sends KILL. */
+  stop_grace_ms: 10_000,
+  /** Where read output is kept, under the job workspace. */
+  output_dir: '.melete/proc',
+} as const;
+
+/** Where a process is in its life. Every state after `running` is final. */
+export const PROCESS_STATES = [
+  'starting',
+  'running',
+  'exited',
+  'stopped',
+  'expired',
+  'lost',
+] as const;
+export type ProcessState = (typeof PROCESS_STATES)[number];
+
+/**
+ * The environment names the service may set on one command, on top of the
+ * sandbox's own environment. Each is a proxy route, a trust bundle path, a
+ * per-command attribution value or a setting that keeps a client from
+ * prompting. Anything else is refused before the command is sent.
+ */
+export const EXEC_ENV_NAMES = [
+  'HTTPS_PROXY',
+  'https_proxy',
+  'HTTP_PROXY',
+  'http_proxy',
+  'NO_PROXY',
+  'no_proxy',
+  'SSL_CERT_FILE',
+  'GIT_SSL_CAINFO',
+  'CURL_CA_BUNDLE',
+  'REQUESTS_CA_BUNDLE',
+  'NODE_EXTRA_CA_CERTS',
+  'AWS_CA_BUNDLE',
+  'CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE',
+  'GH_TOKEN',
+  'GH_PROMPT_DISABLED',
+  'GIT_TERMINAL_PROMPT',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_REGION',
+  'TZ',
+] as const;
+export type ExecEnvName = (typeof EXEC_ENV_NAMES)[number];
+
+/** The longest value one of those names may carry, in UTF-8 bytes. */
+export const EXEC_ENV_MAX_VALUE_BYTES = 4096;
+/** The most the names and values of one command's environment may add up to, in UTF-8 bytes. */
+export const EXEC_ENV_MAX_TOTAL_BYTES = 16_384;
+
+const EXEC_ENV_ALLOWED: ReadonlySet<string> = new Set(EXEC_ENV_NAMES);
+
+/**
+ * Why a per-command environment cannot be sent, or null when it can. A name
+ * outside the allow-list, a value that is not text or holds a NUL byte, a
+ * value above the size limit, and an environment above the total limit are
+ * each refused.
+ */
+export function execEnvRefusal(env: Readonly<Record<string, string>>): string | null {
+  let total = 0;
+  for (const [name, value] of Object.entries(env)) {
+    if (!EXEC_ENV_ALLOWED.has(name))
+      return `the environment name ${JSON.stringify(name.slice(0, 64))} is not one a command may be given`;
+    if (typeof value !== 'string') return `the value of ${name} is not text`;
+    if (value.includes('\0')) return `the value of ${name} holds a NUL byte`;
+    if (new TextEncoder().encode(value).byteLength > EXEC_ENV_MAX_VALUE_BYTES)
+      return `the value of ${name} is longer than ${EXEC_ENV_MAX_VALUE_BYTES} bytes`;
+    total += new TextEncoder().encode(`${name}=${value}`).byteLength;
+  }
+  if (total > EXEC_ENV_MAX_TOTAL_BYTES)
+    return `the environment adds up to more than ${EXEC_ENV_MAX_TOTAL_BYTES} bytes`;
+  return null;
+}
+
 export const EXEC_LANGUAGES = ['shell', 'python'] as const;
 export const execLanguage = z.enum(EXEC_LANGUAGES);
 export type ExecLanguage = z.infer<typeof execLanguage>;

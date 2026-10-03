@@ -69,6 +69,6 @@ export function asksWithoutProposing(
 
 /** The one continuation an attempt gets when it asked for a go-ahead and proposed nothing. */
 export const UNPROPOSED_CONTINUATION =
-  'You asked the owner for a go-ahead, but you proposed nothing, so there is nothing to approve. ' +
-  'Call the tool now: the broker will ask the owner before anything leaves. ' +
+  'You asked the person for a go-ahead, but you proposed nothing, so there is nothing to approve. ' +
+  'Call the tool now: the broker will ask the person before anything leaves. ' +
   'If you cannot, say so plainly instead of asking.';

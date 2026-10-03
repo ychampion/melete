@@ -365,6 +365,17 @@ drives each surface from a second account against the owner's rows, and from the
 owner against the second account's, and asserts that nothing was read, decided,
 sent, undone or steered.
 
+Inside a shared space, a job's memory and connections follow the job's
+principal too. A member's job recalls what the space shares with its members,
+never what is private to the owner, on every memory deployment. A shared
+space's connections, built-in tools included, serve its owner unless marked
+for the room. A member's own job is offered none of them, cannot act through
+them, and cannot watch what they receive, and the broker checks this again
+before anything is sent. Every answer to a permission records the person who
+gave it; one made with the operator's approval key is recorded as the service's.
+[shared-space-scope.test.ts](../apps/melete/test/integration/shared-space-scope.test.ts)
+drives a member's job against the owner's private memory and connections.
+
 What remains: the profile, tasks, saved rules, agents and connection reads are
 rows of a space rather than of a person, so a shared space offers them to its
 owner only. A file whose job row was deleted is scoped by its space alone.
@@ -432,6 +443,38 @@ read through the six tools. Registration is open to anyone who can reach the
 installation and is rate-limited per address; a registration alone grants
 nothing. Consent keys are per process, so a restart between showing the consent
 page and answering it asks the person to start again.
+
+## The agent's computer and its way out
+
+The Docker computer ([sandbox-docker](sandbox-docker.md#what-it-may-reach))
+reaches the network only through the service's egress guard, and only when its
+connection allows it. The guard knows a computer by its address on that
+computer's own network, and each command by a token in that command's proxy
+address.
+
+- **Attribution, not authority.** A command's token says which command a
+  connection belongs to. It is accepted only from the computer it was made for
+  and only until the command settles; a live token presented from another
+  computer is refused. A connection with no live token is let out under the same
+  rules and recorded as unattributed, so a token never widens what a computer
+  may reach.
+- **Borrowing inside one computer.** Every process in a computer runs as the
+  same user and can read another's environment, so code there can borrow a
+  running command's token. That changes only which command of the same computer
+  a connection is recorded against.
+- **Records.** Every tunnel and every refusal is recorded with its host, port,
+  verdict, reason, bytes each way and command. The guard never waits on the
+  record: a record that cannot be written is reported in the service log and the
+  connection proceeds. A computer that loops on connections is held to a record
+  budget: repeated refusals share one record with a count, at most 120 records a
+  minute are written per computer with the rest counted on one record, and
+  writes beyond a bounded queue are dropped and counted.
+- **Where it can go.** `open` is any public HTTPS host. `connected_hosts_only`
+  is the hosts the operator lists, read at each connection; a list that cannot
+  be read lets nothing out.
+  Reading data and sending it elsewhere is limited only by that choice, so a
+  person who wants a computer that reaches one site and nothing else chooses
+  `connected_hosts_only`.
 
 ## Credentials, host and storage
 

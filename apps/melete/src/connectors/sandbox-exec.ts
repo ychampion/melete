@@ -5,7 +5,9 @@
  * broker, so the service opens the session, syncs the job workspace in, wraps
  * the command in its marker, runs it, reads the output back, hashes it here and
  * syncs the workspace out. The sandbox holds no credential and has the egress
- * the owner chose; the model only ever asks for a command.
+ * the owner chose; the model only ever asks for a command. Where the computer
+ * leaves through this service's egress guard, each command carries its own
+ * proxy token, and its receipt lists the hosts it reached.
  *
  * Because the service wrote the output file itself, a receipt from here always
  * says `digest_verified: true`: the bytes it hashed are the bytes on disk, not
@@ -25,6 +27,7 @@ import {
   type ArtifactExpectation,
   type ConnectorManifest,
   EXEC_LIMITS,
+  type ExecEnvName,
   type JsonValue,
   type Receipt,
   type SandboxConnectionConfig,
@@ -33,6 +36,8 @@ import {
 import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
 import { appendEvent } from '../broker/records.ts';
+import { egressHostsFor } from '../egress/records.ts';
+import { type EgressHostSummary, hasCommandEgress } from '../egress/tokens.ts';
 import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
 import { isDesktopProvider } from '../sandbox/adapters/docker.ts';
 import {
@@ -43,6 +48,7 @@ import {
 } from '../sandbox/connection.ts';
 import { SandboxRefusal } from '../sandbox/manifest.ts';
 import { type CommandResult, type ExecutionRecord, runCommand } from '../sandbox/marker.ts';
+import type { SandboxProcesses } from '../sandbox/processes.ts';
 import {
   NOT_STARTED,
   type SandboxSessions,
@@ -58,6 +64,12 @@ import {
   HumanControlRefusal,
   runComputerAction,
 } from './sandbox-computer.ts';
+import {
+  createProcessTools,
+  PROCESS_TOOL_NAMES,
+  PROCESS_TOOLS,
+  processDispatchBudgetMs,
+} from './sandbox-process.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 export type SandboxExecOptions = {
@@ -87,6 +99,8 @@ export type SandboxExecOptions = {
   maxPerConnection?: number;
   /** How long a command waits for the agent's computer while another conversation uses it. */
   workspaceWaitMs?: number;
+  /** Background processes in the agent's computer; without it the process tools refuse. */
+  processes?: SandboxProcesses;
 };
 
 /**
@@ -166,7 +180,7 @@ export const sandboxTerminalManifest: ConnectorManifest = {
     {
       name: 'terminal.run',
       description:
-        'Run a shell command in the job workspace inside a remote sandbox. Output above the cap is stored as an artifact.',
+        'Run a shell command in the job workspace inside a remote sandbox. Output above the cap is stored as an artifact. A command ends within two minutes: for longer work or a server, use process.start, and never background a command with & or nohup.',
       input_schema: runSchema,
       effect_class: 'write_reversible',
       required_scopes: ['terminal.run'],
@@ -175,6 +189,7 @@ export const sandboxTerminalManifest: ConnectorManifest = {
       // Brokered: the service runs it and reads the result back itself.
       record_schema: null,
     },
+    ...PROCESS_TOOLS,
   ],
 };
 
@@ -228,6 +243,11 @@ export function sandboxDispatchBudgetMs(
 ): number {
   if (action.kind && COMPUTER_TOOL_NAMES.has(action.kind))
     return COMPUTER_BUDGET_MS + SANDBOX_SYNC_ALLOWANCE_MS + WORKSPACE_WAIT_MS;
+  if (action.kind && PROCESS_TOOL_NAMES.has(action.kind))
+    return processDispatchBudgetMs(
+      { kind: action.kind, canonical_payload: action.canonical_payload },
+      WORKSPACE_WAIT_MS,
+    );
   let timeout: number = EXEC_LIMITS.default_timeout_ms;
   try {
     timeout = payloadOf(action).timeout_ms ?? timeout;
@@ -259,12 +279,12 @@ export function outputText(preview: Uint8Array, cut: boolean): { text: string; b
 }
 
 /**
- * The words a command runs as. The person's time zone is set on each command,
- * not only when the sandbox was made, so a workspace resumed after the zone
- * changed still reads the current one.
+ * The environment set on one command. The person's time zone is set on each
+ * command, not only when the sandbox was made, so a workspace resumed after the
+ * zone changed still reads the current one.
  */
-export const commandArgv = (command: string, timeZone: string | null): string[] =>
-  timeZone ? ['env', `TZ=${timeZone}`, 'sh', '-c', command] : ['sh', '-c', command];
+export const commandEnv = (timeZone: string | null): Partial<Record<ExecEnvName, string>> =>
+  timeZone ? { TZ: timeZone } : {};
 
 /** A path inside the sandbox's own workspace; the marker runner refuses the rest. */
 const sandboxCwd = (cwd: string | undefined) =>
@@ -272,6 +292,12 @@ const sandboxCwd = (cwd: string | undefined) =>
 
 export function createSandboxExecConnector(options: SandboxExecOptions): Connector {
   const { sessions, provider, sql } = options;
+  /**
+   * Per sandbox, the actions whose outcomes are recorded and whose markers the
+   * next command there removes. Lost on a restart; the wrapper then prunes
+   * them by age instead.
+   */
+  const settled = new Map<string, string[]>();
 
   const checkIdentity = (action: Action, ctx: ConnectorContext) => {
     if (
@@ -454,12 +480,28 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     late,
   });
 
+  /** Whether this computer's way out is the service's guard, which sees each command. */
+  const guarded = (session: SessionRow) =>
+    session.egressPolicy.kind !== 'deny_all' && hasCommandEgress(provider);
+
+  /**
+   * The hosts one command reached, as a receipt lists them: none for a computer
+   * with no network, null where the provider's own network carried it and
+   * nothing here saw where it went.
+   */
+  const egressHosts = (
+    session: SessionRow,
+    seen: EgressHostSummary[] | null,
+  ): EgressHostSummary[] | null =>
+    session.egressPolicy.kind === 'deny_all' ? [] : guarded(session) ? (seen ?? []) : null;
+
   /** Everything the receipt says about one recorded command. */
   const detailFor = async (
     payload: Payload,
     record: ExecutionRecord,
     session: SessionRow,
     stored: Uint8Array | null,
+    hosts: EgressHostSummary[] | null,
   ): Promise<Record<string, JsonValue>> => {
     // The receipt is the only way the result travels back to the engine that
     // asked, so the preview the service kept goes on it, capped as it was.
@@ -490,6 +532,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       image_ref: session.imageRef,
       image_digest: session.imageDigest,
       egress: session.egressPolicy.kind,
+      egress_hosts: hosts,
       persistence: session.persistence,
     };
     if (stored && record.outputPath) {
@@ -522,6 +565,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     payload: Payload,
     session: SessionRow,
     result: CommandResult,
+    hosts: EgressHostSummary[] | null,
   ) => {
     await sessions.settleCommand(action.id, {
       outcome: result.outcome === 'failed' && result.retryable ? NOT_STARTED : result.outcome,
@@ -532,7 +576,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       return { outcome: 'failed' as const, reason: result.reason, retryable: result.retryable };
     if (result.outcome === 'unknown') return { outcome: 'unknown' as const, reason: result.reason };
     const stored = await workspaceFile(ctx.job_id, result.record.outputPath).catch(() => null);
-    const detail = await detailFor(payload, result.record, session, stored);
+    const detail = await detailFor(payload, result.record, session, stored, hosts);
     return {
       outcome: 'succeeded' as const,
       receipt: receiptFor(action, detail, result.record.outputDigest, result.late),
@@ -599,8 +643,36 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     }
   };
 
+  /** The process tools, on this attempt's session in the agent's computer. */
+  const processTools = options.processes
+    ? createProcessTools({
+        processes: options.processes,
+        provider,
+        sql,
+        config: options.config,
+        connectionId: options.connectionId,
+        workRoot: options.workRoot,
+        openSession: async (action, ctx, signal) => {
+          const opened = await sessionFor(action, ctx, signal);
+          const renewed = await sessions.renew(opened.row.id);
+          if (!renewed) throw new Error('the sandbox session ended before the action was sent');
+          return renewed;
+        },
+        renew: (id) => sessions.renew(id),
+      })
+    : null;
+  const NO_PROCESSES = {
+    outcome: 'failed' as const,
+    reason: 'background processes are not available in this installation',
+    retryable: false,
+  };
+
   const verify = async (action: Action, ctx: ConnectorContext): Promise<VerifyResult> => {
     checkIdentity(action, ctx);
+    if (PROCESS_TOOL_NAMES.has(action.kind))
+      return processTools
+        ? processTools.verify(action)
+        : { decision: 'undecided', reason: NO_PROCESSES.reason };
     // Nothing records a click the way a marker records a command: whether it
     // landed is not something the sandbox can say afterwards.
     if (COMPUTER_TOOL_NAMES.has(action.kind))
@@ -633,7 +705,15 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     });
     if (result.outcome === 'succeeded') {
       const stored = await workspaceFile(ctx.job_id, result.record.outputPath).catch(() => null);
-      const detail = await detailFor(payload, result.record, session, stored);
+      // Read back after the fact, the hosts come from the guard's records.
+      const seen = guarded(session) ? await egressHostsFor(sql, action.id).catch(() => null) : null;
+      const detail = await detailFor(
+        payload,
+        result.record,
+        session,
+        stored,
+        egressHosts(session, seen),
+      );
       const evidence: Record<string, JsonValue> = {
         output_digest: result.record.outputDigest,
         sandbox_id: session.providerSandboxId,
@@ -666,6 +746,8 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       ctx.signal?.throwIfAborted();
       const signal = ctx.signal ?? AbortSignal.timeout(sandboxDispatchBudgetMs(action));
       if (COMPUTER_TOOL_NAMES.has(action.kind)) return computer(action, ctx, signal);
+      if (PROCESS_TOOL_NAMES.has(action.kind))
+        return processTools ? processTools.execute(action, ctx, signal) : NO_PROCESSES;
       let payload: Payload;
       let session: SessionRow;
       let timeZone: string | null = null;
@@ -697,22 +779,61 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           retryable: true,
         };
       }
+      const forget = settled.get(session.providerSandboxId) ?? [];
+      settled.delete(session.providerSandboxId);
       const dispatch = await sessions.beginCommand(session.id, action.id, action.id);
-      const result = await runCommand({
-        provider,
-        handle: sessionHandle(session),
-        request: {
-          marker: action.id,
-          argv: commandArgv(payload.command, timeZone),
-          cwd: sandboxCwd(payload.cwd),
-          timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.default_timeout_ms,
-          dispatch,
-        },
-        workRoot: options.workRoot,
-        jobId: ctx.job_id,
-        signal,
-      });
-      const outcome = await finish(action, ctx, payload, session, result);
+      // A token for this command alone, ended when it settles: a process it
+      // leaves behind reaches out unattributed from then on.
+      const attributed =
+        guarded(session) && hasCommandEgress(provider)
+          ? provider.attributeCommand(sessionHandle(session), {
+              kind: 'command',
+              sessionId: session.id,
+              jobId: ctx.job_id,
+              attemptId: action.attempt_id,
+              actionId: action.id,
+            })
+          : null;
+      let result: CommandResult;
+      let seen: EgressHostSummary[] | null = null;
+      try {
+        result = await runCommand({
+          provider,
+          handle: sessionHandle(session),
+          request: {
+            marker: action.id,
+            argv: ['sh', '-c', payload.command],
+            cwd: sandboxCwd(payload.cwd),
+            timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.default_timeout_ms,
+            dispatch,
+            env: { ...commandEnv(timeZone), ...attributed?.env },
+            forget,
+          },
+          workRoot: options.workRoot,
+          jobId: ctx.job_id,
+          signal,
+        });
+      } finally {
+        seen = attributed?.settle() ?? null;
+      }
+      const outcome = await finish(
+        action,
+        ctx,
+        payload,
+        session,
+        result,
+        egressHosts(session, seen),
+      );
+      // A recorded outcome no longer needs its marker; an unknown one keeps it
+      // as the only evidence a later check can read. A command that never
+      // started removed nothing, so what it was to remove waits for the next.
+      const next = result.outcome === 'failed' && result.retryable ? [...forget] : [];
+      if (result.outcome !== 'unknown') next.push(action.id);
+      if (next.length)
+        settled.set(session.providerSandboxId, [
+          ...(settled.get(session.providerSandboxId) ?? []),
+          ...next,
+        ]);
       await sessions.renew(session.id).catch(() => {});
       // The workspace is read back after every command, so a file that lives
       // only in the sandbox at completion is a wrong answer, not a slow one.
@@ -734,6 +855,8 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       // to check by looking at its own screen.
       if (COMPUTER_TOOL_NAMES.has(action.kind))
         return { outcome: 'unknown', reason: DESKTOP_UNCONFIRMED };
+      if (PROCESS_TOOL_NAMES.has(action.kind))
+        return processTools ? processTools.abandoned(action) : NO_PROCESSES;
       let verdict: VerifyResult;
       try {
         verdict = await verify(action, { ...ctx, signal: AbortSignal.timeout(30_000) });

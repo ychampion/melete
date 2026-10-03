@@ -5,7 +5,7 @@
  */
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EXEC_LIMITS } from '@melete/contracts';
+import { EXEC_LIMITS, PROCESS_LIMITS } from '@melete/contracts';
 import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete/runtime-hermes';
 import { z } from 'zod';
 
@@ -234,8 +234,27 @@ const variables = z.object({
 
   /** Where space git repositories and workspace files live. */
   MELETE_SPACES_DIR: z.string().default('/data/spaces'),
+  /** The root of the local blob store, which keeps write-once files by their sha256. */
   MELETE_ARTIFACTS_DIR: z.string().default('/data/artifacts'),
   MELETE_RESTRICTIONS_DIR: z.string().default('/data/restrictions'),
+  /**
+   * Where blobs are kept: `local` is MELETE_ARTIFACTS_DIR, `s3` an
+   * S3-compatible bucket named by the MELETE_BLOB_S3_* settings.
+   */
+  MELETE_BLOB_STORE: unsetWhenBlank(z.enum(['local', 's3']).default('local')),
+  /** Left out, the AWS endpoint for the region. */
+  MELETE_BLOB_S3_ENDPOINT: unsetWhenBlank(z.string().url().optional()),
+  MELETE_BLOB_S3_BUCKET: unsetWhenBlank(z.string().min(3).max(63).optional()),
+  MELETE_BLOB_S3_REGION: unsetWhenBlank(z.string().default('us-east-1')),
+  /** Every key is written under this prefix, so one bucket can serve more than one installation. */
+  MELETE_BLOB_S3_PREFIX: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/, 'letters, digits, ".", "_", "-" and "/" only')
+      .optional(),
+  ),
+  MELETE_BLOB_S3_ACCESS_KEY_ID: unsetWhenBlank(z.string().min(1).optional()),
+  MELETE_BLOB_S3_SECRET_ACCESS_KEY: unsetWhenBlank(z.string().min(1).optional()),
 
   /** The address the runtime container reaches the broker on, internal network only. */
   MELETE_BROKER_BIND: z
@@ -451,6 +470,38 @@ const variables = z.object({
   MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION: unsetWhenBlank(
     z.coerce.number().int().positive().optional(),
   ),
+  /** How many background processes one agent's computer may run at once. */
+  MELETE_PROCESS_MAX_PER_COMPUTER: unsetWhenBlank(
+    z.coerce.number().int().positive().default(PROCESS_LIMITS.max_per_computer),
+  ),
+  /** How many background processes one space may run at once, over all its computers. */
+  MELETE_PROCESS_MAX_PER_SPACE: unsetWhenBlank(
+    z.coerce.number().int().positive().default(PROCESS_LIMITS.max_per_space),
+  ),
+  /** How long a background process runs when it is given no time limit. */
+  MELETE_PROCESS_DEFAULT_TTL_MINUTES: unsetWhenBlank(
+    z.coerce.number().int().positive().default(PROCESS_LIMITS.default_ttl_minutes),
+  ),
+  /** The longest time limit a background process may have. */
+  MELETE_PROCESS_MAX_TTL_MINUTES: unsetWhenBlank(
+    z.coerce.number().int().positive().default(PROCESS_LIMITS.max_ttl_minutes),
+  ),
+  /** The output a process keeps inside the computer, as a ring of two halves. */
+  MELETE_PROCESS_OUTPUT_MAX_BYTES: unsetWhenBlank(
+    z.coerce
+      .number()
+      .int()
+      .min(64 * 1024)
+      .default(PROCESS_LIMITS.output_max_bytes),
+  ),
+  /**
+   * How long a space's background processes may keep its computers running
+   * in one day (UTC). Past it they are stopped and new ones refused until
+   * the next day.
+   */
+  MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY: unsetWhenBlank(
+    z.coerce.number().int().positive().default(PROCESS_LIMITS.awake_seconds_per_day),
+  ),
   /** How long a suspended workspace is kept while nobody resumes it. */
   MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS: unsetWhenBlank(
     z.coerce
@@ -513,9 +564,12 @@ const variables = z.object({
   ),
   /**
    * What the default sandbox may reach: `open` is public HTTPS sites through the
-   * service's egress guard, `deny_all` is nothing at all.
+   * service's egress guard, `connected_hosts_only` the hosts listed below,
+   * `deny_all` is nothing at all.
    */
-  MELETE_SANDBOX_DOCKER_EGRESS: unsetWhenBlank(z.enum(['open', 'deny_all']).default('open')),
+  MELETE_SANDBOX_DOCKER_EGRESS: unsetWhenBlank(
+    z.enum(['open', 'connected_hosts_only', 'deny_all']).default('open'),
+  ),
   /** A container nothing has used for this long is stopped; it starts again when it is used. */
   MELETE_SANDBOX_DOCKER_IDLE_SECONDS: unsetWhenBlank(
     z.coerce.number().int().min(60).max(86_400).default(900),
@@ -524,6 +578,41 @@ const variables = z.object({
   MELETE_SANDBOX_EGRESS_PORT: unsetWhenBlank(
     z.coerce.number().int().min(1024).max(65_535).default(8791),
   ),
+  /**
+   * The hosts a `connected_hosts_only` computer may reach, such as a package
+   * registry: comma-separated names, or `.example.com` for every name below
+   * one. A suffix needs two labels at least, so `.com` alone is refused.
+   */
+  MELETE_SANDBOX_EGRESS_EXTRA_HOSTS: unsetWhenBlank(
+    z
+      .string()
+      .default('')
+      .transform((value) =>
+        value
+          .split(',')
+          .map((item) => item.trim().toLowerCase())
+          .filter(Boolean),
+      )
+      .pipe(
+        z
+          .array(
+            z
+              .string()
+              .max(253)
+              .regex(
+                /^\.?(?=[a-z0-9.-]*[a-z])[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/,
+                'each extra host is a DNS name, or .name for the names below it',
+              )
+              .refine(
+                (host) => !host.startsWith('.') || host.slice(1).includes('.'),
+                'a suffix covers too much with one label; name at least two, as in .example.com',
+              ),
+          )
+          .max(64),
+      ),
+  ),
+  /** How many days the record of where each computer connected is kept. */
+  MELETE_EGRESS_RECORD_DAYS: unsetWhenBlank(z.coerce.number().int().min(1).max(3650).default(30)),
 });
 
 /**
@@ -544,6 +633,12 @@ export const envSchema = variables.transform((value, context) => {
       path: ['MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS'],
       message: `a workspace snapshot must outlast the retention period: ${value.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS}s is shorter than MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS=${value.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS}s`,
     });
+  if (value.MELETE_PROCESS_DEFAULT_TTL_MINUTES > value.MELETE_PROCESS_MAX_TTL_MINUTES)
+    context.addIssue({
+      code: 'custom',
+      path: ['MELETE_PROCESS_DEFAULT_TTL_MINUTES'],
+      message: `a process's default time limit cannot exceed the longest one: ${value.MELETE_PROCESS_DEFAULT_TTL_MINUTES} is more than MELETE_PROCESS_MAX_TTL_MINUTES=${value.MELETE_PROCESS_MAX_TTL_MINUTES}`,
+    });
   if (Boolean(value.MICROSOFT_OAUTH_CLIENT_ID) !== Boolean(value.MICROSOFT_OAUTH_CLIENT_SECRET))
     context.addIssue({
       code: 'custom',
@@ -560,6 +655,18 @@ export const envSchema = variables.transform((value, context) => {
       path: ['MELETE_SANDBOX_PROJECT'],
       message: `MELETE_SANDBOX_PROVIDER=${value.MELETE_SANDBOX_PROVIDER} needs MELETE_SANDBOX_PROJECT, the label that says which sandboxes are this installation's`,
     });
+  if (value.MELETE_BLOB_STORE === 's3')
+    for (const name of [
+      'MELETE_BLOB_S3_BUCKET',
+      'MELETE_BLOB_S3_ACCESS_KEY_ID',
+      'MELETE_BLOB_S3_SECRET_ACCESS_KEY',
+    ] as const)
+      if (!value[name])
+        context.addIssue({
+          code: 'custom',
+          path: [name],
+          message: `MELETE_BLOB_STORE=s3 needs ${name}`,
+        });
   if (Boolean(value.GOOGLE_OAUTH_CLIENT_ID) !== Boolean(value.GOOGLE_OAUTH_CLIENT_SECRET))
     context.addIssue({
       code: 'custom',

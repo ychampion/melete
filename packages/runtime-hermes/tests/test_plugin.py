@@ -681,3 +681,17 @@ def test_a_sandbox_command_waits_for_the_brokers_whole_budget():
     other = Recording()
     build_handler(other, {"name": "email.send", "connection_id": "con_mail"})({"to": "a"})  # type: ignore[arg-type]
     assert other.calls[0]["timeout"] is None
+
+
+def test_what_the_model_is_told_calls_them_the_person_never_the_owner():
+    from melete_plugin import results
+
+    told = [
+        results.END_TURN_INSTRUCTION,
+        results.FAILURE_INSTRUCTION,
+        results.UNCERTAIN_INSTRUCTION,
+        results.OWN_COMPUTER_INSTRUCTION,
+    ]
+    for text in told:
+        assert "owner" not in text.lower()
+    assert "person" in results.END_TURN_INSTRUCTION

@@ -10,10 +10,12 @@
  * temporary storage. It mounts nothing from the host: its only persistent
  * storage is two named volumes of its own, `/work` and the agent's home.
  *
- * Egress is one of two things. `deny_all` is no network at all. `open` is an
+ * Egress is one of three things. `deny_all` is no network at all. `open` is an
  * internal network of the container's own whose only other member is this
  * service, and the egress guard there, which tunnels HTTPS to public addresses
- * and nothing else (see docker-egress.ts).
+ * and nothing else (see docker-egress.ts). `connected_hosts_only` is the same
+ * network, with the guard letting out only the hosts the operator lists. Each command gets its own proxy address,
+ * so the guard records which command reached where.
  *
  * A workspace is the container itself. Suspending it records it idle; a
  * container nobody has used for the idle period is stopped, and anything that
@@ -24,6 +26,8 @@
  * vouch for is reported as such, never guessed.
  */
 
+import type { EgressRecordSink } from '../../egress/records.ts';
+import type { AttributedCommand, CommandEgress, EgressAttribution } from '../../egress/tokens.ts';
 import { DockerError, DockerSocketApi } from '../../runtime/docker.ts';
 import { DOCKER_API_VERSION } from '../../runtime/docker-engine.ts';
 import { LABEL_CONNECTION, LABEL_PROJECT, LABEL_SESSION, ownedLabels } from '../manifest.ts';
@@ -43,13 +47,15 @@ import {
   SandboxTransportError,
   type StartFact,
 } from '../types.ts';
-import { SandboxEgressGuard } from './docker-egress.ts';
+import { SandboxEgressGuard, type SandboxEgressMode } from './docker-egress.ts';
 import { type TarEntry, tarArchive } from './docker-tar.ts';
 
 const MiB = 1024 * 1024;
 export const DOCKER_SANDBOX_UID = 10004;
 export const DOCKER_SANDBOX_HOME = '/home/agent';
 export const DOCKER_SANDBOX_WORK = '/work';
+/** Command markers, on the home volume so they outlive an idle stop. */
+export const DOCKER_MARKER_ROOT = `${DOCKER_SANDBOX_HOME}/.melete/exec`;
 /** The desktop matches the live view's viewport, so a frame and an input need no scaling. */
 export const DOCKER_DESKTOP = { width: 1024, height: 768 } as const;
 const OWNER = 'com.melete.sandbox';
@@ -97,6 +103,13 @@ export type DockerSandboxSettings = {
   egressPort: number;
   /** The service's own container, which joins each open sandbox's network as its guard. */
   selfId?: string;
+  /** Where the egress guard records each tunnel and refusal. */
+  egressRecords?: EgressRecordSink;
+  /**
+   * The hosts every `connected_hosts_only` computer may reach: exact names, or
+   * `.suffix` for the names below one.
+   */
+  egressExtraHosts?: readonly string[];
 };
 
 export const DOCKER_SANDBOX_DEFAULTS: Omit<DockerSandboxSettings, 'socket' | 'project'> = {
@@ -112,14 +125,17 @@ export function dockerCapabilities(): SandboxCapabilities {
   return {
     adapter: 'docker',
     isolation: 'container',
-    // `open` is public HTTPS through the service's egress guard; there is no
-    // allow-list of ranges, so one is refused rather than widened.
-    egress: ['deny_all', 'open'],
+    // `open` is public HTTPS through the service's egress guard, and
+    // `connected_hosts_only` the named hosts through it; there is no allow-list
+    // of ranges, so one is refused rather than widened.
+    egress: ['deny_all', 'connected_hosts_only', 'open'],
     persistence: ['none', 'pause'],
     maxLifetimeSeconds: 86_400,
     maxIdleSeconds: null,
     streaming: false,
     reattach: 'marker_only',
+    // On the home volume: `/var/tmp` is in memory and goes with an idle stop.
+    markerRoot: DOCKER_MARKER_ROOT,
     ports: 'none',
     image: 'registry',
     billing: 'per_second',
@@ -349,7 +365,7 @@ function argvFor(command: DesktopCommand): string[] {
  * The engine-side half of the docker adapter, one per socket: the client, the
  * egress guard, and the idle clock every connection's sandboxes share.
  */
-export class DockerSandboxHost implements DockerSandboxProvider {
+export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
   readonly capabilities = dockerCapabilities();
   readonly desktop = true as const;
   readonly guard: SandboxEgressGuard;
@@ -365,7 +381,12 @@ export class DockerSandboxHost implements DockerSandboxProvider {
     private readonly api: DockerSandboxApi = new DockerSandboxSocket(settings.socket),
     options: { guard?: SandboxEgressGuard; now?: () => number } = {},
   ) {
-    this.guard = options.guard ?? new SandboxEgressGuard();
+    this.guard =
+      options.guard ??
+      new SandboxEgressGuard({
+        ...(settings.egressRecords ? { records: settings.egressRecords } : {}),
+        connectedHosts: () => settings.egressExtraHosts ?? [],
+      });
     this.now = options.now ?? Date.now;
   }
 
@@ -421,7 +442,30 @@ export class DockerSandboxHost implements DockerSandboxProvider {
         EndpointConfig: { Aliases: [EGRESS_ALIAS] },
       });
     const address = state.NetworkSettings?.Networks?.[network]?.IPAddress;
-    if (address) this.guard.allow(address, name);
+    const labels = state.Config?.Labels ?? {};
+    // Only a container made for `open` reaches every public host; anything
+    // else on a network of its own is held to the named hosts.
+    const mode: SandboxEgressMode = labels[EGRESS] === 'open' ? 'open' : 'connected_hosts_only';
+    if (address)
+      this.guard.allow(address, name, {
+        mode,
+        session: labels[LABEL_SESSION] ?? null,
+        space: labels['melete.space'] ?? null,
+      });
+  }
+
+  /**
+   * A proxy address naming one command, for a computer with a network. The
+   * token works only from this computer, and only until `settle`.
+   */
+  attributeCommand(handle: SandboxHandle, attribution: EgressAttribution): AttributedCommand {
+    const name = DockerSandboxHost.checkName(handle);
+    const token = this.guard.mint(name, attribution);
+    const proxy = `http://cmd:${token}@${EGRESS_ALIAS}:${this.settings.egressPort}`;
+    return {
+      env: { HTTPS_PROXY: proxy, https_proxy: proxy, HTTP_PROXY: proxy, http_proxy: proxy },
+      settle: () => this.guard.tokens.settle(token),
+    };
   }
 
   /** Start a stopped container again: the automatic resume after an idle stop. */
@@ -464,6 +508,8 @@ export class DockerSandboxHost implements DockerSandboxProvider {
       maxStderr: number;
       onStdout?: (bytes: Uint8Array) => void;
       deadlineMs?: number;
+      /** `NAME=value` words set on this exec only. */
+      env?: readonly string[];
     },
   ): Promise<{ exitCode: number | null; capture: ExecCapture; durationMs: number }> {
     let id: string;
@@ -475,6 +521,7 @@ export class DockerSandboxHost implements DockerSandboxProvider {
         Tty: false,
         Cmd: argv,
         WorkingDir: '/',
+        ...(options.env?.length ? { Env: [...options.env] } : {}),
       })) as { Id?: string };
       if (!created?.Id || !/^[a-f0-9]{64}$/.test(created.Id))
         throw new Error('the engine did not name the exec');
@@ -550,12 +597,17 @@ export class DockerSandboxHost implements DockerSandboxProvider {
     const session = spec.labels[LABEL_SESSION];
     const project = spec.labels[LABEL_PROJECT];
     if (!session || !project) throw new SandboxAdapterRefusal('a sandbox needs its session label');
-    if (spec.egress.kind !== 'deny_all' && spec.egress.kind !== 'open')
+    if (
+      spec.egress.kind !== 'deny_all' &&
+      spec.egress.kind !== 'open' &&
+      spec.egress.kind !== 'connected_hosts_only'
+    )
       throw new SandboxAdapterRefusal(`the docker adapter cannot enforce ${spec.egress.kind}`);
-    const open = spec.egress.kind === 'open';
+    // Both kinds that reach anything do it only through the service's guard.
+    const open = spec.egress.kind !== 'deny_all';
     if (open && !this.settings.selfId)
       throw new SandboxAdapterRefusal(
-        'open egress needs the service to run in a container on the same engine, so it can be the only way out',
+        `${spec.egress.kind} egress needs the service to run in a container on the same engine, so it can be the only way out`,
       );
     let image: { Id?: string };
     try {
@@ -720,6 +772,7 @@ export class DockerSandboxHost implements DockerSandboxProvider {
         maxStdout: spec.maxOutputBytes,
         maxStderr: spec.maxOutputBytes,
         deadlineMs: spec.timeoutMs + KILL_GRACE_MS,
+        env: Object.entries(spec.env ?? {}).map(([key, value]) => `${key}=${value}`),
       });
     } catch (error) {
       const phase = (error as { phase?: string }).phase;

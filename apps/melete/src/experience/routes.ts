@@ -1,4 +1,5 @@
 import {
+  COMPUTER_PROCESS_LIMIT,
   type ExperienceDraft,
   experienceOperations,
   experienceResult,
@@ -31,7 +32,7 @@ import type { PrivacyRouter } from '../privacy/router.ts';
 import type { RunService } from '../runs/service.ts';
 import { listActivity } from './activity.ts';
 import { ExperienceBeliefs } from './beliefs.ts';
-import { type ComputerBinding, projectComputer } from './computer.ts';
+import { type ComputerBinding, type ComputerProcessRow, projectComputer } from './computer.ts';
 import { ExperienceEffects } from './effects.ts';
 import { type EventChanges, ExperienceEvents } from './events.ts';
 import { ExperienceHome } from './home.ts';
@@ -448,9 +449,38 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
           ),
         )
         .limit(1);
+      // The conversation's agent's computer keeps processes across its jobs. A
+      // process started elsewhere is named, with its output, only when it was
+      // started by this person outside a sensitive conversation; otherwise
+      // only its state, port and time are shown, as the process tools do.
+      const conversation = jobIds[0] ?? '';
+      const processes = deps.sql
+        ? await deps.sql<ComputerProcessRow[]>`with mine as (
+              select p.*, (
+                p.job_id in ${deps.sql(jobIds)} or (
+                  coalesce(h.principal_id, (select id from owner limit 1)) is not distinct from
+                    coalesce(c.principal_id, (select id from owner limit 1))
+                  and not exists (select 1 from privacy_conversation pc
+                    where pc.conversation_id = coalesce(h.experience_parent_id, h.id)
+                      and pc.sensitive <> 'none'))
+              ) as attributable
+              from sandbox_process p
+              join job c on c.id = ${conversation}
+              left join job h on h.id = p.job_id
+              where p.space_id = ${spaceId}
+                and p.agent_id in (select agent_id from job
+                  where space_id = ${spaceId} and id in ${deps.sql(jobIds)} and agent_id is not null))
+          (select id, name, state, started_at, created_at, port, last_line, attributable
+            from mine where state in ('starting', 'running'))
+          union all
+          (select id, name, state, started_at, created_at, port, last_line, attributable
+            from mine where state not in ('starting', 'running')
+            order by created_at desc limit ${COMPUTER_PROCESS_LIMIT})`
+        : [];
       return projectComputer({
         rows: rows.map((row) => row.action),
         bindings,
+        processes,
         available: { browser: deps.browser ?? false, terminal: Boolean(sandbox) },
       });
     },

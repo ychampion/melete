@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readdir, realpath, rename } from 'node:fs/promises';
+import {
+  type FileHandle,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  readlink,
+  realpath,
+  rename,
+} from 'node:fs/promises';
 import path from 'node:path';
 import {
   type Action,
@@ -151,6 +160,83 @@ export async function noLinks(
   return current;
 }
 
+/**
+ * Where an open file or directory really is, read from its own descriptor in
+ * one lookup. Null where the system offers no such view (anything but Linux,
+ * or no /proc); callers then fall back to checking the path.
+ */
+export async function descriptorPath(file: FileHandle): Promise<string | null> {
+  if (process.platform !== 'linux') return null;
+  try {
+    return await readlink(`/proc/self/fd/${file.fd}`);
+  } catch (error) {
+    if (missing(error)) return null;
+    throw error;
+  }
+}
+
+export type PathLookups = {
+  descriptor: (file: FileHandle) => Promise<string | null>;
+  realpath: (target: string) => Promise<string>;
+  lstat: typeof lstat;
+};
+const pathLookups: PathLookups = { descriptor: descriptorPath, realpath, lstat };
+
+/**
+ * Confirm that a file opened for writing is the one ordinary file at `target`,
+ * before a byte of it changes. `noLinks` checks each component before the
+ * open; a directory swapped for a link between that check and the open still
+ * lands the open elsewhere. Where the descriptor can say where the file is,
+ * that one answer decides; looking the path up again could be raced back and
+ * forth. A second name for a file elsewhere is refused the same way.
+ */
+export async function openedAt(
+  file: FileHandle,
+  target: string,
+  lookups: PathLookups = pathLookups,
+): Promise<void> {
+  const opened = await file.stat();
+  if (!opened.isFile()) throw new Error('write target is not a regular file');
+  if (opened.nlink !== 1) throw new Error('write target has more than one name');
+  const where = await lookups.descriptor(file);
+  if (where !== null && where !== target)
+    throw new Error('write target is not where it was opened');
+  if ((await lookups.realpath(target)) !== target)
+    throw new Error('symbolic links are not allowed');
+  const named = await lookups.lstat(target);
+  if (named.dev !== opened.dev || named.ino !== opened.ino)
+    throw new Error('write target changed while it was opened');
+}
+
+/**
+ * Hold a checked directory open, and name entries in it through its
+ * descriptor, so a parent swapped for a link after the check changes nothing:
+ * every later open, rename or create lands in the directory that was checked.
+ * Where the system has no descriptor paths, entries are named by path.
+ */
+export async function pinDirectory(
+  directory: string,
+): Promise<{ at: (name: string) => string; close: () => Promise<void> }> {
+  const byPath = (name: string) => path.join(directory, name);
+  if (process.platform !== 'linux') return { at: byPath, close: async () => {} };
+  const handle = await open(
+    directory,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const where = await descriptorPath(handle);
+    if (where === null) return { at: byPath, close: () => handle.close() };
+    if (where !== directory) throw new Error('symbolic links are not allowed');
+    return { at: (name) => `/proc/self/fd/${handle.fd}/${name}`, close: () => handle.close() };
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+/** Opening never waits: a pipe planted at a name fails or is refused as not a regular file. */
+export const READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
 const pathSchema = { type: 'string', minLength: 1 };
 const areaSchema = { type: 'string', enum: ['work', 'artifacts'] };
 /**
@@ -219,7 +305,7 @@ export const filesManifest: ConnectorManifest = {
     {
       name: 'files.write',
       description:
-        'Write a UTF-8 file, only when the owner asks for a file or the work is a document to keep. Answers, drafts, tables and plans go in the reply instead. Declare expect to make it a checked deliverable.',
+        'Write a UTF-8 file, only when the person asks for a file or the work is a document to keep. Answers, drafts, tables and plans go in the reply instead. Declare expect to make it a checked deliverable.',
       input_schema: inputSchema(
         {
           path: pathSchema,
@@ -273,7 +359,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
     return noLinks(base, [...scope, ...segmentsFor(relative)], create);
   };
   const read = async (target: string): Promise<Buffer> => {
-    const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const file = await open(target, READ_FLAGS);
     try {
       const stat = await file.stat();
       if (!stat.isFile() || stat.size > limit)
@@ -465,22 +551,36 @@ export function createFilesConnector(options: FilesOptions): Connector {
         const to = requiredString(payload, 'to');
         const source = await resolveFile(ctx, area, from);
         const target = await resolveFile(ctx, areaFor(payload.to_area ?? area), to, true);
-        hash = digest(await read(source));
-        if (payload.content_hash !== undefined && payload.content_hash !== hash) {
-          // Nothing was moved. The file on disk is not the content this action
-          // recorded, which is a question for a person, not a retry.
-          throw new ConnectorFaultError({
-            kind: 'bad_output',
-            detail: 'the file to move is not the content the action recorded',
-          });
-        }
+        // Both directories are held from their check to the rename, so neither
+        // can be swapped for a link into another job's workspace meanwhile.
+        const fromDirectory = await pinDirectory(path.dirname(source));
         try {
-          await lstat(target);
-          throw new Error('move destination already exists');
-        } catch (error) {
-          if (!missing(error)) throw error;
+          const toDirectory = await pinDirectory(path.dirname(target));
+          try {
+            const sourceAt = fromDirectory.at(path.basename(source));
+            const targetAt = toDirectory.at(path.basename(target));
+            hash = digest(await read(sourceAt));
+            if (payload.content_hash !== undefined && payload.content_hash !== hash) {
+              // Nothing was moved. The file on disk is not the content this action
+              // recorded, which is a question for a person, not a retry.
+              throw new ConnectorFaultError({
+                kind: 'bad_output',
+                detail: 'the file to move is not the content the action recorded',
+              });
+            }
+            try {
+              await lstat(targetAt);
+              throw new Error('move destination already exists');
+            } catch (error) {
+              if (!missing(error)) throw error;
+            }
+            await rename(sourceAt, targetAt);
+          } finally {
+            await toDirectory.close();
+          }
+        } finally {
+          await fromDirectory.close();
         }
-        await rename(source, target);
         detail = { from, to, area, to_area: areaFor(payload.to_area ?? area), content_hash: hash };
       } else {
         const relative = requiredString(payload, 'path');
@@ -558,19 +658,23 @@ export function createFilesConnector(options: FilesOptions): Connector {
           const content = requiredString(payload, 'content');
           if (Buffer.byteLength(content) > limit)
             throw new Error('content exceeds the write limit');
-          const file = await open(
-            target,
-            constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW,
-            0o600,
-          );
+          const directory = await pinDirectory(path.dirname(target));
           try {
-            const stat = await file.stat();
-            if (!stat.isFile()) throw new Error('write target is not a regular file');
-            await file.truncate(0);
-            await file.writeFile(content, 'utf8');
-            await file.sync();
+            const file = await open(
+              directory.at(path.basename(target)),
+              constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+              0o600,
+            );
+            try {
+              await openedAt(file, target);
+              await file.truncate(0);
+              await file.writeFile(content, 'utf8');
+              await file.sync();
+            } finally {
+              await file.close();
+            }
           } finally {
-            await file.close();
+            await directory.close();
           }
           hash = digest(content);
           // A file existing is not a delivery. Read back what was written and

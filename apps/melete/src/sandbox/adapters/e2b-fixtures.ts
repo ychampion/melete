@@ -4,7 +4,7 @@
  * acknowledgement of a command the way a dropped connection does.
  */
 import { fileURLToPath } from 'node:url';
-import { MARKER_ROOT } from '../marker.ts';
+import { VAR_TMP_MARKER_ROOT } from '../marker.ts';
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -40,7 +40,7 @@ export function acknowledgementControl(inner: Fetch) {
   const marked = (url: URL, init: RequestInit) =>
     url.pathname === '/process.Process/Start' &&
     init.body instanceof Uint8Array &&
-    new TextDecoder().decode(init.body.subarray(5)).includes(MARKER_ROOT);
+    new TextDecoder().decode(init.body.subarray(5)).includes(VAR_TMP_MARKER_ROOT);
   const controlled: Fetch = async (input, init = {}) => {
     const url = new URL(String(input));
     if (!pending || !marked(url, init)) return inner(input, init);

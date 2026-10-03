@@ -1,0 +1,2 @@
+ALTER TABLE "connection" ADD COLUMN "shared_use" text DEFAULT 'owner' NOT NULL;--> statement-breakpoint
+ALTER TABLE "connection" ADD CONSTRAINT "connection_shared_use" CHECK ("connection"."shared_use" in ('owner', 'room'));
