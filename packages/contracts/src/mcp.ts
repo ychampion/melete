@@ -26,11 +26,17 @@ const toolAlias = z
  * offer as a next step. A server cannot widen either: an item naming any other
  * tool is admitted without that action, and a server with no declaration adds
  * nothing to the ledger, whatever its tools return.
+ *
+ * `join_companies` lets an item join a company the person already has from a
+ * mailbox scan at the same domain. Left false, a feed's items stay with the
+ * companies the feed itself added, and an item whose domain belongs to a
+ * company found some other way is dropped.
  */
 export const mcpLedgerDeclaration = z
   .object({
     feed: toolAlias,
     actions: z.array(toolAlias).max(16).default([]),
+    join_companies: z.boolean().default(false),
   })
   .strict();
 export type McpLedgerDeclaration = z.infer<typeof mcpLedgerDeclaration>;

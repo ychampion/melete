@@ -13,10 +13,13 @@
 import { isTerminal, jobState, type LedgerItem } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import type { Sql } from 'postgres';
+import { ServiceError } from '../api/errors.ts';
+import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Database } from '../db/client.ts';
 import { job } from '../db/schema.ts';
 import type { Env } from '../env.ts';
+import { ExperienceEffects } from '../experience/effects.ts';
 import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
 import type { GatewayOptions } from '../gateway/index.ts';
 import {
@@ -29,10 +32,11 @@ import type { GatewayProvider } from '../gateway/types.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 import type { CompanyExtractor, ScanExtractor } from './extract.ts';
-import { publishedAction, syncLedgerFeed } from './feeds.ts';
+import { type FeedLimits, MANUAL_SYNC_MS, publishedAction, syncLedgerFeed } from './feeds.ts';
 import { DEFAULT_EXTRACTION_MODEL, openExtractionGateway } from './gateway.ts';
 import { playbookHandler } from './handler.ts';
 import { connectorMailbox, MAILBOX_READ_LIMIT, type ScanMailbox } from './mailbox.ts';
+import { publishedStepObjective } from './published.ts';
 import { type Owner, PostgresCompanyStore } from './repository.ts';
 import type { CompaniesDeps } from './routes.ts';
 import { scriptedExtractor } from './scripted.ts';
@@ -230,6 +234,85 @@ export function spaceSendConnection(options: { sql: Sql }) {
   };
 }
 
+/**
+ * Reading connections' ledger feeds and taking the steps their items offer.
+ *
+ * A person may ask for a read of one connection at most once a minute, by
+ * default; the scheduled reads are the poller's. A step runs as an owner
+ * command through the broker, so it needs the broker and its database; without
+ * them, steps are not connected and the route says so.
+ */
+export function ledgerFeeds(options: {
+  db: Database;
+  registry: ConnectorRegistry;
+  sql?: Sql;
+  broker?: BrokerService;
+  /** The shortest gap between two reads a person asks for on one connection. */
+  manualGapMs?: number;
+  limits?: FeedLimits;
+  now?: () => Date;
+}): NonNullable<CompaniesDeps['feeds']> {
+  const gap = options.manualGapMs ?? MANUAL_SYNC_MS;
+  const asked = new Map<string, number>();
+  const effects =
+    options.sql && options.broker
+      ? new ExperienceEffects(options.sql, options.broker, options.registry)
+      : null;
+  const deps = {
+    db: options.db,
+    registry: options.registry,
+    ...(options.limits ? { limits: options.limits } : {}),
+    ...(options.now ? { now: options.now } : {}),
+  };
+  return {
+    sync: (connectionId, actor) =>
+      syncLedgerFeed(deps, connectionId, actor, {
+        beforeRead: (id) => {
+          const at = Date.now();
+          const last = asked.get(id);
+          if (last !== undefined && at - last < gap)
+            throw new ServiceError(
+              'too_soon',
+              'This connection was read moments ago. Try again in a minute.',
+              429,
+            );
+          asked.set(id, at);
+        },
+      }),
+    action: (item: LedgerItem, actionId: string) => publishedAction(options.db, item, actionId),
+    ...(effects
+      ? {
+          step: {
+            async start(input) {
+              const started = await effects.startLedgerStep({
+                spaceId: input.spaceId,
+                principalId: input.principalId,
+                connectionId: input.connectionId,
+                kind: input.toolName,
+                itemId: input.itemId,
+                title: `${input.label}: ${input.action.tool}`,
+                objective: publishedStepObjective(input.label, input.action.tool),
+              });
+              if (typeof started !== 'string')
+                throw new ServiceError('action_unavailable', started.reason, 409);
+              return started;
+            },
+            async run(jobId, input) {
+              const effect = await effects.runLedgerStep(jobId, {
+                connectionId: input.connectionId,
+                kind: input.toolName,
+                payload: input.action.input,
+              });
+              if ('reason' in effect) throw new ServiceError('action_refused', effect.reason, 409);
+              return effect.status;
+            },
+            abandon: (jobId, reason) => effects.abandonLedgerStep(jobId, reason),
+          },
+        }
+      : {}),
+  };
+}
+
 /** Everything the routes need, from what the service already built. */
 export function companiesDeps(options: {
   db: Database;
@@ -242,6 +325,8 @@ export function companiesDeps(options: {
   triggers?: TriggerService;
   /** The model and keys connected in the app. */
   modelSettings?: ModelSettingsService;
+  /** The effect boundary a published item's step is proposed to. */
+  broker?: BrokerService;
 }): CompaniesDeps {
   const { jobs, triggers } = options;
   // A model connected in the app may read any scan, so its allowance applies
@@ -287,16 +372,12 @@ export function companiesDeps(options: {
     ...(options.sql ? { sendConnection: spaceSendConnection({ sql: options.sql }) } : {}),
     ...(options.registry
       ? {
-          feeds: {
-            sync: (connectionId: string, actor: string | null) =>
-              syncLedgerFeed(
-                { db: options.db, registry: options.registry as ConnectorRegistry },
-                connectionId,
-                actor,
-              ),
-            action: (item: LedgerItem, actionId?: string) =>
-              publishedAction(options.db, item, actionId),
-          },
+          feeds: ledgerFeeds({
+            db: options.db,
+            registry: options.registry,
+            ...(options.sql ? { sql: options.sql } : {}),
+            ...(options.broker ? { broker: options.broker } : {}),
+          }),
         }
       : {}),
   };

@@ -185,7 +185,8 @@ const SUGGESTION_ICON: Partial<Record<LedgerItem['kind'], IconName>> = {
   renewal: 'refresh',
 };
 
-type Suggestion = { id: string; label: string; icon: IconName };
+/** `open` suggestions show the item first; the others start its playbook. */
+type Suggestion = { id: string; label: string; icon: IconName; open?: boolean };
 
 function suggestionsOf(map: CompanyMap | null, now: number): Suggestion[] {
   if (!map) return [];
@@ -217,6 +218,8 @@ function suggestionsOf(map: CompanyMap | null, now: number): Suggestion[] {
       id: item.id,
       label: label(item),
       icon: SUGGESTION_ICON[item.kind] ?? 'sparkles',
+      // A connected app's step is chosen where its tool and input are shown.
+      ...(item.source ? { open: true } : {}),
     }));
 }
 
@@ -1034,7 +1037,11 @@ export function HomeScreen() {
                   type="button"
                   className="suggestion"
                   disabled={busy}
-                  onClick={() => void handle(suggestion.id)}
+                  onClick={() =>
+                    suggestion.open
+                      ? navigate(`/companies?item=${encodeURIComponent(suggestion.id)}`)
+                      : void handle(suggestion.id)
+                  }
                 >
                   <Icon name={suggestion.icon} size={14} />
                   <span>{suggestion.label}</span>

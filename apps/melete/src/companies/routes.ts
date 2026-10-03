@@ -14,6 +14,7 @@
  */
 
 import {
+  type ActionStatus,
   awaitedReply as awaitedReplyContract,
   type CompanyMap,
   companyMap as companyMapContract,
@@ -21,6 +22,7 @@ import {
   type LedgerItemAction,
   type LedgerSyncResult,
   ledgerHandleRequest,
+  ledgerHandleResult,
   ledgerItem as ledgerItemContract,
   ledgerSyncResult,
   type WaitingOn,
@@ -36,6 +38,7 @@ import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import type { CompanyExtractor } from './extract.ts';
 import { HandlerUnavailable, type LedgerItemHandler, stubLedgerItemHandler } from './handler.ts';
 import type { ScanMailbox } from './mailbox.ts';
+import { publishedActionDigest } from './published.ts';
 import type { CompanyStore, LedgerDetail, Owner, ScanRecord } from './repository.ts';
 import { runScan } from './scan.ts';
 import { waitingOnView } from './waiting-view.ts';
@@ -76,12 +79,36 @@ export type CompaniesDeps = {
   feeds?: {
     /** Read one connection's feed now, as `actor`, and write what it admits. */
     sync(connectionId: string, actor: string | null): Promise<LedgerSyncResult>;
-    /** The action asked for on a published item, checked against its installation now. */
+    /** The action chosen on a published item, checked against its installation now. */
     action(
       item: LedgerItem,
-      actionId?: string,
-    ): Promise<{ action: LedgerItemAction; toolName: string }>;
+      actionId: string,
+    ): Promise<{ action: LedgerItemAction; toolName: string; label: string }>;
+    /**
+     * Taking that action: one call to the declared tool with the item's stored
+     * input, proposed to the broker as an owner command. Absent, steps are not
+     * connected.
+     */
+    step?: {
+      /** Start the command's job. Nothing is proposed yet. */
+      start(input: PublishedStep & { itemId: string }): Promise<string>;
+      /** Propose the call under that job; answers where the call stands. */
+      run(jobId: string, input: PublishedStep): Promise<ActionStatus>;
+      /** End a job whose call will not be proposed. */
+      abandon(jobId: string, reason: string): Promise<void>;
+    };
   };
+};
+
+/** One step on a published item, as the route hands it on. */
+export type PublishedStep = {
+  spaceId: string;
+  principalId: string;
+  connectionId: string;
+  action: LedgerItemAction;
+  toolName: string;
+  /** The connection's label. */
+  label: string;
 };
 
 /**
@@ -307,8 +334,8 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
 
   app.post('/ledger/:id/handle', async (c) => {
     const id = c.req.param('id');
-    // The body is optional: it only names which action to take on an item a
-    // connection published, and a playbook item takes none.
+    // The body names the step to take on an item a connection published, as
+    // it was shown; a playbook item takes none.
     const text = await c.req.text();
     const request = ledgerHandleRequest.parse(text.trim() ? JSON.parse(text) : {});
     // A second press waits for the first, then reads the item it left behind.
@@ -320,29 +347,45 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
       // the product follows about never saying the same thing twice.
       if (found.item.job_id) return { job_id: found.item.job_id, status: 200 as const };
       if (found.item.source) {
-        // A published item is acted on through its connection's own tool, and
-        // only one the installation still declares and grants.
-        if (!deps.feeds || !handler.handlePublishedItem)
+        // A published item is acted on through one of the steps its connection
+        // offers, the one the person was shown, and only while the
+        // installation still declares and grants its tool. The step runs as
+        // one brokered call with the stored input; no model is asked anything.
+        const step = deps.feeds?.step;
+        if (!deps.feeds || !step)
           throw new ServiceError('not_connected', 'Handling is not connected yet.', 503);
+        if (found.item.status === 'settled' || found.item.status === 'dropped')
+          throw new ServiceError('already_terminal', 'This one is already finished.', 409);
+        if (!request.action || !request.digest)
+          throw new ServiceError(
+            'choose_action',
+            'Choose one of the steps this item offers, as it was shown to you.',
+            400,
+          );
         const chosen = await deps.feeds.action(found.item, request.action);
-        const texts = await store.messageTexts(
-          found.owner,
-          found.item.evidence.map((entry) => entry.message_id),
-        );
-        const result = await handler.handlePublishedItem({
-          item: found.item,
-          company: found.company,
+        if (publishedActionDigest(chosen.action) !== request.digest)
+          throw new ServiceError(
+            'action_changed',
+            'This step changed after it was shown. Look at it again before running it.',
+            409,
+          );
+        const published: PublishedStep = {
+          spaceId: found.owner.spaceId,
+          principalId: found.owner.principalId,
+          connectionId: found.item.source.connection_id,
           action: chosen.action,
           toolName: chosen.toolName,
-          texts,
-          principalId: found.owner.principalId,
-          spaceId: found.owner.spaceId,
-        });
-        await store.setJob(found.owner, found.item.id, result.job_id);
-        return { job_id: result.job_id, status: 201 as const };
+          label: chosen.label,
+        };
+        const jobId = await step.start({ ...published, itemId: found.item.id });
+        if (!(await store.setJob(found.owner, found.item.id, jobId))) {
+          await step.abandon(jobId, 'The item closed before the step was taken.');
+          throw new ServiceError('already_terminal', 'This one is already finished.', 409);
+        }
+        return { job_id: jobId, status: 201 as const, published };
       }
-      if (request.action)
-        throw new ServiceError('invalid_request', 'This item offers no such action.', 400);
+      if (request.action || request.digest)
+        throw new ServiceError('invalid_request', 'This item offers no such step.', 400);
       // Which mailbox the message would leave from is the installation's to decide,
       // not the caller's: it is looked up from the space the item was found in.
       const connectionId = (await deps.sendConnection?.(found.owner)) ?? null;
@@ -364,6 +407,16 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
       await store.setJob(found.owner, found.item.id, result.job_id);
       return { job_id: result.job_id, status: 201 as const };
     });
+    // The step's call is proposed once the item names its job, outside the
+    // section: a call may take as long as its connection does, and the item
+    // is already marked as being handled, so a second press finds this job.
+    if ('published' in answer && answer.published && deps.feeds?.step) {
+      const status = await deps.feeds.step.run(answer.job_id, answer.published);
+      return c.json(
+        ledgerHandleResult.parse({ job_id: answer.job_id, action_status: status }),
+        answer.status,
+      );
+    }
     return c.json({ job_id: answer.job_id }, answer.status);
   });
 
@@ -372,7 +425,10 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
   app.post('/connections/:id/ledger/sync', async (c) => {
     if (!deps.feeds)
       throw new ServiceError('not_connected', 'Ledger feeds are not connected.', 503);
-    const result = await deps.feeds.sync(c.req.param('id'), requestPrincipal() ?? null);
+    // Only a signed-in person asks for a read; the service's own reads never come through here.
+    const actor = requestPrincipal();
+    if (!actor) throw new ServiceError('not_found', 'Not found.', 404);
+    const result = await deps.feeds.sync(c.req.param('id'), actor);
     return c.json(ledgerSyncResult.parse(result));
   });
 

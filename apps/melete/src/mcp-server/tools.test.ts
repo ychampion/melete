@@ -90,6 +90,79 @@ describe('the MCP tools', () => {
     expect(hidden.isError).toBe(true);
   });
 
+  test('handle refuses an item a connected app added, and starts nothing', async () => {
+    const calls: Array<[string, string, unknown]> = [];
+    const route = (async (method, path, body) => {
+      calls.push([method, path, body]);
+      return method === 'GET'
+        ? {
+            status: 200,
+            body: { item: { id: 'li_1', source: { label: 'Project tracker', actions: [] } } },
+          }
+        : { status: 201, body: { job_id: 'job_1' } };
+    }) as RouteCall;
+    const result = await callTool({ ...deps().deps, route }, 'handle', { item_id: 'li_1' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('Project tracker added this item');
+    expect(calls.map(([method]) => method)).toEqual(['GET']);
+  });
+
+  test('handle starts a chase for an item found in the mailbox, as before', async () => {
+    const calls: Array<[string, string, unknown]> = [];
+    const route = (async (method, path, body) => {
+      calls.push([method, path, body]);
+      return method === 'GET'
+        ? { status: 200, body: { item: { id: 'li_1' } } }
+        : { status: 201, body: { job_id: 'job_1' } };
+    }) as RouteCall;
+    const result = await callTool({ ...deps().deps, route }, 'handle', { item_id: 'li_1' });
+    expect(result.structuredContent).toEqual({ job_id: 'job_1', status: 'started' });
+    expect(calls.map(([method, path]) => [method, path])).toEqual([
+      ['GET', '/ledger/li_1?space_id=sp_1'],
+      ['POST', '/ledger/li_1/handle?space_id=sp_1'],
+    ]);
+  });
+
+  test('waiting_on names the app that added an item', async () => {
+    const probe = deps({
+      status: 200,
+      body: {
+        companies: [{ id: 'co_1', name: 'Harbour Studio' }],
+        items: [
+          {
+            id: 'li_1',
+            company_id: 'co_1',
+            kind: 'commitment',
+            direction: 'owed_to_you',
+            amount_minor: null,
+            currency: null,
+            due_at: null,
+            status: 'found',
+            job_id: null,
+            summary: 'Signed contract back',
+            source: { label: 'Project tracker' },
+          },
+          {
+            id: 'li_2',
+            company_id: 'co_1',
+            kind: 'refund_owed',
+            direction: 'owed_to_you',
+            amount_minor: 500,
+            currency: 'GBP',
+            due_at: null,
+            status: 'found',
+            job_id: null,
+            summary: 'Refund',
+          },
+        ],
+      },
+    });
+    const result = await callTool(probe.deps, 'waiting_on', {});
+    const items = (result.structuredContent as { items: Array<Record<string, unknown>> }).items;
+    expect(items.find((item) => item.item_id === 'li_1')?.added_by).toBe('Project tracker');
+    expect(items.find((item) => item.item_id === 'li_2')).not.toHaveProperty('added_by');
+  });
+
   test('a name it does not offer is a protocol error', async () => {
     await expect(callTool(deps().deps, 'send_now', {})).rejects.toBeInstanceOf(UnknownTool);
     await expect(callTool(deps().deps, 'toString', {})).rejects.toBeInstanceOf(UnknownTool);

@@ -66,20 +66,33 @@ export function EvidenceText({ text, spans }: { text: string; spans: LedgerEvide
   );
 }
 
-/** The message as it arrived: who sent it, what it was called, and when. */
+/**
+ * The message as it arrived: who sent it, what it was called, and when. A text
+ * a connected app sent says so, and its sender and date are the app's account
+ * of them, not a message Melete read in the person's mail.
+ */
 export function MessageCard({
   message,
   spans,
+  reportedBy,
 }: {
   message: LedgerMessage;
   spans: LedgerEvidence[];
+  /** The connected app that sent this text, when an app did rather than the person's mail. */
+  reportedBy?: string;
 }) {
   return (
-    <div className="evidence-mail">
+    <div className="evidence-mail" data-reported={reportedBy ? 'true' : undefined}>
       <div className="evidence-head">
-        <span className="evidence-subject">{message.subject}</span>
+        <span className="evidence-subject">
+          {reportedBy ? `From ${reportedBy}` : message.subject}
+        </span>
         <span className="evidence-meta">
-          {message.from} · {messageDate(message.received_at)}
+          {reportedBy
+            ? [message.subject, message.from ? `${message.from}, as ${reportedBy} reports it` : '']
+                .filter(Boolean)
+                .join(' · ')
+            : `${message.from} · ${messageDate(message.received_at)}`}
         </span>
       </div>
       <EvidenceText text={message.text} spans={spans} />

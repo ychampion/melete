@@ -55,6 +55,7 @@ import {
   company,
   companyMap,
   ledgerHandleRequest,
+  ledgerHandleResult,
   ledgerItem,
   ledgerSyncResult,
 } from './companies.ts';
@@ -2691,9 +2692,13 @@ export function buildOpenApiDocument() {
             description:
               'Creates the job that runs the item’s playbook. Any message it sends goes ' +
               'through the existing approval path; this route starts the work, it does not send. ' +
-              'For an item a connection published, the job takes one of the item’s actions ' +
-              'through that connection’s own tool, named by `action` or the first one offered, ' +
-              'and only while the installation still declares and grants it. The body is optional.',
+              'For an item a connection published, the body names one of the item’s actions and ' +
+              'the `digest` it was served with. The route refuses a digest that no longer matches ' +
+              'the action, and an action the installation no longer declares and grants. It then ' +
+              'proposes one call to that tool with the action’s stored input, exactly, through the ' +
+              'broker. No model writes or chooses the call. The tool’s effect class and the ' +
+              'person’s approval settings decide whether it runs now or waits for approval. The ' +
+              'answer says where the call stands. A playbook item takes no body.',
             requestParams: {
               ...idParam('id', 'Ledger item id'),
               query: z.object({ space_id: z.string().optional() }),
@@ -2704,11 +2709,15 @@ export function buildOpenApiDocument() {
                 'Already being handled, by the job named here',
                 z.object({ job_id: z.string() }),
               ),
-              '201': jsonResponse('The job now handling it', z.object({ job_id: z.string() })),
-              '400': problem('Nothing ships yet that handles this kind of item on its own'),
+              '201': jsonResponse('The job now handling it', ledgerHandleResult),
+              '400': problem(
+                'Nothing ships yet that handles this kind of item on its own, or a published ' +
+                  'item’s action or digest is missing',
+              ),
               '404': problem('No such item for this person'),
               '409': problem(
-                'Already finished, no longer quotable, or the action is no longer offered',
+                'Already finished, no longer quotable, the action changed since it was shown, ' +
+                  'or the action is no longer offered or was refused',
               ),
               '503': problem('Handling is not connected yet'),
             },
@@ -2722,14 +2731,17 @@ export function buildOpenApiDocument() {
               'Reads the feed tool the installation declared and writes the items it admits ' +
               'into the ledger of the space’s owner. Every quote must hold at its span in a ' +
               'source the same feed sent, or the item is dropped and counted; an action naming ' +
-              'a tool the installation did not declare is dropped. The service also reads every ' +
-              'declared feed on its own every five minutes.',
+              'a tool the installation did not declare is dropped. A connection holds a bounded ' +
+              'number of items, companies and source texts. The service also reads every ' +
+              'declared feed on its own every five minutes; a person may ask for a read of one ' +
+              'connection once a minute.',
             requestParams: idParam('id', 'Connection id'),
             responses: {
               '200': jsonResponse('What the read did', ledgerSyncResult),
               '403': problem('This connection is not accessible to the signed-in account'),
               '404': problem('This connection declares no ledger feed'),
               '409': problem('The connection is not active'),
+              '429': problem('This connection was read less than a minute ago'),
               '502': problem('The connection answered with something that is not a ledger feed'),
               '503': problem('The connection is not running, or its feed did not answer'),
             },

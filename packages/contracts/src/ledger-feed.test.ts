@@ -44,7 +44,11 @@ describe('declaring a ledger feed on an installed server', () => {
     const parsed = mcpConnectionConfig.parse(
       install({ feed: 'open_items', actions: ['post_update', 'close'] }),
     );
-    expect(parsed.ledger).toEqual({ feed: 'open_items', actions: ['post_update', 'close'] });
+    expect(parsed.ledger).toEqual({
+      feed: 'open_items',
+      actions: ['post_update', 'close'],
+      join_companies: false,
+    });
     expect(mcpConnectionConfig.parse(install()).ledger).toBeUndefined();
   });
 

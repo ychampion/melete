@@ -19,8 +19,15 @@ import { DEFAULT_CURRENCY } from './totals.ts';
 
 const OPEN = new Set<LedgerItemStatus>(['found', 'handling', 'waiting']);
 
-/** Nothing is chasing it yet, so "Chase this" can start one. */
-const chaseable = (entry: WaitingOnEntry) => entry.status === 'found' && entry.job_id === null;
+/**
+ * Nothing is chasing it yet, so its button can start one. An item a connection
+ * added has a button only when it offers a step, and the button opens the item
+ * where that step's tool and input are shown; it never runs a step itself.
+ */
+const chaseable = (entry: WaitingOnEntry) =>
+  entry.status === 'found' &&
+  entry.job_id === null &&
+  (entry.added_by === undefined || entry.next_step_label !== undefined);
 
 export function waitingOnView(input: {
   maps: readonly CompanyMap[];
@@ -47,6 +54,14 @@ export function waitingOnView(input: {
           sent_at: null,
           status: item.status,
           job_id: item.job_id,
+          ...(item.source
+            ? {
+                added_by: item.source.label,
+                ...(item.source.actions[0]
+                  ? { next_step_label: item.source.actions[0].label }
+                  : {}),
+              }
+            : {}),
         })),
     )
     // The most money first; an item with no figure after every one with one.

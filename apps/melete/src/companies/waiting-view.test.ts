@@ -155,3 +155,55 @@ describe('what the person is waiting on', () => {
     expect(view.scan.status).toBe('none');
   });
 });
+
+describe('items a connected app added', () => {
+  const source = (actions: Array<{ id: string; label: string }>) => ({
+    connection_id: 'conn_01J0000000000000000000000D',
+    label: 'Project tracker',
+    ref: 'TRK-1',
+    state: 'open',
+    next_step: null,
+    parties: [],
+    actions: actions.map((action) => ({
+      ...action,
+      tool: 'post_note',
+      input: {},
+      digest: 'a'.repeat(64),
+    })),
+    published_at: '2026-09-01T00:00:00.000Z',
+  });
+
+  test('one with a step is offered with that step’s label; one with none has no button', () => {
+    const withStep = owed({
+      kind: 'commitment',
+      suggested_playbook: null,
+      confidence: 'reported',
+      source: source([{ id: 'nudge', label: 'Nudge them' }]),
+    });
+    const without = owed({
+      kind: 'commitment',
+      suggested_playbook: null,
+      confidence: 'reported',
+      source: source([]),
+    });
+    const view = waitingOn.parse(
+      waitingOnView({
+        maps: [map([withStep, without], 10_000)],
+        replies: [],
+        scan: { space_id: SPACE, connected: true, status: 'done', finished_at: null, stale: false },
+      }),
+    );
+    expect(view.owed.find((entry) => entry.id === withStep.id)).toMatchObject({
+      added_by: 'Project tracker',
+      next_step_label: 'Nudge them',
+    });
+    expect(view.owed.find((entry) => entry.id === without.id)).toMatchObject({
+      added_by: 'Project tracker',
+    });
+    expect(view.owed.find((entry) => entry.id === without.id)).not.toHaveProperty(
+      'next_step_label',
+    );
+    expect(view.top.map((entry) => entry.id)).toContain(withStep.id);
+    expect(view.top.map((entry) => entry.id)).not.toContain(without.id);
+  });
+});

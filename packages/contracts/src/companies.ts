@@ -16,8 +16,9 @@
  * bad item is dropped on its own instead of failing the whole extraction.
  */
 import { z } from 'zod';
+import { actionStatus } from './broker.ts';
 import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
-import { confidence } from './knowledge.ts';
+import { CONFIDENCE_LEVELS } from './knowledge.ts';
 
 /**
  * Money is whole minor units — cents, pence, paise — so that adding a column of
@@ -165,6 +166,16 @@ export const ledgerItemAction = z.strictObject({
 export type LedgerItemAction = z.infer<typeof ledgerItemAction>;
 
 /**
+ * An action as the ledger serves it: what the feed offered, plus a digest of
+ * exactly that id, label, tool and input. Acting sends the digest back, so the
+ * action that runs is the one the person was shown, or nothing runs.
+ */
+export const ledgerShownAction = ledgerItemAction.extend({
+  digest: z.string().regex(/^[0-9a-f]{64}$/, 'must be a lowercase hex sha256 digest'),
+});
+export type LedgerShownAction = z.infer<typeof ledgerShownAction>;
+
+/**
  * Where an item came from when a connection published it rather than a scan
  * finding it. Present only on published items; the rest of the item is read
  * the same way as one a scan found.
@@ -178,11 +189,19 @@ export const ledgerItemSource = z.strictObject({
   state: z.string().min(1).max(60),
   next_step: z.string().min(1).max(300).nullable(),
   parties: z.array(ledgerParty).max(20),
-  actions: z.array(ledgerItemAction).max(8),
+  actions: z.array(ledgerShownAction).max(8),
   /** When the connection last published it. */
   published_at: timestamp,
 });
 export type LedgerItemSource = z.infer<typeof ledgerItemSource>;
+
+/**
+ * How sure the ledger is of an item. A scan reads mail and says how well;
+ * `reported` is an item a connection published, which Melete holds to its
+ * evidence rule but cannot vouch for beyond what the connection said.
+ */
+export const ledgerConfidence = z.enum([...CONFIDENCE_LEVELS, 'reported']);
+export type LedgerConfidence = z.infer<typeof ledgerConfidence>;
 
 export const ledgerItem = z.strictObject({
   id: prefixedId(ID_PREFIXES.ledger_item),
@@ -200,7 +219,7 @@ export const ledgerItem = z.strictObject({
    */
   due_date_only: z.boolean().optional(),
   status: ledgerItemStatus,
-  confidence,
+  confidence: ledgerConfidence,
   /** At least one. An item with nothing to check is an item nobody can open. */
   evidence: z.array(ledgerEvidence).min(1).max(8),
   suggested_playbook: playbookId.nullable().default(null),
@@ -356,11 +375,12 @@ export const ledgerFeedItem = z
 export type LedgerFeedItem = z.infer<typeof ledgerFeedItem>;
 
 /**
- * A feed page. Items are checked one at a time, so the outer shape leaves them
- * unparsed: one malformed item is dropped and counted, and the rest stand.
+ * A feed page. Sources and items are checked one at a time, so the outer shape
+ * leaves them unparsed: one malformed source or item is dropped and counted,
+ * and the rest stand.
  */
 export const ledgerFeed = z.object({
-  sources: z.array(ledgerFeedSource).max(200).default([]),
+  sources: z.array(z.unknown()).max(200).default([]),
   items: z.array(z.unknown()).max(200),
 });
 export type LedgerFeed = z.infer<typeof ledgerFeed>;
@@ -377,8 +397,25 @@ export const ledgerSyncResult = z.strictObject({
 });
 export type LedgerSyncResult = z.infer<typeof ledgerSyncResult>;
 
-/** Which of an item's actions to take. Left out, its first. */
+/**
+ * Which of a published item's actions to take, with the digest of the action
+ * as it was shown. Both are required for an item a connection published, and
+ * neither is taken for one a scan found.
+ */
 export const ledgerHandleRequest = z.strictObject({
   action: ledgerItemAction.shape.id.optional(),
+  digest: ledgerShownAction.shape.digest.optional(),
 });
 export type LedgerHandleRequest = z.infer<typeof ledgerHandleRequest>;
+
+/**
+ * What starting work on an item answers. For a published item's action,
+ * `action_status` is where that one call stands when the route answers:
+ * `succeeded` or `failed` when it already ran, `needs_approval` while it waits
+ * for the person.
+ */
+export const ledgerHandleResult = z.object({
+  job_id: prefixedId(ID_PREFIXES.job),
+  action_status: actionStatus.optional(),
+});
+export type LedgerHandleResult = z.infer<typeof ledgerHandleResult>;

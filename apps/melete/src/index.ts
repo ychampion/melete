@@ -369,6 +369,7 @@ export function createApp(deps: AppDeps) {
         jobs: deps.jobs,
         triggers: deps.triggers,
         modelSettings,
+        broker: deps.broker,
       }),
       ...deps.companies,
     });

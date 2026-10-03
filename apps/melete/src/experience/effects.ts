@@ -23,6 +23,9 @@ import { ownJobClause, requestPrincipal } from '../principals/authority.ts';
 import { type ActionRow, draftForReview, object, projectReceipt } from './projectors.ts';
 import { experienceMissing } from './service.ts';
 
+/** What the command key of a step taken on a published ledger item starts with. */
+export const LEDGER_STEP_PREFIX = 'ledger:';
+
 /** How many messages from assistants may wait for one person's approval at once. */
 export const ASSISTANT_SENDS_WAITING = 5;
 /** How long an assistant waits to propose again after the person turned one of its messages down. */
@@ -132,13 +135,15 @@ export class ExperienceEffects {
     outcome:
       | { kind: 'completed'; summary: string }
       | { kind: 'failed'; reason: string; retryable: boolean },
+    /** The states it may end from. A command that asked the person is queued once they answer. */
+    from: readonly string[] = ['running'],
   ) {
     await this.sql.begin(async (tx) => {
       // It appends an event, so it takes the event order first like every
       // other event writer, or a live stream could read past it.
       await lockEventOrderIn(tx);
       const [row] = await tx`select * from job where id = ${jobId} for update`;
-      if (row?.state !== 'running') return;
+      if (!row || !from.includes(String(row.state))) return;
       const [execution] = await tx`update attempt set outcome = ${outcome.kind},
         outcome_detail = ${JSON.stringify(outcome)}::jsonb, ended_at = now(),
         lease_status = 'ended', lease_expires_at = null
@@ -515,15 +520,114 @@ export class ExperienceEffects {
   }
 
   async continueCommand(effect: Action) {
-    const [row] = await this.sql`select kind from job where id = ${effect.job_id}`;
+    const [row] = await this
+      .sql`select kind, experience_command_key from job where id = ${effect.job_id}`;
     if (row?.kind !== 'command') return;
+    let current = effect;
     if (effect.status === 'approved') {
       await this.broker.admit(
         await this.claims(effect.job_id, effect.connection_id),
         effect.id,
         effect.payload_hash,
       );
-      await this.broker.dispatch(effect.id);
+      current = await this.broker.dispatch(effect.id);
     }
+    if (String(row.experience_command_key ?? '').startsWith(LEDGER_STEP_PREFIX))
+      await this.finishLedgerStep(current);
+  }
+
+  /**
+   * Start the owner command for one step a person chose on an item a
+   * connection published, and return its job. Nothing is proposed yet: the
+   * caller records the job on the item first, then `runLedgerStep` proposes
+   * the call. The job's title and objective are the service's own words, from
+   * the installation alone; nothing the connection's feed wrote is in them.
+   */
+  async startLedgerStep(input: {
+    spaceId: string;
+    principalId: string;
+    connectionId: string;
+    /** The tool's brokered name. */
+    kind: string;
+    itemId: string;
+    title: string;
+    objective: string;
+  }): Promise<string | NotAvailable> {
+    if (!(await this.supports(input.spaceId, input.connectionId, input.kind)))
+      return unavailable('This connection cannot take that step with its current access.');
+    const id = recordId('job');
+    await this.sql.begin(async (tx) => {
+      await tx`insert into job (id, space_id, principal_id, title, objective, kind, state, lease_epoch,
+        experience_command_key, constraints, budget)
+        values (${id}, ${input.spaceId}, ${input.principalId}, ${input.title.slice(0, 200)},
+        ${input.objective}, 'command', 'running', 1,
+        ${`${LEDGER_STEP_PREFIX}${input.itemId}:${recordId('req')}`}, '{}'::jsonb,
+        ${JSON.stringify(DEFAULT_BUDGET)}::jsonb)`;
+      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${recordId('att')}, ${id}, 1, 'experience-v1', 'owner', 'explicit-command')`;
+    });
+    return id;
+  }
+
+  /**
+   * Propose a ledger step's one call: the declared tool with the stored input,
+   * exactly, through the broker's own admission. The tool's effect class, the
+   * person's approval settings and the origin checks decide whether it runs now
+   * or waits for the person, as for any call; no model writes or chooses it.
+   * The job ends as soon as the call has an outcome, which hands the item back.
+   */
+  async runLedgerStep(
+    jobId: string,
+    input: { connectionId: string; kind: string; payload: JsonObject },
+  ): Promise<Action | NotAvailable> {
+    try {
+      const proposed = await this.broker.propose(await this.claims(jobId, input.connectionId), {
+        connection_id: input.connectionId,
+        kind: input.kind,
+        payload: input.payload,
+        client_ref: 'ledger',
+      });
+      const effect = await loadAction(this.sql, proposed.action_id);
+      await this.finishLedgerStep(effect);
+      return effect;
+    } catch (error) {
+      await this.endJob(jobId, {
+        kind: 'failed',
+        reason:
+          error instanceof BrokerFault
+            ? `The step was refused: ${error.code}.`
+            : 'The step could not be proposed.',
+        retryable: false,
+      });
+      if (error instanceof BrokerFault)
+        return unavailable('Melete did not accept this step, so nothing was run.');
+      throw error;
+    }
+  }
+
+  /** End a ledger step that will not be proposed, such as one whose item closed meanwhile. */
+  async abandonLedgerStep(jobId: string, reason: string) {
+    await this.endJob(jobId, { kind: 'failed', reason, retryable: false });
+  }
+
+  /**
+   * A ledger step's job ends once its call has succeeded, failed or been
+   * turned down, whether it ran at once or after the person answered.
+   */
+  private async finishLedgerStep(effect: Action) {
+    const open = ['running', 'queued', 'waiting_for_approval'];
+    if (effect.status === 'succeeded')
+      await this.endJob(effect.job_id, { kind: 'completed', summary: 'The step ran.' }, open);
+    else if (effect.status === 'failed' || effect.status === 'denied')
+      await this.endJob(
+        effect.job_id,
+        {
+          kind: 'failed',
+          reason:
+            effect.status === 'denied' ? 'The person turned the step down.' : 'The step failed.',
+          retryable: false,
+        },
+        open,
+      );
   }
 }

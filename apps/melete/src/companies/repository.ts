@@ -16,12 +16,25 @@ import type {
   LedgerItem,
   LedgerItemStatus,
 } from '@melete/contracts';
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  notInArray,
+  or,
+  sql,
+} from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
 import { recordSettled } from '../push/service.ts';
+import { shownActions } from './published.ts';
 import { awaitedReply, company, companyMessage, companyScan, ledgerItem } from './schema.ts';
 import { computeTotals, DEFAULT_CURRENCY } from './totals.ts';
 import { dedupeKey } from './validate.ts';
@@ -95,9 +108,8 @@ export interface CompanyStore {
   /** `timeZone` is the person's own; a due date with no time is a day there. */
   map(owner: Owner, now: Date, timeZone?: string): Promise<CompanyMap>;
   item(owner: Owner, id: string): Promise<LedgerDetail | null>;
-  /** The stored text of each of these messages that is still held, by message id. */
-  messageTexts(owner: Owner, messageIds: readonly string[]): Promise<Map<string, string>>;
   setStatus(owner: Owner, id: string, status: LedgerItemStatus): Promise<LedgerItem | null>;
+  /** A job has it now. Null when the item is not the owner's, or is settled or dropped. */
   setJob(owner: Owner, id: string, jobId: string): Promise<LedgerItem | null>;
   /**
    * Run `work` as the only holder of `key` across every process that shares
@@ -257,21 +269,45 @@ const itemView = (row: ItemRow): LedgerItem => ({
   job_id: row.jobId,
   summary: row.summary,
   ...(row.connectionId && row.source
-    ? { source: { connection_id: row.connectionId, ...row.source } }
+    ? {
+        source: {
+          connection_id: row.connectionId,
+          ...row.source,
+          actions: shownActions(row.source.actions),
+        },
+      }
     : {}),
 });
 
+/** The statuses of a connection whose items, and the companies its feed added, are hidden. */
+const WITHDRAWN = sql`('revoked', 'disabled')`;
+
 /**
- * A published item is served only while the connection behind it is. Revoking
- * the connection withholds its items from every read, and every route that
- * acts on an item reads it first.
+ * A published item is served only while the connection behind it stands:
+ * revoking it or switching it off withholds its items from every read, and
+ * every route that acts on an item reads it first.
  */
 const standing = () =>
   or(
     isNull(ledgerItem.connectionId),
     sql`exists (select 1 from connection c
-      where c.id = ${ledgerItem.connectionId} and c.status <> 'revoked')`,
+      where c.id = ${ledgerItem.connectionId} and c.status not in ${WITHDRAWN})`,
   );
+
+/** A company a feed added is shown under the same rule as that feed's items. */
+const standingCompany = () =>
+  or(
+    isNull(company.connectionId),
+    sql`exists (select 1 from connection c
+      where c.id = ${company.connectionId} and c.status not in ${WITHDRAWN})`,
+  );
+
+/**
+ * The most companies and items one read of the map returns, newest items
+ * first. A connection's share is bounded where it is written; this bounds the
+ * whole read, which Home, Companies and Waiting on all make.
+ */
+export const MAP_LIMITS = { companies: 2000, items: 5000 } as const;
 
 /**
  * A scan runs inside the service process that started it, so a scan still
@@ -455,6 +491,8 @@ export class PostgresCompanyStore implements CompanyStore {
             currency: input.currency,
             lastSeenAt: new Date(input.last_seen_at),
             messageCount: input.message_count,
+            // Found in the person's own mail, it is theirs now, whatever feed added it first.
+            connectionId: null,
           },
         })
         .returning({ id: company.id });
@@ -521,13 +559,15 @@ export class PostgresCompanyStore implements CompanyStore {
     const companies = await this.db
       .select()
       .from(company)
-      .where(ownedCompany(owner))
-      .orderBy(company.name);
+      .where(and(ownedCompany(owner), standingCompany()))
+      .orderBy(company.name, company.id)
+      .limit(MAP_LIMITS.companies);
     const items = await this.db
       .select()
       .from(ledgerItem)
       .where(and(ownedItem(owner), standing()))
-      .orderBy(desc(ledgerItem.createdAt), ledgerItem.id);
+      .orderBy(desc(ledgerItem.createdAt), ledgerItem.id)
+      .limit(MAP_LIMITS.items);
     const view = items.map(itemView);
     const totals = computeTotals(view, { now, timeZone });
     return {
@@ -577,21 +617,6 @@ export class PostgresCompanyStore implements CompanyStore {
     };
   }
 
-  async messageTexts(owner: Owner, messageIds: readonly string[]): Promise<Map<string, string>> {
-    if (!messageIds.length) return new Map();
-    const rows = await this.db
-      .select({ messageId: companyMessage.messageId, body: companyMessage.body })
-      .from(companyMessage)
-      .where(
-        and(
-          eq(companyMessage.spaceId, owner.spaceId),
-          ownJob(companyMessage.principalId, owner.principalId),
-          inArray(companyMessage.messageId, [...messageIds]),
-        ),
-      );
-    return new Map(rows.map((row) => [row.messageId, row.body]));
-  }
-
   async setStatus(owner: Owner, id: string, status: LedgerItemStatus): Promise<LedgerItem | null> {
     const [row] = await this.db
       .update(ledgerItem)
@@ -621,7 +646,14 @@ export class PostgresCompanyStore implements CompanyStore {
     const [row] = await this.db
       .update(ledgerItem)
       .set({ jobId, status: 'handling' })
-      .where(and(ownedItem(owner), eq(ledgerItem.id, id)))
+      .where(
+        and(
+          ownedItem(owner),
+          eq(ledgerItem.id, id),
+          // An item settled or dropped meanwhile, by its connection or the person, stays so.
+          notInArray(ledgerItem.status, ['settled', 'dropped']),
+        ),
+      )
       .returning();
     return row ? itemView(row) : null;
   }
@@ -935,14 +967,6 @@ export class MemoryCompanyStore implements CompanyStore {
         : null,
     };
   }
-  async messageTexts(owner: Owner, messageIds: readonly string[]): Promise<Map<string, string>> {
-    const found = new Map<string, string>();
-    for (const id of messageIds) {
-      const message = this.messages.get(this.key(owner, id));
-      if (message) found.set(id, message.text);
-    }
-    return found;
-  }
   /**
    * Changing an item is about the item, so it does not go through `item()`,
    * which also needs the company row for its detail view. Postgres updates the
@@ -964,7 +988,7 @@ export class MemoryCompanyStore implements CompanyStore {
   }
   async setJob(owner: Owner, id: string, jobId: string): Promise<LedgerItem | null> {
     const item = this.own(owner, id);
-    if (!item) return null;
+    if (!item || item.status === 'settled' || item.status === 'dropped') return null;
     const updated: LedgerItem = { ...item, job_id: jobId, status: 'handling' };
     this.items.set(id, updated);
     return updated;

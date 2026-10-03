@@ -2508,7 +2508,7 @@ export interface paths {
         put?: never;
         /**
          * Read a connection’s ledger feed now
-         * @description Reads the feed tool the installation declared and writes the items it admits into the ledger of the space’s owner. Every quote must hold at its span in a source the same feed sent, or the item is dropped and counted; an action naming a tool the installation did not declare is dropped. The service also reads every declared feed on its own every five minutes.
+         * @description Reads the feed tool the installation declared and writes the items it admits into the ledger of the space’s owner. Every quote must hold at its span in a source the same feed sent, or the item is dropped and counted; an action naming a tool the installation did not declare is dropped. A connection holds a bounded number of items, companies and source texts. The service also reads every declared feed on its own every five minutes; a person may ask for a read of one connection once a minute.
          */
         post: {
             parameters: {
@@ -2558,6 +2558,15 @@ export interface paths {
                 };
                 /** @description The connection is not active */
                 409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema156"];
+                    };
+                };
+                /** @description This connection was read less than a minute ago */
+                429: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -7807,7 +7816,7 @@ export interface paths {
         put?: never;
         /**
          * Start the job that handles this item
-         * @description Creates the job that runs the item’s playbook. Any message it sends goes through the existing approval path; this route starts the work, it does not send. For an item a connection published, the job takes one of the item’s actions through that connection’s own tool, named by `action` or the first one offered, and only while the installation still declares and grants it. The body is optional.
+         * @description Creates the job that runs the item’s playbook. Any message it sends goes through the existing approval path; this route starts the work, it does not send. For an item a connection published, the body names one of the item’s actions and the `digest` it was served with. The route refuses a digest that no longer matches the action, and an action the installation no longer declares and grants. It then proposes one call to that tool with the action’s stored input, exactly, through the broker. No model writes or chooses the call. The tool’s effect class and the person’s approval settings decide whether it runs now or waits for approval. The answer says where the call stands. A playbook item takes no body.
          */
         post: {
             parameters: {
@@ -7825,6 +7834,7 @@ export interface paths {
                 content: {
                     "application/json": {
                         action?: string;
+                        digest?: string;
                     };
                 };
             };
@@ -7847,11 +7857,12 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            action_status?: components["schemas"]["ActionStatus"];
                             job_id: string;
                         };
                     };
                 };
-                /** @description Nothing ships yet that handles this kind of item on its own */
+                /** @description Nothing ships yet that handles this kind of item on its own, or a published item’s action or digest is missing */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -7869,7 +7880,7 @@ export interface paths {
                         "application/json": components["schemas"]["__schema156"];
                     };
                 };
-                /** @description Already finished, no longer quotable, or the action is no longer offered */
+                /** @description Already finished, no longer quotable, the action changed since it was shown, or the action is no longer offered or was refused */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -17265,6 +17276,8 @@ export interface components {
             /** @default [] */
             actions?: components["schemas"]["__schema77"][];
             feed: components["schemas"]["__schema77"];
+            /** @default false */
+            join_companies?: boolean;
         };
         __schema77: string;
         /** Format: uri */
@@ -19153,7 +19166,8 @@ export interface components {
             /** @default null */
             amount_minor: components["schemas"]["__schema529"] | null;
             company_id: string;
-            confidence: components["schemas"]["__schema484"];
+            /** @enum {string} */
+            confidence: "high" | "medium" | "low" | "reported";
             /** @default null */
             currency: components["schemas"]["__schema530"] | null;
             /** @enum {string} */
@@ -19198,6 +19212,7 @@ export interface components {
             role: string | null;
         };
         __schema535: {
+            digest: string;
             id: string;
             /** @default {} */
             input: components["schemas"]["__schema334"];
@@ -19205,6 +19220,7 @@ export interface components {
             tool: string;
         };
         __schema536: {
+            added_by?: string;
             amount_minor: components["schemas"]["__schema529"] | null;
             currency: components["schemas"]["__schema530"] | null;
             due_at: components["schemas"]["__schema154"] | null;
@@ -19212,6 +19228,7 @@ export interface components {
             job_id: string | null;
             /** @enum {string} */
             kind: "owed" | "reply";
+            next_step_label?: string;
             sent_at: components["schemas"]["__schema154"] | null;
             status: components["schemas"]["__schema532"];
             what: string;

@@ -28,6 +28,7 @@ const CONFIDENCE_WORDS: Record<Confidence, string> = {
   high: 'Read with high confidence',
   medium: 'Read with medium confidence',
   low: 'Read with low confidence',
+  reported: 'Reported by a connected app',
 };
 
 /** A row's state in the status vocabulary. */
@@ -134,8 +135,8 @@ export function LedgerDetailPanel({
 }: {
   detail: LedgerDetail | null;
   busy: boolean;
-  /** For an item a connection added, `action` is the step the person chose. */
-  onHandle: (action?: string) => void;
+  /** For an item a connection added, `action` is the step the person chose, as it was shown. */
+  onHandle: (action?: { id: string; digest: string }) => void;
   onSettled: () => void;
   onDrop: () => void;
 }) {
@@ -161,7 +162,11 @@ export function LedgerDetailPanel({
       </div>
       {source ? <SourceFacts source={source} /> : null}
       {message ? (
-        <MessageCard message={message} spans={spans} />
+        <MessageCard
+          message={message}
+          spans={spans}
+          {...(source ? { reportedBy: source.label } : {})}
+        />
       ) : (
         // A figure is only ever shown with the sentence it came from, so when the
         // message is no longer held there is nothing to open. Saying so is
@@ -178,17 +183,24 @@ export function LedgerDetailPanel({
           </Button>
         ) : source ? (
           // A connection's item is acted on through the steps it offers, and
-          // only those; with none, there is nothing to start here.
+          // only those; with none, there is nothing to start here. Each step
+          // shows the tool it runs and the exact input it sends, and pressing
+          // it sends the digest of what was shown.
           source.actions.map((action, index) => (
-            <Button
-              key={action.id}
-              {...(index === 0 ? { icon: 'send' as const } : { variant: 'outline' as const })}
-              className="btn-card"
-              disabled={busy || done}
-              onClick={() => onHandle(action.id)}
-            >
-              {action.label}
-            </Button>
+            <div key={action.id} className="ledger-step">
+              <Button
+                {...(index === 0 ? { icon: 'send' as const } : { variant: 'outline' as const })}
+                className="btn-card"
+                disabled={busy || done}
+                aria-describedby={`step-${item.id}-${action.id}`}
+                onClick={() => onHandle({ id: action.id, digest: action.digest })}
+              >
+                {action.label}
+              </Button>
+              <code id={`step-${item.id}-${action.id}`} className="ledger-step-call">
+                Runs {action.tool} with {JSON.stringify(action.input)}
+              </code>
+            </div>
           ))
         ) : (
           <Button

@@ -16,10 +16,9 @@
  * write the same transition twice, from two places, for one click.
  */
 
-import type { AwaitedReply, Company, LedgerItem, LedgerItemAction } from '@melete/contracts';
+import type { AwaitedReply, Company, LedgerItem } from '@melete/contracts';
 import { type HandleDeps, handleLedgerItem } from './handle.ts';
 import { handleAwaitedReply } from './handle-reply.ts';
-import { handlePublishedItem } from './published.ts';
 
 /** Everything the playbook needs, already checked, with the text its quotes cite. */
 export type HandleRequest = {
@@ -46,19 +45,6 @@ export type ReplyChaseRequest = {
   connectionId?: string;
 };
 
-/** One action on an item a connection published, already checked against its installation. */
-export type PublishedHandleRequest = {
-  item: LedgerItem;
-  company: Company;
-  action: LedgerItemAction;
-  /** The brokered name of the tool the action runs. */
-  toolName: string;
-  /** The stored text of every source the item quotes, by stored message id. */
-  texts: ReadonlyMap<string, string>;
-  principalId: string;
-  spaceId: string;
-};
-
 /**
  * What the route calls. One call, one job. It is given an item that has already
  * passed the evidence gate, so it never has to decide whether a figure is real;
@@ -68,8 +54,6 @@ export interface LedgerItemHandler {
   handleLedgerItem(request: HandleRequest): Promise<HandleResult>;
   /** Chase a reply the person is waiting on. Absent, "Chase this" is not connected. */
   handleAwaitedReply?(request: ReplyChaseRequest): Promise<HandleResult>;
-  /** Take an action on a published item. Absent, such actions are not connected. */
-  handlePublishedItem?(request: PublishedHandleRequest): Promise<HandleResult>;
 }
 
 /** A handler is unavailable in a way a route can answer with, not crash on. */
@@ -114,9 +98,6 @@ export function playbookHandler(deps: HandleDeps): LedgerItemHandler {
         spaceId: request.spaceId,
         ...(request.connectionId ? { connectionId: request.connectionId } : {}),
       });
-    },
-    async handlePublishedItem(request: PublishedHandleRequest): Promise<HandleResult> {
-      return handlePublishedItem(deps, request);
     },
     async handleAwaitedReply(request: ReplyChaseRequest): Promise<HandleResult> {
       if (request.messageText === null)

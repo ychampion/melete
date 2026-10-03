@@ -18,7 +18,7 @@ import { Icon } from '../design/icons.tsx';
 import { Segmented } from '../design/primitives.tsx';
 import { useMedia, useNow } from '../experience/hooks.ts';
 import type { CompanyMap, LedgerDetail, ScanProgress } from '../experience/types.ts';
-import { navigate } from '../router.ts';
+import { navigate, useRoute } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import '../companies/companies.css';
 
@@ -31,7 +31,12 @@ export function CompaniesScreen() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>(null);
   const [grouped, setGrouped] = useState(true);
-  const [openId, setOpenId] = useState<string | null>(null);
+  // An item can be opened from elsewhere, such as Home or Waiting on, by `?item=`.
+  const routeItem = useRoute().query.get('item');
+  const [openId, setOpenId] = useState<string | null>(routeItem);
+  useEffect(() => {
+    if (routeItem) setOpenId(routeItem);
+  }, [routeItem]);
   const [detail, setDetail] = useState<LedgerDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [scan, setScan] = useState<ScanProgress | null>(null);
@@ -118,7 +123,7 @@ export function CompaniesScreen() {
   const act = async (
     id: string,
     what: 'settled' | 'dropped' | 'handle',
-    action?: string,
+    action?: { id: string; digest: string },
   ): Promise<void> => {
     setBusy(true);
     if (what === 'handle') {
@@ -126,6 +131,21 @@ export function CompaniesScreen() {
       setBusy(false);
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t start it' });
+        return;
+      }
+      // A connected app's step is one call: say how it went and stay on the item.
+      if (action) {
+        const status = result.data.action_status;
+        toast(
+          status === 'succeeded'
+            ? { kind: 'ok', title: 'Done' }
+            : status === 'needs_approval'
+              ? { kind: 'ok', title: 'Waiting for your approval' }
+              : { kind: 'err', title: 'That step did not go through' },
+        );
+        if (spaceId) await load(spaceId);
+        const fresh = await companiesApi.item(id);
+        if (fresh.data !== null) setDetail(fresh.data);
         return;
       }
       navigate(`/chat/${result.data.job_id}`);

@@ -51,6 +51,13 @@ export const waitingOnEntry = z.strictObject({
   status: ledgerItemStatus,
   /** The chase handling it, once there is one. */
   job_id: prefixedId(ID_PREFIXES.job).nullable(),
+  /**
+   * For an item a connection added: that connection's label, and the label of
+   * the first step it offers, if any. Such an item is acted on from its own
+   * detail, where the step's tool and input are shown, never from this list.
+   */
+  added_by: z.string().min(1).max(200).optional(),
+  next_step_label: z.string().min(1).max(80).optional(),
 });
 export type WaitingOnEntry = z.infer<typeof waitingOnEntry>;
 

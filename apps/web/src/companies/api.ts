@@ -50,11 +50,15 @@ export const companiesApi = {
     if (result.data !== null && status === 'settled') markValueMoment();
     return result;
   },
-  /** Start handling an item; for one a connection added, `action` names which of its steps. */
-  handle: (id: string, action?: string) =>
-    call<{ job_id: string }>(`/ledger/${encodeURIComponent(id)}/handle`, {
+  /**
+   * Start handling an item. For one a connection added, `action` is the step
+   * the person chose and the digest it was shown with; the answer says where
+   * that step's call stands.
+   */
+  handle: (id: string, action?: { id: string; digest: string }) =>
+    call<{ job_id: string; action_status?: string }>(`/ledger/${encodeURIComponent(id)}/handle`, {
       method: 'POST',
-      ...(action ? { body: { action } } : {}),
+      ...(action ? { body: { action: action.id, digest: action.digest } } : {}),
     }),
   /** Stop the job handling an item: the item goes back to found, with no job. */
   stop: (id: string) =>

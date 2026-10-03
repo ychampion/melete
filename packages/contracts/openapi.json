@@ -19608,7 +19608,7 @@
           "companies"
         ],
         "summary": "Start the job that handles this item",
-        "description": "Creates the job that runs the item’s playbook. Any message it sends goes through the existing approval path; this route starts the work, it does not send. For an item a connection published, the job takes one of the item’s actions through that connection’s own tool, named by `action` or the first one offered, and only while the installation still declares and grants it. The body is optional.",
+        "description": "Creates the job that runs the item’s playbook. Any message it sends goes through the existing approval path; this route starts the work, it does not send. For an item a connection published, the body names one of the item’s actions and the `digest` it was served with. The route refuses a digest that no longer matches the action, and an action the installation no longer declares and grants. It then proposes one call to that tool with the action’s stored input, exactly, through the broker. No model writes or chooses the call. The tool’s effect class and the person’s approval settings decide whether it runs now or waits for approval. The answer says where the call stands. A playbook item takes no body.",
         "parameters": [
           {
             "in": "path",
@@ -19639,6 +19639,10 @@
                     "minLength": 1,
                     "maxLength": 60,
                     "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
                   }
                 },
                 "additionalProperties": false
@@ -19674,7 +19678,11 @@
                   "type": "object",
                   "properties": {
                     "job_id": {
-                      "type": "string"
+                      "type": "string",
+                      "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                    },
+                    "action_status": {
+                      "$ref": "#/components/schemas/ActionStatus"
                     }
                   },
                   "required": [
@@ -19686,7 +19694,7 @@
             }
           },
           "400": {
-            "description": "Nothing ships yet that handles this kind of item on its own",
+            "description": "Nothing ships yet that handles this kind of item on its own, or a published item’s action or digest is missing",
             "content": {
               "application/json": {
                 "schema": {
@@ -19706,7 +19714,7 @@
             }
           },
           "409": {
-            "description": "Already finished, no longer quotable, or the action is no longer offered",
+            "description": "Already finished, no longer quotable, the action changed since it was shown, or the action is no longer offered or was refused",
             "content": {
               "application/json": {
                 "schema": {
@@ -19734,7 +19742,7 @@
           "companies"
         ],
         "summary": "Read a connection’s ledger feed now",
-        "description": "Reads the feed tool the installation declared and writes the items it admits into the ledger of the space’s owner. Every quote must hold at its span in a source the same feed sent, or the item is dropped and counted; an action naming a tool the installation did not declare is dropped. The service also reads every declared feed on its own every five minutes.",
+        "description": "Reads the feed tool the installation declared and writes the items it admits into the ledger of the space’s owner. Every quote must hold at its span in a source the same feed sent, or the item is dropped and counted; an action naming a tool the installation did not declare is dropped. A connection holds a bounded number of items, companies and source texts. The service also reads every declared feed on its own every five minutes; a person may ask for a read of one connection once a minute.",
         "parameters": [
           {
             "in": "path",
@@ -19814,6 +19822,16 @@
           },
           "409": {
             "description": "The connection is not active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema156"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "This connection was read less than a minute ago",
             "content": {
               "application/json": {
                 "schema": {
@@ -24030,6 +24048,10 @@
             "items": {
               "$ref": "#/components/schemas/__schema77"
             }
+          },
+          "join_companies": {
+            "default": false,
+            "type": "boolean"
           }
         },
         "required": [
@@ -34368,7 +34390,13 @@
             "$ref": "#/components/schemas/__schema532"
           },
           "confidence": {
-            "$ref": "#/components/schemas/__schema484"
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low",
+              "reported"
+            ]
           },
           "evidence": {
             "minItems": 1,
@@ -34585,13 +34613,18 @@
           "input": {
             "default": {},
             "$ref": "#/components/schemas/__schema334"
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
           }
         },
         "required": [
           "id",
           "label",
           "tool",
-          "input"
+          "input",
+          "digest"
         ],
         "additionalProperties": false
       },
@@ -34673,6 +34706,16 @@
                 "type": "null"
               }
             ]
+          },
+          "added_by": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "next_step_label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
           }
         },
         "required": [

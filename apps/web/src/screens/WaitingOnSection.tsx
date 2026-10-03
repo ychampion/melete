@@ -111,6 +111,11 @@ export function WaitingOnSection({ now }: { now: number }) {
 
   const chase = async (entry: WaitingOnEntry) => {
     if (busy) return;
+    // A connected app's item opens where its step's tool and input are shown.
+    if (entry.added_by !== undefined) {
+      navigate(`/companies?item=${encodeURIComponent(entry.id)}`);
+      return;
+    }
     setBusy(entry.id);
     const result =
       entry.kind === 'owed'
@@ -178,10 +183,14 @@ export function WaitingOnSection({ now }: { now: number }) {
                   variant="outline"
                   loading={busy === entry.id}
                   disabled={busy !== null}
-                  aria-label={`Chase ${entry.who}`}
+                  aria-label={
+                    entry.next_step_label
+                      ? `${entry.next_step_label}: ${entry.who}`
+                      : `Chase ${entry.who}`
+                  }
                   onClick={() => void chase(entry)}
                 >
-                  Chase this
+                  {entry.next_step_label ?? 'Chase this'}
                 </Button>
                 {entry.kind === 'reply' ? (
                   <Button

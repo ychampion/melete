@@ -13,7 +13,7 @@
  * in a shared space cannot read the first person's map.
  */
 
-import type { LedgerEvidence, LedgerItemSource } from '@melete/contracts';
+import type { LedgerEvidence, LedgerItemAction, LedgerItemSource } from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import {
   boolean,
@@ -28,8 +28,14 @@ import {
 } from 'drizzle-orm/pg-core';
 import { connection, principal, space } from '../db/schema.ts';
 
-/** A published item's source as stored: everything but the connection id, which is a column. */
-export type PublishedSource = Omit<LedgerItemSource, 'connection_id'>;
+/**
+ * A published item's source as stored: everything but the connection id, which
+ * is a column, and the actions without their digests, which are worked out when
+ * the item is served.
+ */
+export type PublishedSource = Omit<LedgerItemSource, 'connection_id' | 'actions'> & {
+  actions: LedgerItemAction[];
+};
 
 const created = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 
@@ -50,9 +56,19 @@ export const company = pgTable(
     firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
     messageCount: integer('message_count').notNull().default(0),
+    /**
+     * The connection whose feed added this company, while only that feed knows
+     * it. A scan that finds the same domain clears it, and the company is the
+     * person's own from then on. Removing the connection removes a company it
+     * still holds; revoking or switching it off hides one.
+     */
+    connectionId: text('connection_id').references(() => connection.id, { onDelete: 'cascade' }),
     createdAt: created(),
   },
   (table) => [
+    index('company_connection_idx')
+      .on(table.connectionId)
+      .where(sql`${table.connectionId} is not null`),
     // One company per domain per person: a second scan updates the row it found before.
     uniqueIndex('company_owner_domain_idx').on(table.spaceId, table.principalId, table.domain),
     check(
@@ -84,10 +100,15 @@ export const companyMessage = pgTable(
     body: text('body').notNull(),
     /** When an extraction call answered for this message. A later scan does not ask again. */
     extractedAt: timestamp('extracted_at', { withTimezone: true }),
+    /** The connection whose feed sent this text, for a source a published item quotes. */
+    connectionId: text('connection_id').references(() => connection.id, { onDelete: 'cascade' }),
     createdAt: created(),
   },
   (table) => [
     uniqueIndex('company_message_owner_idx').on(table.spaceId, table.principalId, table.messageId),
+    index('company_message_connection_idx')
+      .on(table.connectionId)
+      .where(sql`${table.connectionId} is not null`),
   ],
 );
 

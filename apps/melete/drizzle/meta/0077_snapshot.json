@@ -1,5 +1,5 @@
 {
-  "id": "5d97c925-c75a-49eb-8897-832434efbe12",
+  "id": "624d8c5f-6289-48ab-b684-35f0cee19f8a",
   "prevId": "ff6d6c37-a05f-44d9-9b72-1fad68b6f349",
   "version": "7",
   "dialect": "postgresql",
@@ -10086,6 +10086,12 @@
           "notNull": true,
           "default": 0
         },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -10095,6 +10101,22 @@
         }
       },
       "indexes": {
+        "company_connection_idx": {
+          "name": "company_connection_idx",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"company\".\"connection_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "company_owner_domain_idx": {
           "name": "company_owner_domain_idx",
           "columns": [
@@ -10143,6 +10165,19 @@
           "tableTo": "principal",
           "columnsFrom": [
             "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "company_connection_id_connection_id_fk": {
+          "name": "company_connection_id_connection_id_fk",
+          "tableFrom": "company",
+          "tableTo": "connection",
+          "columnsFrom": [
+            "connection_id"
           ],
           "columnsTo": [
             "id"
@@ -10220,6 +10255,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -10255,6 +10296,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "company_message_connection_idx": {
+          "name": "company_message_connection_idx",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"company_message\".\"connection_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -10277,6 +10334,19 @@
           "tableTo": "principal",
           "columnsFrom": [
             "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "company_message_connection_id_connection_id_fk": {
+          "name": "company_message_connection_id_connection_id_fk",
+          "tableFrom": "company_message",
+          "tableTo": "connection",
+          "columnsFrom": [
+            "connection_id"
           ],
           "columnsTo": [
             "id"

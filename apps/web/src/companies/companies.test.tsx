@@ -398,8 +398,14 @@ test('an item a connection added says where it came from and offers only its own
       next_step: 'Nudge on Monday',
       parties: [{ name: 'Ana', role: 'client' }],
       actions: [
-        { id: 'nudge', label: 'Nudge them', tool: 'post_note', input: {} },
-        { id: 'close', label: 'Close it', tool: 'close_item', input: {} },
+        {
+          id: 'nudge',
+          label: 'Nudge them',
+          tool: 'post_note',
+          input: { deal: 'TRK-17' },
+          digest: 'a'.repeat(64),
+        },
+        { id: 'close', label: 'Close it', tool: 'close_item', input: {}, digest: 'b'.repeat(64) },
       ],
       published_at: '2026-09-18T08:00:00.000Z',
     },
@@ -420,4 +426,52 @@ test('an item a connection added says where it came from and offers only its own
   // Its steps replace the playbook's button; there is no "Handle it" to press.
   expect(html).not.toContain('Handle it');
   expect(html).toContain('evidence-mark');
+  // Each step shows the tool it runs and the exact input it sends.
+  expect(html).toContain('Runs post_note with {&quot;deal&quot;:&quot;TRK-17&quot;}');
+  expect(html).toContain('Runs close_item with {}');
+  // Its source is the app's, not a message from the person's mail.
+  expect(html).toContain('From Project tracker');
+  expect(html).toContain('as Project tracker reports it');
+});
+
+test('pressing a step sends the step and the digest it was shown with', () => {
+  const sent: unknown[] = [];
+  const published = item({
+    kind: 'commitment',
+    suggested_playbook: null,
+    source: {
+      connection_id: 'conn_01M2000000000000000000000A',
+      label: 'Project tracker',
+      ref: 'TRK-17',
+      state: 'open',
+      next_step: null,
+      parties: [],
+      actions: [
+        { id: 'nudge', label: 'Nudge them', tool: 'post_note', input: {}, digest: 'c'.repeat(64) },
+      ],
+      published_at: '2026-09-18T08:00:00.000Z',
+    },
+  });
+  const element = LedgerDetailPanel({
+    detail: { item: published, company: COMPANY, message: null },
+    busy: false,
+    onHandle: (action) => sent.push(action),
+    onSettled: () => undefined,
+    onDrop: () => undefined,
+  });
+  const html = renderToStaticMarkup(element);
+  expect(html).toContain('Nudge them');
+  // The button's handler is the one the panel wires to this step.
+  const find = (node: unknown): Array<{ props: Record<string, unknown> }> => {
+    if (!node || typeof node !== 'object') return [];
+    if (Array.isArray(node)) return node.flatMap(find);
+    const value = node as { props?: Record<string, unknown> };
+    const here = value.props && typeof value.props.onClick === 'function' ? [value as never] : [];
+    const children = value.props?.children;
+    return [...here, ...find(children)];
+  };
+  const button = find(element).find((node) => node.props.children === 'Nudge them');
+  if (!button) throw new Error('no button for the step');
+  (button.props.onClick as () => void)();
+  expect(sent).toEqual([{ id: 'nudge', digest: 'c'.repeat(64) }]);
 });
