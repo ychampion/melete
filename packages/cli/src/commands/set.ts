@@ -65,10 +65,32 @@ export async function runSet(
   const envPath = join(context.deployDir, '.env');
   const contractPath = join(context.deployDir, DEPLOY_FILE);
   let settings: ReturnType<typeof requestedSettings>;
+  const force = args.includes('--force');
   try {
-    settings = requestedSettings(args, environment);
+    settings = requestedSettings(
+      args.filter((arg) => arg !== '--force'),
+      environment,
+    );
     if (!existsSync(envPath))
       throw new SetEnvRefusal('There is no deploy/.env yet. Run bun run melete init first.');
+    // A new project name points every Compose command at a new, empty installation.
+    const renamed = settings.find((setting) => setting.name === 'COMPOSE_PROJECT_NAME');
+    const current =
+      parseEnvFile(readFileSync(envPath, 'utf8')).COMPOSE_PROJECT_NAME?.trim() || 'melete';
+    if (renamed && renamed.value.trim() !== current && !force) {
+      const listed = context.run([
+        'docker',
+        'ps',
+        '--all',
+        '--quiet',
+        '--filter',
+        `label=com.docker.compose.project=${current}`,
+      ]);
+      if (listed.code !== 0 || listed.stdout.trim() !== '')
+        throw new SetEnvRefusal(
+          `Compose project ${current} ${listed.code === 0 ? 'has containers' : 'could not be checked'}; renaming it to ${renamed.value} would leave them running and point every command at a new, empty installation with its own database. Nothing was changed. Stop and remove the old stack first, or pass --force if a new installation is what you want.`,
+        );
+    }
   } catch (error) {
     if (!(error instanceof SetEnvRefusal)) throw error;
     context.err(

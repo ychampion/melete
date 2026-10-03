@@ -103,3 +103,35 @@ describe('melete set', () => {
     expect(context.errors()).toContain('bun run melete init');
   });
 });
+
+describe('renaming the Compose project', () => {
+  test('is refused while the current project has containers, and allowed with --force', async () => {
+    const deployDir = temporaryDeployDir();
+    const before = writeEnv(deployDir);
+    const calls: string[] = [];
+    const context = testContext(deployDir, [], {
+      run: (command) => {
+        calls.push(command.join(' '));
+        return { code: 0, stdout: 'c0ffee\n', stderr: '' };
+      },
+    });
+    expect(await runSet(context, ['COMPOSE_PROJECT_NAME=melete2'])).toBe(2);
+    expect(read(deployDir, '.env')).toBe(before);
+    expect(context.errors()).toContain('Compose project melete has containers');
+    expect(calls).toEqual([
+      'docker ps --all --quiet --filter label=com.docker.compose.project=melete',
+    ]);
+
+    expect(await runSet(context, ['COMPOSE_PROJECT_NAME=melete2', '--force'])).toBe(0);
+    expect(read(deployDir, '.env')).toMatch(/^COMPOSE_PROJECT_NAME=melete2$/m);
+  });
+
+  test('is allowed when the current project has no containers', async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir);
+    const context = testContext(deployDir, [], {
+      run: () => ({ code: 0, stdout: '', stderr: '' }),
+    });
+    expect(await runSet(context, ['COMPOSE_PROJECT_NAME=melete2'])).toBe(0);
+  });
+});

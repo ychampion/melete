@@ -206,3 +206,37 @@ export const settingId = (name: string): string =>
 
 export const deployFilePresent = (deployDir: string, name: string) =>
   existsSync(join(deployDir, name));
+
+/**
+ * Settings deploy writes or judges. Compose takes a value set in the shell over
+ * deploy/.env, so one set there would leave a deploy writing one release and
+ * Compose running another.
+ */
+export const SHELL_PINNED = [
+  'MELETE_IMAGE_TAG',
+  'MELETE_IMAGE_REGISTRY',
+  'COMPOSE_PROJECT_NAME',
+  'MELETE_SANDBOX_DOCKER_IMAGE',
+] as const;
+
+/** The settings deploy and rollback write to deploy/.env. */
+export const WRITTEN_BY_DEPLOY = ['MELETE_IMAGE_TAG'] as const;
+
+/**
+ * The pinned settings this shell would override, names only: any it sets that
+ * the command is about to write (Compose would keep the shell's value whatever
+ * deploy/.env says next), and any it sets to something other than deploy/.env.
+ */
+export function shellOverrides(
+  environment: Readonly<Record<string, string | undefined>>,
+  env: Record<string, string>,
+  written: readonly string[] = [],
+): string[] {
+  return SHELL_PINNED.filter((name) => {
+    const shell = environment[name];
+    return shell !== undefined && (written.includes(name) || shell !== (env[name] ?? ''));
+  });
+}
+
+export const shellOverrideMessage = (names: readonly string[]) =>
+  `This shell sets ${names.join(', ')}, which Compose reads before deploy/.env, so the stack would not run what deploy/.env says. Run unset ${names.join(' ')}, then run this again. Nothing was changed.`;

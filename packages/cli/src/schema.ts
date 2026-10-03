@@ -21,12 +21,24 @@ export const resultSchema = z.object({
 export type Result = z.infer<typeof resultSchema>;
 
 export const reportSchema = z.object({
-  command: z.enum(['check', 'doctor', 'status']),
+  command: z.enum(['check', 'doctor', 'status', 'deploy', 'rollback', 'backup', 'restore']),
   /** No result failed. */
   ok: z.boolean(),
   results: z.array(resultSchema),
 });
 export type Report = z.infer<typeof reportSchema>;
+
+const side = z.object({ tag: z.string(), revision: z.string().nullable() });
+
+/** `deploy --json` and `rollback --json`: the report, how the run ended, and what it planned. */
+export const deployReportSchema = reportSchema.extend({
+  outcome: z.enum(['current', 'planned', 'deployed', 'refused', 'failed']),
+  from: side.optional(),
+  to: side.nullable().optional(),
+  pulls: z.array(z.object({ ref: z.string(), service: z.string(), bytes: z.number() })).optional(),
+  needed_mb: z.number().optional(),
+});
+export type DeployReport = z.infer<typeof deployReportSchema>;
 
 /**
  * Exit codes shared by every command:

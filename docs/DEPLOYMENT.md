@@ -146,6 +146,10 @@ bun run melete doctor          # this machine: Docker, disk in MB, memory, ports
 bun run melete status          # the running installation, as status.ts reports it
 bun run melete set MELETE_PUBLIC_URL=https://melete.example.net
 bun run melete logs melete --since 1h
+bun run melete backup --estimate && bun run melete backup
+bun run melete deploy --checkout --dry-run
+bun run melete rollback --dry-run
+bun run melete history
 ```
 
 | Command | What it does |
@@ -155,15 +159,22 @@ bun run melete logs melete --since 1h
 | `check` | Validates `deploy/melete.deploy.json`, `deploy/.env` against the service's own settings schema with the values Compose would pass it, every variable a Compose file requires, the published ports, the image tag and registry, and the Compose boundary checks. |
 | `doctor [--offline]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. `--offline` skips the registry. |
 | `status` | The report `deploy/scripts/status.ts` prints, run with the deploy file's overlay files and profiles, with `disk.min_free_mb` as its disk floor. |
-| `set NAME=value ...` | Changes settings in `deploy/.env` in place. A key is taken only from the environment, with `--from-env NAME`, and is never printed. Setting `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY` or `COMPOSE_PROJECT_NAME` updates `deploy/melete.deploy.json` to match. |
+| `set NAME=value ...` | Changes settings in `deploy/.env` in place. A key is taken only from the environment, with `--from-env NAME`, and is never printed. Setting `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY` or `COMPOSE_PROJECT_NAME` updates `deploy/melete.deploy.json` to match. A new `COMPOSE_PROJECT_NAME` is refused while the current project has containers, since every command would then act on a new, empty installation; `--force` sets it anyway. |
 | `logs [service ...]` | `docker compose logs` with the deploy file's overlay files; takes `--since`, `--tail`, `--follow` and `--timestamps`. |
+| `deploy [--tag <tag>]` | Updates an installation that runs the published images, in the order [Update](#update) describes. `--dry-run` prints the plan, `--checkout` checks out the commit the images were built from, `--allow-compose-mismatch` runs them with the checkout as it is, and `--skip-backup` or `--backup-to ssh://host:/path` change the backup taken before new migrations. |
+| `rollback [--dry-run]` | Goes back to the images the stack ran before the last deploy. When that deploy ran migrations, it prints the database restore instead and exits 3. |
+| `backup` | Backs up the database, the restriction journal and the settings into a new private directory under `backup.dir`, as [Backup and restore](#backup-and-restore) describes. `--estimate`, `--with-volumes`, `--dir <path>` and `--to ssh://host:/path` change what and where. |
+| `restore <backup> [--plan]` | Checks a backup against its `SHA256SUMS` and prints the steps that restore it. |
+| `upgrade <version>` | For an installation that builds its images: runs `deploy/scripts/upgrade.ts` ([Upgrading between releases](UPGRADING.md)) with the deploy file's overlay files. |
+| `history [--json]` | The deploys, rollbacks and upgrades recorded in `deploy/.melete/history.jsonl`. |
 
 `--deploy-dir <checkout>/deploy` runs a command against another checkout's
 deployment directory. The exit code says what happened: 0 done or every check
 passed, 1 a check failed, 2 refused with nothing changed, 3 acted but did not
-finish, with the next step printed. `init` and `set` hold a lock,
-`deploy/.melete/lock`, so two of them never write at once; a lock left by a
-process that has ended is taken over.
+finish, with the next step printed. `init`, `set`, `deploy`, `rollback`,
+`backup` and `upgrade` hold a lock, `deploy/.melete/lock`, so two of them never
+change the installation at once; a lock left by a process that has ended is
+taken over.
 
 ### The deploy file
 
@@ -280,39 +291,75 @@ empty to build from source again: `up -d --build` builds and tags the images
 ### Update
 
 ```bash
-deploy/scripts/update.sh
-# With a docker sandbox, or overlay files, pass the same options Compose was started with:
-deploy/scripts/update.sh --profile sandbox
+bun run melete init --adopt              # once, to write deploy/melete.deploy.json
+bun run melete deploy --checkout --dry-run
+bun run melete deploy --checkout         # the newest main; --tag v0.3.0 for a release
 ```
 
-The script does the update in a safe order:
+`deploy` reads the profiles, overlay files and disk floors from
+`deploy/melete.deploy.json`. Until the new images are all on the machine, each
+step either passes or stops with exit 2 and the running stack as it was:
 
-1. It measures the free space on the filesystem that holds Docker's images,
-   and refuses with nothing changed when it is below 4 GB
-   (`MELETE_UPDATE_MIN_FREE_GB` sets another threshold), naming what to clean.
-2. It fast-forwards the checkout with `git pull --ff-only`, so the Compose file
-   matches the images; a diverged or edited checkout stops it.
-3. It pulls every image first. If any pull fails, it stops and the running
-   containers are not touched.
-4. It starts the new images with `up -d --no-build --wait`, then restarts the
-   `melete` service and waits for health again. The service looks up the
-   engine image's ID when it starts, so a new engine image alone does not
-   reach chats until the service restarts.
-5. Last, it runs `docker image prune -f`, which removes the images the pull
-   replaced. An image a container still uses, such as one an attempt started
-   before the update, is kept.
+1. It takes the lock and runs `check`.
+2. It asks the registry, without pulling, which commit the tag was built from.
+   A moving tag such as `main` is pinned to that commit's own tag, so nothing
+   moves while the update runs. The Compose file must come from the same
+   commit: `--checkout` checks that commit out once the images are here
+   (refusing a checkout with changes outside `deploy/config/`), and
+   `--allow-compose-mismatch` runs the images with the checkout as it is.
+3. It plans: the images whose content differs from what the engine has, and
+   the layers they need. The disk it takes is their compressed size times 2.2
+   plus `disk.pull_margin_mb`, and the plan is refused unless
+   `disk.min_free_mb` is still free after it.
+4. When the new release adds migrations, it dumps the database into
+   `backup.dir` first, or streams it with `--backup-to ssh://host:/path`.
+5. It pulls one image at a time, measuring the disk after each, and stops at
+   the first failure or at the floor. Images already pulled are kept, unused.
+6. It checks out the commit, if asked, and writes `MELETE_IMAGE_TAG`.
 
-The service migrates its database when it starts, so take a
-[backup](#backup-and-restore) before an update you may want to undo. To go
-back, set `MELETE_IMAGE_TAG` to the previous commit's tag, check out that
-commit, and run the `pull` and `up -d --no-build` lines above, then
-`docker compose -f deploy/docker-compose.yml restart melete`.
+Then it starts the new images with `up -d --no-build --pull never --wait`,
+restarts the `melete` service, which looks up the engine image's ID when it
+starts, and waits for health again. It checks `/api/health`, that the database
+has recorded every migration in the new journal, and that no line of
+`bun run melete status` fails that passed before. Only then does it remove the
+stack's own images that no tag names any more; an image another project uses,
+or one a container still runs, is left alone. A failure after the switch exits
+3 and names the way back. Every run is recorded in
+`deploy/.melete/history.jsonl`.
+
+The history line for a run is written the moment `MELETE_IMAGE_TAG` changes,
+so a run that fails or is cut short after that point is on record too. Compose
+reads the shell before `deploy/.env`, so `deploy` and `rollback` are refused in
+a shell that exports `MELETE_IMAGE_TAG` at all, since they write it, and every
+command that acts on the stack is refused when the shell exports
+`MELETE_IMAGE_REGISTRY`, `COMPOSE_PROJECT_NAME` or `MELETE_SANDBOX_DOCKER_IMAGE`
+with a value other than `deploy/.env`'s. With the `sandbox`
+profile, `melete-sandbox:local` follows the new computer image only when it
+was the previous release's published image; an image of your own under that
+name is left alone.
+
+To go back, `bun run melete rollback` undoes the newest run that changed the
+image tag, finished or not: it deploys the images from before that run, and
+returns the checkout with them. When the database records a migration that the
+earlier release does not know, because that run or anything since applied it,
+the older release cannot run on the newer database, so rollback prints the
+restore from the backup taken before the run, and checks that backup is still
+there and whole. It refuses when `deploy/.env` names an image tag other than
+the one that run switched to. A rollback is itself a run, so a second rollback
+goes forward again.
+
+After `melete deploy`, `MELETE_IMAGE_TAG` names the commit's own tag rather
+than `main`. `deploy/scripts/update.sh` does an update in the same order with
+whole-GB floors and a `git pull --ff-only`, for a checkout without the melete
+command; it pulls the tag `deploy/.env` names, so to go back to it, first run
+`bun run melete set MELETE_IMAGE_TAG=main`. `melete deploy` supersedes it.
 
 ### Switch an installation from source builds
 
-Set `MELETE_IMAGE_TAG=main` in `deploy/.env` and run `deploy/scripts/update.sh`
-(with `--profile sandbox` if the installation uses a docker sandbox). After it
-reports the stack healthy, the images built here are no longer used; remove
+Run `bun run melete set MELETE_IMAGE_TAG=main`, then
+`bun run melete deploy --checkout` (list `sandbox` in the deploy file's
+`profiles` if the installation uses a docker sandbox). After it reports the
+stack healthy, the images built here are no longer used; remove
 them and the build cache to recover the space:
 
 ```bash
@@ -321,8 +368,9 @@ docker image rm melete-service:local melete-web:local melete-runtime:local
 ```
 
 Keep `melete-sandbox:local` when spaces already have a **Computer**: their
-connections name that image, and `update.sh` points it at the pulled sandbox
-image on every update so those computers stay current.
+connections name that image, and `melete deploy` (with the `sandbox` profile)
+and `update.sh` point it at the pulled sandbox image on every update so those
+computers stay current.
 
 ### Package visibility
 
@@ -1332,8 +1380,7 @@ labels and inventories when rebuilding.
 [Upgrading between releases](UPGRADING.md) is its own page: the target
 release's `deploy/scripts/upgrade.ts`, taken out of its tag, prints the whole
 plan with `--dry-run`. An installation that runs the published images updates
-with `deploy/scripts/update.sh` instead
-([Using prebuilt images](#using-prebuilt-images)). The service migrates its database at every boot under an advisory lock, so the
+with `bun run melete deploy` instead ([Update](#update)). The service migrates its database at every boot under an advisory lock, so the
 procedure is a consistent backup, a checkout, a rebuild and a wait for health;
 the backup below is its first half.
 
@@ -1356,7 +1403,34 @@ must outlive rotation belong in a log collector you run beside the stack.
 
 ## Backup and restore
 
-Back up `deploy/.env`, Postgres, and the named volumes containing knowledge,
+```bash
+bun run melete backup --estimate     # sizes, against the free space where the backup goes
+bun run melete backup                # database, journal and settings, online
+bun run melete backup --with-volumes # also /data and /work, with the writers stopped
+bun run melete backup --to ssh://backup-host:/srv/melete-backups
+bun run melete restore ~/melete-backups/melete-20261002T101500Z
+```
+
+Each backup is a new directory, `melete-<time>`, under `backup.dir` from the
+deploy file (`~/melete-backups` by default), readable only by the account that made it. It
+holds the database as a custom-format dump, read back with `pg_restore --list`
+while it is written; the restriction journal on its own, under a timestamped
+name; `deploy/.env`, `deploy/config/` and `deploy/melete.deploy.json`; and a
+`SHA256SUMS` list. The newest `backup.keep` backups are kept. The default is
+online and small, so the stack keeps running; `--with-volumes` stops the
+writers to archive the volumes and starts them again. `--to` streams every part
+to another machine over SSH and keeps nothing on this disk, for a host short on
+space.
+
+`restore` checks a backup's checksums and prints the steps that restore it,
+following the rules below: only the database volume is replaced, and the
+newest restriction journal is kept. On a machine that never ran the
+installation, the newest journal archive beside the backups goes back before
+the service starts, keeping its file ownership. A backup counts as whole only when
+`SHA256SUMS` lists every file in it and each matches. `backup.keep` never
+removes the backup the last deploy took.
+
+The same backup by hand: back up `deploy/.env`, Postgres, and the named volumes containing knowledge,
 artifacts, workspaces, and restrictions. Preserve ownership and permissions.
 Stop Melete and runtime work before taking the database and volume snapshot so
 their durable state is consistent. An installation started with an override
