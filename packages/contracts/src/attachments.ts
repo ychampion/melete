@@ -145,8 +145,10 @@ export const attachmentContentQuery = z.strictObject({
 
 /**
  * What this installation takes: the largest file, the most files in one
- * message, and how many uploads one person may have under way at once (null:
- * no limit, which is the default).
+ * message, and how many uploads one person may have under way at once. The
+ * service gives that last as its fair share of what it holds (half, by
+ * default 8) or the operator's lower limit; null means no limit at all. A
+ * client queues its uploads to it.
  */
 export const attachmentLimits = z.strictObject({
   file_bytes: z.number().int().positive().max(ATTACHMENT_LIMITS.file_bytes_ceiling),
@@ -155,7 +157,7 @@ export const attachmentLimits = z.strictObject({
 });
 export type AttachmentLimits = z.infer<typeof attachmentLimits>;
 
-/** What an installation takes when its operator has set nothing. */
+/** The defaults for a client that has not read the installation's limits yet. */
 export const DEFAULT_ATTACHMENT_LIMITS: AttachmentLimits = {
   file_bytes: ATTACHMENT_LIMITS.file_bytes,
   per_message: ATTACHMENT_LIMITS.per_message,

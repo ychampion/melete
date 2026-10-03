@@ -73,3 +73,19 @@ test('a failed upload frees its place for the next one', async () => {
   await expect(first).rejects.toThrow('offline');
   expect(await second).toBe('sent');
 });
+
+test('twelve files from one person, queued to the share the service gives, are never refused', async () => {
+  // A service that holds 8 per person and refuses the next, as the real one does.
+  const share = 8;
+  let held = 0;
+  const serve = async () => {
+    if (held >= share) return 429;
+    held++;
+    await new Promise((done) => setTimeout(done, 5));
+    held--;
+    return 201;
+  };
+  const run = queueOf(() => share);
+  const results = await Promise.all(Array.from({ length: 12 }, () => run(serve)));
+  expect(results).toEqual(Array(12).fill(201));
+});

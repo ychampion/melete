@@ -507,7 +507,7 @@ const variables = z.object({
     z.coerce.number().int().min(1).max(256).default(16),
   ),
   MELETE_ATTACHMENT_SERVER_UPLOAD_MB: unsetWhenBlank(
-    z.coerce.number().int().min(1).max(8192).default(256),
+    z.coerce.number().int().min(1).max(8192).default(384),
   ),
   /** Percent of a limit at which the person is told it is close. */
   MELETE_SPEND_NOTICE_PERCENT: unsetWhenBlank(z.coerce.number().int().min(1).max(99).default(80)),

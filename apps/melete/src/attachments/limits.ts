@@ -31,7 +31,21 @@ export type AttachmentSettings = {
 /** Uploads the service holds in flight at once when the operator sets nothing. */
 export const SERVER_UPLOADS_DEFAULT = 16;
 /** Their bytes between them, in MB, when the operator sets nothing. */
-export const SERVER_UPLOAD_MB_DEFAULT = 256;
+export const SERVER_UPLOAD_MB_DEFAULT = 384;
+
+/** Room in one upload for the small copy of a picture and the form's own framing. */
+export const UPLOAD_FORM_OVERHEAD = ATTACHMENT_LIMITS.model_image_bytes + 64 * 1024;
+
+/**
+ * What the service holds in flight, from everyone and for one person: one
+ * person's share is half of each, never less than one file at the largest size.
+ */
+export function uploadBounds(settings: AttachmentSettings) {
+  const largest = settings.fileBytes + UPLOAD_FORM_OVERHEAD;
+  const bytes = Math.max(settings.serverUploadBytes, largest);
+  const personBytes = Math.max(Math.floor(bytes / 2), largest);
+  return { largest, bytes, personBytes };
+}
 
 /** An installation whose operator has set nothing. */
 export const DEFAULT_ATTACHMENT_SETTINGS: AttachmentSettings = {
@@ -59,11 +73,24 @@ export function attachmentSettingsFromEnv(env: Env): AttachmentSettings {
   };
 }
 
+/**
+ * Uploads one person may have in flight at once. Whatever the operator sets,
+ * nobody may hold more than half of what the service holds, so one person
+ * uploading a lot never keeps everyone else out. This is fairness, not a
+ * quota: the client queues to this number and never sees it refused.
+ */
+export function personUploadsAtOnce(settings: AttachmentSettings): number {
+  const { largest, personBytes } = uploadBounds(settings);
+  // Files at the largest size that fit one person's share of the bytes.
+  const share = Math.min(Math.floor(settings.serverUploads / 2), Math.floor(personBytes / largest));
+  return Math.max(1, Math.min(settings.uploadsAtOnce ?? share, share));
+}
+
 /** The settings as `GET /attachments/limits` gives them to a client. */
 export function attachmentLimitsView(settings: AttachmentSettings): AttachmentLimits {
   return {
     file_bytes: settings.fileBytes,
     per_message: settings.perMessage,
-    uploads_at_once: settings.uploadsAtOnce,
+    uploads_at_once: personUploadsAtOnce(settings),
   };
 }

@@ -33,8 +33,11 @@ export function mountAttachmentsMock(app: Hono, experience: ExperienceMock): voi
   const signedOut = (c: Context) =>
     experience.signedOut ? fail(c, 401, 'unauthorized', 'A session is required.') : null;
 
-  // A self-hosted install by default: no limit on uploads at once.
-  app.get('/attachments/limits', (c) => signedOut(c) ?? c.json(DEFAULT_ATTACHMENT_LIMITS));
+  // A self-hosted install by default: one person's share is half of the service's 16.
+  app.get(
+    '/attachments/limits',
+    (c) => signedOut(c) ?? c.json({ ...DEFAULT_ATTACHMENT_LIMITS, uploads_at_once: 8 }),
+  );
 
   app.post('/attachments', async (c) => {
     const refused = signedOut(c);

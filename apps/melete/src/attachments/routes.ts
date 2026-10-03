@@ -1,28 +1,26 @@
 /**
  * Uploading a file for a message, reading it back, and taking back one not
  * sent yet. The space and the person come from the session, never from the
- * request. How many uploads one person may have under way, or start in a
- * while, is limited only where the operator sets a limit. The whole service
- * always bounds the uploads it holds in flight, by number and by bytes, since
- * each is held in memory while it is read; past that, an upload is asked to
- * come back in a moment.
+ * request. The whole service always bounds the uploads it holds in flight, by
+ * number and by bytes, since each is held in memory while it is read; past
+ * that, an upload is asked to come back in a moment. One person may hold at
+ * most half of either, so nobody can keep everyone else out; the client reads
+ * that number from `GET /attachments/limits` and queues to it. How many one
+ * person may start in a while is limited only where the operator sets it.
  */
-import {
-  ATTACHMENT_LIMITS,
-  attachmentContentQuery,
-  attachmentResponse,
-  attachmentSize,
-} from '@melete/contracts';
+import { attachmentContentQuery, attachmentResponse, attachmentSize } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
 import type { SpaceResolver } from '../api/reactions.ts';
 import { type LimitStore, MemoryLimitStore } from '../ops/limiter.ts';
 import { requestPrincipal } from '../principals/authority.ts';
-import { attachmentLimitsView } from './limits.ts';
+import {
+  attachmentLimitsView,
+  personUploadsAtOnce,
+  UPLOAD_FORM_OVERHEAD,
+  uploadBounds,
+} from './limits.ts';
 import type { AttachmentScope, AttachmentService } from './store.ts';
-
-/** Room for the small copy of a picture and the form's own framing. */
-const FORM_OVERHEAD = ATTACHMENT_LIMITS.model_image_bytes + 64 * 1024;
 
 export function mountAttachments(
   app: Hono,
@@ -31,10 +29,13 @@ export function mountAttachments(
   /** Where upload counts are kept, shared by every instance; left out, this process counts. */
   limits: LimitStore = new MemoryLimitStore(),
 ): void {
-  const { fileBytes, uploadsAtOnce, uploadRate, serverUploads } = attachments.settings;
-  // Room for at least one file at the largest size, whatever the setting.
-  const byteBudget = Math.max(attachments.settings.serverUploadBytes, fileBytes + FORM_OVERHEAD);
-  const underWay = new Map<string, number>();
+  const { fileBytes, uploadRate, serverUploads } = attachments.settings;
+  // Room for at least one file at the largest size, whatever the setting, and
+  // one person's share of what the service holds: half, never less than one file.
+  const { largest, bytes: byteBudget, personBytes } = uploadBounds(attachments.settings);
+  const personUploads = personUploadsAtOnce(attachments.settings);
+  /** Each person's uploads in flight, and the bytes they declared. */
+  const underWay = new Map<string, { count: number; bytes: number }>();
   /** Every upload this service holds in flight, from everyone, and the bytes they declared. */
   const held = { count: 0, bytes: 0 };
   /** A fixed window: how many uploads this person started in it. True with no limit set. */
@@ -69,7 +70,7 @@ export function mountAttachments(
   app.post('/attachments', async (c) => {
     const scope = await scopeFor(c);
     const declared = Number(c.req.header('content-length') ?? 0);
-    if (declared > fileBytes + FORM_OVERHEAD)
+    if (declared > fileBytes + UPLOAD_FORM_OVERHEAD)
       throw new ServiceError(
         'attachment_too_large',
         `Files can be up to ${attachmentSize(fileBytes)}.`,
@@ -80,15 +81,21 @@ export function mountAttachments(
     const who = `${scope.spaceId}:${scope.principalId ?? 'owner'}`;
     // Checked and counted together, before anything is awaited: parallel
     // uploads cannot all pass the check while none has been counted yet.
-    const now = underWay.get(who) ?? 0;
-    if (uploadsAtOnce !== null && now >= uploadsAtOnce)
+    const mine = underWay.get(who) ?? { count: 0, bytes: 0 };
+    // A body without a declared length is counted at the most it may be.
+    const bytes = declared > 0 ? declared : largest;
+    if (mine.count >= personUploads)
       throw new ServiceError(
         'attachment_busy',
-        `You can upload ${uploadsAtOnce} files at a time. Wait for one to finish, then try again.`,
+        `You can upload ${personUploads} files at a time. Wait for one to finish, then try again.`,
         429,
       );
-    // A body without a declared length is counted at the most it may be.
-    const bytes = declared > 0 ? declared : fileBytes + FORM_OVERHEAD;
+    if (mine.bytes + bytes > personBytes)
+      throw new ServiceError(
+        'attachment_busy',
+        'Melete is still reading your other files. Wait for one to finish, then try again.',
+        429,
+      );
     if (held.count >= serverUploads || held.bytes + bytes > byteBudget)
       throw new ServiceError(
         'attachment_server_busy',
@@ -97,7 +104,7 @@ export function mountAttachments(
       );
     held.count++;
     held.bytes += bytes;
-    underWay.set(who, now + 1);
+    underWay.set(who, { count: mine.count + 1, bytes: mine.bytes + bytes });
     try {
       if (!(await counted(who)))
         throw new ServiceError(
@@ -109,8 +116,8 @@ export function mountAttachments(
     } finally {
       held.count--;
       held.bytes -= bytes;
-      const left = (underWay.get(who) ?? 1) - 1;
-      if (left > 0) underWay.set(who, left);
+      const left = underWay.get(who) ?? { count: 1, bytes };
+      if (left.count > 1) underWay.set(who, { count: left.count - 1, bytes: left.bytes - bytes });
       else underWay.delete(who);
     }
   });

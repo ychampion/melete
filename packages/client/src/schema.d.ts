@@ -2120,7 +2120,7 @@ export interface paths {
         };
         /**
          * What files this installation takes
-         * @description The largest file, the most files in one message, and how many uploads one person may have under way at once (null when the operator sets no limit, the default). A client queues its uploads to that number.
+         * @description The largest file, the most files in one message, and how many uploads one person may have under way at once: half of what the whole service holds (8 by default), or the operator's lower limit. A client queues its uploads to that number, so a person never meets the refusal past it.
          */
         get: {
             parameters: {
