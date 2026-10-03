@@ -8,6 +8,8 @@ export type MemoryFailure =
   | 'provider_slow'
   | 'daily_budget'
   | 'unreadable_answer'
+  | 'answer_cut_off'
+  | 'answer_refused'
   | 'too_large'
   | 'no_memory_model'
   | 'other';
@@ -47,6 +49,10 @@ export function describeFailure(code: string): MemoryFailure {
       return 'provider_slow';
     case 'memory_daily_budget':
       return 'daily_budget';
+    case 'extraction_cut_off':
+      return 'answer_cut_off';
+    case 'extraction_answer_refused':
+      return 'answer_refused';
     case 'extraction_unreadable':
     case 'extraction_response_size':
       return 'unreadable_answer';
