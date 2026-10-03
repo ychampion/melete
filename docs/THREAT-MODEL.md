@@ -898,6 +898,25 @@ name in the room. A person's work lists only the rooms they are in and is
 refused, without detail, for any other
 ([room-handoffs.test.ts](../apps/melete/test/integration/room-handoffs.test.ts)).
 
+A chat platform reaches a room through the same three doors as the web: a
+message coming in, the room's frames going out, and an answer to a permission.
+Behind each door the room runs the same checks it runs for the web. A platform
+account counts only through a link, kept per platform, to a person or guest
+here; it is checked on every message, answer and outgoing frame. The platform's
+adapter makes a link after the platform's own sign-in proves who holds the
+account: that proof is the platform's, and the adapter is trusted to have it.
+An account with no link is refused and is never made a guest, a link is never
+moved to another person, the room's own principal takes none, and one
+platform's link means nothing on another. A person lists and removes their own
+links, and a new password, set by them or through a reset, removes them all, as
+it signs out their sessions. One platform's ids for its messages never reach
+another platform, and each platform's submission ids are kept apart from the
+web's. A platform's display name is dropped: speakers carry the
+room's label, and a button press answers only for the person its account is
+linked to, under the room's rule. Frames go out to one linked person at a time,
+and stop the moment that person leaves the room or the account is unlinked
+([room-surface.test.ts](../apps/melete/test/integration/room-surface.test.ts)).
+
 What remains: what a member says in a room stays in the room after they leave,
 unless they delete it first or an owner forgets it. The words of a deleted
 message stay in any answer the agent already gave that quoted them, and in the

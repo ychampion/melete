@@ -139,6 +139,7 @@ import { engineProtocol, providerAddress, servicePrivacyRouter } from './privacy
 import { mountPush } from './push/routes.ts';
 import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { mountRooms } from './rooms/routes.ts';
+import type { RoomSurface } from './rooms/surface.ts';
 import { attachRuns, RunService } from './runs/service.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
@@ -243,6 +244,8 @@ export type AppDeps = {
   blobs?: BlobStore;
   /** Signs app views. Left out, keyed from the master key. */
   viewTokens?: ViewTokens;
+  /** Chat platforms people can talk to rooms from, besides the web. Left out, none. */
+  roomSurfaces?: RoomSurface[];
 };
 
 export function createApp(deps: AppDeps) {
@@ -422,6 +425,7 @@ export function createApp(deps: AppDeps) {
       memory: deps.memory,
       env: deps.env,
       triggers: deps.triggers,
+      surfaces: deps.roomSurfaces,
     });
   if (deps.db)
     mountCompanies(app, {
