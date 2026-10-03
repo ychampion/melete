@@ -26,6 +26,7 @@ import {
 } from '@melete/contracts';
 import { estimateTokens } from '@melete/skills';
 import { EMAIL } from '../memory/tier0.ts';
+import { placeQuote } from '../quotes.ts';
 
 export const MAX_STEPS = 6;
 export const MAX_STEP_CHARS = 240;
@@ -570,6 +571,40 @@ function sliceSpan(
 }
 
 /**
+ * Each evidence span placed in the source it names. The model is asked for
+ * the quote only, and the offsets are found here: the offsets it gave when
+ * they hold the quote exactly, else where the quote occurs in the supplied
+ * text (exactly, then loosely, answering with the source's own characters).
+ * A quote that is not in a supplied source is refused when the model gave no
+ * offsets; when it gave some, the span is left as written, and the span check
+ * below refuses it as what it is (outside the source, or not verbatim).
+ */
+function placeSpans(raw: unknown, sources: readonly ProposalSource[]): unknown {
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+  if (!isRecord(raw)) return raw;
+  const place = (item: unknown) => {
+    if (!isRecord(item) || !isRecord(item.evidence) || typeof item.evidence.quote !== 'string')
+      return item;
+    const evidence = item.evidence;
+    const quote = evidence.quote as string;
+    const source = sources.find((entry) => entry.id === evidence.source);
+    const placed = source ? placeQuote(source.text, source.offset, { ...evidence, quote }) : null;
+    if (placed) return { ...item, evidence: { ...evidence, ...placed } };
+    if (evidence.start === undefined && evidence.end === undefined) {
+      if (!source) refuse('span_outside_source', 'A span cites a source that was not supplied.');
+      refuse('span_not_verbatim', 'The quoted text is not in the source it names.');
+    }
+    return item;
+  };
+  return {
+    ...raw,
+    ...(Array.isArray(raw.steps) ? { steps: raw.steps.map(place) } : {}),
+    ...(Array.isArray(raw.triggers) ? { triggers: raw.triggers.map(place) } : {}),
+  };
+}
+
+/**
  * The admission rules, in order. The spans are verified before anything is
  * read from them; the deny and authority scans run over each step and its quote
  * before the word rule, so injected content is refused as what it is rather
@@ -581,7 +616,8 @@ export function admitProposal(
   raw: unknown,
   context: { sources: readonly ProposalSource[]; objective: string; bundledSuite?: boolean },
 ): AdmittedProcedure {
-  const parsed = procedureProposal.safeParse(raw);
+  const parsed = procedureProposal.safeParse(placeSpans(raw, context.sources));
+
   if (!parsed.success)
     refuse('proposal_schema_invalid', 'The proposal does not match the procedure schema.');
   const proposal = parsed.data;

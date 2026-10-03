@@ -161,6 +161,12 @@ export interface GatewaySettlement {
   servedLocally?: boolean;
   /** The model that actually answered, when the privacy router sent the call to the local model. */
   servedBy?: { provider: string; model: string };
+  /**
+   * What became of the request's answer schema: sent, left out (the model
+   * cannot take one, or refused one before), or refused by the provider on
+   * this call, which is then asked again without it.
+   */
+  structured?: 'sent' | 'stripped' | 'refused';
 }
 
 export interface GatewayBudget {

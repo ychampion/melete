@@ -47,6 +47,8 @@ export const healthResponse = z.object({
           'provider_slow',
           'daily_budget',
           'unreadable_answer',
+          'answer_cut_off',
+          'answer_refused',
           'too_large',
           'no_memory_model',
           'other',
