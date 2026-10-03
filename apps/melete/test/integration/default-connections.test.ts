@@ -275,8 +275,13 @@ const journey = late ? await database() : null;
       expect(await providers(evaluation)).toEqual([]);
 
       const claimed = await claimIn(upgraded, personal);
-      expect(names(claimed.bundle.tools)).toEqual(
+      // Every default is granted; the first catalog holds as many as it can,
+      // and the rest are found through the catalog's search.
+      expect(claimed.claims.scopes).toEqual(
         expect.arrayContaining([...DEFAULT_TOOLS, 'audio.synthesize', 'audio.transcribe']),
+      );
+      expect(names(claimed.bundle.tools)).toEqual(
+        expect.arrayContaining(['audio.synthesize', 'audio.transcribe']),
       );
 
       const login = await upgraded.app.request('/login', {
@@ -345,7 +350,8 @@ const journey = late ? await database() : null;
       const ownerConnections = (
         await fixture.sql`select id from connection where space_id = ${ownerSpace} order by id`
       ).map((row) => row.id);
-      expect(ownerConnections).toHaveLength(4);
+      // Files, the web, saved results, apps and the person's own room tools.
+      expect(ownerConnections).toHaveLength(5);
 
       const login = await running.app.request('/login', {
         method: 'POST',
@@ -396,6 +402,16 @@ const journey = late ? await database() : null;
       (
         await fixture.sql`select provider from connection where space_id = ${spaceId} order by provider`
       ).map((row) => row.provider);
+    // Which defaults a space has, and what each of its room tools grants.
+    const defaults = async (spaceId: string) =>
+      (
+        await fixture.sql`select configuration->>'builtin' as key, scopes from connection
+          where space_id = ${spaceId} order by key`
+      ).map((row) =>
+        ['apps', 'rooms', 'room_handoff'].includes(String(row.key))
+          ? [row.key, row.scopes]
+          : row.key,
+      );
     try {
       const signIn = async (email: string) => {
         const response = await running.app.request('/login', {
@@ -424,6 +440,14 @@ const journey = late ? await database() : null;
       expect(shared.status).toBe(201);
       const made = ((await shared.json()) as { space: { id: string } }).space.id;
       expect(await providers(made)).toEqual(['apps', 'artifacts', 'files', 'room', 'web']);
+      // A room's space gets Apps and the hand-off to a person, never a person's room tools.
+      expect(await defaults(made)).toEqual([
+        ['apps', expect.arrayContaining(['apps.publish'])],
+        'artifacts',
+        'files',
+        ['room_handoff', ['room.handoff']],
+        'web',
+      ]);
       expect(await providers(bare)).toEqual([]);
 
       // A provisioned account is furnished in its own personal space, and only there.
@@ -438,6 +462,14 @@ const journey = late ? await database() : null;
         await fixture.sql`select id from space where owner_principal_id = ${account3}`;
       if (!theirs) throw new Error('A provisioned account has no space');
       expect(await providers(theirs.id)).toEqual(['apps', 'artifacts', 'files', 'room', 'web']);
+      // A person's own space gets Apps and their own room tools, and no hand-off.
+      expect(await defaults(theirs.id)).toEqual([
+        ['apps', expect.arrayContaining(['apps.publish'])],
+        'artifacts',
+        'files',
+        ['rooms', ['room.list', 'room.post', 'room.add_file']],
+        'web',
+      ]);
       expect(await providers(bare)).toEqual([]);
 
       // What it was given is its own, and its first attempt is handed the tools.

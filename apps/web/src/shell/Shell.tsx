@@ -16,7 +16,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Icon, type IconName } from '../design/icons.tsx';
+import { Icon } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import {
@@ -50,6 +50,7 @@ import { FeedbackHost, openFeedback } from '../feedback/FeedbackPanel.tsx';
 import { href, navigate, useRoute } from '../router.ts';
 import { useTheme } from '../theme.ts';
 import { CommandPalette } from './CommandPalette.tsx';
+import { sidebarNav } from './nav.ts';
 import './shell.css';
 
 export type ToastSpec = {
@@ -102,34 +103,6 @@ function ToastStack() {
     </div>
   );
 }
-
-const NAV: { icon: IconName; label: string; path: string; match: (path: string) => boolean }[] = [
-  { icon: 'home', label: 'Home', path: '/', match: (p) => p === '/' },
-  { icon: 'chat', label: 'Chat', path: '/chat', match: (p) => p.startsWith('/chat') },
-  {
-    icon: 'piggy',
-    label: 'Companies',
-    path: '/companies',
-    match: (p) => p.startsWith('/companies'),
-  },
-  { icon: 'plans', label: 'Plans', path: '/plans', match: (p) => p.startsWith('/plans') },
-  { icon: 'progress', label: 'Work', path: '/runs', match: (p) => p.startsWith('/runs') },
-  { icon: 'users', label: 'Rooms', path: '/rooms', match: (p) => p.startsWith('/rooms') },
-  { icon: 'smile', label: 'Agents', path: '/agents', match: (p) => p.startsWith('/agents') },
-  {
-    icon: 'bookmark',
-    label: 'Memory',
-    path: '/settings/memory',
-    match: (p) => p.startsWith('/settings/memory'),
-  },
-  {
-    icon: 'automations',
-    label: 'Automations',
-    path: '/automations',
-    match: (p) => p.startsWith('/automations'),
-  },
-  { icon: 'apps', label: 'Apps', path: '/apps', match: (p) => p.startsWith('/apps') },
-];
 
 const LIVE = new Set<Conversation['status']>(['queued', 'working', 'streaming']);
 
@@ -270,8 +243,7 @@ function Sidebar({
   const route = useRoute();
   const { conversations, conversationsError, agents, profile, refreshConversations, guest } =
     useApp();
-  // A guest reaches only the rooms they were invited to.
-  const nav = guest ? NAV.filter((item) => item.path === '/rooms') : NAV;
+  const nav = sidebarNav(guest === true);
   const decisions = useDecisions();
   const activeChat = route.parts[0] === 'chat' ? (route.parts[1] ?? null) : null;
   const chats = [...conversations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));

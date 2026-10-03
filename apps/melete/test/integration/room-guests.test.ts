@@ -29,7 +29,7 @@ import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { loadEnv } from '../../src/env.ts';
-import { createApp } from '../../src/index.ts';
+import { type AppDeps, createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
@@ -123,6 +123,78 @@ type Person = { id: string; cookie: string };
 let alice: Person;
 let bob: Person;
 let carol: Person;
+
+/**
+ * Every route the service serves when every part of it is set up, read the way
+ * the published API document is checked: each dependency is a stand-in that is
+ * never called.
+ */
+function everyRoute(): Array<{ method: string; path: string }> {
+  const stub = new Proxy({}, { get: () => () => undefined }) as never;
+  const deps: AppDeps = {
+    env: loadEnv({ MELETE_PUBLIC_URL: PUBLIC_URL }),
+    checkDatabase: async () => 'ok',
+    db: stub,
+    sql: stub,
+    registry: stub,
+    jobs: stub,
+    triggers: stub,
+    approvals: stub,
+    events: stub,
+    proposer: stub,
+    evaluator: stub,
+    browserSessions: stub,
+    sandboxComputers: stub,
+    sandboxPreviews: stub,
+    memory: stub,
+    removals: stub,
+    broker: stub,
+  };
+  const seen = new Set<string>();
+  return createApp(deps)
+    .routes.filter((route) => route.method !== 'ALL')
+    .filter((route) => {
+      const key = `${route.method} ${route.path}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((route) => ({ method: route.method, path: route.path }));
+}
+
+/**
+ * What a guest's sign-in reaches, by design: their rooms, their own account and
+ * linked chat accounts, signing out and changing their password, a room's
+ * files, and watching a room's computer. Everything else is refused before it
+ * runs.
+ */
+const GUEST_ROUTES = [
+  /^(GET|POST|PUT|PATCH|DELETE) \/rooms(\/.*)?$/,
+  /^(GET|PATCH) \/me$/,
+  /^GET \/me\/linked-accounts$/,
+  /^DELETE \/me\/linked-accounts\/:[A-Za-z_]+\/:[A-Za-z_]+$/,
+  /^POST \/(signout|account\/password)$/,
+  /^GET \/artifacts\/:id\/content$/,
+  /^POST \/sandbox\/sessions\/:id\/live(\/close)?$/,
+  /^GET \/sandbox\/sessions\/:id\/live\/frames$/,
+];
+/**
+ * Routes that read no sign-in at all, so a guest's is never used there: setup
+ * and sign-in, invites, the MCP server's public routes, a paired computer's own
+ * routes, and an app's or a preview's files, each authorised by its own token.
+ */
+const SIGNED_OUT_ROUTES = [
+  /^GET \/(health|setup)$/,
+  /^POST \/(setup|login|password-reset|password-reset\/consume)$/,
+  /^POST \/signin\/[a-z-]+(\/consume)?$/,
+  /^POST \/invites\/(view|accept)$/,
+  /^GET \/oauth\/client-metadata\.json$/,
+  /^GET \/\.well-known\//,
+  /^(GET|POST|DELETE) \/mcp(\/.*)?$/,
+  /^(GET|POST) \/oauth\/(authorize|token|register|revoke)$/,
+  /^(GET|POST|PUT|DELETE) \/device\//,
+  /^GET \/(apps\/view|previews)\//,
+];
 
 async function makeRoom(name: string) {
   const made = roomDetail.parse(await ok(send(alice.cookie, '/rooms', 'POST', { name }), 201));
@@ -621,6 +693,55 @@ withDb('room guests', () => {
     // The same requests from a person reach their routes: the refusal is the guest's.
     expect((await send(bob.cookie, '/home')).status).toBe(200);
   }, 90_000);
+
+  test('a guest reaches only what rooms give them, on every route the service has', async () => {
+    const roomId = await makeRoom('Every route');
+    const gus = await guestIn(roomId, 'gus@guest.example');
+    const routes = everyRoute();
+    expect(routes.length).toBeGreaterThan(200);
+    const named = (route: { method: string; path: string }) => `${route.method} ${route.path}`;
+    const reached: string[] = [];
+    const notRefused: string[] = [];
+    for (const route of routes) {
+      const key = named(route);
+      if (GUEST_ROUTES.some((pattern) => pattern.test(key))) {
+        reached.push(key);
+        continue;
+      }
+      if (SIGNED_OUT_ROUTES.some((pattern) => pattern.test(key))) continue;
+      const path = route.path.replace(/:[A-Za-z_]+(\{[^}]*\})?/g, 'x1').replace(/\*/g, 'x1');
+      const response = await send(
+        gus.cookie,
+        path,
+        route.method,
+        ['GET', 'HEAD'].includes(route.method) ? undefined : {},
+      );
+      const text = await response.text();
+      const code =
+        response.status === 403
+          ? (JSON.parse(text) as { error?: { code?: string } }).error?.code
+          : undefined;
+      if (code !== 'guests_use_rooms') notRefused.push(`${key} -> ${response.status}`);
+    }
+    // Every route outside the rooms design refuses a guest before it runs.
+    expect(notRefused).toEqual([]);
+    // And the ones a guest reaches are the rooms design's, each still served.
+    expect(reached.filter((key) => !key.includes('/rooms'))).toEqual(
+      expect.arrayContaining([
+        'GET /me',
+        'PATCH /me',
+        'POST /signout',
+        'POST /account/password',
+        'GET /me/linked-accounts',
+        'DELETE /me/linked-accounts/:provider/:externalId',
+        'GET /artifacts/:id/content',
+        'POST /sandbox/sessions/:id/live',
+        'GET /sandbox/sessions/:id/live/frames',
+      ]),
+    );
+    // A guest still reaches their room.
+    expect((await send(gus.cookie, `/rooms/${roomId}`)).status).toBe(200);
+  }, 180_000);
 
   test('adding a guest fences the running request, which starts again with the new roster', async () => {
     const { sql } = database();
