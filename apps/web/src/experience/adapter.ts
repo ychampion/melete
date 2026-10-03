@@ -79,6 +79,9 @@ import type {
   PrivacyReveal,
   PrivacySettings,
   PrivacySettingsUpdate,
+  ProcessOutput,
+  ProcessPreview,
+  ProcessStopped,
   Profile,
   ProfileInput,
   PushDevice,
@@ -706,6 +709,15 @@ export const adapter = {
         body: { live_id: liveId },
       }),
     ),
+  /* ---------- background processes in the agent's computer ---------- */
+  processPreview: (processId: string) =>
+    guard<ProcessPreview>(() => api.POST('/sandbox/processes/{id}/previews', path(processId))),
+  processOutput: (processId: string) =>
+    guard<ProcessOutput>(() => api.GET('/sandbox/processes/{id}/output', path(processId))),
+  processStop: (processId: string) =>
+    guard<ProcessStopped>(() => api.POST('/sandbox/processes/{id}/stop', path(processId))),
+  /** Where a preview's page loads: the API's own address, then the preview's path. */
+  previewSource: (preview: ProcessPreview) => `${API_BASE_URL}${preview.path}`,
   /** Where a file or picture the service keeps is served, with the session's cookie. */
   artifactUrl,
   search: (q: string) =>

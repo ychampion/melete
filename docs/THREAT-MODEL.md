@@ -604,6 +604,56 @@ app's code uses WebRTC by name (`RTCPeerConnection`, `RTCDataChannel`,
 `getUserMedia`); code that hides those names is not found. Apps are for code
 the person trusts with the data it shows.
 
+## Attacker 10: a page served from the agent's computer
+
+A person can preview a web server a background process runs in the agent's
+computer (see [sandbox-docker](sandbox-docker.md#previewing-a-server)). The
+server and its pages were written by the agent, and may be hostile in the same
+ways an app may. The aims are those of Attacker 9, plus two of its own: to use
+the preview to reach something else on the computer's network, and to reach
+another person's computer.
+
+The preview reuses the app viewer's isolation unchanged. Every answer under
+`/api/previews/<token>/` carries the same `Content-Security-Policy: sandbox`
+policy, set in the same place, and the Melete page frames it with the same
+`sandbox` attribute, so the page has an opaque origin, no cookies, no storage,
+fetches nothing and cannot move Melete's page. An answer without the exact
+policy is replaced by a 500 in the service and by a 502 in the web server. A
+page asked for on its own, rather than in a frame, is refused.
+
+The service forwards only reads (GET and HEAD), with a short list of request
+headers: the Melete cookie, any `Authorization`, `Origin` and every other
+header stay behind, and no connection upgrade is passed on. Answers come back
+with the isolation headers and a short list of the server's own; its cookies
+never reach the browser. A redirect is kept only when it points back at the
+same server, and made a path inside the preview.
+
+Each request goes to one address only: the computer's own address on the
+private network it shares with the service, at the port the process declared
+when it started. The address comes from the container engine, and the port from
+the process record; nothing in the request can choose either. A computer with
+no network (`deny_all`) cannot be previewed. On Docker that network holds only
+the computer and the service, so no other computer is reachable from it.
+
+The token in the path names one person, one process, the port and the computer
+it runs in, and the browser session it was opened from, and is signed with a
+key of its own. A preview lasts half an hour; the computer view opens a new
+one while it is on screen. Only the person whose job started the process can
+open one (a job with no recorded person is its space owner's), and only while
+the process runs and listens on its port. Every request checks again that the
+session is signed in, that the person may still use the space, that the
+computer's connection is active, and that the process record still says it
+runs, with that port, in that computer. Whether the process itself still
+listens is checked when the preview is opened, not on each request: if it
+stopped listening before the record caught up, another process in the same
+computer could answer on that port, and nothing outside that computer can.
+Stopping the process, revoking the connection, losing the space or signing out
+ends the preview on its next request.
+
+WebRTC and name lookups are open to a previewed page as they are to an app.
+The preview shows what the agent's own server serves, to the person who asked
+for it.
+
 ## Credentials, host and storage
 
 Connector secrets have tested sealing and scope checks: `stores randomized

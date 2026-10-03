@@ -144,6 +144,8 @@ import {
 } from './runtime/supervisor.ts';
 import { mountSandboxComputers, SandboxComputerService } from './sandbox/computer.ts';
 import { sandboxKeyCheck } from './sandbox/connection.ts';
+import { mountSandboxPreviews, previewsFor, type SandboxPreviews } from './sandbox/preview.ts';
+import { PREVIEW_PREFIX } from './sandbox/preview-path.ts';
 import { startProcessMonitor } from './sandbox/process-monitor.ts';
 import { startProcesses } from './sandbox/processes.ts';
 import {
@@ -203,6 +205,8 @@ export type AppDeps = {
   browserSessions?: BrowserSessionService;
   /** The desktops in docker sandboxes, to watch and take over. */
   sandboxComputers?: SandboxComputerService;
+  /** Previews of servers in agents' computers, and a person's stop and output of their processes. */
+  sandboxPreviews?: SandboxPreviews;
   removals?: SpaceRemovalService;
   runtimeAdapter?: string;
   runner?: AttemptRunner;
@@ -253,6 +257,8 @@ export function createApp(deps: AppDeps) {
   // First, so it runs last: nothing under the app view path leaves without the
   // isolation headers, whatever answered it.
   app.use(`${VIEW_PREFIX}*`, isolated);
+  // The same for a preview of a server in an agent's computer.
+  app.use(`${PREVIEW_PREFIX}*`, isolated);
   const connections =
     deps.db && deps.sql && deps.registry
       ? { db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }
@@ -429,6 +435,7 @@ export function createApp(deps: AppDeps) {
   if (deps.browserSessions) mountBrowserLive(app, deps.browserSessions);
   if (deps.browserSessions) mountBrowserSites(app, deps.browserSessions.sites);
   if (deps.sandboxComputers) mountSandboxComputers(app, deps.sandboxComputers);
+  if (deps.sandboxPreviews) mountSandboxPreviews(app, deps.sandboxPreviews);
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
@@ -560,6 +567,7 @@ export async function bootstrap(
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   let sandboxComputers: SandboxComputerService | undefined;
+  let sandboxPreviews: SandboxPreviews | undefined;
   let processSweep: { stop(): void } | undefined;
   let processMonitor: { stop(): void } | undefined;
   let processFactory: Parameters<typeof startProcessMonitor>[0] | undefined;
@@ -685,6 +693,7 @@ export async function bootstrap(
         );
       }
       processSweep = startProcesses(connectors);
+      sandboxPreviews = previewsFor(handle.sql, connectors, env.MELETE_MASTER_KEY);
       processFactory = connectors;
       // Boot reconciliation, before any attempt can open a session of its own.
       if (sandboxes) {
@@ -1113,6 +1122,7 @@ export async function bootstrap(
     memory: deploymentMemory?.routes ?? memory,
     browserSessions: browser?.sessions,
     sandboxComputers,
+    sandboxPreviews,
     removals,
     episodes,
     proposer: learning?.proposer,

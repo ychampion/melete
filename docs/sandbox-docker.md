@@ -289,6 +289,31 @@ A wake never reaches a computer while it is being suspended: the woken
 conversation waits for the suspend to finish and then resumes the computer as
 usual.
 
+### Previewing a server
+
+A process started with a `port` is a server the person can look at. In the
+computer view, the Processes list shows each background process with its
+state, how long it has run, its port and the last line it printed, and lets
+the person whose job started it read the end of its output, stop it, or open
+**Preview**. The preview is the page the server answers on that port, framed
+inside Melete.
+
+- The server must listen on all addresses (`0.0.0.0`), not only on
+  `localhost`: the service reaches it at the computer's own address on its
+  private network. Most development servers take a `--host 0.0.0.0` option.
+- Only computers with network access (`open`) can be previewed. A `deny_all`
+  computer has no network the preview could use, and opening one says so.
+- Pages are framed with the same isolation as a published app: an opaque
+  origin, no Melete session, and nothing fetched from anywhere, including the
+  server's own API. Pages, scripts and styles that link the server's own
+  files from the root (`/src/main.js`) have those links kept inside the
+  preview, up to 5 MiB per answer; larger ones are passed on unchanged. Live
+  reload connections are not passed on, so reload the preview to see a change.
+- One answer may be up to 50 MiB, and the server has 30 seconds to give it.
+- A preview lasts half an hour. While it is on screen the computer view opens
+  a new one shortly before then and reloads the page. It ends at once when the
+  process stops or the browser session that opened it signs out.
+
 ## Watching and taking over
 
 The service exposes the desktop with the same wire shapes as the browser

@@ -168,6 +168,7 @@ import {
   principal,
   spaceMembership,
 } from './principals.ts';
+import { processPreviewPaths } from './process-preview-openapi.ts';
 import {
   attributionReport,
   attributionRequest,
@@ -3117,6 +3118,7 @@ export function buildOpenApiDocument() {
         },
         ...devicePaths(),
         ...appsPaths(),
+        ...processPreviewPaths(),
       },
     },
     // Shared shapes such as `job` appear on many paths; emitting them once under

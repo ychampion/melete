@@ -463,17 +463,21 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
                   and not exists (select 1 from privacy_conversation pc
                     where pc.conversation_id = coalesce(h.experience_parent_id, h.id)
                       and pc.sensitive <> 'none'))
-              ) as attributable
+              ) as attributable,
+              -- A preview is offered only to the person whose job started the process.
+              (h.id is not null and coalesce(h.principal_id, (select id from owner limit 1))
+                is not distinct from coalesce(c.principal_id, (select id from owner limit 1))
+              ) as previewable
               from sandbox_process p
               join job c on c.id = ${conversation}
               left join job h on h.id = p.job_id
               where p.space_id = ${spaceId}
                 and p.agent_id in (select agent_id from job
                   where space_id = ${spaceId} and id in ${deps.sql(jobIds)} and agent_id is not null))
-          (select id, name, state, started_at, created_at, port, last_line, attributable
+          (select id, name, state, started_at, created_at, port, last_line, attributable, previewable
             from mine where state in ('starting', 'running'))
           union all
-          (select id, name, state, started_at, created_at, port, last_line, attributable
+          (select id, name, state, started_at, created_at, port, last_line, attributable, previewable
             from mine where state not in ('starting', 'running')
             order by created_at desc limit ${COMPUTER_PROCESS_LIMIT})`
         : [];

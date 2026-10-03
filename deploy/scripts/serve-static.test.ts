@@ -300,7 +300,7 @@ describe('same-origin API proxy', () => {
       async fetch(request) {
         apiRequests++;
         const url = new URL(request.url);
-        if (url.pathname.startsWith('/apps/view/')) {
+        if (url.pathname.startsWith('/apps/view/') || url.pathname.startsWith('/previews/')) {
           const seen = JSON.stringify({
             cookie: request.headers.get('cookie'),
             authorization: request.headers.get('authorization'),
@@ -470,6 +470,32 @@ describe('same-origin API proxy', () => {
     expect(response.status).toBe(502);
     expect(await response.text()).not.toContain('<p>');
     expect(response.headers.get('content-security-policy')).toStartWith('sandbox');
+  });
+
+  test("a preview's page, read from its opaque origin, reaches the API without the session, and only isolated", async () => {
+    const response = await fetch(`${webOrigin()}/api/previews/tok/src/main.js`, {
+      headers: {
+        origin: 'null',
+        'sec-fetch-site': 'cross-site',
+        cookie: 'melete_session=session-value',
+        authorization: 'Bearer x',
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ cookie: null, authorization: null, origin: null });
+    expect(isIsolated(response.headers)).toBe(true);
+    expect(response.headers.has('set-cookie')).toBe(false);
+    const bare = await fetch(`${webOrigin()}/api/previews/tok/bare/index.html`);
+    expect(bare.status).toBe(502);
+    expect(await bare.text()).not.toContain('<p>');
+    const count = apiRequests;
+    const posted = await fetch(`${webOrigin()}/api/previews/tok/`, {
+      method: 'POST',
+      headers: { origin: 'null', 'sec-fetch-site': 'cross-site' },
+      body: '{}',
+    });
+    expect(posted.status).toBe(403);
+    expect(apiRequests).toBe(count);
   });
 
   test('a write under the app view path is still refused from another origin', async () => {
