@@ -34,10 +34,12 @@ import { dockerSandboxSettings } from '../sandbox/docker-default.ts';
 import { SandboxProcesses } from '../sandbox/processes.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
 import type { SandboxProvider } from '../sandbox/types.ts';
+import { type BlobStore, configuredBlobStore } from '../storage/blob.ts';
 import { browserArtifactSink } from '../workers/browser/artifacts.ts';
 import { type BrowserWorkerEndpoint, BrowserWorkerPool } from '../workers/browser/client.ts';
 import { PostgresBrowserRecipeStore } from '../workers/browser/recipes.ts';
 import { BrowserSessionService } from '../workers/browser/routes.ts';
+import { createAppsConnector } from './apps.ts';
 import { createArtifactsConnector } from './artifacts.ts';
 import { createBrowserConnector } from './browser.ts';
 import { builtinEnvironment } from './builtin.ts';
@@ -223,6 +225,8 @@ export type ConnectorOptions = {
   stdioLifecycle?: StdioLifecycleOptions;
   /** Everything a sandbox connection needs besides its own row. */
   sandbox?: SandboxRuntimeOptions;
+  /** Where published apps keep their files. Without it, an apps connection offers nothing. */
+  blobs?: BlobStore;
   /** Where work for paired computers waits. Left out, the process's shared hub. */
   devices?: DeviceHub;
   /**
@@ -386,6 +390,14 @@ export class ConnectorFactory {
         spacesRoot: options.spacesRoot,
         mailers: this.mailers,
       });
+    if (row.provider === 'apps')
+      return options.blobs
+        ? createAppsConnector({
+            sql: options.sql,
+            workRoot: options.workRoot,
+            blobs: options.blobs,
+          })
+        : undefined;
     if (row.provider === 'web' && setting?.kind === 'browser') {
       if (!options.browserSessions) throw new Error('Browser session service is not configured');
       return createBrowserConnector({
@@ -875,6 +887,8 @@ export function connectorOptionsFromEnv(
     webSearch: extra.webSearch ?? webSearchFromEnv(env),
     ...(extra.searchPrivacy ? { searchPrivacy: extra.searchPrivacy } : {}),
     cellIsolated: builtinEnvironment(env).cellIsolated,
+    // Nothing is created until the first write.
+    blobs: configuredBlobStore(env),
     ...(env.MICROSOFT_OAUTH_CLIENT_ID && env.MICROSOFT_OAUTH_CLIENT_SECRET
       ? {
           microsoft: {

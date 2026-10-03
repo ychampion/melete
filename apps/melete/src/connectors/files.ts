@@ -26,6 +26,8 @@ import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import { LEGACY_SCREEN_PATH } from '../devices/screen-paths.ts';
+import { noLinks, segmentsFor } from '../paths.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { ConnectorFaultError } from './faults.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import type { PrivateContext } from './web.ts';
@@ -100,68 +102,8 @@ function areaFor(value: JsonValue | undefined): Area {
   throw new Error('area must be work or artifacts');
 }
 
-/** Reject both host and portable path syntax, including Windows device/stream names. */
-export function segmentsFor(value: string): string[] {
-  if (
-    !value ||
-    value.includes('\0') ||
-    path.posix.isAbsolute(value) ||
-    path.win32.isAbsolute(value) ||
-    value.includes('\\') ||
-    value.includes(':')
-  ) {
-    throw new Error('path must be relative to its area');
-  }
-  if (value === '.') return [];
-  const segments = value.split('/');
-  if (
-    segments.some(
-      (part) =>
-        !part ||
-        part === '.' ||
-        part === '..' ||
-        /[. ]$/.test(part) ||
-        /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part),
-    )
-  ) {
-    throw new Error('path traversal or device path is not allowed');
-  }
-  return segments;
-}
-
 const missing = (error: unknown): boolean =>
   error instanceof Error && 'code' in error && error.code === 'ENOENT';
-
-/** Inspect every component: checking only the final realpath misses dangling links. */
-export async function noLinks(
-  base: string,
-  segments: string[],
-  createParents: boolean,
-): Promise<string> {
-  let current = base;
-  for (let index = 0; index < segments.length; index += 1) {
-    const segment = segments[index];
-    if (!segment) throw new Error('empty path component');
-    current = path.join(current, segment);
-    try {
-      const stat = await lstat(current);
-      if (stat.isSymbolicLink()) throw new Error('symbolic links are not allowed');
-      if (index < segments.length - 1 && !stat.isDirectory()) {
-        throw new Error('path parent is not a directory');
-      }
-    } catch (error) {
-      if (!missing(error)) throw error;
-      if (createParents && index < segments.length - 1) {
-        await mkdir(current);
-        const created = await lstat(current);
-        if (!created.isDirectory() || created.isSymbolicLink()) {
-          throw new Error('unsafe path parent');
-        }
-      }
-    }
-  }
-  return current;
-}
 
 /**
  * The path check each open here begins with. It names a link or a file in the
@@ -169,6 +111,7 @@ export async function noLinks(
  * decided by that open. Held in an object so a test can change the tree
  * between this check and the open.
  */
+export { noLinks, segmentsFor };
 export const pathCheck = { noLinks };
 
 /**
@@ -632,6 +575,7 @@ type Located = { base: string; segments: string[]; target: string };
 
 export function createFilesConnector(options: FilesOptions): Connector {
   const limit = options.maxBytes ?? 2 * 1024 * 1024;
+  const workspace = new LocalWorkspaceFs(options.workRoot);
   /**
    * Where a file of the job is: the trusted root and the names under it. The
    * path check here only names a problem early; every open walks the names
@@ -646,9 +590,13 @@ export function createFilesConnector(options: FilesOptions): Connector {
     // agent's to open, whatever that computer allows (devices/screen-paths.ts).
     if (area === 'work' && LEGACY_SCREEN_PATH.test(segments.join('/')))
       throw new Error("that is a paired computer's screenshot, which is not a file you can open");
-    const base = await realpath(area === 'work' ? options.workRoot : options.spacesRoot);
-    const scope = area === 'work' ? [ctx.job_id] : [ctx.space_id, 'artifacts'];
-    const names = [...scope, ...segments];
+    const { base, segments: names } =
+      area === 'work'
+        ? await workspace.location(ctx.job_id, segments, true)
+        : {
+            base: await realpath(options.spacesRoot),
+            segments: [ctx.space_id, 'artifacts', ...segments],
+          };
     return { base, segments: names, target: await pathCheck.noLinks(base, names, false) };
   };
   const readHandle = async (file: FileHandle): Promise<Buffer> => {
@@ -847,11 +795,15 @@ export function createFilesConnector(options: FilesOptions): Connector {
       throw new Error(`there is no file ${JSON.stringify(relative)} in artifacts`);
     const entry = (await savedElsewhere(ctx)).find((candidate) => candidate.id === id);
     if (!entry) throw new Error(`there is no file ${JSON.stringify(relative)} in artifacts`);
-    const base = await realpath(entry.area === 'work' ? options.workRoot : options.spacesRoot);
-    const scope = entry.area === 'work' ? [entry.jobId as string] : [ctx.space_id, 'artifacts'];
     if (entry.area === 'work' && !/^job_[A-Za-z0-9]+$/.test(entry.jobId ?? ''))
       throw new Error('invalid trusted file scope');
-    const names = [...scope, ...segmentsFor(entry.path)];
+    const { base, segments: names } =
+      entry.area === 'work'
+        ? await workspace.location(entry.jobId as string, segmentsFor(entry.path))
+        : {
+            base: await realpath(options.spacesRoot),
+            segments: [ctx.space_id, 'artifacts', ...segmentsFor(entry.path)],
+          };
     const target = await pathCheck.noLinks(base, names, false);
     const content = await read({ base, segments: names, target }).catch((error: unknown) => {
       if (!missing(error)) throw error;

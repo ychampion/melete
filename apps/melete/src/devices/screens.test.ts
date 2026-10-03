@@ -162,7 +162,10 @@ describe('screenshots an earlier version left in a workspace', () => {
     const store = path.join(work, DEVICE_SCREENS_DIRECTORY);
     await writeFile(store, 'in the way');
     const said: string[] = [];
-    const done = moveWorkspaceScreensUntilDone(work, (line) => said.push(line), 20);
+    const done = moveWorkspaceScreensUntilDone(work, {
+      report: (line) => said.push(line),
+      retryMs: 20,
+    });
     await Bun.sleep(60);
     expect(said.some((line) => line.includes('trying again'))).toBe(true);
     await rm(store);

@@ -1,0 +1,63 @@
+{
+  "id": "keep-going",
+  "title": "Carry on in a long conversation",
+  "summary": "The conversation has grown long, so the agent's copy of it is summarised before it carries on: it reads the progress file again, runs the progress script and reports.",
+  "match": ["keep going", "carry on"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    { "step": "compact", "delay_ms": 300 },
+    {
+      "step": "text",
+      "delay_ms": 500,
+      "text": "Picking up where the first run left off. I’ll check the state file and the progress script again."
+    },
+    {
+      "step": "tool",
+      "delay_ms": 700,
+      "name": "read_file",
+      "kind": "file",
+      "title": "Read .eval-state/progress.json",
+      "active_title": "Reading .eval-state/progress.json",
+      "input": { "text": "File", "quote": { "text": ".eval-state/progress.json", "from": "file" } },
+      "output": { "text": "12 lines" },
+      "output_excerpt": {
+        "text": "{\n  \"completed\": 81,\n  \"runs\": { \"1\": 70, \"2\": 11, \"3\": 0 }\n}",
+        "from": "file",
+        "more": false
+      }
+    },
+    {
+      "step": "tool",
+      "delay_ms": 900,
+      "name": "terminal.run",
+      "kind": "sandbox",
+      "title": "Ran `python3 .eval-state/progress.py`",
+      "active_title": "Running `python3 .eval-state/progress.py`",
+      "arguments": { "command": "python3 .eval-state/progress.py" },
+      "result": { "exit_code": 0, "output": "81 completed" },
+      "input_excerpt": {
+        "text": "python3 .eval-state/progress.py",
+        "from": "request",
+        "more": false
+      },
+      "output_excerpt": {
+        "text": "{\"completed\": 81, \"runs\": {\"1\": 70, \"2\": 11, \"3\": 0}, \"deterministic_pass\": 38, \"rubric_pass\": 62}",
+        "from": "app",
+        "more": false
+      }
+    },
+    {
+      "step": "text",
+      "delay_ms": 700,
+      "text": "81 cells are complete. The second repetition is 11 cells in, and the safety counters are still zero."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "The second repetition is under way."
+    }
+  ]
+}

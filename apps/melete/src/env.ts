@@ -286,6 +286,17 @@ const variables = z.object({
     .string()
     .regex(/^[a-z0-9][a-z0-9_-]*$/)
     .default('melete'),
+  /**
+   * This service instance's name among several on one database. Left out, the
+   * container's host name. Each instance labels the containers it starts with
+   * it, so one instance's start never removes another's running cells.
+   */
+  MELETE_INSTANCE_ID: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{0,62}$/)
+      .optional(),
+  ),
   MELETE_WORK_VOLUME: z
     .string()
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/)

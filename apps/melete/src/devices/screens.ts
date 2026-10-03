@@ -27,6 +27,7 @@ import {
   pinDirectory,
   READ_FLAGS,
 } from '../connectors/files.ts';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 
 /** Under the workspace root, beside the job directories; never mounted or synchronised. */
 export const DEVICE_SCREENS_DIRECTORY = '.melete-device-screens';
@@ -150,10 +151,11 @@ export async function moveJobScreens(workRoot: string, jobId: string): Promise<n
   // each file is read and removed inside the held folder.
   // A job folder that is not a plain folder is left alone, for the workspace
   // checks to refuse in their own words.
-  const job = await realpath(workRoot)
-    .then(async (base) => {
-      const stat = await lstat(path.join(base, jobId));
-      return stat.isDirectory() && !stat.isSymbolicLink() ? holdBeneath(base, [jobId]) : null;
+  const job = await new LocalWorkspaceFs(workRoot)
+    .jobDirectory(jobId)
+    .then(async (directory) => {
+      const stat = await lstat(directory);
+      return stat.isDirectory() && !stat.isSymbolicLink() ? holdBeneath(directory, []) : null;
     })
     .catch(absent);
   if (!job) return 0;
@@ -219,8 +221,7 @@ export async function moveWorkspaceScreens(workRoot: string): Promise<number> {
  */
 export function moveWorkspaceScreensUntilDone(
   workRoot: string,
-  report: (line: string) => void,
-  retryMs = 60_000,
+  { report, retryMs = 60_000 }: { report: (line: string) => void; retryMs?: number },
 ): Promise<void> {
   return new Promise((resolve) => {
     const attempt = () => {

@@ -136,8 +136,9 @@ test('a finished turn folds its work behind how long it worked, the answer kept 
   const html = renderToStaticMarkup(
     <WorkLog turn={turn} now={0} items={layout.log} finished renderBlock={() => null} />,
   );
-  expect(html).toContain('Worked for 26m 42s');
+  expect(html).toContain('Worked for 26m 42s · ran a command');
   expect(html).toContain('aria-expanded="false"');
+  expect(html).toContain('inert=""');
   expect(html).not.toContain('I’ll check the eval state.');
 });
 
@@ -165,10 +166,16 @@ test('while the turn runs the log is open, with every message and the work under
     />,
   );
   expect(html).toContain('Working for 12s');
-  expect(html).toContain('aria-expanded="true"');
+  // Inline in the conversation: no summary line over it, nothing folded.
+  expect(html).not.toContain('worklog-head');
+  expect(html).toMatch(
+    /class="worklog" data-state="live"><div id="[^"]+" class="reveal" data-open="true">/,
+  );
   expect(html).toContain('I’ll check the eval state.');
   expect(html).toContain('Running <code class="log-code">python3 progress.py</code>');
-  expect(html).toContain('class="spin"');
+  // Motion, not a spinner or a box: the live words shimmer.
+  expect(html).toContain('class="shimmer-text"');
+  expect(html).not.toContain('class="spin"');
 });
 
 test('reasoning is never drawn, open or folded', () => {
@@ -246,7 +253,8 @@ test('a command opens onto its shell: the command, the output, and how it ended'
     <ShellBlock tool={entry('call:r', { status: 'running', ended_at: null })} live />,
   );
   expect(running).toContain('Running…');
-  expect(running).toContain('class="spin"');
+  expect(running).toContain('class="shimmer-text"');
+  expect(running).not.toContain('class="spin"');
 });
 
 test('a group opens onto each row; a read opens onto what came back, never as markup', () => {
@@ -294,7 +302,7 @@ test('a long chat folds its oldest turns, never one still waiting on the person'
     ...fromTurns([{ ...TURN, id: `t${index}`, status: 'done', answer: 'Done.' }], 'send', 'done')
       .turns[0],
   })) as TranscriptTurn[];
-  expect(foldedTurns(turns)).toEqual({ count: 6, messages: 12 });
+  expect(foldedTurns(turns)).toEqual({ count: 6, messages: 12, summarised: 0 });
   expect(foldedTurns(turns.slice(0, 5)).count).toBe(0);
   const waiting = turns.map((turn, index) =>
     index === 2

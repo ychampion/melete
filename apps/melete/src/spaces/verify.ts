@@ -16,6 +16,7 @@ import { access, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { PhaseOmission, RemovalCounts, RemovalPhase } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 
 export type VerifyOptions = {
   spaceId: string;
@@ -168,10 +169,10 @@ async function countOrphans(
 async function remainingPaths(options: VerifyOptions): Promise<string[]> {
   const remaining: string[] = [];
   const spacesRoot = resolve(options.spacesRoot);
-  const workRoot = resolve(options.workRoot);
+  const workspaces = new LocalWorkspaceFs(resolve(options.workRoot));
   for (const id of options.jobIds) {
-    const workspace = join(workRoot, id);
-    if (await exists(workspace)) remaining.push(workspace);
+    const workspace = await workspaces.remaining(id);
+    if (workspace) remaining.push(workspace);
   }
   const directory = join(spacesRoot, options.spaceId);
   if (!options.emptied) {

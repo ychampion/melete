@@ -39,6 +39,7 @@ import {
   spaceListResponse,
   triggerResponse,
 } from './api.ts';
+import { appsPaths } from './apps-openapi.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
 import {
@@ -168,6 +169,7 @@ import {
   principal,
   spaceMembership,
 } from './principals.ts';
+import { processPreviewPaths } from './process-preview-openapi.ts';
 import {
   attributionReport,
   attributionRequest,
@@ -738,6 +740,7 @@ export function buildOpenApiDocument() {
         { name: 'reactions' },
         { name: 'actions' },
         { name: 'artifacts' },
+        { name: 'apps' },
         { name: 'approvals' },
         { name: 'connections' },
         { name: 'devices' },
@@ -3151,6 +3154,8 @@ export function buildOpenApiDocument() {
           },
         },
         ...devicePaths(),
+        ...appsPaths(),
+        ...processPreviewPaths(),
       },
     },
     // Shared shapes such as `job` appear on many paths; emitting them once under

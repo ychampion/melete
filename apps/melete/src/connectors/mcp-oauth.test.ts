@@ -211,7 +211,7 @@ describe('signing in', () => {
     expect(authorize.searchParams.get('client_id')).toBe('registered-client');
     // The challenge's scope, plus offline_access because the server offers it.
     expect(authorize.searchParams.get('scope')).toBe('files:read offline_access');
-    expect(service.status('prn_owner', started.sign_in_id)?.state).toBe('pending');
+    expect((await service.status('prn_owner', started.sign_in_id))?.state).toBe('pending');
 
     const callback = await approve(started.authorize_url);
     const done = await service.complete('prn_owner', callback.searchParams);
@@ -228,7 +228,7 @@ describe('signing in', () => {
     });
     expect(server.issued).toContain(installed[0]?.credentials.access_token ?? '');
     expect(server.issued).toContain(installed[0]?.credentials.refresh_token ?? '');
-    expect(service.status('prn_owner', started.sign_in_id)).toEqual({
+    expect(await service.status('prn_owner', started.sign_in_id)).toEqual({
       state: 'connected',
       connection_id: 'conn_01J00000000000000000000000',
     });
@@ -354,7 +354,7 @@ describe('the returning browser', () => {
       'sign_in_declined',
     );
     expect(installed).toHaveLength(0);
-    expect(service.status('prn_owner', begun.sign_in_id)).toEqual({
+    expect(await service.status('prn_owner', begun.sign_in_id)).toEqual({
       state: 'failed',
       error: 'sign_in_declined',
     });
@@ -379,7 +379,7 @@ describe('asking for more access', () => {
     expect(installed).toHaveLength(0);
     expect(renewed[0]?.connectionId).toBe('conn_01J00000000000000000000001');
     expect(renewed[0]?.credentials).toMatchObject({ resource: server.mcpUrl, scope: 'files:read' });
-    expect(service.status('prn_owner', started.sign_in_id)).toEqual({
+    expect(await service.status('prn_owner', started.sign_in_id)).toEqual({
       state: 'connected',
       connection_id: 'conn_01J00000000000000000000001',
     });

@@ -42,6 +42,7 @@ import {
   type ExecOutcome,
   type ExecSpec,
   type FileEntry,
+  type PreviewAddress,
   SandboxAdapterRefusal,
   type SandboxCapabilities,
   SandboxFileNotFound,
@@ -181,7 +182,9 @@ export function dockerCapabilities(): SandboxCapabilities {
     reattach: 'marker_only',
     // On the home volume: `/var/tmp` is in memory and goes with an idle stop.
     markerRoot: DOCKER_MARKER_ROOT,
-    ports: 'none',
+    // A port is reached only by the service, on the sandbox's own network, and
+    // shown to a person through its preview route (sandbox/preview.ts).
+    ports: 'authenticated',
     image: 'registry',
     billing: 'per_second',
     regions: [],
@@ -851,6 +854,29 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
     signal.throwIfAborted();
     const state = await this.inspectContainer(DockerSandboxHost.checkName(handle));
     return Boolean(state?.State?.Running);
+  }
+
+  /**
+   * The container's own address on its internal network, which only it and
+   * this service share. A `deny_all` container has no network, so nothing can
+   * be previewed in it; a stopped or paused one is never started for a preview.
+   */
+  async previewAddress(
+    handle: SandboxHandle,
+    port: number,
+    signal: AbortSignal,
+  ): Promise<PreviewAddress | null> {
+    signal.throwIfAborted();
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) return null;
+    const name = DockerSandboxHost.checkName(handle);
+    const state = await this.inspectContainer(name);
+    if (!state?.State?.Running || state.State.Paused) return null;
+    const network = this.networkOf(state);
+    const host = network ? state.NetworkSettings?.Networks?.[network]?.IPAddress : undefined;
+    if (!network || !host) return null;
+    // The service joins the network again if it left it, as any command would.
+    await this.grantEgress(name, state);
+    return { host, port };
   }
 
   async exec(handle: SandboxHandle, spec: ExecSpec, signal: AbortSignal): Promise<ExecOutcome> {

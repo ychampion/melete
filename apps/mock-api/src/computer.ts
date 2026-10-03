@@ -7,6 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import * as C from '@melete/contracts';
 import type { Context, Hono } from 'hono';
+import { ProcessesMock } from './processes.ts';
 import type { Scenario } from './scenario.ts';
 import type { Store } from './store.ts';
 import { newId } from './store.ts';
@@ -47,6 +48,7 @@ const addressOf = (value: string) => (/^https?:\/\//i.test(value) ? value : `htt
 export class ComputerMock {
   private readonly computers = new Map<string, Computer>();
   private readonly sessions = new Map<string, Session>();
+  readonly processes = new ProcessesMock();
 
   constructor(
     private readonly store: Store,
@@ -178,11 +180,13 @@ export class ComputerMock {
           }
         : null,
       terminal: computer?.terminal ?? [],
+      processes: this.processes.list(),
       available: { browser: this.enabled, terminal: this.enabled },
     });
   }
 
   mount(app: Hono): void {
+    this.processes.mount(app);
     const refuse = (c: Context, status: 404 | 409 | 410, code: string) =>
       c.json({ error: { code, message: `The browser could not change: ${code}.` } }, status);
     const session = (c: Context) => this.sessions.get(c.req.param('id') ?? '');

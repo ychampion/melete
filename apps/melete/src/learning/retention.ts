@@ -42,3 +42,22 @@ export async function expireEpisodes(sql: MemorySql, now = new Date()) {
     return rows.length;
   });
 }
+
+/**
+ * Expires episodes every minute on the instance that leads retention; the
+ * others skip the pass. Answers how to stop it.
+ */
+export function startEpisodeRetention(
+  sql: MemorySql,
+  leads: () => boolean | Promise<boolean> = () => true,
+  everyMs = 60_000,
+  say: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
+): () => void {
+  const timer = setInterval(() => {
+    void Promise.resolve(leads())
+      .then((leading) => (leading ? expireEpisodes(sql) : undefined))
+      .catch(() => say('episode retention failed'));
+  }, everyMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}

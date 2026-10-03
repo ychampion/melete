@@ -5,6 +5,12 @@ later one. The target release's `deploy/scripts/upgrade.ts` carries out the
 procedure on this page; `--dry-run` prints every command it would run, and the
 rollback, without executing any of them.
 
+From a checkout that has the melete command, `bun run melete upgrade <tag>`
+runs the checkout's `upgrade.ts` with the overlay files named in
+`deploy/melete.deploy.json`, under the deployment lock, and records the run in
+`deploy/.melete/history.jsonl`. An installation that runs the published images
+updates with `bun run melete deploy` ([DEPLOYMENT.md](DEPLOYMENT.md#update)).
+
 Read the target release's [changelog](../CHANGELOG.md) entry first. Releases are
 upgraded in order of their tags; moving to an older tag is a
 [rollback](#rolling-back), not an upgrade.

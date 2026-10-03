@@ -63,7 +63,12 @@ export type SandboxWiring = {
   afterAttempt(attemptId: string): void;
   /** Ends the attempt's session: suspended if it is a workspace, closed if not. */
   settleAttempt(attemptId: string, signal: AbortSignal): Promise<void>;
-  start(): void;
+  /**
+   * Starts the timed sweep and reconciliation. With several service instances
+   * on one database, the lease says whether this one runs them now, so one
+   * instance at a time does, and its signal stops a run whose lease was lost.
+   */
+  start(lease?: { leads(): Promise<boolean>; signal(): AbortSignal }): void;
   stop(): void;
 };
 
@@ -188,17 +193,27 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
       pending.add(work);
     },
 
-    start() {
+    start(lease) {
+      const led = async () => (lease ? lease.leads() : true);
+      // Work under a lease stops the moment the lease is found lost.
+      const bounded = (ms: number) =>
+        lease
+          ? AbortSignal.any([AbortSignal.timeout(ms), lease.signal()])
+          : AbortSignal.timeout(ms);
       timer ??= setInterval(() => {
-        void wiring.sweep(AbortSignal.timeout(options.sweepMs)).catch(() => {
-          say('sandbox sweep failed');
-        });
+        void led()
+          .then((leading) => (leading ? wiring.sweep(bounded(options.sweepMs)) : undefined))
+          .catch(() => {
+            say('sandbox sweep failed');
+          });
       }, options.sweepMs);
       timer.unref?.();
       reconcileTimer ??= setInterval(() => {
-        void wiring.reconcile(AbortSignal.timeout(120_000)).catch(() => {
-          say('sandbox reconciliation failed');
-        });
+        void led()
+          .then((leading) => (leading ? wiring.reconcile(bounded(120_000)) : undefined))
+          .catch(() => {
+            say('sandbox reconciliation failed');
+          });
       }, options.reconcileMs ?? 3_600_000);
       reconcileTimer.unref?.();
     },

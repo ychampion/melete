@@ -9,7 +9,7 @@
  *    approval. The broker admits it exactly as it admits any other connection.
  * 3. It does not lean on isolation the running deployment lacks.
  *
- * Files, web fetch and artifact publishing pass all three everywhere. Speech
+ * Files, web fetch, artifact publishing and app publishing pass all three everywhere. Speech
  * generation passes once a speech-capable provider is configured, and
  * transcription once a provider that transcribes is; each is a `spend`, so
  * every call still needs an approval and a budget reservation. Transcription
@@ -36,6 +36,7 @@ import type { Sql } from 'postgres';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { newId } from '../ids.ts';
 import { type DockerSandboxEnv, defaultSandboxConfig } from '../sandbox/docker-default.ts';
+import { appsManifest } from './apps.ts';
 import { artifactsManifest } from './artifacts.ts';
 import { execManifest } from './exec.ts';
 import { filesManifest } from './files.ts';
@@ -79,6 +80,9 @@ export const BUILTIN_CONNECTIONS: readonly Builtin[] = [
     label: 'Saved results',
     scopes: grants(artifactsManifest),
   },
+  // Publishing an app asks every time, and what it stores goes to the
+  // installation's own blob store, so it passes all three everywhere.
+  { key: 'apps', provider: 'apps', label: 'Apps', scopes: grants(appsManifest) },
   {
     key: 'generation',
     provider: 'generation',

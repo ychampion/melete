@@ -17,6 +17,7 @@ import {
   pkcePair,
   randomState,
 } from '../gateway/oauth.ts';
+import { MemorySignInStore, type SignInStore } from '../ops/signin-store.ts';
 import { type SignedInCredential, signedInCredentialFrom } from './signed-in.ts';
 
 export type AccountProviderName = 'google' | 'microsoft';
@@ -72,6 +73,12 @@ export type AccountSignInHooks<Installed> = {
   connectionId(installed: Installed): string;
   fetcher?: OAuthFetch;
   now?: () => number;
+  /**
+   * Where sign-ins wait for the browser. Left out, this process's memory; the
+   * service gives every instance the same Postgres store, so the browser may
+   * come back to any of them.
+   */
+  store?: SignInStore;
 };
 
 const PENDING_TTL_MS = 15 * 60_000;
@@ -96,17 +103,17 @@ type Pending = {
 };
 
 export class AccountSignIns<Installed> {
-  private readonly pending = new Map<string, Pending>();
-  private readonly byState = new Map<string, string>();
-  private readonly finished = new Map<
-    string,
-    { actor: string; status: AccountSignInStatus; until: number }
-  >();
+  private readonly store: SignInStore;
+  /** Sign-ins waiting by id; the same kind with `:state` finds one by its state, `:done` a finished one. */
+  private readonly kind: string;
 
   constructor(
     readonly name: AccountProviderName,
     private readonly hooks: AccountSignInHooks<Installed>,
-  ) {}
+  ) {
+    this.store = hooks.store ?? new MemorySignInStore();
+    this.kind = `account:${name}`;
+  }
 
   private now(): number {
     return this.hooks.now?.() ?? Date.now();
@@ -137,16 +144,6 @@ export class AccountSignIns<Installed> {
     return { provider, issuer: provider.issuer(redirectUri) };
   }
 
-  private sweep() {
-    const now = this.now();
-    for (const [id, entry] of this.pending)
-      if (entry.until <= now) {
-        this.pending.delete(id);
-        this.byState.delete(entry.state);
-      }
-    for (const [id, entry] of this.finished) if (entry.until <= now) this.finished.delete(id);
-  }
-
   async start(
     actor: string,
     request: AccountSignInRequest,
@@ -160,15 +157,15 @@ export class AccountSignIns<Installed> {
     /** Everything the sign-in asks for, one scope each. */
     scopes: string[];
   }> {
-    this.sweep();
     const spaceId = await this.hooks.authorize(actor, request.space_id);
     const { issuer } = this.issuer();
     const { verifier, challenge } = pkcePair();
     const state = randomState();
     const id = `asi_${randomState().slice(0, 24)}`;
     const until = this.now() + PENDING_TTL_MS;
-    this.pending.set(id, { id, actor, spaceId, state, verifier, request, until });
-    this.byState.set(state, id);
+    const pending: Pending = { id, actor, spaceId, state, verifier, request, until };
+    await this.store.put(this.kind, id, pending, until);
+    await this.store.put(`${this.kind}:state`, state, id, until);
     return {
       sign_in_id: id,
       authorize_url: authorizeUrl(issuer, state, challenge),
@@ -181,12 +178,14 @@ export class AccountSignIns<Installed> {
 
   /** The browser's return. Single use: the sign-in is gone whatever happens next. */
   async complete(actor: string, query: URLSearchParams): Promise<Installed[]> {
-    this.sweep();
-    const id = this.byState.get(query.get('state') ?? '');
-    const entry = id ? this.pending.get(id) : undefined;
+    const now = this.now();
+    const id = await this.store.get<string>(`${this.kind}:state`, query.get('state') ?? '', now);
+    const entry = id ? await this.store.get<Pending>(this.kind, id, now) : undefined;
     if (!entry || entry.actor !== actor) throw new SignInFailure('sign_in_not_found');
-    this.pending.delete(entry.id);
-    this.byState.delete(entry.state);
+    // Spent here whatever happens next; of two returns, on any instance, one takes it.
+    if (!(await this.store.take<Pending>(this.kind, entry.id, now)))
+      throw new SignInFailure('sign_in_not_found');
+    await this.store.delete(`${this.kind}:state`, entry.state);
     try {
       if (query.get('error')) throw new SignInFailure('sign_in_declined');
       const code = query.get('code');
@@ -229,36 +228,36 @@ export class AccountSignIns<Installed> {
       };
       if (!grant.mail && !grant.calendar) throw new SignInFailure('access_not_granted');
       const installed = await this.hooks.install(actor, grant);
-      this.finished.set(entry.id, {
-        actor,
-        status: {
-          state: 'connected',
-          connection_ids: installed.map((item) => this.hooks.connectionId(item)),
-        },
-        until: this.now() + FINISHED_TTL_MS,
+      await this.finish(entry.id, actor, {
+        state: 'connected',
+        connection_ids: installed.map((item) => this.hooks.connectionId(item)),
       });
       return installed;
     } catch (error) {
-      this.finished.set(entry.id, {
-        actor,
-        status: {
-          state: 'failed',
-          error: error instanceof SignInFailure ? error.code : 'install_failed',
-        },
-        until: this.now() + FINISHED_TTL_MS,
+      await this.finish(entry.id, actor, {
+        state: 'failed',
+        error: error instanceof SignInFailure ? error.code : 'install_failed',
       });
       throw error;
     }
   }
 
-  status(actor: string, id: string): AccountSignInStatus | null {
-    this.sweep();
-    const entry = this.pending.get(id);
+  async status(actor: string, id: string): Promise<AccountSignInStatus | null> {
+    const now = this.now();
+    const entry = await this.store.get<Pending>(this.kind, id, now);
     if (entry)
       return entry.actor === actor
         ? { state: 'pending', expires_at: new Date(entry.until).toISOString() }
         : null;
-    const done = this.finished.get(id);
+    const done = await this.store.get<{ actor: string; status: AccountSignInStatus }>(
+      `${this.kind}:done`,
+      id,
+      now,
+    );
     return done && done.actor === actor ? done.status : null;
+  }
+
+  private finish(id: string, actor: string, status: AccountSignInStatus) {
+    return this.store.put(`${this.kind}:done`, id, { actor, status }, this.now() + FINISHED_TTL_MS);
   }
 }

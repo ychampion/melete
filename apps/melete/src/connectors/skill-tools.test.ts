@@ -6,6 +6,7 @@
 import { describe, expect, test } from 'bun:test';
 import { loadBuiltInSkills } from '@melete/skills';
 import { RUNTIME_WAIT_TOOL } from '../broker/runtime-wait.ts';
+import { appsManifest } from './apps.ts';
 import { artifactsManifest } from './artifacts.ts';
 import { browserManifest } from './browser.ts';
 import { calendarManifest } from './calendar.ts';
@@ -18,6 +19,7 @@ import { webManifest } from './web.ts';
 
 const PROVIDED = new Set([
   ...[
+    appsManifest,
     artifactsManifest,
     browserManifest,
     calendarManifest,
